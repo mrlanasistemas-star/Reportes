@@ -167,6 +167,97 @@ function buildFilteredUrl(format: 'xlsx' | 'pdf'): string {
 const filteredXlsxUrl = computed(() => buildFilteredUrl('xlsx'))
 const filteredPdfUrl  = computed(() => buildFilteredUrl('pdf'))
 
+// ── "Descargar Excel de colaboradores" (frente 6, auditoría 07-sep-2026) ──────
+// TODOS los colaboradores del periodo — ignora explícitamente el filtro de
+// colaborador individual activo en pantalla (aunque haya uno seleccionado
+// arriba), respeta sucursal cuando aplica. La consulta individual arriba NO se
+// toca — este es un botón adicional, no un reemplazo.
+const employeesExportUrl = computed(() => {
+    const params = new URLSearchParams()
+    if (activeScope.value.type === 'branch' && activeScope.value.branch_id) {
+        params.set('branch_id', String(activeScope.value.branch_id))
+    }
+    const qs = params.toString()
+    return `/reportes-mensuales/${props.period.id}/colaboradores.xlsx` + (qs ? `?${qs}` : '')
+})
+
+// ── "Gasto general por gestor" persistente (frente 4, auditoría 07-sep-2026) ──
+// Fuente única en BD (employee_period_manual_expenses vía
+// EmployeePeriodManualExpenseService) — YA NO es un input efímero de descarga:
+// se carga automáticamente al seleccionar un colaborador, y al guardar
+// actualiza de inmediato la tarjeta OPEX/EBITDA en pantalla (fetchScopedDataset
+// vuelve a pedir el snapshot — la caché del backend ya quedó invalidada por el
+// guardado, así que nunca se ve un valor viejo sin recargar la página).
+const manualExpenseAmount  = ref<string>('')
+const manualExpenseNotes   = ref<string>('')
+const manualExpenseLoading = ref(false)
+const manualExpenseSaving  = ref(false)
+const manualExpenseSavedAt = ref<string | null>(null)
+const manualExpenseError   = ref<string | null>(null)
+
+function csrfToken(): string {
+    return (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content ?? ''
+}
+
+async function loadManualExpense(employeeId: number) {
+    manualExpenseLoading.value = true
+    manualExpenseError.value   = null
+    manualExpenseSavedAt.value = null
+    try {
+        const resp = await fetch(`/historico-general/${props.period.id}/colaboradores/${employeeId}/gasto-manual`, {
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        })
+        const json = await resp.json()
+        manualExpenseAmount.value = json.amount ? String(json.amount) : ''
+        manualExpenseNotes.value  = json.notes ?? ''
+    } catch {
+        manualExpenseError.value = 'No se pudo cargar el gasto manual guardado.'
+    } finally {
+        manualExpenseLoading.value = false
+    }
+}
+
+async function saveManualExpense() {
+    const employeeId = activeScope.value.employee_id
+    if (!employeeId) return
+
+    manualExpenseSaving.value = true
+    manualExpenseError.value  = null
+    try {
+        const resp = await fetch(`/historico-general/${props.period.id}/colaboradores/${employeeId}/gasto-manual`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken(), Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ amount: Number(manualExpenseAmount.value) || 0, notes: manualExpenseNotes.value }),
+        })
+        if (!resp.ok) {
+            const json = await resp.json().catch(() => null)
+            manualExpenseError.value = json?.message ?? 'No se pudo guardar el gasto manual.'
+            return
+        }
+        manualExpenseSavedAt.value = new Date().toLocaleTimeString()
+        // Invalida el override de snapshot "general" en caché local y vuelve a pedir
+        // el dataset del alcance activo — la caché del BACKEND ya se invalidó al
+        // guardar (EmployeePeriodManualExpenseService toca PeriodSummary), así que
+        // esta relectura trae el OPEX/EBITDA ya actualizado, sin F5.
+        generalSnapshotOverride = null
+        await fetchScopedDataset()
+    } catch {
+        manualExpenseError.value = 'No se pudo guardar el gasto manual (error de red).'
+    } finally {
+        manualExpenseSaving.value = false
+    }
+}
+
+watch(() => activeScope.value.employee_id, (employeeId) => {
+    if (employeeId) {
+        loadManualExpense(employeeId)
+    } else {
+        manualExpenseAmount.value = ''
+        manualExpenseNotes.value  = ''
+        manualExpenseSavedAt.value = null
+    }
+}, { immediate: true })
+
 // ── Botones Excel/PDF de cabecera — SIEMPRE el alcance que se está viendo ─────
 // Un solo lugar para descargar (requisito: no duplicar "botón de arriba" vs "panel
 // filtrado"): estos usan report_type=simple + el alcance activo sin importar lo que
@@ -1534,6 +1625,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Gasto general asignado ($)</label>
                                 <input v-model="filteredExtraAmount" type="number" min="0" step="0.01" placeholder="0.00"
                                        class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100" />
+                                <p class="mt-1 text-xs text-slate-400">Se guarda como el "Gasto general por gestor" persistente del colaborador — mismo valor que el bloque de abajo.</p>
                             </div>
                             <div>
                                 <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Notas del gasto</label>
@@ -1553,12 +1645,51 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                class="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-sm font-bold text-white transition">
                                 <FileText class="size-4" /> Descargar PDF
                             </a>
+                            <a :href="employeesExportUrl"
+                               class="inline-flex h-9 items-center gap-2 rounded-xl bg-slate-800 px-4 text-sm font-bold text-white transition hover:bg-slate-700">
+                                <FileSpreadsheet class="size-4" /> Descargar Excel de colaboradores
+                            </a>
                             <p v-if="!canDownloadFiltered" class="self-center text-xs text-amber-600 font-semibold">
                                 <span v-if="isComparative && !filteredComparePeriodId">Selecciona un periodo a comparar.</span>
                                 <span v-else-if="isComparative && filteredScope === 'branch'">Selecciona una sucursal.</span>
                                 <span v-else-if="isComparative && filteredScope === 'employee'">Selecciona un gestor.</span>
                             </p>
                         </div>
+                        <p class="text-xs text-slate-400">"Descargar Excel de colaboradores" siempre trae a TODOS los colaboradores del periodo (respeta sucursal cuando aplica) — nunca se limita al gestor seleccionado arriba.</p>
+                    </div>
+                </div>
+
+                <!-- Gasto general por gestor — PERSISTENTE por (periodo, colaborador). Solo
+                     visible con exactamente un colaborador seleccionado. Guardar aquí
+                     actualiza de inmediato la tarjeta OPEX/EBITDA de arriba (sin F5). -->
+                <div v-if="activeScope.type === 'employee' && activeScope.employee_id" class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5 shadow-sm">
+                    <p class="font-black text-slate-950">Gasto general por gestor</p>
+                    <p class="mt-1 text-sm text-slate-600">Monto aproximado de gastos operativos mensuales de {{ activeScope.employee_name }} este periodo. Se suma al OPEX automático — nunca lo reemplaza.</p>
+
+                    <div v-if="manualExpenseLoading" class="mt-3 text-xs text-slate-400">Cargando gasto guardado…</div>
+                    <div v-else class="mt-4 grid gap-3 sm:grid-cols-2">
+                        <label class="block">
+                            <span class="text-xs font-bold text-slate-600">Gasto mensual aproximado (MXN)</span>
+                            <div class="relative mt-1">
+                                <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400">$</span>
+                                <input v-model="manualExpenseAmount" type="number" min="0" step="100" placeholder="0"
+                                       class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                            </div>
+                        </label>
+                        <label class="block">
+                            <span class="text-xs font-bold text-slate-600">Notas del gasto (opcional)</span>
+                            <input v-model="manualExpenseNotes" type="text" placeholder="Ej. incluye viáticos y comunicación"
+                                   class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                        </label>
+                    </div>
+
+                    <div class="mt-4 flex items-center gap-3">
+                        <button type="button" :disabled="manualExpenseSaving" @click="saveManualExpense"
+                                class="h-10 rounded-2xl bg-indigo-700 px-5 text-sm font-black text-white shadow transition hover:bg-indigo-600 disabled:cursor-not-allowed disabled:opacity-50">
+                            {{ manualExpenseSaving ? 'Guardando…' : 'Guardar gasto' }}
+                        </button>
+                        <span v-if="manualExpenseSavedAt" class="text-xs font-bold text-emerald-700">Guardado a las {{ manualExpenseSavedAt }} — OPEX/EBITDA actualizados.</span>
+                        <span v-if="manualExpenseError" class="text-xs font-bold text-rose-600">{{ manualExpenseError }}</span>
                     </div>
                 </div>
 

@@ -19,6 +19,7 @@ use App\Models\PeriodReprocessRun;
 use App\Models\MonthlyEmployeeSummary;
 use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
+use App\Services\EmployeePeriodManualExpenseService;
 use App\Services\PeriodEmployeeRosterService;
 use App\Services\ReportUploadService;
 use Illuminate\Http\JsonResponse;
@@ -1064,6 +1065,22 @@ class ReportUploadController extends Controller {
         } elseif ($scope === 'employee') {
             if (empty($config['employee_id'])) {
                 return back()->with('error', 'No se puede generar el reporte porque falta seleccionar un empleado o gestor.');
+            }
+
+            // "Gasto general por gestor" capturado en Etapa 4 — auditoría 07-sep-2026
+            // (frente 4): se persiste AQUÍ, antes de encolar el job, como fuente única
+            // de EmployeePeriodManualExpenseService (Web/Excel/PDF ya no reciben este
+            // valor por $config, todos lo leen de la tabla). Solo se toca si el campo
+            // vino en la request — evita "limpiar" un valor guardado desde Histórico
+            // si el wizard se envía sin ese campo en el payload.
+            if (array_key_exists('extra_employee_expense_amount', $config)) {
+                app(EmployeePeriodManualExpenseService::class)->upsert(
+                    $period->id,
+                    (int) $config['employee_id'],
+                    (float) $config['extra_employee_expense_amount'],
+                    (string) ($config['extra_employee_expense_notes'] ?? ''),
+                    auth()->id(),
+                );
             }
         }
 

@@ -166,9 +166,10 @@ class RadiografiaExportService
             if (!$employeeId) {
                 throw new RuntimeException('Se requiere employee_id para reportes por gestor.');
             }
-            $extraAmount = (float) ($config['extra_employee_expense_amount'] ?? 0);
-            $extraNotes  = (string) ($config['extra_employee_expense_notes'] ?? '');
-            $spreadsheet = $this->workbookBuilder->buildEmployeeFromSnapshot($period, $summary, $snapshot, $employeeId, $extraAmount, $extraNotes);
+            // extra_employee_expense_amount/notes de $config ya NO alimentan el
+            // cálculo ni la nota mostrada (auditoría 07-sep-2026, frente 4) — la
+            // fuente única es el gasto manual persistido por (period_id, employee_id).
+            $spreadsheet = $this->workbookBuilder->buildEmployeeFromSnapshot($period, $summary, $snapshot, $employeeId);
             $suffix      = 'gestor_' . $employeeId;
         } else {
             $spreadsheet = $this->workbookBuilder->buildFromSnapshot($period, $summary, $snapshot);
@@ -227,15 +228,20 @@ class RadiografiaExportService
             if (!$employeeId) {
                 throw new RuntimeException('Se requiere employee_id para reportes por gestor.');
             }
-            $extraAmount = (float) ($config['extra_employee_expense_amount'] ?? 0);
-            $extraNotes  = (string) ($config['extra_employee_expense_notes'] ?? '');
-            $empData = $this->resolveEmployeeRow($period, $snapshot, $employeeId, $extraAmount, $extraNotes);
+            // extra_employee_expense_amount/notes de $config ya NO alimentan el
+            // cálculo (auditoría 07-sep-2026, frente 4) — la fuente única es el
+            // gasto manual persistido por (period_id, employee_id), leído dentro de
+            // resolveEmployeeRow()->buildEmployeeExpenseDetail(). Lo que se muestra
+            // en el PDF sale de ese mismo resultado ($empData['expenseDetail']),
+            // nunca del valor crudo de la request — así nunca puede mostrar un
+            // monto/nota distinto al que realmente se sumó al total.
+            $empData = $this->resolveEmployeeRow($period, $snapshot, $employeeId);
 
             $pdf = Pdf::loadView('reports.radiography-pdf-employee', array_merge($empData, [
                 'period'      => $period,
                 'snap'        => $snapshot,
-                'extraAmount' => $extraAmount,
-                'extraNotes'  => $extraNotes,
+                'extraAmount' => $empData['expenseDetail']['manual_total'] ?? 0.0,
+                'extraNotes'  => $empData['expenseDetail']['manual_notes'] ?? '',
             ]))->setPaper('letter', 'portrait')->setOption('isPhpEnabled', true);
             $suffix = 'gestor_' . $employeeId;
         } else {
@@ -515,7 +521,7 @@ class RadiografiaExportService
      * de display de la fila ya expuesta (frágil: causa raíz real de "funciona un mes, falla
      * otro" — ver auditoría 2026-08-24). El nombre solo se usa como fallback explícito.
      */
-    private function resolveEmployeeRow(Period $period, array $snapshot, int $employeeId, float $extraExpenseAmount = 0.0, string $extraExpenseNotes = ''): array
+    private function resolveEmployeeRow(Period $period, array $snapshot, int $employeeId): array
     {
         $employee = Employee::find($employeeId);
         if (!$employee) {
@@ -566,9 +572,11 @@ class RadiografiaExportService
         $percepDeducc      = app(BranchRadiographyCalculator::class)
             ->computeNoiPercepcionesDeduccionesForEmployees($this->snapshotBuilder->resolveDataIdsPublic($period), $employeeIdsForNoi);
 
-        // OPEX del gestor = automático (fact_expenses) + manual (Gasto general por
-        // gestor) — 27-ago-2026, misma fuente que Web/Excel. Ver buildEmployeeExpenseDetail().
-        $expenseDetail = $this->snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForNoi, $extraExpenseAmount, $extraExpenseNotes);
+        // OPEX del gestor = automático (fact_expenses) + manual persistido (Gasto
+        // general por gestor) — 07-sep-2026, misma fuente que Web/Excel. Ver
+        // buildEmployeeExpenseDetail(). $extraExpenseAmount/Notes ya no participan
+        // del cálculo — se conservan solo por compatibilidad de firma.
+        $expenseDetail = $this->snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForNoi, $period->id, $employeeId);
         $gastos        = $expenseDetail['total'];
         $payrollDetail     = $this->snapshotBuilder->buildEmployeePayrollDetail($employeeIdsForNoi, $percepDeducc);
 

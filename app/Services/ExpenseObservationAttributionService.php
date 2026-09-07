@@ -36,6 +36,40 @@ use Illuminate\Support\Facades\DB;
  * nombre exacto, o fuzzy con margen amplio) contra el ROSTER VÁLIDO del periodo
  * (PeriodEmployeeRosterService) — nunca contra Employee::all(). Ambigüedad o
  * conflicto entre Observación y Justificación → NEEDS_REVIEW, nunca auto-asigna.
+ *
+ * ================================================================================
+ * AUDITORÍA 07-sep-2026 — MATCHING POR CONTENCIÓN, NO POR CADENA COMPLETA
+ * ================================================================================
+ * El motor original (hasta 06-sep-2026) comparaba el TEXTO COMPLETO de la celda
+ * contra el NOMBRE COMPLETO del roster — igualdad exacta o similar_text() de las
+ * dos cadenas enteras. Eso fallaba en el caso real más común: una Observación con
+ * ruido alrededor del nombre ("RECARGA TELEFONICA PARA ALBERTO FLORENTINO BRAVO
+ * BRAVO DEL MES") diluye el score de similar_text muy por debajo del piso de
+ * ambigüedad (75%), porque compara longitudes completas, no substrings.
+ *
+ * matchAgainstRoster() ahora sigue, en orden, EXACTAMENTE los 5 niveles pedidos:
+ *   A) Normalización (PersonIdentityResolverService::normalizePersonName — ya
+ *      correcta: Str::ascii() + minúsculas + solo alfanumérico + espacios).
+ *   B) Alias confirmado — contención de secuencia de tokens (con límites de
+ *      palabra), no igualdad de cadena completa.
+ *   C) Nombre completo del roster contenido en el texto — misma contención por
+ *      tokens.
+ *   D) Combinaciones parciales de nombre (primer nombre+apellidos, nombre
+ *      compuesto+apellidos, etc.) — SOLO si esa combinación identifica a UNA
+ *      SOLA persona en TODO el roster del periodo (índice construido sobre el
+ *      roster completo, no solo el candidato evaluado).
+ *   C+D están unificados en un solo paso (buscar combinaciones, de la más larga
+ *   -más específica- a la más corta, en el índice global de combinaciones) — la
+ *   combinación más larga que matchea y es única gana; si dos identidades
+ *   distintas empatan en especificidad, es ambiguo.
+ *   E) Fuzzy — ÚLTIMO recurso, y por VENTANA de tokens del texto (no cadena
+ *      completa contra cadena completa) para que el ruido alrededor del nombre
+ *      ya no diluya el score. Mismos umbrales ya validados
+ *      (FUZZY_ACCEPT_THRESHOLD=92, margen=8, piso ambiguo=75).
+ *
+ * Ninguna de estas reglas cambia isEligibleForAttribution(), la prioridad
+ * Observación>Justificación, la detección de conflicto, ni el invariante de
+ * monto — solo CÓMO se decide si un nombre está "en" el texto.
  */
 class ExpenseObservationAttributionService
 {
@@ -46,6 +80,8 @@ class ExpenseObservationAttributionService
     private const FUZZY_ACCEPT_MARGIN    = 8.0;
     /** Por debajo de esto ni se reporta como "ambiguo" — es simplemente texto no-persona. */
     private const AMBIGUOUS_FLOOR        = 75.0;
+    /** Cuántos candidatos fuzzy se exponen en el diagnóstico (audit command). */
+    private const MAX_DIAGNOSTIC_CANDIDATES = 5;
 
     public function __construct(
         private readonly PersonIdentityResolverService $personResolver,
@@ -61,6 +97,7 @@ class ExpenseObservationAttributionService
      *   previous_employee_id:?int, previous_branch_id:?int,
      *   employee_id:?int, employee_name:?string, branch_id:?int, branch_name:?string,
      *   metodo:?string, confianza:float, fuente:?string, estado:string, changed:bool,
+     *   candidates:array, reason:?string,
      * }>
      */
     public function attributeForPeriod(Period $period, array $dataIds, bool $dryRun = false): array
@@ -72,17 +109,29 @@ class ExpenseObservationAttributionService
 
         $roster = $this->rosterService->rosterRowsForSelector($period);
         $rosterByEmployeeId = [];
-        $rosterNormalizedIndex = []; // normalized_name => employee_id (roster ya deduplicado por identidad)
         foreach ($roster['rows'] as $row) {
             $rosterByEmployeeId[$row['employee_id']] = $row;
-            $norm = $this->personResolver->normalizePersonName($row['name']);
-            if ($norm !== '') {
-                $rosterNormalizedIndex[$norm] = $row['employee_id'];
-            }
         }
 
         if (empty($rosterByEmployeeId)) {
             return [];
+        }
+
+        // ── Índices de matching, construidos UNA vez para todo el periodo ──────
+        // fullNameTokensById: employee_id => tokens normalizados del nombre completo.
+        // comboIndex: "combinación de tokens" => [employee_id, ...] (sobre TODO el
+        // roster) — una combinación solo es usable si tiene exactamente 1 dueño.
+        $fullNameTokensById = [];
+        $comboIndex = [];
+        foreach ($rosterByEmployeeId as $eid => $row) {
+            $tokens = $this->tokensOf($this->personResolver->normalizePersonName($row['name']));
+            if (empty($tokens)) {
+                continue;
+            }
+            $fullNameTokensById[$eid] = $tokens;
+            foreach ($this->nameCombinations($tokens) as $combo) {
+                $comboIndex[implode(' ', $combo)][] = $eid;
+            }
         }
 
         $aliasIndex = DB::table('employee_aliases')
@@ -121,8 +170,15 @@ class ExpenseObservationAttributionService
         $operativeMap = $this->branchCalculator->buildBranchMap()['operative'];
         $results = [];
 
+        $matchContext = [
+            'rosterByEmployeeId'  => $rosterByEmployeeId,
+            'aliasIndex'          => $aliasIndex,
+            'comboIndex'          => $comboIndex,
+            'fullNameTokensById'  => $fullNameTokensById,
+        ];
+
         foreach ($rows as $row) {
-            $result = $this->resolveRow($row, $rosterByEmployeeId, $rosterNormalizedIndex, $aliasIndex, $operativeMap);
+            $result = $this->resolveRow($row, $matchContext, $operativeMap);
 
             if ($result['changed'] && !$dryRun) {
                 DB::table('fact_expenses')->where('id', $row->id)->update([
@@ -203,17 +259,12 @@ class ExpenseObservationAttributionService
         return true;
     }
 
-    private function resolveRow(
-        object $row,
-        array $rosterByEmployeeId,
-        array $rosterNormalizedIndex,
-        array $aliasIndex,
-        array $operativeMap,
-    ): array {
+    private function resolveRow(object $row, array $matchContext, array $operativeMap): array
+    {
         [$obsText, $justText] = $this->splitObservations((string) $row->observations);
 
-        $obsMatch  = $obsText  !== null ? $this->matchAgainstRoster($obsText, $rosterNormalizedIndex, $aliasIndex, $rosterByEmployeeId) : null;
-        $justMatch = $justText !== null ? $this->matchAgainstRoster($justText, $rosterNormalizedIndex, $aliasIndex, $rosterByEmployeeId) : null;
+        $obsMatch  = $obsText  !== null ? $this->matchAgainstRoster($obsText, $matchContext) : null;
+        $justMatch = $justText !== null ? $this->matchAgainstRoster($justText, $matchContext) : null;
 
         $rawEmployeeName = is_array($row->raw_payload)
             ? ($row->raw_payload['solicitante'] ?? null)
@@ -244,6 +295,11 @@ class ExpenseObservationAttributionService
                 'employee_id' => null, 'employee_name' => null, 'branch_id' => null, 'branch_name' => null,
                 'metodo' => 'conflict', 'confianza' => 0.0, 'fuente' => null,
                 'estado' => 'conflicto', 'changed' => false,
+                'candidates' => [
+                    ['employee_id' => $obsMatch['employee_id'], 'name' => $matchContext['rosterByEmployeeId'][$obsMatch['employee_id']]['name'] ?? null, 'fuente' => 'observation'],
+                    ['employee_id' => $justMatch['employee_id'], 'name' => $matchContext['rosterByEmployeeId'][$justMatch['employee_id']]['name'] ?? null, 'fuente' => 'justification'],
+                ],
+                'reason' => 'Observación y Justificación nombran personas distintas.',
             ];
         }
 
@@ -259,26 +315,36 @@ class ExpenseObservationAttributionService
 
         if ($winner === null) {
             // Ninguno resolvió con confianza — ¿alguno fue "candidato pero ambiguo"?
-            $ambiguous = ($obsMatch && $obsMatch['method'] === 'ambiguous') || ($justMatch && $justMatch['method'] === 'ambiguous');
-            if ($ambiguous) {
-                $amb = ($obsMatch && $obsMatch['method'] === 'ambiguous') ? $obsMatch : $justMatch;
+            $ambiguousSide = null;
+            if ($obsMatch && ($obsMatch['method'] ?? null) === 'ambiguous') {
+                $ambiguousSide = ['match' => $obsMatch, 'fuente' => 'observation'];
+            } elseif ($justMatch && ($justMatch['method'] ?? null) === 'ambiguous') {
+                $ambiguousSide = ['match' => $justMatch, 'fuente' => 'justification'];
+            }
+
+            if ($ambiguousSide !== null) {
                 return $base + [
                     'employee_id' => null, 'employee_name' => null, 'branch_id' => null, 'branch_name' => null,
-                    'metodo' => 'ambiguous', 'confianza' => $amb['confidence'] ?? 0.0,
-                    'fuente' => ($obsMatch && $obsMatch['method'] === 'ambiguous') ? 'observation' : 'justification',
+                    'metodo' => 'ambiguous', 'confianza' => $ambiguousSide['match']['confidence'] ?? 0.0,
+                    'fuente' => $ambiguousSide['fuente'],
                     'estado' => 'ambiguo', 'changed' => false,
+                    'candidates' => $ambiguousSide['match']['candidates'] ?? [],
+                    'reason' => $ambiguousSide['match']['reason'] ?? 'Más de un candidato posible, sin margen suficiente para decidir.',
                 ];
             }
+
+            $reason = $obsMatch['reason'] ?? $justMatch['reason'] ?? 'El texto no coincide con ningún colaborador del roster del periodo.';
 
             return $base + [
                 'employee_id' => null, 'employee_name' => null, 'branch_id' => null, 'branch_name' => null,
                 'metodo' => null, 'confianza' => 0.0, 'fuente' => null,
                 'estado' => 'no_atribuible', 'changed' => false,
+                'candidates' => [], 'reason' => $reason,
             ];
         }
 
         $winnerEmployeeId = $winner['employee_id'];
-        $rosterRow        = $rosterByEmployeeId[$winnerEmployeeId];
+        $rosterRow        = $matchContext['rosterByEmployeeId'][$winnerEmployeeId];
 
         // Sucursal atribuida = la HISTÓRICA del colaborador para ESTE periodo (ya
         // resuelta por PeriodEmployeeRosterService vía employee_branch_assignments,
@@ -303,6 +369,8 @@ class ExpenseObservationAttributionService
             'fuente'        => $source,
             'estado'        => $changed ? 'atribuido' : 'ya_correcto',
             'changed'       => $changed,
+            'candidates'    => [],
+            'reason'        => null,
         ];
     }
 
@@ -327,67 +395,316 @@ class ExpenseObservationAttributionService
         return [$raw, null];
     }
 
+    /** Tokeniza un nombre/texto YA normalizado (espacio simple, sin acentos/puntuación). */
+    private function tokensOf(string $normalized): array
+    {
+        if ($normalized === '') {
+            return [];
+        }
+        return array_values(array_filter(explode(' ', $normalized), fn ($t) => $t !== ''));
+    }
+
     /**
-     * @return array{employee_id:?int,method:string,confidence:float}|null
+     * Genera combinaciones identificadoras a partir de los tokens del nombre
+     * completo de un colaborador — pensadas para nombres del patrón mexicano
+     * (1-2 nombres de pila + 1-2 apellidos). Siempre incluye el nombre completo.
+     * Para nombres de 4 tokens (2 nombres + 2 apellidos) agrega:
+     *   - [nombre2, apellido1, apellido2]  ("nombre compuesto" recortado + ambos apellidos)
+     *   - [nombre1, apellido1, apellido2]  (primer nombre + ambos apellidos)
+     * Nunca genera combinaciones de un solo token (demasiado ambiguas) ni asume
+     * qué token es apellido en nombres de 3 tokens (se deja solo el nombre
+     * completo — ya suficientemente específico con 3 palabras).
+     *
+     * @return array<int, array<int, string>>
      */
-    private function matchAgainstRoster(string $text, array $rosterNormalizedIndex, array $aliasIndex, array $rosterByEmployeeId): ?array
+    private function nameCombinations(array $tokens): array
+    {
+        $n = count($tokens);
+        if ($n < 2) {
+            return [];
+        }
+
+        $combos = [$tokens];
+        if ($n >= 4) {
+            $combos[] = array_slice($tokens, 1);                          // nombre(s) restante(s) + ambos apellidos
+            $combos[] = array_merge([$tokens[0]], array_slice($tokens, 2)); // primer nombre + ambos apellidos
+        }
+
+        $seen = [];
+        $unique = [];
+        foreach ($combos as $combo) {
+            $key = implode(' ', $combo);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $unique[] = $combo;
+        }
+
+        return $unique;
+    }
+
+    /** Contención de una secuencia de tokens dentro de otra, respetando límites de palabra. */
+    private function tokensContain(array $haystackTokens, array $needleTokens): bool
+    {
+        if (empty($needleTokens)) {
+            return false;
+        }
+        $haystack = ' ' . implode(' ', $haystackTokens) . ' ';
+        $needle   = ' ' . implode(' ', $needleTokens) . ' ';
+        return str_contains($haystack, $needle);
+    }
+
+    /** Umbral mínimo de similitud POR TOKEN dentro de la ventana fuzzy — evita que
+     *  un nombre corto coincida por pura casualidad de caracteres dentro de una
+     *  palabra más larga no relacionada (ej. "ANA" no debe "verse" dentro de
+     *  "MARIANA" solo porque comparten 3 letras consecutivas: similar_text a nivel
+     *  de CADENA COMPLETA sí encontraría ese substring y lo puntuaría alto, pero
+     *  aquí cada token del nombre candidato debe tener su propio par plausible
+     *  entre los tokens de la ventana de texto — "mariana" vs "ana" da ~60%,
+     *  por debajo de este piso, así que el candidato queda descartado). */
+    private const PER_TOKEN_FLOOR = 70.0;
+
+    /**
+     * Compara los tokens de un nombre candidato contra ventanas de tokens del
+     * texto (tamaño = tokens del candidato ±1) — nunca cadena completa del texto
+     * contra cadena completa del nombre (eso diluye el score con el ruido
+     * alrededor). CADA token del candidato debe tener un par plausible
+     * (≥PER_TOKEN_FLOOR) dentro de la ventana — si un solo token del candidato no
+     * tiene ningún par plausible, esa ventana no cuenta para nada (protección
+     * contra coincidencias de substring sin relación real, y contra "encontrar"
+     * a alguien cuando falta una palabra completa de su nombre).
+     */
+    private function windowScoreForCandidate(array $textTokens, array $candidateTokens): float
+    {
+        $k = count($candidateTokens);
+        $textCount = count($textTokens);
+        $best = 0.0;
+
+        foreach ([$k - 1, $k, $k + 1] as $winSize) {
+            if ($winSize < 1 || $winSize > $textCount) {
+                continue;
+            }
+            for ($i = 0; $i <= $textCount - $winSize; $i++) {
+                $window = array_slice($textTokens, $i, $winSize);
+
+                $sumBest = 0.0;
+                $allTokensClearFloor = true;
+                foreach ($candidateTokens as $candidateToken) {
+                    $tokenBest = 0.0;
+                    foreach ($window as $windowToken) {
+                        similar_text($candidateToken, $windowToken, $pct);
+                        if ($pct > $tokenBest) {
+                            $tokenBest = $pct;
+                        }
+                    }
+                    if ($tokenBest < self::PER_TOKEN_FLOOR) {
+                        $allTokensClearFloor = false;
+                        break;
+                    }
+                    $sumBest += $tokenBest;
+                }
+
+                if (!$allTokensClearFloor) {
+                    continue;
+                }
+
+                $windowScore = $sumBest / count($candidateTokens);
+                if ($windowScore > $best) {
+                    $best = $windowScore;
+                }
+            }
+        }
+
+        return $best;
+    }
+
+    /**
+     * Resuelve un texto libre (Observación o Justificación) contra el roster del
+     * periodo, en el orden A→E documentado en el docblock de la clase.
+     *
+     * @return array{employee_id:?int,method:?string,confidence:float,candidates:array,reason:?string}|null
+     *         null SOLO cuando el texto normalizado queda vacío (nada que evaluar).
+     */
+    private function matchAgainstRoster(string $text, array $matchContext): ?array
     {
         $normalized = $this->personResolver->normalizePersonName($text);
         if ($normalized === '') {
             return null;
         }
 
-        // 1. Alias confirmado (employee_aliases), restringido a empleados del roster.
-        if (isset($aliasIndex[$normalized])) {
-            return ['employee_id' => (int) $aliasIndex[$normalized], 'method' => 'alias', 'confidence' => 1.0];
-        }
+        $textTokens = $this->tokensOf($normalized);
+        $rosterByEmployeeId = $matchContext['rosterByEmployeeId'];
+        $fullNameTokensById = $matchContext['fullNameTokensById'];
 
-        // 2. Nombre exacto contra el roster (índice O(1)).
-        if (isset($rosterNormalizedIndex[$normalized])) {
-            return ['employee_id' => $rosterNormalizedIndex[$normalized], 'method' => 'exact_name', 'confidence' => 1.0];
-        }
-
-        // Pre-filtro barato: exige ≥2 tokens de ≥3 caracteres antes de intentar fuzzy —
-        // descarta rápido texto operativo tipo "RECARGA DE EXTINTOR"/"SEMANA 23" sin
-        // recorrer el roster completo por cada fila.
-        $tokens = array_values(array_filter(explode(' ', $normalized), fn ($t) => mb_strlen($t) >= 3));
-        if (count($tokens) < 2) {
-            return null;
-        }
-
-        // 3. Fuzzy contra cada nombre del roster — nunca contra Employee::all().
-        $best = null;
-        $bestScore = 0.0;
-        $secondScore = 0.0;
-        foreach ($rosterByEmployeeId as $eid => $rosterRow) {
-            $rosterNorm = $this->personResolver->normalizePersonName($rosterRow['name']);
-            if ($rosterNorm === '') {
+        // ── B) Alias confirmado — contención por tokens, no igualdad de cadena. ──
+        foreach ($matchContext['aliasIndex'] as $normalizedAlias => $employeeId) {
+            $aliasTokens = $this->tokensOf((string) $normalizedAlias);
+            if (count($aliasTokens) < 1) {
                 continue;
             }
-            $score = $this->personResolver->scoreNameSimilarity($normalized, $rosterNorm);
-            if ($score > $bestScore) {
-                $secondScore = $bestScore;
-                $bestScore   = $score;
-                $best        = $eid;
-            } elseif ($score > $secondScore) {
-                $secondScore = $score;
+            if ($this->tokensContain($textTokens, $aliasTokens)) {
+                return ['employee_id' => (int) $employeeId, 'method' => 'alias', 'confidence' => 1.0, 'candidates' => [], 'reason' => null];
             }
         }
 
-        if ($best === null) {
-            return null;
+        // ── C+D) Nombre completo / combinaciones parciales únicas del roster ─────
+        // Recorre TODAS las combinaciones (propias del roster completo) que
+        // aparecen como secuencia contigua en el texto. Las que identifican UNA
+        // sola persona en todo el roster son usables (gana la más específica —
+        // más tokens). Las que aparecen en el texto pero son compartidas por ≥2
+        // identidades distintas son evidencia de AMBIGÜEDAD explícita (regla D:
+        // "solo aceptar si esa combinación identifica a una sola persona" — si no
+        // la identifica, es ambiguo, no simplemente descartado en silencio).
+        $bestLenByEmployee = []; // employee_id => longitud de la combinación más larga que matcheó (única)
+        $sharedComboHit = null;  // combinación más específica que matcheó pero es compartida por >1 identidad
+        foreach ($matchContext['comboIndex'] as $comboKey => $ownerIds) {
+            $comboTokens = $this->tokensOf($comboKey);
+            if (!$this->tokensContain($textTokens, $comboTokens)) {
+                continue;
+            }
+            $uniqueOwners = array_values(array_unique($ownerIds));
+            $len = count($comboTokens);
+            if (count($uniqueOwners) !== 1) {
+                if ($sharedComboHit === null || $len > $sharedComboHit['len']) {
+                    $sharedComboHit = ['len' => $len, 'owners' => $uniqueOwners];
+                }
+                continue;
+            }
+            $eid = $uniqueOwners[0];
+            if (!isset($bestLenByEmployee[$eid]) || $len > $bestLenByEmployee[$eid]) {
+                $bestLenByEmployee[$eid] = $len;
+            }
+        }
+
+        if (!empty($bestLenByEmployee)) {
+            $maxLen = max($bestLenByEmployee);
+            $winners = array_keys(array_filter($bestLenByEmployee, fn ($len) => $len === $maxLen));
+
+            if (count($winners) === 1) {
+                $eid     = $winners[0];
+                $fullLen = count($fullNameTokensById[$eid] ?? []);
+                $isFull  = $fullLen > 0 && $maxLen >= $fullLen;
+                return [
+                    'employee_id' => $eid,
+                    'method'      => $isFull ? 'full_name_in_text' : 'partial_name_unique',
+                    'confidence'  => $isFull ? 1.0 : 0.95,
+                    'candidates'  => [],
+                    'reason'      => null,
+                ];
+            }
+
+            // Dos (o más) identidades distintas igual de específicas dentro del
+            // mismo texto — nunca se elige arbitrariamente.
+            $candidates = array_map(fn ($eid) => [
+                'employee_id' => $eid,
+                'name'        => $rosterByEmployeeId[$eid]['name'] ?? null,
+                'score'       => 100.0,
+                'method'      => 'combo',
+            ], $winners);
+
+            return [
+                'employee_id' => null, 'method' => 'ambiguous', 'confidence' => 1.0,
+                'candidates'  => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
+                'reason'      => 'Más de un colaborador del roster comparte la misma combinación de nombre encontrada en el texto.',
+            ];
+        }
+
+        if ($sharedComboHit !== null) {
+            // La combinación más específica encontrada en el texto SÍ identifica
+            // personas del roster, pero más de una — nunca se asigna al azar.
+            $candidates = array_map(fn ($eid) => [
+                'employee_id' => $eid,
+                'name'        => $rosterByEmployeeId[$eid]['name'] ?? null,
+                'score'       => 100.0,
+                'method'      => 'combo_shared',
+            ], $sharedComboHit['owners']);
+
+            return [
+                'employee_id' => null, 'method' => 'ambiguous', 'confidence' => 1.0,
+                'candidates'  => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
+                'reason'      => 'La combinación de nombre encontrada en el texto es compartida por más de un colaborador del roster (ninguno se elige arbitrariamente).',
+            ];
+        }
+
+        // ── E) Fuzzy — último recurso, por VENTANA de tokens del texto ───────────
+        // Pre-filtro barato: exige ≥2 tokens de ≥3 caracteres — descarta rápido
+        // texto operativo tipo "RECARGA DE EXTINTOR"/"SEMANA 23" sin recorrer el
+        // roster completo por cada fila.
+        $significantTokens = array_values(array_filter($textTokens, fn ($t) => mb_strlen($t) >= 3));
+        if (count($significantTokens) < 2) {
+            return [
+                'employee_id' => null, 'method' => null, 'confidence' => 0.0, 'candidates' => [],
+                'reason' => 'Texto sin al menos 2 palabras significativas (≥3 caracteres) — no parece contener un nombre de persona.',
+            ];
+        }
+
+        $scored = []; // employee_id => best window score
+        foreach ($rosterByEmployeeId as $eid => $rosterRow) {
+            $candidateTokens = $fullNameTokensById[$eid] ?? [];
+            if (empty($candidateTokens)) {
+                continue;
+            }
+            $best = $this->windowScoreForCandidate($textTokens, $candidateTokens);
+            if ($best > 0.0) {
+                $scored[$eid] = $best;
+            }
+        }
+
+        if (empty($scored)) {
+            return [
+                'employee_id' => null, 'method' => null, 'confidence' => 0.0, 'candidates' => [],
+                'reason' => 'Ningún colaborador del roster tiene similitud detectable con el texto.',
+            ];
+        }
+
+        arsort($scored);
+        $bestEid   = array_key_first($scored);
+        $bestScore = $scored[$bestEid];
+        $secondScore = 0.0;
+        $i = 0;
+        foreach ($scored as $eid => $score) {
+            if ($i === 1) {
+                $secondScore = $score;
+                break;
+            }
+            $i++;
+        }
+
+        $topCandidates = [];
+        $i = 0;
+        foreach ($scored as $eid => $score) {
+            if ($i >= self::MAX_DIAGNOSTIC_CANDIDATES) {
+                break;
+            }
+            $topCandidates[] = ['employee_id' => $eid, 'name' => $rosterByEmployeeId[$eid]['name'] ?? null, 'score' => round($score, 1), 'method' => 'fuzzy_window'];
+            $i++;
         }
 
         if ($bestScore >= self::FUZZY_ACCEPT_THRESHOLD && ($bestScore - $secondScore) >= self::FUZZY_ACCEPT_MARGIN) {
-            return ['employee_id' => $best, 'method' => 'fuzzy_name', 'confidence' => round($bestScore / 100, 2)];
+            return ['employee_id' => $bestEid, 'method' => 'fuzzy_name', 'confidence' => round($bestScore / 100, 2), 'candidates' => [], 'reason' => null];
         }
 
         if ($bestScore >= self::AMBIGUOUS_FLOOR) {
             // Candidato real pero sin confianza/margen suficiente — reportado como
             // ambiguo, nunca auto-asignado.
-            return ['employee_id' => null, 'method' => 'ambiguous', 'confidence' => round($bestScore / 100, 2)];
+            $bestName = $rosterByEmployeeId[$bestEid]['name'] ?? '?';
+            return [
+                'employee_id' => null, 'method' => 'ambiguous', 'confidence' => round($bestScore / 100, 2),
+                'candidates'  => $topCandidates,
+                'reason'      => sprintf(
+                    'Mejor coincidencia difusa: "%s" (%.1f%%)%s — sin margen suficiente sobre el umbral de %.0f%%.',
+                    $bestName,
+                    $bestScore,
+                    $secondScore > 0 ? sprintf(', 2do lugar %.1f%%', $secondScore) : '',
+                    self::FUZZY_ACCEPT_THRESHOLD
+                ),
+            ];
         }
 
-        return null;
+        return [
+            'employee_id' => null, 'method' => null, 'confidence' => 0.0, 'candidates' => [],
+            'reason' => sprintf('Mejor coincidencia difusa (%.1f%%) por debajo del piso mínimo de %.0f%%.', $bestScore, self::AMBIGUOUS_FLOOR),
+        ];
     }
 }

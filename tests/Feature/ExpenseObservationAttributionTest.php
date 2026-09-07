@@ -138,7 +138,13 @@ it('attributes to the employee named in Observación, never to the raw "Empleado
     expect($expense->employee_id)->toBe($beneficiary->id);
     expect($expense->employee_id)->not->toBe($admin->id);
     expect($expense->branch_id)->toBe($branchB->id);
-    expect($expense->attribution_method)->toBe('exact_name');
+    // Auditoría 07-sep-2026: el motor de matching pasó de comparar cadena
+    // completa a contención por tokens — un texto que ES exactamente el nombre
+    // completo cae en el mismo camino que un nombre contenido en texto con ruido
+    // alrededor, así que el método se reporta como 'full_name_in_text' (antes
+    // 'exact_name'). Mismo resultado de negocio: employee_id/branch_id/confianza
+    // 1.0 sin cambios.
+    expect($expense->attribution_method)->toBe('full_name_in_text');
     expect($expense->attribution_source)->toBe('observation');
     expect((float) $expense->attribution_confidence)->toBe(1.0);
     // El monto/categoría/concepto NUNCA cambian — solo la atribución.
@@ -437,14 +443,16 @@ it('never attributes NOMINA/PAGO DE IMSS/DEDUCCIONES/ANTICIPO DE NOMINA (already
 // Usa la MISMA fórmula canónica de RadiographySnapshotBuilder::applyEmployeeScope()
 // (ebitda = ingreso_base - (gastos + neto)) — no se inventa ninguna fórmula nueva.
 // ============================================================================
-// ACLARACIÓN 27-ago-2026: OPEX DE EMPLEADO/GESTOR = AUTOMÁTICO + MANUAL
+// ACLARACIÓN 27-ago-2026 (actualizada 07-sep-2026 — frente 4, gasto manual
+// persistente): OPEX DE EMPLEADO/GESTOR = AUTOMÁTICO + MANUAL
 // ============================================================================
 // La atribución automática (fact_expenses vía Observación/Justificación) NO
-// reemplaza el input manual que ya existe en Etapa 4 ("Gasto general por
-// gestor" / extra_employee_expense_amount+notes) — se SUMAN. Ver
-// RadiographySnapshotBuilder::buildEmployeeExpenseDetail(), fuente única para
-// Web (applyEmployeeScope), Excel (buildEmployeeFromSnapshot) y PDF
-// (resolveEmployeeRow).
+// reemplaza el input manual — se SUMAN. El manual YA NO viaja por $config
+// (extra_employee_expense_amount/notes de la request) — se persiste vía
+// EmployeePeriodManualExpenseService::upsert() y buildEmployeeExpenseDetail()
+// lo lee de ahí. Ver RadiographySnapshotBuilder::buildEmployeeExpenseDetail(),
+// fuente única para Web (applyEmployeeScope), Excel (buildEmployeeFromSnapshot)
+// y PDF (resolveEmployeeRow).
 function makeEbitdaFixtureRow(int $employeeId): array
 {
     return ['name' => 'EMPLEADO EBITDA', 'branch' => 'ORIZABA', 'pagos' => 40000.0, 'bonos' => 0.0, 'descuentos' => 0.0, 'neto' => 40000.0, 'gastos' => 0.0, 'colocacion' => 0.0, 'operaciones' => 0, 'recuperacion' => 0.0, 'cartera' => 0.0, 'vencida' => 0.0, 'mora' => 0.0, 'ingreso_ebitda_base' => 190000.0, '_employee_ids' => [$employeeId]];
@@ -463,7 +471,7 @@ it('OPEX total = automatic only, when there is no manual input', function () {
     // llegar aquí; se replica esa misma secuencia para la prueba directa del método.
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], 0.0, '');
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
 
     expect($detail['automatic_total'])->toBe(200.0);
     expect($detail['manual_total'])->toBe(0.0);
@@ -472,7 +480,13 @@ it('OPEX total = automatic only, when there is no manual input', function () {
 
 // Test obligatorio 2: automatic=0, manual=1500 → total=1500 (nunca $0 porque no hay automático).
 it('OPEX total = manual only, when there is no automatic attribution', function () {
-    $detail = app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([999999], 1500.0, 'Viáticos y comunicación');
+    $period = makeAttribPeriodo();
+    $branch = makeAttribBranch('Orizaba');
+    $employee = makeAttribRosterEmployee($period, 'EMPLEADO EBITDA SOLO MANUAL', $branch);
+
+    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Viáticos y comunicación');
+
+    $detail = app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
 
     expect($detail['automatic_total'])->toBe(0.0);
     expect($detail['manual_total'])->toBe(1500.0);
@@ -487,9 +501,11 @@ it('OPEX total = automatic + manual, SUMMED, never one replacing the other', fun
     $employee = makeAttribRosterEmployee($period, 'EMPLEADO EBITDA B', $branch);
     makeAttribExpense($period, $upload, ['amount' => 200, 'paid_amount' => 200, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
 
+    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Viáticos y comunicación');
+
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], 1500.0, 'Viáticos y comunicación');
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
 
     expect($detail['automatic_total'])->toBe(200.0);
     expect($detail['manual_total'])->toBe(1500.0);
@@ -515,11 +531,11 @@ it('shifts employee EBITDA by exactly the combined automatic+manual OPEX, via th
     $snapshotSin = makeGeneralSnapshotFixture($period->id, [], [$rowSin]);
     $resultSin = invokeScopeMethod($builder, 'applyEmployeeScope', ['dataIds' => [$period->id], 'args' => [$snapshotSin, $employee->id, [$rowSin], $period, []]]);
 
-    // Automático $200 (fact_expenses real) + manual $1,500 (config de esta corrida).
+    // Automático $200 (fact_expenses real) + manual $1,500 (persistido — fuente única).
     makeAttribExpense($period, $upload, ['amount' => 200, 'paid_amount' => 200, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
+    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Viáticos y comunicación');
     $snapshotCon = makeGeneralSnapshotFixture($period->id, [], [$rowSin]);
-    $config = ['extra_employee_expense_amount' => 1500.0, 'extra_employee_expense_notes' => 'Viáticos y comunicación'];
-    $resultCon = invokeScopeMethod($builder, 'applyEmployeeScope', ['dataIds' => [$period->id], 'args' => [$snapshotCon, $employee->id, [$rowSin], $period, $config]]);
+    $resultCon = invokeScopeMethod($builder, 'applyEmployeeScope', ['dataIds' => [$period->id], 'args' => [$snapshotCon, $employee->id, [$rowSin], $period, []]]);
 
     expect((float) $resultSin['summary']['opex_total'])->toBe(0.0);
     expect((float) $resultCon['summary']['opex_total'])->toBe(1700.0);
@@ -534,7 +550,8 @@ it('shifts employee EBITDA by exactly the combined automatic+manual OPEX, via th
 });
 
 // Test obligatorio 5: el input manual NUNCA toca fact_expenses ni el OPEX general oficial —
-// sigue siendo semántica de ESTA configuración de reporte, no un dato persistido.
+// vive en su propia tabla persistente (employee_period_manual_expenses), nunca en
+// fact_expenses ni mezclado con gastos automáticos.
 it('never writes the manual amount to fact_expenses or changes the official general OPEX', function () {
     $period = makeAttribPeriodo();
     $upload = makeAttribUpload($period);
@@ -545,9 +562,143 @@ it('never writes the manual amount to fact_expenses or changes the official gene
     $totalFactExpensesAntes = (float) DB::table('fact_expenses')->where('period_id', $period->id)->count();
     $sumaAntes = (float) DB::table('fact_expenses')->where('period_id', $period->id)->sum('paid_amount');
 
-    app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([$employee->id], 1500.0, 'Ajuste manual');
+    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Ajuste manual');
+    app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
 
     expect((float) DB::table('fact_expenses')->where('period_id', $period->id)->count())->toBe($totalFactExpensesAntes);
     expect((float) DB::table('fact_expenses')->where('period_id', $period->id)->sum('paid_amount'))->toBe($sumaAntes);
     expect($sumaAntes)->toBe(200.0); // el manual ($1,500) nunca aparece en fact_expenses
+});
+
+// ============================================================================
+// AUDITORÍA 07-sep-2026 — matching por CONTENCIÓN (no cadena completa)
+// ============================================================================
+// Caso real reportado: el nombre completo del colaborador aparece DENTRO de un
+// texto con ruido alrededor. El motor anterior (similar_text de cadena completa
+// contra cadena completa) fallaba aquí porque el ruido diluye el score muy por
+// debajo del piso de ambigüedad. Ver ExpenseObservationAttributionService::
+// matchAgainstRoster() — pasos C/D (contención de nombre completo / combinaciones).
+
+// ── 13. Nombre completo contenido en texto largo con ruido alrededor ─────────
+it('resolves a full name embedded inside a noisy sentence (word-boundary containment)', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('San Luis Potosi');
+    $employee = makeAttribRosterEmployee($period, 'ALBERTO FLORENTINO BRAVO BRAVO', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'concept'      => 'RECARGA TELEFONICA',
+        'observations' => 'RECARGA TELEFONICA PARA ALBERTO FLORENTINO BRAVO BRAVO DEL MES',
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($results[0]['estado'])->toBe('atribuido');
+    expect($results[0]['metodo'])->toBe('full_name_in_text');
+    expect($expense->fresh()->employee_id)->toBe($employee->id);
+    expect((float) $expense->fresh()->attribution_confidence)->toBe(1.0);
+});
+
+// ── 14. Acentos/mayúsculas/puntuación distintos al roster — debe localizarse ──
+it('resolves regardless of accents, case and punctuation differences from the roster name', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Cordoba');
+    $employee = makeAttribRosterEmployee($period, 'JOSE ANGEL PEREZ LOPEZ', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'observations' => 'PAGO DE TELEFONO PARA JOSÉ ANGEL PÉREZ LÓPEZ, JUNIO.',
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($expense->fresh()->employee_id)->toBe($employee->id);
+});
+
+// ── 15. Combinación parcial única en el roster → resuelve ────────────────────
+it('resolves a partial name combination (first name + both surnames) when it identifies exactly one roster member', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Tula');
+    $employee = makeAttribRosterEmployee($period, 'JOSE ANGEL PEREZ LOPEZ', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'observations' => 'RECARGA PARA JOSE PEREZ LOPEZ',
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($results[0]['estado'])->toBe('atribuido');
+    expect($results[0]['metodo'])->toBe('partial_name_unique');
+    expect($expense->fresh()->employee_id)->toBe($employee->id);
+});
+
+// ── 16. Misma combinación parcial, pero DOS personas del roster la comparten → ambiguo ──
+it('does NOT resolve the same partial combination when two roster members share it', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Tenango del Valle');
+    makeAttribRosterEmployee($period, 'JOSE ANGEL PEREZ LOPEZ', $branch);
+    makeAttribRosterEmployee($period, 'JOSE RICARDO PEREZ LOPEZ', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'observations' => 'RECARGA PARA JOSE PEREZ LOPEZ',
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($results[0]['estado'])->not->toBe('atribuido');
+    expect($expense->fresh()->employee_id)->toBeNull();
+});
+
+// ── 17. Protección contra substring peligroso: "ANA" no debe matchear dentro de "MARIANA" ──
+it('never matches a short name as a raw substring of a longer, unrelated word', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Ixtlahuaca');
+    makeAttribRosterEmployee($period, 'ANA LOPEZ', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'observations' => 'GASTO DE MARIANA LOPEZ POR VIATICOS',
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    // "MARIANA" nunca debe leerse como que contiene "ANA" — ni matchea ni queda
+    // ambiguo por una lectura de substring sin límites de palabra.
+    expect($expense->fresh()->employee_id)->toBeNull();
+    expect($results[0]['estado'])->not->toBe('atribuido');
+});
+
+// ── 18. Diagnóstico: 'candidates'/'reason' se pueblan en ambiguo y no_atribuible ──
+it('exposes candidates and reason for diagnostics on ambiguous and unattributable rows', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Atlacomulco');
+    // Comparten la combinación "JOSE PEREZ LOPEZ" (primer nombre + ambos
+    // apellidos) — esa combinación SÍ aparece en el texto, pero identifica a DOS
+    // personas del roster, así que debe reportarse como ambigua con ambos candidatos.
+    makeAttribRosterEmployee($period, 'JOSE ANGEL PEREZ LOPEZ', $branch);
+    makeAttribRosterEmployee($period, 'JOSE RICARDO PEREZ LOPEZ', $branch);
+
+    $ambiguo = makeAttribExpense($period, $upload, ['observations' => 'RECARGA PARA JOSE PEREZ LOPEZ']);
+    $noAtribuible = makeAttribExpense($period, $upload, ['observations' => 'RECARGA DE EXTINTOR']);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    $rAmbiguo = collect($results)->firstWhere('fact_expense_id', $ambiguo->id);
+    $rNoAtrib = collect($results)->firstWhere('fact_expense_id', $noAtribuible->id);
+
+    expect($rAmbiguo['estado'])->toBe('ambiguo');
+    expect($rAmbiguo['reason'])->not->toBeNull();
+    expect($rAmbiguo['candidates'])->toHaveCount(2);
+
+    expect($rNoAtrib['estado'])->toBe('no_atribuible');
+    expect($rNoAtrib['reason'])->not->toBeNull();
 });

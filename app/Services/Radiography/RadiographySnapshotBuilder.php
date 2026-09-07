@@ -46,6 +46,7 @@ class RadiographySnapshotBuilder
     public function __construct(
         private readonly EmployeeNameCanonicalizer $canonicalizer,
         private readonly BranchRadiographyCalculator $branchCalculator,
+        private readonly \App\Services\EmployeePeriodManualExpenseService $manualExpenseService,
     ) {}
 
     public function build(Period $period, PeriodSummary $summary, array $config = []): array
@@ -494,27 +495,32 @@ class RadiographySnapshotBuilder
      *      directo + GastosExcelBranchResolverService + FinanciamientoMotosAssignmentService
      *      + ExpenseObservationAttributionService — ver auditoría de atribución de
      *      OPEX). Dato oficial persistido, agnóstico de qué reporte se esté viendo.
-     *   B) MANUAL: "Gasto general por gestor" capturado en Etapa 4 del wizard
-     *      (config extra_employee_expense_amount/extra_employee_expense_notes) —
-     *      un ajuste de ESTA configuración de reporte, NUNCA se escribe a
-     *      fact_expenses (ver semántica actual documentada donde se arma $config).
+     *   B) MANUAL: "Gasto general por gestor" — auditoría 07-sep-2026 (frente 4):
+     *      YA NO viaja por $config (extra_employee_expense_amount/notes de la
+     *      request) — ese campo divergía entre Web (que nunca lo recibía, ver
+     *      MonthlyReportController::scopedData()) y Excel/PDF. Ahora se lee de
+     *      EmployeePeriodManualExpenseService, persistido por (period_id,
+     *      employee_id) — la MISMA fila para cualquier pantalla/reporte.
      *
      * Fuente ÚNICA para Web (applyEmployeeScope), Excel
      * (RadiographyWorkbookBuilder::buildEmployeeFromSnapshot) y PDF
      * (RadiografiaExportService::resolveEmployeeRow) — los tres deben llamar
-     * exactamente este método con los mismos argumentos, nunca sumar por su cuenta,
-     * para garantizar Web = Excel = PDF sin duplicar ni perder ninguna de las dos
-     * fuentes.
+     * exactamente este método, nunca sumar por su cuenta, para garantizar
+     * Web = Excel = PDF sin duplicar ni perder ninguna de las dos fuentes.
      *
      * Requiere que $this->dataIds ya esté resuelto (build() o
      * findEmployeeGestorRowByEmployeeId() ya lo hacen antes de llegar aquí).
      *
-     * @param  int[] $employeeIds  Normalmente [$employeeId] — fact_expenses.employee_id
-     *                             ya es un id canónico único por persona (a diferencia
-     *                             de fact_noi_movements, que puede traer más de un
-     *                             employee_id para la misma persona real).
+     * @param  int[]  $employeeIds        Normalmente [$employeeId] — fact_expenses.employee_id
+     *                                    ya es un id canónico único por persona (a diferencia
+     *                                    de fact_noi_movements, que puede traer más de un
+     *                                    employee_id para la misma persona real).
+     * @param  int    $periodId           Periodo del reporte — clave del gasto manual persistido.
+     * @param  ?int   $primaryEmployeeId  Identidad canónica contra la que se guardó/lee el gasto
+     *                                    manual (el employee_id que el usuario seleccionó en
+     *                                    pantalla). Si se omite, usa el primero de $employeeIds.
      */
-    public function buildEmployeeExpenseDetail(array $employeeIds, float $manualAmount = 0.0, string $manualNotes = ''): array
+    public function buildEmployeeExpenseDetail(array $employeeIds, int $periodId, ?int $primaryEmployeeId = null): array
     {
         $items = empty($employeeIds) ? collect() : DB::table('fact_expenses')
             ->whereIn('period_id', $this->dataIds)
@@ -531,15 +537,18 @@ class RadiographySnapshotBuilder
             ]);
 
         $automaticTotal = round((float) $items->sum('amount'), 2);
-        $manualAmount   = round($manualAmount, 2);
-        $manualNotes    = $manualAmount > 0 ? trim($manualNotes) : '';
+
+        $manualEmployeeId = $primaryEmployeeId ?? (empty($employeeIds) ? null : (int) reset($employeeIds));
+        $manual = $manualEmployeeId
+            ? $this->manualExpenseService->getForPeriodEmployee($periodId, $manualEmployeeId)
+            : ['amount' => 0.0, 'notes' => ''];
 
         return [
             'automatic_total' => $automaticTotal,
             'automatic_items' => $items->values()->all(),
-            'manual_total'    => $manualAmount,
-            'manual_notes'    => $manualNotes,
-            'total'           => round($automaticTotal + $manualAmount, 2),
+            'manual_total'    => $manual['amount'],
+            'manual_notes'    => $manual['notes'],
+            'total'           => round($automaticTotal + $manual['amount'], 2),
         ];
     }
 
@@ -555,6 +564,24 @@ class RadiographySnapshotBuilder
         }
 
         return null;
+    }
+
+    /**
+     * TODAS las filas de gestor del periodo (no filtradas a un solo employee_id) —
+     * usado por el export "Descargar Excel de colaboradores" (frente 6, auditoría
+     * 07-sep-2026, EmployeesHistoricoExportService). MISMA fuente que
+     * findEmployeeGestorRowByEmployeeId() (una sola llamada a
+     * buildEmployeesGestores(), sin N+1: ya trae recuperación/colocación/cartera/
+     * vencida/nómina de TODOS los colaboradores en un solo pase).
+     *
+     * @return array<int, array<string,mixed>>
+     */
+    public function buildAllEmployeeGestorRows(Period $period): array
+    {
+        $this->dataIds        = $this->resolveDataIds($period);
+        $this->closingDataIds = $this->resolveClosingDataIds($period);
+
+        return $this->buildEmployeesGestores($period)['rows'];
     }
 
     private function eqName(mixed $value): string
@@ -783,12 +810,13 @@ class RadiographySnapshotBuilder
         $employeeIdsForNoi = !empty($row['_employee_ids']) ? $row['_employee_ids'] : [$employeeId];
         $percepDeducc = $this->branchCalculator->computeNoiPercepcionesDeduccionesForEmployees($this->dataIds, $employeeIdsForNoi);
 
-        // OPEX del gestor = automático (fact_expenses) + manual ("Gasto general por
-        // gestor" de Etapa 4) — ver buildEmployeeExpenseDetail(). Misma identidad
-        // (employeeIdsForNoi) que usa el resto del scope para no divergir de NOI.
-        $manualAmount   = (float) ($config['extra_employee_expense_amount'] ?? 0);
-        $manualNotes    = (string) ($config['extra_employee_expense_notes'] ?? '');
-        $expenseDetail  = $this->buildEmployeeExpenseDetail($employeeIdsForNoi, $manualAmount, $manualNotes);
+        // OPEX del gestor = automático (fact_expenses) + manual persistido ("Gasto
+        // general por gestor", EmployeePeriodManualExpenseService) — ver
+        // buildEmployeeExpenseDetail(). Misma identidad (employeeIdsForNoi) que usa
+        // el resto del scope para no divergir de NOI; el gasto manual se lee/guarda
+        // contra $employeeId (la identidad canónica seleccionada en pantalla), no
+        // contra todo el grupo NOI fusionado.
+        $expenseDetail  = $this->buildEmployeeExpenseDetail($employeeIdsForNoi, $period->id, $employeeId);
 
         $snapshot['summary'] = $this->summaryFromRow($row, $percepDeducc, $row, $expenseDetail);
         $snapshot['branch_radiography']['global']     = $this->notAttributable('El colaborador no representa una sucursal completa — ver sections.employees_gestores.');
@@ -956,6 +984,7 @@ class RadiographySnapshotBuilder
                     $s['rotation_detail'][$k] = $this->filterRowsByField($s['rotation_detail'][$k], ['nombre'], $employee->full_name);
                 }
             }
+            $s['rotation_detail']['operational_status'] = $this->buildOperationalStatus($period, $employeeId, $row, $expenseDetail);
         }
 
         foreach ([
@@ -4050,6 +4079,76 @@ class RadiographySnapshotBuilder
             'mes_anterior'     => $prevPeriod ? strtoupper($prevPeriod->label) : null,
             'empleados_mes_actual'   => $activos,
             'empleados_mes_anterior' => $mesAnteriorLista,
+        ];
+    }
+
+    /**
+     * Estatus OPERATIVO de un colaborador — auditoría 07-sep-2026 (frente 5),
+     * alcance acotado explícitamente por decisión del usuario: SOLO alimenta el
+     * badge de Histórico y la columna "ESTADO ACTIVO/BAJA" del Excel de
+     * colaboradores (buildEmployeesHistoricoExport()). NUNCA toca:
+     *   - Rotación oficial (buildRotationData()/buildRotationDetail() arriba,
+     *     'altas'/'bajas'/'activos'/'plantilla') — sigue siendo 100% derivada de
+     *     period_employee_rosters (presencia en NOI), sin cambios.
+     *   - IMSS patronal (ImssFromNoiFiscalService, $3,500 × colaborador activo en
+     *     el roster NOI) — tampoco se toca.
+     *
+     * Regla de negocio corregida (la que SÍ aplica aquí): un colaborador está
+     * OPERATIVAMENTE ACTIVO si generó ingreso real (recuperación o colocación) O
+     * tuvo gasto operativo automático atribuible > 0 este periodo — nunca solo
+     * por aparecer en nómina (NOI puede traer un pago/finiquito atrasado que no
+     * refleja actividad real del periodo — ver PersonIdentityResolverService::
+     * evaluateNoiCandidateEvidence(), que documenta el mismo riesgo para otro
+     * propósito). La cartera/mora del colaborador NUNCA se toca ni se pone en
+     * cero por este estatus — sigue mostrándose íntegra en el resto del snapshot.
+     *
+     * Transición (activo→inactivo = UNA baja operativa; inactivo→inactivo = NO
+     * es una baja nueva) se resuelve comparando SOLO contra el periodo mensual
+     * anterior, calculado bajo demanda (nunca persistido) con una instancia
+     * NUEVA del builder — nunca $this, para no pisar $this->dataIds del periodo
+     * que se está construyendo (ver advertencia de estado en
+     * findEmployeeGestorRowByEmployeeId()).
+     */
+    private function buildOperationalStatus(Period $period, int $employeeId, array $row, array $expenseDetail): array
+    {
+        $hasIncome  = round((float) ($row['recuperacion'] ?? 0), 2) > 0 || round((float) ($row['colocacion'] ?? 0), 2) > 0;
+        $hasExpense = round((float) ($expenseDetail['automatic_total'] ?? 0), 2) > 0;
+        $isActiveNow = $hasIncome || $hasExpense;
+
+        $prevPeriod = $period->previousMonthly(Period::all());
+        $wasActivePrev = null;
+
+        if ($prevPeriod) {
+            $prevBuilder = app(self::class);
+            $prevRow = $prevBuilder->findEmployeeGestorRowByEmployeeId($prevPeriod, $employeeId);
+            if ($prevRow) {
+                $prevExpenseIds = !empty($prevRow['_employee_ids']) ? $prevRow['_employee_ids'] : [$employeeId];
+                $prevExpenseDetail = $prevBuilder->buildEmployeeExpenseDetail($prevExpenseIds, $prevPeriod->id, $employeeId);
+                $wasActivePrev = round((float) ($prevRow['recuperacion'] ?? 0), 2) > 0
+                    || round((float) ($prevRow['colocacion'] ?? 0), 2) > 0
+                    || round((float) ($prevExpenseDetail['automatic_total'] ?? 0), 2) > 0;
+            } else {
+                $wasActivePrev = false;
+            }
+        }
+
+        $transition = 'sin_periodo_anterior';
+        if ($wasActivePrev !== null) {
+            $transition = match (true) {
+                $isActiveNow && $wasActivePrev   => 'activo_continua',
+                $isActiveNow && !$wasActivePrev  => 'alta_operativa',
+                !$isActiveNow && $wasActivePrev  => 'baja_operativa',
+                default                          => 'inactivo_continua',
+            };
+        }
+
+        return [
+            'is_active'                   => $isActiveNow,
+            'has_income'                  => $hasIncome,
+            'has_operational_expense'     => $hasExpense,
+            'was_active_previous_period'  => $wasActivePrev,
+            'transition'                  => $transition,
+            'note'                        => 'Estatus operativo (ingreso real o gasto atribuible este periodo) — independiente del estatus de nómina NOI (Rotación/IMSS arriba), que no cambia.',
         ];
     }
 

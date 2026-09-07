@@ -6365,8 +6365,6 @@ class RadiographyWorkbookBuilder
         PeriodSummary $summary,
         array         $snap,
         int           $employeeId,
-        float         $extraExpenseAmount = 0.0,
-        string        $extraExpenseNotes  = ''
     ): Spreadsheet {
         @ini_set('memory_limit', '1024M');
 
@@ -6417,12 +6415,16 @@ class RadiographyWorkbookBuilder
         $pagos     = (float)($empRow['pagos']        ?? 0);
         $bonos     = (float)($empRow['bonos']        ?? 0);
         $desctos   = (float)($empRow['descuentos']   ?? 0);
-        // OPEX del gestor = automático (fact_expenses) + manual (Gasto general por
-        // gestor) — MISMA fuente/fórmula que Web (RadiographySnapshotBuilder::
-        // applyEmployeeScope()) y PDF (RadiografiaExportService::resolveEmployeeRow()).
-        // Nunca se recalcula por separado — ver buildEmployeeExpenseDetail().
+        // OPEX del gestor = automático (fact_expenses) + manual persistido (Gasto
+        // general por gestor, EmployeePeriodManualExpenseService) — MISMA fuente/
+        // fórmula que Web (RadiographySnapshotBuilder::applyEmployeeScope()) y PDF
+        // (RadiografiaExportService::resolveEmployeeRow()). Nunca se recalcula por
+        // separado — ver buildEmployeeExpenseDetail(). $extraExpenseAmount/Notes ya
+        // no participan del cálculo (auditoría 07-sep-2026) — el dato persistido es
+        // la única fuente; los parámetros se conservan solo por compatibilidad de
+        // firma con quien arma la URL de descarga.
         $employeeIdsForExpenses = !empty($empRow['_employee_ids']) ? $empRow['_employee_ids'] : [$employeeId];
-        $expenseDetail = $snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForExpenses, $extraExpenseAmount, $extraExpenseNotes);
+        $expenseDetail = $snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForExpenses, $period->id, $employeeId);
         $gastos    = $expenseDetail['total'];
         $neto      = (float)($empRow['neto']          ?? ($pagos + $bonos - $desctos));
         $coloc     = (float)($empRow['colocacion']    ?? 0);
@@ -6555,9 +6557,10 @@ class RadiographyWorkbookBuilder
         ]);
         $r += 2;
 
-        if ($extraExpenseNotes) {
+        $manualNotesForSheet = $expenseDetail['manual_notes'] ?? '';
+        if ($manualNotesForSheet) {
             $this->sectionHeader($sheet, "A{$r}:D{$r}", 'OBSERVACIONES'); $r++;
-            $sheet->setCellValue("A{$r}", $extraExpenseNotes);
+            $sheet->setCellValue("A{$r}", $manualNotesForSheet);
             RadiographyStyleHelper::mergeCellsSafe($sheet,"A{$r}:D{$r}");
             $this->dataRow($sheet, "A{$r}:D{$r}", true);
             $sheet->getStyle("A{$r}:D{$r}")->getAlignment()->setWrapText(true);

@@ -57,6 +57,36 @@ it('persists a PeriodIncident with a message over 1000 characters without trunca
     expect(mb_strlen($incident->message))->toBeGreaterThan(1000);
 });
 
+// Caso explícito pedido en la auditoría 07-sep-2026: varios MILES de caracteres
+// (no solo >1000) — confirma que no hay un segundo límite oculto (ej. un
+// ->substr() defensivo agregado a medias, o un límite de TEXT vs MEDIUMTEXT
+// insuficiente — TEXT soporta hasta 65,535 bytes, muy por encima de este caso).
+it('persists a PeriodIncident with a message of several thousand characters (5000+)', function () {
+    $period = Period::query()->create([
+        'name' => 'Periodo mensaje 5000', 'code' => 'M-2026-11-HUGEMSG', 'type' => 'monthly',
+        'year' => 2026, 'month' => 11, 'sequence' => 1,
+        'start_date' => '2026-11-01', 'end_date' => '2026-11-30', 'is_closed' => false,
+    ]);
+    $summary = PeriodSummary::query()->create([
+        'period_id' => $period->id, 'status' => 'generated', 'generated_at' => now(),
+    ]);
+
+    $message = str_repeat('Registro de auditoría con nombres largos y acentos: José Ángel Núñez Domínguez. ', 65); // ~5265 chars
+    expect(mb_strlen($message))->toBeGreaterThan(5000);
+
+    $incident = PeriodIncident::query()->create([
+        'period_summary_id' => $summary->id,
+        'type'     => 'noi_identidad.sin_respaldo',
+        'severity' => 'warning',
+        'message'  => $message,
+        'context'  => null,
+    ]);
+
+    $incident->refresh();
+    expect($incident->message)->toBe($message);
+    expect(mb_strlen($incident->message))->toBeGreaterThan(5000);
+});
+
 it('persists a PeriodIncident with a large structured context array', function () {
     $period = Period::query()->create([
         'name' => 'Periodo contexto grande', 'code' => 'M-2026-10-BIGCTX', 'type' => 'monthly',
