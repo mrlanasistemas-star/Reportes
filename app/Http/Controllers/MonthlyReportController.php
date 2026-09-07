@@ -12,8 +12,10 @@ use App\Models\PeriodBranchSummary;
 use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
+use App\Services\EmployeePeriodManualExpenseService;
 use App\Services\PeriodRadiographyService;
 use App\Services\RadiografiaExportService;
+use App\Services\Radiography\EmployeesHistoricoExportService;
 use App\Services\Radiography\RadiographySnapshotBuilder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -157,6 +159,38 @@ class MonthlyReportController extends Controller {
             'message' => 'Consulta, previsualiza y descarga los reportes ya generados.',
             'generatedReports' => $generatedReports,
         ]);
+    }
+
+    /**
+     * "Gasto general por gestor" — auditoría 07-sep-2026 (frente 4): el panel
+     * "Descargar / Comparativos" de Histórico sigue enviando
+     * extra_employee_expense_amount/notes como query string de este link de
+     * descarga (comportamiento de UI sin cambios) — pero ya no alimenta el
+     * cálculo directamente. Aquí se persiste ese valor (si vino en la request)
+     * en EmployeePeriodManualExpenseService ANTES de construir el export, para
+     * que sea la MISMA fuente que ya usan Web/Excel/PDF. Sin este paso, un
+     * cambio hecho solo en este panel de descarga se perdería al cerrar la
+     * pestaña — con él, queda guardado igual que si se hubiera guardado desde
+     * el bloque "Gasto general por gestor" de Histórico.
+     */
+    private function persistManualExpenseFromConfig(Period $period, array $config): void
+    {
+        if (($config['scope'] ?? '') !== 'employee' || !array_key_exists('extra_employee_expense_amount', $config)) {
+            return;
+        }
+
+        $employeeId = (int) ($config['employee_id'] ?? 0);
+        if (!$employeeId) {
+            return;
+        }
+
+        app(EmployeePeriodManualExpenseService::class)->upsert(
+            $period->id,
+            $employeeId,
+            (float) $config['extra_employee_expense_amount'],
+            (string) ($config['extra_employee_expense_notes'] ?? ''),
+            auth()->id(),
+        );
     }
 
     /**
@@ -619,6 +653,8 @@ class MonthlyReportController extends Controller {
             return response('Selecciona un gestor.', 422);
         }
 
+        $this->persistManualExpenseFromConfig($period, $config);
+
         try {
             $path = $service->exportWithConfig($period, $config);
         } catch (\Throwable $e) {
@@ -655,6 +691,8 @@ class MonthlyReportController extends Controller {
             'compare_period_id', 'extra_employee_expense_amount', 'extra_employee_expense_notes',
         ]);
 
+        $this->persistManualExpenseFromConfig($period, $config);
+
         try {
             $path = $service->exportPdfWithConfig($period, $config);
         } catch (\Throwable $e) {
@@ -668,6 +706,46 @@ class MonthlyReportController extends Controller {
 
         return response()->download($path, basename($path), [
             'Content-Type'  => 'application/pdf',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma'        => 'no-cache',
+        ]);
+    }
+
+    /**
+     * "Descargar Excel de colaboradores" (frente 6, auditoría 07-sep-2026) —
+     * TODOS los colaboradores del periodo, ignorando explícitamente el filtro
+     * individual de employee_id (si la pantalla tiene uno seleccionado) pero
+     * respetando el resto de filtros aplicables (branch_id). No requiere que
+     * exista una Radiografía generada — se calcula directamente sobre
+     * fact_* igual que la vista Web (RadiographySnapshotBuilder::
+     * buildAllEmployeeGestorRows()).
+     */
+    public function exportEmployeesHistorico(Period $period, Request $request, EmployeesHistoricoExportService $service)
+    {
+        $filters = $request->only(['branch_id']);
+
+        try {
+            $spreadsheet = $service->build($period, $filters);
+        } catch (\Throwable $e) {
+            report($e);
+            return response('No se pudo generar el Excel de colaboradores: ' . $e->getMessage(), 500);
+        }
+
+        $directory = storage_path('app/radiografias');
+        File::ensureDirectoryExists($directory);
+        $outputPath = $directory . '/colaboradores_' . ($period->code ?: $period->id) . '_' . now()->format('Ymd_His') . '.xlsx';
+
+        $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
+        $writer->save($outputPath);
+        $spreadsheet->disconnectWorksheets();
+        unset($spreadsheet);
+
+        if (!file_exists($outputPath) || filesize($outputPath) === 0) {
+            return response('El archivo Excel generado está vacío o no existe.', 500);
+        }
+
+        return response()->download($outputPath, basename($outputPath), [
+            'Content-Type'  => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
             'Pragma'        => 'no-cache',
         ]);
