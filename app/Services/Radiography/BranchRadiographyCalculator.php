@@ -4,6 +4,7 @@ namespace App\Services\Radiography;
 
 use App\Models\Period;
 use App\Services\BranchResolverService;
+use App\Services\OpexClassificationService;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -13,30 +14,14 @@ use Illuminate\Support\Facades\DB;
  */
 class BranchRadiographyCalculator
 {
-    private const EXCEDENTES_CAT     = 'Envío de utilidad a corporativo';
-    private const FONDEO_CAT         = 'Préstamos Intersucursales';
-    private const NOMINA_CAT         = 'Nómina y Capital Humano';
-
-    // Concepts inside 'Nómina y Capital Humano' from Lendus that must be excluded from
-    // gastos_lendus_total (OPEX) here in accumulateGastos():
-    //   - NOMINA/PAGO DE IMSS/DEDUCCIONES*/PAGO PRESTAMO Z: true payroll/IMSS items already
-    //     covered by NOI and by the official IMSS file — excluded everywhere, never counted.
-    //   - PAGO FINANCIAMIENTO MOTO / COMPRA DE CASCOS: real operational expenses, counted in
-    //     OPEX (gastos_operativos) via the dedicated gastos_lendus_excel block inside
-    //     accumulateNomina() (the PDF source read here would otherwise duplicate that same
-    //     real-world payment). Also shown as nomina_informativo — display-only, NEVER summed
-    //     into the KPI Nómina (regla 4/6C: gasto real → OPEX, no contamina Nómina).
-    private const LENDUS_NOMINA_SKIP_CONCEPTS = [
-        'NOMINA', 'PAGO DE IMSS', 'DEDUCCIONES', 'DEDUCCIONES GENERALES', 'PAGO PRESTAMO Z',
-        'PAGO FINANCIAMIENTO MOTO', 'COMPRA DE CASCOS', 'ANTICIPO DE NOMINA',
-    ];
-
-    // Pólizas/seguros category — excluded from OPEX for BOTH sources (regla vigente 2026-07:
-    // pólizas/seguros deben quedar en $0.00 dentro de OPEX). Lendus 'Pólizas' = passthrough a
-    // aseguradoras (tracked as seguros_lendus_puente); ERP 'Pólizas' = seguros vehiculares/oficina
-    // (SEGUROS AUTOMOVIL, etc., tracked as gastos_erp_excluido_seguros). Antes ERP se incluía en
-    // OPEX — ya no, por instrucción explícita de excluir seguros/pólizas de OPEX en ambas fuentes.
-    private const SEGUROS_LENDUS_CATS = ['Pólizas'];
+    // NOMINA_CAT: la ÚNICA constante de clasificación que sigue viviendo aquí —
+    // usada por accumulateNomina() para consultar gastos_expenses de Motos/
+    // Finiquito/Médicos directamente (no es una decisión "es OPEX sí/no", es un
+    // filtro de qué categoría leer). El resto de la clasificación financiera
+    // (qué categoría/concepto ES OPEX) vive en OpexClassificationService —
+    // auditoría 07-sep-2026, fuente canónica única (antes duplicada aquí Y en
+    // ExpenseObservationAttributionService).
+    private const NOMINA_CAT = 'Nómina y Capital Humano';
 
     // DEPRECATED — kept only so old references don't break during the transition. No longer
     // used to compute nomina_total: since the 2026-07-10 rewrite, nomina_total already has
@@ -60,7 +45,10 @@ class BranchRadiographyCalculator
     ];
 
 
-    public function __construct(private readonly BranchResolverService $resolver) {}
+    public function __construct(
+        private readonly BranchResolverService $resolver,
+        private readonly OpexClassificationService $opexClassifier,
+    ) {}
 
     /**
      * Fuente canónica ÚNICA del KPI "Nómina y Capital Humano" para un branch summary o GLOBAL.
@@ -1180,9 +1168,11 @@ class BranchRadiographyCalculator
                     // obsoleta: ERP va íntegro a OPEX, solo excluyendo Corporativo arriba).
                     // Única excepción: Pólizas (seguros/coberturas — SEGUROS AUTOMOVIL, etc.)
                     // se excluye de OPEX, igual que en Lendus — pólizas/seguros deben quedar
-                    // en $0.00 dentro de OPEX.
+                    // en $0.00 dentro de OPEX. Decisión vía OpexClassificationService (fuente
+                    // canónica — auditoría 07-sep-2026), nunca una lista duplicada aquí.
                     $summaries[$suc]['gastos_erp_cargado'] += $amt;
-                    if (in_array($cat, self::SEGUROS_LENDUS_CATS, true)) {
+                    $ercClassification = $this->opexClassifier->classify($cat, (string) ($row->concept ?? ''), OpexClassificationService::SOURCE_ERP);
+                    if (!$ercClassification['is_opex']) {
                         $summaries[$suc]['gastos_erp_excluido_seguros'] += $amt;
                         continue;
                     }
@@ -1215,23 +1205,22 @@ class BranchRadiographyCalculator
                     continue;
                 }
 
-                $isExcedente = $cat === self::EXCEDENTES_CAT || str_contains($catUpper, 'EXCEDENTE');
-                $isFondeo    = $cat === self::FONDEO_CAT || str_contains($catUpper, 'FONDEO') || str_contains($catUpper, 'INTERSUCURSAL');
-                // Regla vigente (2026-07): PAGO FINIQUITO y GASTOS MEDICOS (PDF, categoría Nómina
-                // y Capital Humano) NO forman parte de OPEX — se mueven al KPI Nómina y Capital
-                // Humano (ver accumulateNomina(), que los suma a gastos_empleados_nomina).
-                // NOMINA/PAGO DE IMSS/DEDUCCIONES/PAGO PRESTAMO Z siguen sin sumar a ningún KPI:
-                // ya están cubiertos por NOI y por el archivo IMSS oficial — sumarlos aquí también
-                // duplicaría el gasto.
-                if ($cat === self::NOMINA_CAT) {
-                    $isNomina = in_array($conceptUp, self::LENDUS_NOMINA_SKIP_CONCEPTS, true)
-                        || str_contains($conceptUp, 'FINIQUITO')
-                        || str_contains($conceptUp, 'MEDICO')
-                        || str_contains($conceptUp, 'MÉDICO');
-                } else {
-                    $isNomina = str_contains($catUpper, 'NOMINA') || str_contains($catUpper, 'NÓMINA');
-                }
-                $isSegurosPuente = in_array($cat, self::SEGUROS_LENDUS_CATS, true);
+                // Decisión vía OpexClassificationService (fuente canónica única — auditoría
+                // 07-sep-2026): antes esta clasificación vivía duplicada aquí Y en
+                // ExpenseObservationAttributionService::isEligibleForAttribution() (dos listas
+                // manuales que podían divergir). Regla vigente sin cambios: PAGO FINIQUITO y
+                // GASTOS MEDICOS (categoría Nómina y Capital Humano) NO forman parte de OPEX —
+                // se mueven al KPI Nómina y Capital Humano (ver accumulateNomina(), que los
+                // suma a gastos_empleados_nomina). NOMINA/PAGO DE IMSS/DEDUCCIONES/PAGO
+                // PRESTAMO Z siguen sin sumar a ningún KPI: ya cubiertos por NOI/IMSS oficial.
+                $classification  = $this->opexClassifier->classify($cat, (string) ($row->concept ?? ''), OpexClassificationService::SOURCE_LENDUS);
+                $isExcedente     = $classification['type'] === OpexClassificationService::TYPE_EXCEDENTE;
+                $isFondeo        = $classification['type'] === OpexClassificationService::TYPE_FONDEO;
+                $isSegurosPuente = $classification['type'] === OpexClassificationService::TYPE_POLIZAS;
+                $isNomina        = in_array($classification['type'], [
+                    OpexClassificationService::TYPE_NOMINA_COVERED_BY_NOI,
+                    OpexClassificationService::TYPE_NOMINA_EMPLEADO,
+                ], true);
 
                 if ($isExcedente) {
                     $summaries[$suc]['excedentes']                       += $amt;

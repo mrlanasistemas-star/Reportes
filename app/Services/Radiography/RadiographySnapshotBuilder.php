@@ -47,6 +47,7 @@ class RadiographySnapshotBuilder
         private readonly EmployeeNameCanonicalizer $canonicalizer,
         private readonly BranchRadiographyCalculator $branchCalculator,
         private readonly \App\Services\EmployeePeriodManualExpenseService $manualExpenseService,
+        private readonly \App\Services\OpexClassificationService $opexClassifier,
     ) {}
 
     public function build(Period $period, PeriodSummary $summary, array $config = []): array
@@ -522,21 +523,44 @@ class RadiographySnapshotBuilder
      */
     public function buildEmployeeExpenseDetail(array $employeeIds, int $periodId, ?int $primaryEmployeeId = null): array
     {
-        $items = empty($employeeIds) ? collect() : DB::table('fact_expenses')
+        $rows = empty($employeeIds) ? collect() : DB::table('fact_expenses')
             ->whereIn('period_id', $this->dataIds)
             ->whereIn('employee_id', $employeeIds)
             ->selectRaw("COALESCE(concept, 'Sin concepto') as concept, COALESCE(category, 'Sin categoría') as category, SUM(COALESCE(NULLIF(paid_amount,0), amount)) as total")
             ->groupBy('concept', 'category')
             ->orderByDesc('total')
-            ->get()
-            ->map(fn ($r) => [
-                'concept'  => $r->concept,
-                'category' => $r->category,
-                'amount'   => (float) $r->total,
-                'fuente'   => 'automatico',
-            ]);
+            ->get();
 
-        $automaticTotal = round((float) $items->sum('amount'), 2);
+        // Auditoría 07-sep-2026 (cierre) — fuente ÚNICA de clasificación
+        // (OpexClassificationService): "OPEX del colaborador" ya NO suma
+        // cualquier fact_expenses con ese employee_id sin filtro (bug real: un
+        // gasto de categoría Nómina y Capital Humano con employee_id poblado
+        // — heredado del PDF antes de que ExpenseObservationAttributionService
+        // corriera, que EXCLUYE esos conceptos a propósito — se colaba aquí
+        // como si fuera OPEX puro, duplicando dinero que el EBITDA ya cuenta vía
+        // NOI/$neto). Ahora solo cuenta lo que realmente ES OPEX. Finiquito/
+        // Médicos/Motos (nomina_empleado: dinero real pagado al colaborador,
+        // pero NO es "OPEX") se exponen aparte en nomina_empleado_total — SIGUEN
+        // sumados dentro de `total` (ningún monto desaparece, el EBITDA no
+        // cambia), solo se corrige la etiqueta. Cualquier fila cubierta por NOI/
+        // IMSS/Fondeo/Excedentes/Pólizas nunca cuenta aquí, ni siquiera si por
+        // error tuviera employee_id de otro flujo.
+        $opexItems           = collect();
+        $nominaEmpleadoItems = collect();
+        foreach ($rows as $r) {
+            $classification = $this->opexClassifier->classify($r->category, $r->concept, \App\Services\OpexClassificationService::SOURCE_LENDUS);
+            $item = ['concept' => $r->concept, 'category' => $r->category, 'amount' => (float) $r->total, 'fuente' => 'automatico'];
+            if ($classification['is_opex']) {
+                $opexItems->push($item);
+            } elseif ($classification['type'] === \App\Services\OpexClassificationService::TYPE_NOMINA_EMPLEADO) {
+                $nominaEmpleadoItems->push($item);
+            }
+            // Cualquier otro tipo (cubierto por NOI/IMSS, Fondeo, Excedentes, Pólizas)
+            // se descarta por completo — nunca debe aparecer en el detalle de un colaborador.
+        }
+
+        $automaticTotal      = round((float) $opexItems->sum('amount'), 2);
+        $nominaEmpleadoTotal = round((float) $nominaEmpleadoItems->sum('amount'), 2);
 
         $manualEmployeeId = $primaryEmployeeId ?? (empty($employeeIds) ? null : (int) reset($employeeIds));
         $manual = $manualEmployeeId
@@ -544,11 +568,59 @@ class RadiographySnapshotBuilder
             : ['amount' => 0.0, 'notes' => ''];
 
         return [
-            'automatic_total' => $automaticTotal,
-            'automatic_items' => $items->values()->all(),
-            'manual_total'    => $manual['amount'],
-            'manual_notes'    => $manual['notes'],
-            'total'           => round($automaticTotal + $manual['amount'], 2),
+            'automatic_total'       => $automaticTotal,
+            'automatic_items'       => $opexItems->values()->all(),
+            'nomina_empleado_total' => $nominaEmpleadoTotal,
+            'nomina_empleado_items' => $nominaEmpleadoItems->values()->all(),
+            'manual_total'          => $manual['amount'],
+            'manual_notes'          => $manual['notes'],
+            'total'                 => round($automaticTotal + $nominaEmpleadoTotal + $manual['amount'], 2),
+        ];
+    }
+
+    /**
+     * Fuente ÚNICA de EBITDA/margen/OPEX total de un colaborador (auditoría
+     * 07-sep-2026, cierre, sección 11) — antes vivía inline dentro de
+     * summaryFromRow() (rama colaborador) Y, por separado, recalculada a mano en
+     * Radiography\EmployeesHistoricoExportService (misma resta, dos
+     * implementaciones). Ahora ambos llaman este método — mismo resultado por
+     * construcción, no por coincidencia. Ninguna fórmula cambió:
+     *   OPEX total = $expenseDetail['total'] (buildEmployeeExpenseDetail() —
+     *     automático OPEX + Nómina-empleado + manual, YA fuente única también).
+     *   EBITDA = ingreso_base − (OPEX total + neto NOI).
+     *   Margen EBITDA % = EBITDA / ingreso_base × 100 (0 si no hay ingreso_base).
+     *
+     * @param  array $employeeRow    Fila de buildEmployeesGestores() (pagos/bonos/descuentos/
+     *                                neto/ingreso_ebitda_base/cartera/vencida).
+     * @param  array $expenseDetail  buildEmployeeExpenseDetail() ya resuelto (o [] para 0).
+     */
+    public function computeEmployeeFinancialMetrics(array $employeeRow, array $expenseDetail = []): array
+    {
+        $pagos       = (float) ($employeeRow['pagos'] ?? 0);
+        $bonos       = (float) ($employeeRow['bonos'] ?? 0);
+        $descuentos  = (float) ($employeeRow['descuentos'] ?? 0);
+        $opexTotal   = $expenseDetail['total'] ?? (float) ($employeeRow['gastos'] ?? 0);
+        $neto        = (float) ($employeeRow['neto'] ?? ($pagos + $bonos - $descuentos));
+        $ingresoBase = (float) ($employeeRow['ingreso_ebitda_base'] ?? 0);
+        $cartera     = (float) ($employeeRow['cartera'] ?? 0);
+        $vencida     = (float) ($employeeRow['vencida'] ?? 0);
+        $ebitda      = $ingresoBase - ($opexTotal + $neto);
+        $margen      = $ingresoBase > 0 ? round($ebitda / $ingresoBase * 100, 2) : 0.0;
+        $moraIndex   = $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0;
+
+        return [
+            'pagos'            => $pagos,
+            'bonos'            => $bonos,
+            'descuentos'       => $descuentos,
+            'opex_total'       => $opexTotal,
+            'neto'             => $neto,
+            'ingreso_base'     => $ingresoBase,
+            'cartera'          => $cartera,
+            'vencida'          => $vencida,
+            'mora_index'       => $moraIndex,
+            'ebitda'           => $ebitda,
+            'margen_ebitda'    => $margen,
+            'ebitda_categoria' => $this->ebitdaCategory($ebitda),
         ];
     }
 
@@ -1053,15 +1125,19 @@ class RadiographySnapshotBuilder
             // salen de $expenseDetail (auditoría 27-ago-2026: automático de fact_expenses +
             // manual de "Gasto general por gestor" — DOS FUENTES QUE SE SUMAN), nunca solo de
             // $employeeRow['gastos'] (que es SOLO el automático).
-            $pagos       = (float) ($employeeRow['pagos'] ?? 0);
-            $bonos       = (float) ($employeeRow['bonos'] ?? 0);
-            $descuentos  = (float) ($employeeRow['descuentos'] ?? 0);
-            $gastos      = $expenseDetail['total'] ?? (float) ($employeeRow['gastos'] ?? 0);
-            $neto        = (float) ($employeeRow['neto'] ?? ($pagos + $bonos - $descuentos));
-            $ingresoBase = (float) ($employeeRow['ingreso_ebitda_base'] ?? 0);
-            $cartera     = (float) ($employeeRow['cartera'] ?? 0);
-            $vencida     = (float) ($employeeRow['vencida'] ?? 0);
-            $ebitda      = $ingresoBase - ($gastos + $neto);
+            //
+            // EBITDA/margen/OPEX total — fuente ÚNICA (auditoría 07-sep-2026, cierre, sección
+            // 11): computeEmployeeFinancialMetrics(), la MISMA función que usa
+            // EmployeesHistoricoExportService — nunca dos fórmulas separadas.
+            $metrics = $this->computeEmployeeFinancialMetrics($employeeRow, $expenseDetail ?? []);
+            $gastos      = $metrics['opex_total'];
+            $neto        = $metrics['neto'];
+            $ingresoBase = $metrics['ingreso_base'];
+            $cartera     = $metrics['cartera'];
+            $vencida     = $metrics['vencida'];
+            $ebitda      = $metrics['ebitda'];
+            $pagos       = $metrics['pagos'];
+            $bonos       = $metrics['bonos'];
 
             return [
                 'employees_count'              => 1,
@@ -1069,7 +1145,7 @@ class RadiographySnapshotBuilder
                 'placement_total'               => (float) ($employeeRow['colocacion'] ?? 0),
                 'portfolio_total'               => $cartera,
                 'overdue_portfolio'             => $vencida,
-                'mora_index'                    => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0,
+                'mora_index'                    => $metrics['mora_index'],
                 'expenses_total'                => $gastos,
                 'expenses_automatic_total'      => $expenseDetail['automatic_total'] ?? $gastos,
                 'expenses_manual_total'         => $expenseDetail['manual_total'] ?? 0.0,
@@ -1085,8 +1161,8 @@ class RadiographySnapshotBuilder
                 'total_gastos_ebitda'           => $gastos + $neto,
                 'ebitda_global'                 => $ebitda,
                 'venta_global'                  => $ingresoBase,
-                'margen_ebitda'                 => $ingresoBase > 0 ? round($ebitda / $ingresoBase * 100, 2) : 0.0,
-                'ebitda_categoria'               => $this->ebitdaCategory($ebitda),
+                'margen_ebitda'                 => $metrics['margen_ebitda'],
+                'ebitda_categoria'               => $metrics['ebitda_categoria'],
                 'ingreso_ebitda_base'           => $ingresoBase,
                 'gastos_totales'                => $gastos + $neto,
                 'ebitda_final'                  => $ebitda,
