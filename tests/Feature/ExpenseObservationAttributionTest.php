@@ -81,9 +81,16 @@ function makeAttribRosterEmployee(Period $period, string $fullName, Branch $bran
 
 function makeAttribUpload(Period $period): ReportUpload
 {
+    return makeAttribUploadForSource($period, 'gastos_lendus_excel');
+}
+
+// Auditoría 07-sep-2026 (cierre) — attributeForPeriod() ahora también evalúa
+// gastos_lendus (PDF primario) y gastos_erp, no solo gastos_lendus_excel.
+function makeAttribUploadForSource(Period $period, string $code): ReportUpload
+{
     $source = DataSource::query()->firstOrCreate(
-        ['code' => 'gastos_lendus_excel'],
-        ['name' => 'gastos_lendus_excel', 'description' => 'gastos_lendus_excel', 'is_active' => true],
+        ['code' => $code],
+        ['name' => $code, 'description' => $code, 'is_active' => true],
     );
 
     return ReportUpload::query()->create([
@@ -844,4 +851,194 @@ it('a general branch expense (no person named, branch already resolved) resolves
     expect($expense->fresh()->employee_id)->toBeNull();
     // No se inventa colaborador ni se toca branch_id — sigue siendo el mismo.
     expect($expense->fresh()->branch_id)->toBe($branch->id);
+});
+
+// ── BUG REAL 07-sep-2026 (evidencia de producción) — "catch-all" de capturista ──
+// Un gasto general de sucursal (sin persona identificable en el texto) que YA
+// tenía un employee_id INCORRECTO (típicamente el capturista/administrativo que
+// registró el gasto, no la persona real) debía limpiarse a NULL en --apply. Antes
+// de este fix, resolveRow() declaraba 'changed' => false SIEMPRE para
+// branch_general, sin importar el employee_id previo — attributeForPeriod() solo
+// escribe cuando 'changed'=true, así que estos gastos quedaban COLGADOS al
+// capturista para siempre, sin importar cuántas veces se corriera --apply.
+it('a branch-general expense that ALREADY has a wrong employee_id (capturista catch-all) gets cleared to NULL on --apply', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Tula');
+    $capturista = makeAttribRosterEmployee($period, 'CAPTURISTA GENERAL TULA', $branch);
+
+    // Gasto real de sucursal (gasolina), sin ninguna persona nombrada en el texto,
+    // pero YA atribuido (incorrectamente) al capturista que lo registró.
+    $expense = makeAttribExpense($period, $upload, [
+        'category' => 'Gasolina', 'concept' => 'GASOLINA OPERATIVA SUCURSALES',
+        'observations' => 'GASTO DE APOYO GASOLINA OPERATIVA | Folio: REQ-TEST01',
+        'branch_id' => $branch->id, 'employee_id' => $capturista->id,
+        'amount' => 2900.0, 'paid_amount' => 2900.0,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($results[0]['estado'])->toBe('branch_general');
+    expect($results[0]['changed'])->toBeTrue(); // el fix real — antes siempre false
+    expect($expense->fresh()->employee_id)->toBeNull();
+    // Nunca se toca branch_id/amount/paid_amount/concept/category — solo employee_id
+    // y metadata de atribución.
+    expect($expense->fresh()->branch_id)->toBe($branch->id);
+    expect((float) $expense->fresh()->amount)->toBe(2900.0);
+    expect((float) $expense->fresh()->paid_amount)->toBe(2900.0);
+    expect($expense->fresh()->concept)->toBe('GASOLINA OPERATIVA SUCURSALES');
+});
+
+// Idempotencia del fix: una segunda corrida NO debe volver a reportar 'changed'
+// para la misma fila ya limpiada (evita falsos "cambios" repetidos en cada apply).
+it('the capturista catch-all fix is idempotent — a second run reports no further change', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Orizaba');
+    $capturista = makeAttribRosterEmployee($period, 'CAPTURISTA GENERAL ORIZABA', $branch);
+
+    makeAttribExpense($period, $upload, [
+        'category' => 'Viáticos', 'concept' => 'VIATICOS (SUPERVISION, CAPACITACION Y SEGUIMIENTO)',
+        'observations' => 'VIATICOS DE SUPERVISION SUCURSAL | Folio: REQ-TEST02',
+        'branch_id' => $branch->id, 'employee_id' => $capturista->id,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $service->attributeForPeriod($period, [$period->id], dryRun: false);
+    $second = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($second[0]['estado'])->toBe('branch_general');
+    expect($second[0]['changed'])->toBeFalse(); // ya estaba en NULL — nada que cambiar
+});
+
+// ============================================================================
+// Auditoría 07-sep-2026 (cierre, punto 2 del pedido) — attributeForPeriod()
+// ahora también evalúa gastos_lendus (PDF primario) y gastos_erp — antes SOLO
+// veía gastos_lendus_excel (el archivo "complementario"). Un catch-all de
+// capturista en cualquiera de las otras dos fuentes nunca podía limpiarse.
+// ============================================================================
+
+it('a capturista catch-all in gastos_erp (Gasolina/Viáticos, no person named) gets cleared to branch_general on --apply', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUploadForSource($period, 'gastos_erp');
+    $branch = makeAttribBranch('Tula');
+    $capturista = makeAttribRosterEmployee($period, 'CAPTURISTA ERP TULA', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'category' => 'Gasolina', 'concept' => 'GASOLINA OPERATIVA SUCURSALES',
+        'observations' => 'GASTO DE APOYO GASOLINA OPERATIVA | Folio: REQ-ERPTEST',
+        'branch_id' => $branch->id, 'employee_id' => $capturista->id,
+        'amount' => 2900.0, 'paid_amount' => 2900.0,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($results[0]['estado'])->toBe('branch_general');
+    expect($expense->fresh()->employee_id)->toBeNull();
+    expect($expense->fresh()->branch_id)->toBe($branch->id);
+    expect((float) $expense->fresh()->amount)->toBe(2900.0); // amount nunca se toca
+});
+
+it('a capturista catch-all in gastos_lendus (PDF primario, no person named) gets cleared to branch_general on --apply', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUploadForSource($period, 'gastos_lendus');
+    $branch = makeAttribBranch('Cordoba');
+    $capturista = makeAttribRosterEmployee($period, 'CAPTURISTA PDF CORDOBA', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'category' => 'Préstamos Intersucursales', 'concept' => 'FONDEO A SUCURSAL',
+        'observations' => '', 'branch_id' => $branch->id, 'employee_id' => $capturista->id,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    // FONDEO nunca es elegible para atribución (TYPE_FONDEO) — la fila ni
+    // siquiera entra al universo evaluado, y el employee_id NUNCA se toca aquí
+    // (ExpenseObservationAttributionService no decide fondeo/excedentes/pólizas).
+    expect(collect($results)->firstWhere('fact_expense_id', $expense->id))->toBeNull();
+    expect($expense->fresh()->employee_id)->toBe($capturista->id);
+});
+
+it('a real OPEX expense in gastos_lendus (PDF primario) with no person named DOES get cleared to branch_general', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUploadForSource($period, 'gastos_lendus');
+    $branch = makeAttribBranch('Huamantla');
+    $capturista = makeAttribRosterEmployee($period, 'CAPTURISTA PDF HUAMANTLA', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'category' => 'Gastos Operativos', 'concept' => 'SERVICIOS DE LIMPIEZA',
+        'observations' => 'SERVICIO DE LIMPIEZA MENSUAL SUCURSAL | Folio: X',
+        'branch_id' => $branch->id, 'employee_id' => $capturista->id,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    $found = collect($results)->firstWhere('fact_expense_id', $expense->id);
+    expect($found['estado'])->toBe('branch_general');
+    expect($expense->fresh()->employee_id)->toBeNull();
+});
+
+// ── Empleado previo confirmado por el texto, aunque esté fuera del roster ────
+// Caso real: JOSE ALBERTO CISNEROS FLORES (employee_id=232, source_system=
+// lendus_cobranza) — ausente del roster de este periodo por un motivo de
+// PeriodEmployeeRosterService, pero su nombre completo aparece literal en la
+// Observación y ya tenía employee_id correctamente asignado. Debe CONSERVARSE
+// — nunca limpiarse a branch_general solo porque el roster no lo incluye.
+it('a previously-assigned employee whose full name is confirmed in the text is kept, even when absent from this period roster', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Tula');
+    // Roster con OTRA persona — el empleado real (fuera de roster) se crea aparte.
+    makeAttribRosterEmployee($period, 'EMPLEADO IRRELEVANTE TULA', $branch);
+
+    $fueraDeRoster = Employee::query()->create([
+        'employee_code' => 'FUERA-ROSTER-1', 'full_name' => 'JOSE ALBERTO CISNEROS FLORES',
+        'normalized_name' => 'jose alberto cisneros flores', 'first_name' => 'JOSE', 'paternal_last_name' => 'ALBERTO',
+        'is_active' => true, 'source_system' => 'lendus_cobranza',
+    ]);
+    // Deliberadamente SIN EmployeeBranchAssignment/fact_noi_movements para este
+    // periodo — así el roster de ESTE periodo NUNCA lo incluye (ver
+    // PeriodEmployeeRosterService), aunque ya tenga employee_id asignado.
+
+    $expense = makeAttribExpense($period, $upload, [
+        'observations' => 'JOSE ALBERTO CISNEROS FLORES',
+        'branch_id' => $branch->id, 'employee_id' => $fueraDeRoster->id,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    $found = collect($results)->firstWhere('fact_expense_id', $expense->id);
+    expect($found['estado'])->toBe('ya_correcto');
+    expect($found['metodo'])->toBe('previous_employee_confirmed_by_text');
+    expect($found['changed'])->toBeFalse();
+    expect($expense->fresh()->employee_id)->toBe($fueraDeRoster->id); // NUNCA se limpia a NULL
+});
+
+// Guardia opuesta: si el texto NO nombra a la persona actualmente asignada (el
+// patrón catch-all real), el fallback branch_general debe seguir aplicando —
+// el chequeo de "empleado previo confirmado" nunca debe volverse un "confía
+// ciegamente en lo que ya había" para el caso catch-all.
+it('a catch-all employee_id (previous employee NOT named in the text) still gets cleared to branch_general, never blindly kept', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Miacatlan');
+    $capturista = makeAttribRosterEmployee($period, 'CAPTURISTA CATCHALL GUARD', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'category' => 'Gastos Operativos', 'concept' => 'SERVICIOS DE LIMPIEZA',
+        'observations' => 'GASTO DE APOYO SIN NOMBRE DE PERSONA | Folio: X',
+        'branch_id' => $branch->id, 'employee_id' => $capturista->id,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    $found = collect($results)->firstWhere('fact_expense_id', $expense->id);
+    expect($found['estado'])->toBe('branch_general');
+    expect($expense->fresh()->employee_id)->toBeNull();
 });
