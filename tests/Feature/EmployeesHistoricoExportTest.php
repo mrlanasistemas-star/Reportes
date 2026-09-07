@@ -6,7 +6,6 @@ use App\Models\Branch;
 use App\Models\DataSource;
 use App\Models\Employee;
 use App\Models\EmployeeBranchAssignment;
-use App\Models\EmployeePeriodManualExpense;
 use App\Models\Expense;
 use App\Models\Period;
 use App\Models\ReportUpload;
@@ -161,10 +160,13 @@ it('OPEX total and EBITDA in the Excel match exactly what buildEmployeeExpenseDe
     $branch = exportBranch('Orizaba');
     $employee = exportEmployee($period, 'COLABORADOR PARIDAD', $branch);
     exportExpense($period, $employee, $branch, 750);
-    EmployeePeriodManualExpense::query()->create(['period_id' => $period->id, 'employee_id' => $employee->id, 'amount' => 250, 'notes' => 'Ajuste']);
+
+    // Ajuste manual EFÍMERO (reversión 07-sep-2026, cierre) — nunca BD, viaja
+    // como parámetro directo a build().
+    $manualAdjustment = ['scope' => 'employee', 'employee_id' => $employee->id, 'amount' => 250.0, 'notes' => 'Ajuste'];
 
     $service = app(EmployeesHistoricoExportService::class);
-    $spreadsheet = $service->build($period, []);
+    $spreadsheet = $service->build($period, [], $manualAdjustment);
     $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
     IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
     $rows = readExportedRows($tmp);
@@ -180,9 +182,69 @@ it('OPEX total and EBITDA in the Excel match exactly what buildEmployeeExpenseDe
     // buildEmployeeExpenseDetail) — sin recalcular con una fórmula distinta.
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $employee->id, 250.0, 'Ajuste');
 
     expect((float) $exportRow['OPEX TOTAL'])->toBe($detail['total']);
+});
+
+// ── Ajuste manual EFÍMERO: nunca se guarda, nunca se reparte (punto 7/14) ────
+it('a manual adjustment passed to build() is never persisted and, without it, the export returns exactly the base data', function () {
+    $period = exportPeriodo();
+    $branch = exportBranch('Cordoba');
+    $employee = exportEmployee($period, 'COLABORADOR SIN AJUSTE', $branch);
+    exportExpense($period, $employee, $branch, 400);
+
+    $countAntes = DB::table('employee_period_manual_expenses')->count();
+
+    $service = app(EmployeesHistoricoExportService::class);
+    $service->build($period, [], ['scope' => 'employee', 'employee_id' => $employee->id, 'amount' => 999.0, 'notes' => 'x']);
+
+    expect(DB::table('employee_period_manual_expenses')->count())->toBe($countAntes);
+
+    // Nueva descarga SIN manual_adjustment — debe volver exactamente a la base.
+    $spreadsheet = $service->build($period, []);
+    $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
+    IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
+    $rows = readExportedRows($tmp);
+    @unlink($tmp);
+
+    $exportRow = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR SIN AJUSTE');
+    expect((float) $exportRow['GASTO MANUAL'])->toBe(0.0);
+    expect((float) $exportRow['OPEX AUTOMÁTICO'])->toBe(400.0);
+    expect((float) $exportRow['OPEX TOTAL'])->toBe(400.0);
+});
+
+// ── Ajuste GENERAL: nunca se reparte entre colaboradores, solo aparece en "Resumen" ──
+it('a general-scope manual adjustment never gets distributed across employee rows and appears once in the Resumen sheet', function () {
+    $period = exportPeriodo();
+    $branch = exportBranch('Puebla');
+    $e1 = exportEmployee($period, 'COLABORADOR GENERAL UNO', $branch);
+    $e2 = exportEmployee($period, 'COLABORADOR GENERAL DOS', $branch);
+    exportExpense($period, $e1, $branch, 100);
+    exportExpense($period, $e2, $branch, 200);
+
+    $service = app(EmployeesHistoricoExportService::class);
+    $spreadsheet = $service->build($period, [], ['scope' => 'general', 'amount' => 10000.0, 'notes' => 'Ajuste general de prueba']);
+
+    $sheet = $spreadsheet->getSheetByName('Colaboradores');
+    $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
+    IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
+    $rows = readExportedRows($tmp);
+    @unlink($tmp);
+
+    // Ninguna fila individual recibió el ajuste general — cada quien conserva su
+    // OPEX AUTOMÁTICO/GASTO MANUAL/OPEX TOTAL oficiales.
+    $row1 = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR GENERAL UNO');
+    $row2 = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR GENERAL DOS');
+    expect((float) $row1['GASTO MANUAL'])->toBe(0.0);
+    expect((float) $row1['OPEX TOTAL'])->toBe(100.0);
+    expect((float) $row2['GASTO MANUAL'])->toBe(0.0);
+    expect((float) $row2['OPEX TOTAL'])->toBe(200.0);
+
+    // El ajuste general aparece UNA vez, en su propia hoja.
+    $resumen = $spreadsheet->getSheetByName('Resumen');
+    expect($resumen)->not->toBeNull();
+    expect((float) $resumen->getCell('B2')->getValue())->toBe(10000.0); // AJUSTE MANUAL GENERAL TEMPORAL
 });
 
 it('marks a collaborator with real activity as ACTIVO and one with none as BAJA, without touching their portfolio', function () {
@@ -218,6 +280,35 @@ it('the HTTP download route is reachable and returns a valid xlsx file', functio
     expect($response->headers->get('Content-Type'))->toContain('spreadsheetml');
 });
 
+// ── Bug real 07-sep-2026: el .xlsx descargado por HTTP debe contener gráficas
+// REALES, no solo la mini-tabla de apoyo (writer sin setIncludeCharts(true) las
+// omitía en el archivo final aunque el código las hubiera construido). ─────────
+it('the .xlsx downloaded via HTTP actually contains rendered chart objects, not just numbers', function () {
+    $user = User::factory()->create();
+    $period = exportPeriodo();
+    $branch = exportBranch('Tula');
+    $e1 = exportEmployee($period, 'COLABORADOR CHART HTTP UNO', $branch);
+    exportExpense($period, $e1, $branch, 500);
+
+    $response = $this->actingAs($user)->get(route('reportes-mensuales.export-employees-historico', $period->id));
+    $response->assertOk();
+
+    $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
+    file_put_contents($tmp, $response->streamedContent());
+
+    // El reader de PhpSpreadsheet TAMBIÉN necesita includeCharts=true para volver
+    // a parsear los objetos de gráfica al leer — sin esto, IOFactory::load()
+    // simplemente no los expone (aunque sí estén en el .xlsx real). No es el bug:
+    // es la simetría esperada de la librería (setIncludeCharts en reader Y writer).
+    $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xlsx');
+    $reader->setIncludeCharts(true);
+    $spreadsheet = $reader->load($tmp);
+    $chartSheet = $spreadsheet->getSheetByName('Gráficas');
+    expect($chartSheet)->not->toBeNull();
+    expect(count($chartSheet->getChartCollection()))->toBeGreaterThan(0);
+    @unlink($tmp);
+});
+
 // ── Ajustes de UX pedidos (mid-turn, 07-sep-2026) ─────────────────────────────
 it('renames INGRESO BASE EBITDA to UTILIDAD BRUTA, removes ID COLABORADOR, adds AutoFilter and a Gráficas sheet with a bar per collaborator', function () {
     $period = exportPeriodo();
@@ -245,6 +336,9 @@ it('renames INGRESO BASE EBITDA to UTILIDAD BRUTA, removes ID COLABORADOR, adds 
     $chartSheet = $spreadsheet->getSheetByName('Gráficas');
     expect($chartSheet)->not->toBeNull();
     expect(count($chartSheet->getChartCollection()))->toBeGreaterThan(0);
-    $chartRows = $chartSheet->rangeToArray('A2:A3');
+    // La tabla de apoyo vive lejos (columna AB en adelante) para que las gráficas
+    // (A1 en adelante) sean lo primero visible al abrir la hoja.
+    $chartRows = $chartSheet->rangeToArray('AB2:AB3');
     expect(collect($chartRows)->flatten()->filter()->count())->toBe(2); // ambos colaboradores, ninguno faltante
+    expect($chartSheet->getAutoFilter()->getRange())->not->toBe(''); // filtro nativo sobre la tabla de apoyo
 });

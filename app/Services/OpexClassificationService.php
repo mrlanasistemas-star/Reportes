@@ -46,17 +46,35 @@ class OpexClassificationService
 
     /**
      * Conceptos dentro de 'Nómina y Capital Humano' (Lendus) que NUNCA cuentan
-     * como OPEX: NOMINA, PAGO DE IMSS, DEDUCCIONES (generales), PAGO PRESTAMO Z,
-     * ANTICIPO DE NOMINA — ya cubiertos por NOI y por el archivo IMSS oficial
-     * (sumarlos aquí duplicaría el gasto). PAGO FINANCIAMIENTO MOTO y COMPRA DE
-     * CASCOS también quedan fuera de OPEX aquí — son gasto real de empleado,
-     * pero se cuentan vía el bloque dedicado de Motos (gastos_empleados_nomina),
-     * no como OPEX genérico. Ver BranchRadiographyCalculator::accumulateGastos().
+     * como OPEX NI se atribuyen a un colaborador: NOMINA, PAGO DE IMSS,
+     * DEDUCCIONES (generales), PAGO PRESTAMO Z, ANTICIPO DE NOMINA — ya
+     * cubiertos por NOI y por el archivo IMSS oficial (sumarlos aquí, a
+     * cualquier nivel, duplicaría el gasto). PAGO FINANCIAMIENTO MOTO y COMPRA
+     * DE CASCOS NO están aquí — ver TYPE_NOMINA_EMPLEADO abajo: a nivel
+     * branch/global siguen sin ser OPEX (se cuentan vía el bloque dedicado de
+     * Motos, gastos_empleados_nomina — BranchRadiographyCalculator::
+     * accumulateGastos()/accumulateNomina()), pero SÍ son gasto real y
+     * atribuible al colaborador (auditoría 07-sep-2026, cierre — caso real
+     * MARLEN RAZO SALDAÑA: 4 pagos de PAGO FINANCIAMIENTO MOTO no deben
+     * desaparecer del costo total de ESE colaborador solo por tener una
+     * subcategoría financiera distinta a OPEX puro — mismo trato que ya
+     * recibía la etiqueta genérica truncada "PAGO" bajo categoría "Gastos
+     * Operativos", ver el branch de arriba en classify()).
      */
     private const LENDUS_NOMINA_SKIP_CONCEPTS = [
         'NOMINA', 'PAGO DE IMSS', 'DEDUCCIONES', 'DEDUCCIONES GENERALES', 'PAGO PRESTAMO Z',
-        'PAGO FINANCIAMIENTO MOTO', 'COMPRA DE CASCOS', 'ANTICIPO DE NOMINA',
+        'ANTICIPO DE NOMINA',
     ];
+
+    /**
+     * Financiamiento de Motos/Cascos — gasto real de empleado, atribuible a la
+     * persona (eligible_for_attribution=true) pero NUNCA sumado a OPEX
+     * (is_opex=false, mismo bucket que Finiquito/Médicos). DEBE mantenerse en
+     * sincronía con FinanciamientoMotosAssignmentService::CONCEPTS (identidad
+     * de employee_id/branch_id de estas filas — un concern distinto y
+     * deliberadamente separado del de este servicio, que solo clasifica).
+     */
+    private const LENDUS_MOTOS_CASCOS_CONCEPTS = ['PAGO FINANCIAMIENTO MOTO', 'COMPRA DE CASCOS'];
 
     /** Pólizas/seguros — excluidas de OPEX para ambas fuentes (Lendus y ERP). */
     private const SEGUROS_LENDUS_CATS = ['Pólizas'];
@@ -109,6 +127,9 @@ class OpexClassificationService
             $isFiniquitoMedico = str_contains($conceptUpper, 'FINIQUITO') || str_contains($conceptUpper, 'MEDICO') || str_contains($conceptUpper, 'MÉDICO');
             if ($isFiniquitoMedico) {
                 return $this->result(false, self::TYPE_NOMINA_EMPLEADO, true, 'Finiquito/Gastos médicos — gasto real de nómina, no OPEX genérico.');
+            }
+            if (in_array($conceptUpper, self::LENDUS_MOTOS_CASCOS_CONCEPTS, true)) {
+                return $this->result(false, self::TYPE_NOMINA_EMPLEADO, true, 'Financiamiento de Moto/Cascos — gasto real de empleado atribuible, no OPEX genérico.');
             }
             if (in_array($conceptUpper, self::LENDUS_NOMINA_SKIP_CONCEPTS, true)) {
                 return $this->result(false, self::TYPE_NOMINA_COVERED_BY_NOI, false, 'Ya cubierto por NOI/IMSS — atribuirlo duplicaría el gasto.');

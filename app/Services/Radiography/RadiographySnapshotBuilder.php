@@ -46,7 +46,6 @@ class RadiographySnapshotBuilder
     public function __construct(
         private readonly EmployeeNameCanonicalizer $canonicalizer,
         private readonly BranchRadiographyCalculator $branchCalculator,
-        private readonly \App\Services\EmployeePeriodManualExpenseService $manualExpenseService,
         private readonly \App\Services\OpexClassificationService $opexClassifier,
     ) {}
 
@@ -344,7 +343,45 @@ class RadiographySnapshotBuilder
             $snapshot = $this->applyScope($snapshot, $config, $period, $empGestores, $gm);
         } else {
             $snapshot['scope'] = ['type' => 'general', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => true];
+            $snapshot = $this->applyGeneralManualAdjustment($snapshot, $config);
         }
+
+        return $snapshot;
+    }
+
+    /**
+     * Ajuste manual EFÍMERO de esta request/reporte, alcance GENERAL (reversión
+     * 07-sep-2026, cierre — secciones 16/17/26): se suma UNA SOLA VEZ al resumen
+     * general — NUNCA se reparte entre colaboradores ($10,000 con 100
+     * colaboradores sigue siendo $10,000, no $1,000,000). No toca
+     * branch_radiography.branches ni sections.employees_gestores — solo el
+     * bloque summary (visible en Web/Excel general/PDF general). Nunca se
+     * persiste — si $config no trae manual_adjustment, el snapshot es
+     * exactamente el oficial de BD.
+     */
+    private function applyGeneralManualAdjustment(array $snapshot, array $config): array
+    {
+        $adjustment = $config['manual_adjustment'] ?? null;
+        if (!is_array($adjustment) || ($adjustment['scope'] ?? null) !== 'general') {
+            return $snapshot;
+        }
+        $amount = round(max(0.0, (float) ($adjustment['amount'] ?? 0)), 2);
+        if ($amount <= 0) {
+            return $snapshot;
+        }
+
+        $s = $snapshot['summary'];
+        $ingresoBase = (float) ($s['ingreso_ebitda_base'] ?? 0);
+        $s['expenses_total'] = round((float) ($s['expenses_total'] ?? 0) + $amount, 2);
+        $s['opex_total']     = round((float) ($s['opex_total'] ?? 0) + $amount, 2);
+        $s['gastos_totales'] = round((float) ($s['gastos_totales'] ?? 0) + $amount, 2);
+        $newEbitda = round((float) ($s['ebitda_final'] ?? 0) - $amount, 2);
+        $s['ebitda_final']     = $newEbitda;
+        $s['ebitda_global']    = $newEbitda;
+        $s['margen_ebitda']    = $ingresoBase > 0 ? round($newEbitda / $ingresoBase * 100, 2) : 0.0;
+        $s['ebitda_categoria'] = $this->ebitdaCategory($newEbitda);
+        $s['manual_adjustment_applied'] = ['amount' => $amount, 'notes' => (string) ($adjustment['notes'] ?? '')];
+        $snapshot['summary'] = $s;
 
         return $snapshot;
     }
@@ -403,7 +440,7 @@ class RadiographySnapshotBuilder
         }
 
         $generalSnapshot['scope'] = ['type' => 'general', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => true];
-        return $generalSnapshot;
+        return $this->applyGeneralManualAdjustment($generalSnapshot, $config);
     }
 
     /**
@@ -489,19 +526,25 @@ class RadiographySnapshotBuilder
     }
 
     /**
-     * OPEX de un colaborador = DOS FUENTES DISTINTAS que se SUMAN (auditoría
-     * 27-ago-2026, aclaración explícita del usuario) — nunca una reemplaza a la otra:
+     * OPEX de un colaborador = DOS FUENTES DISTINTAS que se SUMAN — nunca una
+     * reemplaza a la otra:
      *
      *   A) AUTOMÁTICO: fact_expenses ya atribuidos a este employee_id (import
      *      directo + GastosExcelBranchResolverService + FinanciamientoMotosAssignmentService
-     *      + ExpenseObservationAttributionService — ver auditoría de atribución de
-     *      OPEX). Dato oficial persistido, agnóstico de qué reporte se esté viendo.
-     *   B) MANUAL: "Gasto general por gestor" — auditoría 07-sep-2026 (frente 4):
-     *      YA NO viaja por $config (extra_employee_expense_amount/notes de la
-     *      request) — ese campo divergía entre Web (que nunca lo recibía, ver
-     *      MonthlyReportController::scopedData()) y Excel/PDF. Ahora se lee de
-     *      EmployeePeriodManualExpenseService, persistido por (period_id,
-     *      employee_id) — la MISMA fila para cualquier pantalla/reporte.
+     *      + ExpenseObservationAttributionService), filtrado por
+     *      OpexClassificationService::eligible_for_attribution — combina OPEX
+     *      puro (recargas, transporte...) con Nómina-empleado (Finiquito/
+     *      Médicos/Motos: dinero real pagado al colaborador, no debe
+     *      "desaparecer" solo por tener otra subcategoría financiera). Dato
+     *      oficial persistido, agnóstico de qué reporte se esté viendo.
+     *   B) MANUAL: "Ajuste manual temporal del reporte" — REVERSIÓN explícita
+     *      07-sep-2026 (cierre): YA NO se persiste en BD (el diseño anterior,
+     *      EmployeePeriodManualExpenseService/employee_period_manual_expenses,
+     *      quedó desconectado de todo cálculo — ver su docblock). Ahora es
+     *      puramente un parámetro de ESTA llamada: quien construye el snapshot
+     *      (applyEmployeeScope) lo lee de $config['manual_adjustment'] (nunca
+     *      de BD) y lo pasa aquí. Si no se pasa, es 0 — el reporte vuelve a los
+     *      datos oficiales exactamente.
      *
      * Fuente ÚNICA para Web (applyEmployeeScope), Excel
      * (RadiographyWorkbookBuilder::buildEmployeeFromSnapshot) y PDF
@@ -516,13 +559,18 @@ class RadiographySnapshotBuilder
      *                                    ya es un id canónico único por persona (a diferencia
      *                                    de fact_noi_movements, que puede traer más de un
      *                                    employee_id para la misma persona real).
-     * @param  int    $periodId           Periodo del reporte — clave del gasto manual persistido.
-     * @param  ?int   $primaryEmployeeId  Identidad canónica contra la que se guardó/lee el gasto
-     *                                    manual (el employee_id que el usuario seleccionó en
-     *                                    pantalla). Si se omite, usa el primero de $employeeIds.
+     * @param  ?int   $primaryEmployeeId  Identidad canónica del colaborador que se está viendo
+     *                                    (no participa en el cálculo — se conserva por
+     *                                    compatibilidad de llamadas existentes).
+     * @param  float  $manualAmount       Ajuste manual EFÍMERO de esta request/reporte — nunca BD.
+     * @param  string $manualNotes        Notas del ajuste manual — solo se conservan si amount > 0.
      */
-    public function buildEmployeeExpenseDetail(array $employeeIds, int $periodId, ?int $primaryEmployeeId = null): array
-    {
+    public function buildEmployeeExpenseDetail(
+        array $employeeIds,
+        ?int $primaryEmployeeId = null,
+        float $manualAmount = 0.0,
+        string $manualNotes = '',
+    ): array {
         $rows = empty($employeeIds) ? collect() : DB::table('fact_expenses')
             ->whereIn('period_id', $this->dataIds)
             ->whereIn('employee_id', $employeeIds)
@@ -531,50 +579,54 @@ class RadiographySnapshotBuilder
             ->orderByDesc('total')
             ->get();
 
-        // Auditoría 07-sep-2026 (cierre) — fuente ÚNICA de clasificación
-        // (OpexClassificationService): "OPEX del colaborador" ya NO suma
-        // cualquier fact_expenses con ese employee_id sin filtro (bug real: un
-        // gasto de categoría Nómina y Capital Humano con employee_id poblado
-        // — heredado del PDF antes de que ExpenseObservationAttributionService
-        // corriera, que EXCLUYE esos conceptos a propósito — se colaba aquí
-        // como si fuera OPEX puro, duplicando dinero que el EBITDA ya cuenta vía
-        // NOI/$neto). Ahora solo cuenta lo que realmente ES OPEX. Finiquito/
-        // Médicos/Motos (nomina_empleado: dinero real pagado al colaborador,
-        // pero NO es "OPEX") se exponen aparte en nomina_empleado_total — SIGUEN
-        // sumados dentro de `total` (ningún monto desaparece, el EBITDA no
-        // cambia), solo se corrige la etiqueta. Cualquier fila cubierta por NOI/
-        // IMSS/Fondeo/Excedentes/Pólizas nunca cuenta aquí, ni siquiera si por
-        // error tuviera employee_id de otro flujo.
+        // Auditoría 07-sep-2026 (cierre — corregido tras evidencia real de Bryan/
+        // Marlen) — fuente ÚNICA de clasificación (OpexClassificationService):
+        // "OPEX AUTOMÁTICO del colaborador" = todo lo ELEGIBLE PARA ATRIBUCIÓN
+        // (`eligible_for_attribution`), NO solo `is_opex`. Esto combina OPEX puro
+        // (recargas, transporte, etc.) CON Nómina-empleado (Finiquito/Médicos/
+        // PAGO FINANCIAMIENTO MOTO) — dinero real pagado al colaborador que
+        // nunca debe "desaparecer" del costo total solo por tener una
+        // subcategoría financiera distinta (caso real: MARLEN RAZO SALDAÑA,
+        // $2,307.92 en 4 pagos de moto, debía seguir sumando). Lo único que
+        // NUNCA cuenta aquí es lo cubierto por NOI/IMSS/Fondeo/Excedentes/
+        // Pólizas (`eligible_for_attribution=false`) — eso sí duplicaría el
+        // EBITDA del colaborador. Se conserva el desglose fino
+        // (automatic_opex_pure_total / automatic_nomina_empleado_total) para
+        // quien quiera ver la separación, pero "automatic_total" (lo que se
+        // muestra como OPEX AUTOMÁTICO en Web/Excel/PDF) es la suma de ambos.
         $opexItems           = collect();
         $nominaEmpleadoItems = collect();
         foreach ($rows as $r) {
             $classification = $this->opexClassifier->classify($r->category, $r->concept, \App\Services\OpexClassificationService::SOURCE_LENDUS);
+            if (!$classification['eligible_for_attribution']) {
+                // Cubierto por NOI/IMSS, Fondeo, Excedentes, Pólizas — nunca cuenta
+                // aquí, ni siquiera si por error tuviera employee_id de otro flujo.
+                continue;
+            }
             $item = ['concept' => $r->concept, 'category' => $r->category, 'amount' => (float) $r->total, 'fuente' => 'automatico'];
             if ($classification['is_opex']) {
                 $opexItems->push($item);
-            } elseif ($classification['type'] === \App\Services\OpexClassificationService::TYPE_NOMINA_EMPLEADO) {
+            } else {
                 $nominaEmpleadoItems->push($item);
             }
-            // Cualquier otro tipo (cubierto por NOI/IMSS, Fondeo, Excedentes, Pólizas)
-            // se descarta por completo — nunca debe aparecer en el detalle de un colaborador.
         }
 
-        $automaticTotal      = round((float) $opexItems->sum('amount'), 2);
+        $opexPureTotal       = round((float) $opexItems->sum('amount'), 2);
         $nominaEmpleadoTotal = round((float) $nominaEmpleadoItems->sum('amount'), 2);
+        $automaticTotal      = round($opexPureTotal + $nominaEmpleadoTotal, 2);
 
-        $manualEmployeeId = $primaryEmployeeId ?? (empty($employeeIds) ? null : (int) reset($employeeIds));
-        $manual = $manualEmployeeId
-            ? $this->manualExpenseService->getForPeriodEmployee($periodId, $manualEmployeeId)
-            : ['amount' => 0.0, 'notes' => ''];
+        $manualAmount = round(max(0.0, $manualAmount), 2);
+        $manualNotes  = $manualAmount > 0 ? trim($manualNotes) : '';
 
         return [
-            'automatic_total'       => $automaticTotal,
-            'automatic_items'       => $opexItems->values()->all(),
-            'nomina_empleado_total' => $nominaEmpleadoTotal,
-            'nomina_empleado_items' => $nominaEmpleadoItems->values()->all(),
-            'manual_total'          => $manual['amount'],
-            'manual_notes'          => $manual['notes'],
-            'total'                 => round($automaticTotal + $nominaEmpleadoTotal + $manual['amount'], 2),
+            'automatic_total'                 => $automaticTotal,
+            'automatic_items'                 => $opexItems->concat($nominaEmpleadoItems)->values()->all(),
+            'automatic_opex_pure_total'       => $opexPureTotal,
+            'automatic_nomina_empleado_total' => $nominaEmpleadoTotal,
+            'nomina_empleado_items'           => $nominaEmpleadoItems->values()->all(),
+            'manual_total'                    => $manualAmount,
+            'manual_notes'                    => $manualNotes,
+            'total'                           => round($automaticTotal + $manualAmount, 2),
         ];
     }
 
@@ -882,13 +934,21 @@ class RadiographySnapshotBuilder
         $employeeIdsForNoi = !empty($row['_employee_ids']) ? $row['_employee_ids'] : [$employeeId];
         $percepDeducc = $this->branchCalculator->computeNoiPercepcionesDeduccionesForEmployees($this->dataIds, $employeeIdsForNoi);
 
-        // OPEX del gestor = automático (fact_expenses) + manual persistido ("Gasto
-        // general por gestor", EmployeePeriodManualExpenseService) — ver
-        // buildEmployeeExpenseDetail(). Misma identidad (employeeIdsForNoi) que usa
-        // el resto del scope para no divergir de NOI; el gasto manual se lee/guarda
-        // contra $employeeId (la identidad canónica seleccionada en pantalla), no
-        // contra todo el grupo NOI fusionado.
-        $expenseDetail  = $this->buildEmployeeExpenseDetail($employeeIdsForNoi, $period->id, $employeeId);
+        // OPEX del gestor = automático (fact_expenses) + ajuste manual EFÍMERO de
+        // ESTA request — ver buildEmployeeExpenseDetail(). Misma identidad
+        // (employeeIdsForNoi) que usa el resto del scope para no divergir de NOI.
+        // Reversión 07-sep-2026 (cierre): el manual YA NO se lee de BD — viaja en
+        // $config['manual_adjustment'] (nunca persistido) y solo aplica si su
+        // scope es 'employee' y su employee_id es EXACTAMENTE este colaborador
+        // (nunca se filtra "de paso" a otro colaborador que comparta grupo NOI).
+        $manualAdjustment = $config['manual_adjustment'] ?? null;
+        $manualAmount = 0.0;
+        $manualNotes  = '';
+        if (is_array($manualAdjustment) && ($manualAdjustment['scope'] ?? null) === 'employee' && (int) ($manualAdjustment['employee_id'] ?? 0) === $employeeId) {
+            $manualAmount = (float) ($manualAdjustment['amount'] ?? 0);
+            $manualNotes  = (string) ($manualAdjustment['notes'] ?? '');
+        }
+        $expenseDetail  = $this->buildEmployeeExpenseDetail($employeeIdsForNoi, $employeeId, $manualAmount, $manualNotes);
 
         $snapshot['summary'] = $this->summaryFromRow($row, $percepDeducc, $row, $expenseDetail);
         $snapshot['branch_radiography']['global']     = $this->notAttributable('El colaborador no representa una sucursal completa — ver sections.employees_gestores.');
@@ -4199,7 +4259,9 @@ class RadiographySnapshotBuilder
             $prevRow = $prevBuilder->findEmployeeGestorRowByEmployeeId($prevPeriod, $employeeId);
             if ($prevRow) {
                 $prevExpenseIds = !empty($prevRow['_employee_ids']) ? $prevRow['_employee_ids'] : [$employeeId];
-                $prevExpenseDetail = $prevBuilder->buildEmployeeExpenseDetail($prevExpenseIds, $prevPeriod->id, $employeeId);
+                // Estatus operativo del periodo ANTERIOR — nunca lleva ajuste manual
+                // (ese es efímero de ESTA request/reporte, no aplica a un periodo distinto).
+                $prevExpenseDetail = $prevBuilder->buildEmployeeExpenseDetail($prevExpenseIds, $employeeId);
                 $wasActivePrev = round((float) ($prevRow['recuperacion'] ?? 0), 2) > 0
                     || round((float) ($prevRow['colocacion'] ?? 0), 2) > 0
                     || round((float) ($prevExpenseDetail['automatic_total'] ?? 0), 2) > 0;

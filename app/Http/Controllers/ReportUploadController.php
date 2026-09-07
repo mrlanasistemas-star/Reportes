@@ -19,7 +19,6 @@ use App\Models\PeriodReprocessRun;
 use App\Models\MonthlyEmployeeSummary;
 use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
-use App\Services\EmployeePeriodManualExpenseService;
 use App\Services\PeriodEmployeeRosterService;
 use App\Services\ReportUploadService;
 use Illuminate\Http\JsonResponse;
@@ -1067,20 +1066,22 @@ class ReportUploadController extends Controller {
                 return back()->with('error', 'No se puede generar el reporte porque falta seleccionar un empleado o gestor.');
             }
 
-            // "Gasto general por gestor" capturado en Etapa 4 — auditoría 07-sep-2026
-            // (frente 4): se persiste AQUÍ, antes de encolar el job, como fuente única
-            // de EmployeePeriodManualExpenseService (Web/Excel/PDF ya no reciben este
-            // valor por $config, todos lo leen de la tabla). Solo se toca si el campo
-            // vino en la request — evita "limpiar" un valor guardado desde Histórico
-            // si el wizard se envía sin ese campo en el payload.
-            if (array_key_exists('extra_employee_expense_amount', $config)) {
-                app(EmployeePeriodManualExpenseService::class)->upsert(
-                    $period->id,
-                    (int) $config['employee_id'],
-                    (float) $config['extra_employee_expense_amount'],
-                    (string) ($config['extra_employee_expense_notes'] ?? ''),
-                    auth()->id(),
-                );
+            // "Gasto general por gestor" capturado en Etapa 4 — reversión 07-sep-2026
+            // (cierre): YA NO se persiste en EmployeePeriodManualExpenseService (ZERO
+            // WRITES, ver auditoría). Se convierte a la forma efímera
+            // manual_adjustment y viaja DENTRO del config del run — GenerateRadiographyJob
+            // pasa este mismo $config a RadiografiaExportService::exportWithConfig()/
+            // exportPdfWithConfig(), que ya lo aplican vía
+            // RadiographySnapshotBuilder::applyEmployeeScope(). El archivo generado
+            // por este run refleja el ajuste (es la salida de ESTA generación puntual),
+            // pero nada queda escrito en ninguna tabla de gasto manual.
+            if (array_key_exists('extra_employee_expense_amount', $config) && (float) $config['extra_employee_expense_amount'] > 0) {
+                $config['manual_adjustment'] = [
+                    'scope'       => 'employee',
+                    'employee_id' => (int) $config['employee_id'],
+                    'amount'      => round((float) $config['extra_employee_expense_amount'], 2),
+                    'notes'       => (string) ($config['extra_employee_expense_notes'] ?? ''),
+                ];
             }
         }
 

@@ -33,6 +33,24 @@ it('classifies PAGO FINIQUITO and GASTOS MEDICOS as nomina_empleado: not OPEX, b
     }
 });
 
+// Caso real MARLEN RAZO SALDAÑA (auditoría 07-sep-2026, cierre) — el concepto
+// COMPLETO "PAGO FINANCIAMIENTO MOTO"/"COMPRA DE CASCOS" bajo la categoría
+// "Nómina y Capital Humano" (como llega vía gastos_lendus_excel) debe recibir
+// el MISMO trato que la etiqueta genérica truncada "PAGO"/"COMPRA DE" bajo
+// "Gastos Operativos" (ver test de abajo): gasto real de empleado, atribuible,
+// NUNCA OPEX genérico — nunca is_opex, siempre eligible_for_attribution. Antes
+// de este fix caía en TYPE_NOMINA_COVERED_BY_NOI (eligible=false), lo que
+// hacía desaparecer el dinero del costo total del colaborador.
+it('classifies PAGO FINANCIAMIENTO MOTO and COMPRA DE CASCOS (full label) as nomina_empleado: not OPEX, but eligible for person attribution', function () {
+    $service = new OpexClassificationService();
+    foreach (['PAGO FINANCIAMIENTO MOTO', 'COMPRA DE CASCOS'] as $concept) {
+        $r = $service->classify('Nómina y Capital Humano', $concept, OpexClassificationService::SOURCE_LENDUS);
+        expect($r['is_opex'])->toBeFalse();
+        expect($r['type'])->toBe(OpexClassificationService::TYPE_NOMINA_EMPLEADO);
+        expect($r['eligible_for_attribution'])->toBeTrue();
+    }
+});
+
 it('classifies Excedentes, Fondeo/Intersucursal and Pólizas as excluded, never eligible', function () {
     $service = new OpexClassificationService();
 
