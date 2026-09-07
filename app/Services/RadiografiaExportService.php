@@ -96,7 +96,12 @@ class RadiografiaExportService
      *   scope: general | branch | employee
      *   report_type: simple | month_vs_month | bimester_vs_bimester | quarter_vs_quarter
      *   branch_id, employee_id, compare_period_id,
-     *   extra_employee_expense_amount, extra_employee_expense_notes
+     *   manual_adjustment: {scope: 'general'|'employee', employee_id, amount, notes}
+     *   — ajuste manual EFÍMERO (reversión 07-sep-2026, cierre), nunca BD.
+     *
+     * NOTA HISTÓRICA: antes de esa reversión el ajuste viajaba como
+     * extra_employee_expense_amount/notes y se persistía en
+     * EmployeePeriodManualExpenseService — desconectado por completo.
      *
      * DEUDA ARQUITECTÓNICA CONOCIDA (evaluada y NO forzada — 2026-08-25):
      * Web (MonthlyReportController::scopedData() → buildSnapshot()) construye el
@@ -129,10 +134,20 @@ class RadiografiaExportService
         @ini_set('memory_limit', '1024M');
 
         $summary  = $this->requireSummary($period);
-        $snapshot = $this->buildSnapshotCached($period, $summary);
-
         $scope      = $config['scope'] ?? 'general';
         $reportType = $config['report_type'] ?? 'simple';
+        // Ajuste manual EFÍMERO de alcance GENERAL (reversión 07-sep-2026, cierre,
+        // punto 1) — el snapshot general SIEMPRE se construye a través de este mismo
+        // método, sea el destino final el libro general, por sucursal o por gestor
+        // (ver docblock de arriba: branch/employee ubican su fila DENTRO de este
+        // snapshot general, no construyen uno propio). Si no se pasa el
+        // manual_adjustment aquí, el ajuste general nunca llega al Excel — solo a
+        // Web (que sí pasa $config completo a build() vía scopedData()). Solo se
+        // reenvía 'manual_adjustment' — nunca 'scope'/'branch_id'/'employee_id' —
+        // para no disparar applyScope() dentro de build() (arquitectura documentada
+        // arriba: branch/employee se resuelven a mano en este archivo).
+        $generalSnapshotConfig = isset($config['manual_adjustment']) ? ['manual_adjustment' => $config['manual_adjustment']] : [];
+        $snapshot = $this->buildSnapshotCached($period, $summary, $generalSnapshotConfig);
 
         if (in_array($reportType, ['month_vs_month', 'bimester_vs_bimester', 'quarter_vs_quarter'])) {
             $comparePeriodId = (int) ($config['compare_period_id'] ?? 0);
@@ -166,10 +181,12 @@ class RadiografiaExportService
             if (!$employeeId) {
                 throw new RuntimeException('Se requiere employee_id para reportes por gestor.');
             }
-            // extra_employee_expense_amount/notes de $config ya NO alimentan el
-            // cálculo ni la nota mostrada (auditoría 07-sep-2026, frente 4) — la
-            // fuente única es el gasto manual persistido por (period_id, employee_id).
-            $spreadsheet = $this->workbookBuilder->buildEmployeeFromSnapshot($period, $summary, $snapshot, $employeeId);
+            // Ajuste manual EFÍMERO de esta descarga (reversión 07-sep-2026, cierre)
+            // — nunca BD. $config['manual_adjustment'] lo arma el controlador desde
+            // los parámetros de la request; se aplica SOLO si es de este mismo
+            // employee_id (nunca se filtra a otro colaborador).
+            [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($config, $employeeId);
+            $spreadsheet = $this->workbookBuilder->buildEmployeeFromSnapshot($period, $summary, $snapshot, $employeeId, $extraAmount, $extraNotes);
             $suffix      = 'gestor_' . $employeeId;
         } else {
             $spreadsheet = $this->workbookBuilder->buildFromSnapshot($period, $summary, $snapshot);
@@ -197,10 +214,13 @@ class RadiografiaExportService
 
         $summary = $this->requireSummary($period);
         $summary->loadMissing(['branchSummaries', 'incidents']);
-        $snapshot = $this->buildSnapshotCached($period, $summary);
 
         $scope      = $config['scope'] ?? 'general';
         $reportType = $config['report_type'] ?? 'simple';
+        // Mismo fix que exportWithConfig() (ver comentario ahí) — el ajuste manual
+        // GENERAL debe llegar también al PDF, no solo a Web/Excel.
+        $generalSnapshotConfig = isset($config['manual_adjustment']) ? ['manual_adjustment' => $config['manual_adjustment']] : [];
+        $snapshot = $this->buildSnapshotCached($period, $summary, $generalSnapshotConfig);
 
         if (in_array($reportType, ['month_vs_month', 'bimester_vs_bimester', 'quarter_vs_quarter'], true)) {
             $viewData      = $this->comparativeViewData($period, $config, $summary, $snapshot);
@@ -228,14 +248,14 @@ class RadiografiaExportService
             if (!$employeeId) {
                 throw new RuntimeException('Se requiere employee_id para reportes por gestor.');
             }
-            // extra_employee_expense_amount/notes de $config ya NO alimentan el
-            // cálculo (auditoría 07-sep-2026, frente 4) — la fuente única es el
-            // gasto manual persistido por (period_id, employee_id), leído dentro de
-            // resolveEmployeeRow()->buildEmployeeExpenseDetail(). Lo que se muestra
-            // en el PDF sale de ese mismo resultado ($empData['expenseDetail']),
-            // nunca del valor crudo de la request — así nunca puede mostrar un
-            // monto/nota distinto al que realmente se sumó al total.
-            $empData = $this->resolveEmployeeRow($period, $snapshot, $employeeId);
+            // Ajuste manual EFÍMERO de esta descarga (reversión 07-sep-2026, cierre)
+            // — nunca BD, ver exportWithConfig(). Lo que se muestra en el PDF sale
+            // del resultado real de buildEmployeeExpenseDetail()
+            // ($empData['expenseDetail']), nunca del valor crudo de la request —
+            // así nunca puede mostrar un monto/nota distinto al que realmente se
+            // sumó al total.
+            [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($config, $employeeId);
+            $empData = $this->resolveEmployeeRow($period, $snapshot, $employeeId, $extraAmount, $extraNotes);
 
             $pdf = Pdf::loadView('reports.radiography-pdf-employee', array_merge($empData, [
                 'period'      => $period,
@@ -521,7 +541,27 @@ class RadiografiaExportService
      * de display de la fila ya expuesta (frágil: causa raíz real de "funciona un mes, falla
      * otro" — ver auditoría 2026-08-24). El nombre solo se usa como fallback explícito.
      */
-    private function resolveEmployeeRow(Period $period, array $snapshot, int $employeeId): array
+    /**
+     * Ajuste manual EFÍMERO de esta request/descarga (reversión 07-sep-2026,
+     * cierre) — nunca lee/escribe BD. Solo aplica si `manual_adjustment.scope`
+     * es 'employee' Y su `employee_id` es EXACTAMENTE este colaborador; nunca
+     * "se filtra" a otro colaborador que comparta grupo NOI fusionado.
+     *
+     * @return array{0: float, 1: string}
+     */
+    private function resolveManualAdjustmentFor(array $config, int $employeeId): array
+    {
+        $adjustment = $config['manual_adjustment'] ?? null;
+        if (!is_array($adjustment) || ($adjustment['scope'] ?? null) !== 'employee') {
+            return [0.0, ''];
+        }
+        if ((int) ($adjustment['employee_id'] ?? 0) !== $employeeId) {
+            return [0.0, ''];
+        }
+        return [(float) ($adjustment['amount'] ?? 0), (string) ($adjustment['notes'] ?? '')];
+    }
+
+    private function resolveEmployeeRow(Period $period, array $snapshot, int $employeeId, float $extraExpenseAmount = 0.0, string $extraExpenseNotes = ''): array
     {
         $employee = Employee::find($employeeId);
         if (!$employee) {
@@ -572,11 +612,9 @@ class RadiografiaExportService
         $percepDeducc      = app(BranchRadiographyCalculator::class)
             ->computeNoiPercepcionesDeduccionesForEmployees($this->snapshotBuilder->resolveDataIdsPublic($period), $employeeIdsForNoi);
 
-        // OPEX del gestor = automático (fact_expenses) + manual persistido (Gasto
-        // general por gestor) — 07-sep-2026, misma fuente que Web/Excel. Ver
-        // buildEmployeeExpenseDetail(). $extraExpenseAmount/Notes ya no participan
-        // del cálculo — se conservan solo por compatibilidad de firma.
-        $expenseDetail = $this->snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForNoi, $period->id, $employeeId);
+        // OPEX del gestor = automático (fact_expenses) + ajuste manual EFÍMERO de
+        // esta descarga — misma fuente que Web/Excel. Ver buildEmployeeExpenseDetail().
+        $expenseDetail = $this->snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForNoi, $employeeId, $extraExpenseAmount, $extraExpenseNotes);
         $gastos        = $expenseDetail['total'];
         $payrollDetail     = $this->snapshotBuilder->buildEmployeePayrollDetail($employeeIdsForNoi, $percepDeducc);
 

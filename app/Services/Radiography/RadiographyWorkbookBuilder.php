@@ -6365,6 +6365,8 @@ class RadiographyWorkbookBuilder
         PeriodSummary $summary,
         array         $snap,
         int           $employeeId,
+        float         $extraExpenseAmount = 0.0,
+        string        $extraExpenseNotes  = ''
     ): Spreadsheet {
         @ini_set('memory_limit', '1024M');
 
@@ -6415,16 +6417,15 @@ class RadiographyWorkbookBuilder
         $pagos     = (float)($empRow['pagos']        ?? 0);
         $bonos     = (float)($empRow['bonos']        ?? 0);
         $desctos   = (float)($empRow['descuentos']   ?? 0);
-        // OPEX del gestor = automático (fact_expenses) + manual persistido (Gasto
-        // general por gestor, EmployeePeriodManualExpenseService) — MISMA fuente/
-        // fórmula que Web (RadiographySnapshotBuilder::applyEmployeeScope()) y PDF
-        // (RadiografiaExportService::resolveEmployeeRow()). Nunca se recalcula por
-        // separado — ver buildEmployeeExpenseDetail(). $extraExpenseAmount/Notes ya
-        // no participan del cálculo (auditoría 07-sep-2026) — el dato persistido es
-        // la única fuente; los parámetros se conservan solo por compatibilidad de
-        // firma con quien arma la URL de descarga.
+        // OPEX del gestor = automático (fact_expenses) + ajuste manual EFÍMERO de
+        // esta descarga — MISMA fuente/fórmula que Web (RadiographySnapshotBuilder::
+        // applyEmployeeScope()) y PDF (RadiografiaExportService::resolveEmployeeRow()).
+        // Nunca se recalcula por separado — ver buildEmployeeExpenseDetail().
+        // Reversión 07-sep-2026 (cierre): $extraExpenseAmount/Notes vuelven a ser la
+        // fuente real (nunca BD) — es lo que el usuario tecleó en la pantalla en el
+        // momento de pedir esta descarga, se pierde al cerrar la pestaña.
         $employeeIdsForExpenses = !empty($empRow['_employee_ids']) ? $empRow['_employee_ids'] : [$employeeId];
-        $expenseDetail = $snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForExpenses, $period->id, $employeeId);
+        $expenseDetail = $snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForExpenses, $employeeId, $extraExpenseAmount, $extraExpenseNotes);
         $gastos    = $expenseDetail['total'];
         $neto      = (float)($empRow['neto']          ?? ($pagos + $bonos - $desctos));
         $coloc     = (float)($empRow['colocacion']    ?? 0);

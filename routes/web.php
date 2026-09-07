@@ -4,7 +4,6 @@ use Illuminate\Support\Facades\Route;
 use Laravel\Fortify\Features;
 use App\Http\Controllers\PeriodController;
 use App\Http\Controllers\ReportUploadController;
-use App\Http\Controllers\EmployeePeriodManualExpenseController;
 use App\Http\Controllers\EmployeeBranchAssignmentController;
 use App\Http\Controllers\EmployeeController;
 use App\Http\Controllers\ValidationController;
@@ -40,8 +39,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('/{period}/actualizacion-bd/reencolar', [ReportUploadController::class, 'requeueRun'])->name('requeue-run');
             Route::get('/{period}/incidencias', [ReportUploadController::class, 'incidents'])->name('incidents');
             Route::get('/{period}/colaboradores', [ReportUploadController::class, 'periodEmployeesForConfig'])->name('period-employees');
-            Route::get('/{period}/colaboradores/{employee}/gasto-manual', [EmployeePeriodManualExpenseController::class, 'show'])->name('colaboradores.gasto-manual.show');
-            Route::post('/{period}/colaboradores/{employee}/gasto-manual', [EmployeePeriodManualExpenseController::class, 'store'])->name('colaboradores.gasto-manual.store');
             Route::post('/{period}/incidencias/{incident}/resolver', [ReportUploadController::class, 'resolveIncident'])->name('incidents.resolve');
             Route::post('/{period}/incidencias/refrescar', [ReportUploadController::class, 'refreshIncidents'])->name('incidents.refresh');
             Route::get('/{period}/personas-sin-sucursal', [ReportUploadController::class, 'personasSinSucursal'])->name('personas-sin-sucursal');

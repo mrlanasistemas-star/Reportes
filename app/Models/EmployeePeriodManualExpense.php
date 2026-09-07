@@ -6,11 +6,11 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * "Gasto general por gestor" persistente por (period_id, employee_id) — ver
- * migración 2026_09_07_000001_create_employee_period_manual_expenses_table y
- * App\Services\EmployeePeriodManualExpenseService (fuente única de lectura/
- * escritura, nunca usar este modelo directamente fuera de ese servicio salvo
- * para relaciones/consultas simples).
+ * ⚠️ DESCONECTADO DEL CÁLCULO (reversión 07-sep-2026, cierre) — ver
+ * App\Services\EmployeePeriodManualExpenseService. La tabla se conserva
+ * (no se borra/trunca), pero ningún flujo real la lee ni la escribe: el
+ * "Gasto general por gestor" es 100% efímero por request desde el cierre.
+ * No usar este modelo en código nuevo.
  */
 class EmployeePeriodManualExpense extends Model
 {

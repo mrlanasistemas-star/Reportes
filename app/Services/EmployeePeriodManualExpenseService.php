@@ -6,21 +6,28 @@ use App\Models\EmployeePeriodManualExpense;
 use App\Models\PeriodSummary;
 
 /**
+ * ⚠️ DESCONECTADO DEL CÁLCULO — no usar para ningún flujo nuevo (reversión
+ * 07-sep-2026, cierre). Este servicio y la tabla `employee_period_manual_expenses`
+ * que administra quedan intactos (no se borran/truncan) pero YA NO tienen
+ * ningún lector ni escritor activo en Web/Histórico/scoped-data/Excel/PDF/
+ * radiografía — el "Gasto general por gestor" es ahora 100% EFÍMERO
+ * (`manual_adjustment` viaja por request/config, nunca por BD). Ver
+ * RadiographySnapshotBuilder::buildEmployeeExpenseDetail()/
+ * applyGeneralManualAdjustment(), RadiografiaExportService::
+ * resolveManualAdjustmentFor(), EmployeesHistoricoExportService::build(). Se
+ * conserva el código por si se decide una limpieza/migración de borrado
+ * separada más adelante — hasta entonces, ZERO READS / ZERO WRITES desde
+ * cualquier cálculo real.
+ *
+ * ── Historia (frente 4, superada) ──────────────────────────────────────────
  * Fuente ÚNICA de lectura/escritura del "Gasto general por gestor" persistente
  * (auditoría 07-sep-2026, frente 4). Antes vivía solo en la config de cada
  * request (extra_employee_expense_amount/notes) — efímero, y la vista Web en
  * vivo (MonthlyReportController::scopedData()) nunca lo recibía, así que
- * divergía de Excel/PDF. Ahora:
- *   - Se guarda UNA vez por (period_id, employee_id) — updateOrCreate sobre el
- *     UNIQUE de la tabla, así que guardar dos veces nunca duplica ni suma.
- *   - RadiographySnapshotBuilder::buildEmployeeExpenseDetail() lo lee de aquí
- *     directamente (ya no recibe el monto por parámetro/config) — mismo dato
- *     para Web, Excel y PDF sin ninguna lógica adicional.
- *   - Al guardar, se "toca" el PeriodSummary del periodo para invalidar la
- *     única caché financiera del sistema (RadiografiaExportService::
- *     buildSnapshotCached(), cuya key incluye PeriodSummary->updated_at) — la
- *     siguiente lectura del snapshot del periodo recalcula con el valor nuevo,
- *     sin necesidad de F5 forzado ni de tocar el mecanismo de caché.
+ * divergía de Excel/PDF. Se guardaba UNA vez por (period_id, employee_id) —
+ * updateOrCreate sobre el UNIQUE de la tabla. El cierre 07-sep-2026 revirtió
+ * este diseño: el usuario determinó que el ajuste NUNCA debe modificar datos
+ * guardados — debe volver a $0.00 al salir/reentrar al reporte.
  */
 class EmployeePeriodManualExpenseService
 {

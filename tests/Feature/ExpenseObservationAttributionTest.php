@@ -443,16 +443,17 @@ it('never attributes NOMINA/PAGO DE IMSS/DEDUCCIONES/ANTICIPO DE NOMINA (already
 // Usa la MISMA fórmula canónica de RadiographySnapshotBuilder::applyEmployeeScope()
 // (ebitda = ingreso_base - (gastos + neto)) — no se inventa ninguna fórmula nueva.
 // ============================================================================
-// ACLARACIÓN 27-ago-2026 (actualizada 07-sep-2026 — frente 4, gasto manual
-// persistente): OPEX DE EMPLEADO/GESTOR = AUTOMÁTICO + MANUAL
+// ACLARACIÓN 27-ago-2026 (actualizada 07-sep-2026 — cierre, reversión del
+// gasto manual persistente): OPEX DE EMPLEADO/GESTOR = AUTOMÁTICO + MANUAL
 // ============================================================================
 // La atribución automática (fact_expenses vía Observación/Justificación) NO
-// reemplaza el input manual — se SUMAN. El manual YA NO viaja por $config
-// (extra_employee_expense_amount/notes de la request) — se persiste vía
-// EmployeePeriodManualExpenseService::upsert() y buildEmployeeExpenseDetail()
-// lo lee de ahí. Ver RadiographySnapshotBuilder::buildEmployeeExpenseDetail(),
-// fuente única para Web (applyEmployeeScope), Excel (buildEmployeeFromSnapshot)
-// y PDF (resolveEmployeeRow).
+// reemplaza el input manual — se SUMAN. El manual es 100% EFÍMERO por request
+// — viaja como parámetro directo a buildEmployeeExpenseDetail() (o vía
+// $config['manual_adjustment'] en applyEmployeeScope()) y NUNCA se lee/escribe
+// en BD (employee_period_manual_expenses queda desconectada del cálculo). Ver
+// RadiographySnapshotBuilder::buildEmployeeExpenseDetail(), fuente única para
+// Web (applyEmployeeScope), Excel (buildEmployeeFromSnapshot) y PDF
+// (resolveEmployeeRow).
 function makeEbitdaFixtureRow(int $employeeId): array
 {
     return ['name' => 'EMPLEADO EBITDA', 'branch' => 'ORIZABA', 'pagos' => 40000.0, 'bonos' => 0.0, 'descuentos' => 0.0, 'neto' => 40000.0, 'gastos' => 0.0, 'colocacion' => 0.0, 'operaciones' => 0, 'recuperacion' => 0.0, 'cartera' => 0.0, 'vencida' => 0.0, 'mora' => 0.0, 'ingreso_ebitda_base' => 190000.0, '_employee_ids' => [$employeeId]];
@@ -471,7 +472,7 @@ it('OPEX total = automatic only, when there is no manual input', function () {
     // llegar aquí; se replica esa misma secuencia para la prueba directa del método.
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $employee->id);
 
     expect($detail['automatic_total'])->toBe(200.0);
     expect($detail['manual_total'])->toBe(0.0);
@@ -479,14 +480,13 @@ it('OPEX total = automatic only, when there is no manual input', function () {
 });
 
 // Test obligatorio 2: automatic=0, manual=1500 → total=1500 (nunca $0 porque no hay automático).
+// El manual es EFÍMERO — se pasa directo como parámetro, nunca se persiste.
 it('OPEX total = manual only, when there is no automatic attribution', function () {
     $period = makeAttribPeriodo();
     $branch = makeAttribBranch('Orizaba');
     $employee = makeAttribRosterEmployee($period, 'EMPLEADO EBITDA SOLO MANUAL', $branch);
 
-    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Viáticos y comunicación');
-
-    $detail = app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    $detail = app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([$employee->id], $employee->id, 1500.0, 'Viáticos y comunicación');
 
     expect($detail['automatic_total'])->toBe(0.0);
     expect($detail['manual_total'])->toBe(1500.0);
@@ -501,11 +501,9 @@ it('OPEX total = automatic + manual, SUMMED, never one replacing the other', fun
     $employee = makeAttribRosterEmployee($period, 'EMPLEADO EBITDA B', $branch);
     makeAttribExpense($period, $upload, ['amount' => 200, 'paid_amount' => 200, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
 
-    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Viáticos y comunicación');
-
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $employee->id, 1500.0, 'Viáticos y comunicación');
 
     expect($detail['automatic_total'])->toBe(200.0);
     expect($detail['manual_total'])->toBe(1500.0);
@@ -516,7 +514,8 @@ it('OPEX total = automatic + manual, SUMMED, never one replacing the other', fun
 
 // Test obligatorio 4: EBITDA usa la fórmula canónica con el OPEX TOTAL (automático+manual),
 // vía applyEmployeeScope() → summaryFromRow() → buildEmployeeExpenseDetail(). Nunca una
-// fórmula nueva — misma resta que ya existía (ingreso_base - (gastos + neto)).
+// fórmula nueva — misma resta que ya existía (ingreso_base - (gastos + neto)). El manual
+// viaja EFÍMERO por $config['manual_adjustment'] — nunca BD.
 it('shifts employee EBITDA by exactly the combined automatic+manual OPEX, via the canonical formula', function () {
     $period = makeAttribPeriodo();
     $upload = makeAttribUpload($period);
@@ -531,11 +530,11 @@ it('shifts employee EBITDA by exactly the combined automatic+manual OPEX, via th
     $snapshotSin = makeGeneralSnapshotFixture($period->id, [], [$rowSin]);
     $resultSin = invokeScopeMethod($builder, 'applyEmployeeScope', ['dataIds' => [$period->id], 'args' => [$snapshotSin, $employee->id, [$rowSin], $period, []]]);
 
-    // Automático $200 (fact_expenses real) + manual $1,500 (persistido — fuente única).
+    // Automático $200 (fact_expenses real) + manual $1,500 (EFÍMERO, vía $config — nunca BD).
     makeAttribExpense($period, $upload, ['amount' => 200, 'paid_amount' => 200, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
-    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Viáticos y comunicación');
+    $manualConfig = ['manual_adjustment' => ['scope' => 'employee', 'employee_id' => $employee->id, 'amount' => 1500.0, 'notes' => 'Viáticos y comunicación']];
     $snapshotCon = makeGeneralSnapshotFixture($period->id, [], [$rowSin]);
-    $resultCon = invokeScopeMethod($builder, 'applyEmployeeScope', ['dataIds' => [$period->id], 'args' => [$snapshotCon, $employee->id, [$rowSin], $period, []]]);
+    $resultCon = invokeScopeMethod($builder, 'applyEmployeeScope', ['dataIds' => [$period->id], 'args' => [$snapshotCon, $employee->id, [$rowSin], $period, $manualConfig]]);
 
     expect((float) $resultSin['summary']['opex_total'])->toBe(0.0);
     expect((float) $resultCon['summary']['opex_total'])->toBe(1700.0);
@@ -550,9 +549,8 @@ it('shifts employee EBITDA by exactly the combined automatic+manual OPEX, via th
 });
 
 // Test obligatorio 5: el input manual NUNCA toca fact_expenses ni el OPEX general oficial —
-// vive en su propia tabla persistente (employee_period_manual_expenses), nunca en
-// fact_expenses ni mezclado con gastos automáticos.
-it('never writes the manual amount to fact_expenses or changes the official general OPEX', function () {
+// es 100% efímero (parámetro directo), nunca escribe en ninguna tabla.
+it('never writes the manual amount to fact_expenses or any table — it is a pure ephemeral parameter', function () {
     $period = makeAttribPeriodo();
     $upload = makeAttribUpload($period);
     $branch = makeAttribBranch('Orizaba');
@@ -562,12 +560,12 @@ it('never writes the manual amount to fact_expenses or changes the official gene
     $totalFactExpensesAntes = (float) DB::table('fact_expenses')->where('period_id', $period->id)->count();
     $sumaAntes = (float) DB::table('fact_expenses')->where('period_id', $period->id)->sum('paid_amount');
 
-    app(\App\Services\EmployeePeriodManualExpenseService::class)->upsert($period->id, $employee->id, 1500.0, 'Ajuste manual');
-    app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    app(RadiographySnapshotBuilder::class)->buildEmployeeExpenseDetail([$employee->id], $employee->id, 1500.0, 'Ajuste manual');
 
     expect((float) DB::table('fact_expenses')->where('period_id', $period->id)->count())->toBe($totalFactExpensesAntes);
     expect((float) DB::table('fact_expenses')->where('period_id', $period->id)->sum('paid_amount'))->toBe($sumaAntes);
     expect($sumaAntes)->toBe(200.0); // el manual ($1,500) nunca aparece en fact_expenses
+    expect(DB::table('employee_period_manual_expenses')->count())->toBe(0); // ni en la tabla desconectada
 });
 
 // ============================================================================
@@ -735,11 +733,11 @@ it('NOMINA with employee_id is never counted as OPEX for that employee (would du
 
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $employee->id);
 
     expect($detail['automatic_total'])->toBe(500.0);
     expect($detail['automatic_items'])->toHaveCount(1);
-    expect($detail['nomina_empleado_total'])->toBe(0.0); // NOMINA no es nomina_empleado (finiquito/médico) — se descarta del todo
+    expect($detail['automatic_nomina_empleado_total'])->toBe(0.0); // NOMINA no es nomina_empleado (finiquito/médico/moto) — se descarta del todo
 });
 
 // ── E) RECARGA (OPEX real) SÍ se incluye ──────────────────────────────────────
@@ -752,13 +750,18 @@ it('a real OPEX expense (RECARGA) is included in automatic_total', function () {
 
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $employee->id);
 
     expect($detail['automatic_total'])->toBe(500.0);
 });
 
-// ── PAGO FINIQUITO: no es OPEX, pero SÍ se suma dentro de `total` (nomina_empleado) ──
-it('PAGO FINIQUITO is excluded from automatic_total (OPEX) but still included in nomina_empleado_total and the grand total', function () {
+// ── PAGO FINIQUITO: caso real Marlen Razo Saldaña (auditoría 07-sep-2026, cierre) ──
+// El colaborador NUNCA debe "perder" este gasto de su costo total solo por tener
+// una subcategoría financiera distinta a OPEX puro — automatic_total (lo que ve
+// Web/Excel/PDF como "OPEX AUTOMÁTICO") lo INCLUYE. El desglose fino
+// (automatic_opex_pure_total / automatic_nomina_empleado_total) sigue disponible
+// para quien quiera ver la separación.
+it('PAGO FINIQUITO is included in automatic_total (combined with OPEX puro) and the grand total', function () {
     $period = makeAttribPeriodo();
     $upload = makeAttribUpload($period);
     $branch = makeAttribBranch('Orizaba');
@@ -770,11 +773,12 @@ it('PAGO FINIQUITO is excluded from automatic_total (OPEX) but still included in
 
     $builder = app(RadiographySnapshotBuilder::class);
     $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
-    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $employee->id);
 
-    expect($detail['automatic_total'])->toBe(0.0); // NO es OPEX
-    expect($detail['nomina_empleado_total'])->toBe(6136.0);
-    expect($detail['total'])->toBe(6136.0); // pero el monto SIGUE apareciendo en el total — nunca desaparece
+    expect($detail['automatic_opex_pure_total'])->toBe(0.0); // no es OPEX puro
+    expect($detail['automatic_nomina_empleado_total'])->toBe(6136.0);
+    expect($detail['automatic_total'])->toBe(6136.0); // pero SÍ cuenta en "OPEX AUTOMÁTICO" — nunca desaparece
+    expect($detail['total'])->toBe(6136.0);
 });
 
 // ── B) Alias ambiguo — dos personas con alias válido en el mismo texto ───────

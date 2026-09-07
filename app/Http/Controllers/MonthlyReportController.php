@@ -12,7 +12,6 @@ use App\Models\PeriodBranchSummary;
 use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
-use App\Services\EmployeePeriodManualExpenseService;
 use App\Services\PeriodRadiographyService;
 use App\Services\RadiografiaExportService;
 use App\Services\Radiography\EmployeesHistoricoExportService;
@@ -162,35 +161,39 @@ class MonthlyReportController extends Controller {
     }
 
     /**
-     * "Gasto general por gestor" — auditoría 07-sep-2026 (frente 4): el panel
-     * "Descargar / Comparativos" de Histórico sigue enviando
-     * extra_employee_expense_amount/notes como query string de este link de
-     * descarga (comportamiento de UI sin cambios) — pero ya no alimenta el
-     * cálculo directamente. Aquí se persiste ese valor (si vino en la request)
-     * en EmployeePeriodManualExpenseService ANTES de construir el export, para
-     * que sea la MISMA fuente que ya usan Web/Excel/PDF. Sin este paso, un
-     * cambio hecho solo en este panel de descarga se perdería al cerrar la
-     * pestaña — con él, queda guardado igual que si se hubiera guardado desde
-     * el bloque "Gasto general por gestor" de Histórico.
+     * Ajuste manual del reporte — 100% EFÍMERO (reversión 07-sep-2026, cierre,
+     * puntos 1/5/6): NUNCA se lee/escribe en employee_period_manual_expenses ni
+     * en ninguna otra tabla. Arma `$config['manual_adjustment']` a partir de los
+     * 4 parámetros de la request (manual_scope/manual_employee_id/manual_amount/
+     * manual_notes) — la MISMA forma que ya consumen
+     * RadiographySnapshotBuilder::applyEmployeeScope()/applyGeneralManualAdjustment()
+     * y RadiografiaExportService::resolveManualAdjustmentFor(). Si no viene
+     * manual_amount > 0, no agrega nada — el snapshot queda exactamente igual al
+     * oficial de BD.
      */
-    private function persistManualExpenseFromConfig(Period $period, array $config): void
+    private function manualAdjustmentFromRequest(Request $request): array
     {
-        if (($config['scope'] ?? '') !== 'employee' || !array_key_exists('extra_employee_expense_amount', $config)) {
-            return;
+        $amount = (float) $request->query('manual_amount', $request->input('manual_amount', 0));
+        if ($amount <= 0) {
+            return [];
         }
 
-        $employeeId = (int) ($config['employee_id'] ?? 0);
-        if (!$employeeId) {
-            return;
+        $scope = $request->query('manual_scope', $request->input('manual_scope', 'employee'));
+        if (!in_array($scope, ['general', 'employee'], true)) {
+            return [];
         }
 
-        app(EmployeePeriodManualExpenseService::class)->upsert(
-            $period->id,
-            $employeeId,
-            (float) $config['extra_employee_expense_amount'],
-            (string) ($config['extra_employee_expense_notes'] ?? ''),
-            auth()->id(),
-        );
+        $notes = (string) $request->query('manual_notes', $request->input('manual_notes', ''));
+
+        if ($scope === 'employee') {
+            $employeeId = (int) $request->query('manual_employee_id', $request->input('manual_employee_id', 0));
+            if (!$employeeId) {
+                return [];
+            }
+            return ['scope' => 'employee', 'employee_id' => $employeeId, 'amount' => round($amount, 2), 'notes' => $notes];
+        }
+
+        return ['scope' => 'general', 'employee_id' => null, 'amount' => round($amount, 2), 'notes' => $notes];
     }
 
     /**
@@ -633,9 +636,12 @@ class MonthlyReportController extends Controller {
         }
 
         $config = $request->only([
-            'scope', 'report_type', 'branch_id', 'employee_id',
-            'compare_period_id', 'extra_employee_expense_amount', 'extra_employee_expense_notes',
+            'scope', 'report_type', 'branch_id', 'employee_id', 'compare_period_id',
         ]);
+        $manualAdjustment = $this->manualAdjustmentFromRequest($request);
+        if (!empty($manualAdjustment)) {
+            $config['manual_adjustment'] = $manualAdjustment;
+        }
 
         // Validate branch is operative
         if (($config['scope'] ?? '') === 'branch') {
@@ -652,8 +658,6 @@ class MonthlyReportController extends Controller {
         if (($config['scope'] ?? '') === 'employee' && !(int)($config['employee_id'] ?? 0)) {
             return response('Selecciona un gestor.', 422);
         }
-
-        $this->persistManualExpenseFromConfig($period, $config);
 
         try {
             $path = $service->exportWithConfig($period, $config);
@@ -687,11 +691,12 @@ class MonthlyReportController extends Controller {
         }
 
         $config = $request->only([
-            'scope', 'report_type', 'branch_id', 'employee_id',
-            'compare_period_id', 'extra_employee_expense_amount', 'extra_employee_expense_notes',
+            'scope', 'report_type', 'branch_id', 'employee_id', 'compare_period_id',
         ]);
-
-        $this->persistManualExpenseFromConfig($period, $config);
+        $manualAdjustment = $this->manualAdjustmentFromRequest($request);
+        if (!empty($manualAdjustment)) {
+            $config['manual_adjustment'] = $manualAdjustment;
+        }
 
         try {
             $path = $service->exportPdfWithConfig($period, $config);
@@ -723,9 +728,10 @@ class MonthlyReportController extends Controller {
     public function exportEmployeesHistorico(Period $period, Request $request, EmployeesHistoricoExportService $service)
     {
         $filters = $request->only(['branch_id']);
+        $manualAdjustment = $this->manualAdjustmentFromRequest($request);
 
         try {
-            $spreadsheet = $service->build($period, $filters);
+            $spreadsheet = $service->build($period, $filters, $manualAdjustment);
         } catch (\Throwable $e) {
             report($e);
             return response('No se pudo generar el Excel de colaboradores: ' . $e->getMessage(), 500);
@@ -736,6 +742,11 @@ class MonthlyReportController extends Controller {
         $outputPath = $directory . '/colaboradores_' . ($period->code ?: $period->id) . '_' . now()->format('Ymd_His') . '.xlsx';
 
         $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
+        // BUG REAL (07-sep-2026, cierre): sin esto, PhpSpreadsheet omite los
+        // objetos de gráfica al guardar el .xlsx aunque el código los haya
+        // construido — el usuario veía la hoja "Gráficas" con solo números, sin
+        // ninguna gráfica renderizada. Mismo patrón que RadiografiaExportService::export().
+        $writer->setIncludeCharts(true);
         $writer->save($outputPath);
         $spreadsheet->disconnectWorksheets();
         unset($spreadsheet);
@@ -791,6 +802,16 @@ class MonthlyReportController extends Controller {
                 return response()->json(['error' => 'Colaborador no encontrado.'], 404);
             }
             $config['employee_id'] = $employeeId;
+        }
+
+        // Ajuste manual EFÍMERO (reversión 07-sep-2026, cierre, punto 12) — sin
+        // regla aprobada para scope=branch todavía, así que deliberadamente NUNCA
+        // se adjunta ahí (sin input manual para sucursal por ahora).
+        if ($scope !== 'branch') {
+            $manualAdjustment = $this->manualAdjustmentFromRequest($request);
+            if (!empty($manualAdjustment)) {
+                $config['manual_adjustment'] = $manualAdjustment;
+            }
         }
 
         try {
