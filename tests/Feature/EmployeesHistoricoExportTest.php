@@ -336,9 +336,138 @@ it('renames INGRESO BASE EBITDA to UTILIDAD BRUTA, removes ID COLABORADOR, adds 
     $chartSheet = $spreadsheet->getSheetByName('Gráficas');
     expect($chartSheet)->not->toBeNull();
     expect(count($chartSheet->getChartCollection()))->toBeGreaterThan(0);
-    // La tabla de apoyo vive lejos (columna AB en adelante) para que las gráficas
-    // (A1 en adelante) sean lo primero visible al abrir la hoja.
-    $chartRows = $chartSheet->rangeToArray('AB2:AB3');
+    // La tabla de apoyo vive lejos (columna AI en adelante, ronda 3 — grid 2×3 más
+    // grande) para que las gráficas (A1 en adelante) sean lo primero visible al
+    // abrir la hoja.
+    $chartRows = $chartSheet->rangeToArray('AI2:AI3');
     expect(collect($chartRows)->flatten()->filter()->count())->toBe(2); // ambos colaboradores, ninguno faltante
     expect($chartSheet->getAutoFilter()->getRange())->not->toBe(''); // filtro nativo sobre la tabla de apoyo
+});
+
+// ============================================================================
+// Ronda 3 (07-sep-2026) — hoja "Detalle de Gastos": desglose por concepto de lo
+// que compone el OPEX AUTOMÁTICO de cada colaborador, y ajuste manual scope='all'
+// (mismo monto a CADA colaborador — a propósito multiplicado por el número de
+// colaboradores, distinto de scope='general').
+// ============================================================================
+
+it('the "Detalle de Gastos" sheet lists every concept behind a collaborator\'s OPEX AUTOMÁTICO, summing to the same total', function () {
+    $period = exportPeriodo();
+    $branch = exportBranch('Puebla');
+    $employee = exportEmployee($period, 'COLABORADOR DESGLOSE', $branch);
+
+    $source = DataSource::query()->firstOrCreate(
+        ['code' => 'gastos_lendus_excel'],
+        ['name' => 'gastos_lendus_excel', 'description' => 'x', 'is_active' => true],
+    );
+    $upload = ReportUpload::query()->create([
+        'period_id' => $period->id, 'data_source_id' => $source->id,
+        'original_name' => 'Gastos.xlsx', 'stored_path' => 'x', 'mime_type' => 'x', 'file_size' => 10,
+        'uploaded_at' => now(), 'status' => \App\Enums\ReportUploadStatus::Processed, 'notes' => null,
+    ]);
+    Expense::query()->create([
+        'period_id' => $period->id, 'report_upload_id' => $upload->id,
+        'category' => 'Recargas Telefónicas', 'concept' => 'RECARGAS TELEFONICAS',
+        'amount' => 200, 'paid_amount' => 200, 'expense_date' => now()->format('Y-m-d'),
+        'branch_id' => $branch->id, 'employee_id' => $employee->id,
+    ]);
+    Expense::query()->create([
+        'period_id' => $period->id, 'report_upload_id' => $upload->id,
+        'category' => 'Gastos Operativos', 'concept' => 'GASTOS POR TRANSPORTE',
+        'amount' => 300, 'paid_amount' => 300, 'expense_date' => now()->format('Y-m-d'),
+        'branch_id' => $branch->id, 'employee_id' => $employee->id,
+    ]);
+    // NOMINA (con employee_id) nunca debe aparecer en el desglose — ya filtrado
+    // (cubierto por NOI, no es OPEX ni nómina-empleado atribuible).
+    Expense::query()->create([
+        'period_id' => $period->id, 'report_upload_id' => $upload->id,
+        'category' => 'Nómina y Capital Humano', 'concept' => 'NOMINA',
+        'amount' => 9999, 'paid_amount' => 9999, 'expense_date' => now()->format('Y-m-d'),
+        'branch_id' => $branch->id, 'employee_id' => $employee->id,
+    ]);
+
+    $service = app(EmployeesHistoricoExportService::class);
+    $spreadsheet = $service->build($period, []);
+
+    $detailSheet = $spreadsheet->getSheetByName('Detalle de Gastos');
+    expect($detailSheet)->not->toBeNull();
+
+    $rows = [];
+    foreach ($detailSheet->toArray(null, true, false, false) as $i => $line) {
+        if ($i === 0 || $line[0] === null) continue;
+        $rows[] = $line;
+    }
+    $forEmployee = collect($rows)->filter(fn ($r) => $r[0] === 'COLABORADOR DESGLOSE');
+    expect($forEmployee)->toHaveCount(2); // RECARGAS + TRANSPORTE — nunca NOMINA
+    expect((float) $forEmployee->sum(4))->toBe(500.0); // reconcilia con OPEX AUTOMÁTICO
+    expect($forEmployee->pluck(3)->all())->not->toContain('NOMINA');
+
+    // Reconciliación exacta contra la columna OPEX AUTOMÁTICO de "Colaboradores".
+    $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
+    IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
+    $mainRows = readExportedRows($tmp);
+    @unlink($tmp);
+    $mainRow = collect($mainRows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR DESGLOSE');
+    expect((float) $mainRow['OPEX AUTOMÁTICO'])->toBe(500.0);
+
+    // AutoFilter nativo sobre la hoja de detalle también.
+    expect($detailSheet->getAutoFilter()->getRange())->not->toBe('');
+});
+
+it('a manual_adjustment scope=all applies the SAME amount to EVERY collaborator row, multiplied by headcount — never a single lump sum', function () {
+    $period = exportPeriodo();
+    $branch = exportBranch('Cuernavaca');
+    $e1 = exportEmployee($period, 'COLABORADOR TODOS UNO', $branch);
+    $e2 = exportEmployee($period, 'COLABORADOR TODOS DOS', $branch);
+    $e3 = exportEmployee($period, 'COLABORADOR TODOS TRES', $branch);
+    exportExpense($period, $e1, $branch, 100);
+    exportExpense($period, $e2, $branch, 200);
+    exportExpense($period, $e3, $branch, 300);
+
+    $service = app(EmployeesHistoricoExportService::class);
+    $spreadsheet = $service->build($period, [], ['scope' => 'all', 'amount' => 20000.0, 'notes' => 'Ajuste a todos']);
+
+    $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
+    IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
+    $rows = readExportedRows($tmp);
+    @unlink($tmp);
+
+    $r1 = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR TODOS UNO');
+    $r2 = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR TODOS DOS');
+    $r3 = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR TODOS TRES');
+
+    // CADA colaborador recibe el MISMO monto completo — no se reparte entre ellos.
+    expect((float) $r1['GASTO MANUAL'])->toBe(20000.0);
+    expect((float) $r2['GASTO MANUAL'])->toBe(20000.0);
+    expect((float) $r3['GASTO MANUAL'])->toBe(20000.0);
+    expect((float) $r1['OPEX TOTAL'])->toBe(20100.0);
+    expect((float) $r2['OPEX TOTAL'])->toBe(20200.0);
+    expect((float) $r3['OPEX TOTAL'])->toBe(20300.0);
+
+    // La hoja "Resumen" documenta el total agregado (monto × colaboradores) para
+    // transparencia — nunca cambia el cálculo por fila de arriba.
+    $resumen = $spreadsheet->getSheetByName('Resumen');
+    expect($resumen)->not->toBeNull();
+    expect((float) $resumen->getCell('B2')->getValue())->toBe(20000.0); // por colaborador
+    expect((int) $resumen->getCell('B3')->getValue())->toBe(3);          // colaboradores afectados
+    expect((float) $resumen->getCell('B4')->getValue())->toBe(60000.0);  // total = 20000 × 3
+});
+
+it('a manual_adjustment scope=all with amount=0 changes nothing (no Resumen sheet, no GASTO MANUAL)', function () {
+    $period = exportPeriodo();
+    $branch = exportBranch('Tenango del Valle');
+    $employee = exportEmployee($period, 'COLABORADOR SIN AJUSTE ALL', $branch);
+    exportExpense($period, $employee, $branch, 100);
+
+    $service = app(EmployeesHistoricoExportService::class);
+    $spreadsheet = $service->build($period, [], ['scope' => 'all', 'amount' => 0]);
+
+    expect($spreadsheet->getSheetByName('Resumen'))->toBeNull();
+
+    $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
+    IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
+    $rows = readExportedRows($tmp);
+    @unlink($tmp);
+    $row = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR SIN AJUSTE ALL');
+    expect((float) $row['GASTO MANUAL'])->toBe(0.0);
 });

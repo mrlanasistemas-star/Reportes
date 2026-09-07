@@ -134,11 +134,27 @@ const manualNotes  = ref<string>('')
 const manualGeneralAmount = ref<string>('')
 const manualGeneralNotes  = ref<string>('')
 
+// Tercer alcance (ronda 3, 07-sep-2026): "aplicar a TODOS los colaboradores" —
+// SOLO tiene efecto en el botón "Descargar Excel de colaboradores" (el único
+// consumidor que sabe interpretar scope='all', ver EmployeesHistoricoExportService).
+// A diferencia de manualGeneralAmount (suma UNA sola vez al total, nunca se
+// reparte), este SÍ se suma a CADA colaborador individualmente — a propósito
+// multiplicado por el número de colaboradores ("que tuvieron un gasto de 20k
+// TODOS los colaboradores"). Independiente de activeScope — no se limpia al
+// cambiar de filtro (el botón de colaboradores siempre trae a todos igual).
+const manualAllAmount = ref<string>('')
+const manualAllNotes  = ref<string>('')
+
 function clearManualAdjustment() {
     manualAmount.value = ''
     manualNotes.value  = ''
     manualGeneralAmount.value = ''
     manualGeneralNotes.value  = ''
+}
+
+function clearManualAllAdjustment() {
+    manualAllAmount.value = ''
+    manualAllNotes.value  = ''
 }
 
 // Parámetros manual_scope/manual_employee_id/manual_amount/manual_notes que
@@ -220,11 +236,18 @@ const employeesExportUrl = computed(() => {
     if (activeScope.value.type === 'branch' && activeScope.value.branch_id) {
         params.set('branch_id', String(activeScope.value.branch_id))
     }
-    // Ajuste manual EFÍMERO — si hay uno activo (empleado o general), viaja también
-    // a este export bulk: scope=employee solo afecta la fila de ese colaborador,
-    // scope=general nunca se reparte (aparece solo en la hoja "Resumen").
-    for (const [k, v] of Object.entries(manualAdjustmentParams(activeScope.value.type, activeScope.value.employee_id))) {
-        params.set(k, v)
+    // Ajuste manual EFÍMERO — "aplicar a TODOS" (manualAllAmount) tiene prioridad
+    // sobre el de un solo colaborador/general cuando está activo — no tiene
+    // sentido combinar los dos en la misma descarga. Si no hay "a todos" activo,
+    // cae al comportamiento normal (empleado seleccionado o general).
+    if (Number(manualAllAmount.value) > 0) {
+        params.set('manual_scope', 'all')
+        params.set('manual_amount', String(Number(manualAllAmount.value)))
+        params.set('manual_notes', manualAllNotes.value ?? '')
+    } else {
+        for (const [k, v] of Object.entries(manualAdjustmentParams(activeScope.value.type, activeScope.value.employee_id))) {
+            params.set(k, v)
+        }
     }
     const qs = params.toString()
     return `/reportes-mensuales/${props.period.id}/colaboradores.xlsx` + (qs ? `?${qs}` : '')
@@ -1665,6 +1688,37 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </p>
                         </div>
                         <p class="text-xs text-slate-400">"Descargar Excel de colaboradores" siempre trae a TODOS los colaboradores del periodo (respeta sucursal cuando aplica) — nunca se limita al gestor seleccionado arriba.</p>
+
+                        <!-- Ajuste manual "a TODOS los colaboradores" (ronda 3, 07-sep-2026) —
+                             SOLO afecta el Excel de colaboradores. A diferencia del ajuste
+                             general (una sola vez al total), este SÍ se suma a CADA
+                             colaborador individualmente. 100% efímero — nunca se guarda. -->
+                        <div class="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+                            <p class="font-black text-slate-950 text-sm">Ajuste temporal — aplicar a TODOS los colaboradores</p>
+                            <p class="mt-1 text-xs text-slate-600">Suma el MISMO monto al OPEX de CADA colaborador en el Excel de colaboradores (a diferencia del ajuste general, aquí SÍ se multiplica por el número de colaboradores). Solo afecta esta descarga — no modifica los datos guardados.</p>
+                            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                                <label class="block">
+                                    <span class="text-xs font-bold text-slate-600">Gasto por colaborador (MXN)</span>
+                                    <div class="relative mt-1">
+                                        <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400">$</span>
+                                        <input v-model="manualAllAmount" type="number" min="0" step="100" placeholder="0"
+                                               class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-amber-100" />
+                                    </div>
+                                </label>
+                                <label class="block">
+                                    <span class="text-xs font-bold text-slate-600">Notas (opcional)</span>
+                                    <input v-model="manualAllNotes" type="text" placeholder="Ej. gasto extraordinario del mes"
+                                           class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-4 focus:ring-amber-100" />
+                                </label>
+                            </div>
+                            <div class="mt-3 flex items-center gap-3">
+                                <button type="button" :disabled="!manualAllAmount && !manualAllNotes" @click="clearManualAllAdjustment"
+                                        class="h-9 rounded-2xl border border-slate-300 bg-white px-4 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                                    Limpiar ajuste
+                                </button>
+                                <span v-if="Number(manualAllAmount) > 0" class="text-xs font-bold text-amber-700">Se aplicará a CADA colaborador al descargar el Excel.</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
