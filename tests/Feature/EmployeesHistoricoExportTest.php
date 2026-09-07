@@ -217,3 +217,34 @@ it('the HTTP download route is reachable and returns a valid xlsx file', functio
     $response->assertOk();
     expect($response->headers->get('Content-Type'))->toContain('spreadsheetml');
 });
+
+// ── Ajustes de UX pedidos (mid-turn, 07-sep-2026) ─────────────────────────────
+it('renames INGRESO BASE EBITDA to UTILIDAD BRUTA, removes ID COLABORADOR, adds AutoFilter and a Gráficas sheet with a bar per collaborator', function () {
+    $period = exportPeriodo();
+    $branch = exportBranch('Cuernavaca');
+    $e1 = exportEmployee($period, 'COLABORADOR UX UNO', $branch);
+    $e2 = exportEmployee($period, 'COLABORADOR UX DOS', $branch);
+    exportExpense($period, $e1, $branch, 200);
+    exportExpense($period, $e2, $branch, 300);
+
+    $service = app(\App\Services\Radiography\EmployeesHistoricoExportService::class);
+    $spreadsheet = $service->build($period, []);
+
+    $dataSheet = $spreadsheet->getSheetByName('Colaboradores');
+    $header = $dataSheet->rangeToArray('A1:S1')[0];
+
+    expect($header)->toContain('UTILIDAD BRUTA');
+    expect($header)->not->toContain('INGRESO BASE EBITDA');
+    expect($header)->not->toContain('ID COLABORADOR');
+
+    // AutoFilter cubre todo el encabezado — filtros nativos de Excel por sucursal,
+    // estado activo/baja, o cualquier otra columna.
+    expect($dataSheet->getAutoFilter()->getRange())->not->toBe('');
+
+    // Hoja de gráficas nativas, con una fila (barra) por colaborador — ninguno omitido.
+    $chartSheet = $spreadsheet->getSheetByName('Gráficas');
+    expect($chartSheet)->not->toBeNull();
+    expect(count($chartSheet->getChartCollection()))->toBeGreaterThan(0);
+    $chartRows = $chartSheet->rangeToArray('A2:A3');
+    expect(collect($chartRows)->flatten()->filter()->count())->toBe(2); // ambos colaboradores, ninguno faltante
+});

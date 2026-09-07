@@ -5,6 +5,7 @@ namespace App\Services\Radiography;
 use App\Models\Branch;
 use App\Models\EmployeePeriodManualExpense;
 use App\Models\Period;
+use App\Services\OpexClassificationService;
 use Illuminate\Support\Facades\DB;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
@@ -12,30 +13,45 @@ use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 
 /**
- * "Descargar Excel de colaboradores" (frente 6, auditoria 07-sep-2026) - TODOS
- * los colaboradores del periodo en una fila cada uno, ignorando explicitamente
- * el filtro individual de employee (si la pantalla tiene a un colaborador
- * seleccionado, este export igual trae a todos), respetando el resto de
- * filtros (sucursal) cuando se indiquen.
+ * "Descargar Excel de colaboradores" (frente 6, auditoria 07-sep-2026, cerrado
+ * 07-sep-2026) - TODOS los colaboradores del periodo en una fila cada uno,
+ * ignorando explicitamente el filtro individual de employee (si la pantalla
+ * tiene a un colaborador seleccionado, este export igual trae a todos),
+ * respetando el resto de filtros (sucursal) cuando se indiquen. Verificado
+ * contra Preview.vue/scoped-data: producto/mora/categoria son filtros 100%
+ * cliente sobre tablas ya cargadas (nunca viajan al backend) - branch_id es el
+ * UNICO filtro real ademas de employee_id, y ya se respeta aqui.
  *
  * REUTILIZA - nunca reinventa - las mismas fuentes/formulas que la vista Web de
- * un colaborador individual (RadiographySnapshotBuilder::applyEmployeeScope() /
- * summaryFromRow()):
+ * un colaborador individual (RadiographySnapshotBuilder):
  *   - buildAllEmployeeGestorRows() = MISMO buildEmployeesGestores() que arma la
  *     fila de cada colaborador (recuperacion/colocacion/cartera/vencida/nomina).
- *   - OPEX automatico/manual = MISMA formula de buildEmployeeExpenseDetail(),
- *     pero agregada en bloque (una sola consulta para TODOS los colaboradores)
- *     en vez de N consultas - evita N+1 sin cambiar el resultado.
- *   - EBITDA = MISMA resta que summaryFromRow(): ingreso_base - (gastos + neto).
- *   - Estatus activo/baja = MISMA regla que RadiographySnapshotBuilder::
- *     buildOperationalStatus() (ingreso real O gasto operativo > 0), aplicada
- *     en bloque - no cambia la definicion de "activo", solo evita repetir el
- *     calculo persona por persona.
+ *   - OPEX = MISMA clasificacion canonica (OpexClassificationService) que usa
+ *     buildEmployeeExpenseDetail() - aplicada en bloque (una sola consulta con
+ *     todos los conceptos/categorias del periodo, clasificados en PHP) en vez
+ *     de N consultas - evita N+1 sin cambiar el resultado ni la regla.
+ *   - EBITDA/margen/OPEX total = MISMO computeEmployeeFinancialMetrics() que
+ *     usa RadiographySnapshotBuilder::summaryFromRow() - nunca una segunda
+ *     formula.
+ *   - Estado activo/baja = MISMA condicion que buildOperationalStatus()
+ *     (ingreso real O gasto OPEX automatico > 0 - el gasto manual NUNCA activa
+ *     por si solo), sobre los MISMOS totales ya calculados en bloque.
  */
 class EmployeesHistoricoExportService
 {
+    /** Encabezados monetarios — reciben formato de moneda. */
+    private const CURRENCY_HEADERS = [
+        'RECUPERACIÓN', 'COLOCACIÓN', 'VALOR CARTERA', 'CARTERA VENCIDA',
+        'OPEX AUTOMÁTICO', 'GASTO MANUAL', 'OPEX TOTAL', 'NÓMINA / CAPITAL HUMANO',
+        'PERCEPCIONES', 'DEDUCCIONES', 'NETO PAGADO', 'UTILIDAD BRUTA', 'EBITDA',
+    ];
+
+    /** Encabezados porcentuales. */
+    private const PERCENT_HEADERS = ['MORA %', 'MARGEN EBITDA %'];
+
     public function __construct(
         private readonly RadiographySnapshotBuilder $snapshotBuilder,
+        private readonly OpexClassificationService $opexClassifier,
     ) {
     }
 
@@ -63,13 +79,29 @@ class EmployeesHistoricoExportService
             }
         }
 
-        // OPEX automatico - UNA sola consulta para todos los colaboradores.
-        $automaticByEmployee = DB::table('fact_expenses')
+        // ── OPEX/Nómina-empleado clasificados — UNA sola consulta para todos los
+        // colaboradores, agrupada por employee_id+categoria+concepto, clasificada
+        // en PHP vía OpexClassificationService (fuente canónica única — auditoría
+        // 07-sep-2026). Nunca suma NOMINA/IMSS/Deducciones/Fondeo/Excedentes/
+        // Pólizas, aunque tuvieran employee_id por error de otro flujo.
+        $expenseRows = DB::table('fact_expenses')
             ->whereIn('period_id', $dataIds)
             ->whereNotNull('employee_id')
-            ->selectRaw('employee_id, SUM(COALESCE(NULLIF(paid_amount,0), amount)) as total')
-            ->groupBy('employee_id')
-            ->pluck('total', 'employee_id');
+            ->selectRaw("employee_id, COALESCE(category,'') as category, COALESCE(concept,'') as concept, SUM(COALESCE(NULLIF(paid_amount,0), amount)) as total")
+            ->groupBy('employee_id', 'category', 'concept')
+            ->get();
+
+        $opexByEmployee          = [];
+        $nominaEmpleadoByEmployee = [];
+        foreach ($expenseRows as $r) {
+            $classification = $this->opexClassifier->classify($r->category, $r->concept, OpexClassificationService::SOURCE_LENDUS);
+            $eid = (int) $r->employee_id;
+            if ($classification['is_opex']) {
+                $opexByEmployee[$eid] = ($opexByEmployee[$eid] ?? 0.0) + (float) $r->total;
+            } elseif ($classification['type'] === OpexClassificationService::TYPE_NOMINA_EMPLEADO) {
+                $nominaEmpleadoByEmployee[$eid] = ($nominaEmpleadoByEmployee[$eid] ?? 0.0) + (float) $r->total;
+            }
+        }
 
         // Gasto manual persistido - UNA sola consulta.
         $manualByEmployee = EmployeePeriodManualExpense::query()
@@ -96,17 +128,18 @@ class EmployeesHistoricoExportService
         $sheet->setTitle('Colaboradores');
 
         $headers = [
-            'PERIODO', 'SUCURSAL', 'ID COLABORADOR', 'NOMBRE COLABORADOR', 'ESTADO ACTIVO/BAJA',
+            'PERIODO', 'SUCURSAL', 'NOMBRE COLABORADOR', 'ESTADO ACTIVO/BAJA',
             'RECUPERACIÓN', 'COLOCACIÓN', 'VALOR CARTERA', 'CARTERA VENCIDA', 'MORA %',
             'OPEX AUTOMÁTICO', 'GASTO MANUAL', 'OPEX TOTAL',
             'NÓMINA / CAPITAL HUMANO', 'PERCEPCIONES', 'DEDUCCIONES', 'NETO PAGADO',
-            'INGRESO BASE EBITDA', 'EBITDA', 'MARGEN EBITDA %',
+            'UTILIDAD BRUTA', 'EBITDA', 'MARGEN EBITDA %',
         ];
+        $lastCol = Coordinate::stringFromColumnIndex(count($headers));
         foreach ($headers as $i => $header) {
             $col = Coordinate::stringFromColumnIndex($i + 1);
             $sheet->setCellValue("{$col}1", $header);
         }
-        $sheet->getStyle('A1:' . Coordinate::stringFromColumnIndex(count($headers)) . '1')
+        $sheet->getStyle("A1:{$lastCol}1")
             ->applyFromArray([
                 'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF']],
                 'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => RadiographyStyleHelper::BG_PRIMARY_DARK]],
@@ -114,7 +147,12 @@ class EmployeesHistoricoExportService
             ]);
         $sheet->freezePane('A2');
 
+        $estadoColIdx = array_search('ESTADO ACTIVO/BAJA', $headers, true) + 1;
+        $estadoCol    = Coordinate::stringFromColumnIndex($estadoColIdx);
+
         $r = 2;
+        $exportedRowsCount = 0;
+        $chartRows = [];
         foreach ($rows as $row) {
             $employeeIds = $row['_employee_ids'] ?? [];
             $primaryId   = $employeeIds[0] ?? null;
@@ -122,53 +160,53 @@ class EmployeesHistoricoExportService
                 continue; // fila sin identidad resuelta - no se puede exportar como colaborador
             }
 
-            $automatic = 0.0;
-            $manual    = (float) ($manualByEmployee[$primaryId] ?? 0.0);
-            $percep    = 0.0;
-            $deduc     = 0.0;
+            $opexAuto        = 0.0;
+            $nominaEmpleado  = 0.0;
+            $percep          = 0.0;
+            $deduc           = 0.0;
             foreach ($employeeIds as $eid) {
-                $automatic += (float) ($automaticByEmployee[$eid] ?? 0.0);
-                $percep    += (float) ($percepcionesByEmployee[$eid] ?? 0.0);
-                $deduc     += (float) ($deduccionesByEmployee[$eid] ?? 0.0);
+                $opexAuto       += (float) ($opexByEmployee[$eid] ?? 0.0);
+                $nominaEmpleado += (float) ($nominaEmpleadoByEmployee[$eid] ?? 0.0);
+                $percep         += (float) ($percepcionesByEmployee[$eid] ?? 0.0);
+                $deduc          += (float) ($deduccionesByEmployee[$eid] ?? 0.0);
             }
-            $opexTotal = round($automatic + $manual, 2);
+            $manual = (float) ($manualByEmployee[$primaryId] ?? 0.0);
 
-            $pagos      = (float) ($row['pagos'] ?? 0);
-            $bonos      = (float) ($row['bonos'] ?? 0);
-            $descuentos = (float) ($row['descuentos'] ?? 0);
-            $neto       = (float) ($row['neto'] ?? ($pagos + $bonos - $descuentos));
-            $ingresoBase = (float) ($row['ingreso_ebitda_base'] ?? 0);
-            $cartera    = (float) ($row['cartera'] ?? 0);
-            $vencida    = (float) ($row['vencida'] ?? 0);
-            $mora       = $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0;
-            $ebitda     = $ingresoBase - ($opexTotal + $neto);
-            $margen     = $ingresoBase > 0 ? round($ebitda / $ingresoBase * 100, 2) : 0.0;
+            // Fuente ÚNICA de EBITDA/margen/OPEX total — computeEmployeeFinancialMetrics(),
+            // la MISMA función que usa RadiographySnapshotBuilder::summaryFromRow() para
+            // Web/Excel individual/PDF. 'total' replica exactamente lo que
+            // buildEmployeeExpenseDetail() expondría: OPEX + Nómina-empleado + manual.
+            $expenseDetailLike = ['total' => round($opexAuto + $nominaEmpleado + $manual, 2)];
+            $metrics = $this->snapshotBuilder->computeEmployeeFinancialMetrics($row, $expenseDetailLike);
 
+            // Estado activo/baja — MISMA condición que buildOperationalStatus(): ingreso
+            // real (recuperación/colocación) O gasto OPEX automático > 0. El gasto manual
+            // y el Nómina-empleado (finiquito/médico — normalmente señal de BAJA, no de
+            // actividad) nunca activan por sí solos.
             $hasIncome  = round((float) ($row['recuperacion'] ?? 0), 2) > 0 || round((float) ($row['colocacion'] ?? 0), 2) > 0;
-            $hasExpense = round($automatic, 2) > 0;
+            $hasExpense = round($opexAuto, 2) > 0;
             $estado     = ($hasIncome || $hasExpense) ? 'ACTIVO' : 'BAJA';
 
             $values = [
                 $period->label,
                 $row['branch'] ?? 'Sin asignar',
-                $primaryId,
                 $row['name'] ?? '-',
                 $estado,
                 round((float) ($row['recuperacion'] ?? 0), 2),
                 round((float) ($row['colocacion'] ?? 0), 2),
-                round($cartera, 2),
-                round($vencida, 2),
-                $mora,
-                round($automatic, 2),
+                round($metrics['cartera'], 2),
+                round($metrics['vencida'], 2),
+                $metrics['mora_index'],
+                round($opexAuto, 2),
                 round($manual, 2),
-                $opexTotal,
-                round($neto, 2),
+                round($metrics['opex_total'], 2),
+                round($metrics['neto'], 2),
                 round($percep, 2),
                 round($deduc, 2),
                 round($percep - $deduc, 2),
-                round($ingresoBase, 2),
-                round($ebitda, 2),
-                $margen,
+                round($metrics['ingreso_base'], 2),
+                round($metrics['ebitda'], 2),
+                $metrics['margen_ebitda'],
             ];
 
             foreach ($values as $i => $value) {
@@ -176,28 +214,118 @@ class EmployeesHistoricoExportService
                 $sheet->setCellValue("{$col}{$r}", $value);
             }
 
-            // Formato moneda para las columnas numericas monetarias.
-            foreach ([6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19] as $colIdx) {
-                $col = Coordinate::stringFromColumnIndex($colIdx);
-                $sheet->getStyle("{$col}{$r}")->getNumberFormat()->setFormatCode(RadiographyStyleHelper::CURRENCY);
+            foreach ($headers as $i => $header) {
+                $col = Coordinate::stringFromColumnIndex($i + 1);
+                if (in_array($header, self::CURRENCY_HEADERS, true)) {
+                    $sheet->getStyle("{$col}{$r}")->getNumberFormat()->setFormatCode(RadiographyStyleHelper::CURRENCY);
+                } elseif (in_array($header, self::PERCENT_HEADERS, true)) {
+                    $sheet->getStyle("{$col}{$r}")->getNumberFormat()->setFormatCode('0.00"%"');
+                }
             }
-            $sheet->getStyle('J' . $r)->getNumberFormat()->setFormatCode('0.00"%"');
-            $sheet->getStyle('T' . $r)->getNumberFormat()->setFormatCode('0.00"%"');
 
             $estadoColor = $estado === 'ACTIVO' ? RadiographyStyleHelper::BG_POSITIVE : RadiographyStyleHelper::BG_ALERT_RED;
-            $sheet->getStyle('E' . $r)->applyFromArray([
+            $sheet->getStyle("{$estadoCol}{$r}")->applyFromArray([
                 'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => $estadoColor]],
                 'font' => ['bold' => true],
                 'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER],
             ]);
 
+            $chartRows[] = [
+                'name'          => $row['name'] ?? '-',
+                'ebitda'        => round($metrics['ebitda'], 2),
+                'opex_total'    => round($metrics['opex_total'], 2),
+                'cartera'       => round($metrics['cartera'], 2),
+                'vencida'       => round($metrics['vencida'], 2),
+                'recuperacion'  => round((float) ($row['recuperacion'] ?? 0), 2),
+                'colocacion'    => round((float) ($row['colocacion'] ?? 0), 2),
+            ];
+
             $r++;
+            $exportedRowsCount++;
         }
 
-        foreach (range('A', Coordinate::stringFromColumnIndex(count($headers))) as $col) {
+        $lastDataRow = $r - 1;
+
+        foreach (range('A', $lastCol) as $col) {
             $sheet->getColumnDimension($col)->setAutoSize(true);
         }
 
+        // Filtros nativos de Excel sobre TODO el encabezado — permite filtrar por
+        // sucursal, estado activo/baja o cualquier otra columna sin reinventar UI.
+        if ($lastDataRow >= 2) {
+            $sheet->setAutoFilter("A1:{$lastCol}{$lastDataRow}");
+        }
+
+        if (!empty($chartRows)) {
+            $this->addChartsSheet($spreadsheet, $chartRows);
+        }
+
         return $spreadsheet;
+    }
+
+    /**
+     * Gráficas nativas de Excel (hoja "Gráficas" aparte) — reutiliza
+     * RadiographyStyleHelper::addBarChart(), YA existente en el workbook
+     * principal (RadiographyWorkbookBuilder) — no se crea un mecanismo de
+     * gráficas nuevo. Una barra por colaborador, TODAS las filas exportadas
+     * (ninguna omitida), para EBITDA/OPEX/cartera y el resto de métricas clave.
+     *
+     * addBarChart() qualifica sus rangos y adjunta el chart a la MISMA hoja que
+     * recibe como primer argumento — por eso los datos se replican aquí (una
+     * mini-tabla local en la propia hoja "Gráficas"), en vez de referenciar la
+     * hoja "Colaboradores" desde otra hoja.
+     */
+    private function addChartsSheet(Spreadsheet $spreadsheet, array $chartRows): void
+    {
+        $chartSheet = $spreadsheet->createSheet();
+        $chartSheet->setTitle('Gráficas');
+
+        $dataHeaders = ['Colaborador', 'EBITDA', 'OPEX TOTAL', 'VALOR CARTERA', 'CARTERA VENCIDA', 'RECUPERACIÓN', 'COLOCACIÓN'];
+        foreach ($dataHeaders as $i => $h) {
+            $chartSheet->setCellValue(Coordinate::stringFromColumnIndex($i + 1) . '1', $h);
+        }
+
+        $rowCount = count($chartRows);
+        $r = 2;
+        foreach ($chartRows as $cr) {
+            $chartSheet->setCellValue("A{$r}", $cr['name']);
+            $chartSheet->setCellValue("B{$r}", $cr['ebitda']);
+            $chartSheet->setCellValue("C{$r}", $cr['opex_total']);
+            $chartSheet->setCellValue("D{$r}", $cr['cartera']);
+            $chartSheet->setCellValue("E{$r}", $cr['vencida']);
+            $chartSheet->setCellValue("F{$r}", $cr['recuperacion']);
+            $chartSheet->setCellValue("G{$r}", $cr['colocacion']);
+            $r++;
+        }
+        $lastRow = $r - 1;
+        $categoryRange = "\$A\$2:\$A\${$lastRow}";
+
+        $metrics = [
+            'B' => ['EBITDA por colaborador', RadiographyStyleHelper::BG_ACCENT],
+            'C' => ['OPEX total por colaborador', RadiographyStyleHelper::BG_ALERT_RED],
+            'D' => ['Valor de cartera por colaborador', RadiographyStyleHelper::BG_PRIMARY_DARK],
+            'E' => ['Cartera vencida por colaborador', RadiographyStyleHelper::FG_RED],
+            'F' => ['Recuperación por colaborador', RadiographyStyleHelper::BG_POSITIVE],
+            'G' => ['Colocación por colaborador', RadiographyStyleHelper::BG_SECTION_HDR],
+        ];
+
+        $topRow = 1;
+        foreach ($metrics as $col => [$title, $color]) {
+            RadiographyStyleHelper::addBarChart(
+                $chartSheet,
+                "{$title} ({$rowCount})",
+                $categoryRange,
+                "\${$col}\$2:\${$col}\${$lastRow}",
+                $rowCount,
+                "I{$topRow}",
+                'V' . ($topRow + 18),
+                $color,
+            );
+            $topRow += 20;
+        }
+
+        foreach (['A', 'B', 'C', 'D', 'E', 'F', 'G'] as $col) {
+            $chartSheet->getColumnDimension($col)->setAutoSize(true);
+        }
     }
 }

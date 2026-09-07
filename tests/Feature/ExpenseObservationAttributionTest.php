@@ -702,3 +702,142 @@ it('exposes candidates and reason for diagnostics on ambiguous and unattributabl
     expect($rNoAtrib['estado'])->toBe('no_atribuible');
     expect($rNoAtrib['reason'])->not->toBeNull();
 });
+
+// ============================================================================
+// AUDITORÍA 07-sep-2026 (cierre) — OpexClassificationService, branch_general,
+// alias ambiguos (recolectar todos, no el primero de la iteración SQL).
+// ============================================================================
+
+// ── D) NOMINA con employee_id NO debe sumarse al OPEX del colaborador ────────
+// Caso obligatorio del pedido: NOMINA $10,000 (con employee_id, heredado del
+// PDF ANTES de que este servicio corriera) + RECARGA $500 (employee_id real) →
+// OPEX automático = $500, nunca $10,500. La fila NOMINA queda excluida
+// COMPLETAMENTE (ni siquiera en nomina_empleado_total) — ya está cubierta por
+// NOI ($neto), sumarla aquí duplicaría el EBITDA del colaborador.
+it('NOMINA with employee_id is never counted as OPEX for that employee (would duplicate NOI)', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Cordoba');
+    $employee = makeAttribRosterEmployee($period, 'EMPLEADO NOMINA NO OPEX', $branch);
+
+    // NOMINA ya con employee_id (simula lo heredado del PDF antes de la atribución
+    // — este servicio NUNCA toca esta fila porque isEligibleForAttribution() la
+    // excluye, pero buildEmployeeExpenseDetail() debía filtrarla también).
+    makeAttribExpense($period, $upload, [
+        'category' => 'Nómina y Capital Humano', 'concept' => 'NOMINA',
+        'amount' => 10000, 'paid_amount' => 10000,
+        'employee_id' => $employee->id, 'branch_id' => $branch->id,
+    ]);
+    makeAttribExpense($period, $upload, [
+        'amount' => 500, 'paid_amount' => 500,
+        'employee_id' => $employee->id, 'branch_id' => $branch->id,
+    ]);
+
+    $builder = app(RadiographySnapshotBuilder::class);
+    $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+
+    expect($detail['automatic_total'])->toBe(500.0);
+    expect($detail['automatic_items'])->toHaveCount(1);
+    expect($detail['nomina_empleado_total'])->toBe(0.0); // NOMINA no es nomina_empleado (finiquito/médico) — se descarta del todo
+});
+
+// ── E) RECARGA (OPEX real) SÍ se incluye ──────────────────────────────────────
+it('a real OPEX expense (RECARGA) is included in automatic_total', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Tula');
+    $employee = makeAttribRosterEmployee($period, 'EMPLEADO OPEX REAL', $branch);
+    makeAttribExpense($period, $upload, ['amount' => 500, 'paid_amount' => 500, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
+
+    $builder = app(RadiographySnapshotBuilder::class);
+    $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+
+    expect($detail['automatic_total'])->toBe(500.0);
+});
+
+// ── PAGO FINIQUITO: no es OPEX, pero SÍ se suma dentro de `total` (nomina_empleado) ──
+it('PAGO FINIQUITO is excluded from automatic_total (OPEX) but still included in nomina_empleado_total and the grand total', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Orizaba');
+    $employee = makeAttribRosterEmployee($period, 'EMPLEADO FINIQUITO', $branch);
+    makeAttribExpense($period, $upload, [
+        'category' => 'Nómina y Capital Humano', 'concept' => 'PAGO FINIQUITO',
+        'amount' => 6136, 'paid_amount' => 6136, 'employee_id' => $employee->id, 'branch_id' => $branch->id,
+    ]);
+
+    $builder = app(RadiographySnapshotBuilder::class);
+    $builder->findEmployeeGestorRowByEmployeeId($period, $employee->id);
+    $detail = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
+
+    expect($detail['automatic_total'])->toBe(0.0); // NO es OPEX
+    expect($detail['nomina_empleado_total'])->toBe(6136.0);
+    expect($detail['total'])->toBe(6136.0); // pero el monto SIGUE apareciendo en el total — nunca desaparece
+});
+
+// ── B) Alias ambiguo — dos personas con alias válido en el mismo texto ───────
+it('two valid aliases in the same text => ambiguous, never assigns the first one returned by the DB', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Miacatlan');
+    $juan  = makeAttribRosterEmployee($period, 'JUAN ALBERTO PEREZ GOMEZ', $branch);
+    $maria = makeAttribRosterEmployee($period, 'MARIA FERNANDA LOPEZ RUIZ', $branch);
+
+    EmployeeAlias::query()->create(['employee_id' => $juan->id, 'alias_name' => 'JUAN PEREZ', 'normalized_alias' => 'juan perez', 'source' => 'manual', 'confidence' => 1.0]);
+    EmployeeAlias::query()->create(['employee_id' => $maria->id, 'alias_name' => 'MARIA LOPEZ', 'normalized_alias' => 'maria lopez', 'source' => 'manual', 'confidence' => 1.0]);
+
+    $expense = makeAttribExpense($period, $upload, ['observations' => 'PAGO PARA JUAN PEREZ Y MARIA LOPEZ']);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($results[0]['estado'])->toBe('ambiguo');
+    expect($results[0]['candidates'])->toHaveCount(2);
+    expect($expense->fresh()->employee_id)->toBeNull();
+});
+
+// ── K) universo completo — filas con observations NULL también se evalúan ────
+it('a row with observations = NULL is still part of the evaluated universe (never silently dropped)', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('Ixtlahuaca');
+    makeAttribRosterEmployee($period, 'EMPLEADO IRRELEVANTE NULL OBS', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'concept' => 'RENTA', 'category' => 'Servicios Generales',
+        'observations' => null, 'branch_id' => $branch->id,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    $found = collect($results)->firstWhere('fact_expense_id', $expense->id);
+    expect($found)->not->toBeNull(); // antes desaparecía del universo por completo
+    expect($found['estado'])->toBe('branch_general'); // sin texto no hay persona posible, pero sí sucursal
+});
+
+// ── branch_general: sin colaborador identificable, pero sucursal ya resuelta ─
+it('a general branch expense (no person named, branch already resolved) resolves as branch_general, not an error', function () {
+    $period = makeAttribPeriodo();
+    $upload = makeAttribUpload($period);
+    $branch = makeAttribBranch('San Luis Potosi');
+    makeAttribRosterEmployee($period, 'EMPLEADO IRRELEVANTE SLP', $branch);
+
+    $expense = makeAttribExpense($period, $upload, [
+        'concept' => 'INTERNET', 'category' => 'Servicios Generales',
+        'observations' => 'PAGO INTERNET SUCURSAL SAN LUIS POTOSI',
+        'branch_id' => $branch->id,
+    ]);
+
+    $service = app(ExpenseObservationAttributionService::class);
+    $results = $service->attributeForPeriod($period, [$period->id], dryRun: false);
+
+    expect($results[0]['estado'])->toBe('branch_general');
+    expect($results[0]['employee_id'])->toBeNull();
+    expect($results[0]['branch_id'])->toBe($branch->id);
+    expect($expense->fresh()->employee_id)->toBeNull();
+    // No se inventa colaborador ni se toca branch_id — sigue siendo el mismo.
+    expect($expense->fresh()->branch_id)->toBe($branch->id);
+});

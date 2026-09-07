@@ -92,7 +92,7 @@ function makeCmdExpense(Period $period, ReportUpload $upload, array $overrides =
     ], $overrides));
 }
 
-it('reports resumen, atribución, montos, por colaborador/concepto/categoría, no encontrados y ambiguos with real numbers', function () {
+it('reports UNIVERSO A/B, atribución, branch_general, ambiguos, OPEX sin destino y números reales', function () {
     $period = makeCmdPeriodo();
     $upload = makeCmdUpload($period);
     $branch = makeCmdBranch('Huamantla');
@@ -103,11 +103,13 @@ it('reports resumen, atribución, montos, por colaborador/concepto/categoría, n
 
     // Encontrado (nombre contenido en texto con ruido).
     makeCmdExpense($period, $upload, ['observations' => 'RECARGA TELEFONICA PARA CARLOS ALBERTO MENDOZA RUIZ DEL MES']);
-    // No encontrado.
+    // Verdaderamente sin destino (sin branch_id, sin persona).
     makeCmdExpense($period, $upload, ['observations' => 'RECARGA DE EXTINTOR']);
     // Ambiguo (combinación compartida por 2 personas del roster).
     makeCmdExpense($period, $upload, ['observations' => 'RECARGA PARA JOSE PEREZ LOPEZ']);
-    // Excluido de evaluación (Nómina, ya cubierto por NOI) — no debe aparecer en "evaluables".
+    // General de sucursal (sin persona, pero branch_id ya resuelto).
+    makeCmdExpense($period, $upload, ['concept' => 'INTERNET', 'category' => 'Servicios Generales', 'observations' => null, 'branch_id' => $branch->id]);
+    // Excluido de evaluación (Nómina, ya cubierto por NOI) — universo A, no B.
     makeCmdExpense($period, $upload, ['category' => 'Nómina y Capital Humano', 'concept' => 'NOMINA', 'observations' => 'CARLOS ALBERTO MENDOZA RUIZ']);
 
     // expectsOutputToContain() en cadena no es confiable con salida multilínea con
@@ -119,19 +121,46 @@ it('reports resumen, atribución, montos, por colaborador/concepto/categoría, n
     expect($exitCode)->toBe(0);
     expect($output)->toContain("PERIODO: {$period->label}");
     expect($output)->toContain('ARCHIVO: Gastos.xlsx');
-    expect($output)->toContain('Filas fact_expenses del upload más reciente: 4');
-    expect($output)->toContain('Filas OPEX evaluables por este servicio');
+    expect($output)->toContain('UNIVERSO A — OPEX TOTAL FINANCIERO');
+    expect($output)->toContain('Filas totales: 5');
+    expect($output)->toContain('UNIVERSO B — EVALUABLE PARA MATCH DE PERSONA');
     expect($output)->toContain('POR COLABORADOR');
     expect($output)->toContain((string) $employee->id);
     expect($output)->toContain('POR CONCEPTO');
     expect($output)->toContain('POR CATEGORÍA');
-    expect($output)->toContain('NO ENCONTRADOS');
-    expect($output)->toContain('AMBIGUOS');
+    expect($output)->toContain('GENERAL SUCURSAL: cantidad 1');
+    expect($output)->toContain('AMBIGUOS: cantidad 1');
+    expect($output)->toContain('SIN INFORMACIÓN (verdaderamente sin destino): cantidad 1');
     expect($output)->toContain('Candidatos considerados');
-    expect($output)->toContain('Total evaluados: 3'); // 4 filas - 1 excluida (Nómina) = 3 evaluables
-    expect($output)->toContain('Con colaborador: 1');
-    expect($output)->toContain('Sin colaborador: 1');
-    expect($output)->toContain('Ambiguos: 1');
+    expect($output)->toContain('OPEX SIN DESTINO (invariante — debe tender a 0):');
+    // La fila "RECARGA DE EXTINTOR" no tiene branch_id resuelto ni persona
+    // identificable — es el ÚNICO caso real "sin destino" de este fixture.
+    expect($output)->toContain('count = 1 | amount = $200.00');
+    expect($output)->toContain('TOTAL fact_expenses del upload: 5');
+    expect($output)->toContain('No-OPEX excluido: 1'); // la fila NOMINA
+});
+
+it('--export writes an xlsx audit file with the DESTINATION_TYPE column and never touches fact_expenses', function () {
+    $period = makeCmdPeriodo();
+    $upload = makeCmdUpload($period);
+    $branch = makeCmdBranch('Cordoba');
+    makeCmdRosterEmployee($period, 'EMPLEADO EXPORT AUDIT', $branch);
+    $expense = makeCmdExpense($period, $upload, ['observations' => 'EMPLEADO EXPORT AUDIT']);
+
+    $path = storage_path("app/audits/opex_attribution_period_{$period->id}.xlsx");
+    @unlink($path);
+
+    \Illuminate\Support\Facades\Artisan::call('reports:audit-expense-attribution', ['period' => $period->id, '--export' => true]);
+
+    expect(file_exists($path))->toBeTrue();
+    $sheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($path)->getActiveSheet();
+    $header = $sheet->rangeToArray('A1:U1')[0];
+    expect($header)->toContain('DESTINATION_TYPE');
+    expect($header)->toContain('IS_OPEX');
+    expect($header)->toContain('FACT_EXPENSE_ID');
+
+    expect($expense->fresh()->employee_id)->toBeNull(); // --export es de solo lectura, dry-run
+    @unlink($path);
 });
 
 it('never mutates fact_expenses (audit command is dry-run only)', function () {

@@ -87,6 +87,7 @@ class ExpenseObservationAttributionService
         private readonly PersonIdentityResolverService $personResolver,
         private readonly PeriodEmployeeRosterService $rosterService,
         private readonly BranchRadiographyCalculator $branchCalculator,
+        private readonly OpexClassificationService $opexClassifier,
     ) {
     }
 
@@ -146,7 +147,13 @@ class ExpenseObservationAttributionService
             ->whereIn('e.period_id', $dataIds)
             ->where('ru.data_source_id', $lendusExcelId)
             ->whereNotIn(DB::raw("UPPER(TRIM(COALESCE(e.concept,'')))"), $delegatedConcepts)
-            ->whereNotNull('e.observations')
+            // Auditoría 07-sep-2026 (cierre, sección 2): antes se excluía aquí
+            // cualquier fila con observations NULL — dejándola completamente
+            // fuera del universo auditado/atribuible. Una fila OPEX elegible sin
+            // texto simplemente no puede resolver a una persona (splitObservations
+            // de '' devuelve [null,null] más abajo), pero SIGUE evaluándose y cae
+            // correctamente a 'branch_general' (si ya tiene sucursal resuelta) o
+            // 'no_atribuible' — nunca desaparece del reporte de auditoría.
             ->select(
                 'e.id', 'e.period_id', 'e.report_upload_id', 'e.category', 'e.concept',
                 'e.employee_id', 'e.branch_id', 'e.observations', 'e.raw_payload',
@@ -208,55 +215,17 @@ class ExpenseObservationAttributionService
     }
 
     /**
-     * Espejo DELIBERADO (no reutilizable directamente — la clasificación real vive
-     * dentro del bucle privado de BranchRadiographyCalculator::accumulateGastos(),
-     * que es código de cálculo financiero que este trabajo tiene prohibido tocar) de
-     * qué categorías/conceptos cuentan como OPEX ahí. Si esa clasificación cambia,
-     * esta lista debe actualizarse a mano — están unidas por comentario, no por código
-     * compartido, a propósito (evita acoplar un cambio de negocio financiero a este
-     * servicio de atribución dimensional).
-     *
-     * Excluye (nunca atribuye a un colaborador):
-     *   - Excedentes ('Envío de utilidad a corporativo' / contiene EXCEDENTE)
-     *   - Fondeo ('Préstamos Intersucursales' / contiene FONDEO o INTERSUCURSAL)
-     *   - Pólizas (seguros/coberturas puente)
-     *   - Nómina y Capital Humano → NOMINA/PAGO DE IMSS/DEDUCCIONES/DEDUCCIONES
-     *     GENERALES/PAGO PRESTAMO Z/ANTICIPO DE NOMINA — accumulateGastos() nunca los
-     *     suma a ningún KPI porque YA están cubiertos por NOI/IMSS; atribuirlos aquí
-     *     duplicaría ese gasto en el EBITDA del colaborador (que usa NOI vía $neto).
-     * Mantiene elegibles PAGO FINIQUITO / GASTOS MEDICOS (categoría Nómina y Capital
-     * Humano): ya son atribuibles hoy vía GastosExcelBranchResolverService (precedente
-     * existente, no nuevo) — son pagos reales y puntuales al colaborador, no una
-     * duplicación de su nómina recurrente.
+     * Auditoría 07-sep-2026 (cierre) — delega en OpexClassificationService, la
+     * FUENTE ÚNICA de clasificación financiera (antes esto era una lista manual
+     * duplicada de la que vive en BranchRadiographyCalculator::accumulateGastos(),
+     * con el riesgo explícito de que divergieran). Ningún criterio cambió: mismo
+     * resultado que antes para cada categoría/concepto — ver
+     * tests/Unit/OpexClassificationServiceTest.php.
      */
     private function isEligibleForAttribution(string $category, string $concept): bool
     {
-        $catUpper = mb_strtoupper(trim($category));
-        $conceptUpper = preg_replace('/\s+/u', ' ', mb_strtoupper(trim($concept))) ?? mb_strtoupper(trim($concept));
-
-        if ($catUpper === 'ENVÍO DE UTILIDAD A CORPORATIVO' || str_contains($catUpper, 'EXCEDENTE')) {
-            return false;
-        }
-        if ($catUpper === 'PRÉSTAMOS INTERSUCURSALES' || str_contains($catUpper, 'FONDEO') || str_contains($catUpper, 'INTERSUCURSAL')) {
-            return false;
-        }
-        if ($catUpper === 'PÓLIZAS') {
-            return false;
-        }
-
-        if ($catUpper === 'NÓMINA Y CAPITAL HUMANO') {
-            $duplicatesNoiOrImss = in_array($conceptUpper, [
-                'NOMINA', 'PAGO DE IMSS', 'DEDUCCIONES', 'DEDUCCIONES GENERALES', 'PAGO PRESTAMO Z', 'ANTICIPO DE NOMINA',
-            ], true);
-            if ($duplicatesNoiOrImss) {
-                return false;
-            }
-            // FINIQUITO/MEDICO quedan elegibles (return true más abajo).
-        } elseif (str_contains($catUpper, 'NOMINA') || str_contains($catUpper, 'NÓMINA')) {
-            return false;
-        }
-
-        return true;
+        return $this->opexClassifier
+            ->classify($category, $concept, OpexClassificationService::SOURCE_LENDUS)['eligible_for_attribution'];
     }
 
     private function resolveRow(object $row, array $matchContext, array $operativeMap): array
@@ -334,6 +303,27 @@ class ExpenseObservationAttributionService
             }
 
             $reason = $obsMatch['reason'] ?? $justMatch['reason'] ?? 'El texto no coincide con ningún colaborador del roster del periodo.';
+
+            // ── branch_general (auditoría 07-sep-2026, cierre) ──────────────────
+            // Ningún colaborador identificado, pero el gasto YA tiene una sucursal
+            // operativa resuelta (GastosExcelBranchResolverService la garantiza
+            // antes de que este servicio corra — nunca se inventa aquí). Un gasto
+            // general de sucursal (renta, luz, agua, internet de oficina, limpieza,
+            // vigilancia...) NO es un error de atribución — es un destino válido
+            // por diseño. Solo cae a 'no_atribuible' cuando NI SIQUIERA hay
+            // sucursal resuelta (verificado contra datos reales: no ocurre hoy,
+            // pero se conserva como salvaguarda).
+            $branchIsOperative = $row->branch_id && isset($operativeMap[(int) $row->branch_id]);
+            if ($branchIsOperative) {
+                return $base + [
+                    'employee_id' => null, 'employee_name' => null,
+                    'branch_id'   => (int) $row->branch_id,
+                    'branch_name' => $operativeMap[(int) $row->branch_id] ?? null,
+                    'metodo' => null, 'confianza' => 0.0, 'fuente' => null,
+                    'estado' => 'branch_general', 'changed' => false,
+                    'candidates' => [], 'reason' => 'Sin colaborador identificable — gasto general de la sucursal ya resuelta.',
+                ];
+            }
 
             return $base + [
                 'employee_id' => null, 'employee_name' => null, 'branch_id' => null, 'branch_name' => null,
@@ -537,15 +527,39 @@ class ExpenseObservationAttributionService
         $rosterByEmployeeId = $matchContext['rosterByEmployeeId'];
         $fullNameTokensById = $matchContext['fullNameTokensById'];
 
-        // ── B) Alias confirmado — contención por tokens, no igualdad de cadena. ──
+        // ── B) Alias confirmado — RECOLECTAR TODOS los alias contenidos en el texto
+        // antes de decidir (auditoría 07-sep-2026, cierre): el orden en que MySQL/
+        // el índice PHP devuelve las filas de employee_aliases nunca debe decidir
+        // una persona. Si el texto contiene el alias de MÁS de un colaborador
+        // distinto ("PAGO PARA JUAN PEREZ Y MARIA LOPEZ", ambos alias válidos) →
+        // ambiguo, nunca se asigna al primero que aparezca en la iteración.
+        $aliasHits = []; // employee_id => true (deduplicado)
         foreach ($matchContext['aliasIndex'] as $normalizedAlias => $employeeId) {
             $aliasTokens = $this->tokensOf((string) $normalizedAlias);
             if (count($aliasTokens) < 1) {
                 continue;
             }
             if ($this->tokensContain($textTokens, $aliasTokens)) {
-                return ['employee_id' => (int) $employeeId, 'method' => 'alias', 'confidence' => 1.0, 'candidates' => [], 'reason' => null];
+                $aliasHits[(int) $employeeId] = true;
             }
+        }
+        if (count($aliasHits) === 1) {
+            $eid = array_key_first($aliasHits);
+            return ['employee_id' => $eid, 'method' => 'alias', 'confidence' => 1.0, 'candidates' => [], 'reason' => null];
+        }
+        if (count($aliasHits) > 1) {
+            $candidates = array_map(fn ($eid) => [
+                'employee_id' => $eid,
+                'name'        => $rosterByEmployeeId[$eid]['name'] ?? null,
+                'score'       => 100.0,
+                'method'      => 'alias_shared',
+            ], array_keys($aliasHits));
+
+            return [
+                'employee_id' => null, 'method' => 'ambiguous', 'confidence' => 1.0,
+                'candidates'  => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
+                'reason'      => 'El texto contiene el alias de más de un colaborador distinto.',
+            ];
         }
 
         // ── C+D) Nombre completo / combinaciones parciales únicas del roster ─────

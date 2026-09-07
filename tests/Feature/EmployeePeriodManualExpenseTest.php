@@ -187,3 +187,80 @@ it('two reads of buildEmployeeExpenseDetail — before and after saving — refl
     $after = $builder->buildEmployeeExpenseDetail([$employee->id], $period->id, $employee->id);
     expect($after['manual_total'])->toBe(950.0);
 });
+
+// ── G) employee_ids fusionados — el detalle inmediato debe incluir el gasto de AMBOS ──
+// Auditoría 07-sep-2026 (cierre, sección 13): antes, store() descartaba el
+// resultado de findEmployeeGestorRowByEmployeeId() y usaba solo [$employee->id]
+// — cuando la identidad real agrupa varios employee_id históricos (NOI normal +
+// duplicado/fiscal con el MISMO nombre), el gasto automático del ID histórico
+// se perdía en la respuesta inmediata (aunque sí aparecía en la vista Web
+// completa, que sí usa el grupo fusionado) — divergencia real entre "lo que
+// acabas de guardar" y "lo que ves en pantalla".
+it('the immediate response after saving includes automatic expenses from BOTH fused employee_ids (historical duplicate)', function () {
+    $user = User::factory()->create();
+    $period = makeManualExpPeriodo();
+    $branch = makeManualExpBranch('Cuernavaca');
+
+    // Dos registros Employee con el MISMO nombre — buildEmployeesGestores() los
+    // fusiona en una sola fila de gestor (misma lógica ya probada en
+    // RadiographyScopeTest::"finds NOI perceptions even when...").
+    $canonical = Employee::query()->create([
+        'employee_code' => 'FUSED-CANON', 'full_name' => 'COLABORADOR FUSIONADO GAMA',
+        'normalized_name' => 'colaborador fusionado gama', 'first_name' => 'COLABORADOR', 'paternal_last_name' => 'FUSIONADO',
+        'is_active' => true, 'source_system' => 'noi',
+    ]);
+    $duplicate = Employee::query()->create([
+        'employee_code' => 'FUSED-DUP', 'full_name' => 'COLABORADOR FUSIONADO GAMA',
+        'normalized_name' => 'colaborador fusionado gama', 'first_name' => 'COLABORADOR', 'paternal_last_name' => 'FUSIONADO',
+        'is_active' => true, 'source_system' => 'noi_fiscal',
+    ]);
+
+    foreach ([$canonical, $duplicate] as $emp) {
+        DB::table('fact_noi_movements')->insert([
+            'period_id' => $period->id, 'employee_id' => $emp->id, 'amount' => 1000, 'quantity' => 0,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        EmployeeBranchAssignment::query()->create([
+            'employee_id' => $emp->id, 'period_id' => $period->id, 'branch_id' => $branch->id,
+            'source_type' => SourceType::Manual, 'match_type' => MatchType::Manual,
+        ]);
+    }
+
+    // Gasto automático real bajo el ID CANÓNICO y bajo el ID histórico DUPLICADO.
+    $source = \App\Models\DataSource::query()->firstOrCreate(
+        ['code' => 'gastos_lendus_excel'],
+        ['name' => 'gastos_lendus_excel', 'description' => 'x', 'is_active' => true],
+    );
+    $upload = \App\Models\ReportUpload::query()->create([
+        'period_id' => $period->id, 'data_source_id' => $source->id,
+        'original_name' => 'Gastos.xlsx', 'stored_path' => 'x', 'mime_type' => 'x', 'file_size' => 10,
+        'uploaded_at' => now(), 'status' => \App\Enums\ReportUploadStatus::Processed, 'notes' => null,
+    ]);
+    \App\Models\Expense::query()->create([
+        'period_id' => $period->id, 'report_upload_id' => $upload->id,
+        'category' => 'Recargas Telefónicas', 'concept' => 'RECARGAS TELEFONICAS',
+        'amount' => 300, 'paid_amount' => 300, 'expense_date' => now()->format('Y-m-d'),
+        'branch_id' => $branch->id, 'employee_id' => $canonical->id,
+    ]);
+    \App\Models\Expense::query()->create([
+        'period_id' => $period->id, 'report_upload_id' => $upload->id,
+        'category' => 'Recargas Telefónicas', 'concept' => 'RECARGAS TELEFONICAS',
+        'amount' => 450, 'paid_amount' => 450, 'expense_date' => now()->format('Y-m-d'),
+        'branch_id' => $branch->id, 'employee_id' => $duplicate->id, // ID histórico fusionado
+    ]);
+
+    // Se guarda el gasto manual contra el ID CANÓNICO (el que usaría el selector de la UI).
+    $response = $this->actingAs($user)
+        ->postJson(route('historico-general.colaboradores.gasto-manual.store', [$period->id, $canonical->id]), [
+            'amount' => 100, 'notes' => 'Ajuste',
+        ]);
+
+    $response->assertOk();
+    // 300 (canónico) + 450 (duplicado fusionado) = 750 — nunca solo 300.
+    // (json_encode() de un float entero como 750.0 serializa "750" sin decimales
+    // — se castea explícitamente al leer, en vez de comparar contra 750.0 con ===.)
+    $json = $response->json();
+    expect((float) $json['detail']['automatic_total'])->toBe(750.0);
+    expect((float) $json['detail']['manual_total'])->toBe(100.0);
+    expect((float) $json['detail']['total'])->toBe(850.0);
+});
