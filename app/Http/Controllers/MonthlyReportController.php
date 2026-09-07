@@ -170,6 +170,15 @@ class MonthlyReportController extends Controller {
      * y RadiografiaExportService::resolveManualAdjustmentFor(). Si no viene
      * manual_amount > 0, no agrega nada — el snapshot queda exactamente igual al
      * oficial de BD.
+     *
+     * scope='all' (ronda 3, 07-sep-2026) — SOLO tiene efecto en
+     * exportEmployeesHistorico() (EmployeesHistoricoExportService::build() es el
+     * único consumidor que sabe interpretarlo: aplica el MISMO monto a CADA
+     * colaborador, a propósito multiplicado por el total de colaboradores —
+     * "que tuvieron un gasto de 20k TODOS los colaboradores"). Los demás
+     * consumidores (RadiographySnapshotBuilder/RadiografiaExportService) solo
+     * reconocen 'general'/'employee' y simplemente ignoran 'all' sin efecto — se
+     * permite aquí para no duplicar este parser en un segundo método.
      */
     private function manualAdjustmentFromRequest(Request $request): array
     {
@@ -179,7 +188,7 @@ class MonthlyReportController extends Controller {
         }
 
         $scope = $request->query('manual_scope', $request->input('manual_scope', 'employee'));
-        if (!in_array($scope, ['general', 'employee'], true)) {
+        if (!in_array($scope, ['general', 'employee', 'all'], true)) {
             return [];
         }
 
@@ -193,7 +202,7 @@ class MonthlyReportController extends Controller {
             return ['scope' => 'employee', 'employee_id' => $employeeId, 'amount' => round($amount, 2), 'notes' => $notes];
         }
 
-        return ['scope' => 'general', 'employee_id' => null, 'amount' => round($amount, 2), 'notes' => $notes];
+        return ['scope' => $scope, 'employee_id' => null, 'amount' => round($amount, 2), 'notes' => $notes];
     }
 
     /**
