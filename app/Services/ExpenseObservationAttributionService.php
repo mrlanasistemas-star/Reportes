@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Employee;
 use App\Models\Period;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use Illuminate\Support\Facades\DB;
@@ -104,7 +105,27 @@ class ExpenseObservationAttributionService
     public function attributeForPeriod(Period $period, array $dataIds, bool $dryRun = false): array
     {
         $lendusExcelId = DB::table('data_sources')->where('code', 'gastos_lendus_excel')->value('id');
-        if (!$lendusExcelId) {
+        // Auditoría 07-sep-2026 (cierre — evidencia real de producción, patrón
+        // "catch-all"): antes SOLO se evaluaban gastos de gastos_lendus_excel (el
+        // archivo "complementario") — dos fuentes reales quedaban fuera del universo
+        // por completo:
+        //   - gastos_lendus (el PDF PRIMARIO — mismo formato de observations, MISMA
+        //     clasificación SOURCE_LENDUS, ver OpexClassificationService: "PDF
+        //     gastos_lendus y su gemelo gastos_lendus_excel — mismas transacciones,
+        //     mismas categorías/conceptos").
+        //   - gastos_erp (Gasolina/Viáticos/Pólizas/Servicio de Motos, etc., con el
+        //     MISMO formato "texto | Folio: REQ-XXXX" en observations, clasificado
+        //     con SOURCE_ERP).
+        // Un employee_id incorrecto en cualquiera de las dos (ej. el capturista/
+        // administrativo que registró el gasto, nunca la persona real) nunca podía
+        // corregirse ni limpiarse a NULL, sin importar cuántas veces se corriera
+        // --apply. Misma lógica de matching para las tres — ver
+        // isEligibleForAttribution()/resolveRow(), que ya distinguen SOURCE_ERP vs
+        // SOURCE_LENDUS para la clasificación OPEX.
+        $lendusPdfId = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
+        $erpId       = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
+        $sourceIds   = array_values(array_filter([$lendusExcelId, $lendusPdfId, $erpId]));
+        if (empty($sourceIds)) {
             return [];
         }
 
@@ -145,7 +166,7 @@ class ExpenseObservationAttributionService
         $rows = DB::table('fact_expenses as e')
             ->join('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
             ->whereIn('e.period_id', $dataIds)
-            ->where('ru.data_source_id', $lendusExcelId)
+            ->whereIn('ru.data_source_id', $sourceIds)
             ->whereNotIn(DB::raw("UPPER(TRIM(COALESCE(e.concept,'')))"), $delegatedConcepts)
             // Auditoría 07-sep-2026 (cierre, sección 2): antes se excluía aquí
             // cualquier fila con observations NULL — dejándola completamente
@@ -157,6 +178,7 @@ class ExpenseObservationAttributionService
             ->select(
                 'e.id', 'e.period_id', 'e.report_upload_id', 'e.category', 'e.concept',
                 'e.employee_id', 'e.branch_id', 'e.observations', 'e.raw_payload',
+                'ru.data_source_id',
                 DB::raw("COALESCE(NULLIF(e.paid_amount,0), e.amount) as amount")
             )
             ->get()
@@ -171,17 +193,38 @@ class ExpenseObservationAttributionService
             // colaborador, dinero que el EBITDA de empleado ya cuenta vía $neto (NOI). Este
             // filtro replica EXACTAMENTE la misma exclusión que accumulateGastos() aplica a
             // nivel sucursal/general — nunca "qué es OPEX", solo A QUIÉN se atribuye.
-            ->filter(fn ($row) => $this->isEligibleForAttribution((string) $row->category, (string) $row->concept))
+            ->filter(fn ($row) => $this->isEligibleForAttribution(
+                (string) $row->category,
+                (string) $row->concept,
+                (int) $row->data_source_id === $erpId ? OpexClassificationService::SOURCE_ERP : OpexClassificationService::SOURCE_LENDUS,
+            ))
             ->values();
 
         $operativeMap = $this->branchCalculator->buildBranchMap()['operative'];
         $results = [];
+
+        // Auditoría 07-sep-2026 (cierre — evidencia real: JOSE ALBERTO CISNEROS
+        // FLORES, employee_id=232, source_system=lendus_cobranza) — algunos
+        // colaboradores reales, ya correctamente nombrados en Observación/
+        // Justificación ("Si Observation/Justification identifica claramente a
+        // una persona: employee_id debe ser esa persona"), no aparecen en el
+        // roster de ESTE periodo (PeriodEmployeeRosterService — concern separado,
+        // fuera de alcance aquí; no se toca su lógica). Sin este índice, el
+        // fallback branch_general los hubiera limpiado a NULL por error — un gasto
+        // ya correcto no puede convertirse en "sin destino" solo porque el roster
+        // no lo incluyó. Se carga SOLO para los employee_id que ya aparecen en las
+        // filas evaluadas (nunca la tabla completa de empleados sin necesidad).
+        $existingEmployeeIds = $rows->pluck('employee_id')->filter()->unique()->values()->all();
+        $allEmployeeNameById = empty($existingEmployeeIds)
+            ? []
+            : Employee::query()->whereIn('id', $existingEmployeeIds)->pluck('full_name', 'id')->all();
 
         $matchContext = [
             'rosterByEmployeeId'  => $rosterByEmployeeId,
             'aliasIndex'          => $aliasIndex,
             'comboIndex'          => $comboIndex,
             'fullNameTokensById'  => $fullNameTokensById,
+            'allEmployeeNameById' => $allEmployeeNameById,
         ];
 
         foreach ($rows as $row) {
@@ -220,12 +263,14 @@ class ExpenseObservationAttributionService
      * duplicada de la que vive en BranchRadiographyCalculator::accumulateGastos(),
      * con el riesgo explícito de que divergieran). Ningún criterio cambió: mismo
      * resultado que antes para cada categoría/concepto — ver
-     * tests/Unit/OpexClassificationServiceTest.php.
+     * tests/Unit/OpexClassificationServiceTest.php. $sourceType distingue
+     * gastos_lendus_excel de gastos_erp (auditoría 07-sep-2026, cierre — ERP
+     * ahora también entra al universo de atribución, ver attributeForPeriod()).
      */
-    private function isEligibleForAttribution(string $category, string $concept): bool
+    private function isEligibleForAttribution(string $category, string $concept, string $sourceType = OpexClassificationService::SOURCE_LENDUS): bool
     {
         return $this->opexClassifier
-            ->classify($category, $concept, OpexClassificationService::SOURCE_LENDUS)['eligible_for_attribution'];
+            ->classify($category, $concept, $sourceType)['eligible_for_attribution'];
     }
 
     private function resolveRow(object $row, array $matchContext, array $operativeMap): array
@@ -302,6 +347,39 @@ class ExpenseObservationAttributionService
                 ];
             }
 
+            // ── Empleado previo CONFIRMADO por el texto, aunque esté fuera del
+            // roster de este periodo (auditoría 07-sep-2026, cierre — evidencia
+            // real: JOSE ALBERTO CISNEROS FLORES, employee_id=232, source_system=
+            // lendus_cobranza, ausente de period_employee_rosters este periodo por
+            // un motivo de PeriodEmployeeRosterService ajeno a este servicio).
+            // matchAgainstRoster() solo busca DENTRO del roster — sin este chequeo,
+            // un gasto YA correctamente nombrado ("JOSE ALBERTO CISNEROS FLORES" en
+            // Observación, employee_id=232 ya asignado) se hubiera limpiado a NULL
+            // por error, contradiciendo la regla "si el texto identifica claramente
+            // a una persona, employee_id debe ser esa persona". Nunca inventa: solo
+            // CONFIRMA una asignación que el texto ya respalda explícitamente
+            // (nombre completo contenido, no una coincidencia parcial/débil).
+            if ($row->employee_id && isset($matchContext['allEmployeeNameById'][$row->employee_id])) {
+                $prevName   = $matchContext['allEmployeeNameById'][$row->employee_id];
+                $prevTokens = $this->tokensOf($this->personResolver->normalizePersonName($prevName));
+                if (!empty($prevTokens)) {
+                    $obsTokens  = $obsText  !== null ? $this->tokensOf($this->personResolver->normalizePersonName($obsText))  : [];
+                    $justTokens = $justText !== null ? $this->tokensOf($this->personResolver->normalizePersonName($justText)) : [];
+                    $confirmedByText = $this->tokensContain($obsTokens, $prevTokens) || $this->tokensContain($justTokens, $prevTokens);
+                    if ($confirmedByText) {
+                        return $base + [
+                            'employee_id' => (int) $row->employee_id, 'employee_name' => $prevName,
+                            'branch_id'   => (int) $row->branch_id,
+                            'branch_name' => $row->branch_id ? ($operativeMap[(int) $row->branch_id] ?? null) : null,
+                            'metodo' => 'previous_employee_confirmed_by_text', 'confianza' => 1.0,
+                            'fuente' => $this->tokensContain($obsTokens, $prevTokens) ? 'observation' : 'justification',
+                            'estado' => 'ya_correcto', 'changed' => false,
+                            'candidates' => [], 'reason' => null,
+                        ];
+                    }
+                }
+            }
+
             $reason = $obsMatch['reason'] ?? $justMatch['reason'] ?? 'El texto no coincide con ningún colaborador del roster del periodo.';
 
             // ── branch_general (auditoría 07-sep-2026, cierre) ──────────────────
@@ -315,12 +393,22 @@ class ExpenseObservationAttributionService
             // pero se conserva como salvaguarda).
             $branchIsOperative = $row->branch_id && isset($operativeMap[(int) $row->branch_id]);
             if ($branchIsOperative) {
+                // BUG REAL (07-sep-2026, cierre — hallazgo por evidencia real de
+                // producción, patrón "catch-all"): esta rama declaraba SIEMPRE
+                // 'changed' => false, sin importar que la fila YA tuviera un
+                // employee_id (a veces incorrecto — ej. el capturista/administrativo
+                // que registró el gasto, nunca la persona real) — attributeForPeriod()
+                // solo escribe cuando 'changed'=true, así que --apply NUNCA limpiaba
+                // estos casos, sin importar cuántas veces se corriera. Un gasto
+                // general de sucursal (sin persona identificable en el texto) SIEMPRE
+                // debe quedar con employee_id=NULL — se detecta el cambio real
+                // comparando contra el employee_id que la fila tenía.
                 return $base + [
                     'employee_id' => null, 'employee_name' => null,
                     'branch_id'   => (int) $row->branch_id,
                     'branch_name' => $operativeMap[(int) $row->branch_id] ?? null,
                     'metodo' => null, 'confianza' => 0.0, 'fuente' => null,
-                    'estado' => 'branch_general', 'changed' => false,
+                    'estado' => 'branch_general', 'changed' => $row->employee_id !== null,
                     'candidates' => [], 'reason' => 'Sin colaborador identificable — gasto general de la sucursal ya resuelta.',
                 ];
             }
