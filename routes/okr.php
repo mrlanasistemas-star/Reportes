@@ -18,8 +18,12 @@ use Illuminate\Support\Facades\Route;
  */
 Route::prefix('okr')->name('okr.')->group(function () {
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
-    Route::get('/create', [ObjectiveController::class, 'create'])->name('create');
+    // "/create" retirado 10-sep-2026 (auditoría, sección 6) — Asignar OKR ya
+    // NO navega a una página aparte, es un Dialog embebido en el Dashboard
+    // (ver DashboardController::index(), props wizard*). El Gate 'okr.create'
+    // se conserva — sigue protegiendo POST /okr y los endpoints de apoyo.
     Route::get('/employees-lookup', [ObjectiveController::class, 'employeesLookup'])->name('employees.lookup');
+    Route::get('/objectives-lookup', [ObjectiveController::class, 'objectivesLookup'])->name('objectives.lookup');
     Route::get('/baseline-preview', [ObjectiveController::class, 'baselinePreview'])->name('baseline-preview');
     Route::post('/', [ObjectiveController::class, 'store'])->name('store');
     Route::get('/history', [HistoryController::class, 'index'])->name('history');

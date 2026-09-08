@@ -38,9 +38,20 @@ it('a non-admin user cannot delete an objective', function () {
     expect($objective->fresh())->not->toBeNull();
 });
 
+// "Asignar OKR" ya no es una página aparte (10-sep-2026) — es un Dialog
+// embebido en el propio Dashboard (ver DashboardController::index(), props
+// wizard*), así que "puede crear" se verifica con el dashboard + el POST real.
 it('a non-admin user can still perform normal OKR operations (view/create/check-in)', function () {
     $colaborador = User::factory()->create(['role' => 'colaborador']);
 
     $this->actingAs($colaborador)->get(route('okr.dashboard'))->assertOk();
-    $this->actingAs($colaborador)->get(route('okr.create'))->assertOk();
+
+    $branch = okrBranch('Cordoba');
+    $kpi = okrManualKpi('non_admin_create_kpi');
+    $this->actingAs($colaborador)->post(route('okr.store'), [
+        'scope_type' => 'branch', 'branch_id' => $branch->id,
+        'title' => 'Objective de prueba creado por colaborador',
+        'start_date' => now()->toDateString(), 'duration_weeks' => 8,
+        'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR de prueba', 'baseline_value' => 10, 'target_value' => 20, 'weight' => 100]],
+    ])->assertSessionHasNoErrors();
 });

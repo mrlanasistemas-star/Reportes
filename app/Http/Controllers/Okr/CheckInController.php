@@ -15,13 +15,28 @@ use Illuminate\Support\Facades\DB;
  *
  * CORRECCIÓN 09-sep-2026 (punto 1 de la auditoría): antes un KPI manual no
  * tenía NINGÚN camino real para actualizar `current_value` — quedaba NULL o
- * congelado para siempre ("lo captura la persona responsable en cada
- * check-in" no era cierto en el código). Ahora el check-in acepta
- * `manual_results` (uno por cada KR manual/híbrido) y actualiza esos KR
- * dentro de la MISMA transacción del check-in + acción correctiva. El
- * "resultado actual" de un KPI AUTOMÁTICO sigue viniendo SIEMPRE de
- * Reportería — nunca se sobreescribe aquí (validado también en
- * StoreCheckInRequest).
+ * congelado para siempre. Ahora el check-in acepta `manual_results` (uno por
+ * cada KR manual/híbrido) y actualiza esos KR dentro de la MISMA transacción
+ * del check-in + acción correctiva. El "resultado actual" de un KPI
+ * AUTOMÁTICO sigue viniendo SIEMPRE de Reportería — nunca se sobreescribe
+ * aquí (validado también en StoreCheckInRequest).
+ *
+ * CORRECCIÓN 10-sep-2026 (punto 30 de la auditoría — bug real): antes
+ * `actual_value_snapshot` se armaba leyendo `current_value` de los KR ANTES
+ * de aplicar `manual_results`, y el check-in se creaba con ese snapshot
+ * desfasado — el KR terminaba actualizado pero el snapshot guardado DENTRO
+ * del check-in conservaba el valor ANTERIOR. Ahora: (1) se crea el check-in
+ * con snapshot provisional vacío, (2) se aplican los manual_results y se
+ * recalcula cada KR afectado, (3) se vuelve a leer TODOS los current_value
+ * YA actualizados, (4) se actualiza `actual_value_snapshot` con esos valores
+ * finales. Check-in, KR, snapshot semanal y actual_value_snapshot quedan
+ * representando exactamente el mismo instante.
+ *
+ * CORRECCIÓN (punto 31): el snapshot usaba `kpi_id` como llave — si un
+ * Objective tuviera dos Key Results con el MISMO KPI, colisionarían y uno se
+ * perdería. Ahora la llave es `key_result_id` (único por definición), con
+ * `kpi_id` y `value` como datos dentro de cada entrada — nunca se pierde
+ * ningún KR aunque compartan KPI.
  */
 class CheckInController extends Controller
 {
@@ -39,19 +54,20 @@ class CheckInController extends Controller
         }
 
         DB::transaction(function () use ($request, $objective, $weekNumber, $snapshotService) {
-            $snapshot = $objective->keyResults()->get()->mapWithKeys(fn ($kr) => [$kr->kpi_id => $kr->current_value])->all();
-
+            // 1. Check-in con snapshot PROVISIONAL — se completa hasta el final,
+            // una vez aplicados los resultados manuales (ver docblock).
             $checkIn = $objective->checkIns()->create([
                 'week_number'            => $weekNumber,
                 'check_in_date'          => now()->toDateString(),
                 'user_id'                => auth()->id(),
                 'main_blocker'           => $request->input('main_blocker'),
                 'corrective_action'      => $request->input('corrective_action'),
-                'actual_value_snapshot'  => $snapshot,
+                'actual_value_snapshot'  => null,
             ]);
 
-            // Resultados manuales de esta semana (ya validados: pertenecen al
-            // Objective y su KPI NUNCA es automático — ver StoreCheckInRequest).
+            // 2. Aplica resultados manuales (ya validados: pertenecen al
+            // Objective y su KPI NUNCA es automático — ver StoreCheckInRequest)
+            // y recalcula cada KR afectado.
             foreach ($request->input('manual_results', []) as $row) {
                 $kr = $objective->keyResults()->findOrFail($row['key_result_id']);
                 $kr->update([
@@ -67,6 +83,15 @@ class CheckInController extends Controller
                 $snapshotService->evaluateKeyResult($kr->fresh(), null, $checkIn->id);
             }
 
+            // 3-4. Vuelve a leer TODOS los current_value YA actualizados (post
+            // manual_results) y completa el snapshot del check-in con la llave
+            // key_result_id (nunca kpi_id — dos KR podrían compartir KPI).
+            $finalSnapshot = $objective->keyResults()->get()->mapWithKeys(fn ($kr) => [
+                "kr_{$kr->id}" => ['key_result_id' => $kr->id, 'kpi_id' => $kr->kpi_id, 'value' => $kr->current_value],
+            ])->all();
+            $checkIn->update(['actual_value_snapshot' => $finalSnapshot]);
+
+            // 5. Acción correctiva.
             if ($request->filled('corrective_action') && $request->filled('action_responsible_user_id') && $request->filled('action_due_date')) {
                 $objective->correctiveActions()->create([
                     'okr_check_in_id'     => $checkIn->id,

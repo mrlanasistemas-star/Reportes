@@ -31,6 +31,11 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            // 'access_enabled_at' agregado 10-sep-2026 — módulo OKR (ver
+            // ResponsibleController): habilitación ADMINISTRATIVA de acceso,
+            // distinta de la verificación real del correo (email_verified_at
+            // nunca se debe fingir para representar esto — ver auditoría punto 32).
+            'access_enabled_at' => 'datetime',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
         ];

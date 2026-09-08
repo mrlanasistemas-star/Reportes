@@ -35,23 +35,6 @@ class ObjectiveController extends Controller
 {
     use ResolvesOperativeBranches, AuthorizesRequests;
 
-    public function create(): Response
-    {
-        $this->authorize('okr.create');
-
-        return Inertia::render('Okr/Wizard', [
-            'branches'  => Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']),
-            // Ya NO se precargan los empleados aquí (podían ser cientos) — el
-            // wizard los busca bajo demanda vía employeesLookup(), filtrados
-            // por la sucursal elegida (sección "performance UI" del pedido).
-            'users'       => User::query()->orderBy('name')->get(['id', 'name']),
-            'currentUser' => ['id' => auth()->id(), 'name' => auth()->user()->name],
-            'kpis'      => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(),
-            'objectives' => OkrObjective::query()->where('scope_type', OkrObjective::SCOPE_BRANCH)->where('lifecycle_status', '!=', OkrObjective::STATUS_CANCELLED)->get(['id', 'title', 'branch_id']),
-            'canManageResponsibles' => auth()->user()?->can('okr.admin') ?? false,
-        ]);
-    }
-
     /**
      * Búsqueda ligera de colaboradores de UNA sucursal (bug "empleado de otra
      * sucursal" — sección 46/AP del pedido: nunca cargar la lista completa).
@@ -69,6 +52,44 @@ class ObjectiveController extends Controller
         );
 
         return response()->json(['employees' => $employees]);
+    }
+
+    /**
+     * Búsqueda ligera de Objectives para el filtro "Objective / OKR" de
+     * Seguimiento (docs/imagenesOKR/9.png) — permite cambiar de OKR sin volver
+     * al Dashboard. Nunca precarga todos los Objectives del sistema.
+     */
+    public function objectivesLookup(Request $request): JsonResponse
+    {
+        $this->authorize('okr.view');
+        $request->validate([
+            'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            'period_id' => ['nullable', 'integer', 'exists:periods,id'],
+            'search' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        $query = OkrObjective::query()->whereNull('deleted_at')->where('lifecycle_status', '!=', OkrObjective::STATUS_CANCELLED);
+        if ($branchId = $request->integer('branch_id')) {
+            $query->where(fn ($q) => $q->where('branch_id', $branchId)->orWhereHas('parent', fn ($p) => $p->where('branch_id', $branchId)));
+        }
+        if ($employeeId = $request->integer('employee_id')) {
+            $query->where('employee_id', $employeeId);
+        }
+        if ($periodId = $request->integer('period_id')) {
+            $period = Period::find($periodId);
+            if ($period && $period->start_date && $period->end_date) {
+                // Mismo criterio de traslape que DashboardController::applyDashboardFilters().
+                $query->where('start_date', '<=', $period->end_date)->where('end_date', '>=', $period->start_date);
+            }
+        }
+        if ($search = $request->string('search')->toString()) {
+            $query->where('title', 'like', "%{$search}%");
+        }
+
+        $objectives = $query->orderByDesc('id')->limit(30)->get(['id', 'title']);
+
+        return response()->json(['objectives' => $objectives]);
     }
 
     /**
@@ -119,21 +140,25 @@ class ObjectiveController extends Controller
 
         $employeeId = $data['scope_type'] === OkrObjective::SCOPE_EMPLOYEE ? $data['employee_id'] : null;
         $branchId   = $data['branch_id'] ?? null;
+        $individualRows = $data['scope_type'] === OkrObjective::SCOPE_BRANCH ? ($data['individual_objectives'] ?? []) : [];
 
-        $objective = DB::transaction(function () use ($data, $employeeId, $branchId, $calendar, $logger) {
+        $objective = DB::transaction(function () use ($data, $employeeId, $branchId, $individualRows, $calendar, $logger) {
             $startDate = \Carbon\Carbon::parse($data['start_date']);
+            $responsibleId = $data['responsible_user_id'] ?? auth()->id();
+            $endDate = $calendar->endDate($startDate, (int) $data['duration_weeks']);
+
             $objective = OkrObjective::query()->create([
                 'parent_id'            => $data['parent_id'] ?? null,
                 'scope_type'           => $data['scope_type'],
                 'branch_id'            => $branchId,
                 'employee_id'          => $employeeId,
                 'title'                => $data['title'],
-                'responsible_user_id'  => $data['responsible_user_id'] ?? auth()->id(),
+                'responsible_user_id'  => $responsibleId,
                 'created_by'           => auth()->id(),
                 'start_date'           => $startDate,
                 // Fin INCLUSIVO de la semana N (ver OkrCalendarService) — antes
                 // addWeeks($n) dejaba un día de más (bug corregido punto 6).
-                'end_date'             => $calendar->endDate($startDate, (int) $data['duration_weeks']),
+                'end_date'             => $endDate,
                 'duration_weeks'       => $data['duration_weeks'],
                 'lifecycle_status'     => OkrObjective::STATUS_DRAFT,
             ]);
@@ -149,6 +174,29 @@ class ObjectiveController extends Controller
             }
 
             $logger->log('objective', $objective->id, auth()->id(), 'created');
+
+            // OKR individuales de la misma asignación (sección 8/9 de la
+            // auditoría 10-sep-2026) — jerárquicamente ligados al principal
+            // (parent_id), misma sucursal, mismo plazo, EN BORRADOR y SIN Key
+            // Results propios (se configuran después — nunca se inventan KRs
+            // financieros automáticamente aquí). Si cualquiera falla, toda la
+            // transacción (principal + individuales) se revierte.
+            foreach ($individualRows as $row) {
+                $child = OkrObjective::query()->create([
+                    'parent_id'            => $objective->id,
+                    'scope_type'           => OkrObjective::SCOPE_EMPLOYEE,
+                    'branch_id'            => $objective->branch_id,
+                    'employee_id'          => $row['employee_id'],
+                    'title'                => $row['title'],
+                    'responsible_user_id'  => $responsibleId,
+                    'created_by'           => auth()->id(),
+                    'start_date'           => $startDate,
+                    'end_date'             => $endDate,
+                    'duration_weeks'       => $data['duration_weeks'],
+                    'lifecycle_status'     => OkrObjective::STATUS_DRAFT,
+                ]);
+                $logger->log('objective', $child->id, auth()->id(), 'created', reason: "OKR individual creado junto con el Objective de sucursal #{$objective->id}.");
+            }
 
             return $objective;
         });
@@ -189,6 +237,16 @@ class ObjectiveController extends Controller
 
         $weightSummary = app(OkrWeightValidator::class)->summary($objective);
         $compliance = $calc->objectiveCompliance($krPayload->map(fn ($kr) => ['raw_progress' => $kr['actual_progress_percentage'], 'weight' => (float) $kr['weight']])->all());
+        // "Avance esperado"/"Proyección de cierre" a nivel Objective (sección
+        // 24 de la auditoría 10-sep-2026, docs/imagenesOKR/9.png) — MISMA
+        // fórmula canónica (Σ cumplimiento×peso), solo cambia qué campo del KR
+        // se le pasa (esperado/proyectado en vez de real) — nunca una fórmula nueva.
+        $expectedCompliance = $calc->objectiveCompliance($krPayload->map(fn ($kr) => ['raw_progress' => $kr['expected_progress_percentage'], 'weight' => (float) $kr['weight']])->all());
+        $hasProjection = $krPayload->contains(fn ($kr) => $kr['projected_compliance_percentage'] !== null);
+        $projectedCompliance = $hasProjection
+            ? $calc->objectiveCompliance($krPayload->map(fn ($kr) => ['raw_progress' => $kr['projected_compliance_percentage'], 'weight' => (float) $kr['weight']])->all())
+            : null;
+        $deviation = $calc->deviationPp($compliance, $expectedCompliance);
 
         // Bitácora de auditoría (sección AD del pedido) — "una meta no se puede
         // modificar silenciosamente": cambios del Objective mismo + de sus KR.
@@ -258,7 +316,9 @@ class ObjectiveController extends Controller
                 'duration_weeks' => $objective->duration_weeks, 'current_week' => $objective->currentWeekNumber(),
                 'lifecycle_status' => $objective->lifecycle_status, 'health_status' => $objective->health_status,
                 'final_status' => $objective->final_status,
-                'compliance' => $compliance, 'weight_summary' => $weightSummary,
+                'compliance' => $compliance, 'expected_compliance' => $expectedCompliance,
+                'projected_compliance' => $projectedCompliance, 'deviation_pp' => $deviation,
+                'weight_summary' => $weightSummary,
             ],
             'keyResults' => $krPayload,
             'checkIns' => $objective->checkIns->map(fn ($c) => ['id' => $c->id, 'week_number' => $c->week_number, 'check_in_date' => $c->check_in_date->toDateString(), 'user' => $c->user->name, 'main_blocker' => $c->main_blocker, 'corrective_action' => $c->corrective_action]),
@@ -269,6 +329,14 @@ class ObjectiveController extends Controller
             'canManage' => auth()->user()?->can('delete', $objective) ?? false,
             'canAssign' => auth()->user()?->can('assign', $objective) ?? false,
             'canUpdate' => auth()->user()?->can('update', $objective) ?? false,
+            'canCheckin' => auth()->user()?->can('checkin', $objective) ?? false,
+            'canUploadEvidence' => auth()->user()?->can('uploadEvidence', $objective) ?? false,
+            // Filtro "Seguimiento" (docs/imagenesOKR/9.png) — cambiar de
+            // sucursal/colaborador/OKR/periodo sin volver al Dashboard.
+            'filterBranches' => Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']),
+            'filterPeriods'  => Period::query()->where('type', 'monthly')->orderByDesc('id')->limit(24)->get()->map(fn ($p) => ['id' => $p->id, 'label' => $p->label]),
+            // Para el selector "Responsable" del check-in (acción correctiva).
+            'users' => User::query()->orderBy('name')->get(['id', 'name']),
         ]);
     }
 

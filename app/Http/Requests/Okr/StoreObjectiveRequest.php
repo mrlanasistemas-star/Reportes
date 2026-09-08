@@ -46,6 +46,13 @@ class StoreObjectiveRequest extends FormRequest
             'key_results.*.baseline_value'       => ['nullable', 'numeric'],
             'key_results.*.target_value'         => ['required', 'numeric'],
             'key_results.*.weight'               => ['required', 'numeric', 'min:0.01', 'max:100'],
+            // OKR individuales dentro de la MISMA asignación de sucursal (fix
+            // 10-sep-2026, sección 8/9 de la auditoría — la referencia exige
+            // sucursal + N individuales en una sola asignación, no un
+            // employee_id suelto). Solo aplica cuando scope_type=branch.
+            'individual_objectives'               => ['nullable', 'array'],
+            'individual_objectives.*.employee_id' => ['required_with:individual_objectives', 'integer', 'exists:employees,id'],
+            'individual_objectives.*.title'       => ['required_with:individual_objectives', 'string', 'min:10', 'max:191'],
         ];
     }
 
@@ -55,7 +62,45 @@ class StoreObjectiveRequest extends FormRequest
             $this->validateEmployeeBelongsToBranch($validator);
             $this->validateParent($validator);
             $this->validateAutomaticBaselines($validator);
+            $this->validateIndividualObjectives($validator);
         });
+    }
+
+    /**
+     * OKR individuales opcionales de la misma asignación (sección 8/9 de la
+     * auditoría 10-sep-2026): cada colaborador debe pertenecer a la MISMA
+     * sucursal que se está asignando (misma fuente que Reportería, nunca
+     * confiar en lo que ya venía filtrado en el frontend), y no puede
+     * repetirse dentro de la asignación.
+     */
+    private function validateIndividualObjectives(Validator $validator): void
+    {
+        $rows = $this->input('individual_objectives', []);
+        if (empty($rows) || $this->input('scope_type') !== OkrObjective::SCOPE_BRANCH) {
+            return;
+        }
+
+        $branchId = $this->integer('branch_id');
+        $resolver = app(OkrEmployeeBranchResolver::class);
+        $seen = [];
+
+        foreach ($rows as $i => $row) {
+            $employeeId = $row['employee_id'] ?? null;
+            if (!$employeeId) {
+                continue; // ya reportado por 'required_with' de arriba
+            }
+
+            if (isset($seen[$employeeId])) {
+                $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador ya fue agregado en esta asignación.');
+
+                continue;
+            }
+            $seen[$employeeId] = true;
+
+            if ($branchId && !$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
+                $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador no pertenece a la sucursal seleccionada.');
+            }
+        }
     }
 
     private function validateEmployeeBelongsToBranch(Validator $validator): void
