@@ -7,19 +7,21 @@ use App\Models\OkrKpi;
 use App\Models\OkrObjective;
 use App\Models\OkrProgressSnapshot;
 use App\Models\Period;
-use App\Models\PeriodSummary;
 
 /**
- * Módulo OKR (08-sep-2026) — evalúa un Key Result: pide el valor real a
- * OkrKpiValueResolver (nunca calcula financiero por su cuenta), calcula
- * trayectoria/desviación/proyección/semáforo, actualiza el CACHE del KR y
- * guarda el snapshot semanal IDEMPOTENTE (mismo KR + misma semana = update,
- * nunca duplicado — ver UNIQUE en la migración).
+ * Módulo OKR (08-sep-2026, corregido el mismo día) — evalúa un Key Result:
+ * pide el valor real a OkrKpiValueResolver (nunca calcula financiero por su
+ * cuenta), calcula trayectoria/desviación/proyección/semáforo, actualiza el
+ * CACHE del KR y guarda el snapshot semanal IDEMPOTENTE (mismo KR + misma
+ * semana = update, nunca duplicado — ver UNIQUE en la migración).
  *
- * Resolución del "periodo de referencia": OKR no tiene su propio calendario
- * financiero — usa el periodo MENSUAL más reciente con radiografía generada
- * (mismo criterio que MonthlyReportController::previewPage() para "el reporte
- * vigente"), nunca inventa un periodo propio incompatible.
+ * Resolución del "periodo de referencia": BUG CRÍTICO CORREGIDO — antes se
+ * usaba siempre "el último periodo mensual con radiografía generada" para
+ * CUALQUIER semana del OKR, lo que hacía que un OKR de varias semanas (ej.
+ * 15-ago → 10-oct) comparara TODAS sus semanas contra el mismo mes. Ahora
+ * cada semana resuelve SU PROPIO periodo real vía OkrTrackingPeriodResolver
+ * (según la fecha calendario de esa semana), nunca "el último generado" a
+ * ciegas — ver docs/OKR.md.
  */
 class OkrSnapshotService
 {
@@ -29,33 +31,24 @@ class OkrSnapshotService
         private readonly OkrProjectionService $projection,
         private readonly OkrProgressCalculator $calculator,
         private readonly OkrHealthService $health,
+        private readonly OkrTrackingPeriodResolver $periodResolver,
     ) {
-    }
-
-    public function resolveTrackingPeriod(): ?Period
-    {
-        $periodId = PeriodSummary::query()
-            ->where('status', 'generated')
-            ->whereNull('invalidated_at')
-            ->join('periods', 'period_summaries.period_id', '=', 'periods.id')
-            ->where('periods.type', 'monthly')
-            ->orderByDesc('periods.id')
-            ->value('periods.id');
-
-        return $periodId ? Period::find($periodId) : null;
     }
 
     public function evaluateKeyResult(OkrKeyResult $kr, ?Period $period = null): OkrKeyResult
     {
-        $objective = $kr->objective;
-        $kpi       = $kr->kpi;
-        $period  ??= $this->resolveTrackingPeriod();
+        $objective  = $kr->objective;
+        $kpi        = $kr->kpi;
+        $weekNumber = $objective->currentWeekNumber();
+        // El periodo se resuelve para ESTA semana concreta (según su fecha
+        // calendario), nunca "el último mensual generado" sin relación con la
+        // semana que se está evaluando — ver OkrTrackingPeriodResolver.
+        $period   ??= $this->periodResolver->getPeriodForObjectiveWeek($objective->start_date, $weekNumber);
 
         $currentValue = $kpi->isAutomatic() && $period
             ? $this->resolver->getValue($kpi, $objective->scope_type, $objective->branch_id, $objective->employee_id, $period)
             : $kr->current_value; // manual — el check-in ya lo capturó, nunca se sobreescribe aquí
 
-        $weekNumber = $objective->currentWeekNumber();
         $totalWeeks = (int) $objective->duration_weeks;
         $baseline   = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
         $target     = (float) $kr->target_value;
@@ -129,7 +122,10 @@ class OkrSnapshotService
 
     public function evaluateObjective(OkrObjective $objective): OkrObjective
     {
-        $period = $this->resolveTrackingPeriod();
+        // Todos los KR de un mismo Objective comparten la misma semana actual —
+        // se resuelve una sola vez el periodo de ESA semana (evita N consultas
+        // idénticas), nunca "el último mensual generado" sin relación con ella.
+        $period = $this->periodResolver->getPeriodForObjectiveWeek($objective->start_date, $objective->currentWeekNumber());
         foreach ($objective->keyResults()->get() as $kr) {
             $this->evaluateKeyResult($kr, $period);
         }

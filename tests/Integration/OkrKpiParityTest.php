@@ -66,7 +66,7 @@ it('OKR EBITDA equals Reportería EBITDA for a real branch, exact, no tolerance'
     $period = Period::query()->where('type', 'monthly')->orderByDesc('id')->first();
     if (!$period) { $this->markTestSkipped('No hay periodos mensuales en la BD de desarrollo.'); }
 
-    $operativeNames = (new ReflectionClass(\App\Http\Controllers\MonthlyReportController::class))->getConstant('OPERATIVE_BRANCH_NAMES');
+    $operativeNames = \App\Services\Reporting\OperativeBranchService::NAMES;
     $exportService = app(RadiografiaExportService::class);
 
     $branchId = null;
@@ -115,7 +115,7 @@ it('OKR placement/recovery/mora/portfolio equal Reportería for the same real br
     $period = Period::query()->where('type', 'monthly')->orderByDesc('id')->first();
     if (!$period) { $this->markTestSkipped('No hay periodos mensuales en la BD de desarrollo.'); }
 
-    $operativeNames = (new ReflectionClass(\App\Http\Controllers\MonthlyReportController::class))->getConstant('OPERATIVE_BRANCH_NAMES');
+    $operativeNames = \App\Services\Reporting\OperativeBranchService::NAMES;
     $exportService = app(RadiografiaExportService::class);
 
     $branchId = null;

@@ -8,6 +8,7 @@ use App\Http\Controllers\Okr\HistoryController;
 use App\Http\Controllers\Okr\KeyResultController;
 use App\Http\Controllers\Okr\KpiController;
 use App\Http\Controllers\Okr\ObjectiveController;
+use App\Http\Controllers\Okr\ResponsibleController;
 use Illuminate\Support\Facades\Route;
 
 /**
@@ -18,11 +19,14 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('okr')->name('okr.')->group(function () {
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
     Route::get('/create', [ObjectiveController::class, 'create'])->name('create');
+    Route::get('/employees-lookup', [ObjectiveController::class, 'employeesLookup'])->name('employees.lookup');
     Route::post('/', [ObjectiveController::class, 'store'])->name('store');
     Route::get('/history', [HistoryController::class, 'index'])->name('history');
     Route::get('/kpis', [KpiController::class, 'index'])->name('kpis.index');
     Route::post('/kpis', [KpiController::class, 'store'])->name('kpis.store');
     Route::put('/kpis/{kpi}', [KpiController::class, 'update'])->name('kpis.update');
+    Route::get('/responsibles', [ResponsibleController::class, 'index'])->name('responsibles.index');
+    Route::post('/responsibles', [ResponsibleController::class, 'store'])->name('responsibles.store');
     Route::get('/alerts', [AlertController::class, 'index'])->name('alerts.index');
     Route::post('/alerts/{alert}/read', [AlertController::class, 'markRead'])->name('alerts.read');
     Route::get('/evidences/{evidence}/download', [EvidenceController::class, 'download'])->name('evidences.download');

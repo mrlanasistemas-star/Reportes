@@ -1,9 +1,25 @@
 <script setup lang="ts">
+// Módulo OKR — Detalle de Objective (rediseño 08-sep-2026, secciones X-AD del
+// pedido). Ancho completo, hero visual, tabla KR moderna, gráfica, check-ins,
+// evidencias y bitácora de auditoría como timeline.
 import { computed, ref } from 'vue'
 import { Link, router, useForm } from '@inertiajs/vue3'
-import { ArrowLeft, RefreshCw, CheckCircle2, Upload, Paperclip, Bell } from 'lucide-vue-next'
+import {
+    ArrowLeft, Bell, Building2, CalendarClock, CalendarDays, CheckCircle2, ClipboardList,
+    Compass, FileText, Flag, Gauge, History, Paperclip, RefreshCw, Trash2, Upload, UserRound, Users,
+} from 'lucide-vue-next'
+import Swal from 'sweetalert2'
 import AppLayout from '@/layouts/AppLayout.vue'
 import ChartCard from '@/components/radiography/ChartCard.vue'
+import TextareaField from '@/components/forms/TextareaField.vue'
+import DatePickerField from '@/components/forms/DatePickerField.vue'
+import SearchableSelect from '@/components/forms/SearchableSelect.vue'
+import { Button } from '@/components/ui/button'
+import OkrStatCard from '@/components/okr/OkrStatCard.vue'
+import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
+import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
+import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
+import { formatByUnit, formatFriendlyDate, formatPp } from '@/lib/okrFormat'
 
 defineOptions({ layout: AppLayout })
 
@@ -14,32 +30,31 @@ const props = defineProps<{
     correctiveActions: any[]
     evidences: any[]
     alerts: any[]
+    auditLogs: any[]
+    canManage: boolean
 }>()
 
-const healthLabel: Record<string, string> = { ahead: 'Adelantado', on_track: 'En trayectoria', risk: 'En riesgo', off_track: 'Fuera de trayectoria' }
-const healthColor: Record<string, string> = {
-    ahead: 'text-emerald-700 bg-emerald-100', on_track: 'text-sky-700 bg-sky-100',
-    risk: 'text-amber-700 bg-amber-100', off_track: 'text-rose-700 bg-rose-100',
-}
 const statusLabel: Record<string, string> = { draft: 'Borrador', active: 'Activo', closed: 'Cerrado', cancelled: 'Cancelado' }
 
 function fmt(v: number | null, unit?: string) {
-    if (v === null || v === undefined) return '—'
-    if (unit === 'percentage') return `${Number(v).toFixed(2)}%`
-    if (unit === 'currency') return `$${Number(v).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`
-    return Number(v).toLocaleString('es-MX')
+    return formatByUnit(v, unit)
 }
 
-function activate() {
-    router.post(`/okr/${props.objective.id}/activate`)
-}
-function refresh() {
-    router.post(`/okr/${props.objective.id}/refresh`)
+function activate() { router.post(`/okr/${props.objective.id}/activate`) }
+function refresh() { router.post(`/okr/${props.objective.id}/refresh`) }
+
+function destroyObjective() {
+    Swal.fire({
+        icon: 'warning', title: '¿Eliminar este OKR?',
+        text: 'Se cancelará y quedará fuera del tablero activo. El histórico se conserva.',
+        showCancelButton: true, confirmButtonText: 'Sí, eliminar', cancelButtonText: 'Cancelar',
+        confirmButtonColor: '#e11d48',
+    }).then((r) => { if (r.isConfirmed) router.delete(`/okr/${props.objective.id}`) })
 }
 
 // ── Gráfica esperado vs real (por KR seleccionado) ──
 const selectedKrId = ref(props.keyResults[0]?.id ?? null)
-const selectedKr = computed(() => props.keyResults.find(k => k.id === selectedKrId.value))
+const selectedKr = computed(() => props.keyResults.find((k) => k.id === selectedKrId.value))
 const chartSeries = computed(() => {
     const kr = selectedKr.value
     if (!kr) return []
@@ -51,25 +66,35 @@ const chartSeries = computed(() => {
 const chartOptions = computed(() => ({
     chart: { toolbar: { show: false } },
     xaxis: { categories: (selectedKr.value?.snapshots ?? []).map((s: any) => `Semana ${s.week_number}`) },
-    colors: ['#94a3b8', '#4338ca'],
+    colors: ['#94a3b8', '#4f46e5'],
     stroke: { curve: 'smooth', width: 3 },
     legend: { position: 'top' },
     tooltip: { y: { formatter: (v: number) => fmt(v, selectedKr.value?.kpi?.unit) } },
 }))
 
 // ── Check-in ──
-const checkInForm = useForm({ main_blocker: '', corrective_action: '', action_responsible_user_id: '', action_due_date: '' })
+const checkInForm = useForm({ main_blocker: '', corrective_action: '', action_responsible_user_id: null as number | null, action_due_date: null as string | null })
 function submitCheckIn() {
-    checkInForm.post(`/okr/${props.objective.id}/check-ins`, { onSuccess: () => checkInForm.reset() })
+    checkInForm.post(`/okr/${props.objective.id}/check-ins`, {
+        onSuccess: () => { checkInForm.reset(); Swal.fire({ icon: 'success', title: 'Check-in guardado', confirmButtonColor: '#4f46e5', timer: 1800, showConfirmButton: false }) },
+    })
 }
 
-// ── Evidencia ──
+// ── Evidencia (dropzone) ──
 const evidenceForm = useForm({ file: null as File | null, comment: '', okr_key_result_id: null as number | null })
-function onFileChange(e: Event) {
-    evidenceForm.file = (e.target as HTMLInputElement).files?.[0] ?? null
-}
+const isDragging = ref(false)
+function pickFile(file: File | undefined | null) { evidenceForm.file = file ?? null }
+function onFileChange(e: Event) { pickFile((e.target as HTMLInputElement).files?.[0]) }
+function onDrop(e: DragEvent) { isDragging.value = false; pickFile(e.dataTransfer?.files?.[0]) }
 function submitEvidence() {
-    evidenceForm.post(`/okr/${props.objective.id}/evidences`, { onSuccess: () => evidenceForm.reset() })
+    evidenceForm.post(`/okr/${props.objective.id}/evidences`, {
+        onSuccess: () => { evidenceForm.reset(); Swal.fire({ icon: 'success', title: 'Evidencia subida', confirmButtonColor: '#4f46e5', timer: 1800, showConfirmButton: false }) },
+    })
+}
+function formatSize(bytes?: number) {
+    if (!bytes) return ''
+    const kb = bytes / 1024
+    return kb < 1024 ? `${kb.toFixed(0)} KB` : `${(kb / 1024).toFixed(1)} MB`
 }
 
 // ── Editar meta (auditado) ──
@@ -77,6 +102,7 @@ const goalForm = useForm({ key_result_id: null as number | null, target_value: '
 const editingKr = ref<number | null>(null)
 function openEditGoal(kr: any) {
     editingKr.value = kr.id
+    goalForm.clearErrors()
     goalForm.key_result_id = kr.id
     goalForm.target_value = kr.target_value
     goalForm.weight = kr.weight
@@ -85,173 +111,239 @@ function openEditGoal(kr: any) {
 function submitGoal() {
     goalForm.put(`/okr/${props.objective.id}/goal`, { onSuccess: () => { editingKr.value = null } })
 }
+
+const fieldLabel: Record<string, string> = { target_value: 'Meta', weight: 'Ponderación' }
 </script>
 
 <template>
-    <div class="mx-auto max-w-6xl space-y-6 p-4 sm:p-6">
+    <div class="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <div class="flex items-center gap-3">
-            <Link href="/okr" class="text-slate-400 hover:text-slate-700"><ArrowLeft class="size-5" /></Link>
-            <div class="flex-1">
-                <h1 class="text-xl font-black text-slate-950">{{ objective.title }}</h1>
-                <p class="text-xs text-slate-500">{{ objective.branch?.name ?? objective.employee?.full_name }} · Responsable: {{ objective.responsible?.name ?? '—' }}</p>
-            </div>
-            <button v-if="objective.lifecycle_status === 'draft'" @click="activate" class="inline-flex h-9 items-center gap-2 rounded-xl bg-emerald-600 px-4 text-xs font-black text-white hover:bg-emerald-500">
-                <CheckCircle2 class="size-4" /> Activar OKR
-            </button>
-            <button v-if="objective.lifecycle_status === 'active'" @click="refresh" class="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 px-4 text-xs font-bold text-slate-600 hover:bg-slate-50">
-                <RefreshCw class="size-4" /> Recalcular
-            </button>
+            <Link href="/okr" class="text-muted-foreground transition hover:text-foreground"><ArrowLeft class="size-5" /></Link>
+            <p class="text-sm text-muted-foreground">Detalle del OKR</p>
         </div>
 
-        <div v-if="alerts.length" class="space-y-1">
-            <div v-for="a in alerts" :key="a.id" class="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+        <!-- Hero -->
+        <section class="app-card space-y-4 p-6">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+                <div class="space-y-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <OkrStatusBadge kind="lifecycle" :value="objective.lifecycle_status" />
+                        <OkrStatusBadge kind="health" :value="objective.health_status" />
+                        <OkrStatusBadge v-if="objective.final_status" kind="final" :value="objective.final_status" />
+                    </div>
+                    <h1 class="text-2xl font-bold tracking-tight text-foreground">{{ objective.title }}</h1>
+                    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                        <span class="inline-flex items-center gap-1.5"><Building2 v-if="objective.branch" class="size-3.5" /><Users v-else class="size-3.5" /> {{ objective.branch?.name ?? objective.employee?.full_name ?? '—' }}</span>
+                        <span class="inline-flex items-center gap-1.5"><UserRound class="size-3.5" /> Responsable: {{ objective.responsible?.name ?? '—' }}</span>
+                        <span class="inline-flex items-center gap-1.5"><CalendarDays class="size-3.5" /> {{ formatFriendlyDate(objective.start_date) }} → {{ formatFriendlyDate(objective.end_date) }}</span>
+                    </div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <Button v-if="objective.lifecycle_status === 'draft'" class="h-10 gap-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500" @click="activate">
+                        <CheckCircle2 class="size-4" /> Activar OKR
+                    </Button>
+                    <Button v-if="objective.lifecycle_status === 'active'" variant="outline" class="h-10 gap-2 rounded-2xl" @click="refresh">
+                        <RefreshCw class="size-4" /> Recalcular
+                    </Button>
+                    <Button v-if="canManage && objective.lifecycle_status !== 'cancelled'" variant="outline" class="h-10 gap-2 rounded-2xl border-destructive/30 text-destructive hover:bg-destructive/10" @click="destroyObjective">
+                        <Trash2 class="size-4" /> Eliminar
+                    </Button>
+                </div>
+            </div>
+
+            <p v-if="objective.lifecycle_status === 'draft'" class="flex items-start gap-2 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-xs font-semibold text-primary">
+                <Compass class="mt-0.5 size-4 shrink-0" />
+                OKR en borrador — revisa la línea base y ponderación antes de activar. Al activar, la línea base queda CONGELADA.
+                Ponderación actual: {{ objective.weight_summary.total }}%
+                ({{ objective.weight_summary.is_valid ? 'lista para activar' : (objective.weight_summary.remaining > 0 ? objective.weight_summary.remaining + '% pendiente' : Math.abs(objective.weight_summary.remaining) + '% excedido') }}).
+            </p>
+        </section>
+
+        <!-- Alertas -->
+        <div v-if="alerts.length" class="space-y-1.5">
+            <div v-for="a in alerts" :key="a.id" class="flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
                 <Bell class="size-3.5 shrink-0" /> {{ a.message }}
             </div>
         </div>
 
-        <p v-if="objective.lifecycle_status === 'draft'" class="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs font-bold text-indigo-700">
-            OKR en borrador — revisa la línea base y ponderación antes de activar. Al activar, la línea base queda CONGELADA.
-            Ponderación actual: {{ objective.weight_summary.total }}% ({{ objective.weight_summary.is_valid ? 'lista para activar' : (objective.weight_summary.remaining > 0 ? objective.weight_summary.remaining + '% pendiente' : Math.abs(objective.weight_summary.remaining) + '% excedido') }}).
-        </p>
+        <!-- Métricas -->
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+            <OkrStatCard :icon="CalendarClock" label="Plazo" :value="`${objective.current_week}/${objective.duration_weeks}`" hint="Semana actual / total" />
+            <OkrStatCard :icon="Flag" label="Estado" :value="statusLabel[objective.lifecycle_status]" />
+            <OkrStatCard :icon="Gauge" label="Cumplimiento" :value="`${objective.compliance}%`" tone="primary" hint="Ponderado por KR" />
+            <OkrStatCard :icon="CalendarDays" label="Inicio" :value="formatFriendlyDate(objective.start_date)" />
+            <OkrStatCard :icon="CalendarDays" label="Término" :value="formatFriendlyDate(objective.end_date)" />
+            <OkrStatCard :icon="Users" label="Key Results" :value="keyResults.length" />
+        </div>
 
-        <!-- Cards de seguimiento -->
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <p class="text-xs font-bold text-slate-500">Plazo</p>
-                <p class="mt-1 text-lg font-black text-slate-950">{{ objective.current_week }}/{{ objective.duration_weeks }} sem.</p>
+        <!-- Tabla KR -->
+        <div class="app-table-wrap">
+            <div class="app-table-toolbar">
+                <h2 class="flex items-center gap-1.5 text-sm font-bold text-foreground">
+                    <ClipboardList class="size-4 text-primary" /> Key Results
+                    <OkrHelpTooltip text="Haz clic en una fila para ver su trayectoria semanal en la gráfica de abajo." />
+                </h2>
             </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <p class="text-xs font-bold text-slate-500">Estado</p>
-                <p class="mt-1 text-lg font-black text-slate-950">{{ statusLabel[objective.lifecycle_status] }}</p>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <p class="text-xs font-bold text-slate-500">Cumplimiento</p>
-                <p class="mt-1 text-lg font-black text-indigo-700">{{ objective.compliance }}%</p>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <p class="text-xs font-bold text-slate-500">Semáforo</p>
-                <span v-if="objective.health_status" :class="healthColor[objective.health_status]" class="mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-bold">{{ healthLabel[objective.health_status] }}</span>
-                <span v-else class="text-sm text-slate-400">—</span>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <p class="text-xs font-bold text-slate-500">Inicio</p>
-                <p class="mt-1 text-sm font-bold text-slate-800">{{ objective.start_date }}</p>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <p class="text-xs font-bold text-slate-500">Término</p>
-                <p class="mt-1 text-sm font-bold text-slate-800">{{ objective.end_date }}</p>
+            <div class="app-table-content">
+                <table class="w-full min-w-[980px] text-sm">
+                    <thead class="border-b border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr>
+                            <th class="px-3 py-3 text-left font-semibold">KPI</th>
+                            <th class="px-3 py-3 text-left font-semibold">Base</th>
+                            <th class="px-3 py-3 text-left font-semibold">Meta</th>
+                            <th class="px-3 py-3 text-left font-semibold">Actual</th>
+                            <th class="px-3 py-3 text-left font-semibold">Esperado</th>
+                            <th class="px-3 py-3 text-left font-semibold">Desviación</th>
+                            <th class="px-3 py-3 text-left font-semibold">Peso</th>
+                            <th class="px-3 py-3 text-left font-semibold">Cumplimiento</th>
+                            <th class="px-3 py-3 text-left font-semibold">Estado</th>
+                            <th class="px-3 py-3 text-left font-semibold"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr
+                            v-for="kr in keyResults" :key="kr.id"
+                            class="cursor-pointer border-t border-border transition-colors hover:bg-muted/30"
+                            :class="{ 'bg-primary/5': kr.id === selectedKrId }"
+                            @click="selectedKrId = kr.id"
+                        >
+                            <td class="px-3 py-3">
+                                <p class="font-semibold text-foreground">{{ kr.kpi.name }}</p>
+                                <p class="text-xs text-muted-foreground">{{ kr.description }}</p>
+                                <span class="mt-1 inline-block rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">{{ kr.kpi.automation === 'automatic' ? 'Fuente: Reportería' : 'Manual' }}</span>
+                            </td>
+                            <td class="px-3 py-3 tabular-nums">{{ fmt(kr.baseline_value, kr.kpi.unit) }}</td>
+                            <td class="px-3 py-3 tabular-nums">{{ fmt(kr.target_value, kr.kpi.unit) }}</td>
+                            <td class="px-3 py-3 font-semibold tabular-nums">{{ fmt(kr.current_value, kr.kpi.unit) }}</td>
+                            <td class="px-3 py-3 tabular-nums">{{ fmt(kr.expected_value, kr.kpi.unit) }}</td>
+                            <td class="px-3 py-3 font-semibold tabular-nums" :class="(kr.deviation_pp ?? 0) < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'">{{ formatPp(kr.deviation_pp) }}</td>
+                            <td class="px-3 py-3 tabular-nums">{{ kr.weight }}%</td>
+                            <td class="px-3 py-3">
+                                <div class="flex items-center gap-2">
+                                    <OkrProgressBar v-if="kr.actual_progress_percentage !== null" :value="kr.actual_progress_percentage" />
+                                    <span class="shrink-0 text-xs font-semibold tabular-nums">{{ kr.actual_progress_percentage === null ? '—' : kr.actual_progress_percentage + '%' }}</span>
+                                </div>
+                            </td>
+                            <td class="px-3 py-3"><OkrStatusBadge kind="health" :value="kr.health_status" /></td>
+                            <td class="px-3 py-3" @click.stop>
+                                <button v-if="objective.lifecycle_status === 'active'" class="text-xs font-bold text-primary hover:underline" @click="openEditGoal(kr)">Editar meta</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 
-        <!-- Tabla Key Results -->
-        <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table class="w-full min-w-[900px] text-sm">
-                <thead class="bg-slate-900 text-white">
-                    <tr>
-                        <th class="px-3 py-3 text-left font-bold">KPI</th>
-                        <th class="px-3 py-3 text-left font-bold">Base</th>
-                        <th class="px-3 py-3 text-left font-bold">Meta</th>
-                        <th class="px-3 py-3 text-left font-bold">Actual</th>
-                        <th class="px-3 py-3 text-left font-bold">Esperado</th>
-                        <th class="px-3 py-3 text-left font-bold">Desviación</th>
-                        <th class="px-3 py-3 text-left font-bold">Peso</th>
-                        <th class="px-3 py-3 text-left font-bold">Cumplimiento</th>
-                        <th class="px-3 py-3 text-left font-bold">Proyección</th>
-                        <th class="px-3 py-3 text-left font-bold"></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr v-for="kr in keyResults" :key="kr.id" class="cursor-pointer border-t border-slate-100 hover:bg-slate-50" :class="{ 'bg-indigo-50/40': kr.id === selectedKrId }" @click="selectedKrId = kr.id">
-                        <td class="px-3 py-3">
-                            <p class="font-bold text-slate-900">{{ kr.kpi.name }}</p>
-                            <p class="text-xs text-slate-400">{{ kr.description }}</p>
-                            <span class="mt-0.5 inline-block rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">{{ kr.kpi.automation === 'automatic' ? 'Fuente: Reportería' : 'Manual' }}</span>
-                        </td>
-                        <td class="px-3 py-3">{{ fmt(kr.baseline_value, kr.kpi.unit) }}</td>
-                        <td class="px-3 py-3">{{ fmt(kr.target_value, kr.kpi.unit) }}</td>
-                        <td class="px-3 py-3 font-bold">{{ fmt(kr.current_value, kr.kpi.unit) }}</td>
-                        <td class="px-3 py-3">{{ fmt(kr.expected_value, kr.kpi.unit) }}</td>
-                        <td class="px-3 py-3 font-bold" :class="(kr.deviation_pp ?? 0) < 0 ? 'text-rose-600' : 'text-emerald-600'">{{ kr.deviation_pp === null ? '—' : (kr.deviation_pp > 0 ? '+' : '') + kr.deviation_pp + ' pp' }}</td>
-                        <td class="px-3 py-3">{{ kr.weight }}%</td>
-                        <td class="px-3 py-3 font-bold">{{ kr.actual_progress_percentage === null ? '—' : kr.actual_progress_percentage + '%' }}</td>
-                        <td class="px-3 py-3">{{ kr.projected_compliance_percentage === null ? '—' : kr.projected_compliance_percentage + '%' }}</td>
-                        <td class="px-3 py-3" @click.stop>
-                            <button v-if="objective.lifecycle_status === 'active'" @click="openEditGoal(kr)" class="text-xs font-bold text-indigo-600 hover:underline">Editar meta</button>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Editar meta modal simple -->
-        <div v-if="editingKr" class="rounded-2xl border border-indigo-200 bg-indigo-50/50 p-4 space-y-3">
-            <p class="text-sm font-black text-indigo-800">Editar meta / peso — se registra en la bitácora</p>
+        <!-- Editar meta -->
+        <div v-if="editingKr" class="app-card animate-in fade-in slide-in-from-top-2 space-y-3 border-primary/20 bg-primary/5 p-5 duration-200">
+            <p class="text-sm font-bold text-foreground">Editar meta / peso — se registra en la bitácora</p>
             <div class="grid gap-3 sm:grid-cols-3">
-                <input v-model="goalForm.target_value" type="number" step="0.01" placeholder="Nueva meta" class="h-10 rounded-xl border border-slate-200 px-3 text-sm" />
-                <input v-model="goalForm.weight" type="number" step="0.01" placeholder="Nuevo peso %" class="h-10 rounded-xl border border-slate-200 px-3 text-sm" />
-                <input v-model="goalForm.reason" placeholder="Motivo del cambio (obligatorio)" class="h-10 rounded-xl border border-slate-200 px-3 text-sm" />
+                <input v-model="goalForm.target_value" type="number" step="0.01" placeholder="Nueva meta" class="app-input">
+                <input v-model="goalForm.weight" type="number" step="0.01" placeholder="Nuevo peso %" class="app-input">
+                <input v-model="goalForm.reason" placeholder="Motivo del cambio (obligatorio)" class="app-input">
             </div>
+            <p v-if="goalForm.errors.weight" class="text-xs font-semibold text-destructive">{{ goalForm.errors.weight }}</p>
+            <p v-if="goalForm.errors.reason" class="text-xs font-semibold text-destructive">{{ goalForm.errors.reason }}</p>
             <div class="flex gap-2">
-                <button @click="submitGoal" class="h-9 rounded-xl bg-indigo-700 px-4 text-xs font-black text-white">Guardar cambio</button>
-                <button @click="editingKr = null" class="h-9 rounded-xl border border-slate-200 px-4 text-xs font-bold text-slate-600">Cancelar</button>
+                <Button class="h-10 rounded-2xl" :disabled="goalForm.processing" @click="submitGoal">Guardar cambio</Button>
+                <Button variant="outline" class="h-10 rounded-2xl" @click="editingKr = null">Cancelar</Button>
             </div>
         </div>
 
-        <!-- Gráfica trayectoria -->
-        <ChartCard v-if="selectedKr && selectedKr.snapshots.length" title="Trayectoria esperada vs resultado real" :subtitle="selectedKr.description"
-                   type="line" :series="chartSeries" :options="chartOptions" />
+        <!-- Gráfica -->
+        <ChartCard
+            v-if="selectedKr && selectedKr.snapshots.length"
+            title="Trayectoria semanal"
+            :subtitle="selectedKr.description"
+            type="line" :series="chartSeries" :options="chartOptions"
+        />
 
-        <div class="grid gap-6 lg:grid-cols-2">
+        <div class="grid gap-6 xl:grid-cols-2">
             <!-- Check-in -->
-            <div class="space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <p class="text-sm font-black text-slate-950">Check-in semanal</p>
-                <textarea v-model="checkInForm.main_blocker" rows="2" placeholder="Principal bloqueo" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
-                <textarea v-model="checkInForm.corrective_action" rows="2" placeholder="Acción correctiva" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
-                <div class="grid gap-2 sm:grid-cols-2">
-                    <input v-model="checkInForm.action_due_date" type="date" class="h-10 rounded-xl border border-slate-200 px-3 text-sm" />
+            <section class="app-card space-y-3 p-5">
+                <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
+                    <ClipboardList class="size-4 text-primary" /> Check-in semanal — Semana {{ objective.current_week }}
+                    <OkrHelpTooltip text="Registra qué está frenando el avance y qué acción correctiva se hará. El valor del KPI se toma solo — aquí solo agregas contexto." />
+                </p>
+                <TextareaField v-model="checkInForm.main_blocker" label="Bloqueo principal" placeholder="¿Qué está frenando el avance?" :rows="2" />
+                <TextareaField v-model="checkInForm.corrective_action" label="Acción correctiva" placeholder="¿Qué se va a hacer al respecto?" :rows="2" />
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <DatePickerField v-model="checkInForm.action_due_date" label="Fecha compromiso" clearable />
                 </div>
-                <button @click="submitCheckIn" :disabled="checkInForm.processing" class="h-9 rounded-xl bg-indigo-700 px-4 text-xs font-black text-white disabled:opacity-40">Registrar check-in</button>
+                <Button class="h-10 rounded-2xl" :disabled="checkInForm.processing" @click="submitCheckIn">Registrar check-in</Button>
 
-                <div class="mt-3 space-y-2">
-                    <div v-for="c in checkIns" :key="c.id" class="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs">
-                        <p class="font-bold text-slate-700">Semana {{ c.week_number }} — {{ c.user }} ({{ c.check_in_date }})</p>
-                        <p v-if="c.main_blocker" class="text-slate-500">Bloqueo: {{ c.main_blocker }}</p>
-                        <p v-if="c.corrective_action" class="text-slate-500">Acción: {{ c.corrective_action }}</p>
+                <div v-if="checkIns.length" class="mt-2 space-y-3 border-t border-border pt-3">
+                    <div v-for="c in checkIns" :key="c.id" class="relative border-l-2 border-border pl-4">
+                        <span class="absolute -left-[5px] top-1.5 size-2 rounded-full bg-primary" />
+                        <p class="text-xs font-semibold text-foreground">Semana {{ c.week_number }} — {{ c.user }} · {{ formatFriendlyDate(c.check_in_date) }}</p>
+                        <p v-if="c.main_blocker" class="mt-0.5 text-xs text-muted-foreground">Bloqueo: {{ c.main_blocker }}</p>
+                        <p v-if="c.corrective_action" class="text-xs text-muted-foreground">Acción: {{ c.corrective_action }}</p>
                     </div>
                 </div>
-            </div>
+            </section>
 
             <!-- Evidencias -->
-            <div class="space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <p class="text-sm font-black text-slate-950">Evidencias y archivos de seguimiento</p>
-                <input type="file" @change="onFileChange" class="w-full text-xs" />
-                <input v-model="evidenceForm.comment" placeholder="Comentario (opcional)" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
-                <button @click="submitEvidence" :disabled="!evidenceForm.file || evidenceForm.processing" class="inline-flex h-9 items-center gap-2 rounded-xl bg-slate-800 px-4 text-xs font-black text-white disabled:opacity-40">
-                    <Upload class="size-3.5" /> Cargar evidencia
-                </button>
+            <section class="app-card space-y-3 p-5">
+                <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
+                    <Paperclip class="size-4 text-primary" /> Evidencias y archivos de seguimiento
+                </p>
 
-                <div class="mt-3 space-y-2">
-                    <a v-for="e in evidences" :key="e.id" :href="`/okr/evidences/${e.id}/download`" class="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs hover:bg-slate-100">
-                        <Paperclip class="size-3.5 shrink-0 text-slate-400" />
-                        <span class="flex-1 font-bold text-slate-700">{{ e.original_name }}</span>
-                        <span class="text-slate-400">{{ e.uploader }}</span>
+                <label
+                    class="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-6 text-center transition-colors"
+                    :class="isDragging ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40 hover:bg-muted/30'"
+                    @dragover.prevent="isDragging = true" @dragleave.prevent="isDragging = false" @drop.prevent="onDrop"
+                >
+                    <Upload class="size-6 text-muted-foreground" />
+                    <p class="text-sm font-semibold text-foreground">{{ evidenceForm.file ? evidenceForm.file.name : 'Arrastra un archivo aquí' }}</p>
+                    <p class="text-xs text-muted-foreground">{{ evidenceForm.file ? formatSize(evidenceForm.file.size) : 'o haz clic para seleccionar' }}</p>
+                    <input type="file" class="hidden" @change="onFileChange">
+                </label>
+
+                <input v-model="evidenceForm.comment" placeholder="Comentario (opcional)" class="app-input">
+                <Button class="h-10 gap-2 rounded-2xl" :disabled="!evidenceForm.file || evidenceForm.processing" @click="submitEvidence">
+                    <Upload class="size-3.5" /> Cargar evidencia
+                </Button>
+
+                <div v-if="evidences.length" class="mt-2 space-y-2 border-t border-border pt-3">
+                    <a v-for="e in evidences" :key="e.id" :href="`/okr/evidences/${e.id}/download`" class="flex items-center gap-3 rounded-xl border border-border bg-muted/20 p-3 text-xs transition hover:bg-muted/40">
+                        <FileText class="size-4 shrink-0 text-muted-foreground" />
+                        <span class="flex-1 truncate font-semibold text-foreground">{{ e.original_name }}</span>
+                        <span class="shrink-0 text-muted-foreground">{{ e.uploader }} · {{ formatFriendlyDate(e.created_at?.slice(0, 10)) }}</span>
                     </a>
                 </div>
-            </div>
+            </section>
         </div>
 
         <!-- Acciones correctivas -->
-        <div v-if="correctiveActions.length" class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p class="mb-3 text-sm font-black text-slate-950">Acciones correctivas</p>
+        <section v-if="correctiveActions.length" class="app-card space-y-3 p-5">
+            <p class="text-sm font-bold text-foreground">Acciones correctivas</p>
             <div class="space-y-2">
-                <div v-for="a in correctiveActions" :key="a.id" class="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs">
+                <div v-for="a in correctiveActions" :key="a.id" class="flex items-center justify-between rounded-xl border border-border bg-muted/20 p-3 text-xs">
                     <div>
-                        <p class="font-bold text-slate-700">{{ a.description }}</p>
-                        <p class="text-slate-400">{{ a.responsible }} — vence {{ a.due_date }}</p>
+                        <p class="font-semibold text-foreground">{{ a.description }}</p>
+                        <p class="text-muted-foreground">{{ a.responsible }} — vence {{ formatFriendlyDate(a.due_date) }}</p>
                     </div>
-                    <span class="rounded-full px-2 py-0.5 font-bold" :class="a.is_overdue ? 'bg-rose-100 text-rose-700' : 'bg-slate-200 text-slate-600'">{{ a.is_overdue ? 'Vencida' : a.status }}</span>
+                    <span class="rounded-full px-2.5 py-1 font-semibold" :class="a.is_overdue ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'">{{ a.is_overdue ? 'Vencida' : a.status }}</span>
                 </div>
             </div>
-        </div>
+        </section>
+
+        <!-- Historial / bitácora -->
+        <section v-if="auditLogs.length" class="app-card space-y-3 p-5">
+            <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
+                <History class="size-4 text-primary" /> Historial de cambios
+            </p>
+            <div class="space-y-3">
+                <div v-for="log in auditLogs" :key="log.id" class="relative border-l-2 border-border pl-4">
+                    <span class="absolute -left-[5px] top-1.5 size-2 rounded-full bg-muted-foreground/50" />
+                    <p class="text-xs font-semibold text-foreground">
+                        {{ fieldLabel[log.field] ?? log.field ?? log.action }} modificada
+                        <span v-if="log.old_value !== null && log.new_value !== null" class="font-normal text-muted-foreground">— {{ log.old_value }} → {{ log.new_value }}</span>
+                    </p>
+                    <p class="text-xs text-muted-foreground">{{ log.user ?? 'Sistema' }} · {{ log.created_at }}</p>
+                    <p v-if="log.reason" class="mt-0.5 text-xs italic text-muted-foreground">"{{ log.reason }}"</p>
+                </div>
+            </div>
+        </section>
     </div>
 </template>

@@ -33,6 +33,10 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string | number | null): void
   (e: 'change', value: string | number | null): void
+  // Emite el texto de búsqueda tal cual lo escribe el usuario — para consumidores
+  // que resuelven `options` de forma asíncrona (ej. buscador de colaboradores del
+  // módulo OKR) en vez de filtrar una lista ya cargada por completo.
+  (e: 'update:search', value: string): void
 }>()
 
 const open = ref(false)
@@ -143,6 +147,8 @@ watch(
     updatePosition()
   },
 )
+
+watch(query, (value) => emit('update:search', value))
 </script>
 
 <template>

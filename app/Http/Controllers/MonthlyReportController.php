@@ -14,6 +14,7 @@ use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
 use App\Services\PeriodRadiographyService;
 use App\Services\RadiografiaExportService;
+use App\Services\Reporting\OperativeBranchService;
 use App\Services\Radiography\EmployeesHistoricoExportService;
 use App\Services\Radiography\RadiographySnapshotBuilder;
 use Illuminate\Http\JsonResponse;
@@ -27,12 +28,13 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class MonthlyReportController extends Controller {
 
-    /** Las 13 sucursales operativas — fuente de verdad para el selector UI y validación. */
-    private const OPERATIVE_BRANCH_NAMES = [
-        'ATLACOMULCO', 'ATLIXCO', 'CORDOBA', 'CUERNAVACA', 'HUAMANTLA',
-        'IXTLAHUACA', 'MIACATLAN', 'ORIZABA', 'SAN JUAN DEL RÍO',
-        'SAN LUIS POTOSI', 'TENANGO DEL VALLE', 'TLAXCALA', 'TULA',
-    ];
+    /**
+     * Las 13 sucursales operativas — fuente de verdad para el selector UI y validación.
+     * Vive en OperativeBranchService (compartida con el módulo OKR) — nunca
+     * duplicada aquí; esta constante solo re-expone el mismo arreglo para no
+     * tocar los ~10 usos de `self::OPERATIVE_BRANCH_NAMES` en este archivo.
+     */
+    private const OPERATIVE_BRANCH_NAMES = OperativeBranchService::NAMES;
 
     /** Mismas etiquetas que ReportConfigurationStep.vue (REPORT_TYPES) — no inventar otras. */
     private const REPORT_TYPE_LABELS = [
