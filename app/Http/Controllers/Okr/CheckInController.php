@@ -11,11 +11,17 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Módulo OKR (08-sep-2026) — check-in semanal (sección 29 del pedido). El
- * "resultado actual" SIEMPRE viene del KPI automático cuando existe — el
- * usuario nunca lo sobrescribe silenciosamente (solo agrega contexto
- * cualitativo: bloqueo/acción correctiva). Único por (objective, semana,
- * usuario) — UNIQUE en la migración evita doble captura.
+ * Módulo OKR — check-in semanal (sección 29 del pedido original).
+ *
+ * CORRECCIÓN 09-sep-2026 (punto 1 de la auditoría): antes un KPI manual no
+ * tenía NINGÚN camino real para actualizar `current_value` — quedaba NULL o
+ * congelado para siempre ("lo captura la persona responsable en cada
+ * check-in" no era cierto en el código). Ahora el check-in acepta
+ * `manual_results` (uno por cada KR manual/híbrido) y actualiza esos KR
+ * dentro de la MISMA transacción del check-in + acción correctiva. El
+ * "resultado actual" de un KPI AUTOMÁTICO sigue viniendo SIEMPRE de
+ * Reportería — nunca se sobreescribe aquí (validado también en
+ * StoreCheckInRequest).
  */
 class CheckInController extends Controller
 {
@@ -32,7 +38,7 @@ class CheckInController extends Controller
             return back()->withErrors(['check_in' => 'Ya registraste el check-in de esta semana.']);
         }
 
-        DB::transaction(function () use ($request, $objective, $weekNumber) {
+        DB::transaction(function () use ($request, $objective, $weekNumber, $snapshotService) {
             $snapshot = $objective->keyResults()->get()->mapWithKeys(fn ($kr) => [$kr->kpi_id => $kr->current_value])->all();
 
             $checkIn = $objective->checkIns()->create([
@@ -43,6 +49,23 @@ class CheckInController extends Controller
                 'corrective_action'      => $request->input('corrective_action'),
                 'actual_value_snapshot'  => $snapshot,
             ]);
+
+            // Resultados manuales de esta semana (ya validados: pertenecen al
+            // Objective y su KPI NUNCA es automático — ver StoreCheckInRequest).
+            foreach ($request->input('manual_results', []) as $row) {
+                $kr = $objective->keyResults()->findOrFail($row['key_result_id']);
+                $kr->update([
+                    'current_value'         => $row['value'],
+                    'last_manual_input_by'  => auth()->id(),
+                    'last_manual_input_at'  => now(),
+                ]);
+                // Recalcula trayectoria/desviación/proyección con el valor recién
+                // capturado y guarda el snapshot de la semana, marcado como
+                // fuente manual_checkin — nunca pisa un KPI automático (ver
+                // OkrSnapshotService::evaluateKeyResult(), preserva current_value
+                // para manual/híbrido).
+                $snapshotService->evaluateKeyResult($kr->fresh(), null, $checkIn->id);
+            }
 
             if ($request->filled('corrective_action') && $request->filled('action_responsible_user_id') && $request->filled('action_due_date')) {
                 $objective->correctiveActions()->create([

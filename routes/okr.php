@@ -20,6 +20,7 @@ Route::prefix('okr')->name('okr.')->group(function () {
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
     Route::get('/create', [ObjectiveController::class, 'create'])->name('create');
     Route::get('/employees-lookup', [ObjectiveController::class, 'employeesLookup'])->name('employees.lookup');
+    Route::get('/baseline-preview', [ObjectiveController::class, 'baselinePreview'])->name('baseline-preview');
     Route::post('/', [ObjectiveController::class, 'store'])->name('store');
     Route::get('/history', [HistoryController::class, 'index'])->name('history');
     Route::get('/kpis', [KpiController::class, 'index'])->name('kpis.index');
@@ -27,6 +28,7 @@ Route::prefix('okr')->name('okr.')->group(function () {
     Route::put('/kpis/{kpi}', [KpiController::class, 'update'])->name('kpis.update');
     Route::get('/responsibles', [ResponsibleController::class, 'index'])->name('responsibles.index');
     Route::post('/responsibles', [ResponsibleController::class, 'store'])->name('responsibles.store');
+    Route::post('/responsibles/{user}/enable-access', [ResponsibleController::class, 'enableAccess'])->name('responsibles.enable-access');
     Route::get('/alerts', [AlertController::class, 'index'])->name('alerts.index');
     Route::post('/alerts/{alert}/read', [AlertController::class, 'markRead'])->name('alerts.read');
     Route::get('/evidences/{evidence}/download', [EvidenceController::class, 'download'])->name('evidences.download');
@@ -35,6 +37,7 @@ Route::prefix('okr')->name('okr.')->group(function () {
     Route::post('/{objective}/activate', [ObjectiveController::class, 'activate'])->name('activate');
     Route::post('/{objective}/refresh', [ObjectiveController::class, 'refresh'])->name('refresh');
     Route::put('/{objective}/goal', [ObjectiveController::class, 'updateGoal'])->name('goal.update');
+    Route::put('/{objective}/weights', [ObjectiveController::class, 'updateWeights'])->name('weights.update');
     Route::delete('/{objective}', [ObjectiveController::class, 'destroy'])->name('destroy');
 
     Route::post('/{objective}/key-results', [KeyResultController::class, 'store'])->name('key-results.store');

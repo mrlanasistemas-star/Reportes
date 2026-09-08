@@ -32,8 +32,12 @@ class OkrRefreshCommand extends Command
 
         foreach ($objectives as $objective) {
             $snapshotService->evaluateObjective($objective);
+            // Punto 4 de la auditoría 09-sep-2026: si el cron no corrió alguna
+            // semana anterior, rellena el hueco histórico (idempotente, nunca
+            // duplica, nunca toca el cache de la semana actual).
+            $backfilled = $snapshotService->backfillMissingWeeks($objective);
             $alertService->generateForObjective($objective->fresh());
-            $this->line("  ✓ #{$objective->id} {$objective->title}");
+            $this->line("  ✓ #{$objective->id} {$objective->title}" . ($backfilled ? " (backfill: {$backfilled} semana(s))" : ''));
         }
 
         $this->info('Listo.');

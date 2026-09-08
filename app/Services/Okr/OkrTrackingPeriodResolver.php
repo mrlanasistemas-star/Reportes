@@ -25,6 +25,10 @@ use Illuminate\Support\Carbon;
  */
 class OkrTrackingPeriodResolver
 {
+    public function __construct(private readonly OkrCalendarService $calendar)
+    {
+    }
+
     /**
      * Periodo mensual GENERADO cuyo rango [start_date, end_date] contiene $date.
      * Si el mes calendario de esa fecha todavía no cierra su radiografía (ej. la
@@ -61,10 +65,11 @@ class OkrTrackingPeriodResolver
      */
     public function getPeriodForObjectiveWeek(CarbonInterface|\DateTimeInterface|string $objectiveStartDate, int $weekNumber): ?Period
     {
-        $weekNumber  = max(1, $weekNumber);
-        $weekEndDate = Carbon::parse($objectiveStartDate)->addDays(($weekNumber * 7) - 1);
+        if ($weekNumber < 1) {
+            return null; // semana 0 (el OKR todavía no inicia) — nunca se resuelve un periodo para ella
+        }
 
-        return $this->getPeriodForDate($weekEndDate);
+        return $this->getPeriodForDate($this->calendar->weekEnd($objectiveStartDate, $weekNumber));
     }
 
     /**

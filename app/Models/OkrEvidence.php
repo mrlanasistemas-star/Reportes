@@ -15,7 +15,7 @@ class OkrEvidence extends Model
 
     protected $fillable = [
         'okr_objective_id', 'okr_key_result_id', 'week_number',
-        'original_name', 'stored_path', 'mime_type', 'size_bytes',
+        'original_name', 'stored_path', 'disk', 'mime_type', 'size_bytes',
         'uploaded_by', 'comment',
     ];
 
