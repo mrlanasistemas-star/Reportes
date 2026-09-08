@@ -24,6 +24,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // confirmado con `php artisan route:list --name=dashboard` (vacío) tras probarlo.
     Route::inertia('/home', 'Dashboard')->name('home');
 
+    // Módulo OKR (08-sep-2026) — dentro del MISMO grupo auth+verified que el
+    // resto de Reportería, nunca autenticación aparte.
+    require __DIR__ . '/okr.php';
+
     Route::prefix('historico-general')
         ->name('historico-general.')
         ->group(function () {
