@@ -59,8 +59,14 @@ class DashboardController extends Controller
         $branchesWithOkr  = $openObjectives->pluck('branch_id')->filter()->unique()->count();
         $employeesWithOkr = $openObjectives->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)->pluck('employee_id')->filter()->unique()->count();
 
+        // Punto 14 de la auditoría 09-sep-2026 — distingue "sistema vacío" de
+        // "filtros sin resultados": consulta GLOBAL (ignora los filtros de
+        // este request), nunca se confunde con $filtered/$openObjectives.
+        $hasAnyObjectives = OkrObjective::query()->exists();
+
         return Inertia::render('Okr/Dashboard', [
             'objectives' => $openObjectives->map(fn ($o) => $this->toCard($o))->values(),
+            'has_any_objectives' => $hasAnyObjectives,
             'cards' => [
                 'active'            => $activeCount,
                 'risk'              => $riskCount,
@@ -92,7 +98,10 @@ class DashboardController extends Controller
         // en index()), porque el card "no cumplidos" SÍ necesita ver cerrados
         // dentro del mismo conjunto filtrado.
         return OkrObjective::query()
-            ->with(['branch:id,name', 'employee:id,full_name', 'responsibleUser:id,name', 'keyResults.kpi:id,name,code,unit'])
+            ->with([
+                'branch:id,name', 'employee:id,full_name', 'responsibleUser:id,name', 'keyResults.kpi:id,name,code,unit',
+                'keyResults.snapshots:id,okr_key_result_id,week_number,actual_progress_percentage',
+            ])
             ->whereNull('okr_objectives.deleted_at');
     }
 
@@ -180,6 +189,27 @@ class DashboardController extends Controller
             'current_week'     => $o->currentWeekNumber(),
             'compliance'       => $this->objectiveCompliance($o),
             'key_results_count'=> $o->keyResults->count(),
+            // Sparkline (sección 22 del pedido) — promedio simple de
+            // actual_progress_percentage por semana entre todos los KR,
+            // últimos 8 puntos. Sin ejes/leyenda — solo tendencia visual.
+            'trend'            => $this->trend($o),
         ];
+    }
+
+    private function trend(OkrObjective $o): array
+    {
+        $byWeek = [];
+        foreach ($o->keyResults as $kr) {
+            foreach ($kr->snapshots as $snap) {
+                $byWeek[$snap->week_number][] = (float) ($snap->actual_progress_percentage ?? 0);
+            }
+        }
+        ksort($byWeek);
+
+        return collect($byWeek)
+            ->map(fn ($values) => round(array_sum($values) / count($values), 2))
+            ->values()
+            ->slice(-8)
+            ->all();
     }
 }

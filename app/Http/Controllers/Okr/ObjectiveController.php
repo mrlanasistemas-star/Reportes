@@ -11,6 +11,7 @@ use App\Models\OkrObjective;
 use App\Models\Period;
 use App\Models\User;
 use App\Services\Okr\OkrAuditLogger;
+use App\Services\Okr\OkrCalendarService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use App\Services\Okr\OkrKpiValueResolver;
 use App\Services\Okr\OkrProgressCalculator;
@@ -70,7 +71,44 @@ class ObjectiveController extends Controller
         return response()->json(['employees' => $employees]);
     }
 
-    public function store(StoreObjectiveRequest $request, OkrWeightValidator $weightValidator, OkrAuditLogger $logger): RedirectResponse
+    /**
+     * Vista previa READ-ONLY de la línea base real (punto 3 de la auditoría
+     * 09-sep-2026) — nunca guarda nada. Deja ver el valor que Reportería
+     * tiene ANTES de crear/activar el Objective, para que el usuario sepa qué
+     * va a congelarse sin adivinar.
+     */
+    public function baselinePreview(Request $request, OkrKpiValueResolver $resolver, OkrTrackingPeriodResolver $periodResolver): JsonResponse
+    {
+        $this->authorize('okr.create');
+
+        $data = $request->validate([
+            'kpi_id'      => ['required', 'integer', 'exists:okr_kpis,id'],
+            'scope_type'  => ['required', 'in:general,branch,employee'],
+            'branch_id'   => ['nullable', 'integer', 'exists:branches,id'],
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            'start_date'  => ['required', 'date'],
+        ]);
+
+        $kpi = OkrKpi::query()->findOrFail($data['kpi_id']);
+
+        if (!$kpi->isAutomatic()) {
+            return response()->json(['available' => false, 'value' => null, 'period' => null, 'source' => 'manual']);
+        }
+
+        $period = $periodResolver->getPeriodForDate($data['start_date']);
+        $value  = $period
+            ? $resolver->getValue($kpi, $data['scope_type'], $data['branch_id'] ?? null, $data['employee_id'] ?? null, $period)
+            : null;
+
+        return response()->json([
+            'available' => $value !== null,
+            'value'     => $value,
+            'period'    => $period ? ['id' => $period->id, 'label' => $period->label] : null,
+            'source'    => $kpi->provider_key,
+        ]);
+    }
+
+    public function store(StoreObjectiveRequest $request, OkrWeightValidator $weightValidator, OkrCalendarService $calendar, OkrAuditLogger $logger): RedirectResponse
     {
         $data = $request->validated();
 
@@ -82,7 +120,7 @@ class ObjectiveController extends Controller
         $employeeId = $data['scope_type'] === OkrObjective::SCOPE_EMPLOYEE ? $data['employee_id'] : null;
         $branchId   = $data['branch_id'] ?? null;
 
-        $objective = DB::transaction(function () use ($data, $employeeId, $branchId, $logger) {
+        $objective = DB::transaction(function () use ($data, $employeeId, $branchId, $calendar, $logger) {
             $startDate = \Carbon\Carbon::parse($data['start_date']);
             $objective = OkrObjective::query()->create([
                 'parent_id'            => $data['parent_id'] ?? null,
@@ -93,7 +131,9 @@ class ObjectiveController extends Controller
                 'responsible_user_id'  => $data['responsible_user_id'] ?? auth()->id(),
                 'created_by'           => auth()->id(),
                 'start_date'           => $startDate,
-                'end_date'             => $startDate->copy()->addWeeks((int) $data['duration_weeks']),
+                // Fin INCLUSIVO de la semana N (ver OkrCalendarService) — antes
+                // addWeeks($n) dejaba un día de más (bug corregido punto 6).
+                'end_date'             => $calendar->endDate($startDate, (int) $data['duration_weeks']),
                 'duration_weeks'       => $data['duration_weeks'],
                 'lifecycle_status'     => OkrObjective::STATUS_DRAFT,
             ]);
@@ -118,9 +158,9 @@ class ObjectiveController extends Controller
 
     public function show(OkrObjective $objective): Response
     {
-        $this->authorize('okr.view');
+        $this->authorize('view', $objective);
 
-        $objective->load(['branch', 'employee', 'responsibleUser', 'creator', 'parent', 'children.branch', 'children.employee',
+        $objective->load(['branch', 'employee', 'responsibleUser', 'creator', 'parent', 'children.branch', 'children.employee', 'children.keyResults.kpi',
             'keyResults.kpi', 'keyResults.snapshots' => fn ($q) => $q->orderBy('week_number'),
             'checkIns.user', 'correctiveActions.responsibleUser', 'evidences.uploader', 'alerts' => fn ($q) => $q->whereNull('read_at')->latest()]);
 
@@ -135,10 +175,15 @@ class ObjectiveController extends Controller
             'projected_compliance_percentage' => $kr->projected_compliance_percentage, 'health_status' => $kr->health_status,
             'baseline_locked_at' => $kr->baseline_locked_at?->toDateTimeString(),
             'last_evaluated_at' => $kr->last_evaluated_at?->toDateTimeString(),
+            'last_manual_input_at' => $kr->last_manual_input_at?->toDateTimeString(),
             'snapshots' => $kr->snapshots->map(fn ($s) => [
                 'week_number' => $s->week_number, 'actual_value' => $s->actual_value, 'expected_value' => $s->expected_value,
                 'actual_progress_percentage' => $s->actual_progress_percentage, 'expected_progress_percentage' => $s->expected_progress_percentage,
                 'deviation_pp' => $s->deviation_pp,
+                // Trazabilidad de fuente (punto 4 de la auditoría 09-sep-2026) —
+                // la UI nunca finge granularidad semanal real que no existe.
+                'source_quality' => $s->source_quality, 'source_granularity' => $s->source_granularity,
+                'source_period_code' => $s->source_period_code,
             ]),
         ]);
 
@@ -160,6 +205,47 @@ class ObjectiveController extends Controller
                 'user' => $log->user?->name, 'created_at' => $log->created_at->toDateTimeString(),
             ]);
 
+        // Contribución sucursal ↔ gestores (sección 25 de la auditoría 09-sep-2026)
+        // — solo tiene sentido para KPI DISTRIBUIBLES (moneda/entero, nunca un
+        // porcentaje como mora, que no se puede "sumar" entre gestores). Por
+        // cada KR de la sucursal, suma los KR de los hijos que comparten el
+        // MISMO kpi_id — nunca mezcla KPIs distintos.
+        $contributions = [];
+        if ($objective->scope_type === OkrObjective::SCOPE_BRANCH && $objective->children->isNotEmpty()) {
+            foreach ($objective->keyResults as $parentKr) {
+                if ($parentKr->kpi->type === OkrKpi::TYPE_PERCENTAGE) {
+                    continue; // no distribuible entre gestores
+                }
+                $childRows = [];
+                foreach ($objective->children as $child) {
+                    $childKr = $child->keyResults->firstWhere('kpi_id', $parentKr->kpi_id);
+                    if (!$childKr) {
+                        continue;
+                    }
+                    $childRows[] = [
+                        'employee' => $child->employee?->full_name ?? $child->title,
+                        'target_value' => (float) $childKr->target_value,
+                        'current_value' => $childKr->current_value !== null ? (float) $childKr->current_value : null,
+                        'compliance' => $childKr->actual_progress_percentage,
+                    ];
+                }
+                if (empty($childRows)) {
+                    continue;
+                }
+                $sumTarget  = array_sum(array_column($childRows, 'target_value'));
+                $sumCurrent = array_sum(array_map(fn ($r) => $r['current_value'] ?? 0, $childRows));
+                $contributions[] = [
+                    'kpi' => $parentKr->kpi->only(['id', 'name', 'unit']),
+                    'branch_target' => (float) $parentKr->target_value,
+                    'children_target_sum' => $sumTarget,
+                    'children_current_sum' => $sumCurrent,
+                    'coverage_percentage' => $sumTarget > 0 ? round(($sumCurrent / $sumTarget) * 100, 1) : null,
+                    'gap' => (float) $parentKr->target_value - $sumTarget,
+                    'rows' => $childRows,
+                ];
+            }
+        }
+
         return Inertia::render('Okr/Show', [
             'objective' => [
                 'id' => $objective->id, 'title' => $objective->title, 'scope_type' => $objective->scope_type,
@@ -167,6 +253,7 @@ class ObjectiveController extends Controller
                 'responsible' => $objective->responsibleUser?->only(['id', 'name']), 'creator' => $objective->creator?->only(['id', 'name']),
                 'parent' => $objective->parent?->only(['id', 'title']),
                 'children' => $objective->children->map(fn ($c) => ['id' => $c->id, 'title' => $c->title, 'employee' => $c->employee?->full_name]),
+                'contributions' => $contributions,
                 'start_date' => $objective->start_date->toDateString(), 'end_date' => $objective->end_date->toDateString(),
                 'duration_weeks' => $objective->duration_weeks, 'current_week' => $objective->currentWeekNumber(),
                 'lifecycle_status' => $objective->lifecycle_status, 'health_status' => $objective->health_status,
@@ -179,13 +266,15 @@ class ObjectiveController extends Controller
             'evidences' => $objective->evidences->map(fn ($e) => ['id' => $e->id, 'original_name' => $e->original_name, 'uploader' => $e->uploader->name, 'week_number' => $e->week_number, 'created_at' => $e->created_at->toDateTimeString(), 'comment' => $e->comment]),
             'alerts' => $objective->alerts->map(fn ($a) => ['id' => $a->id, 'type' => $a->type, 'message' => $a->message, 'created_at' => $a->created_at->toDateTimeString()]),
             'auditLogs' => $auditLogs,
-            'canManage' => auth()->user()?->can('okr.delete') ?? false,
+            'canManage' => auth()->user()?->can('delete', $objective) ?? false,
+            'canAssign' => auth()->user()?->can('assign', $objective) ?? false,
+            'canUpdate' => auth()->user()?->can('update', $objective) ?? false,
         ]);
     }
 
     public function activate(OkrObjective $objective, OkrWeightValidator $weightValidator, OkrKpiValueResolver $resolver, OkrSnapshotService $snapshotService, OkrTrackingPeriodResolver $periodResolver, OkrAuditLogger $logger): RedirectResponse
     {
-        $this->authorize('okr.assign');
+        $this->authorize('assign', $objective);
 
         if ($objective->lifecycle_status !== OkrObjective::STATUS_DRAFT) {
             return back()->withErrors(['activate' => 'Solo un Objective en borrador puede activarse.']);
@@ -261,15 +350,18 @@ class ObjectiveController extends Controller
 
     public function refresh(OkrObjective $objective, OkrSnapshotService $snapshotService): RedirectResponse
     {
-        $this->authorize('okr.update');
+        $this->authorize('update', $objective);
         $snapshotService->evaluateObjective($objective);
+        $backfilled = $snapshotService->backfillMissingWeeks($objective);
 
-        return back()->with('success', 'Progreso recalculado desde Reportería.');
+        return back()->with('success', $backfilled
+            ? "Progreso recalculado desde Reportería — se rellenaron {$backfilled} semana(s) sin snapshot."
+            : 'Progreso recalculado desde Reportería.');
     }
 
     public function updateGoal(Request $request, OkrObjective $objective, OkrWeightValidator $weightValidator, OkrAuditLogger $logger): RedirectResponse
     {
-        $this->authorize('okr.update');
+        $this->authorize('update', $objective);
         $request->validate([
             'key_result_id' => ['required', 'integer', 'exists:okr_key_results,id'],
             'target_value'  => ['nullable', 'numeric'],
@@ -310,9 +402,57 @@ class ObjectiveController extends Controller
         return back()->with('success', 'Meta actualizada — cambio registrado en la bitácora.');
     }
 
+    /**
+     * Redistribución de pesos EN BLOQUE (punto 2 de la auditoría 09-sep-2026)
+     * — bug de diseño corregido: antes solo se podía cambiar UN KR a la vez y
+     * la validación de 100% exacto (updateGoal()) hacía IMPOSIBLE mover peso
+     * de un KR a otro en dos pasos (60/40 → 70/30: el primer paso solo, por sí
+     * mismo, ya rompía el 100%). Aquí se reciben TODOS los pesos nuevos juntos,
+     * se valida una sola vez, y se guardan todos en una sola transacción.
+     */
+    public function updateWeights(Request $request, OkrObjective $objective, OkrAuditLogger $logger): RedirectResponse
+    {
+        $this->authorize('update', $objective);
+
+        $data = $request->validate([
+            'weights'                  => ['required', 'array', 'min:1'],
+            'weights.*.key_result_id'  => ['required', 'integer'],
+            'weights.*.weight'         => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'reason'                   => ['required', 'string', 'min:5', 'max:500'],
+        ]);
+
+        $krs = $objective->keyResults()->get()->keyBy('id');
+        $payload = collect($data['weights'])->keyBy('key_result_id');
+
+        // Debe cubrir EXACTAMENTE el mismo conjunto de KR del Objective — una
+        // redistribución parcial dejaría pesos "huérfanos" sin nueva cifra,
+        // rompiendo la coherencia del total.
+        if ($payload->keys()->sort()->values()->all() !== $krs->keys()->sort()->values()->all()) {
+            return back()->withErrors(['weights' => 'Debes indicar el nuevo peso de TODOS los Key Results del Objective, ninguno puede quedar fuera.']);
+        }
+
+        $total = round($payload->sum('weight'), 2);
+        if (abs($total - 100.0) > 0.01) {
+            return back()->withErrors(['weights' => "La suma de los pesos debe ser exactamente 100% (actual: {$total}%)."]);
+        }
+
+        DB::transaction(function () use ($krs, $payload, $data, $logger) {
+            foreach ($payload as $krId => $row) {
+                $kr = $krs[$krId];
+                $newWeight = (float) $row['weight'];
+                if ($newWeight !== (float) $kr->weight) {
+                    $logger->logFieldChange('key_result', $kr->id, auth()->id(), 'weight', $kr->weight, $newWeight, $data['reason']);
+                    $kr->update(['weight' => $newWeight]);
+                }
+            }
+        });
+
+        return back()->with('success', 'Ponderación redistribuida — cambios registrados en la bitácora.');
+    }
+
     public function destroy(OkrObjective $objective): RedirectResponse
     {
-        $this->authorize('okr.delete');
+        $this->authorize('delete', $objective);
         $objective->update(['lifecycle_status' => OkrObjective::STATUS_CANCELLED]);
         $objective->delete(); // soft delete — conserva histórico
 

@@ -8,7 +8,11 @@ use Illuminate\Support\Facades\Storage;
 uses(RefreshDatabase::class);
 
 // Test T — evidencia valida MIME/permisos.
-it('accepts a valid evidence file (pdf) and stores it via the existing public disk', function () {
+// CORRECCIÓN 09-sep-2026 (punto 8 de la auditoría): las evidencias NUEVAS se
+// guardan en el disco 'local' (storage/app/private — nunca expuesto por URL
+// pública), ya no en 'public'.
+it('accepts a valid evidence file (pdf) and stores it via the private local disk, never public', function () {
+    Storage::fake('local');
     Storage::fake('public');
     $user = User::factory()->create();
     $objective = okrDraftObjective($user, okrBranch('Cordoba'), [100.0]);
@@ -20,7 +24,22 @@ it('accepts a valid evidence file (pdf) and stores it via the existing public di
 
     expect($objective->evidences()->count())->toBe(1);
     $evidence = $objective->evidences()->first();
-    Storage::disk('public')->assertExists($evidence->stored_path);
+    expect($evidence->disk)->toBe('local');
+    Storage::disk('local')->assertExists($evidence->stored_path);
+    Storage::disk('public')->assertMissing($evidence->stored_path);
+});
+
+it('still downloads a legacy evidence stored on the public disk before this correction', function () {
+    Storage::fake('public');
+    $user = User::factory()->create();
+    $objective = okrDraftObjective($user, okrBranch('Tenango del Valle'), [100.0]);
+    Storage::disk('public')->put('okr-evidences/legacy.pdf', 'contenido');
+    $evidence = $objective->evidences()->create([
+        'original_name' => 'legacy.pdf', 'stored_path' => 'okr-evidences/legacy.pdf', 'disk' => 'public',
+        'mime_type' => 'application/pdf', 'size_bytes' => 9, 'uploaded_by' => $user->id,
+    ]);
+
+    $this->actingAs($user)->get(route('okr.evidences.download', $evidence))->assertOk();
 });
 
 it('rejects a file type outside the allowed MIME list', function () {

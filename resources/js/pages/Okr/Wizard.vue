@@ -67,28 +67,53 @@ const weightValid = computed(() => Math.abs(totalWeight.value - 100) < 0.01)
 
 const branchObjectives = computed(() => props.objectives.filter((o) => !form.branch_id || o.branch_id === form.branch_id))
 
-// ── Colaboradores de la sucursal elegida — bajo demanda, nunca todos precargados. ──
+// ── Colaboradores de la sucursal elegida — búsqueda REMOTA real (bug
+// corregido, punto 7 de la auditoría 09-sep-2026): antes solo se cargaba el
+// top de resultados de la sucursal una vez y SearchableSelect filtraba en
+// memoria — si había más de ~30 colaboradores, escribir un nombre que no
+// estuviera en ese primer lote nunca lo encontraba. Ahora cada tecleo dispara
+// (con debounce) la MISMA búsqueda remota que ya usa OkrFilters. ──
 const employeeOptions = ref<{ id: number; full_name: string }[]>([])
 const loadingEmployees = ref(false)
+const selectedEmployeeCache = ref<{ id: number; full_name: string } | null>(null)
+let employeeSearchTimer: ReturnType<typeof setTimeout> | null = null
 
-async function loadEmployees() {
+async function loadEmployees(search = '') {
     if (!form.branch_id) { employeeOptions.value = []; return }
     loadingEmployees.value = true
     try {
-        const res = await fetch(`/okr/employees-lookup?branch_id=${form.branch_id}`, { headers: { Accept: 'application/json' } })
+        const params = new URLSearchParams({ branch_id: String(form.branch_id) })
+        if (search) params.set('search', search)
+        const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { headers: { Accept: 'application/json' } })
         const data = await res.json()
-        employeeOptions.value = data.employees ?? []
+        let list: { id: number; full_name: string }[] = data.employees ?? []
+        // El colaborador ya elegido se mantiene visible en la lista aunque la
+        // búsqueda actual no lo incluya — nunca "se pierde" al buscar otro nombre.
+        if (selectedEmployeeCache.value && !list.some((e) => e.id === selectedEmployeeCache.value!.id)) {
+            list = [selectedEmployeeCache.value, ...list]
+        }
+        employeeOptions.value = list
     } finally {
         loadingEmployees.value = false
     }
 }
 
+function onEmployeeSearch(term: string) {
+    if (employeeSearchTimer) clearTimeout(employeeSearchTimer)
+    employeeSearchTimer = setTimeout(() => loadEmployees(term), 300)
+}
+
+function onEmployeeChange(id: number | string | null) {
+    selectedEmployeeCache.value = employeeOptions.value.find((e) => e.id === id) ?? null
+}
+
 watch(() => [form.scope_type, form.branch_id], () => {
+    selectedEmployeeCache.value = null
     if (form.scope_type === 'employee') loadEmployees()
 })
 
 const selectedBranchName = computed(() => props.branches.find((b) => b.id === form.branch_id)?.name ?? null)
-const selectedEmployeeName = computed(() => employeeOptions.value.find((e) => e.id === form.employee_id)?.full_name ?? null)
+const selectedEmployeeName = computed(() => selectedEmployeeCache.value?.full_name ?? employeeOptions.value.find((e) => e.id === form.employee_id)?.full_name ?? null)
 
 function canAdvance(): boolean {
     if (step.value === 1) {
@@ -193,15 +218,17 @@ function submit() {
                             <label class="text-sm font-semibold text-foreground">Colaborador</label>
                             <SearchableSelect
                                 v-model="form.employee_id as any"
-                                :placeholder="!form.branch_id ? 'Primero elige una sucursal' : (loadingEmployees ? 'Cargando...' : 'Buscar colaborador...')"
-                                search-placeholder="Escribe un nombre..."
+                                :placeholder="!form.branch_id ? 'Primero elige una sucursal' : 'Buscar colaborador...'"
+                                :search-placeholder="loadingEmployees ? 'Buscando...' : 'Escribe un nombre...'"
                                 :options="employeeOptions"
                                 label-key="full_name"
                                 secondary-key="__none"
                                 :disabled="!form.branch_id"
                                 :error="form.errors.employee_id"
+                                @update:search="onEmployeeSearch"
+                                @change="onEmployeeChange"
                             />
-                            <p class="text-xs text-muted-foreground">Solo se muestran colaboradores realmente asignados a esta sucursal (misma fuente que Reportería).</p>
+                            <p class="text-xs text-muted-foreground">Escribe para buscar entre TODOS los colaboradores de esta sucursal (no solo los primeros) — misma fuente que Reportería.</p>
                         </div>
                         <div class="space-y-1.5">
                             <div class="flex items-center gap-1.5">
@@ -270,6 +297,10 @@ function submit() {
                         :index="i"
                         :kpis="kpis"
                         :removable="form.key_results.length > 1"
+                        :scope-type="form.scope_type"
+                        :branch-id="form.branch_id"
+                        :employee-id="form.employee_id"
+                        :start-date="form.start_date"
                         @update:model-value="(v) => (form.key_results[i] = v)"
                         @remove="removeKr(i)"
                     />

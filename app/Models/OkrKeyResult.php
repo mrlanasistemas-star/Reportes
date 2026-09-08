@@ -21,7 +21,7 @@ class OkrKeyResult extends Model
         'okr_objective_id', 'kpi_id', 'description',
         'baseline_value', 'baseline_source', 'baseline_period_date', 'baseline_locked_at',
         'target_value', 'weight',
-        'current_value', 'expected_value', 'actual_progress_percentage',
+        'current_value', 'last_manual_input_by', 'last_manual_input_at', 'expected_value', 'actual_progress_percentage',
         'expected_progress_percentage', 'deviation_pp', 'projected_value',
         'projected_compliance_percentage', 'health_status', 'last_evaluated_at',
     ];
@@ -33,6 +33,7 @@ class OkrKeyResult extends Model
         'target_value'                     => 'float',
         'weight'                           => 'float',
         'current_value'                    => 'float',
+        'last_manual_input_at'             => 'datetime',
         'expected_value'                   => 'float',
         'actual_progress_percentage'       => 'float',
         'expected_progress_percentage'     => 'float',

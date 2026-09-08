@@ -108,17 +108,18 @@ class OkrObjective extends Model
         return $this->lifecycle_status === self::STATUS_ACTIVE;
     }
 
-    /** Semana actual (1-based) contando desde start_date — nunca negativa/cero. */
+    /**
+     * Semana actual (1-based) contando desde start_date — 0 si todavía no
+     * inicia (ver OkrCalendarService, fuente única de esta aritmética).
+     */
     public function currentWeekNumber(?\DateTimeInterface $asOf = null): int
     {
-        $asOf = $asOf ?? now();
-        $start = $this->start_date;
-        if ($asOf < $start) {
-            return 0;
-        }
-        $elapsedDays = $start->diffInDays($asOf);
-        $week = (int) floor($elapsedDays / 7) + 1;
+        return app(\App\Services\Okr\OkrCalendarService::class)
+            ->currentWeekNumber($this->start_date, (int) $this->duration_weeks, $asOf);
+    }
 
-        return min($week, (int) $this->duration_weeks);
+    public function hasStarted(?\DateTimeInterface $asOf = null): bool
+    {
+        return $this->currentWeekNumber($asOf) >= 1;
     }
 }

@@ -12,10 +12,14 @@ use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
- * Módulo OKR (08-sep-2026) — evidencias (sección 30 del pedido). Reutiliza el
- * disco de almacenamiento YA usado por ReportUploadController (Storage::disk
- * 'public') — nunca una integración externa nueva. MIME/tamaño validados en
- * StoreEvidenceRequest (backend, nunca solo el <input accept="">).
+ * Módulo OKR — evidencias (sección 30 del pedido original).
+ *
+ * CORRECCIÓN 09-sep-2026 (punto 8 — evidencias privadas): las evidencias
+ * NUEVAS se guardan en el disco 'local' (storage/app/private — nunca
+ * expuesto por URL pública), no en 'public'. La descarga sigue siendo
+ * EXCLUSIVAMENTE vía download() con autorización. Las evidencias YA
+ * existentes en 'public' (antes de esta corrección) se leen tal cual — cada
+ * fila guarda su propio `disk`, nunca se asume uno fijo.
  */
 class EvidenceController extends Controller
 {
@@ -23,14 +27,22 @@ class EvidenceController extends Controller
 
     public function store(StoreEvidenceRequest $request, OkrObjective $objective): RedirectResponse
     {
-        $file = $request->file('file');
-        $path = $file->store('okr-evidences/' . $objective->id, 'public');
+        $this->authorize('uploadEvidence', $objective);
 
+        $file = $request->file('file');
+        $disk = 'local';
+        $path = $file->store('okr-evidences/' . $objective->id, $disk);
+
+        // Nunca se asigna semana 0 automáticamente (punto 9 de la auditoría) —
+        // si el Objective todavía no inicia, la evidencia queda sin semana
+        // hasta que el usuario indique una explícitamente.
+        $currentWeek = $objective->currentWeekNumber();
         $objective->evidences()->create([
             'okr_key_result_id' => $request->input('okr_key_result_id'),
-            'week_number'       => $request->input('week_number', $objective->currentWeekNumber()),
+            'week_number'       => $request->input('week_number') ?? ($currentWeek >= 1 ? $currentWeek : null),
             'original_name'     => $file->getClientOriginalName(),
             'stored_path'       => $path,
+            'disk'              => $disk,
             'mime_type'         => $file->getMimeType(),
             'size_bytes'        => $file->getSize(),
             'uploaded_by'       => auth()->id(),
@@ -42,9 +54,11 @@ class EvidenceController extends Controller
 
     public function download(OkrEvidence $evidence): StreamedResponse
     {
-        $this->authorize('okr.view');
-        abort_unless(Storage::disk('public')->exists($evidence->stored_path), 404, 'El archivo ya no está disponible.');
+        $this->authorize('view', $evidence->objective);
 
-        return Storage::disk('public')->download($evidence->stored_path, $evidence->original_name);
+        $disk = $evidence->disk ?: 'public'; // compat legado — evidencias de antes de esta corrección
+        abort_unless(Storage::disk($disk)->exists($evidence->stored_path), 404, 'El archivo ya no está disponible.');
+
+        return Storage::disk($disk)->download($evidence->stored_path, $evidence->original_name);
     }
 }
