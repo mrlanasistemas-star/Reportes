@@ -28,6 +28,14 @@ class UserFactory extends Factory
             'name' => fake()->name(),
             'email' => fake()->unique()->safeEmail(),
             'email_verified_at' => now(),
+            // Explícito (08-sep-2026, módulo OKR) — la columna `users.role` tiene
+            // DEFAULT 'admin' a nivel de base de datos, pero un modelo recién
+            // creado con Model::create() NO recibe de vuelta valores que solo
+            // vinieron del default de la BD (quedan null en memoria hasta un
+            // ->fresh()/->refresh()). Declararlo aquí evita que cualquier test que
+            // use actingAs(User::factory()->create()) — que nunca hace ese refresh —
+            // vea `role` como null en vez del admin real que ya tiene en la BD.
+            'role' => 'admin',
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
             'two_factor_secret' => null,

@@ -1,8 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+// Módulo OKR — Dashboard (rediseño 08-sep-2026, secciones L-N/AG del pedido).
+// Ancho completo del contenedor (nunca max-w-7xl con espacio muerto lateral).
+import { computed, reactive } from 'vue'
 import { Link, router } from '@inertiajs/vue3'
-import { Target, AlertTriangle, XCircle, Gauge, Building2, Users, Plus, History, Search, X } from 'lucide-vue-next'
+import { AlertTriangle, Building2, Gauge, History, Plus, Target, Users, XCircle } from 'lucide-vue-next'
 import AppLayout from '@/layouts/AppLayout.vue'
+import AppEmptyState from '@/components/app/AppEmptyState.vue'
+import { Button } from '@/components/ui/button'
+import OkrFilters from '@/components/okr/OkrFilters.vue'
+import OkrStatCard from '@/components/okr/OkrStatCard.vue'
+import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
+import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
 
 defineOptions({ layout: AppLayout })
 
@@ -12,169 +20,151 @@ const props = defineProps<{
         active: number; risk: number; not_met: number; avg_compliance: number
         branches_with_okr: number; employees_with_okr: number; total_branches: number; total_employees: number
     }
-    filters: { branches: { id: number; name: string }[]; employees: { id: number; full_name: string }[]; statuses: string[] }
-    query: { branch_id?: string; employee_id?: string; status?: string; search?: string }
+    filters: {
+        branches: { id: number; name: string }[]
+        statuses: string[]
+        kpis: { id: number; name: string }[]
+        responsibles: { id: number; name: string }[]
+        periods: { id: number; label: string }[]
+    }
+    query: Record<string, string | undefined>
 }>()
 
-const branchId   = ref(props.query.branch_id ?? '')
-const employeeId = ref(props.query.employee_id ?? '')
-const status     = ref(props.query.status ?? '')
-const search     = ref(props.query.search ?? '')
+const filterState = reactive({
+    branch_id: props.query.branch_id ?? '',
+    employee_id: props.query.employee_id ?? '',
+    status: props.query.status ?? '',
+    search: props.query.search ?? '',
+    period_id: props.query.period_id ?? '',
+    start_date: props.query.start_date ?? null,
+    end_date: props.query.end_date ?? null,
+    kpi_id: props.query.kpi_id ?? '',
+    responsible_user_id: props.query.responsible_user_id ?? '',
+})
 
 function applyFilters() {
-    router.get('/okr', {
-        branch_id: branchId.value || undefined,
-        employee_id: employeeId.value || undefined,
-        status: status.value || undefined,
-        search: search.value || undefined,
-    }, { preserveState: true, replace: true })
+    router.get('/okr', { ...filterState }, { preserveState: true, replace: true })
 }
 
 function clearFilters() {
-    branchId.value = ''; employeeId.value = ''; status.value = ''; search.value = ''
+    Object.assign(filterState, { branch_id: '', employee_id: '', status: '', search: '', period_id: '', start_date: null, end_date: null, kpi_id: '', responsible_user_id: '' })
     router.get('/okr', {}, { replace: true })
 }
 
-const healthLabel: Record<string, string> = { ahead: 'Adelantado', on_track: 'En trayectoria', risk: 'En riesgo', off_track: 'Fuera de trayectoria' }
-const healthColor: Record<string, string> = {
-    ahead: 'bg-emerald-100 text-emerald-700', on_track: 'bg-sky-100 text-sky-700',
-    risk: 'bg-amber-100 text-amber-700', off_track: 'bg-rose-100 text-rose-700',
-}
 const statusLabel: Record<string, string> = { draft: 'Borrador', active: 'Activo', closed: 'Cerrado', cancelled: 'Cancelado' }
 
 const sortedObjectives = computed(() => [...props.objectives].sort((a, b) => (a.health_status === 'off_track' ? -1 : 1)))
+const hasAnyObjective = computed(() => props.cards.active > 0 || props.objectives.length > 0)
 </script>
 
 <template>
-    <div class="mx-auto max-w-7xl space-y-6 p-4 sm:p-6">
-        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-                <h1 class="text-2xl font-black text-slate-950">OKR <span class="font-normal text-slate-400">(Objective Key Result)</span></h1>
-                <p class="mt-1 text-sm text-slate-500">Gestiona objetivos, resultados clave y seguimiento por sucursal y colaborador.</p>
-            </div>
-            <div class="flex gap-2">
-                <Link href="/okr/history" class="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-50">
-                    <History class="size-4" /> Histórico
-                </Link>
-                <Link href="/okr/create" class="inline-flex h-10 items-center gap-2 rounded-xl bg-indigo-700 px-4 text-sm font-black text-white shadow transition hover:bg-indigo-600">
-                    <Plus class="size-4" /> Asignar OKR
-                </Link>
-            </div>
-        </div>
-
-        <!-- Filtros -->
-        <div class="flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div>
-                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Sucursal</label>
-                <select v-model="branchId" @change="applyFilters" class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm">
-                    <option value="">Todas</option>
-                    <option v-for="b in filters.branches" :key="b.id" :value="b.id">{{ b.name }}</option>
-                </select>
-            </div>
-            <div>
-                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Colaborador</label>
-                <select v-model="employeeId" @change="applyFilters" class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm">
-                    <option value="">Todos</option>
-                    <option v-for="e in filters.employees" :key="e.id" :value="e.id">{{ e.full_name }}</option>
-                </select>
-            </div>
-            <div>
-                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Estado</label>
-                <select v-model="status" @change="applyFilters" class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm">
-                    <option value="">Todos</option>
-                    <option v-for="s in filters.statuses" :key="s" :value="s">{{ statusLabel[s] ?? s }}</option>
-                </select>
-            </div>
-            <div class="min-w-[220px] flex-1">
-                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Buscar objetivo / KPI</label>
-                <div class="relative">
-                    <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                    <input v-model="search" @keyup.enter="applyFilters" placeholder="Ej. colocación, EBITDA…"
-                           class="h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm" />
+    <div class="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+        <!-- Header ejecutivo -->
+        <section class="overflow-hidden rounded-[2rem] bg-slate-950 p-6 text-white shadow-2xl shadow-slate-300/40 sm:p-8 dark:shadow-none">
+            <div class="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+                <div class="flex items-start gap-4">
+                    <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-indigo-500">
+                        <Target class="size-6 text-white" />
+                    </div>
+                    <div>
+                        <p class="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Objectives &amp; Key Results</p>
+                        <h1 class="mt-1 text-3xl font-black tracking-tight sm:text-4xl">OKR</h1>
+                        <p class="mt-2 max-w-xl text-sm leading-6 text-slate-300">
+                            Define, mide y anticipa el cumplimiento de objetivos por sucursal y colaborador.
+                        </p>
+                    </div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <Link href="/okr/history">
+                        <Button variant="outline" class="h-11 gap-2 rounded-2xl border-white/20 bg-white/5 text-white hover:bg-white/10">
+                            <History class="size-4" /> Histórico
+                        </Button>
+                    </Link>
+                    <Link href="/okr/create">
+                        <Button class="h-11 gap-2 rounded-2xl bg-indigo-500 text-white shadow-lg shadow-indigo-500/30 hover:bg-indigo-400">
+                            <Plus class="size-4" /> Asignar OKR
+                        </Button>
+                    </Link>
                 </div>
             </div>
-            <button type="button" @click="clearFilters" class="inline-flex h-10 items-center gap-1 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-500 hover:bg-slate-50">
-                <X class="size-3.5" /> Limpiar filtros
-            </button>
-        </div>
+        </section>
+
+        <OkrFilters
+            v-model="filterState"
+            :branches="filters.branches"
+            :statuses="filters.statuses"
+            :kpis="filters.kpis"
+            :responsibles="filters.responsibles"
+            :periods="filters.periods"
+            @apply="applyFilters"
+            @clear="clearFilters"
+        />
 
         <!-- Cards ejecutivas -->
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <Target class="size-5 text-indigo-600" />
-                <p class="mt-2 text-2xl font-black text-slate-950">{{ cards.active }}</p>
-                <p class="text-xs font-bold text-slate-500">OKR activos</p>
-            </div>
-            <div class="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 shadow-sm">
-                <AlertTriangle class="size-5 text-amber-600" />
-                <p class="mt-2 text-2xl font-black text-amber-700">{{ cards.risk }}</p>
-                <p class="text-xs font-bold text-amber-700">OKR en riesgo</p>
-            </div>
-            <div class="rounded-2xl border border-rose-200 bg-rose-50/60 p-4 shadow-sm">
-                <XCircle class="size-5 text-rose-600" />
-                <p class="mt-2 text-2xl font-black text-rose-700">{{ cards.not_met }}</p>
-                <p class="text-xs font-bold text-rose-700">No cumplidos</p>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <Gauge class="size-5 text-emerald-600" />
-                <p class="mt-2 text-2xl font-black text-slate-950">{{ cards.avg_compliance }}%</p>
-                <p class="text-xs font-bold text-slate-500">Cumplimiento promedio</p>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <Building2 class="size-5 text-indigo-600" />
-                <p class="mt-2 text-2xl font-black text-slate-950">{{ cards.branches_with_okr }}/{{ cards.total_branches }}</p>
-                <p class="text-xs font-bold text-slate-500">Sucursales con OKR</p>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <Users class="size-5 text-indigo-600" />
-                <p class="mt-2 text-2xl font-black text-slate-950">{{ cards.employees_with_okr }}/{{ cards.total_employees }}</p>
-                <p class="text-xs font-bold text-slate-500">Colaboradores con OKR</p>
-            </div>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+            <OkrStatCard :icon="Target" label="OKR activos" :value="cards.active" hint="Objetivos vigentes" tone="primary" />
+            <OkrStatCard :icon="AlertTriangle" label="OKR en riesgo" :value="cards.risk" hint="Requieren atención" tone="warning" />
+            <OkrStatCard :icon="XCircle" label="No cumplidos" :value="cards.not_met" hint="Cerrados sin alcanzar la meta" tone="danger" />
+            <OkrStatCard :icon="Gauge" label="Cumplimiento promedio" :value="`${cards.avg_compliance}%`" hint="Alcance actual" tone="success" />
+            <OkrStatCard :icon="Building2" label="Sucursales con OKR" :value="`${cards.branches_with_okr}/${cards.total_branches}`" hint="Del alcance filtrado" />
+            <OkrStatCard :icon="Users" label="Colaboradores con OKR" :value="`${cards.employees_with_okr}/${cards.total_employees}`" hint="Total de colaboradores activos" global />
         </div>
 
         <!-- Listado -->
-        <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table class="w-full min-w-[900px] text-sm">
-                <thead class="bg-slate-900 text-white">
-                    <tr>
-                        <th class="px-4 py-3 text-left font-bold">Objective</th>
-                        <th class="px-4 py-3 text-left font-bold">Sucursal / Colaborador</th>
-                        <th class="px-4 py-3 text-left font-bold">Responsable</th>
-                        <th class="px-4 py-3 text-left font-bold">Plazo</th>
-                        <th class="px-4 py-3 text-left font-bold">Progreso</th>
-                        <th class="px-4 py-3 text-left font-bold">Estado</th>
-                        <th class="px-4 py-3 text-left font-bold">Semáforo</th>
-                        <th class="px-4 py-3 text-left font-bold">Acciones</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr v-for="o in sortedObjectives" :key="o.id" class="border-t border-slate-100 hover:bg-slate-50">
-                        <td class="px-4 py-3 font-bold text-slate-900">{{ o.title }}</td>
-                        <td class="px-4 py-3 text-slate-600">{{ o.branch ?? o.employee ?? '—' }}</td>
-                        <td class="px-4 py-3 text-slate-600">{{ o.responsible ?? '—' }}</td>
-                        <td class="px-4 py-3 text-slate-600">Semana {{ o.current_week }}/{{ o.duration_weeks }}</td>
-                        <td class="px-4 py-3">
-                            <div class="flex items-center gap-2">
-                                <div class="h-2 w-24 overflow-hidden rounded-full bg-slate-100">
-                                    <div class="h-full rounded-full bg-indigo-600" :style="{ width: Math.min(100, o.compliance) + '%' }" />
+        <div class="app-table-wrap">
+            <div class="app-table-content">
+                <table v-if="sortedObjectives.length" class="w-full min-w-[960px] text-sm">
+                    <thead class="border-b border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr>
+                            <th class="px-4 py-3 text-left font-semibold">Objective</th>
+                            <th class="px-4 py-3 text-left font-semibold">Sucursal / Colaborador</th>
+                            <th class="px-4 py-3 text-left font-semibold">Responsable</th>
+                            <th class="px-4 py-3 text-left font-semibold">Plazo</th>
+                            <th class="px-4 py-3 text-left font-semibold">Progreso</th>
+                            <th class="px-4 py-3 text-left font-semibold">Estado</th>
+                            <th class="px-4 py-3 text-left font-semibold">Semáforo</th>
+                            <th class="px-4 py-3 text-left font-semibold"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="o in sortedObjectives" :key="o.id" class="border-t border-border transition-colors hover:bg-muted/30">
+                            <td class="px-4 py-3 font-semibold text-foreground">{{ o.title }}</td>
+                            <td class="px-4 py-3 text-muted-foreground">{{ o.branch ?? o.employee ?? '—' }}</td>
+                            <td class="px-4 py-3 text-muted-foreground">{{ o.responsible ?? '—' }}</td>
+                            <td class="px-4 py-3 text-muted-foreground">Semana {{ o.current_week }}/{{ o.duration_weeks }}</td>
+                            <td class="px-4 py-3">
+                                <div class="flex items-center gap-2">
+                                    <OkrProgressBar :value="o.compliance" />
+                                    <span class="shrink-0 text-xs font-semibold tabular-nums text-muted-foreground">{{ o.compliance }}%</span>
                                 </div>
-                                <span class="text-xs font-bold text-slate-600">{{ o.compliance }}%</span>
-                            </div>
-                        </td>
-                        <td class="px-4 py-3"><span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-600">{{ statusLabel[o.lifecycle_status] ?? o.lifecycle_status }}</span></td>
-                        <td class="px-4 py-3">
-                            <span v-if="o.health_status" :class="healthColor[o.health_status]" class="rounded-full px-2 py-0.5 text-xs font-bold">{{ healthLabel[o.health_status] }}</span>
-                            <span v-else class="text-xs text-slate-400">—</span>
-                        </td>
-                        <td class="px-4 py-3">
-                            <Link :href="`/okr/${o.id}`" class="text-xs font-bold text-indigo-600 hover:underline">Ver</Link>
-                        </td>
-                    </tr>
-                    <tr v-if="sortedObjectives.length === 0">
-                        <td colspan="8" class="px-4 py-10 text-center text-sm text-slate-400">No hay OKR que coincidan con los filtros.</td>
-                    </tr>
-                </tbody>
-            </table>
+                            </td>
+                            <td class="px-4 py-3"><OkrStatusBadge kind="lifecycle" :value="o.lifecycle_status" /></td>
+                            <td class="px-4 py-3"><OkrStatusBadge kind="health" :value="o.health_status" /></td>
+                            <td class="px-4 py-3">
+                                <Link :href="`/okr/${o.id}`" class="text-xs font-bold text-primary transition hover:underline">Ver detalle →</Link>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <AppEmptyState
+                    v-else-if="!hasAnyObjective"
+                    title="No hay OKR todavía"
+                    message="Comienza creando el primer objetivo para una sucursal o colaborador."
+                >
+                    <Link href="/okr/create">
+                        <Button class="h-11 gap-2 rounded-2xl"><Plus class="size-4" /> Asignar OKR</Button>
+                    </Link>
+                </AppEmptyState>
+
+                <AppEmptyState
+                    v-else
+                    title="No encontramos OKR con esos filtros"
+                    message="Ajusta o limpia los filtros para ver más resultados."
+                >
+                    <Button variant="outline" class="h-11 rounded-2xl" @click="clearFilters">Limpiar filtros</Button>
+                </AppEmptyState>
+            </div>
         </div>
     </div>
 </template>

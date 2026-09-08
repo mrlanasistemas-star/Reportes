@@ -1,8 +1,17 @@
 <script setup lang="ts">
+// Módulo OKR — Catálogo de KPI (rediseño 08-sep-2026, sección AF del pedido).
+// Ancho completo del contenedor — nunca max-w-5xl. Solo administradores
+// (users.role='admin') pueden entrar aquí — ver OkrServiceProvider.
 import { ref } from 'vue'
 import { Link, useForm } from '@inertiajs/vue3'
-import { ArrowLeft, Plus } from 'lucide-vue-next'
+import { ArrowDown, ArrowLeft, ArrowUp, Plus, Sparkles } from 'lucide-vue-next'
+import Swal from 'sweetalert2'
 import AppLayout from '@/layouts/AppLayout.vue'
+import AppEmptyState from '@/components/app/AppEmptyState.vue'
+import TextField from '@/components/forms/TextField.vue'
+import SelectField from '@/components/forms/SelectField.vue'
+import { Button } from '@/components/ui/button'
+import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
 
 defineOptions({ layout: AppLayout })
 
@@ -15,7 +24,13 @@ const form = useForm({
 })
 
 function submit() {
-    form.post('/okr/kpis', { onSuccess: () => { form.reset(); showCreate.value = false } })
+    form.post('/okr/kpis', {
+        onSuccess: () => {
+            form.reset()
+            showCreate.value = false
+            Swal.fire({ icon: 'success', title: 'KPI creado', confirmButtonColor: '#4f46e5', timer: 1800, showConfirmButton: false })
+        },
+    })
 }
 
 function toggleActive(kpi: any) {
@@ -27,77 +42,95 @@ function toggleActive(kpi: any) {
 </script>
 
 <template>
-    <div class="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
-        <div class="flex items-center justify-between">
+    <div class="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+        <div class="flex flex-wrap items-center justify-between gap-3">
             <div class="flex items-center gap-3">
-                <Link href="/okr" class="text-slate-400 hover:text-slate-700"><ArrowLeft class="size-5" /></Link>
-                <h1 class="text-xl font-black text-slate-950">Catálogo de KPI</h1>
+                <Link href="/okr" class="text-muted-foreground transition hover:text-foreground"><ArrowLeft class="size-5" /></Link>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight text-foreground">Catálogo de KPI</h1>
+                    <p class="text-sm text-muted-foreground">Métricas disponibles para armar Key Results — automáticas (Reportería) o manuales.</p>
+                </div>
             </div>
-            <button @click="showCreate = !showCreate" class="inline-flex h-9 items-center gap-2 rounded-xl bg-indigo-700 px-4 text-xs font-black text-white">
+            <Button class="h-11 gap-2 rounded-2xl" @click="showCreate = !showCreate">
                 <Plus class="size-4" /> Nuevo KPI
-            </button>
+            </Button>
         </div>
 
-        <div v-if="showCreate" class="space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div class="grid gap-3 sm:grid-cols-2">
-                <input v-model="form.code" placeholder="code (ej. new_metric)" class="h-10 rounded-xl border border-slate-200 px-3 text-sm" />
-                <input v-model="form.name" placeholder="Nombre visible" class="h-10 rounded-xl border border-slate-200 px-3 text-sm" />
+        <div v-if="showCreate" class="app-card animate-in fade-in slide-in-from-top-2 space-y-4 p-5 duration-200">
+            <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
+                <Sparkles class="size-4 text-primary" /> Nuevo KPI
+                <OkrHelpTooltip text="El 'code' es la llave técnica estable (nunca cambia). 'provider' solo puede ser una fuente ya registrada en el sistema — nunca texto libre." />
+            </p>
+            <div class="grid gap-4 sm:grid-cols-2">
+                <TextField v-model="form.code" label="Code" placeholder="ej. new_metric" :error="form.errors.code" />
+                <TextField v-model="form.name" label="Nombre visible" placeholder="Ej. Margen operativo" :error="form.errors.name" />
             </div>
-            <div class="grid gap-3 sm:grid-cols-4">
-                <select v-model="form.unit" class="h-10 rounded-xl border border-slate-200 px-3 text-sm">
-                    <option value="currency">currency</option><option value="percentage">percentage</option>
-                    <option value="integer">integer</option><option value="decimal">decimal</option>
-                </select>
-                <select v-model="form.type" class="h-10 rounded-xl border border-slate-200 px-3 text-sm">
-                    <option value="cumulative">cumulative</option><option value="balance">balance</option><option value="percentage">percentage</option>
-                </select>
-                <select v-model="form.direction" class="h-10 rounded-xl border border-slate-200 px-3 text-sm">
-                    <option value="increase">increase</option><option value="decrease">decrease</option>
-                </select>
-                <select v-model="form.automation" class="h-10 rounded-xl border border-slate-200 px-3 text-sm">
-                    <option value="manual">manual</option><option value="automatic">automatic</option><option value="hybrid">hybrid</option>
-                </select>
+            <div class="grid gap-4 sm:grid-cols-4">
+                <SelectField v-model="form.unit" label="Unidad" :options="[{ value: 'currency', label: 'Moneda' }, { value: 'percentage', label: 'Porcentaje' }, { value: 'integer', label: 'Entero' }, { value: 'decimal', label: 'Decimal' }]" />
+                <SelectField v-model="form.type" label="Tipo" :options="[{ value: 'cumulative', label: 'Acumulado' }, { value: 'balance', label: 'Saldo' }, { value: 'percentage', label: 'Porcentaje' }]" />
+                <SelectField v-model="form.direction" label="Dirección" :options="[{ value: 'increase', label: 'Incrementar ↑' }, { value: 'decrease', label: 'Disminuir ↓' }]" />
+                <SelectField v-model="form.automation" label="Automatización" :options="[{ value: 'manual', label: 'Manual' }, { value: 'automatic', label: 'Automático' }, { value: 'hybrid', label: 'Híbrido' }]" />
             </div>
             <div v-if="form.automation !== 'manual'">
-                <label class="block text-xs font-bold text-slate-500 mb-1">Provider (fuente registrada — nunca texto libre)</label>
-                <select v-model="form.provider_key" class="h-10 w-full rounded-xl border border-slate-200 px-3 text-sm">
-                    <option value="">— Ninguno —</option>
-                    <option v-for="p in availableProviders" :key="p" :value="p">{{ p }}</option>
-                </select>
+                <SelectField
+                    v-model="form.provider_key"
+                    label="Provider (fuente registrada — nunca texto libre)"
+                    placeholder="— Ninguno —"
+                    :options="availableProviders.map((p) => ({ value: p, label: p }))"
+                    :error="form.errors.provider_key"
+                />
             </div>
-            <button @click="submit" class="h-9 rounded-xl bg-indigo-700 px-4 text-xs font-black text-white">Guardar KPI</button>
+            <div class="flex gap-2">
+                <Button class="h-10 rounded-2xl" :disabled="form.processing" @click="submit">Guardar KPI</Button>
+                <Button variant="outline" class="h-10 rounded-2xl" @click="showCreate = false">Cancelar</Button>
+            </div>
         </div>
 
-        <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table class="w-full min-w-[800px] text-sm">
-                <thead class="bg-slate-900 text-white">
-                    <tr>
-                        <th class="px-3 py-3 text-left font-bold">Code</th>
-                        <th class="px-3 py-3 text-left font-bold">Nombre</th>
-                        <th class="px-3 py-3 text-left font-bold">Tipo</th>
-                        <th class="px-3 py-3 text-left font-bold">Dirección</th>
-                        <th class="px-3 py-3 text-left font-bold">Fuente</th>
-                        <th class="px-3 py-3 text-left font-bold">Activo</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr v-for="k in kpis" :key="k.id" class="border-t border-slate-100">
-                        <td class="px-3 py-3 font-mono text-xs text-slate-500">{{ k.code }}</td>
-                        <td class="px-3 py-3 font-bold text-slate-900">{{ k.name }}</td>
-                        <td class="px-3 py-3 text-slate-600">{{ k.type }}</td>
-                        <td class="px-3 py-3 text-slate-600">{{ k.direction === 'increase' ? 'Incrementar' : 'Disminuir' }}</td>
-                        <td class="px-3 py-3">
-                            <span v-if="k.automation === 'automatic'" class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">Automático — {{ k.provider_key }}</span>
-                            <span v-else class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-500">Manual</span>
-                        </td>
-                        <td class="px-3 py-3">
-                            <button @click="toggleActive(k)" class="rounded-full px-2 py-0.5 text-xs font-bold" :class="k.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'">
-                                {{ k.is_active ? 'Activo' : 'Inactivo' }}
-                            </button>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
+        <div class="app-table-wrap">
+            <div class="app-table-content">
+                <table v-if="kpis.length" class="w-full min-w-[860px] text-sm">
+                    <thead class="border-b border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr>
+                            <th class="px-3 py-3 text-left font-semibold">Code</th>
+                            <th class="px-3 py-3 text-left font-semibold">Nombre</th>
+                            <th class="px-3 py-3 text-left font-semibold">Tipo</th>
+                            <th class="px-3 py-3 text-left font-semibold">Dirección</th>
+                            <th class="px-3 py-3 text-left font-semibold">Fuente</th>
+                            <th class="px-3 py-3 text-left font-semibold">Estado</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="k in kpis" :key="k.id" class="border-t border-border transition-colors hover:bg-muted/30">
+                            <td class="px-3 py-3 font-mono text-xs text-muted-foreground">{{ k.code }}</td>
+                            <td class="px-3 py-3 font-semibold text-foreground">{{ k.name }}</td>
+                            <td class="px-3 py-3 text-muted-foreground">{{ k.type }}</td>
+                            <td class="px-3 py-3">
+                                <span class="inline-flex items-center gap-1 text-muted-foreground">
+                                    <ArrowUp v-if="k.direction === 'increase'" class="size-3.5" />
+                                    <ArrowDown v-else class="size-3.5" />
+                                    {{ k.direction === 'increase' ? 'Incrementar' : 'Disminuir' }}
+                                </span>
+                            </td>
+                            <td class="px-3 py-3">
+                                <span v-if="k.automation === 'automatic'" class="rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300">Automático — {{ k.provider_key }}</span>
+                                <span v-else-if="k.automation === 'hybrid'" class="rounded-full bg-sky-500/10 px-2.5 py-1 text-xs font-semibold text-sky-700 dark:text-sky-300">Híbrido</span>
+                                <span v-else class="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold text-muted-foreground">Manual</span>
+                            </td>
+                            <td class="px-3 py-3">
+                                <button
+                                    class="rounded-full px-2.5 py-1 text-xs font-semibold transition"
+                                    :class="k.is_active ? 'bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300' : 'bg-muted text-muted-foreground hover:bg-muted/70'"
+                                    @click="toggleActive(k)"
+                                >
+                                    {{ k.is_active ? 'Activo' : 'Inactivo' }}
+                                </button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <AppEmptyState v-else title="Sin KPI en el catálogo" message="Agrega el primero para poder usarlo en un Key Result." />
+            </div>
         </div>
     </div>
 </template>

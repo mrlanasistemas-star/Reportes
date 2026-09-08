@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Okr;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Okr\Concerns\ResolvesOperativeBranches;
 use App\Models\Branch;
-use App\Models\Employee;
 use App\Models\OkrObjective;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
@@ -41,7 +40,8 @@ class HistoryController extends Controller
             'objectives' => $objectives,
             'filters' => [
                 'branches'  => Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']),
-                'employees' => Employee::query()->where('is_active', true)->orderBy('full_name')->limit(500)->get(['id', 'full_name']),
+                // Colaborador ya NO se precarga completo — se busca bajo demanda
+                // vía GET /okr/employees-lookup (mismo criterio que el dashboard).
             ],
             'query' => $request->only(['branch_id', 'employee_id', 'final_status']),
         ]);
