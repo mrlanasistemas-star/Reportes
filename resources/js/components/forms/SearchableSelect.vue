@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, ChevronsUpDown, Search, X } from 'lucide-vue-next'
+// FocusScope real de reka-ui (no un hack propio) — el panel se teletransporta a
+// <body>, así que cuando este componente vive DENTRO de un shadcn Dialog, el
+// focus-trap del Dialog "atrapa" el foco y se lo roba de vuelta al buscador en
+// cuanto el usuario hace clic/escribe ahí (el input nunca conserva el foco:
+// "no me deja escribir"). FocusScope aquí NO atrapa nada por sí mismo
+// (`trapped` no se pasa) — solo, al montarse, PAUSA el FocusScope activo más
+// arriba en la pila (mismo mecanismo que usan los propios Select/Popover de
+// reka-ui anidados en un Dialog) y lo reanuda al cerrarse.
+import { FocusScope } from 'reka-ui'
 
 type OptionLike = Record<string, any>
 
@@ -196,74 +205,78 @@ watch(query, (value) => emit('update:search', value))
       <div
         v-if="open"
         class="fixed inset-0 z-[9998]"
+        style="pointer-events: auto"
+        data-dismissable-layer
       >
         <div
           class="absolute inset-0"
           @mousedown.prevent="close"
         />
 
-        <div
-          ref="panelRef"
-          :style="panelStyle"
-          class="z-[9999] overflow-hidden rounded-3xl border border-border bg-popover shadow-2xl"
-          @mousedown.stop
-        >
-          <div class="border-b border-border p-3">
-            <div class="relative">
-              <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                ref="searchRef"
-                v-model="query"
-                type="text"
-                :placeholder="searchPlaceholder"
-                class="app-input pl-10"
-              >
-            </div>
-          </div>
-
-          <div class="max-h-[inherit] overflow-auto p-2">
-            <button
-              v-if="allowNull"
-              type="button"
-              class="flex w-full items-center justify-between rounded-2xl px-3 py-2.5 text-left text-sm transition hover:bg-muted"
-              @click="pick(null)"
-            >
-              <span>{{ nullLabel }}</span>
-              <X class="h-4 w-4 text-muted-foreground" />
-            </button>
-
-            <button
-              v-for="option in filteredOptions"
-              :key="String(option[valueKey])"
-              type="button"
-              class="flex w-full items-center justify-between gap-3 rounded-2xl px-3 py-2.5 text-left text-sm transition hover:bg-muted"
-              :class="String(modelValue) === String(option[valueKey]) ? 'bg-accent text-accent-foreground font-semibold' : ''"
-              @click="pick(option[valueKey])"
-            >
-              <span class="truncate">
-                {{ option[labelKey] }}
-                <span
-                  v-if="option[secondaryKey]"
-                  class="ml-1 text-muted-foreground"
+        <FocusScope>
+          <div
+            ref="panelRef"
+            :style="panelStyle"
+            class="z-[9999] overflow-hidden rounded-3xl border border-border bg-popover shadow-2xl"
+            @mousedown.stop
+          >
+            <div class="border-b border-border p-3">
+              <div class="relative">
+                <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  ref="searchRef"
+                  v-model="query"
+                  type="text"
+                  :placeholder="searchPlaceholder"
+                  class="app-input pl-10"
                 >
-                  ({{ option[secondaryKey] }})
+              </div>
+            </div>
+
+            <div class="max-h-[inherit] overflow-auto p-2">
+              <button
+                v-if="allowNull"
+                type="button"
+                class="flex w-full items-center justify-between rounded-2xl px-3 py-2.5 text-left text-sm transition hover:bg-muted"
+                @click="pick(null)"
+              >
+                <span>{{ nullLabel }}</span>
+                <X class="h-4 w-4 text-muted-foreground" />
+              </button>
+
+              <button
+                v-for="option in filteredOptions"
+                :key="String(option[valueKey])"
+                type="button"
+                class="flex w-full items-center justify-between gap-3 rounded-2xl px-3 py-2.5 text-left text-sm transition hover:bg-muted"
+                :class="String(modelValue) === String(option[valueKey]) ? 'bg-accent text-accent-foreground font-semibold' : ''"
+                @click="pick(option[valueKey])"
+              >
+                <span class="truncate">
+                  {{ option[labelKey] }}
+                  <span
+                    v-if="option[secondaryKey]"
+                    class="ml-1 text-muted-foreground"
+                  >
+                    ({{ option[secondaryKey] }})
+                  </span>
                 </span>
-              </span>
 
-              <Check
-                v-if="String(modelValue) === String(option[valueKey])"
-                class="h-4 w-4 shrink-0"
-              />
-            </button>
+                <Check
+                  v-if="String(modelValue) === String(option[valueKey])"
+                  class="h-4 w-4 shrink-0"
+                />
+              </button>
 
-            <div
-              v-if="filteredOptions.length === 0"
-              class="px-3 py-4 text-sm text-muted-foreground"
-            >
-              Sin resultados.
+              <div
+                v-if="filteredOptions.length === 0"
+                class="px-3 py-4 text-sm text-muted-foreground"
+              >
+                Sin resultados.
+              </div>
             </div>
           </div>
-        </div>
+        </FocusScope>
       </div>
     </Teleport>
 

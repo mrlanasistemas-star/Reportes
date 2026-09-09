@@ -46,12 +46,16 @@ class ObjectiveController extends Controller
         $this->authorize('okr.view');
         $request->validate(['branch_id' => ['nullable', 'integer', 'exists:branches,id'], 'search' => ['nullable', 'string', 'max:100']]);
 
-        $employees = $resolver->employeesForBranch(
-            $request->filled('branch_id') ? $request->integer('branch_id') : null,
-            $request->string('search')->toString(),
-        );
+        $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
+        $employees = $resolver->employeesForBranch($branchId, $request->string('search')->toString());
 
-        return response()->json(['employees' => $employees]);
+        return response()->json([
+            'employees' => $employees,
+            // Total real de la sucursal (sin el límite de 30 del buscador) —
+            // lo usa el resumen del wizard de asignación para mostrar "todos
+            // todos" los colaboradores cuando no se activan OKR individuales.
+            'total_in_branch' => $branchId !== null ? $resolver->countForBranch($branchId) : null,
+        ]);
     }
 
     /**
