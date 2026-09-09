@@ -10,13 +10,14 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useForm } from '@inertiajs/vue3'
 import {
-    ArrowLeft, ArrowRight, Building2, CheckCircle2, Loader2, Plus,
-    Search, Sparkles, Trash2, Users, X,
+    AlertTriangle, ArrowLeft, ArrowRight, Building2, CalendarDays, CheckCircle2, GripVertical, Hash, Info, ListChecks, Loader2, Percent, Plus,
+    Search, Sparkles, Trash2, UserCheck, Users, Users2, Wallet, X,
 } from 'lucide-vue-next'
 import VueApexCharts from 'vue3-apexcharts'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import SelectField from '@/components/forms/SelectField.vue'
 import DatePickerField from '@/components/forms/DatePickerField.vue'
@@ -36,7 +37,44 @@ const STEPS = ['Asignación', 'Key Results y KPIs', 'Metas, pesos y trayectoria'
 const step = ref(1)
 
 type IndividualRow = { employee_id: number | null; employee_name: string; title: string }
-type KrRow = { kpi_id: number | null; description: string; baseline_value: string; target_value: string; weight: string; baseline_mode: 'auto' | 'manual' }
+// type_filter/direction_filter son SOLO estado de UI (nunca se envían al
+// backend — el submit() reconstruye cada key_result con únicamente
+// kpi_id/description/baseline_value/target_value/weight, sección 234-239):
+// sirven para acotar qué KPI del catálogo puede elegirse en "KPI relacionado"
+// sin inventar columnas nuevas en okr_key_results (Tipo y Dirección siguen
+// siendo, como siempre, atributos del KPI del catálogo — nunca del Key Result).
+type KrRow = {
+    kpi_id: number | null
+    description: string
+    baseline_value: string
+    target_value: string
+    weight: string
+    baseline_mode: 'auto' | 'manual'
+    type_filter: string | null
+    direction_filter: string | null
+}
+
+// Traducciones ES de los enums crudos de OkrKpi (app/Models/OkrKpi.php) — el
+// bug reportado era mostrar el valor crudo en inglés ("cumulative", etc.) sin
+// traducir en la tabla de Key Results.
+const KPI_TYPE_LABELS: Record<string, string> = { cumulative: 'Acumulativo', balance: 'Saldo', percentage: 'Porcentual' }
+const KPI_DIRECTION_LABELS: Record<string, string> = { increase: 'Incrementar', decrease: 'Disminuir' }
+const ALL_FILTER = '__all__'
+function kpiTypeLabel(type?: string | null) { return type ? (KPI_TYPE_LABELS[type] ?? type) : '—' }
+function kpiDirectionLabel(direction?: string | null) { return direction ? (KPI_DIRECTION_LABELS[direction] ?? direction) : '—' }
+
+// Ícono + color por KPI (docs/imagenesOKR/7.png y 8.png muestran un ícono
+// circular a la izquierda del nombre en "Definición de metas por KPI"). El
+// catálogo (okr_kpis) no tiene una columna de ícono/color propia — inventar
+// una hubiera sido otro cambio de esquema no pedido — así que se deriva de
+// `unit`, que sí es un dato real del KPI: currency → billetera, percentage →
+// porcentaje, integer/conteo → numeral.
+function kpiIconFor(kpi: any): { icon: any; class: string } {
+    if (!kpi) return { icon: Hash, class: 'bg-muted text-muted-foreground' }
+    if (kpi.unit === 'currency') return { icon: Wallet, class: 'bg-blue-500/10 text-blue-600 dark:text-blue-300' }
+    if (kpi.unit === 'percentage') return { icon: Percent, class: 'bg-rose-500/10 text-rose-600 dark:text-rose-300' }
+    return { icon: Hash, class: 'bg-violet-500/10 text-violet-600 dark:text-violet-300' }
+}
 
 // CORRECCIÓN 10-sep-2026 (punto 12 de la auditoría — bug real): antes
 // `responsibleOptions` mezclaba el usuario actual `{id, full_name}` con
@@ -76,18 +114,27 @@ function resetAll() {
     form.responsible_user_id = props.currentUser.id
     individualsEnabled.value = false
     individualRows.splice(0, individualRows.length)
+    employeeOptions.value = []
+    branchEmployeeCount.value = 0
 }
 watch(open, (isOpen) => { if (isOpen) resetAll() })
 
 // ── Colaboradores de la sucursal — búsqueda remota (nunca precarga todos). ──
 const employeeOptions = ref<{ id: number; full_name: string }[]>([])
+// Total REAL de colaboradores de la sucursal (sin el límite de 30 del
+// buscador) — se usa en "Resumen de asignación" cuando NO se activan OKR
+// individuales: el Objective de sucursal aplica a todos todos, no solo a los
+// que alcanzó a mostrar el dropdown de búsqueda.
+const branchEmployeeCount = ref(0)
 let employeeSearchTimer: ReturnType<typeof setTimeout> | null = null
 async function loadEmployees(search = '') {
-    if (!form.branch_id) { employeeOptions.value = []; return }
+    if (!form.branch_id) { employeeOptions.value = []; branchEmployeeCount.value = 0; return }
     const params = new URLSearchParams({ branch_id: String(form.branch_id) })
     if (search) params.set('search', search)
     const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { headers: { Accept: 'application/json' } })
-    employeeOptions.value = res.ok ? (await res.json()).employees ?? [] : []
+    const data = res.ok ? await res.json() : { employees: [], total_in_branch: 0 }
+    employeeOptions.value = data.employees ?? []
+    branchEmployeeCount.value = data.total_in_branch ?? 0
 }
 function onEmployeeSearch(term: string) {
     if (employeeSearchTimer) clearTimeout(employeeSearchTimer)
@@ -107,22 +154,125 @@ function removeIndividual(i: number) { individualRows.splice(i, 1) }
 
 const selectedBranchName = computed(() => props.branches.find((b) => b.id === form.branch_id)?.name ?? null)
 const assignmentType = computed(() => individualsEnabled.value && individualRows.length ? 'Sucursal + Individual' : 'Sucursal')
+// Paso 4 — nombre del responsable elegido, para el resumen detallado final.
+const selectedResponsibleName = computed(() => responsibleOptions.value.find((u) => u.id === form.responsible_user_id)?.full_name ?? '—')
+// Si "Agregar OKR individuales por vendedor" está apagado, el Objective de
+// sucursal aplica a TODOS los colaboradores de esa sucursal — el contador
+// debe reflejar eso (branchEmployeeCount), no quedarse en 0. Si está
+// encendido, sigue contando solo a los colaboradores agregados uno por uno.
+const summaryCollaboratorsCount = computed(() => individualsEnabled.value ? individualRows.length : branchEmployeeCount.value)
 
 // ── Paso 2: Key Results y KPIs ──
 function addKr() {
-    form.key_results.push({ kpi_id: null, description: '', baseline_value: '', target_value: '', weight: '', baseline_mode: 'auto' })
+    // El peso del nuevo Key Result arranca en el % que aún falta para llegar
+    // a 100 (nunca vacío) — ayuda a que la suma final cierre en 100 sin que
+    // el usuario tenga que hacer la resta a mano.
+    const remaining = Math.max(0, round2(100 - totalWeight.value))
+    form.key_results.push({
+        kpi_id: null, description: '', baseline_value: '', target_value: '',
+        weight: remaining > 0 ? String(remaining) : '', baseline_mode: 'auto',
+        type_filter: null, direction_filter: null,
+    })
 }
 function removeKr(i: number) { form.key_results.splice(i, 1) }
 watch(() => step.value, (s) => { if (s === 2 && form.key_results.length === 0) addKr() })
+
+// Si queda UN SOLO Key Result, matemáticamente su peso SIEMPRE debe ser 100%
+// — nunca queda a criterio del usuario ni puede quedar en otro valor. Se
+// bloquea el input en el template (:disabled) y aquí se fuerza el valor.
+watch(() => form.key_results.length, (len) => {
+    if (len === 1) form.key_results[0].weight = '100'
+}, { immediate: true })
 
 function kpiOf(id: number | null) { return props.kpis.find((k) => k.id === id) ?? null }
 const totalWeight = computed(() => form.key_results.reduce((sum, kr) => sum + (Number(kr.weight) || 0), 0))
 const weightValid = computed(() => Math.abs(totalWeight.value - 100) < 0.01)
 
+// Tope dinámico por fila: nunca se puede meter un peso que, sumado al resto
+// de las filas, pase de 100% — si ya asignaste 90% en las demás, esta fila
+// solo admite hasta 10%, jamás 101% aunque el usuario lo intente escribir.
+function maxWeightForRow(i: number): number {
+    const others = form.key_results.reduce((sum, kr, idx) => (idx === i ? sum : sum + (Number(kr.weight) || 0)), 0)
+    return Math.max(0, round2(100 - others))
+}
+function onWeightInput(kr: KrRow, i: number, value: string) {
+    if (value === '') { kr.weight = ''; return }
+    const max = maxWeightForRow(i)
+    const clamped = Math.min(Math.max(Number(value) || 0, 0), max)
+    // No reformatear mientras el usuario sigue tecleando un decimal (ej. "10.")
+    kr.weight = value.endsWith('.') && clamped === Number(value.slice(0, -1)) ? value : String(clamped)
+}
+
+// ── Filtro Tipo/Dirección → acota qué KPI puede elegirse en "KPI relacionado" ──
+// Tipo y Dirección siguen siendo atributos del KPI del catálogo (no se
+// inventan columnas nuevas en key_results) — pero aquí se vuelven selects
+// reales y funcionales: cambiarlos filtra el catálogo a los KPI compatibles,
+// y si el KPI ya elegido deja de calzar, se limpia para que el usuario
+// escoja uno nuevo que sí cumpla lo que pidió.
+//
+// BUG corregido: `kr.type_filter`/`direction_filter` en null significaba DOS
+// cosas a la vez — "todavía no tocaste el filtro" (usa el valor del KPI ya
+// elegido) Y "elegiste 'Cualquiera' a propósito" — con `??` ambas caían al
+// mismo `null` y el fallback al KPI se comía la elección de "Cualquiera": no
+// había forma de volver a "sin filtro" una vez que ya había un KPI elegido.
+// Ahora "Cualquiera" se guarda como el sentinel ALL_FILTER (NO como null),
+// así se distingue de "sin tocar todavía" y sí se respeta al reabrir el select.
+function typeFilterOf(kr: KrRow): string | null {
+    if (kr.type_filter === ALL_FILTER) return null
+    return kr.type_filter ?? kpiOf(kr.kpi_id)?.type ?? null
+}
+function directionFilterOf(kr: KrRow): string | null {
+    if (kr.direction_filter === ALL_FILTER) return null
+    return kr.direction_filter ?? kpiOf(kr.kpi_id)?.direction ?? null
+}
+function kpisMatchingFilters(kr: KrRow) {
+    const type = typeFilterOf(kr)
+    const direction = directionFilterOf(kr)
+    return props.kpis.filter((k) => (!type || k.type === type) && (!direction || k.direction === direction))
+}
+function onTypeFilterChange(kr: KrRow, value: string) {
+    kr.type_filter = value
+    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) kr.kpi_id = null
+}
+function onDirectionFilterChange(kr: KrRow, value: string) {
+    kr.direction_filter = value
+    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) kr.kpi_id = null
+}
+function onKpiPick(kr: KrRow, id: number | null) {
+    kr.kpi_id = id
+    kr.type_filter = null
+    kr.direction_filter = null
+}
+
+// ── Reordenar Key Results arrastrando el "⠿" (docs/imagenesOKR/5.png) ──
+const dragIndex = ref<number | null>(null)
+function onDragStart(i: number) { dragIndex.value = i }
+function onDropRow(i: number) {
+    if (dragIndex.value === null || dragIndex.value === i) return
+    const [moved] = form.key_results.splice(dragIndex.value, 1)
+    form.key_results.splice(i, 0, moved)
+    dragIndex.value = null
+}
+
+// FIX: ApexCharts, si no se le apaga explícitamente el dataLabel "name" de
+// radialBar, muestra el nombre de la serie ("series-1" por defecto al no
+// pasar `series` con nombre) encima del valor — por eso se veía "series-1"
+// en vez de solo el porcentaje grande y centrado que pide la referencia
+// (docs/imagenesOKR/5.png y 6.png).
 const donutOptions = computed(() => ({
     chart: { sparkline: { enabled: true } },
     colors: [weightValid.value ? '#10b981' : '#f59e0b'],
-    plotOptions: { radialBar: { hollow: { size: '68%' }, dataLabels: { value: { fontSize: '20px', fontWeight: 700, formatter: () => `${Math.round(totalWeight.value)}%` } } } },
+    plotOptions: {
+        radialBar: {
+            hollow: { size: '66%' },
+            track: { background: 'rgba(148,163,184,0.18)' },
+            dataLabels: {
+                name: { show: false },
+                value: { offsetY: 8, fontSize: '26px', fontWeight: 700, formatter: () => `${Math.round(totalWeight.value)}%` },
+            },
+        },
+    },
+    stroke: { lineCap: 'round' },
 }))
 
 // ── Paso 3: Metas, pesos y trayectoria ──
@@ -172,6 +322,17 @@ const trajectoryPoints = computed(() => {
         return Math.round((base + ((target - base) * week) / weeks) * 100) / 100
     })
 })
+// Serie que SÍ se grafica — % de avance esperado (0-100), igual que el eje Y
+// de la referencia (docs/imagenesOKR/7.png y 8.png: 10%, 20%... hasta 100%).
+// Como la trayectoria es una interpolación lineal base→meta, el % esperado en
+// la semana N es simplemente N/total — la misma matemática que ya usa
+// OkrTrajectoryService, solo expresada en porcentaje en vez de valor crudo
+// del KPI (que puede estar en pesos, cientos, etc. y no cabría en un eje 0-100).
+const trajectoryPercents = computed(() => {
+    if (trajectoryPoints.value.length === 0) return []
+    const weeks = Math.max(1, form.duration_weeks)
+    return Array.from({ length: weeks }, (_, i) => Math.round(((i + 1) / weeks) * 100))
+})
 const expectedAtWeek1Pct = computed(() => (form.duration_weeks > 0 ? Math.round((1 / form.duration_weeks) * 100) : 0))
 
 const endDatePreview = computed(() => {
@@ -181,15 +342,58 @@ const endDatePreview = computed(() => {
     return start.toISOString().slice(0, 10)
 })
 
-const trajectoryChartOptions = computed(() => ({
-    chart: { toolbar: { show: false }, sparkline: { enabled: false } },
-    xaxis: { categories: trajectoryPoints.value.map((_, i) => `S${i + 1}`), labels: { style: { fontSize: '10px' } } },
-    yaxis: { labels: { show: false } },
-    colors: ['#4f46e5'],
-    stroke: { curve: 'straight', width: 2 },
-    grid: { show: false },
-    dataLabels: { enabled: false },
-}))
+// Opciones fijas de plazo (semanas) para el select "Plazo de evaluación" —
+// siempre incluye el valor actual aunque no esté en la lista común, para no
+// perder un valor ya capturado (ej. si venía de un objective ya editado).
+const weekOptionsList = computed(() => {
+    const base = [4, 6, 8, 10, 12, 16, 20, 24, 36, 48, 52]
+    if (!base.includes(form.duration_weeks)) base.push(form.duration_weeks)
+    return base.sort((a, b) => a - b)
+})
+
+const trajectoryChartOptions = computed(() => {
+    const showDataLabels = trajectoryPercents.value.length > 0 && trajectoryPercents.value.length <= 14
+    return {
+        chart: { toolbar: { show: false }, sparkline: { enabled: false } },
+        xaxis: {
+            categories: trajectoryPercents.value.map((_, i) => `S${i + 1}`),
+            labels: { style: { fontSize: '10px' } },
+            axisTicks: { show: false },
+        },
+        // El eje Y muestra el % de avance en pasos de 10 — 0%, 10%, 20%... 100%
+        // (antes venía oculto: `labels: { show: false }`, ese era el bug). Con
+        // 11 etiquetas (0 a 100) se ven apretadas si la gráfica es baja — por
+        // eso subimos su alto (ver :height más abajo) y agrandamos la fuente.
+        yaxis: {
+            min: 0, max: 100, tickAmount: 10,
+            labels: { formatter: (v: number) => `${Math.round(v)}%`, style: { fontSize: '11px', colors: ['#94a3b8'] }, offsetX: -4 },
+        },
+        colors: ['#4f46e5'],
+        stroke: { curve: 'straight', width: 2.5 },
+        grid: { borderColor: 'rgba(148,163,184,0.25)', strokeDashArray: 4, padding: { left: 8, right: 8, top: 4 } },
+        // Punto visible donde cada semana (eje X) se cruza con su % (eje Y),
+        // con un hover más grande para resaltar el punto bajo el cursor.
+        markers: { size: 4, colors: ['#ffffff'], strokeColors: '#4f46e5', strokeWidth: 2, hover: { size: 6 } },
+        dataLabels: {
+            enabled: showDataLabels,
+            formatter: (v: number) => `${v}%`,
+            offsetY: -10,
+            style: { fontSize: '9px', fontWeight: 700, colors: ['#4f46e5'] },
+        },
+        tooltip: {
+            y: {
+                // Además del %, se muestra el valor crudo esperado del KPI en
+                // esa semana (ej. "40% · $130,000.00") — mismo dato que ya
+                // calcula trajectoryPoints, solo presentado junto al %.
+                formatter: (val: number, opts: any) => {
+                    const raw = trajectoryPoints.value[opts?.dataPointIndex]
+                    const unit = kpiOf(primaryKr.value?.kpi_id ?? null)?.unit
+                    return raw !== undefined ? `${val}% · ${formatByUnit(raw, unit)}` : `${val}%`
+                },
+            },
+        },
+    }
+})
 
 // ── Navegación ──
 function canAdvance(): boolean {
@@ -232,7 +436,12 @@ function submit() {
 
 <template>
     <Dialog v-model:open="open">
-        <DialogContent class="flex max-h-[90vh] w-full max-w-[1000px] flex-col gap-0 overflow-hidden p-0" :show-close-button="false">
+        <DialogContent
+            class="flex max-h-[90vh] w-[95vw] max-w-[95vw] sm:max-w-[1400px] flex-col gap-0 overflow-hidden p-0"
+            :show-close-button="false"
+            @pointer-down-outside="(e) => e.preventDefault()"
+            @interact-outside="(e) => e.preventDefault()"
+        >
             <DialogTitle class="sr-only">Asignar OKR</DialogTitle>
 
             <!-- Header -->
@@ -305,11 +514,11 @@ function submit() {
                         <div v-if="individualsEnabled" class="space-y-3 animate-in fade-in duration-200">
                             <p class="text-sm font-semibold text-foreground">Asignación individual</p>
                             <div class="flex gap-2">
-                                <div class="relative flex-1">
-                                    <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                                <div class="flex-1">
                                     <SearchableSelect
                                         v-model="addEmployeeId as any"
                                         placeholder="Agregar colaborador"
+                                        search-placeholder="Buscar colaborador..."
                                         :options="employeeOptions.filter((e) => !individualRows.some((r) => r.employee_id === e.id))"
                                         label-key="full_name" secondary-key="__none"
                                         :disabled="!form.branch_id"
@@ -340,7 +549,7 @@ function submit() {
                         </div>
                         <div class="flex items-center gap-2 text-sm">
                             <Users class="size-4 text-primary" />
-                            <div><p class="text-xs text-muted-foreground">Colaboradores</p><p class="font-semibold text-foreground">{{ individualRows.length }}</p></div>
+                            <div><p class="text-xs text-muted-foreground">Colaboradores</p><p class="font-semibold text-foreground">{{ summaryCollaboratorsCount }}</p></div>
                         </div>
                         <div class="flex items-center gap-2 text-sm">
                             <Sparkles class="size-4 text-primary" />
@@ -353,8 +562,9 @@ function submit() {
                 <div v-else-if="step === 2" class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_240px]">
                     <div class="space-y-4">
                         <div class="flex items-center gap-3 rounded-xl border border-border bg-muted/20 p-3">
-                            <span class="flex size-9 items-center justify-center rounded-full bg-primary/10 text-primary"><Sparkles class="size-4" /></span>
+                            <span class="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Sparkles class="size-4" /></span>
                             <div class="min-w-0">
+                                <p class="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Objetivo seleccionado</p>
                                 <p class="truncate text-sm font-semibold text-foreground">{{ form.title || 'Objective sin título' }}</p>
                                 <p class="truncate text-xs text-muted-foreground">{{ selectedBranchName }}</p>
                             </div>
@@ -366,39 +576,93 @@ function submit() {
                         </div>
 
                         <div class="overflow-x-auto rounded-xl border border-border">
-                            <table class="w-full min-w-[640px] text-xs">
+                            <table class="w-full min-w-[760px] text-xs">
                                 <thead class="border-b border-border bg-muted/30 text-muted-foreground">
                                     <tr>
-                                        <th class="w-8 px-2 py-2"></th>
+                                        <th class="w-10 px-2 py-2"></th>
                                         <th class="px-2 py-2 text-left font-semibold">Resultado clave</th>
-                                        <th class="px-2 py-2 text-left font-semibold">KPI relacionado</th>
-                                        <th class="px-2 py-2 text-left font-semibold">Tipo</th>
-                                        <th class="px-2 py-2 text-left font-semibold">Dirección</th>
-                                        <th class="w-20 px-2 py-2 text-left font-semibold">Peso</th>
+                                        <th class="min-w-[150px] px-2 py-2 text-left font-semibold">KPI relacionado</th>
+                                        <th class="min-w-[130px] px-2 py-2 text-left font-semibold">Tipo de KPI</th>
+                                        <th class="min-w-[130px] px-2 py-2 text-left font-semibold">Dirección</th>
+                                        <th class="w-24 px-2 py-2 text-left font-semibold">Peso</th>
                                         <th class="w-8 px-2 py-2"></th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(kr, i) in form.key_results" :key="i" class="border-t border-border">
-                                        <td class="px-2 py-2 text-center text-muted-foreground">{{ i + 1 }}</td>
-                                        <td class="px-2 py-2"><input v-model="kr.description" placeholder="Incrementar colocación de cartera" class="app-input h-9 text-xs"></td>
-                                        <td class="min-w-[140px] px-2 py-2">
-                                            <SelectField
-                                                :model-value="kr.kpi_id !== null ? String(kr.kpi_id) : null"
-                                                placeholder="KPI"
-                                                :options="kpis.map((k) => ({ value: String(k.id), label: k.name }))"
-                                                @update:model-value="(v) => (kr.kpi_id = Number(v))"
-                                            />
-                                        </td>
-                                        <td class="whitespace-nowrap px-2 py-2 text-muted-foreground">{{ kpiOf(kr.kpi_id)?.type ?? '—' }}</td>
-                                        <td class="whitespace-nowrap px-2 py-2">
-                                            <span v-if="kpiOf(kr.kpi_id)" class="rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="kpiOf(kr.kpi_id).direction === 'increase' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'">
-                                                {{ kpiOf(kr.kpi_id).direction === 'increase' ? 'Incrementar ↑' : 'Disminuir ↓' }}
+                                    <tr
+                                        v-for="(kr, i) in form.key_results" :key="i"
+                                        class="border-t border-border transition"
+                                        :class="dragIndex === i ? 'opacity-40' : ''"
+                                        draggable="true"
+                                        @dragstart="onDragStart(i)"
+                                        @dragover.prevent
+                                        @drop="onDropRow(i)"
+                                    >
+                                        <td class="px-2 py-2.5 text-center text-muted-foreground">
+                                            <span class="inline-flex items-center gap-1">
+                                                <GripVertical class="size-3.5 cursor-grab text-muted-foreground/70 hover:text-foreground" />
+                                                {{ i + 1 }}
                                             </span>
-                                            <span v-else class="text-muted-foreground">—</span>
                                         </td>
-                                        <td class="px-2 py-2"><input v-model="kr.weight" type="number" step="0.01" min="0.01" max="100" placeholder="0" class="app-input h-9 text-xs"></td>
-                                        <td class="px-2 py-2 text-center">
+                                        <td class="min-w-[180px] px-2 py-2.5">
+                                            <input v-model="kr.description" placeholder="Incrementar colocación de cartera" class="app-input h-9 text-xs">
+                                        </td>
+
+                                        <!-- KPI relacionado — pill azul, filtrado por Tipo/Dirección si el usuario los usó -->
+                                        <td class="px-2 py-2.5">
+                                            <Select :model-value="kr.kpi_id !== null ? String(kr.kpi_id) : undefined" @update:model-value="(v) => onKpiPick(kr, v ? Number(v) : null)">
+                                                <SelectTrigger size="sm" class="w-full justify-between gap-1 rounded-full border-0 bg-blue-500/10 px-3 text-[11px] font-semibold text-blue-700 hover:bg-blue-500/15 dark:text-blue-300">
+                                                    <SelectValue placeholder="Selecciona un KPI" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem v-for="k in kpisMatchingFilters(kr)" :key="k.id" :value="String(k.id)">{{ k.name }}</SelectItem>
+                                                    <p v-if="kpisMatchingFilters(kr).length === 0" class="px-2 py-3 text-center text-[11px] text-muted-foreground">Ningún KPI coincide con Tipo/Dirección.</p>
+                                                </SelectContent>
+                                            </Select>
+                                        </td>
+
+                                        <!-- Tipo de KPI — pill violeta, editable: filtra el catálogo -->
+                                        <td class="px-2 py-2.5">
+                                            <Select :model-value="typeFilterOf(kr) ?? ALL_FILTER" @update:model-value="(v) => onTypeFilterChange(kr, v as string)">
+                                                <SelectTrigger size="sm" class="w-full justify-between gap-1 rounded-full border-0 bg-violet-500/10 px-3 text-[11px] font-semibold text-violet-700 hover:bg-violet-500/15 dark:text-violet-300">
+                                                    <SelectValue placeholder="Tipo" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem :value="ALL_FILTER">Cualquiera</SelectItem>
+                                                    <SelectItem value="cumulative">Acumulativo</SelectItem>
+                                                    <SelectItem value="balance">Saldo</SelectItem>
+                                                    <SelectItem value="percentage">Porcentual</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </td>
+
+                                        <!-- Dirección — pill verde/ámbar según incrementar/disminuir, editable: filtra el catálogo -->
+                                        <td class="px-2 py-2.5">
+                                            <Select :model-value="directionFilterOf(kr) ?? ALL_FILTER" @update:model-value="(v) => onDirectionFilterChange(kr, v as string)">
+                                                <SelectTrigger
+                                                    size="sm" class="w-full justify-between gap-1 rounded-full border-0 px-3 text-[11px] font-semibold hover:opacity-80"
+                                                    :class="directionFilterOf(kr) === 'decrease' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'"
+                                                >
+                                                    <SelectValue placeholder="Dirección" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem :value="ALL_FILTER">Cualquiera</SelectItem>
+                                                    <SelectItem value="increase">Incrementar ↗</SelectItem>
+                                                    <SelectItem value="decrease">Disminuir ↘</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </td>
+
+                                        <td class="px-2 py-2.5">
+                                            <input
+                                                :value="kr.weight" type="number" step="0.01" min="0"
+                                                :max="maxWeightForRow(i)"
+                                                :disabled="form.key_results.length === 1"
+                                                placeholder="0" class="app-input h-9 text-xs disabled:cursor-not-allowed disabled:opacity-70"
+                                                @input="(e) => onWeightInput(kr, i, (e.target as HTMLInputElement).value)"
+                                            >
+                                        </td>
+                                        <td class="px-2 py-2.5 text-center">
                                             <button v-if="form.key_results.length > 1" type="button" class="text-muted-foreground transition hover:text-destructive" @click="removeKr(i)"><Trash2 class="size-3.5" /></button>
                                         </td>
                                     </tr>
@@ -406,17 +670,29 @@ function submit() {
                             </table>
                         </div>
 
+                        <p class="text-[11px] text-muted-foreground">
+                            Arrastra <GripVertical class="-mt-0.5 inline size-3 align-middle" /> para reordenar. Un solo Key Result siempre pesa 100%; con varios, la suma nunca puede pasar de 100%.
+                        </p>
+
                         <Button type="button" variant="outline" size="sm" class="gap-1.5 rounded-xl border-dashed" @click="addKr">
                             <Plus class="size-3.5" /> Agregar Key Result
                         </Button>
                     </div>
 
-                    <aside class="app-card h-fit space-y-3 p-4 text-center">
+                    <aside class="app-card h-fit space-y-4 p-4 text-center">
                         <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Resumen del OKR</p>
-                        <div class="mx-auto w-28"><VueApexCharts type="radialBar" :height="112" :options="donutOptions" :series="[Math.min(100, totalWeight)]" /></div>
-                        <p class="text-xs text-muted-foreground">Pesos asignados</p>
-                        <p class="text-sm font-semibold text-foreground">{{ form.key_results.length }} KPI seleccionados</p>
-                        <p class="text-[11px] text-muted-foreground">El cumplimiento del OKR se calcula por ponderación.</p>
+                        <div class="mx-auto w-32"><VueApexCharts type="radialBar" :height="128" :options="donutOptions" :series="[Math.min(100, totalWeight)]" /></div>
+                        <p class="-mt-2 text-xs text-muted-foreground">Pesos asignados</p>
+
+                        <div class="flex items-center gap-2.5 rounded-xl border border-border bg-muted/20 p-3 text-left">
+                            <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><ListChecks class="size-4" /></span>
+                            <p class="text-sm font-semibold text-foreground">{{ form.key_results.length }} KPI seleccionados</p>
+                        </div>
+
+                        <div class="flex items-start gap-2 rounded-xl bg-muted/30 p-3 text-left text-[11px] text-muted-foreground">
+                            <Info class="mt-0.5 size-3.5 shrink-0" />
+                            <span>El cumplimiento del OKR se calcula por ponderación.</span>
+                        </div>
                     </aside>
                 </div>
 
@@ -439,9 +715,25 @@ function submit() {
                             </thead>
                             <tbody>
                                 <tr v-for="(kr, i) in form.key_results" :key="i" class="border-t border-border align-top">
-                                    <td class="px-2 py-2.5 font-medium text-foreground">{{ kpiOf(kr.kpi_id)?.name ?? '—' }}</td>
-                                    <td class="px-2 py-2.5 text-muted-foreground">{{ kpiOf(kr.kpi_id)?.type ?? '—' }}</td>
-                                    <td class="px-2 py-2.5 text-muted-foreground">{{ kpiOf(kr.kpi_id)?.direction === 'increase' ? 'Incrementar ↑' : 'Disminuir ↓' }}</td>
+                                    <td class="px-2 py-2.5 font-medium text-foreground">
+                                        <span class="flex items-center gap-2">
+                                            <span class="flex size-6 shrink-0 items-center justify-center rounded-full" :class="kpiIconFor(kpiOf(kr.kpi_id)).class">
+                                                <component :is="kpiIconFor(kpiOf(kr.kpi_id)).icon" class="size-3.5" />
+                                            </span>
+                                            {{ kpiOf(kr.kpi_id)?.name ?? '—' }}
+                                        </span>
+                                    </td>
+                                    <td class="px-2 py-2.5">
+                                        <span class="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">{{ kpiTypeLabel(kpiOf(kr.kpi_id)?.type) }}</span>
+                                    </td>
+                                    <td class="px-2 py-2.5">
+                                        <span
+                                            class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                                            :class="kpiOf(kr.kpi_id)?.direction === 'decrease' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'"
+                                        >
+                                            {{ kpiOf(kr.kpi_id) ? `${kpiDirectionLabel(kpiOf(kr.kpi_id)?.direction)} ${kpiOf(kr.kpi_id)?.direction === 'decrease' ? '↘' : '↗'}` : '—' }}
+                                        </span>
+                                    </td>
                                     <td class="min-w-[140px] px-2 py-2.5">
                                         <template v-if="kpiOf(kr.kpi_id)?.automation === 'automatic'">
                                             <div class="rounded-lg border border-border bg-muted/20 px-2 py-1.5">
@@ -468,7 +760,7 @@ function submit() {
                     </div>
 
                     <p class="flex items-start gap-2 rounded-xl bg-muted/30 px-3 py-2.5 text-[11px] text-muted-foreground">
-                        <span class="mt-0.5">ⓘ</span>
+                        <Info class="mt-0.5 size-3.5 shrink-0" />
                         <span>Fórmula de cálculo de la meta: <strong class="text-foreground">Meta = Base congelada + Incremento esperado</strong>. Para KPI porcentuales, el incremento se expresa en puntos porcentuales (pp).</span>
                     </p>
 
@@ -476,24 +768,35 @@ function submit() {
                         <div class="app-card space-y-2 p-4">
                             <p class="text-xs font-semibold text-foreground">Plazo de evaluación</p>
                             <p class="text-[11px] text-muted-foreground">Define el horizonte temporal para medir el avance del OKR.</p>
-                            <input v-model.number="form.duration_weeks" type="number" min="1" max="104" class="app-input h-9 w-28 text-xs">
-                            <p class="text-[11px] text-muted-foreground">semanas</p>
-                            <div class="pt-1 text-[11px] text-muted-foreground">
-                                <p>Inicio: {{ formatFriendlyDate(form.start_date) }}</p>
-                                <p>Término: {{ endDatePreview ? formatFriendlyDate(endDatePreview) : '—' }}</p>
+
+                            <div class="flex items-center gap-2 pt-1">
+                                <CalendarDays class="size-4 shrink-0 text-primary" />
+                                <Select :model-value="String(form.duration_weeks)" @update:model-value="(v) => (form.duration_weeks = Number(v))">
+                                    <SelectTrigger size="sm" class="h-9 w-full justify-between gap-1 rounded-lg border-0 bg-muted/60 px-3 text-sm font-bold text-foreground">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem v-for="w in weekOptionsList" :key="w" :value="String(w)">{{ w }} semanas</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div class="flex flex-col gap-1 pt-2 text-[11px]">
+                                <p><span class="font-semibold text-foreground">Inicio:</span> <span class="text-muted-foreground">{{ formatFriendlyDate(form.start_date) }}</span></p>
+                                <p><span class="font-semibold text-foreground">Término:</span> <span class="text-muted-foreground">{{ endDatePreview ? formatFriendlyDate(endDatePreview) : '—' }}</span></p>
                             </div>
                         </div>
                         <div class="app-card space-y-2 p-4">
                             <p class="text-xs font-semibold text-foreground">Trayectoria esperada</p>
                             <p class="text-[11px] text-muted-foreground">Proyección del avance acumulado durante el periodo.</p>
-                            <VueApexCharts v-if="trajectoryPoints.length > 1" type="line" :height="110" :options="trajectoryChartOptions" :series="[{ name: 'Esperado', data: trajectoryPoints }]" />
+                            <VueApexCharts v-if="trajectoryPercents.length > 1" type="line" :height="190" :options="trajectoryChartOptions" :series="[{ name: 'Avance esperado', data: trajectoryPercents }]" />
                             <p v-else class="py-6 text-center text-[11px] text-muted-foreground">Captura base y meta para ver la trayectoria.</p>
                         </div>
                         <div class="app-card space-y-2 p-4">
                             <p class="text-xs font-semibold text-foreground">Avance esperado vs. meta final</p>
                             <p class="text-[11px] text-muted-foreground">Comparación del avance esperado al cierre frente a la meta.</p>
                             <div class="mt-2 grid grid-cols-2 gap-2 text-center">
-                                <div class="rounded-lg bg-muted/30 p-2"><p class="text-lg font-bold text-foreground">{{ expectedAtWeek1Pct }}%</p><p class="text-[10px] text-muted-foreground">Semana 1</p></div>
+                                <div class="rounded-lg bg-muted/30 p-2"><p class="text-lg font-bold text-foreground">{{ expectedAtWeek1Pct }}%</p><p class="text-[10px] text-muted-foreground">Avance esperado a la fecha</p></div>
                                 <div class="rounded-lg bg-primary/10 p-2"><p class="text-lg font-bold text-primary">100%</p><p class="text-[10px] text-muted-foreground">Meta final</p></div>
                             </div>
                         </div>
@@ -502,36 +805,102 @@ function submit() {
 
                 <!-- PASO 4: Resumen y confirmación -->
                 <div v-else-if="step === 4" class="space-y-5">
-                    <div class="app-card space-y-2 p-4">
-                        <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Objective</p>
-                        <p class="text-sm font-semibold text-foreground">{{ form.title }}</p>
-                        <div class="grid gap-2 pt-1 text-xs sm:grid-cols-3">
-                            <p><span class="text-muted-foreground">Sucursal:</span> <span class="font-semibold text-foreground">{{ selectedBranchName }}</span></p>
-                            <p><span class="text-muted-foreground">Plazo:</span> <span class="font-semibold text-foreground">{{ form.duration_weeks }} semanas</span></p>
-                            <p><span class="text-muted-foreground">Inicio → Término:</span> <span class="font-semibold text-foreground">{{ formatFriendlyDate(form.start_date) }} → {{ endDatePreview ? formatFriendlyDate(endDatePreview) : '—' }}</span></p>
+                    <!-- Objective: encabezado + 4 datos clave con ícono, cada uno en su propia tarjeta -->
+                    <div class="app-card space-y-3 p-4">
+                        <div class="flex items-start gap-3">
+                            <span class="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Sparkles class="size-5" /></span>
+                            <div class="min-w-0">
+                                <p class="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Objective a crear</p>
+                                <p class="text-sm font-semibold text-foreground">{{ form.title }}</p>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2.5 pt-1 sm:grid-cols-4">
+                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
+                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-300"><Building2 class="size-4" /></span>
+                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Sucursal</p><p class="truncate text-xs font-semibold text-foreground">{{ selectedBranchName }}</p></div>
+                            </div>
+                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
+                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-300"><UserCheck class="size-4" /></span>
+                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Responsable</p><p class="truncate text-xs font-semibold text-foreground">{{ selectedResponsibleName }}</p></div>
+                            </div>
+                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
+                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-300"><CalendarDays class="size-4" /></span>
+                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Plazo</p><p class="truncate text-xs font-semibold text-foreground">{{ form.duration_weeks }} semanas</p></div>
+                            </div>
+                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
+                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"><Users2 class="size-4" /></span>
+                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Tipo</p><p class="truncate text-xs font-semibold text-foreground">{{ assignmentType }}</p></div>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-2 rounded-xl bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                            <CalendarDays class="size-3.5 shrink-0" />
+                            <span><strong class="font-semibold text-foreground">{{ formatFriendlyDate(form.start_date) }}</strong> → <strong class="font-semibold text-foreground">{{ endDatePreview ? formatFriendlyDate(endDatePreview) : '—' }}</strong></span>
                         </div>
                     </div>
 
-                    <div v-if="individualsEnabled && individualRows.length" class="app-card space-y-2 p-4">
-                        <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">OKR individuales ({{ individualRows.length }})</p>
-                        <div v-for="row in individualRows" :key="row.employee_id" class="rounded-lg border border-border bg-muted/20 p-2 text-xs">
-                            <p class="font-semibold text-foreground">{{ row.employee_name }}</p>
-                            <p class="text-muted-foreground">{{ row.title }}</p>
+                    <!-- OKR individuales — solo si se activó el switch y hay colaboradores agregados -->
+                    <div v-if="individualsEnabled && individualRows.length" class="app-card space-y-2.5 p-4">
+                        <p class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                            <Users2 class="size-3.5 text-primary" /> OKR individuales ({{ individualRows.length }})
+                        </p>
+                        <div
+                            v-for="row in individualRows" :key="row.employee_id"
+                            class="flex items-start gap-2.5 rounded-xl border border-border bg-muted/20 p-2.5 text-xs transition hover:border-primary/40 hover:bg-primary/5"
+                        >
+                            <span class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">{{ row.employee_name.slice(0, 2).toUpperCase() }}</span>
+                            <div class="min-w-0">
+                                <p class="font-semibold text-foreground">{{ row.employee_name }}</p>
+                                <p class="text-muted-foreground">{{ row.title }}</p>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="app-card space-y-2 p-4">
+                    <!-- Key Results — mismo ícono/color por KPI que en el Paso 3, con barra de peso -->
+                    <div class="app-card space-y-2.5 p-4">
                         <div class="flex items-center justify-between">
-                            <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Key Results ({{ totalWeight.toFixed(2) }}% ponderado)</p>
-                            <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="weightValid ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-destructive/10 text-destructive'">{{ weightValid ? 'Listo para guardar' : 'Los pesos deben sumar 100%' }}</span>
+                            <p class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                                <ListChecks class="size-3.5 text-primary" /> Key Results ({{ totalWeight.toFixed(2) }}% ponderado)
+                            </p>
+                            <span class="flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="weightValid ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-destructive/10 text-destructive'">
+                                <CheckCircle2 v-if="weightValid" class="size-3" /><AlertTriangle v-else class="size-3" />
+                                {{ weightValid ? 'Listo para guardar' : 'Los pesos deben sumar 100%' }}
+                            </span>
                         </div>
-                        <div v-for="(kr, i) in form.key_results" :key="i" class="rounded-lg border border-border bg-muted/20 p-2 text-xs">
-                            <p class="font-semibold text-foreground">{{ kr.description }} — {{ kpiOf(kr.kpi_id)?.name }}</p>
-                            <p class="text-muted-foreground">Base {{ kr.baseline_value || '(auto)' }} → Meta {{ kr.target_value }} · Peso {{ kr.weight }}%</p>
+
+                        <div
+                            v-for="(kr, i) in form.key_results" :key="i"
+                            class="space-y-2 rounded-xl border border-border bg-muted/20 p-3 text-xs transition hover:border-primary/40 hover:bg-primary/5"
+                        >
+                            <div class="flex items-start gap-2.5">
+                                <span class="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full" :class="kpiIconFor(kpiOf(kr.kpi_id)).class">
+                                    <component :is="kpiIconFor(kpiOf(kr.kpi_id)).icon" class="size-4" />
+                                </span>
+                                <div class="min-w-0 flex-1">
+                                    <p class="font-semibold text-foreground">{{ kr.description }} <span class="text-muted-foreground">— {{ kpiOf(kr.kpi_id)?.name }}</span></p>
+                                    <p class="mt-0.5 text-muted-foreground">Base {{ kr.baseline_value || '(auto)' }} → Meta {{ kr.target_value }}</p>
+                                    <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                        <span class="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">{{ kpiTypeLabel(kpiOf(kr.kpi_id)?.type) }}</span>
+                                        <span
+                                            class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                                            :class="kpiOf(kr.kpi_id)?.direction === 'decrease' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'"
+                                        >
+                                            {{ kpiDirectionLabel(kpiOf(kr.kpi_id)?.direction) }} {{ kpiOf(kr.kpi_id)?.direction === 'decrease' ? '↘' : '↗' }}
+                                        </span>
+                                    </div>
+                                </div>
+                                <span class="shrink-0 text-sm font-bold tabular-nums text-foreground">{{ kr.weight }}%</span>
+                            </div>
+                            <div class="h-1.5 overflow-hidden rounded-full bg-muted">
+                                <div class="h-1.5 rounded-full bg-primary transition-all" :style="{ width: `${Math.min(100, Number(kr.weight) || 0)}%` }" />
+                            </div>
                         </div>
                     </div>
 
-                    <p class="rounded-xl bg-primary/5 px-3 py-2.5 text-xs text-primary">El OKR se guardará en BORRADOR. Podrás revisar la línea base y activarlo desde el detalle.</p>
+                    <p class="flex items-center gap-2 rounded-xl bg-primary/5 px-3 py-2.5 text-xs font-medium text-primary">
+                        <Info class="size-4 shrink-0" /> El OKR se guardará en BORRADOR. Podrás revisar la línea base y activarlo desde el detalle.
+                    </p>
                 </div>
             </div>
 

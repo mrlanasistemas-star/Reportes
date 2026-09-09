@@ -48,7 +48,7 @@ function submit() {
 
 <template>
     <Dialog v-model:open="open">
-        <DialogContent class="max-w-lg">
+        <DialogContent class="max-w-lg" @pointer-down-outside="(e) => e.preventDefault()">
             <DialogHeader>
                 <DialogTitle>Check-in semanal</DialogTitle>
                 <DialogDescription>Registra el bloqueo principal y la acción correctiva de esta semana.</DialogDescription>

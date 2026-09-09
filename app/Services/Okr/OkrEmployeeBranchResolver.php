@@ -35,12 +35,7 @@ class OkrEmployeeBranchResolver
         $query = Employee::query()->where('is_active', true);
 
         if ($branchId !== null) {
-            $latestAssignmentIds = $this->latestAssignmentIdsSubquery();
-            $employeeIds = EmployeeBranchAssignment::query()
-                ->whereIn('id', $latestAssignmentIds)
-                ->where('branch_id', $branchId)
-                ->pluck('employee_id');
-            $query->whereIn('id', $employeeIds);
+            $query->whereIn('id', $this->employeeIdsForBranch($branchId));
         }
 
         if ($search !== null && trim($search) !== '') {
@@ -48,6 +43,31 @@ class OkrEmployeeBranchResolver
         }
 
         return $query->orderBy('full_name')->limit($limit)->get(['id', 'full_name']);
+    }
+
+    /**
+     * Total REAL de colaboradores activos de una sucursal — sin límite de 30 y
+     * sin filtro de búsqueda, a diferencia de employeesForBranch() (que es solo
+     * para el dropdown tipo buscador). Lo usa el resumen del wizard de
+     * asignación: cuando NO se activa "OKR individuales por vendedor", el
+     * Objective de sucursal aplica a TODOS los colaboradores de esa sucursal,
+     * no solo a los que alcanzaron a aparecer en el buscador limitado.
+     */
+    public function countForBranch(int $branchId): int
+    {
+        return Employee::query()
+            ->where('is_active', true)
+            ->whereIn('id', $this->employeeIdsForBranch($branchId))
+            ->count();
+    }
+
+    /** IDs de empleados activos cuya asignación más reciente apunta a $branchId. */
+    private function employeeIdsForBranch(int $branchId): \Illuminate\Support\Collection
+    {
+        return EmployeeBranchAssignment::query()
+            ->whereIn('id', $this->latestAssignmentIdsSubquery())
+            ->where('branch_id', $branchId)
+            ->pluck('employee_id');
     }
 
     /** Branch_id de la asignación MÁS RECIENTE del empleado, o null si no tiene ninguna. */
