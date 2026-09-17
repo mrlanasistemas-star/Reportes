@@ -9,11 +9,17 @@ use App\Http\Controllers\EmployeeController;
 use App\Http\Controllers\ValidationController;
 use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\SystemGuideController;
+use App\Http\Controllers\DashboardController;
 
 Route::redirect('/', '/login');
 
 Route::middleware(['auth', 'verified'])->group(function () {
-    Route::inertia('/dashboard', 'Dashboard')->name('dashboard');
+    // Cierre 17-sep-2026 ronda 4 — el Dashboard ahora resume el periodo más reciente
+    // con radiografía generada (antes era una página estática sin datos). Ver
+    // DashboardController — misma fuente (RadiografiaExportService) que Web/Excel/PDF.
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+    Route::get('/dashboard-data', [DashboardController::class, 'data'])->name('dashboard.data');
+    Route::get('/dashboard-trend', [DashboardController::class, 'trend'])->name('dashboard.trend');
     // Alias 'home' — el scaffolding de auth (login/logout/verificación/tests de
     // ejemplo) espera route('home') por convención de Laravel; este proyecto no tenía
     // ese nombre registrado, lo que rompía AuthenticationTest/
@@ -22,7 +28,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // registrar dos rutas con la MISMA URI '/dashboard' (una named 'dashboard', otra
     // 'home') hace que Laravel pierda la resolución por nombre de la primera —
     // confirmado con `php artisan route:list --name=dashboard` (vacío) tras probarlo.
-    Route::inertia('/home', 'Dashboard')->name('home');
+    Route::get('/home', [DashboardController::class, 'index'])->name('home');
 
     // Módulo OKR (08-sep-2026) — dentro del MISMO grupo auth+verified que el
     // resto de Reportería, nunca autenticación aparte.

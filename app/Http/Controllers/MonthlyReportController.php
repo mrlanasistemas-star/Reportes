@@ -100,7 +100,15 @@ class MonthlyReportController extends Controller {
                 'period_id' => $run->period_id,
                 'period' => $run->period?->label,
                 'period_code' => $run->period?->code,
+                'period_type' => $run->period?->type,
+                // Rango real de fechas del periodo (cierre 17-sep-2026, ronda 5 — pedido
+                // explícito: la tarjeta debe decir de qué mes/semanas es, no solo el
+                // nombre). Nunca se inventa: viene directo de periods.start_date/end_date.
+                'period_start' => optional($run->period?->start_date)->format('d/m/Y'),
+                'period_end' => optional($run->period?->end_date)->format('d/m/Y'),
                 'comparison_period' => $run->comparisonPeriod?->label,
+                'comparison_period_start' => optional($run->comparisonPeriod?->start_date)->format('d/m/Y'),
+                'comparison_period_end' => optional($run->comparisonPeriod?->end_date)->format('d/m/Y'),
                 'type' => self::REPORT_TYPE_LABELS[$reportType] ?? $reportType,
                 'scope' => $scope,
                 'scope_detail' => $scope === 'branch' ? $run->branch?->name : ($scope === 'employee' ? $run->employee?->full_name : null),
@@ -141,7 +149,12 @@ class MonthlyReportController extends Controller {
                 'period_id' => $summary->period_id,
                 'period' => $summary->period?->label,
                 'period_code' => $summary->period?->code,
+                'period_type' => $summary->period?->type,
+                'period_start' => optional($summary->period?->start_date)->format('d/m/Y'),
+                'period_end' => optional($summary->period?->end_date)->format('d/m/Y'),
                 'comparison_period' => null,
+                'comparison_period_start' => null,
+                'comparison_period_end' => null,
                 'type' => self::REPORT_TYPE_LABELS['simple'],
                 'scope' => 'general',
                 'scope_detail' => null,

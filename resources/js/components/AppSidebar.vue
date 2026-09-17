@@ -8,6 +8,7 @@ import {
     Settings,
     BookOpen,
     Target,
+    Users,
 } from 'lucide-vue-next';
 
 import AppLogo from '@/components/AppLogo.vue';
@@ -41,6 +42,11 @@ const mainNavItems: NavItem[] = [
         title: 'Periodos',
         href: '/periodos',
         icon: CalendarRange,
+    },
+    {
+        title: 'Colaboradores',
+        href: '/asignaciones-empleado-sucursal',
+        icon: Users,
     },
     {
         title: 'Reportes mensuales',

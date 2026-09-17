@@ -21,9 +21,14 @@ class EmployeeBranchAssignmentController extends Controller
 {
     public function index(Request $request): Response
     {
-        // Only monthly periods are valid for employee–branch assignments
+        // Only monthly periods are valid for employee–branch assignments — nunca un
+        // periodo "de prueba"/migración con año absurdo (ej. 2099, "Test Migracion
+        // 1406" en BD de desarrollo) apareciendo primero y seleccionado por defecto
+        // (mismo filtro que DashboardController::availablePeriods(), cierre 17-sep-2026
+        // ronda 5).
         $periods = Period::query()
             ->where('type', 'monthly')
+            ->where('year', '<=', now()->year)
             ->orderByDesc('year')
             ->orderByDesc('month')
             ->orderByDesc('sequence')
@@ -125,36 +130,37 @@ class EmployeeBranchAssignmentController extends Controller
 
             $assignments = $assignments->values();
 
-            $previousPeriod = Period::query()
-                ->where('id', '!=', $selectedPeriod->id)
-                ->whereDate('start_date', '<', $selectedPeriod->start_date)
-                ->orderByDesc('start_date')
-                ->orderByDesc('id')
-                ->first();
+            // Altas/bajas (cierre 17-sep-2026, ronda 4) — bug real confirmado: esta pantalla
+            // calculaba altas/bajas comparando employee_id CRUDOS (sin deduplicar por persona
+            // real — NOI normal y NOI fiscal generan DOS employee_id para la misma persona,
+            // ver PeriodEmployeeRosterService) contra "el periodo anterior por fecha", SIN
+            // filtrar por type='monthly' — para Junio 2026 esto comparaba contra una SEMANA
+            // de Mayo (asignaciones semanales, un universo totalmente distinto), mostrando
+            // 132 "altas" y 0 "bajas" cuando la realidad (misma fuente que el Índice de
+            // Rotación de OKR, ver RotacionDerivedFromNoiService) era 5 altas / 5 bajas.
+            // Ahora se lee DIRECTO de `period_employee_rosters` — el roster canónico,
+            // deduplicado por persona real, ya calculado mes-contra-mes-anterior durante
+            // "Actualizar BD" — la MISMA fuente que OKR, nunca un segundo cálculo.
+            $rosterRows = $selectedPeriod->isMonthly()
+                ? DB::table('period_employee_rosters')
+                    ->where('period_id', $selectedPeriod->id)
+                    ->get(['employee_id', 'nombre_original', 'branch_name', 'is_active_for_period', 'movement_type'])
+                : collect();
 
-            $previousAssignments = collect();
+            $lastKnownPeriod = $selectedPeriod->isMonthly() ? $selectedPeriod->previousMonthly($periods) : null;
 
-            if ($previousPeriod) {
-                $previousAssignments = EmployeeBranchAssignment::query()
-                    ->with(['employee:id,full_name,normalized_name', 'branch:id,name', 'period:id,name'])
-                    ->where('period_id', $previousPeriod->id)
-                    ->get();
-            }
+            $toRosterItem = fn ($r, ?string $periodLabel = null) => [
+                'id'            => (int) $r->employee_id,
+                'employee_id'   => (int) $r->employee_id,
+                'employee_name' => $r->nombre_original,
+                'branch_name'   => $r->branch_name,
+                'period_label'  => $periodLabel,
+            ];
 
-            $currentEmployeeIds = $assignments->pluck('employee_id')->filter()->unique()->values();
-            $previousEmployeeIds = $previousAssignments->pluck('employee_id')->filter()->unique()->values();
-
-            $hireIds = $currentEmployeeIds->diff($previousEmployeeIds)->values();
-            $leaverIds = $previousEmployeeIds->diff($currentEmployeeIds)->values();
-
-            $hires = $assignments
-                ->whereIn('employee_id', $hireIds)
-                ->values();
-
-            $leavers = $previousAssignments
-                ->whereIn('employee_id', $leaverIds)
-                ->map(fn (EmployeeBranchAssignment $assignment) => $this->transformAssignment($assignment, 'baja'))
-                ->values();
+            $hires = $rosterRows->where('movement_type', 'alta')->map(fn ($r) => $toRosterItem($r, $selectedPeriod->label))->values();
+            $leavers = $rosterRows->where('movement_type', 'baja')->map(fn ($r) => $toRosterItem($r, $lastKnownPeriod?->label))->values();
+            $plantillaActual = $rosterRows->where('is_active_for_period', true)->count();
+            $rosterCalculado = $rosterRows->isNotEmpty();
 
             $incidences = $assignments
                 ->filter(function (array $item) {
@@ -176,6 +182,8 @@ class EmployeeBranchAssignmentController extends Controller
                 'needs_review' => $incidences->count(),
                 'hires' => $hires->count(),
                 'leavers' => $leavers->count(),
+                'plantilla' => $plantillaActual,
+                'roster_calculado' => $rosterCalculado,
             ];
         }
 
