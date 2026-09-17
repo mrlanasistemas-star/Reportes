@@ -9,14 +9,18 @@ use App\Http\Controllers\Okr\KeyResultController;
 use App\Http\Controllers\Okr\KpiController;
 use App\Http\Controllers\Okr\ObjectiveController;
 use App\Http\Controllers\Okr\ResponsibleController;
+use App\Http\Middleware\EnsureOkrAccessEnabled;
 use Illuminate\Support\Facades\Route;
 
 /**
  * Módulo OKR (08-sep-2026) — incluido desde routes/web.php dentro del MISMO
  * grupo ['auth', 'verified'] que el resto de Reportería (nunca autenticación
  * aparte). Convención de nombres: prefijo 'okr.' (sección 20 del pedido).
+ *
+ * EnsureOkrAccessEnabled (D5, cierre 17-sep-2026): SOLO este módulo exige
+ * `access_enabled_at` — nunca se aplica al resto de Reportería.
  */
-Route::prefix('okr')->name('okr.')->group(function () {
+Route::prefix('okr')->name('okr.')->middleware(EnsureOkrAccessEnabled::class)->group(function () {
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
     // "/create" retirado 10-sep-2026 (auditoría, sección 6) — Asignar OKR ya
     // NO navega a una página aparte, es un Dialog embebido en el Dashboard

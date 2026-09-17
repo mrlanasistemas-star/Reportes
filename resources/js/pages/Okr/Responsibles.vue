@@ -7,7 +7,6 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import TextField from '@/components/forms/TextField.vue'
-import SelectField from '@/components/forms/SelectField.vue'
 import { Button } from '@/components/ui/button'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
 
@@ -29,7 +28,9 @@ watch(() => props.temp_password, (pwd) => {
 }, { immediate: true })
 
 const showForm = ref(false)
-const form = useForm({ name: '', email: '', role: 'colaborador' })
+// D7 del cierre (17-sep-2026): esta pantalla NUNCA puede crear un admin — el rol
+// siempre es 'colaborador' (el backend también lo fuerza, ver ResponsibleController::store()).
+const form = useForm({ name: '', email: '' })
 
 function submit() {
     form.post('/okr/responsibles', {
@@ -66,16 +67,11 @@ function enableAccess(responsible: { id: number; name: string }) {
                 <UserPlus class="size-4 text-primary" /> Nuevo responsable
                 <OkrHelpTooltip text="Se crea sin acceso todavía — un administrador debe habilitarlo explícitamente después de confirmar la identidad de la persona." />
             </p>
-            <div class="grid gap-4 sm:grid-cols-3">
+            <div class="grid gap-4 sm:grid-cols-2">
                 <TextField v-model="form.name" label="Nombre completo" placeholder="Ej. Ana López" :error="form.errors.name" />
                 <TextField v-model="form.email" type="email" label="Correo" placeholder="ana@empresa.com" :error="form.errors.email" />
-                <SelectField
-                    v-model="form.role"
-                    label="Rol"
-                    :options="[{ value: 'colaborador', label: 'Colaborador' }, { value: 'admin', label: 'Administrador' }]"
-                    description="Administrador puede eliminar OKR y administrar el catálogo de KPI."
-                />
             </div>
+            <p class="text-xs text-muted-foreground">Se crea como Colaborador. Los administradores se gestionan fuera del módulo OKR.</p>
             <div class="flex justify-end gap-2">
                 <Button type="button" variant="outline" class="h-10" @click="showForm = false">Cancelar</Button>
                 <Button type="button" class="h-10" :disabled="form.processing" @click="submit">Guardar responsable</Button>

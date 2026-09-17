@@ -36,6 +36,9 @@ class MonthlyReportController extends Controller {
      */
     private const OPERATIVE_BRANCH_NAMES = OperativeBranchService::NAMES;
 
+    /** Parte C4 del cierre (17-sep-2026) — lookups/datasets dinámicos nunca cacheables. */
+    private const NO_STORE_HEADERS = ['Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma' => 'no-cache'];
+
     /** Mismas etiquetas que ReportConfigurationStep.vue (REPORT_TYPES) — no inventar otras. */
     private const REPORT_TYPE_LABELS = [
         'simple'                => 'Radiografía simple',
@@ -250,7 +253,7 @@ class MonthlyReportController extends Controller {
      * página web normal (sin dompdf) — reutiliza exactamente los mismos datos que el
      * PDF, así que nunca se desincroniza de lo que se descarga.
      */
-    public function viewRun(PeriodRadiographyRun $run, RadiografiaExportService $service)
+    public function viewRun(PeriodRadiographyRun $run)
     {
         $reportType = $run->report_type ?: 'simple';
         $scope      = $run->scope ?: 'general';
@@ -259,18 +262,23 @@ class MonthlyReportController extends Controller {
             return redirect()->route('reportes-mensuales.preview', $run->period_id);
         }
 
+        // Bug real corregido (Parte B, cierre 17-sep-2026): esto renderizaba la MISMA
+        // plantilla del PDF (reports.radiography-pdf-comparative) como página web — la
+        // Web se veía literalmente como el PDF, sin selectores ni gráficas. Ahora
+        // redirige a la vista Inertia interactiva (ComparativePreview.vue), cargando
+        // inicialmente EXACTAMENTE el period/comparison_period/scope de este run
+        // (B14) — cambiar de periodo después es solo visualización, nunca crea un
+        // run nuevo. El PDF/Excel comparativos (exportPdfWithConfig/exportWithConfig,
+        // reports.radiography-pdf-comparative) NO se tocan — siguen siendo la fuente
+        // de descarga real.
         if (in_array($reportType, ['month_vs_month', 'bimester_vs_bimester', 'quarter_vs_quarter'], true)) {
-            $config = [
-                'scope'                => $scope,
-                'report_type'          => $reportType,
-                'branch_id'            => $run->branch_id,
-                'employee_id'          => $run->employee_id,
-                'compare_period_id'    => $run->comparison_period_id,
-            ];
-
-            $data = $service->comparativeViewData($run->period, $config);
-
-            return view('reports.radiography-pdf-comparative', $data);
+            return redirect()->route('reportes-mensuales.comparativo', array_filter([
+                'period_a'    => $run->period_id,
+                'period_b'    => $run->comparison_period_id,
+                'scope'       => $scope !== 'general' ? $scope : null,
+                'branch_id'   => $run->branch_id,
+                'employee_id' => $run->employee_id,
+            ]));
         }
 
         // Por sucursal / por gestor (simple, sin comparativo): la vista web completa
@@ -398,20 +406,7 @@ class MonthlyReportController extends Controller {
         }
 
         // All available periods for compare selectors (with snapshot flag for comparativo protection)
-        $periodsWithSnap = PeriodSummary::where('status', 'generated')
-            ->pluck('period_id')
-            ->flip();
-        $allPeriods = Period::query()
-            ->orderByDesc('year')->orderByDesc('month')->orderByDesc('sequence')
-            ->get(['id', 'name', 'code', 'type', 'year', 'month'])
-            ->map(fn ($p) => [
-                'id'           => $p->id,
-                'label'        => $p->label,
-                'code'         => $p->code,
-                'type'         => $p->type,
-                'has_snapshot' => $periodsWithSnap->has($p->id),
-            ])
-            ->values();
+        $allPeriods = $this->allPeriodsForSelector();
 
         return Inertia::render('ReportesMensuales/Preview', [
             'period' => [
@@ -441,6 +436,210 @@ class MonthlyReportController extends Controller {
             'filteredPdfBaseUrl'   => route('reportes-mensuales.export-filtered-radiography-pdf', $period->id),
             'updateSaldoInicialUrl' => route('reportes-mensuales.update-saldo-inicial', $period->id),
         ]);
+    }
+
+    /** Compartido por previewPage()/comparativoPage() — lista de periodos para selectores. */
+    private function allPeriodsForSelector(): \Illuminate\Support\Collection
+    {
+        $periodsWithSnap = PeriodSummary::where('status', 'generated')->pluck('period_id')->flip();
+
+        return Period::query()
+            ->orderByDesc('year')->orderByDesc('month')->orderByDesc('sequence')
+            ->get(['id', 'name', 'code', 'type', 'year', 'month'])
+            ->map(fn ($p) => [
+                'id'           => $p->id,
+                'label'        => $p->label,
+                'code'         => $p->code,
+                'type'         => $p->type,
+                'has_snapshot' => $periodsWithSnap->has($p->id),
+            ])
+            ->values();
+    }
+
+    /** Mismo mapeo type→report_type que ya usan comparePeriodOptions (Preview.vue)/config del run. */
+    private const PERIOD_TYPE_TO_COMPARATIVE_REPORT_TYPE = [
+        'monthly'   => 'month_vs_month',
+        'bimonthly' => 'bimester_vs_bimester',
+        'quarterly' => 'quarter_vs_quarter',
+    ];
+
+    /**
+     * Vista web INTERACTIVA del comparativo (Parte B del cierre, 17-sep-2026).
+     *
+     * ANTES: MonthlyReportController::viewRun() reutilizaba la plantilla PDF
+     * (reports.radiography-pdf-comparative) como página web — bug real confirmado en
+     * código: la Web se veía literalmente como el PDF, sin selectores interactivos,
+     * gráficas ni forma de comparar otro periodo sin regenerar un run.
+     *
+     * AHORA: esta es una página Inertia/Vue real (ComparativePreview.vue). Nunca
+     * calcula cifras propias — TODO dato sale de
+     * RadiografiaExportService::comparativeViewData(), la MISMA fuente que ya usan el
+     * Excel y el PDF comparativos (que NO se tocan en esta sesión — B1/B3 del
+     * pendiente). Los selectores de periodo/alcance viven en el cliente y piden
+     * comparativoData() vía JSON — cambiar de periodo aquí NUNCA crea un
+     * PeriodRadiographyRun ni genera archivos (B14).
+     */
+    public function comparativoPage(Request $request): Response
+    {
+        $allPeriods = $this->allPeriodsForSelector();
+
+        $periodAId  = (int) $request->query('period_a', 0) ?: null;
+        $periodBId  = (int) $request->query('period_b', 0) ?: null;
+        $scope      = $request->query('scope', 'general');
+        $branchId   = (int) $request->query('branch_id', 0) ?: null;
+        $employeeId = (int) $request->query('employee_id', 0) ?: null;
+
+        // Sin deep-link todavía: default razonable — los dos periodos MENSUALES con
+        // radiografía generada más recientes (mes actual vs mes anterior).
+        if (!$periodAId || !$periodBId) {
+            $monthlyWithSnapshot = $allPeriods->where('type', 'monthly')->where('has_snapshot', true)->values();
+            $periodAId ??= (int) ($monthlyWithSnapshot[0]['id'] ?? 0) ?: null;
+            $periodBId ??= (int) ($monthlyWithSnapshot[1]['id'] ?? 0) ?: null;
+        }
+
+        $operativeBranches = Branch::query()
+            ->whereIn('name', self::OPERATIVE_BRANCH_NAMES)
+            ->orderBy('name')->get(['id', 'name'])
+            ->map(fn ($b) => ['id' => $b->id, 'name' => $b->name])
+            ->values();
+
+        return Inertia::render('ReportesMensuales/ComparativePreview', [
+            'initialPeriodAId'   => $periodAId,
+            'initialPeriodBId'   => $periodBId,
+            'initialScope'       => in_array($scope, ['general', 'branch', 'employee'], true) ? $scope : 'general',
+            'initialBranchId'    => $branchId,
+            'initialEmployeeId'  => $employeeId,
+            'periods'            => $allPeriods,
+            'branches'           => $operativeBranches,
+            'comparativeDataUrl' => route('reportes-mensuales.comparativo-data'),
+            'employeesLookupUrl' => route('reportes-mensuales.comparativo-employees-lookup'),
+        ]);
+    }
+
+    /**
+     * Dataset JSON del comparativo — consumido por ComparativePreview.vue (B5/B13: cambiar
+     * de periodo/alcance NO recarga la página, pide este JSON). ÚNICA fuente de cifras:
+     * RadiografiaExportService::comparativeViewData(), la misma que alimenta el PDF/Excel
+     * comparativo — así Web/Excel/PDF nunca pueden divergir (B3/B16 del pendiente).
+     */
+    public function comparativoData(Request $request, RadiografiaExportService $exportService): JsonResponse
+    {
+        $periodAId = (int) $request->query('period_a', 0);
+        $periodBId = (int) $request->query('period_b', 0);
+        $scope     = $request->query('scope', 'general');
+
+        if (!$periodAId || !$periodBId) {
+            return response()->json(['error' => 'Selecciona los dos periodos a comparar.'], 422);
+        }
+        if ($periodAId === $periodBId) {
+            return response()->json(['error' => 'Selecciona dos periodos distintos.'], 422);
+        }
+        if (!in_array($scope, ['general', 'branch', 'employee'], true)) {
+            return response()->json(['error' => 'Alcance no válido. Usa general, branch o employee.'], 422);
+        }
+
+        $periodA = Period::find($periodAId);
+        $periodB = Period::find($periodBId);
+        if (!$periodA || !$periodB) {
+            return response()->json(['error' => 'Uno de los periodos seleccionados no existe.'], 404);
+        }
+
+        // B6: nunca permitir comparar tipos distintos (ej. un mensual contra un
+        // bimestre) — ni desde el cliente ni si alguien golpea el endpoint directo.
+        if ($periodA->type !== $periodB->type || !isset(self::PERIOD_TYPE_TO_COMPARATIVE_REPORT_TYPE[$periodA->type])) {
+            return response()->json([
+                'error' => 'Los dos periodos deben ser del mismo tipo (ambos mensuales, ambos bimestrales o ambos trimestrales).',
+            ], 422);
+        }
+        $reportType = self::PERIOD_TYPE_TO_COMPARATIVE_REPORT_TYPE[$periodA->type];
+
+        $config = ['scope' => $scope, 'report_type' => $reportType, 'compare_period_id' => $periodB->id];
+
+        if ($scope === 'branch') {
+            $branchId = (int) $request->query('branch_id', 0);
+            if (!$branchId) {
+                return response()->json(['error' => 'Selecciona una sucursal.'], 422);
+            }
+            $branch = Branch::find($branchId);
+            if (!$branch || !in_array($branch->name, self::OPERATIVE_BRANCH_NAMES, true)) {
+                return response()->json(['error' => 'Selecciona una sucursal operativa válida.'], 422);
+            }
+            $config['branch_id'] = $branchId;
+        }
+
+        if ($scope === 'employee') {
+            $employeeId = (int) $request->query('employee_id', 0);
+            if (!$employeeId) {
+                return response()->json(['error' => 'Selecciona un colaborador.'], 422);
+            }
+            if (!Employee::query()->whereKey($employeeId)->exists()) {
+                return response()->json(['error' => 'Colaborador no encontrado.'], 404);
+            }
+            $config['employee_id'] = $employeeId;
+        }
+
+        try {
+            $data = $exportService->comparativeViewData($periodA, $config);
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json(['error' => 'No se pudo construir el comparativo: ' . $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'periodA' => [
+                'id' => $periodA->id, 'label' => $periodA->label, 'code' => $periodA->code, 'type' => $periodA->type,
+                'composite' => $data['currentComposite'] ?? null,
+            ],
+            'periodB' => [
+                'id' => $periodB->id, 'label' => $periodB->label, 'code' => $periodB->code, 'type' => $periodB->type,
+                'composite' => $data['compareComposite'] ?? null,
+            ],
+            'scope'       => $scope,
+            'scopeLabel'  => $data['scopeLabel'],
+            'reportType'  => $reportType,
+            'branchId'    => $config['branch_id'] ?? null,
+            'employeeId'  => $config['employee_id'] ?? null,
+            'rows'        => $data['rows'],
+            'exportUrls'  => [
+                'excel' => route('reportes-mensuales.export-filtered-radiography', $periodA->id) . '?' . http_build_query(array_filter([
+                    'report_type' => $reportType, 'compare_period_id' => $periodB->id,
+                    'scope' => $scope !== 'general' ? $scope : null,
+                    'branch_id' => $config['branch_id'] ?? null, 'employee_id' => $config['employee_id'] ?? null,
+                ])),
+                'pdf' => route('reportes-mensuales.export-filtered-radiography-pdf', $periodA->id) . '?' . http_build_query(array_filter([
+                    'report_type' => $reportType, 'compare_period_id' => $periodB->id,
+                    'scope' => $scope !== 'general' ? $scope : null,
+                    'branch_id' => $config['branch_id'] ?? null, 'employee_id' => $config['employee_id'] ?? null,
+                ])),
+            ],
+        ], 200, ['Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma' => 'no-cache']);
+    }
+
+    /**
+     * Roster de colaboradores de UN periodo para el selector de alcance "Por gestor"
+     * del comparativo — reutiliza PeriodEmployeeRosterService::rosterRowsForSelector(),
+     * el MISMO roster que ya usa el flujo de generación de reportes (nunca una consulta
+     * nueva/paralela a Employee::all()).
+     */
+    public function comparativoEmployeesLookup(Request $request, \App\Services\PeriodEmployeeRosterService $rosterService): JsonResponse
+    {
+        $periodId = (int) $request->query('period_id', 0);
+        if (!$periodId) {
+            return response()->json(['employees' => []], 200, self::NO_STORE_HEADERS);
+        }
+        $period = Period::find($periodId);
+        if (!$period) {
+            return response()->json(['employees' => []], 200, self::NO_STORE_HEADERS);
+        }
+
+        $rows = $rosterService->rosterRowsForSelector($period)['rows'] ?? [];
+
+        return response()->json([
+            'employees' => collect($rows)->map(fn ($r) => [
+                'id'   => (int) $r['employee_id'],
+                'name' => $r['name'],
+            ])->values(),
+        ], 200, self::NO_STORE_HEADERS);
     }
 
     public function consolidate(Period $period, PeriodRadiographyService $service): RedirectResponse
@@ -832,15 +1031,21 @@ class MonthlyReportController extends Controller {
             return response()->json(['error' => 'No se pudo construir la radiografía para este alcance.'], 500);
         }
 
+        // Nunca cacheable — un ajuste manual EFÍMERO cambia el resultado para la MISMA
+        // URL de scope, así que un cache compartido/proxy/navegador que ignore el
+        // querystring podría servir un snapshot ajustado (o sin ajustar) equivocado
+        // (Parte C4 del cierre, 17-sep-2026).
+        $noStoreHeaders = ['Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma' => 'no-cache'];
+
         if ($scope !== 'general' && (($snapshot['scope']['available'] ?? true) === false)) {
             $label = $scope === 'branch' ? ($snapshot['scope']['branch_name'] ?? 'la sucursal seleccionada') : ($snapshot['scope']['employee_name'] ?? 'el colaborador seleccionado');
             return response()->json([
                 'error'    => "Sin datos de radiografía para {$label} en este periodo.",
                 'snapshot' => $snapshot,
-            ], 404);
+            ], 404, $noStoreHeaders);
         }
 
-        return response()->json(['snapshot' => $snapshot]);
+        return response()->json(['snapshot' => $snapshot], 200, $noStoreHeaders);
     }
 
     public function status(Period $period) {

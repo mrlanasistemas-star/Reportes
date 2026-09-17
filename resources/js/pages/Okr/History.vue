@@ -30,9 +30,15 @@ function applyFilters() {
 }
 
 const employeeOptions = ref<{ id: number; full_name: string }[]>([])
+// Parte C del cierre (17-sep-2026): token de versión — un cambio rápido de
+// sucursal no debe dejar que una respuesta vieja pise a la más nueva.
+let employeesVersion = 0
 async function loadEmployees() {
-    const res = await fetch(`/okr/employees-lookup${branchId.value ? `?branch_id=${branchId.value}` : ''}`, { headers: { Accept: 'application/json' } })
+    const myVersion = ++employeesVersion
+    const res = await fetch(`/okr/employees-lookup${branchId.value ? `?branch_id=${branchId.value}` : ''}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+    if (myVersion !== employeesVersion) return
     const data = await res.json()
+    if (myVersion !== employeesVersion) return
     employeeOptions.value = data.employees ?? []
 }
 onMounted(loadEmployees)

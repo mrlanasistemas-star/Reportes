@@ -102,6 +102,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('reportes-mensuales.')
         ->group(function () {
             Route::get('/', [MonthlyReportController::class, 'index'])->name('index');
+            // Comparativo web interactivo (Parte B, cierre 17-sep-2026) — declaradas ANTES de
+            // '/{period}' a propósito: esa ruta hace binding por ID y "comparativo"/
+            // "comparativo-data" tienen la misma forma de un solo segmento, así que deben
+            // ganar la prioridad de coincidencia por orden de declaración.
+            Route::get('/comparativo', [MonthlyReportController::class, 'comparativoPage'])->name('comparativo');
+            Route::get('/comparativo-data', [MonthlyReportController::class, 'comparativoData'])->name('comparativo-data');
+            Route::get('/comparativo-empleados', [MonthlyReportController::class, 'comparativoEmployeesLookup'])->name('comparativo-employees-lookup');
             Route::get('/{period}', [MonthlyReportController::class, 'show'])->name('show');
             Route::post('/{period}/consolidar', [MonthlyReportController::class, 'consolidate'])->name('consolidate');
             Route::get('/{period}/estado-radiografia', [MonthlyReportController::class, 'status'])->name('status');

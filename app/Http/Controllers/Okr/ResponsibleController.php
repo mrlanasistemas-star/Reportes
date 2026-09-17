@@ -87,16 +87,20 @@ class ResponsibleController extends Controller
         $data = $request->validate([
             'name'  => ['required', 'string', 'max:191'],
             'email' => ['required', 'email', 'max:191', Rule::unique('users', 'email')],
-            'role'  => ['required', Rule::in(['admin', 'colaborador'])],
         ]);
 
         $tempPassword = Str::password(16);
 
+        // D7 del cierre (17-sep-2026): esta pantalla NUNCA puede crear un admin —
+        // antes aceptaba 'role' del request (Rule::in(['admin','colaborador'])),
+        // así que cualquiera con acceso a "Responsables OKR" podía elevarse a
+        // administrador desde aquí. El rol siempre es 'colaborador'; los admins se
+        // administran fuera de OKR.
         User::query()->create([
             'name'              => $data['name'],
             'email'             => $data['email'],
             'password'          => Hash::make($tempPassword),
-            'role'              => $data['role'],
+            'role'              => 'colaborador',
             'email_verified_at' => null, // real: nadie ha verificado nada todavía
         ]);
 

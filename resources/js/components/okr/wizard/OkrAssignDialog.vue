@@ -127,12 +127,18 @@ const employeeOptions = ref<{ id: number; full_name: string }[]>([])
 // que alcanzó a mostrar el dropdown de búsqueda.
 const branchEmployeeCount = ref(0)
 let employeeSearchTimer: ReturnType<typeof setTimeout> | null = null
+// Parte C del cierre (17-sep-2026): token de versión — evita que una respuesta
+// vieja (búsqueda o cambio de sucursal anterior) pise a la más nueva.
+let employeeSearchVersion = 0
 async function loadEmployees(search = '') {
     if (!form.branch_id) { employeeOptions.value = []; branchEmployeeCount.value = 0; return }
     const params = new URLSearchParams({ branch_id: String(form.branch_id) })
     if (search) params.set('search', search)
-    const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { headers: { Accept: 'application/json' } })
+    const myVersion = ++employeeSearchVersion
+    const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+    if (myVersion !== employeeSearchVersion) return
     const data = res.ok ? await res.json() : { employees: [], total_in_branch: 0 }
+    if (myVersion !== employeeSearchVersion) return
     employeeOptions.value = data.employees ?? []
     branchEmployeeCount.value = data.total_in_branch ?? 0
 }
@@ -400,7 +406,11 @@ function canAdvance(): boolean {
     if (step.value === 1) {
         if (!form.branch_id || form.title.trim().length < 10) return false
         if (individualsEnabled.value) {
-            return individualRows.every((r) => r.employee_id && r.title.trim().length >= 10)
+            // D11 del cierre (17-sep-2026): bug real — Array.every() en un array
+            // vacío es vacuamente true, así que "Agregar OKR individuales" ON con
+            // CERO colaboradores agregados dejaba avanzar igual al paso 2. Ahora
+            // exige al menos 1 fila además de que cada una esté completa.
+            return individualRows.length >= 1 && individualRows.every((r) => r.employee_id && r.title.trim().length >= 10)
         }
         return true
     }
@@ -533,7 +543,7 @@ function submit() {
                                     <span class="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">{{ row.employee_name.slice(0, 2).toUpperCase() }}</span>
                                     <div class="min-w-0 flex-1">
                                         <p class="mb-1 truncate text-xs font-semibold text-foreground">{{ row.employee_name }}</p>
-                                        <input v-model="row.title" placeholder="Objective individual (mín. 10 caracteres)" class="app-input h-9 text-xs">
+                                        <input v-model="row.title" maxlength="500" placeholder="Objective individual (mín. 10 caracteres)" class="app-input h-9 text-xs">
                                     </div>
                                     <button type="button" class="mt-1 shrink-0 text-muted-foreground transition hover:text-destructive" @click="removeIndividual(i)"><X class="size-4" /></button>
                                 </div>

@@ -1,0 +1,38 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { ArrowUp, ArrowDown, Minus } from 'lucide-vue-next'
+import { money, percent, num } from '@/lib/format'
+import { toneFor } from '@/lib/comparative-metrics'
+
+const props = defineProps<{
+    label: string
+    diff: number
+    varPct: number
+    fmt: 'currency' | 'percent' | 'integer'
+}>()
+
+const tone = computed(() => toneFor(props.label, props.varPct))
+
+const toneClasses = computed(() => ({
+    good: 'bg-emerald-50 text-emerald-700',
+    bad: 'bg-rose-50 text-rose-700',
+    neutral: 'bg-slate-100 text-slate-600',
+}[tone.value]))
+
+const diffLabel = computed(() => {
+    const abs = Math.abs(props.diff)
+    const formatted = props.fmt === 'percent' ? percent(abs) : props.fmt === 'integer' ? num(abs) : money(abs)
+    const sign = props.diff > 0 ? '+' : props.diff < 0 ? '−' : ''
+    return `${sign}${formatted}`
+})
+</script>
+
+<template>
+    <span :class="toneClasses" class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold">
+        <ArrowUp v-if="varPct > 0" class="size-3" />
+        <ArrowDown v-else-if="varPct < 0" class="size-3" />
+        <Minus v-else class="size-3" />
+        {{ diffLabel }}
+        <span class="opacity-70">({{ varPct >= 0 ? '+' : '' }}{{ varPct.toFixed(2) }}%)</span>
+    </span>
+</template>

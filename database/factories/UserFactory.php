@@ -36,6 +36,13 @@ class UserFactory extends Factory
             // use actingAs(User::factory()->create()) — que nunca hace ese refresh —
             // vea `role` como null en vez del admin real que ya tiene en la BD.
             'role' => 'admin',
+            // D5 del cierre (17-sep-2026, EnsureOkrAccessEnabled): mismo razonamiento
+            // que 'role' arriba — un usuario de prueba representa, por defecto, a
+            // alguien con acceso normal al sistema (incluido OKR), no a un
+            // responsable recién creado y aún pendiente de habilitación. Un test que
+            // sí necesite simular "pendiente" lo declara explícitamente con
+            // ->create(['access_enabled_at' => null]) — nunca al revés.
+            'access_enabled_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
             'two_factor_secret' => null,

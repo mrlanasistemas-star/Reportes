@@ -24,7 +24,25 @@ import OkrEditGoalDialog from '@/components/okr/OkrEditGoalDialog.vue'
 import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
 import OkrCheckInDialog from '@/components/okr/OkrCheckInDialog.vue'
 import OkrEvidenceUploadDialog from '@/components/okr/OkrEvidenceUploadDialog.vue'
+import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
 import { formatByUnit, formatFriendlyDate, formatPp } from '@/lib/okrFormat'
+
+// D13 del cierre (17-sep-2026) — auditoría real confirmó que este sistema SOLO
+// genera radiografía a nivel MENSUAL (nunca semanal), así que un KPI automático
+// evaluado en la semana 1 y en la semana 2 del MISMO mes lee el MISMO total
+// mensual — el backend ya lo etiqueta honestamente (OkrSnapshotService::
+// resolveSourceMetadata(), source_quality='monthly_proxy'|'last_available'), pero
+// esa etiqueta nunca llegaba a mostrarse — el usuario no tenía forma de saber que
+// "Actual" no es una lectura semanal real. Se muestra aquí, nunca se inventa una
+// granularidad que no existe.
+function latestSourceQuality(kr: any): string | null {
+    const snaps = kr.snapshots ?? []
+    return snaps.length ? (snaps[snaps.length - 1]?.source_quality ?? null) : null
+}
+const SOURCE_QUALITY_LABELS: Record<string, string> = {
+    monthly_proxy: 'Este valor es el TOTAL MENSUAL de Reportería (proxy) — el sistema no tiene granularidad semanal real; "Actual" no cambia entre semanas del mismo mes.',
+    last_available: 'Reportería todavía no cierra el mes de esta semana — se muestra el último mes con radiografía generada disponible.',
+}
 
 defineOptions({ layout: AppLayout })
 
@@ -67,10 +85,19 @@ const selectedObjectiveId = ref<number>(props.objective.id)
 const employeeOptions = ref<{ id: number; full_name: string }[]>([])
 const objectiveOptions = ref<{ id: number; title: string }[]>([{ id: props.objective.id, title: props.objective.title }])
 
+// Parte C del cierre (17-sep-2026): tokens de versión — sin esto, una
+// respuesta vieja (ej. tecleo rápido o cambio de sucursal) podía pisar el
+// resultado de una búsqueda más nueva y dejar opciones equivocadas.
+let employeesVersion = 0
+let objectivesVersion = 0
+let objectivesSearchTimer: ReturnType<typeof setTimeout> | null = null
+
 async function loadEmployees() {
     const params = new URLSearchParams()
     if (filterBranchId.value) params.set('branch_id', String(filterBranchId.value))
-    const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { headers: { Accept: 'application/json' } })
+    const myVersion = ++employeesVersion
+    const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+    if (myVersion !== employeesVersion) return
     employeeOptions.value = res.ok ? (await res.json()).employees ?? [] : []
 }
 async function loadObjectives() {
@@ -79,13 +106,19 @@ async function loadObjectives() {
     if (filterEmployeeId.value) params.set('employee_id', String(filterEmployeeId.value))
     if (filterPeriodId.value) params.set('period_id', filterPeriodId.value)
     if (filterSearch.value) params.set('search', filterSearch.value)
-    const res = await fetch(`/okr/objectives-lookup?${params.toString()}`, { headers: { Accept: 'application/json' } })
+    const myVersion = ++objectivesVersion
+    const res = await fetch(`/okr/objectives-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+    if (myVersion !== objectivesVersion) return
     objectiveOptions.value = res.ok ? (await res.json()).objectives ?? [] : []
 }
 onMounted(loadEmployees)
 watch(filterBranchId, () => { filterEmployeeId.value = null; loadEmployees(); loadObjectives() })
 watch([filterEmployeeId, filterPeriodId], loadObjectives)
-function onObjectiveSearch(term: string) { filterSearch.value = term; loadObjectives() }
+function onObjectiveSearch(term: string) {
+    filterSearch.value = term
+    if (objectivesSearchTimer) clearTimeout(objectivesSearchTimer)
+    objectivesSearchTimer = setTimeout(loadObjectives, 250)
+}
 function goToObjective(id: number | string | null) { if (id && id !== props.objective.id) router.get(`/okr/${id}`) }
 function clearTrackingFilters() {
     filterBranchId.value = null; filterEmployeeId.value = null; filterPeriodId.value = ''; filterSearch.value = ''
@@ -219,7 +252,12 @@ function trendIcon(kr: any) {
                                 </td>
                                 <td class="whitespace-nowrap px-2 py-2.5 tabular-nums">{{ fmt(kr.baseline_value, kr.kpi.unit) }}</td>
                                 <td class="whitespace-nowrap px-2 py-2.5 tabular-nums">{{ fmt(kr.target_value, kr.kpi.unit) }}</td>
-                                <td class="whitespace-nowrap px-2 py-2.5 font-semibold tabular-nums">{{ fmt(kr.current_value, kr.kpi.unit) }}</td>
+                                <td class="whitespace-nowrap px-2 py-2.5 font-semibold tabular-nums">
+                                    <span class="inline-flex items-center gap-1">
+                                        {{ fmt(kr.current_value, kr.kpi.unit) }}
+                                        <OkrHelpTooltip v-if="SOURCE_QUALITY_LABELS[latestSourceQuality(kr) ?? '']" :text="SOURCE_QUALITY_LABELS[latestSourceQuality(kr) ?? '']" />
+                                    </span>
+                                </td>
                                 <td class="whitespace-nowrap px-2 py-2.5 tabular-nums">{{ fmt(kr.expected_value, kr.kpi.unit) }}</td>
                                 <td class="whitespace-nowrap px-2 py-2.5 font-semibold tabular-nums" :class="(kr.deviation_pp ?? 0) < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'">{{ formatPp(kr.deviation_pp) }}</td>
                                 <td class="px-2 py-2.5">
