@@ -5,11 +5,11 @@ namespace App\Http\Controllers\Okr;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Okr\Concerns\ResolvesOperativeBranches;
 use App\Models\Branch;
-use App\Models\Employee;
 use App\Models\OkrKpi;
 use App\Models\OkrObjective;
 use App\Models\Period;
 use App\Models\User;
+use App\Services\Okr\OkrEmployeeBranchResolver;
 use App\Services\Okr\OkrProgressCalculator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
@@ -44,15 +44,29 @@ class DashboardController extends Controller
         // en Objectives cerrados, y debe respetar los mismos filtros.
         $filtered = $this->applyDashboardFilters($this->baseQuery(), $request)->orderByDesc('id')->get();
 
-        // La tabla y la mayoría de cards muestran el tablero VIGENTE (excluye
-        // cerrados) — derivado del mismo conjunto filtrado.
-        $openObjectives = $filtered->where('lifecycle_status', '!=', OkrObjective::STATUS_CLOSED);
+        // D8 del cierre (17-sep-2026) — bug real: SIN filtro de status, la tabla
+        // operativa excluía SOLO 'closed', dejando 'cancelled' mezclado con
+        // draft/active. Y CON un filtro de status explícito (ej. status=closed o
+        // status=cancelled), esta misma exclusión volvía a filtrar esos
+        // resultados FUERA — la tabla salía vacía aunque el usuario pidió
+        // exactamente ese status. Ahora: sin filtro → draft+active únicamente
+        // (nunca closed/cancelled); con filtro → exactamente lo solicitado
+        // (ya viene aplicado en $filtered, sin exclusión adicional).
+        $statusFilter = $request->string('status')->toString();
+        $openObjectives = $statusFilter !== ''
+            ? $filtered
+            : $filtered->whereNotIn('lifecycle_status', [OkrObjective::STATUS_CLOSED, OkrObjective::STATUS_CANCELLED]);
 
-        $activeCount      = $openObjectives->where('lifecycle_status', OkrObjective::STATUS_ACTIVE)->count();
-        $riskCount        = $openObjectives->whereIn('health_status', [OkrObjective::HEALTH_RISK, OkrObjective::HEALTH_OFF_TRACK])->count();
+        $activeOnly = $openObjectives->where('lifecycle_status', OkrObjective::STATUS_ACTIVE)->values();
+
+        $activeCount      = $activeOnly->count();
+        // Riesgo/cumplimiento promedio: SOLO activos — un draft (sin tracking
+        // todavía) o un cancelled (con un health_status potencialmente
+        // congelado de cuando SÍ estaba activo) nunca deben inflar estas cifras.
+        $riskCount        = $activeOnly->whereIn('health_status', [OkrObjective::HEALTH_RISK, OkrObjective::HEALTH_OFF_TRACK])->count();
         $notMetCount      = $filtered->where('final_status', OkrObjective::FINAL_NOT_COMPLETED)->count();
-        $avgCompliance    = $openObjectives->isNotEmpty()
-            ? round($openObjectives->avg(fn ($o) => $this->objectiveCompliance($o)), 2)
+        $avgCompliance    = $activeOnly->isNotEmpty()
+            ? round($activeOnly->avg(fn ($o) => $this->objectiveCompliance($o)), 2)
             : 0.0;
         $branchesWithOkr  = $openObjectives->pluck('branch_id')->filter()->unique()->count();
         $employeesWithOkr = $openObjectives->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)->pluck('employee_id')->filter()->unique()->count();
@@ -60,8 +74,6 @@ class DashboardController extends Controller
         // Punto 14 de la auditoría 09-sep-2026 — distingue "sistema vacío" de
         // "filtros sin resultados": consulta GLOBAL (ignora los filtros).
         $hasAnyObjectives = OkrObjective::query()->exists();
-
-        $activeOnly = $openObjectives->where('lifecycle_status', OkrObjective::STATUS_ACTIVE)->values();
 
         return Inertia::render('Okr/Dashboard', [
             'objectives' => $openObjectives->map(fn ($o) => $this->toCard($o))->values(),
@@ -74,7 +86,16 @@ class DashboardController extends Controller
                 'branches_with_okr' => $branchesWithOkr,
                 'employees_with_okr'=> $employeesWithOkr,
                 'total_branches'    => count($this->operativeBranchNames()),
-                'total_employees'   => Employee::query()->where('is_active', true)->count(),
+                // D12 del cierre (17-sep-2026): con sucursal filtrada, el
+                // denominador debe ser el total de ESA sucursal, nunca el global
+                // (bug real: mostraba "X / 78" para Córdoba en vez de "X / TOTAL
+                // canónico de Córdoba"). Ambos casos usan la MISMA identidad
+                // canónica que employeesForBranch() (D1/D2) — nunca
+                // Employee::count() a secas, que cuenta IDs históricos duplicados
+                // como personas distintas.
+                'total_employees'   => ($branchIdForEmployeeCount = $request->integer('branch_id'))
+                    ? app(OkrEmployeeBranchResolver::class)->countForBranch($branchIdForEmployeeCount)
+                    : app(OkrEmployeeBranchResolver::class)->countAllActive(),
             ],
             // "Cumplimiento general" (docs/imagenesOKR/1.png y 2.png) — donut
             // por semáforo de los OKR activos del alcance filtrado.
@@ -100,7 +121,16 @@ class DashboardController extends Controller
             // Normalizado a {id, full_name} — bug corregido punto 12 de la
             // auditoría (antes viajaba {id, name} y colisionaba con
             // label-key="full_name" del selector de responsables).
-            'wizardUsers'       => User::query()->orderBy('name')->get(['id', 'name'])->map(fn ($u) => ['id' => $u->id, 'full_name' => $u->name])->values(),
+            //
+            // D6 del cierre (17-sep-2026): un responsable "pendiente" (no-admin sin
+            // access_enabled_at) no puede elegirse como NUEVO responsable — ni
+            // siquiera puede entrar al módulo OKR (ver EnsureOkrAccessEnabled). El
+            // backend (StoreObjectiveRequest::validateResponsibleIsEnabled()) ya lo
+            // rechaza con 422; esto evita además que aparezca como opción elegible.
+            'wizardUsers'       => User::query()
+                ->where(fn ($q) => $q->where('role', 'admin')->orWhereNotNull('access_enabled_at'))
+                ->orderBy('name')->get(['id', 'name'])
+                ->map(fn ($u) => ['id' => $u->id, 'full_name' => $u->name])->values(),
         ]);
     }
 
@@ -131,7 +161,18 @@ class DashboardController extends Controller
             $query->where('lifecycle_status', $status);
         }
         if ($search = $request->string('search')->toString()) {
-            $query->where('title', 'like', "%{$search}%");
+            // D9 del cierre (17-sep-2026) — bug real: el placeholder dice "Objetivo,
+            // colaborador o KPI" pero solo buscaba en `title`. Ahora busca también en
+            // colaborador/sucursal/responsable/KR/KPI — las mismas relaciones que ya
+            // vienen eager-loaded en baseQuery(), sin queries extra.
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                    ->orWhereHas('employee', fn ($e) => $e->where('full_name', 'like', "%{$search}%"))
+                    ->orWhereHas('branch', fn ($b) => $b->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('responsibleUser', fn ($u) => $u->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('keyResults', fn ($k) => $k->where('description', 'like', "%{$search}%"))
+                    ->orWhereHas('keyResults.kpi', fn ($k) => $k->where('name', 'like', "%{$search}%")->orWhere('code', 'like', "%{$search}%"));
+            });
         }
         if ($responsibleId = $request->integer('responsible_user_id')) {
             $query->where('responsible_user_id', $responsibleId);

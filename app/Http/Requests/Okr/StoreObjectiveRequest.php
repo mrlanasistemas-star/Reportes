@@ -4,6 +4,7 @@ namespace App\Http\Requests\Okr;
 
 use App\Models\OkrKpi;
 use App\Models\OkrObjective;
+use App\Models\User;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -36,7 +37,12 @@ class StoreObjectiveRequest extends FormRequest
             'branch_id'            => ['required', 'integer', 'exists:branches,id'],
             'employee_id'          => ['required_if:scope_type,employee', 'nullable', 'integer', 'exists:employees,id'],
             'parent_id'            => ['nullable', 'integer', 'exists:okr_objectives,id'],
-            'title'                => ['required', 'string', 'min:10', 'max:191'],
+            // D10 del cierre (17-sep-2026): la UI (OkrAssignDialog.vue) permite hasta
+            // 500 caracteres (maxlength="500") — el backend validaba max:191 y la
+            // columna real era varchar(255) (bug real, ver migración
+            // 2026_09_17_000001_widen_title_on_okr_objectives_table). 500 es ahora
+            // la fuente de verdad en los tres lugares (UI/validación/columna).
+            'title'                => ['required', 'string', 'min:10', 'max:500'],
             'responsible_user_id'  => ['nullable', 'integer', 'exists:users,id'],
             'start_date'           => ['required', 'date'],
             'duration_weeks'       => ['required', 'integer', 'min:1', 'max:104'],
@@ -52,7 +58,7 @@ class StoreObjectiveRequest extends FormRequest
             // employee_id suelto). Solo aplica cuando scope_type=branch.
             'individual_objectives'               => ['nullable', 'array'],
             'individual_objectives.*.employee_id' => ['required_with:individual_objectives', 'integer', 'exists:employees,id'],
-            'individual_objectives.*.title'       => ['required_with:individual_objectives', 'string', 'min:10', 'max:191'],
+            'individual_objectives.*.title'       => ['required_with:individual_objectives', 'string', 'min:10', 'max:500'],
         ];
     }
 
@@ -63,7 +69,31 @@ class StoreObjectiveRequest extends FormRequest
             $this->validateParent($validator);
             $this->validateAutomaticBaselines($validator);
             $this->validateIndividualObjectives($validator);
+            $this->validateResponsibleIsEnabled($validator);
         });
+    }
+
+    /**
+     * D6 del cierre (17-sep-2026): un responsable "pendiente" (no-admin sin
+     * `access_enabled_at`) no puede ni siquiera entrar al módulo OKR (ver
+     * EnsureOkrAccessEnabled) — no tiene sentido asignarle un OKR de antemano.
+     * Backend REAL, nunca solo el filtro del selector en el wizard.
+     */
+    private function validateResponsibleIsEnabled(Validator $validator): void
+    {
+        $responsibleId = $this->input('responsible_user_id');
+        if (!$responsibleId) {
+            return; // opcional — ObjectiveController::store() cae a auth()->id() si no viene
+        }
+
+        $responsible = User::query()->find($responsibleId);
+        if (!$responsible) {
+            return; // ya reportado por la regla 'exists' de arriba
+        }
+
+        if (($responsible->role ?? null) !== 'admin' && $responsible->access_enabled_at === null) {
+            $validator->errors()->add('responsible_user_id', 'Ese responsable todavía no tiene acceso habilitado al módulo OKR.');
+        }
     }
 
     /**

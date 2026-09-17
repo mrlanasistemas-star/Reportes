@@ -70,6 +70,18 @@ export function stackedBarOptions(categories: string[], colors: string[] = categ
     }
 }
 
+/** Vertical column comparison for percentages (mora, margen EBITDA, rotación, etc.) — nunca en el mismo eje que cifras en millones. */
+export function percentColumnOptions(categories: string[], colors: string[] = [chartColors.teal, chartColors.blue]) {
+    return {
+        ...baseChart({ chart: { type: 'bar' } }),
+        plotOptions: { bar: { columnWidth: '55%', borderRadius: 6 } },
+        colors,
+        xaxis: { categories, labels: { style: { colors: '#64748b', fontSize: '10.5px' } } },
+        yaxis: { labels: { style: { colors: '#64748b', fontSize: '10px' }, formatter: (v: number) => `${Number(v ?? 0).toFixed(0)}%` } },
+        tooltip: { y: { formatter: (v: number) => percent(v) } },
+    }
+}
+
 /** Vertical column comparison for plain counts (headcount, altas/bajas, etc.) — no $ formatting. */
 export function countColumnOptions(categories: string[], colors: string[] = [chartColors.teal, chartColors.blue]) {
     return {
@@ -113,6 +125,28 @@ export function donutOptions(labels: string[], colors: string[] = categoryPalett
         },
         plotOptions: { pie: { donut: { size: '68%', labels: { show: true, total: { show: true, label: 'Total', formatter: (w: any) => moneyCompact(w.globals.seriesTotals.reduce((a: number, b: number) => a + b, 0)) } } } } },
         tooltip: { y: { formatter: (v: number) => money(v) } },
+    }
+}
+
+/** Radial gauge (uno o más anillos concéntricos) — para una sola métrica porcentual comparada entre 2+ series (ej. Mora Periodo A vs B). */
+export function radialBarOptions(labels: string[], colors: string[] = [chartColors.blue, chartColors.teal]) {
+    return {
+        ...baseChart({ chart: { type: 'radialBar' } }),
+        labels,
+        colors,
+        legend: { show: false },
+        plotOptions: {
+            radialBar: {
+                hollow: { size: '42%' },
+                track: { background: '#eef2f7' },
+                dataLabels: {
+                    name: { fontSize: '11px', color: '#64748b' },
+                    value: { fontSize: '15px', fontWeight: 700, formatter: (v: number) => percent(v) },
+                    total: { show: labels.length > 1, label: 'Promedio', fontSize: '11px', color: '#64748b', formatter: (w: any) => percent(w.globals.seriesTotals.reduce((a: number, b: number) => a + b, 0) / w.globals.seriesTotals.length) },
+                },
+            },
+        },
+        tooltip: { y: { formatter: (v: number) => percent(v) } },
     }
 }
 

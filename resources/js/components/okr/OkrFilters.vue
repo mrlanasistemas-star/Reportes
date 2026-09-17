@@ -39,15 +39,23 @@ const statusLabel: Record<string, string> = { draft: 'Borrador', active: 'Activo
 
 const employeeOptions = ref<{ id: number; full_name: string }[]>([])
 let employeeSearchTimer: ReturnType<typeof setTimeout> | null = null
+// Parte C del cierre (17-sep-2026): token de versión — sin esto, una respuesta
+// vieja que tarda más que una más nueva (ej. "Ana" tarda más que "Ana P") podía
+// pisar el resultado correcto y dejar opciones equivocadas en el buscador.
+let employeeSearchVersion = 0
 
 async function loadEmployees(search = '') {
     const params = new URLSearchParams()
     if (model.value.branch_id) params.set('branch_id', model.value.branch_id)
     if (search) params.set('search', search)
+    const myVersion = ++employeeSearchVersion
     try {
-        const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { headers: { Accept: 'application/json' } })
+        const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+        if (myVersion !== employeeSearchVersion) return // llegó tarde — una búsqueda más nueva ya ganó
         if (!res.ok) return
-        employeeOptions.value = (await res.json()).employees ?? []
+        const json = await res.json()
+        if (myVersion !== employeeSearchVersion) return
+        employeeOptions.value = json.employees ?? []
     } catch {
         // Búsqueda opcional — un fallo de red no debe romper el resto del dashboard.
     }

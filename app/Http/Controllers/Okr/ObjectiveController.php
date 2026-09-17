@@ -35,6 +35,9 @@ class ObjectiveController extends Controller
 {
     use ResolvesOperativeBranches, AuthorizesRequests;
 
+    /** Parte C4 del cierre (17-sep-2026) — lookups dinámicos nunca cacheables. */
+    private const NO_STORE_HEADERS = ['Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma' => 'no-cache'];
+
     /**
      * Búsqueda ligera de colaboradores de UNA sucursal (bug "empleado de otra
      * sucursal" — sección 46/AP del pedido: nunca cargar la lista completa).
@@ -49,13 +52,16 @@ class ObjectiveController extends Controller
         $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
         $employees = $resolver->employeesForBranch($branchId, $request->string('search')->toString());
 
+        // Nunca cacheable (Parte C4 del cierre, 17-sep-2026) — resultado sensible
+        // a búsqueda/sucursal, un cache compartido/proxy podría servir la lista de
+        // otro filtro.
         return response()->json([
             'employees' => $employees,
             // Total real de la sucursal (sin el límite de 30 del buscador) —
             // lo usa el resumen del wizard de asignación para mostrar "todos
             // todos" los colaboradores cuando no se activan OKR individuales.
             'total_in_branch' => $branchId !== null ? $resolver->countForBranch($branchId) : null,
-        ]);
+        ], 200, self::NO_STORE_HEADERS);
     }
 
     /**
@@ -93,7 +99,7 @@ class ObjectiveController extends Controller
 
         $objectives = $query->orderByDesc('id')->limit(30)->get(['id', 'title']);
 
-        return response()->json(['objectives' => $objectives]);
+        return response()->json(['objectives' => $objectives], 200, self::NO_STORE_HEADERS);
     }
 
     /**
