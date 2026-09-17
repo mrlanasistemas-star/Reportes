@@ -50,7 +50,7 @@ class ResponsibleController extends Controller
 {
     use AuthorizesRequests;
 
-    public function index(): Response
+    public function index(Request $request): Response
     {
         $this->authorize('okr.admin');
 
@@ -77,6 +77,13 @@ class ResponsibleController extends Controller
             // (Este repo no comparte `flash` de sesión a Inertia globalmente
             // — ver HandleInertiaRequests — por eso viaja como prop normal.)
             'temp_password' => session()->pull('temp_password'),
+            // current_user_id/admin_count (cierre 17-sep-2026, ronda 4) — para que la UI
+            // oculte por sí sola "cambiar rol" en tu propia fila y "quitar admin" cuando
+            // eres el único admin, en vez de dejar que el usuario intente algo que el
+            // backend rechazará igual (ver updateRole()) sin ningún mensaje visible (este
+            // repo no comparte flash de sesión a Inertia globalmente).
+            'current_user_id' => $request->user()->id,
+            'admin_count' => $responsibles->where('role', 'admin')->count(),
         ]);
     }
 
@@ -121,5 +128,53 @@ class ResponsibleController extends Controller
         $user->forceFill(['access_enabled_at' => now()])->save();
 
         return back()->with('success', "Acceso habilitado para {$user->name}. Debe usar \"¿Olvidaste tu contraseña?\" para entrar la primera vez.");
+    }
+
+    /**
+     * Revierte la habilitación de acceso (cierre 17-sep-2026, ronda 4) — antes
+     * esta pantalla solo podía HABILITAR, nunca deshabilitar de nuevo. Sin
+     * efecto sobre un admin (EnsureOkrAccessEnabled ya lo deja pasar siempre,
+     * sin importar access_enabled_at) — solo aplica de verdad a colaboradores.
+     */
+    public function disableAccess(User $user): RedirectResponse
+    {
+        $this->authorize('okr.admin');
+
+        $user->forceFill(['access_enabled_at' => null])->save();
+
+        return back()->with('success', "Acceso deshabilitado para {$user->name}.");
+    }
+
+    /**
+     * Cambia el rol de un usuario (cierre 17-sep-2026, ronda 4) — antes esta
+     * pantalla no permitía editar el rol de nadie después de creado. Dos
+     * candados de seguridad, ambos para evitar quedarse sin ningún admin que
+     * pueda entrar a arreglarlo:
+     *   - nadie puede cambiar su PROPIO rol desde aquí (evita que un admin se
+     *     autodegrade por error mientras está operando esta pantalla).
+     *   - no se puede degradar al ÚLTIMO admin restante.
+     */
+    public function updateRole(User $user, Request $request): RedirectResponse
+    {
+        $this->authorize('okr.admin');
+
+        $data = $request->validate([
+            'role' => ['required', Rule::in(['admin', 'colaborador'])],
+        ]);
+
+        if ($user->id === $request->user()->id) {
+            return back()->with('error', 'No puedes cambiar tu propio rol desde aquí.');
+        }
+
+        if ($data['role'] !== 'admin' && $user->role === 'admin') {
+            $adminCount = User::query()->where('role', 'admin')->count();
+            if ($adminCount <= 1) {
+                return back()->with('error', 'No puedes quitar el único administrador restante del sistema.');
+            }
+        }
+
+        $user->forceFill(['role' => $data['role']])->save();
+
+        return back()->with('success', "Rol de {$user->name} actualizado a " . ($data['role'] === 'admin' ? 'Administrador' : 'Colaborador') . '.');
     }
 }

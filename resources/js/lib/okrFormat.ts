@@ -58,3 +58,16 @@ export function formatFriendlyDate(value: string | null | undefined): string {
     if (Number.isNaN(parsed.getTime())) return value
     return new Intl.DateTimeFormat('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }).format(parsed).replace('.', '')
 }
+
+/**
+ * Fecha + hora amigable (ej. "08 sep 2026, 5:42 p.m.") — para timestamps CON hora
+ * (historial de auditoría, bitácora), a diferencia de formatFriendlyDate() que
+ * asume una fecha pura. Cierre 17-sep-2026 ronda 5: antes el historial del OKR
+ * mostraba el timestamp crudo tal cual venía de la BD ("2026-09-08 17:42:22").
+ */
+export function formatFriendlyDateTime(value: string | null | undefined): string {
+    if (!value) return '—'
+    const parsed = new Date(value.includes('T') ? value : value.replace(' ', 'T'))
+    if (Number.isNaN(parsed.getTime())) return value
+    return new Intl.DateTimeFormat('es-MX', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }).format(parsed).replace('.', '')
+}

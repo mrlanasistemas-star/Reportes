@@ -144,7 +144,15 @@ return [
     */
 
     'features' => [
-        Features::registration(),
+        // Registro público DESHABILITADO (cierre 17-sep-2026, ronda 4) — a petición
+        // explícita del usuario: /register permitía que CUALQUIERA con la URL creara
+        // una cuenta propia sin pasar por ningún administrador. Los usuarios ahora
+        // SOLO se crean desde "Responsables OKR" (ResponsibleController::store()),
+        // que ya fuerza role='colaborador' y requiere habilitación explícita del
+        // admin — nunca vía self-signup. resetPasswords() sigue activo (un usuario
+        // ya creado por un admin necesita "¿Olvidaste tu contraseña?" para entrar
+        // la primera vez, ver ResponsibleController).
+        // Features::registration(),
         Features::resetPasswords(),
         Features::emailVerification(),
         Features::twoFactorAuthentication([

@@ -25,7 +25,27 @@ import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
 import OkrCheckInDialog from '@/components/okr/OkrCheckInDialog.vue'
 import OkrEvidenceUploadDialog from '@/components/okr/OkrEvidenceUploadDialog.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
-import { formatByUnit, formatFriendlyDate, formatPp } from '@/lib/okrFormat'
+import { formatByUnit, formatFriendlyDate, formatFriendlyDateTime, formatPp } from '@/lib/okrFormat'
+
+// Historial del OKR (cierre 17-sep-2026 ronda 5) — antes le pegaba " modificada" a
+// CUALQUIER acción sin importar cuál fuera ("created modificada", "activated
+// modificada" — texto técnico en inglés, ni siquiera con sentido gramatical). Cada
+// action/field real (ver OkrAuditLogger — 'created'/'activated'/
+// 'key_result_removed'/'field_changed') tiene aquí su propia frase en español.
+const FIELD_LABELS: Record<string, string> = {
+    weight: 'Ponderación',
+    target_value: 'Meta',
+}
+function auditLogLabel(log: { action: string; field?: string | null }): string {
+    if (log.field && FIELD_LABELS[log.field]) return `${FIELD_LABELS[log.field]} modificada`
+    switch (log.action) {
+        case 'created': return 'OKR creado'
+        case 'activated': return 'OKR activado'
+        case 'key_result_removed': return 'Resultado clave eliminado'
+        case 'field_changed': return `${log.field ?? 'Campo'} modificado`
+        default: return log.field ? `${log.field} modificado` : 'Actualización del OKR'
+    }
+}
 
 // D13 del cierre (17-sep-2026) — auditoría real confirmó que este sistema SOLO
 // genera radiografía a nivel MENSUAL (nunca semanal), así que un KPI automático
@@ -348,8 +368,8 @@ function trendIcon(kr: any) {
             <summary class="cursor-pointer text-sm font-bold text-foreground">Historial del OKR ({{ auditLogs.length }})</summary>
             <div class="mt-3 space-y-2">
                 <div v-for="log in auditLogs" :key="log.id" class="border-l-2 border-border pl-3 text-xs">
-                    <p class="font-semibold text-foreground">{{ log.field === 'weight' ? 'Ponderación' : log.field === 'target_value' ? 'Meta' : log.field ?? log.action }} modificada <span v-if="log.old_value !== null" class="font-normal text-muted-foreground">— {{ log.old_value }} → {{ log.new_value }}</span></p>
-                    <p class="text-muted-foreground">{{ log.user ?? 'Sistema' }} · {{ log.created_at }} <span v-if="log.reason">· "{{ log.reason }}"</span></p>
+                    <p class="font-semibold text-foreground">{{ auditLogLabel(log) }} <span v-if="log.old_value !== null" class="font-normal text-muted-foreground">— {{ log.old_value }} → {{ log.new_value }}</span></p>
+                    <p class="text-muted-foreground">{{ log.user ?? 'Sistema' }} · {{ formatFriendlyDateTime(log.created_at) }} <span v-if="log.reason">· "{{ log.reason }}"</span></p>
                 </div>
             </div>
         </details>

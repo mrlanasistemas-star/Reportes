@@ -21,6 +21,8 @@ import {
 import Swal from 'sweetalert2'
 
 import AppLayout from '@/layouts/AppLayout.vue'
+import ChartCard from '@/components/radiography/ChartCard.vue'
+import SelectField from '@/components/forms/SelectField.vue'
 
 type AssignmentAlias = {
     employee_id: number
@@ -51,6 +53,18 @@ type Assignment = {
     needs_manual_attention?: boolean
     context?: string
     aliases?: AssignmentAlias[]
+}
+
+// Altas/bajas del periodo (cierre 17-sep-2026, ronda 4) — vienen de
+// `period_employee_rosters` (roster canónico, deduplicado por persona real,
+// MISMA fuente que el Índice de Rotación de OKR), no de `Assignment` — forma
+// más chica a propósito, nunca confundir con una asignación real.
+type RosterMovementItem = {
+    id: number
+    employee_id: number
+    employee_name: string
+    branch_name?: string | null
+    period_label?: string | null
 }
 
 type Branch = {
@@ -85,10 +99,12 @@ const props = withDefaults(
             needs_review: number
             hires: number
             leavers: number
+            plantilla: number
+            roster_calculado: boolean
         }
         incidences?: Assignment[]
-        hires?: Assignment[]
-        leavers?: Assignment[]
+        hires?: RosterMovementItem[]
+        leavers?: RosterMovementItem[]
     }>(),
     {
         assignments: () => [],
@@ -108,6 +124,8 @@ const props = withDefaults(
             needs_review: 0,
             hires: 0,
             leavers: 0,
+            plantilla: 0,
+            roster_calculado: false,
         }),
         incidences: () => [],
         hires: () => [],
@@ -122,7 +140,39 @@ defineOptions({
 const filters = reactive({
     query: '',
     status: 'all',
+    branch: '',
 })
+
+// Filtro por sucursal (cierre 17-sep-2026, ronda 5) — opciones a partir de las
+// sucursales que REALMENTE aparecen en las asignaciones de este periodo, nunca
+// el catálogo completo (evita mostrar sucursales sin ningún colaborador aquí).
+const branchFilterOptions = computed(() => {
+    const names = new Set(props.assignments.map((a) => a.branch_name).filter((n): n is string => !!n))
+    return [
+        { value: '', label: 'Todas las sucursales' },
+        ...Array.from(names).sort().map((n) => ({ value: n, label: n })),
+    ]
+})
+
+// Distribución de colaboradores por sucursal — gráfica pequeña, solo informativa
+// (nunca reemplaza los KPIs de arriba, que son la fuente real de conteos).
+const branchDistribution = computed(() => {
+    const counts = new Map<string, number>()
+    for (const a of props.assignments) {
+        const key = a.branch_name || 'Sin sucursal'
+        counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
+})
+const branchChartOptions = computed(() => ({
+    chart: { toolbar: { show: false } },
+    colors: ['#0ea5e9'],
+    plotOptions: { bar: { borderRadius: 5, horizontal: true, barHeight: '55%' } },
+    dataLabels: { enabled: false },
+    xaxis: { categories: branchDistribution.value.map(([name]) => name), labels: { style: { fontSize: '10px' } } },
+    grid: { borderColor: '#f1f5f9' },
+}))
+const branchChartSeries = computed(() => [{ name: 'Colaboradores', data: branchDistribution.value.map(([, count]) => count) }])
 
 const selectedPeriodId = computed({
     get: () => (props.selected_period_id ? String(props.selected_period_id) : ''),
@@ -272,8 +322,9 @@ const filteredAssignments = computed(() => {
             aliasNames.includes(query)
 
         const matchesStatus = filters.status === 'all' || item.ui_status === filters.status
+        const matchesBranch = !filters.branch || item.branch_name === filters.branch
 
-        return matchesQuery && matchesStatus
+        return matchesQuery && matchesStatus && matchesBranch
     })
 })
 
@@ -289,7 +340,7 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
 </script>
 
 <template>
-    <Head title="Asignación sucursal" />
+    <Head title="Colaboradores" />
 
     <div class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 lg:p-8">
         <div class="mx-auto max-w-screen-2xl space-y-6">
@@ -300,11 +351,12 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                     <div class="flex size-10 items-center justify-center rounded-2xl bg-sky-500">
                         <GitCompareArrows class="size-5 text-white" />
                     </div>
-                    <p class="text-xs font-black uppercase tracking-[0.28em] text-sky-300">Empleados</p>
+                    <p class="text-xs font-black uppercase tracking-[0.28em] text-sky-300">Colaboradores</p>
                 </div>
-                <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">Asignación empleado → sucursal</h1>
+                <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">Colaboradores por sucursal y periodo</h1>
                 <p class="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
-                    Revisa el cruce de colaboradores del periodo con las sucursales. Usa el botón
+                    Revisa en qué sucursal está cada colaborador este periodo, por qué uno no tiene sucursal
+                    asignada todavía, y quién entró o salió respecto al periodo anterior. Usa el botón
                     <span class="font-bold text-sky-300">Asignar sucursal</span> en cada tarjeta para corregir o confirmar manualmente.
                 </p>
                 <div class="mt-5 flex flex-wrap items-center gap-3">
@@ -330,29 +382,23 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
 
             <!-- Stats -->
             <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
-                <div class="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div class="flex items-center gap-2 text-xs text-slate-500"><UserRound class="size-4" /> Activos</div>
-                    <p class="mt-2 text-2xl font-black text-slate-950">{{ summary.total }}</p>
-                </div>
-                <div class="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div class="flex items-center gap-2 text-xs text-slate-500"><CheckCircle2 class="size-4" /> Con sucursal</div>
-                    <p class="mt-2 text-2xl font-black text-slate-950">{{ summary.with_branch }}</p>
-                </div>
-                <div class="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div class="flex items-center gap-2 text-xs text-slate-500"><AlertTriangle class="size-4" /> Incidencias</div>
-                    <p class="mt-2 text-2xl font-black text-slate-950">{{ summary.needs_review }}</p>
-                </div>
-                <div class="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div class="flex items-center gap-2 text-xs text-slate-500"><Sparkles class="size-4" /> Manuales</div>
-                    <p class="mt-2 text-2xl font-black text-slate-950">{{ summary.manual }}</p>
-                </div>
-                <div class="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div class="flex items-center gap-2 text-xs text-slate-500"><UserPlus class="size-4" /> Altas</div>
-                    <p class="mt-2 text-2xl font-black text-slate-950">{{ summary.hires }}</p>
-                </div>
-                <div class="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div class="flex items-center gap-2 text-xs text-slate-500"><UserMinus class="size-4" /> Bajas</div>
-                    <p class="mt-2 text-2xl font-black text-slate-950">{{ summary.leavers }}</p>
+                <div
+                    v-for="stat in [
+                        { icon: UserRound, label: 'Activos', value: summary.total, bg: 'bg-slate-100', fg: 'text-slate-600' },
+                        { icon: CheckCircle2, label: 'Con sucursal', value: summary.with_branch, bg: 'bg-emerald-50', fg: 'text-emerald-600' },
+                        { icon: AlertTriangle, label: 'Incidencias', value: summary.needs_review, bg: 'bg-amber-50', fg: 'text-amber-600' },
+                        { icon: Sparkles, label: 'Manuales', value: summary.manual, bg: 'bg-sky-50', fg: 'text-sky-600' },
+                        { icon: UserPlus, label: 'Altas', value: summary.hires, bg: 'bg-emerald-50', fg: 'text-emerald-600' },
+                        { icon: UserMinus, label: 'Bajas', value: summary.leavers, bg: 'bg-rose-50', fg: 'text-rose-600' },
+                    ]"
+                    :key="stat.label"
+                    class="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                >
+                    <div :class="['flex size-8 items-center justify-center rounded-xl', stat.bg]">
+                        <component :is="stat.icon" :class="['size-4', stat.fg]" />
+                    </div>
+                    <p class="mt-2.5 text-[11px] font-bold tracking-wide text-slate-500 uppercase">{{ stat.label }}</p>
+                    <p class="mt-0.5 text-2xl font-black text-slate-950">{{ stat.value }}</p>
                 </div>
             </div>
 
@@ -381,6 +427,18 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                             <p class="mt-2 text-2xl font-extrabold text-sky-800 dark:text-sky-200">{{ manualAssignments.length }}</p>
                         </div>
                     </div>
+
+                    <!-- Distribución por sucursal — informativa, chica a propósito para no
+                         sobrecargar el módulo (pedido explícito: "que no sobresature"). -->
+                    <div v-if="branchDistribution.length" class="border-t p-4 sm:p-5">
+                        <ChartCard
+                            title="Colaboradores por sucursal"
+                            type="bar"
+                            :height="Math.max(160, branchDistribution.length * 32)"
+                            :series="branchChartSeries"
+                            :options="branchChartOptions"
+                        />
+                    </div>
                 </div>
 
                 <!-- Employee cards -->
@@ -394,8 +452,8 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                                 </p>
                             </div>
 
-                            <div class="flex flex-col gap-3 sm:flex-row">
-                                <div class="relative w-full sm:w-[320px]">
+                            <div class="flex flex-col flex-wrap gap-3 sm:flex-row">
+                                <div class="relative w-full sm:w-[260px]">
                                     <Search class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <input
                                         v-model="filters.query"
@@ -405,13 +463,17 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                                     />
                                 </div>
 
-                                <select v-model="filters.status" class="app-input h-11 sm:w-[190px]">
+                                <select v-model="filters.status" class="app-input h-11 sm:w-[170px]">
                                     <option value="all">Todos</option>
                                     <option value="matched">Match correcto</option>
                                     <option value="manual">Manual</option>
                                     <option value="pending">Pendiente</option>
                                     <option value="unmatched">Sin match</option>
                                 </select>
+
+                                <div class="w-full sm:w-[200px]">
+                                    <SelectField v-model="filters.branch" :options="branchFilterOptions" placeholder="Todas las sucursales" />
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -582,6 +644,9 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                         </article>
                     </div>
 
+                    <div v-else-if="!summary.roster_calculado" class="px-4 py-10 text-center text-sm text-muted-foreground">
+                        El roster de colaboradores de este periodo aún no se ha calculado — corre "Actualizar BD" en Histórico General primero.
+                    </div>
                     <div v-else class="px-4 py-10 text-center text-sm text-muted-foreground">Sin altas detectadas.</div>
                 </div>
 
@@ -606,6 +671,9 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                         </article>
                     </div>
 
+                    <div v-else-if="!summary.roster_calculado" class="px-4 py-10 text-center text-sm text-muted-foreground">
+                        El roster de colaboradores de este periodo aún no se ha calculado — corre "Actualizar BD" en Histórico General primero.
+                    </div>
                     <div v-else class="px-4 py-10 text-center text-sm text-muted-foreground">Sin bajas detectadas.</div>
                 </div>
             </section>

@@ -341,12 +341,16 @@ class RadiografiaExportService
     }
 
     /**
-     * Renderiza la página de gráficas ejecutivas a un PDF temporal vía Browsershot (Chrome
-     * headless real — el único motor de este proyecto capaz de ejecutar Chart.js, dompdf no
-     * puede). Devuelve null (nunca lanza) si Node/Chrome no están disponibles o el render
-     * falla — el llamador ya sabe tratar null como "sin página extra, seguir normal".
+     * Datos agregados para gráficas ejecutivas (mora por bucket, top gastos, categoría
+     * EBITDA por sucursal, colocación/recuperación por sucursal) — extraído como método
+     * público (cierre 17-sep-2026, ronda 4) para que el PDF general (renderExecutiveChartsPdf)
+     * Y el Dashboard principal (DashboardController) lean EXACTAMENTE el mismo cálculo,
+     * nunca dos fórmulas divergentes. Devuelve null si el snapshot no trae branch_radiography
+     * completo (p.ej. un snapshot de alcance sucursal/colaborador).
+     *
+     * @return array{moraBuckets:array,gastosTopN:array,categorias:array,categoriaLabels:array,categoriaCounts:array,categoriaColors:array,sucursalRows:array}|null
      */
-    private function renderExecutiveChartsPdf(Period $period, array $snapshot): ?string
+    public function buildExecutiveChartsData(array $snapshot): ?array
     {
         $brGlobal   = $snapshot['branch_radiography']['global'] ?? null;
         $brBranches = $snapshot['branch_radiography']['branches'] ?? [];
@@ -399,9 +403,7 @@ class RadiografiaExportService
         }
         usort($sucursalRows, fn ($x, $y) => strcmp($x['sucursal'], $y['sucursal']));
 
-        $html = view('reports.radiography-pdf-charts', [
-            'period'          => $period,
-            'chartJsInline'   => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
+        return [
             'moraBuckets'     => $moraBuckets,
             'gastosTopN'      => $gastosTopN,
             'categorias'      => $categorias,
@@ -409,6 +411,32 @@ class RadiografiaExportService
             'categoriaCounts' => array_values($categoriaCounts),
             'categoriaColors' => $categoriaColors,
             'sucursalRows'    => $sucursalRows,
+        ];
+    }
+
+    /**
+     * Renderiza la página de gráficas ejecutivas a un PDF temporal vía Browsershot (Chrome
+     * headless real — el único motor de este proyecto capaz de ejecutar Chart.js, dompdf no
+     * puede). Devuelve null (nunca lanza) si Node/Chrome no están disponibles o el render
+     * falla — el llamador ya sabe tratar null como "sin página extra, seguir normal".
+     */
+    private function renderExecutiveChartsPdf(Period $period, array $snapshot): ?string
+    {
+        $data = $this->buildExecutiveChartsData($snapshot);
+        if ($data === null) {
+            return null;
+        }
+
+        $html = view('reports.radiography-pdf-charts', [
+            'period'          => $period,
+            'chartJsInline'   => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
+            'moraBuckets'     => $data['moraBuckets'],
+            'gastosTopN'      => $data['gastosTopN'],
+            'categorias'      => $data['categorias'],
+            'categoriaLabels' => $data['categoriaLabels'],
+            'categoriaCounts' => $data['categoriaCounts'],
+            'categoriaColors' => $data['categoriaColors'],
+            'sucursalRows'    => $data['sucursalRows'],
         ])->render();
 
         $tmpPath = storage_path('app/radiografias/tmp_charts_' . uniqid() . '.pdf');

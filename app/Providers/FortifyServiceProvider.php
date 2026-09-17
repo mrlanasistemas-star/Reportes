@@ -49,7 +49,6 @@ class FortifyServiceProvider extends ServiceProvider
     {
         Fortify::loginView(fn (Request $request) => Inertia::render('auth/Login', [
             'canResetPassword' => Features::enabled(Features::resetPasswords()),
-            'canRegister' => Features::enabled(Features::registration()),
             'status' => $request->session()->get('status'),
         ]));
 
@@ -66,7 +65,11 @@ class FortifyServiceProvider extends ServiceProvider
             'status' => $request->session()->get('status'),
         ]));
 
-        Fortify::registerView(fn () => Inertia::render('auth/Register'));
+        // registerView() eliminado (cierre 17-sep-2026, ronda 4) — Features::registration()
+        // está deshabilitado en config/fortify.php (registro público quitado a petición del
+        // usuario), así que esta vista nunca se sirve; se quitó junto con
+        // resources/js/pages/auth/Register.vue (importaba una ruta Wayfinder que ya no
+        // existe, rompía `npm run build`).
 
         Fortify::twoFactorChallengeView(fn () => Inertia::render('auth/TwoFactorChallenge'));
 
