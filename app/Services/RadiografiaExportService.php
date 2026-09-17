@@ -21,6 +21,7 @@ class RadiografiaExportService
     public function __construct(
         private RadiographyWorkbookBuilder $workbookBuilder,
         private RadiographySnapshotBuilder $snapshotBuilder,
+        private \App\Services\TemporaryOpexAdjustmentService $temporaryAdjustment,
     ) {}
 
     /**
@@ -174,7 +175,11 @@ class RadiografiaExportService
             if (!$branchId) {
                 throw new RuntimeException('Se requiere branch_id para reportes por sucursal.');
             }
-            $spreadsheet = $this->workbookBuilder->buildBranchFromSnapshot($period, $summary, $snapshot, $branchId);
+            // Ajuste manual EFÍMERO de SUCURSAL (cierre 17-sep-2026, ronda 2, A5 Caso
+            // 2) — nunca BD. Antes de esta ronda no existía: el Excel de sucursal
+            // jamás pudo llevar un ajuste. Ver TemporaryOpexAdjustmentService.
+            [$branchExtraAmount, $branchExtraNotes] = $this->resolveBranchManualAdjustmentFor($period, $config, $branchId);
+            $spreadsheet = $this->workbookBuilder->buildBranchFromSnapshot($period, $summary, $snapshot, $branchId, $branchExtraAmount, $branchExtraNotes);
             $suffix      = 'sucursal_' . $branchId;
         } elseif ($scope === 'employee') {
             $employeeId    = (int) ($config['employee_id'] ?? 0);
@@ -185,7 +190,7 @@ class RadiografiaExportService
             // — nunca BD. $config['manual_adjustment'] lo arma el controlador desde
             // los parámetros de la request; se aplica SOLO si es de este mismo
             // employee_id (nunca se filtra a otro colaborador).
-            [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($config, $employeeId);
+            [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($period, $config, $employeeId);
             $spreadsheet = $this->workbookBuilder->buildEmployeeFromSnapshot($period, $summary, $snapshot, $employeeId, $extraAmount, $extraNotes);
             $suffix      = 'gestor_' . $employeeId;
         } else {
@@ -235,12 +240,24 @@ class RadiografiaExportService
                 throw new RuntimeException('Se requiere branch_id para reportes por sucursal.');
             }
             $branchRow  = $this->resolveBranchRow($snapshot, $branchId);
+            // Ajuste manual EFÍMERO de SUCURSAL (cierre 17-sep-2026, ronda 2, A5 Caso 2)
+            // — se suma a gastos_operativos ANTES de resolveBranchPdfData() (que
+            // calcula gastosTotales/ebitda/margen leyendo ese mismo campo vía
+            // BranchRadiographyCalculator) — así el PDF de sucursal queda EXACTO a
+            // Web/Excel. Antes de esta ronda no existía: el PDF de sucursal jamás
+            // pudo llevar un ajuste.
+            [$branchExtraAmount, $branchExtraNotes] = $this->resolveBranchManualAdjustmentFor($period, $config, $branchId);
+            if ($branchExtraAmount > 0) {
+                $branchRow['gastos_operativos'] = (float) ($branchRow['gastos_operativos'] ?? 0) + $branchExtraAmount;
+            }
             $branchData = $this->resolveBranchPdfData($period, $snapshot, $branchId, $branchRow);
 
             $pdf = Pdf::loadView('reports.radiography-pdf-branch', array_merge($branchData, [
                 'period'     => $period,
                 'snap'       => $snapshot,
                 'branchRow'  => $branchRow,
+                'extraAmount' => $branchExtraAmount,
+                'extraNotes'  => $branchExtraNotes,
             ]))->setPaper('letter', 'portrait')->setOption('isPhpEnabled', true);
             $suffix = 'sucursal_' . $branchId;
         } elseif ($scope === 'employee') {
@@ -254,7 +271,7 @@ class RadiografiaExportService
             // ($empData['expenseDetail']), nunca del valor crudo de la request —
             // así nunca puede mostrar un monto/nota distinto al que realmente se
             // sumó al total.
-            [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($config, $employeeId);
+            [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($period, $config, $employeeId);
             $empData = $this->resolveEmployeeRow($period, $snapshot, $employeeId, $extraAmount, $extraNotes);
 
             $pdf = Pdf::loadView('reports.radiography-pdf-employee', array_merge($empData, [
@@ -278,7 +295,138 @@ class RadiografiaExportService
 
         $pdf->save($outputPath);
 
+        // Página de gráficas ejecutivas (Chart.js vía Chrome headless/Browsershot) — cierre
+        // 17-sep-2026 ronda 3, a petición explícita del usuario ("quiero PDFs modernos con
+        // gráficas"). SOLO para el PDF general (dompdf no soporta canvas/JS — no toca branch/
+        // employee/comparativo, que siguen 100% dompdf sin cambios). Se agrega DESPUÉS de
+        // guardar el PDF ya verificado (nunca reemplaza su contenido) y NUNCA puede tumbar el
+        // export: si Node/Chrome no están instalados en el servidor o algo falla, se reporta
+        // el error y el usuario recibe el PDF de siempre, sin la página extra.
+        if ($suffix === 'general') {
+            $this->appendExecutiveChartsPageIfPossible($period, $snapshot, $outputPath);
+        }
+
         return $outputPath;
+    }
+
+    /**
+     * Intenta añadir una página de gráficas ejecutivas (Chart.js, renderizado real vía
+     * Chrome headless) al final del PDF general ya generado. Estrictamente aditivo y
+     * best-effort — cualquier fallo (Node/Chrome no instalados, timeout, etc.) se registra
+     * con report() y se ignora, dejando el PDF original intacto.
+     */
+    private function appendExecutiveChartsPageIfPossible(Period $period, array $snapshot, string $outputPath): void
+    {
+        try {
+            $chartsPdfPath = $this->renderExecutiveChartsPdf($period, $snapshot);
+            if ($chartsPdfPath === null) {
+                return;
+            }
+
+            $merged = new \setasign\Fpdi\Fpdi();
+            foreach ([$outputPath, $chartsPdfPath] as $sourcePath) {
+                $pageCount = $merged->setSourceFile($sourcePath);
+                for ($i = 1; $i <= $pageCount; $i++) {
+                    $templateId = $merged->importPage($i);
+                    $size = $merged->getTemplateSize($templateId);
+                    $merged->AddPage($size['orientation'], [$size['width'], $size['height']]);
+                    $merged->useTemplate($templateId);
+                }
+            }
+            $merged->Output('F', $outputPath);
+            @unlink($chartsPdfPath);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * Renderiza la página de gráficas ejecutivas a un PDF temporal vía Browsershot (Chrome
+     * headless real — el único motor de este proyecto capaz de ejecutar Chart.js, dompdf no
+     * puede). Devuelve null (nunca lanza) si Node/Chrome no están disponibles o el render
+     * falla — el llamador ya sabe tratar null como "sin página extra, seguir normal".
+     */
+    private function renderExecutiveChartsPdf(Period $period, array $snapshot): ?string
+    {
+        $brGlobal   = $snapshot['branch_radiography']['global'] ?? null;
+        $brBranches = $snapshot['branch_radiography']['branches'] ?? [];
+        if (!$brGlobal || empty($brBranches)) {
+            return null;
+        }
+
+        $moraBuckets = [
+            ['label' => 'Mora 1-30',   'valor' => (float) ($brGlobal['mora_0_30'] ?? 0)],
+            ['label' => 'Mora 31-60',  'valor' => (float) ($brGlobal['mora_31_60'] ?? 0)],
+            ['label' => 'Mora 61-90',  'valor' => (float) ($brGlobal['mora_61_90'] ?? 0)],
+            ['label' => 'Mora 91-120', 'valor' => (float) ($brGlobal['mora_91_120'] ?? 0)],
+            ['label' => 'Mora 120+',   'valor' => (float) ($brGlobal['mora_120_plus'] ?? 0)],
+        ];
+
+        $gastosDetalle = (array) ($brGlobal['gastos_detalle'] ?? []);
+        arsort($gastosDetalle);
+        $gastosTopN = array_slice($gastosDetalle, 0, 8, true);
+
+        $categorias = [];
+        foreach ($brBranches as $b) {
+            $ebitda = BranchRadiographyCalculator::ebitdaFinalFor($b);
+            $categorias[] = [
+                'nombre'    => $b['sucursal'],
+                'ebitda'    => round($ebitda, 2),
+                'categoria' => \App\Services\Radiography\RadiographyStyleHelper::ebitdaCategory($ebitda),
+            ];
+        }
+        usort($categorias, fn ($x, $y) => strcmp($x['nombre'], $y['nombre']));
+        $categoriaCounts = array_count_values(array_column($categorias, 'categoria'));
+        // Mismos colores que las badges de categoría EBITDA en el resto del reporte
+        // (RadiographyStyleHelper::ebitdaCategoryBadgeColors()) — nunca un color nuevo
+        // inventado para esta gráfica.
+        $categoriaColorMap = [
+            'DIAMANTE'  => '#0369A1',
+            'MASTER'    => '#7C3AED',
+            'SENIOR'    => '#00B050',
+            'JUNIOR'    => '#92400E',
+            'MANTENIDO' => '#B91C1C',
+        ];
+        $categoriaColors = array_map(fn ($label) => $categoriaColorMap[$label] ?? '#94A3B8', array_keys($categoriaCounts));
+
+        $sucursalRows = [];
+        foreach ($brBranches as $b) {
+            $sucursalRows[] = [
+                'sucursal'     => $b['sucursal'],
+                'colocacion'   => round((float) ($b['colocacion'] ?? 0), 2),
+                'recuperacion' => round((float) ($b['recuperacion_total'] ?? 0), 2),
+            ];
+        }
+        usort($sucursalRows, fn ($x, $y) => strcmp($x['sucursal'], $y['sucursal']));
+
+        $html = view('reports.radiography-pdf-charts', [
+            'period'          => $period,
+            'chartJsInline'   => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
+            'moraBuckets'     => $moraBuckets,
+            'gastosTopN'      => $gastosTopN,
+            'categorias'      => $categorias,
+            'categoriaLabels' => array_keys($categoriaCounts),
+            'categoriaCounts' => array_values($categoriaCounts),
+            'categoriaColors' => $categoriaColors,
+            'sucursalRows'    => $sucursalRows,
+        ])->render();
+
+        $tmpPath = storage_path('app/radiografias/tmp_charts_' . uniqid() . '.pdf');
+
+        $shot = \Spatie\Browsershot\Browsershot::html($html)
+            ->waitUntilNetworkIdle()
+            ->showBackground()
+            ->format('Letter')
+            ->margins(0, 0, 0, 0);
+
+        $nodeBinary = config('services.browsershot.node_binary');
+        $chromePath = config('services.browsershot.chrome_path');
+        if ($nodeBinary) { $shot->setNodeBinary($nodeBinary); }
+        if ($chromePath) { $shot->setChromePath($chromePath); }
+
+        $shot->savePdf($tmpPath);
+
+        return file_exists($tmpPath) && filesize($tmpPath) > 0 ? $tmpPath : null;
     }
 
     /**
@@ -549,16 +697,40 @@ class RadiografiaExportService
      *
      * @return array{0: float, 1: string}
      */
-    private function resolveManualAdjustmentFor(array $config, int $employeeId): array
+    /**
+     * Cierre 17-sep-2026, ronda 2 — delega en TemporaryOpexAdjustmentService (fuente
+     * ÚNICA): solo aplica si mode='employee' y el employee_id coincide EXACTO
+     * (nunca "de paso" a otro colaborador).
+     */
+    private function resolveManualAdjustmentFor(Period $period, array $config, int $employeeId): array
     {
-        $adjustment = $config['manual_adjustment'] ?? null;
-        if (!is_array($adjustment) || ($adjustment['scope'] ?? null) !== 'employee') {
+        if (!isset($config['manual_adjustment'])) {
             return [0.0, ''];
         }
-        if ((int) ($adjustment['employee_id'] ?? 0) !== $employeeId) {
+        $empGestores = $this->snapshotBuilder->buildAllEmployeeGestorRows($period);
+        $amount = $this->temporaryAdjustment->totalForScope($empGestores, $config['manual_adjustment'], 'employee', null, $employeeId);
+        if ($amount <= 0) {
             return [0.0, ''];
         }
-        return [(float) ($adjustment['amount'] ?? 0), (string) ($adjustment['notes'] ?? '')];
+        $adjustment = $this->temporaryAdjustment->normalize($config['manual_adjustment']);
+
+        return [$amount, (string) ($adjustment['notes'] ?? '')];
+    }
+
+    /** Monto/nota del ajuste manual EFÍMERO de SUCURSAL para este periodo/branch — ver TemporaryOpexAdjustmentService. */
+    private function resolveBranchManualAdjustmentFor(Period $period, array $config, int $branchId): array
+    {
+        if (!isset($config['manual_adjustment'])) {
+            return [0.0, ''];
+        }
+        $empGestores = $this->snapshotBuilder->buildAllEmployeeGestorRows($period);
+        $amount = $this->temporaryAdjustment->totalForScope($empGestores, $config['manual_adjustment'], 'branch', $branchId);
+        if ($amount <= 0) {
+            return [0.0, ''];
+        }
+        $adjustment = $this->temporaryAdjustment->normalize($config['manual_adjustment']);
+
+        return [$amount, (string) ($adjustment['notes'] ?? '')];
     }
 
     private function resolveEmployeeRow(Period $period, array $snapshot, int $employeeId, float $extraExpenseAmount = 0.0, string $extraExpenseNotes = ''): array

@@ -4,6 +4,7 @@ namespace App\Services\Okr;
 
 use App\Models\Employee;
 use App\Models\EmployeeBranchAssignment;
+use App\Services\CanonicalEmployeeResolver;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -21,6 +22,10 @@ use Illuminate\Support\Facades\DB;
  */
 class OkrEmployeeBranchResolver
 {
+    public function __construct(private readonly CanonicalEmployeeResolver $canonicalResolver)
+    {
+    }
+
     /**
      * Empleados activos cuya asignación de sucursal MÁS RECIENTE es $branchId
      * (o de cualquier sucursal si $branchId es null — usado por el buscador
@@ -61,31 +66,19 @@ class OkrEmployeeBranchResolver
     }
 
     /**
-     * Agrupa filas de Employee por identidad canónica (normalized_name) — un
-     * registro sin normalized_name se trata como su propia identidad (nunca se
-     * fusiona a ciegas con otro). El `id` canónico expuesto es el MENOR de los
-     * IDs del grupo (el más antiguo/estable) — siempre el mismo para la misma
-     * persona en llamadas sucesivas, así el resto del módulo (validaciones,
-     * "ya tiene OKR", etc.) puede comparar por ese ID de forma consistente.
+     * Agrupa filas de Employee por identidad canónica — delega en
+     * CanonicalEmployeeResolver (extraído en el cierre 17-sep-2026, ronda 2, C2:
+     * "una única identidad... debe ser la MISMA para Reportería/Excel/OKR").
+     * Ver el docblock de esa clase para la regla exacta y su limitación conocida
+     * (dos personas reales con el normalized_name IDÉNTICO se agruparían — igual
+     * que en el resto de Reportería, no es un problema exclusivo de OKR).
      *
      * @param  \Illuminate\Support\Collection<int, Employee>  $rows
      * @return Collection<int, object{id:int, full_name:string, employee_ids:int[]}>
      */
     private function canonicalize(\Illuminate\Support\Collection $rows): Collection
     {
-        $byIdentity = [];
-        foreach ($rows as $row) {
-            $norm = trim((string) $row->normalized_name);
-            $key  = $norm !== '' ? $norm : ('__employee_' . $row->id);
-
-            if (!isset($byIdentity[$key])) {
-                $byIdentity[$key] = ['id' => (int) $row->id, 'full_name' => $row->full_name, 'employee_ids' => []];
-            }
-            $byIdentity[$key]['id'] = min($byIdentity[$key]['id'], (int) $row->id);
-            $byIdentity[$key]['employee_ids'][] = (int) $row->id;
-        }
-
-        return collect(array_values($byIdentity))->map(fn ($r) => (object) $r);
+        return $this->canonicalResolver->canonicalize($rows);
     }
 
     /**

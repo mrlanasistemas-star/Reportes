@@ -68,8 +68,13 @@ class DashboardController extends Controller
         $avgCompliance    = $activeOnly->isNotEmpty()
             ? round($activeOnly->avg(fn ($o) => $this->objectiveCompliance($o)), 2)
             : 0.0;
-        $branchesWithOkr  = $openObjectives->pluck('branch_id')->filter()->unique()->count();
-        $employeesWithOkr = $openObjectives->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)->pluck('employee_id')->filter()->unique()->count();
+        // C5 del cierre (17-sep-2026, ronda 2) — igual que riesgo/cumplimiento: SOLO
+        // activos. Un draft recién creado NO debe hacer creer que ya existe un OKR
+        // operativo en esa sucursal/colaborador (recomendación explícita del
+        // usuario). Antes usaban $openObjectives (draft+active), inflando estas
+        // cards con OKR que ni siquiera empezaron a trackearse.
+        $branchesWithOkr  = $activeOnly->pluck('branch_id')->filter()->unique()->count();
+        $employeesWithOkr = $activeOnly->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)->pluck('employee_id')->filter()->unique()->count();
 
         // Punto 14 de la auditoría 09-sep-2026 — distingue "sistema vacío" de
         // "filtros sin resultados": consulta GLOBAL (ignora los filtros).

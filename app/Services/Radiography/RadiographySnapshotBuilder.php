@@ -47,6 +47,7 @@ class RadiographySnapshotBuilder
         private readonly EmployeeNameCanonicalizer $canonicalizer,
         private readonly BranchRadiographyCalculator $branchCalculator,
         private readonly \App\Services\OpexClassificationService $opexClassifier,
+        private readonly \App\Services\TemporaryOpexAdjustmentService $temporaryAdjustment,
     ) {}
 
     public function build(Period $period, PeriodSummary $summary, array $config = []): array
@@ -343,32 +344,30 @@ class RadiographySnapshotBuilder
             $snapshot = $this->applyScope($snapshot, $config, $period, $empGestores, $gm);
         } else {
             $snapshot['scope'] = ['type' => 'general', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => true];
-            $snapshot = $this->applyGeneralManualAdjustment($snapshot, $config);
+            $snapshot = $this->applyGeneralManualAdjustment($snapshot, $config, $empGestores);
         }
 
         return $snapshot;
     }
 
     /**
-     * Ajuste manual EFÍMERO de esta request/reporte, alcance GENERAL (reversión
-     * 07-sep-2026, cierre — secciones 16/17/26): se suma UNA SOLA VEZ al resumen
-     * general — NUNCA se reparte entre colaboradores ($10,000 con 100
-     * colaboradores sigue siendo $10,000, no $1,000,000). No toca
+     * Ajuste manual EFÍMERO de esta request/reporte, alcance GENERAL (cierre
+     * 17-sep-2026, ronda 2 — TemporaryOpexAdjustmentService es ahora la ÚNICA
+     * fuente de "cuánto suma este ajuste a este alcance"): mode=all_each_employee
+     * suma amount_per_employee × colaboradores CANÓNICOS del periodo completo
+     * (nunca la plantilla de empleados actual — A6). No toca
      * branch_radiography.branches ni sections.employees_gestores — solo el
      * bloque summary (visible en Web/Excel general/PDF general). Nunca se
      * persiste — si $config no trae manual_adjustment, el snapshot es
      * exactamente el oficial de BD.
      */
-    private function applyGeneralManualAdjustment(array $snapshot, array $config): array
+    private function applyGeneralManualAdjustment(array $snapshot, array $config, array $empGestores): array
     {
-        $adjustment = $config['manual_adjustment'] ?? null;
-        if (!is_array($adjustment) || ($adjustment['scope'] ?? null) !== 'general') {
-            return $snapshot;
-        }
-        $amount = round(max(0.0, (float) ($adjustment['amount'] ?? 0)), 2);
+        $amount = $this->temporaryAdjustment->totalForScope($empGestores, $config['manual_adjustment'] ?? null, 'general');
         if ($amount <= 0) {
             return $snapshot;
         }
+        $adjustment = $this->temporaryAdjustment->normalize($config['manual_adjustment'] ?? null);
 
         $s = $snapshot['summary'];
         $ingresoBase = (float) ($s['ingreso_ebitda_base'] ?? 0);
@@ -380,8 +379,28 @@ class RadiographySnapshotBuilder
         $s['ebitda_global']    = $newEbitda;
         $s['margen_ebitda']    = $ingresoBase > 0 ? round($newEbitda / $ingresoBase * 100, 2) : 0.0;
         $s['ebitda_categoria'] = $this->ebitdaCategory($newEbitda);
-        $s['manual_adjustment_applied'] = ['amount' => $amount, 'notes' => (string) ($adjustment['notes'] ?? '')];
+        $s['manual_adjustment_applied'] = [
+            'amount' => $amount,
+            'amount_per_employee' => $adjustment['amount_per_employee'] ?? $amount,
+            'employee_count' => $this->temporaryAdjustment->affectedEmployeeCount($empGestores, $config['manual_adjustment'] ?? null),
+            'notes' => (string) ($adjustment['notes'] ?? ''),
+        ];
         $snapshot['summary'] = $s;
+
+        // Bug real confirmado (cierre 17-sep-2026, ronda 3): el Excel GLOBAL/GASTOS y el
+        // PDF general NUNCA leen `summary.*` para su EBITDA/OPEX narrativo — recalculan
+        // todo desde cero vía extractGlobalCoreMetrics()/BranchRadiographyCalculator sobre
+        // `branch_radiography.global` (ver RadiographyWorkbookBuilder::
+        // extractGlobalCoreMetrics()). Sin esta línea, el ajuste general SÍ actualizaba
+        // Web (summary.*) pero el Excel/PDF general seguían mostrando el OPEX/EBITDA
+        // OFICIAL sin ajustar — la nota "AJUSTE TEMPORAL (ya incluido arriba)" mentía.
+        // Mutar aquí (fuente única, RadiographySnapshotBuilder) en vez de en cada export
+        // — así CUALQUIER consumidor futuro de branch_radiography.global también queda
+        // correcto por construcción, no por acordarse de repetir la suma.
+        if (isset($snapshot['branch_radiography']['global']['gastos_operativos'])) {
+            $snapshot['branch_radiography']['global']['gastos_operativos'] =
+                round((float) $snapshot['branch_radiography']['global']['gastos_operativos'] + $amount, 2);
+        }
 
         return $snapshot;
     }
@@ -400,7 +419,7 @@ class RadiographySnapshotBuilder
         if ($scope === 'branch') {
             $branchId = (int) ($config['branch_id'] ?? 0);
             if (!$branchId) return $snapshot;
-            return $this->applyBranchScope($snapshot, $branchId, $period);
+            return $this->applyBranchScope($snapshot, $branchId, $period, $config, $empGestores);
         }
 
         if ($scope === 'employee') {
@@ -440,7 +459,7 @@ class RadiographySnapshotBuilder
         }
 
         $generalSnapshot['scope'] = ['type' => 'general', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => true];
-        return $this->applyGeneralManualAdjustment($generalSnapshot, $config);
+        return $this->applyGeneralManualAdjustment($generalSnapshot, $config, $this->lastEmpGestores);
     }
 
     /**
@@ -755,7 +774,7 @@ class RadiographySnapshotBuilder
         return $snapshot;
     }
 
-    private function applyBranchScope(array $snapshot, int $branchId, Period $period): array
+    private function applyBranchScope(array $snapshot, int $branchId, Period $period, array $config = [], array $empGestores = []): array
     {
         $branch = Branch::find($branchId);
         if (!$branch) {
@@ -868,6 +887,48 @@ class RadiographySnapshotBuilder
         $snapshot['sections'] = $s;
         $snapshot['charts']   = $this->scopeChartsByLabel($snapshot['charts'], $name);
 
+        // Ajuste manual EFÍMERO de SUCURSAL (cierre 17-sep-2026, ronda 2 — A5 Caso 2):
+        // mode=branch_each_employee suma amount_per_employee × colaboradores
+        // CANÓNICOS de ESTA sucursal en ESTE periodo (A6: nunca la plantilla de
+        // empleados actual) — nunca un monto fijo a repartir. Único punto que sabe
+        // esta cuenta: TemporaryOpexAdjustmentService — Web/Excel/PDF de sucursal
+        // nunca pueden divergir porque los tres llaman este mismo método.
+        $branchAdjustmentAmount = $this->temporaryAdjustment->totalForScope($empGestores, $config['manual_adjustment'] ?? null, 'branch', $branchId);
+        if ($branchAdjustmentAmount > 0) {
+            $adj = $this->temporaryAdjustment->normalize($config['manual_adjustment'] ?? null);
+            $s2 = $snapshot['summary'];
+            $ingresoBase = (float) ($s2['ingreso_ebitda_base'] ?? 0);
+            $s2['expenses_total'] = round((float) ($s2['expenses_total'] ?? 0) + $branchAdjustmentAmount, 2);
+            $s2['opex_total']     = round((float) ($s2['opex_total'] ?? 0) + $branchAdjustmentAmount, 2);
+            $s2['gastos_totales'] = round((float) ($s2['gastos_totales'] ?? 0) + $branchAdjustmentAmount, 2);
+            $newEbitda = round((float) ($s2['ebitda_final'] ?? 0) - $branchAdjustmentAmount, 2);
+            $s2['ebitda_final']     = $newEbitda;
+            $s2['ebitda_global']    = $newEbitda;
+            $s2['margen_ebitda']    = $ingresoBase > 0 ? round($newEbitda / $ingresoBase * 100, 2) : 0.0;
+            $s2['ebitda_categoria'] = $this->ebitdaCategory($newEbitda);
+            $s2['manual_adjustment_applied'] = [
+                'amount' => $branchAdjustmentAmount,
+                'amount_per_employee' => $adj['amount_per_employee'] ?? $branchAdjustmentAmount,
+                'employee_count' => $this->temporaryAdjustment->affectedEmployeeCount($empGestores, $config['manual_adjustment'] ?? null),
+                'notes' => (string) ($adj['notes'] ?? ''),
+            ];
+            $snapshot['summary'] = $s2;
+
+            // Bug real confirmado (cierre 17-sep-2026, ronda 3 — mismo hallazgo que en
+            // applyGeneralManualAdjustment()): Web (Preview.vue::brGlobal) lee el desglose
+            // de gastos/OPEX de sucursal directamente de branch_radiography.global (aquí
+            // reasignado a `$row`, la fila de ESTA sucursal — ver arriba), NUNCA de
+            // summary.*. Sin esta línea, la tabla de detalle de gastos en pantalla seguía
+            // mostrando el OPEX sin ajustar aunque las tarjetas de resumen (summary.*) ya
+            // reflejaban el ajuste — exactamente el síntoma reportado ("se aplica el
+            // ajuste pero OPEX no se actualiza en pantalla").
+            if (isset($snapshot['branch_radiography']['global']['gastos_operativos'])) {
+                $snapshot['branch_radiography']['global']['gastos_operativos'] =
+                    round((float) $snapshot['branch_radiography']['global']['gastos_operativos'] + $branchAdjustmentAmount, 2);
+                $snapshot['branch_radiography']['branches'] = [$snapshot['branch_radiography']['global']];
+            }
+        }
+
         return $snapshot;
     }
 
@@ -937,17 +998,12 @@ class RadiographySnapshotBuilder
         // OPEX del gestor = automático (fact_expenses) + ajuste manual EFÍMERO de
         // ESTA request — ver buildEmployeeExpenseDetail(). Misma identidad
         // (employeeIdsForNoi) que usa el resto del scope para no divergir de NOI.
-        // Reversión 07-sep-2026 (cierre): el manual YA NO se lee de BD — viaja en
-        // $config['manual_adjustment'] (nunca persistido) y solo aplica si su
-        // scope es 'employee' y su employee_id es EXACTAMENTE este colaborador
+        // Cierre 17-sep-2026, ronda 2: el manual YA NO se lee de BD — viaja en
+        // $config['manual_adjustment'] (nunca persistido). TemporaryOpexAdjustmentService
+        // es el ÚNICO que decide si aplica — mode='employee' y employee_id EXACTO
         // (nunca se filtra "de paso" a otro colaborador que comparta grupo NOI).
-        $manualAdjustment = $config['manual_adjustment'] ?? null;
-        $manualAmount = 0.0;
-        $manualNotes  = '';
-        if (is_array($manualAdjustment) && ($manualAdjustment['scope'] ?? null) === 'employee' && (int) ($manualAdjustment['employee_id'] ?? 0) === $employeeId) {
-            $manualAmount = (float) ($manualAdjustment['amount'] ?? 0);
-            $manualNotes  = (string) ($manualAdjustment['notes'] ?? '');
-        }
+        $manualAmount = $this->temporaryAdjustment->totalForScope($empGestores, $config['manual_adjustment'] ?? null, 'employee', null, $employeeId);
+        $manualNotes  = $manualAmount > 0 ? (string) ($this->temporaryAdjustment->normalize($config['manual_adjustment'] ?? null)['notes'] ?? '') : '';
         $expenseDetail  = $this->buildEmployeeExpenseDetail($employeeIdsForNoi, $employeeId, $manualAmount, $manualNotes);
 
         $snapshot['summary'] = $this->summaryFromRow($row, $percepDeducc, $row, $expenseDetail);

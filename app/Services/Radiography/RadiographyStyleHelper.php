@@ -24,6 +24,25 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
  */
 final class RadiographyStyleHelper
 {
+    /**
+     * Lee los valores YA escritos en un rango del propio sheet (p.ej. "$F$101:$F$102")
+     * para poblar el `<c:strCache>`/`<c:numCache>` de un chart nativo con datos REALES en
+     * vez de dejarlos vacíos (ptCount sin puntos) — bug real confirmado por inspección
+     * directa del XML de un .xlsx generado (cierre 17-sep-2026 ronda 3): sin esto, algunos
+     * visores (Excel antes de recalcular, LibreOffice, Google Sheets) muestran la gráfica
+     * en blanco o con marcadores de error en vez del dato real. Puramente de LECTURA — el
+     * rango ya fue escrito por el caller antes de agregar el chart, esto nunca cambia
+     * ninguna celda ni ningún cálculo.
+     *
+     * @return array<int, mixed>
+     */
+    private static function readRangeValues(Worksheet $sheet, string $range): array
+    {
+        $flat = $sheet->rangeToArray(str_replace('$', '', $range), null, false, false);
+
+        return array_map(fn ($row) => $row[0] ?? null, $flat);
+    }
+
     // Palette — teal/mint executive look, matches the reference workbook's aesthetic.
     public const BG_PRIMARY_DARK = 'FF106A59';
     public const BG_ACCENT       = 'FF1DC1A2';
@@ -371,6 +390,13 @@ final class RadiographyStyleHelper
      */
     /**
      * @param string|array<int,string> $barColorArgb single ARGB hex, or one per data point
+     * @param array<int,string> $categoryValues valores REALES de categoría — sin esto, PhpSpreadsheet
+     *        escribe `<c:strCache>`/`<c:numCache>` con `ptCount` pero CERO puntos cacheados, lo que
+     *        algunos visores (y a veces el propio Excel antes de recalcular) muestran como #NOMBRE?/
+     *        celdas de gráfica vacías en vez del dato real (bug real confirmado, cierre 17-sep-2026
+     *        ronda 3 — inspección directa del XML de un .xlsx generado). Opcional para no romper
+     *        llamadores existentes que no lo pasan.
+     * @param array<int,float> $dataValues valores REALES de la serie (mismo motivo que arriba).
      */
     public static function addBarChart(
         Worksheet $sheet,
@@ -380,15 +406,19 @@ final class RadiographyStyleHelper
         int $dataPointCount,
         string $topLeftCell,
         string $bottomRightCell,
-        string|array|null $barColorArgb = null
+        string|array|null $barColorArgb = null,
+        array $categoryValues = [],
+        array $dataValues = []
     ): void {
         $categoriesRef = self::sheetQualifiedRange($sheet, $categoryRange);
         $valuesRef     = self::sheetQualifiedRange($sheet, $valueRange);
+        if (empty($categoryValues)) { $categoryValues = self::readRangeValues($sheet, $categoryRange); }
+        if (empty($dataValues)) { $dataValues = self::readRangeValues($sheet, $valueRange); }
 
         $color = $barColorArgb ?? self::BG_ACCENT;
-        $values = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER, $valuesRef, null, $dataPointCount);
+        $values = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER, $valuesRef, null, $dataPointCount, $dataValues);
         $values->setFillColor(is_array($color) ? array_map([self::class, 'stripAlpha'], $color) : self::stripAlpha($color));
-        $categories = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, $categoriesRef, null, $dataPointCount);
+        $categories = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, $categoriesRef, null, $dataPointCount, $categoryValues);
 
         $series = new DataSeries(
             DataSeries::TYPE_BARCHART,
@@ -589,8 +619,8 @@ final class RadiographyStyleHelper
         $categoriesRef = self::sheetQualifiedRange($sheet, $categoryRange);
         $valuesRef     = self::sheetQualifiedRange($sheet, $valueRange);
 
-        $values     = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER, $valuesRef, null, $dataPointCount);
-        $categories = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, $categoriesRef, null, $dataPointCount);
+        $values     = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER, $valuesRef, null, $dataPointCount, self::readRangeValues($sheet, $valueRange));
+        $categories = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, $categoriesRef, null, $dataPointCount, self::readRangeValues($sheet, $categoryRange));
 
         if (!empty($colors)) {
             $values->setFillColor(array_map([self::class, 'stripAlpha'], $colors));
@@ -637,8 +667,8 @@ final class RadiographyStyleHelper
         $categoriesRef = self::sheetQualifiedRange($sheet, $categoryRange);
         $valuesRef     = self::sheetQualifiedRange($sheet, $valueRange);
 
-        $values     = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER, $valuesRef, null, $dataPointCount);
-        $categories = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, $categoriesRef, null, $dataPointCount);
+        $values     = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER, $valuesRef, null, $dataPointCount, self::readRangeValues($sheet, $valueRange));
+        $categories = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, $categoriesRef, null, $dataPointCount, self::readRangeValues($sheet, $categoryRange));
 
         if (!empty($colors)) {
             $values->setFillColor(array_map([self::class, 'stripAlpha'], $colors));

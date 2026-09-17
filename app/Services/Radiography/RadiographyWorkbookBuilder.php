@@ -123,6 +123,18 @@ class RadiographyWorkbookBuilder
             }
         }
 
+        // Ajuste temporal EFÍMERO general (A18 del cierre 17-sep-2026, ronda 2) —
+        // OPEX/EBITDA de las hojas de arriba YA lo incluyen (viene sumado en
+        // $snap['summary'] desde RadiographySnapshotBuilder::applyGeneralManualAdjustment())
+        // — esta hoja SOLO documenta el ajuste (monto/nota/colaboradores afectados)
+        // para transparencia, en su propio try/catch para nunca afectar el resto
+        // del libro si algo aquí fallara.
+        try {
+            $this->addManualAdjustmentNoteSheetIfPresent($spreadsheet, $snap);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
         // Remove default empty sheet if it exists
         if ($spreadsheet->getSheetCount() > 1) {
             try {
@@ -141,6 +153,52 @@ class RadiographyWorkbookBuilder
         $spreadsheet->setActiveSheetIndex(0); // GLOBAL is already first
 
         return $spreadsheet;
+    }
+
+    /**
+     * Hoja "Gasto Manual" — SOLO se agrega si
+     * `$snap['summary']['manual_adjustment_applied']` viene poblado
+     * (RadiographySnapshotBuilder::applyGeneralManualAdjustment(), mode=
+     * all_each_employee). Aislada del resto del libro a propósito: nunca
+     * modifica ninguna celda de GLOBAL/GASTOS/etc. — esas YA reflejan el ajuste
+     * en sus totales, esta hoja solo documenta monto/nota/colaboradores.
+     */
+    private function addManualAdjustmentNoteSheetIfPresent(Spreadsheet $spreadsheet, array $snap): void
+    {
+        $applied = $snap['summary']['manual_adjustment_applied'] ?? null;
+        if (!is_array($applied) || (float) ($applied['amount'] ?? 0) <= 0) {
+            return;
+        }
+
+        $sheet = $spreadsheet->createSheet();
+        $sheet->setTitle('Gasto Manual');
+
+        $sheet->setCellValue('A1', 'CONCEPTO');
+        $sheet->setCellValue('B1', 'VALOR');
+        $sheet->getStyle('A1:B1')->applyFromArray([
+            'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF']],
+            'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => RadiographyStyleHelper::BG_PRIMARY_DARK]],
+        ]);
+
+        $rows = [
+            ['Monto por colaborador', (float) ($applied['amount_per_employee'] ?? 0)],
+            ['Colaboradores afectados', (int) ($applied['employee_count'] ?? 0)],
+            ['Total gasto manual', (float) ($applied['amount'] ?? 0)],
+            ['Notas', (string) ($applied['notes'] ?? '') ?: '-'],
+        ];
+        $currencyLabels = ['Monto por colaborador', 'Total gasto manual'];
+        $r = 2;
+        foreach ($rows as [$label, $value]) {
+            $sheet->setCellValue("A{$r}", $label);
+            $sheet->setCellValue("B{$r}", $value);
+            if (in_array($label, $currencyLabels, true)) {
+                $sheet->getStyle("B{$r}")->getNumberFormat()->setFormatCode(RadiographyStyleHelper::CURRENCY);
+            }
+            $r++;
+        }
+
+        $sheet->getColumnDimension('A')->setAutoSize(true);
+        $sheet->getColumnDimension('B')->setAutoSize(true);
     }
 
     /** @deprecated use buildFromSnapshot */
@@ -1242,6 +1300,21 @@ class RadiographyWorkbookBuilder
             $sheet->setCellValue("C{$r}", '');
             $this->dataRow($sheet, "A{$r}:D{$r}", $gastosOpIdx % 2 === 0);
             $this->applyFmt($sheet, "B{$r}", 'currency', $gastosOpOtros);
+            $r++;
+        }
+        // Gasto manual EFÍMERO general — $gastosOpTotal (arriba, $brCalcGlobal) YA lo
+        // incluye (RadiographySnapshotBuilder::applyGeneralManualAdjustment() lo suma
+        // antes de que este builder corra); esta fila solo lo hace VISIBLE en el
+        // desglose, igual que ya ocurre en el reporte de sucursal (cierre 17-sep-2026
+        // ronda 3 — antes solo se veía en la hoja aparte "Gasto Manual").
+        $manualAppliedGlobal = $sum['manual_adjustment_applied'] ?? null;
+        if (is_array($manualAppliedGlobal) && (float) ($manualAppliedGlobal['amount'] ?? 0) > 0) {
+            RadiographyStyleHelper::setCellValueSafe($sheet, "A{$r}", 'Gasto manual');
+            $sheet->setCellValue("B{$r}", (float) $manualAppliedGlobal['amount']);
+            $sheet->setCellValue("C{$r}", '');
+            $sheet->setCellValue("D{$r}", (string) ($manualAppliedGlobal['notes'] ?? '') ?: 'Gasto manual');
+            $this->dataRow($sheet, "A{$r}:D{$r}", true);
+            $this->applyFmt($sheet, "B{$r}", 'currency', (float) $manualAppliedGlobal['amount']);
             $r++;
         }
         RadiographyStyleHelper::setCellValueSafe($sheet, "A{$r}", 'Total Gastos Operativos');
@@ -5796,7 +5869,9 @@ class RadiographyWorkbookBuilder
         Period        $period,
         PeriodSummary $summary,
         array         $snap,
-        int           $branchId
+        int           $branchId,
+        float         $extraAmount = 0.0,
+        string        $extraNotes = ''
     ): Spreadsheet {
         @ini_set('memory_limit', '1024M');
 
@@ -5846,6 +5921,17 @@ class RadiographyWorkbookBuilder
         if (!$brCalc) {
             throw new \RuntimeException("Sucursal \"{$branchName}\" (ID {$branchId}) no tiene fila en branch_radiography para este periodo — no se puede generar un Excel consistente con Web.");
         }
+
+        // Ajuste manual EFÍMERO de SUCURSAL (cierre 17-sep-2026, ronda 2, A5 Caso 2)
+        // — nunca BD. Se suma a `gastos_operativos` de esta copia local de $brCalc
+        // ANTES de cualquier cálculo derivado (gastosTotalesFor/ebitdaFinalFor/
+        // margenEbitdaFor leen ese mismo campo) — así el Excel de sucursal queda
+        // EXACTO a Web (RadiographySnapshotBuilder::applyBranchScope()), que aplica
+        // el mismo monto de la misma forma sobre el summary.
+        if ($extraAmount > 0) {
+            $brCalc['gastos_operativos'] = (float) ($brCalc['gastos_operativos'] ?? 0) + $extraAmount;
+        }
+
         $mora0_30  = (float)($brCalc['mora_0_30']     ?? 0);
         $mora31_60 = (float)($brCalc['mora_31_60']   ?? 0);
         $mora61_90 = (float)($brCalc['mora_61_90']   ?? 0);
@@ -5968,7 +6054,16 @@ class RadiographyWorkbookBuilder
         }
         // Total OPEX: fuente canónica gastos_operativos (regla final 2026-07), no la suma de
         // la lista curada de arriba (que es solo desglose y puede no cubrir todos los conceptos).
+        // Ya incluye el ajuste manual EFÍMERO de sucursal (ver arriba, $brCalc mutado).
         $gopTotalCanonico = $brCalc ? (float)($brCalc['gastos_operativos'] ?? 0) : ($gopTotal > 0 ? $gopTotal : $gastosB);
+        if ($extraAmount > 0) {
+            $sheet->setCellValue("A{$r}", 'Gasto manual');
+            $sheet->setCellValue("B{$r}", $extraAmount);
+            $sheet->setCellValue("D{$r}", $extraNotes !== '' ? $extraNotes : 'Gasto manual');
+            $this->dataRow($sheet, "A{$r}:D{$r}", true);
+            $this->applyFmt($sheet, "B{$r}", 'currency', $extraAmount);
+            $r++;
+        }
         $sheet->setCellValue("A{$r}", 'Total Gastos Operativos');
         $sheet->setCellValue("B{$r}", $gopTotalCanonico);
         $this->totalsRow($sheet, "A{$r}:D{$r}");
@@ -6164,7 +6259,22 @@ class RadiographyWorkbookBuilder
             $gasSheet->getStyle("C{$gr}")->getNumberFormat()->setFormatCode(self::PERCENT);
             $gr++;
         }
-        $gasSheet->setCellValue("A{$gr}", 'Total'); $gasSheet->setCellValue("B{$gr}", $totalGastosSheet > 0 ? $totalGastosSheet : $gastosB);
+        // Gasto manual EFÍMERO de sucursal — se SUMA aquí también (nunca reemplaza el
+        // desglose automático de arriba) para que el Total de esta hoja reconcilie
+        // exacto contra el OPEX de RESUMEN, que ya lo incluye (cierre 17-sep-2026 ronda 3:
+        // antes solo aparecía en RESUMEN, esta hoja se quedaba con el total sin ajustar).
+        $totalGastosSheetConAjuste = $totalGastosSheet;
+        if ($extraAmount > 0) {
+            $gasSheet->setCellValue("A{$gr}", 'Gasto manual');
+            $gasSheet->setCellValue("B{$gr}", $extraAmount);
+            $gasSheet->setCellValue("C{$gr}", 0);
+            $this->dataRow($gasSheet, "A{$gr}:C{$gr}", true);
+            $gasSheet->getStyle("B{$gr}")->getNumberFormat()->setFormatCode(self::CURRENCY);
+            $gasSheet->getStyle("C{$gr}")->getNumberFormat()->setFormatCode(self::PERCENT);
+            $totalGastosSheetConAjuste += $extraAmount;
+            $gr++;
+        }
+        $gasSheet->setCellValue("A{$gr}", 'Total'); $gasSheet->setCellValue("B{$gr}", $totalGastosSheetConAjuste > 0 ? $totalGastosSheetConAjuste : $gastosB);
         $this->totalsRow($gasSheet, "A{$gr}:C{$gr}");
         $gasSheet->getStyle("B{$gr}")->getNumberFormat()->setFormatCode(self::CURRENCY);
         $this->setColWidths($gasSheet, ['A' => 38, 'B' => 20, 'C' => 10]);

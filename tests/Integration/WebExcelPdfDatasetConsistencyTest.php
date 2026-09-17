@@ -251,7 +251,7 @@ it('an employee-scope manual_adjustment is reflected identically in Web and Exce
     $employeeId = (int) $roster[0]['employee_id'];
 
     $exportService = app(RadiografiaExportService::class);
-    $manualAdjustment = ['scope' => 'employee', 'employee_id' => $employeeId, 'amount' => 1500.0, 'notes' => 'Test integración'];
+    $manualAdjustment = ['mode' => 'employee', 'employee_id' => $employeeId, 'amount_per_employee' => 1500.0, 'notes' => 'Test integración'];
 
     $countAntes = \DB::table('employee_period_manual_expenses')->count();
 
@@ -300,7 +300,7 @@ it('an employee-scope manual_adjustment is reflected identically in Web and Exce
     expect(round((float) $webDespues['summary']['opex_total'], 2))->toBe($webOpexSin);
 });
 
-it('a general-scope manual_adjustment reaches Web AND the general Excel/PDF identically (bug found and fixed 07-sep-2026), never persisted', function () {
+it('a general-scope (all_each_employee) manual_adjustment reaches Web AND the general Excel/PDF identically, multiplied by canonical headcount, never persisted', function () {
     // Prefiere el periodo 21 (Junio 2026) — fixture real conocido — cae al genérico
     // "último mensual" si no existe en este entorno.
     $period = Period::find(21) ?? Period::query()->where('type', 'monthly')->orderByDesc('id')->first();
@@ -314,7 +314,11 @@ it('a general-scope manual_adjustment reaches Web AND the general Excel/PDF iden
     }
 
     $exportService = app(RadiografiaExportService::class);
-    $manualAdjustment = ['scope' => 'general', 'employee_id' => null, 'amount' => 10000.0, 'notes' => 'Ajuste general de prueba'];
+    // Cierre 17-sep-2026, ronda 2 — modo unificado: all_each_employee reemplaza al
+    // extinto scope='general' (que sumaba UNA sola vez sin importar el headcount).
+    // Ahora amount_per_employee se multiplica por los colaboradores CANÓNICOS del
+    // periodo completo (A5 Caso 3) — nunca un monto fijo.
+    $manualAdjustment = ['mode' => 'all_each_employee', 'employee_id' => null, 'amount_per_employee' => 100.0, 'notes' => 'Ajuste general de prueba'];
 
     $webSin = $exportService->buildSnapshot($period, ['scope' => 'general']);
     $opexSin = round((float) $webSin['summary']['opex_total'], 2);
@@ -324,23 +328,47 @@ it('a general-scope manual_adjustment reaches Web AND the general Excel/PDF iden
     $opexCon = round((float) $webCon['summary']['opex_total'], 2);
     $ebitdaCon = round((float) $webCon['summary']['ebitda_final'], 2);
 
-    // Se suma UNA sola vez — nunca multiplicado por el número de colaboradores.
-    expect(round($opexCon - $opexSin, 2))->toBe(10000.0);
-    expect(round($ebitdaSin - $ebitdaCon, 2))->toBe(10000.0);
+    $empGestores = app(\App\Services\Radiography\RadiographySnapshotBuilder::class)->buildAllEmployeeGestorRows($period);
+    $expectedTotal = app(\App\Services\TemporaryOpexAdjustmentService::class)->totalForScope($empGestores, $manualAdjustment, 'general');
+    expect($expectedTotal)->toBeGreaterThan(0.0, "El periodo {$period->label} no tiene colaboradores canónicos para probar la multiplicación.");
 
-    // Excel general CON el mismo ajuste — antes de este fix, exportWithConfig()
-    // ignoraba manual_adjustment en la rama scope=general (bug real encontrado
-    // leyendo código, corregido 07-sep-2026).
+    // Se suma amount_per_employee × colaboradores canónicos — NUNCA un monto fijo
+    // sin relación con el headcount real del periodo.
+    expect(round($opexCon - $opexSin, 2))->toBe($expectedTotal);
+    expect(round($ebitdaSin - $ebitdaCon, 2))->toBe($expectedTotal);
+
+    // Excel general CON el mismo ajuste — debe reflejar el mismo total multiplicado.
+    // Bug real confirmado y corregido (cierre 17-sep-2026, ronda 3): el Excel/PDF general
+    // recalculan EBITDA/OPEX desde branch_radiography.global (extractGlobalCoreMetrics()),
+    // NUNCA desde summary.* — antes de la corrección esta hoja seguía mostrando el EBITDA
+    // OFICIAL sin ajustar aunque Web (summary.*) ya reflejaba el ajuste. Esta aserción lee
+    // la CELDA real (no solo "la hoja existe") para que una regresión futura sí reviente.
     $excelPath = $exportService->exportWithConfig($period, ['scope' => 'general', 'report_type' => 'simple', 'manual_adjustment' => $manualAdjustment]);
     $spreadsheet = IOFactory::load($excelPath);
     $global = $spreadsheet->getSheetByName('GLOBAL');
     expect($global)->not->toBeNull();
+    $ebitdaRow = null;
+    $gastoManualRow = null;
+    for ($r = 1; $r <= $global->getHighestRow(); $r++) {
+        $label = (string) $global->getCell("A{$r}")->getValue();
+        if ($label === 'EBITDA') { $ebitdaRow = $r; }
+        if ($label === 'Gasto manual') { $gastoManualRow = $r; }
+    }
+    expect($ebitdaRow)->not->toBeNull('No se encontró la fila EBITDA en GLOBAL.');
+    expect($gastoManualRow)->not->toBeNull('El Excel general no muestra la fila "Gasto manual" con el ajuste activo.');
+    expect(round((float) $global->getCell("B{$gastoManualRow}")->getValue(), 2))->toBe($expectedTotal);
+    expect(round((float) $global->getCell("B{$ebitdaRow}")->getValue(), 2))->toBe($ebitdaCon);
     @unlink($excelPath);
 
-    // PDF general con el mismo ajuste — no debe fallar.
+    // PDF general con el mismo ajuste — debe mostrar el MISMO EBITDA que Web/Excel en su
+    // narrativa principal (no solo en la nota "AJUSTE TEMPORAL" aparte).
     $pdfPath = $exportService->exportPdfWithConfig($period, ['scope' => 'general', 'report_type' => 'simple', 'manual_adjustment' => $manualAdjustment]);
     expect(file_exists($pdfPath))->toBeTrue();
     expect(filesize($pdfPath))->toBeGreaterThan(0);
+    $pdfText = shell_exec('pdftotext -layout ' . escapeshellarg($pdfPath) . ' -');
+    $ebitdaFormatted = number_format($ebitdaCon, 0);
+    expect($pdfText)->not->toBeNull();
+    expect(str_contains((string) $pdfText, $ebitdaFormatted))->toBeTrue("El PDF general no muestra el EBITDA ajustado ({$ebitdaFormatted}) en su narrativa principal.");
     @unlink($pdfPath);
 
     // Nunca escribió en la tabla persistente desconectada.

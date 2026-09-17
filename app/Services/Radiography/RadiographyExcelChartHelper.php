@@ -63,6 +63,9 @@ class RadiographyExcelChartHelper
             count($data),
             $anchorCell,
             $bottomRightCol . $bottomRightRow,
+            null,
+            array_column($data, 'label'),
+            array_map(fn ($d) => (float) $d['value'], $data),
         );
 
         return true;

@@ -166,48 +166,53 @@ class MonthlyReportController extends Controller {
     }
 
     /**
-     * Ajuste manual del reporte — 100% EFÍMERO (reversión 07-sep-2026, cierre,
-     * puntos 1/5/6): NUNCA se lee/escribe en employee_period_manual_expenses ni
-     * en ninguna otra tabla. Arma `$config['manual_adjustment']` a partir de los
-     * 4 parámetros de la request (manual_scope/manual_employee_id/manual_amount/
-     * manual_notes) — la MISMA forma que ya consumen
-     * RadiographySnapshotBuilder::applyEmployeeScope()/applyGeneralManualAdjustment()
-     * y RadiografiaExportService::resolveManualAdjustmentFor(). Si no viene
-     * manual_amount > 0, no agrega nada — el snapshot queda exactamente igual al
-     * oficial de BD.
+     * Ajuste temporal de OPEX EFÍMERO (cierre 17-sep-2026, ronda 2) — modelo ÚNICO
+     * `TemporaryOpexAdjustmentService::normalize()` es la fuente de verdad de qué
+     * hace cada modo; este método SOLO parsea la request a la misma forma
+     * canónica {mode, employee_id, branch_id, amount_per_employee, notes}. Nunca
+     * persiste — si los parámetros no vienen o no son válidos, el snapshot es
+     * exactamente el oficial de BD.
      *
-     * scope='all' (ronda 3, 07-sep-2026) — SOLO tiene efecto en
-     * exportEmployeesHistorico() (EmployeesHistoricoExportService::build() es el
-     * único consumidor que sabe interpretarlo: aplica el MISMO monto a CADA
-     * colaborador, a propósito multiplicado por el total de colaboradores —
-     * "que tuvieron un gasto de 20k TODOS los colaboradores"). Los demás
-     * consumidores (RadiographySnapshotBuilder/RadiografiaExportService) solo
-     * reconocen 'general'/'employee' y simplemente ignoran 'all' sin efecto — se
-     * permite aquí para no duplicar este parser en un segundo método.
+     * Parámetros de request:
+     *   manual_mode = employee | branch_each_employee | all_each_employee
+     *   manual_employee_id       (requerido si mode=employee)
+     *   manual_branch_id         (requerido si mode=branch_each_employee)
+     *   manual_amount_per_employee
+     *   manual_notes
      */
     private function manualAdjustmentFromRequest(Request $request): array
     {
-        $amount = (float) $request->query('manual_amount', $request->input('manual_amount', 0));
+        $amount = (float) $request->query('manual_amount_per_employee', $request->input('manual_amount_per_employee', 0));
         if ($amount <= 0) {
             return [];
         }
 
-        $scope = $request->query('manual_scope', $request->input('manual_scope', 'employee'));
-        if (!in_array($scope, ['general', 'employee', 'all'], true)) {
+        $mode = $request->query('manual_mode', $request->input('manual_mode', ''));
+        if (!in_array($mode, ['employee', 'branch_each_employee', 'all_each_employee'], true)) {
             return [];
         }
 
         $notes = (string) $request->query('manual_notes', $request->input('manual_notes', ''));
 
-        if ($scope === 'employee') {
+        if ($mode === 'employee') {
             $employeeId = (int) $request->query('manual_employee_id', $request->input('manual_employee_id', 0));
             if (!$employeeId) {
                 return [];
             }
-            return ['scope' => 'employee', 'employee_id' => $employeeId, 'amount' => round($amount, 2), 'notes' => $notes];
+
+            return ['mode' => 'employee', 'employee_id' => $employeeId, 'branch_id' => null, 'amount_per_employee' => round($amount, 2), 'notes' => $notes];
         }
 
-        return ['scope' => $scope, 'employee_id' => null, 'amount' => round($amount, 2), 'notes' => $notes];
+        if ($mode === 'branch_each_employee') {
+            $branchId = (int) $request->query('manual_branch_id', $request->input('manual_branch_id', 0));
+            if (!$branchId) {
+                return [];
+            }
+
+            return ['mode' => 'branch_each_employee', 'employee_id' => null, 'branch_id' => $branchId, 'amount_per_employee' => round($amount, 2), 'notes' => $notes];
+        }
+
+        return ['mode' => 'all_each_employee', 'employee_id' => null, 'branch_id' => null, 'amount_per_employee' => round($amount, 2), 'notes' => $notes];
     }
 
     /**
@@ -1014,14 +1019,13 @@ class MonthlyReportController extends Controller {
             $config['employee_id'] = $employeeId;
         }
 
-        // Ajuste manual EFÍMERO (reversión 07-sep-2026, cierre, punto 12) — sin
-        // regla aprobada para scope=branch todavía, así que deliberadamente NUNCA
-        // se adjunta ahí (sin input manual para sucursal por ahora).
-        if ($scope !== 'branch') {
-            $manualAdjustment = $this->manualAdjustmentFromRequest($request);
-            if (!empty($manualAdjustment)) {
-                $config['manual_adjustment'] = $manualAdjustment;
-            }
+        // Ajuste manual EFÍMERO (cierre 17-sep-2026, ronda 2) — YA soporta los 3
+        // alcances (employee/branch/general) vía TemporaryOpexAdjustmentService;
+        // el ajuste solo se aplica de verdad si su modo coincide con este scope
+        // (ver applyEmployeeScope()/applyBranchScope()/applyGeneralManualAdjustment()).
+        $manualAdjustment = $this->manualAdjustmentFromRequest($request);
+        if (!empty($manualAdjustment)) {
+            $config['manual_adjustment'] = $manualAdjustment;
         }
 
         try {

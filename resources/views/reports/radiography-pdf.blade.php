@@ -365,6 +365,14 @@ $alTotalVencido = array_sum(array_column($activeLoansByBranch, 'vencido'));
             <div style="font-size:7.6pt; color:#475569; margin-top:6px;">
                 Préstamos intersucursales (fondea): <b>{{ $fmt0($fondeoTotal) }}</b>
             </div>
+            <?php $manualApplied = $snapshot['summary']['manual_adjustment_applied'] ?? null; ?>
+            @if($manualApplied && (float) ($manualApplied['amount'] ?? 0) > 0)
+            <div style="font-size:7.6pt; color:#475569; margin-top:6px; border-top:0.5pt solid #e2e8f0; padding-top:6px;">
+                <b>AJUSTE TEMPORAL</b> (ya incluido arriba): {{ $fmt0($manualApplied['amount']) }}
+                ({{ $fmt0($manualApplied['amount_per_employee'] ?? 0) }} × {{ (int) ($manualApplied['employee_count'] ?? 0) }} colaboradores)
+                — {{ $manualApplied['notes'] ?: 'Sin observación' }}
+            </div>
+            @endif
         </td>
     </tr>
 </table>

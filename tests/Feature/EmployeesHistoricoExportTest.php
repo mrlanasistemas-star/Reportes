@@ -161,9 +161,9 @@ it('OPEX total and EBITDA in the Excel match exactly what buildEmployeeExpenseDe
     $employee = exportEmployee($period, 'COLABORADOR PARIDAD', $branch);
     exportExpense($period, $employee, $branch, 750);
 
-    // Ajuste manual EFÍMERO (reversión 07-sep-2026, cierre) — nunca BD, viaja
+    // Ajuste manual EFÍMERO (cierre 17-sep-2026, ronda 2) — nunca BD, viaja
     // como parámetro directo a build().
-    $manualAdjustment = ['scope' => 'employee', 'employee_id' => $employee->id, 'amount' => 250.0, 'notes' => 'Ajuste'];
+    $manualAdjustment = ['mode' => 'employee', 'employee_id' => $employee->id, 'amount_per_employee' => 250.0, 'notes' => 'Ajuste'];
 
     $service = app(EmployeesHistoricoExportService::class);
     $spreadsheet = $service->build($period, [], $manualAdjustment);
@@ -215,7 +215,7 @@ it('a manual adjustment passed to build() is never persisted and, without it, th
 });
 
 // ── Ajuste GENERAL: nunca se reparte entre colaboradores, solo aparece en "Resumen" ──
-it('a general-scope manual adjustment never gets distributed across employee rows and appears once in the Resumen sheet', function () {
+it('an employee-mode manual adjustment NEVER leaks to a different collaborator row (cierre 17-sep-2026, ronda 2 — modelo unificado)', function () {
     $period = exportPeriodo();
     $branch = exportBranch('Puebla');
     $e1 = exportEmployee($period, 'COLABORADOR GENERAL UNO', $branch);
@@ -224,27 +224,28 @@ it('a general-scope manual adjustment never gets distributed across employee row
     exportExpense($period, $e2, $branch, 200);
 
     $service = app(EmployeesHistoricoExportService::class);
-    $spreadsheet = $service->build($period, [], ['scope' => 'general', 'amount' => 10000.0, 'notes' => 'Ajuste general de prueba']);
+    $spreadsheet = $service->build($period, [], ['mode' => 'employee', 'employee_id' => $e1->id, 'amount_per_employee' => 10000.0, 'notes' => 'Ajuste de prueba']);
 
-    $sheet = $spreadsheet->getSheetByName('Colaboradores');
     $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
     IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
     $rows = readExportedRows($tmp);
     @unlink($tmp);
 
-    // Ninguna fila individual recibió el ajuste general — cada quien conserva su
-    // OPEX AUTOMÁTICO/GASTO MANUAL/OPEX TOTAL oficiales.
+    // SOLO la fila del colaborador ajustado recibe el monto — el otro conserva
+    // su OPEX AUTOMÁTICO/GASTO MANUAL/OPEX TOTAL oficiales, sin importar que
+    // compartan la misma sucursal.
     $row1 = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR GENERAL UNO');
     $row2 = collect($rows)->firstWhere('NOMBRE COLABORADOR', 'COLABORADOR GENERAL DOS');
-    expect((float) $row1['GASTO MANUAL'])->toBe(0.0);
-    expect((float) $row1['OPEX TOTAL'])->toBe(100.0);
+    expect((float) $row1['GASTO MANUAL'])->toBe(10000.0);
+    expect((float) $row1['OPEX TOTAL'])->toBe(10100.0);
     expect((float) $row2['GASTO MANUAL'])->toBe(0.0);
     expect((float) $row2['OPEX TOTAL'])->toBe(200.0);
 
-    // El ajuste general aparece UNA vez, en su propia hoja.
+    // El ajuste aparece en su propia hoja "Resumen" — 1 solo colaborador afectado.
     $resumen = $spreadsheet->getSheetByName('Resumen');
     expect($resumen)->not->toBeNull();
-    expect((float) $resumen->getCell('B2')->getValue())->toBe(10000.0); // AJUSTE MANUAL GENERAL TEMPORAL
+    expect((float) $resumen->getCell('B2')->getValue())->toBe(10000.0); // AJUSTE MANUAL POR COLABORADOR (c/u)
+    expect((int) $resumen->getCell('B3')->getValue())->toBe(1);          // colaboradores afectados
 });
 
 it('marks a collaborator with real activity as ACTIVO and one with none as BAJA, without touching their portfolio', function () {
@@ -425,7 +426,7 @@ it('a manual_adjustment scope=all applies the SAME amount to EVERY collaborator 
     exportExpense($period, $e3, $branch, 300);
 
     $service = app(EmployeesHistoricoExportService::class);
-    $spreadsheet = $service->build($period, [], ['scope' => 'all', 'amount' => 20000.0, 'notes' => 'Ajuste a todos']);
+    $spreadsheet = $service->build($period, [], ['mode' => 'all_each_employee', 'amount_per_employee' => 20000.0, 'notes' => 'Ajuste a todos']);
 
     $tmp = tempnam(sys_get_temp_dir(), 'export') . '.xlsx';
     IOFactory::createWriter($spreadsheet, 'Xlsx')->save($tmp);
@@ -460,7 +461,7 @@ it('a manual_adjustment scope=all with amount=0 changes nothing (no Resumen shee
     exportExpense($period, $employee, $branch, 100);
 
     $service = app(EmployeesHistoricoExportService::class);
-    $spreadsheet = $service->build($period, [], ['scope' => 'all', 'amount' => 0]);
+    $spreadsheet = $service->build($period, [], ['mode' => 'all_each_employee', 'amount_per_employee' => 0]);
 
     expect($spreadsheet->getSheetByName('Resumen'))->toBeNull();
 
