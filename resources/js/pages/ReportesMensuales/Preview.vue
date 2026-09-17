@@ -120,95 +120,148 @@ const filteredBranchId   = ref<number | null>(null)
 const filteredEmployeeId = ref<number | null>(null)
 const filteredComparePeriodId = ref<number | null>(null)
 
-// ── Ajuste manual del reporte — 100% EFÍMERO, DRAFT vs APPLIED (cierre, ronda 4) ──
-// Vive ÚNICAMENTE en memoria de Vue — nunca localStorage/sessionStorage/cookies/
-// IndexedDB, nunca un fetch de "cargar guardado" al montar. Al salir de la página
-// o recargar, se pierde por construcción (no hay persistencia).
+// ── Ajuste temporal de OPEX — modelo ÚNICO, 100% EFÍMERO, DRAFT vs APPLIED ────
+// (cierre 17-sep-2026, ronda 2). Vive ÚNICAMENTE en memoria de Vue — nunca
+// localStorage/sessionStorage/cookies/IndexedDB, nunca un fetch de "cargar
+// guardado" al montar. Al salir de la página o recargar, se pierde por
+// construcción (no hay persistencia).
 //
-// BUG REAL corregido aquí (reporte del usuario, 17-sep-2026): antes había un
-// watch([manualAmount, manualNotes, ...]) con debounce de 400ms que disparaba
-// fetchScopedDataset() en CADA tecla — interrumpía la captura, mostraba el
-// overlay "Actualizando radiografía", generaba XHR consecutivos que se pisaban
-// entre sí y a veces devolvía el monto a 0. Se ELIMINÓ por completo ese watcher.
+// A4 del pendiente: UN SOLO modelo (`TemporaryOpexAdjustment`), reemplaza a los
+// tres refs antiguos con comportamientos distintos (manualAmount/
+// manualGeneralAmount/manualAllAmount). Tres modos, uno por alcance:
+//   employee              → aplica SOLO al colaborador que se está viendo.
+//   branch_each_employee  → aplica a CADA colaborador canónico de la sucursal
+//                            que se está viendo (Web/Excel/PDF de sucursal
+//                            reflejan el TOTAL multiplicado; el Excel de
+//                            colaboradores refleja el monto POR persona).
+//   all_each_employee     → igual que branch_each_employee pero para TODO el
+//                            periodo (reemplaza al viejo "aplicar a TODOS los
+//                            colaboradores", que antes solo tocaba el Excel de
+//                            colaboradores y nunca Web/Excel/PDF general).
+// El backend (TemporaryOpexAdjustmentService) es la ÚNICA fuente de "cuánto le
+// toca a quién" — Vue nunca multiplica ni calcula el total, solo lo MUESTRA
+// (estimación en vivo, ver affectedEmployeeCountEstimate/estimatedTotalImpact
+// más abajo, ambas derivadas de datos YA cargados en el snapshot — cero fetch).
 //
-// Ahora el flujo es DRAFT (mientras se escribe, nunca dispara nada) → APPLIED
-// (solo al pulsar "Aplicar ajuste", UNA request). `manualDraft` es el borrador
-// compartido por el panel visible (employee o general — nunca los dos a la vez,
-// el template los muestra excluyentemente según activeScope.type).
-// `appliedManualAdjustment` es lo único que se manda al backend.
-const manualDraft = reactive({ amount: '', notes: '' })
+// BUG REAL corregido en la ronda anterior: un watch con debounce de 400ms
+// disparaba fetchScopedDataset() en CADA tecla. Sigue eliminado — el flujo es
+// DRAFT (mientras se escribe, nunca dispara nada) → APPLIED (solo al pulsar
+// "Aplicar ajuste", UNA request).
+const manualDraft = reactive({ amountPerEmployee: '', notes: '' })
 const manualDraftError = ref<string | null>(null)
 
-type AppliedManualAdjustment = {
-    scope: 'employee' | 'general'
+type TemporaryOpexAdjustmentMode = 'employee' | 'branch_each_employee' | 'all_each_employee'
+type AppliedTemporaryOpexAdjustment = {
+    mode: TemporaryOpexAdjustmentMode
     employeeId: number | null
     employeeName: string | null
-    amount: number
+    branchId: number | null
+    branchName: string | null
+    amountPerEmployee: number
     notes: string
+    affectedCount: number
 }
-const appliedManualAdjustment = ref<AppliedManualAdjustment | null>(null)
+const appliedAdjustment = ref<AppliedTemporaryOpexAdjustment | null>(null)
 
-// Loading SOLO del bloque/botón de ajuste (parte A12/C: nunca el overlay grande
-// de scopedLoading — aplicar un ajuste chico no debe congelar toda la pantalla).
+// Loading SOLO del bloque/botón de ajuste (A12/D2: nunca el overlay grande de
+// scopedLoading — aplicar un ajuste chico no debe congelar toda la pantalla).
 const adjustmentLoading = ref(false)
 
 function resetManualDraft() {
-    manualDraft.amount = ''
-    manualDraft.notes  = ''
+    manualDraft.amountPerEmployee = ''
+    manualDraft.notes = ''
     manualDraftError.value = null
 }
 
 function discardManualAdjustment() {
     resetManualDraft()
-    appliedManualAdjustment.value = null
+    appliedAdjustment.value = null
     isEditingManualDraft.value = false
 }
 
-// Tercer alcance (ronda 3, 07-sep-2026): "aplicar a TODOS los colaboradores" —
-// SOLO tiene efecto en el botón "Descargar Excel de colaboradores" (el único
-// consumidor que sabe interpretar scope='all', ver EmployeesHistoricoExportService).
-// A diferencia del ajuste general (suma UNA sola vez al total, nunca se
-// reparte), este SÍ se suma a CADA colaborador individualmente — a propósito
-// multiplicado por el número de colaboradores ("que tuvieron un gasto de 20k
-// TODOS los colaboradores"). Independiente de activeScope — no se limpia al
-// cambiar de filtro (el botón de colaboradores siempre trae a todos igual).
-// Nunca dispara fetch (solo alimenta employeesExportUrl), así que no forma
-// parte del bug de arriba — se deja igual, sin mezclarla con el panel nuevo.
-const manualAllAmount = ref<string>('')
-const manualAllNotes  = ref<string>('')
+// Colaboradores CANÓNICOS del alcance actual — MISMA fuente que ya usa el
+// backend para "sections.employees_gestores" (RadiographySnapshotBuilder::
+// buildEmployeesGestores(), ya filtrada por sucursal cuando activeScope=branch,
+// completa cuando activeScope=general) — cero fetch adicional, el dato YA
+// viene en el snapshot cargado. A10: alimenta "Gestores/Colaboradores
+// afectados" y la estimación de impacto EN VIVO mientras se escribe.
+const affectedEmployeeCountEstimate = computed(() => {
+    if (activeScope.value.type === 'employee') return activeScope.value.available ? 1 : 0
+    return (activeDataset.value?.sections?.employees_gestores ?? []).length
+})
+const estimatedTotalImpact = computed(() => {
+    const amt = Number(manualDraft.amountPerEmployee) || 0
+    if (amt <= 0) return 0
+    return activeScope.value.type === 'employee' ? amt : amt * affectedEmployeeCountEstimate.value
+})
 
-function clearManualAllAdjustment() {
-    manualAllAmount.value = ''
-    manualAllNotes.value  = ''
-}
-
-// Parámetros manual_scope/manual_employee_id/manual_amount/manual_notes que
-// entiende el backend (MonthlyReportController::manualAdjustmentFromRequest())
-// — la MISMA forma para scopedData (Web), Excel filtrado, PDF filtrado y Excel
-// de colaboradores, así los 4 nunca pueden divergir entre sí. SOLO lee del
-// ajuste APLICADO — nunca del draft mientras la persona escribe. `scopeType`/
-// `employeeId` son el alcance del CONSUMIDOR (export activo o filtrado) — se
-// exige que coincidan con el ajuste aplicado para que nunca se filtre a un
-// export de otro colaborador/alcance distinto.
-function manualAdjustmentParams(scopeType: ScopeType, employeeId: number | null): Record<string, string> {
-    const applied = appliedManualAdjustment.value
-    if (!applied || !(applied.amount > 0)) return {}
-    if (applied.scope === 'employee' && scopeType === 'employee' && employeeId && employeeId === applied.employeeId) {
+// Parámetros manual_mode/manual_employee_id/manual_branch_id/
+// manual_amount_per_employee/manual_notes que entiende el backend
+// (MonthlyReportController::manualAdjustmentFromRequest()) — la MISMA forma
+// para scopedData (Web), Excel filtrado, PDF filtrado y Excel de
+// colaboradores, así los 4 nunca pueden divergir entre sí (A3/A7 — fuente
+// única). SOLO lee del ajuste APLICADO — nunca del draft mientras la persona
+// escribe. `scopeType`/`branchId`/`employeeId` son el alcance del CONSUMIDOR
+// (export activo o filtrado) — se exige que coincidan con el ajuste aplicado
+// para que nunca se filtre a un export de otro colaborador/sucursal/alcance.
+function buildTemporaryAdjustmentParams(scopeType: ScopeType, branchId: number | null, employeeId: number | null): Record<string, string> {
+    const applied = appliedAdjustment.value
+    if (!applied || !(applied.amountPerEmployee > 0)) return {}
+    if (applied.mode === 'employee' && scopeType === 'employee' && employeeId && employeeId === applied.employeeId) {
         return {
-            manual_scope: 'employee',
+            manual_mode: 'employee',
             manual_employee_id: String(applied.employeeId),
-            manual_amount: String(applied.amount),
+            manual_amount_per_employee: String(applied.amountPerEmployee),
             manual_notes: applied.notes ?? '',
         }
     }
-    if (applied.scope === 'general' && scopeType === 'general') {
+    if (applied.mode === 'branch_each_employee' && scopeType === 'branch' && branchId && branchId === applied.branchId) {
         return {
-            manual_scope: 'general',
-            manual_amount: String(applied.amount),
+            manual_mode: 'branch_each_employee',
+            manual_branch_id: String(applied.branchId),
+            manual_amount_per_employee: String(applied.amountPerEmployee),
+            manual_notes: applied.notes ?? '',
+        }
+    }
+    if (applied.mode === 'all_each_employee' && scopeType === 'general') {
+        return {
+            manual_mode: 'all_each_employee',
+            manual_amount_per_employee: String(applied.amountPerEmployee),
             manual_notes: applied.notes ?? '',
         }
     }
     return {}
+}
+
+// Versión "cruda" del ajuste aplicado — SIN exigir que coincida con ningún
+// alcance del consumidor. Solo la usa "Descargar Excel de colaboradores"
+// (A15): ese export NUNCA está encerrado a un alcance (siempre trae a todos,
+// respetando sucursal como filtro de VISTA, no de aplicación del ajuste), así
+// que el modo activo (sea cual sea) viaja tal cual.
+function buildTemporaryAdjustmentParamsRaw(): Record<string, string> {
+    const applied = appliedAdjustment.value
+    if (!applied || !(applied.amountPerEmployee > 0)) return {}
+    if (applied.mode === 'employee') {
+        return {
+            manual_mode: 'employee',
+            manual_employee_id: String(applied.employeeId),
+            manual_amount_per_employee: String(applied.amountPerEmployee),
+            manual_notes: applied.notes ?? '',
+        }
+    }
+    if (applied.mode === 'branch_each_employee') {
+        return {
+            manual_mode: 'branch_each_employee',
+            manual_branch_id: String(applied.branchId),
+            manual_amount_per_employee: String(applied.amountPerEmployee),
+            manual_notes: applied.notes ?? '',
+        }
+    }
+    return {
+        manual_mode: 'all_each_employee',
+        manual_amount_per_employee: String(applied.amountPerEmployee),
+        manual_notes: applied.notes ?? '',
+    }
 }
 
 const isComparative = computed(() => filteredType.value !== 'simple')
@@ -244,9 +297,9 @@ function buildFilteredUrl(format: 'xlsx' | 'pdf'): string {
         params.set('scope', filteredScope.value)
         if (filteredScope.value === 'branch' && filteredBranchId.value) params.set('branch_id', String(filteredBranchId.value))
         if (filteredScope.value === 'employee' && filteredEmployeeId.value) params.set('employee_id', String(filteredEmployeeId.value))
-        // Ajuste manual EFÍMERO — SOLO el ya APLICADO (nunca el draft), el mismo que
-        // se ve en pantalla.
-        for (const [k, v] of Object.entries(manualAdjustmentParams(filteredScope.value, filteredEmployeeId.value))) {
+        // Ajuste temporal — SOLO el ya APLICADO (nunca el draft), el mismo que se
+        // ve en pantalla (A3: único helper canónico, todos los botones lo usan).
+        for (const [k, v] of Object.entries(buildTemporaryAdjustmentParams(filteredScope.value, filteredBranchId.value, filteredEmployeeId.value))) {
             params.set(k, v)
         }
     }
@@ -261,42 +314,35 @@ const filteredPdfUrl  = computed(() => buildFilteredUrl('pdf'))
 // TODOS los colaboradores del periodo — ignora explícitamente el filtro de
 // colaborador individual activo en pantalla (aunque haya uno seleccionado
 // arriba), respeta sucursal cuando aplica. La consulta individual arriba NO se
-// toca — este es un botón adicional, no un reemplazo.
+// toca — este es un botón adicional, no un reemplazo. A15: el modo del ajuste
+// APLICADO (cualquiera que sea) viaja tal cual — este export nunca está
+// encerrado a un alcance, así que usa la versión "cruda" del helper.
 const employeesExportUrl = computed(() => {
     const params = new URLSearchParams()
     if (activeScope.value.type === 'branch' && activeScope.value.branch_id) {
         params.set('branch_id', String(activeScope.value.branch_id))
     }
-    // Ajuste manual EFÍMERO — "aplicar a TODOS" (manualAllAmount) tiene prioridad
-    // sobre el de un solo colaborador/general cuando está activo — no tiene
-    // sentido combinar los dos en la misma descarga. Si no hay "a todos" activo,
-    // cae al comportamiento normal (empleado seleccionado o general).
-    if (Number(manualAllAmount.value) > 0) {
-        params.set('manual_scope', 'all')
-        params.set('manual_amount', String(Number(manualAllAmount.value)))
-        params.set('manual_notes', manualAllNotes.value ?? '')
-    } else {
-        for (const [k, v] of Object.entries(manualAdjustmentParams(activeScope.value.type, activeScope.value.employee_id))) {
-            params.set(k, v)
-        }
+    for (const [k, v] of Object.entries(buildTemporaryAdjustmentParamsRaw())) {
+        params.set(k, v)
     }
     const qs = params.toString()
     return `/reportes-mensuales/${props.period.id}/colaboradores.xlsx` + (qs ? `?${qs}` : '')
 })
 
-// ── Ajuste manual EFÍMERO — descarte al cambiar de alcance (A9, cierre) ──────
+// ── Ajuste temporal — descarte al cambiar de alcance (A9, cierre) ────────────
 // Sin fetch de "cargar guardado" al montar (no hay nada guardado). Cambiar de
 // sucursal/colaborador/alcance descarta el ajuste (draft Y aplicado) — nunca se
-// arrastra el ajuste de un colaborador a otro. Aplicar un ajuste SIGUE pidiendo
-// el snapshot vía fetchScopedDataset({ silent: true }) — la MISMA función que ya
-// usa el resto de filtros — pero solo al pulsar "Aplicar ajuste", nunca al escribir.
+// arrastra el ajuste de un colaborador/sucursal a otro. Aplicar un ajuste SIGUE
+// pidiendo el snapshot vía fetchScopedDataset({ silent: true }) — la MISMA
+// función que ya usa el resto de filtros — pero solo al pulsar "Aplicar
+// ajuste", nunca al escribir.
 watch(() => [activeScope.value.type, activeScope.value.employee_id, activeScope.value.branch_id], () => {
     discardManualAdjustment()
 })
 
-// Sin watcher de debounce sobre el draft — ver nota arriba (bug real corregido
-// 17-sep-2026): escribir monto/nota NUNCA dispara fetch/recálculo por sí solo.
-// Solo `applyManualAdjustment()` (click en "Aplicar ajuste") toca el backend.
+// Sin watcher de debounce sobre el draft — escribir monto/nota NUNCA dispara
+// fetch/recálculo por sí solo. Solo `applyManualAdjustment()` (click en
+// "Aplicar ajuste") toca el backend.
 
 // ── Botones Excel/PDF de cabecera — SIEMPRE el alcance que se está viendo ─────
 // Un solo lugar para descargar (requisito: no duplicar "botón de arriba" vs "panel
@@ -304,24 +350,28 @@ watch(() => [activeScope.value.type, activeScope.value.employee_id, activeScope.
 // el usuario haya tocado en el panel "Descargar / Comparativos" de abajo.
 const hasActiveScope = computed(() => activeScope.value.type !== 'general')
 
-// Bug real corregido (A10, 17-sep-2026): con scope=general (sin sucursal/gestor
-// filtrado) el botón caía a props.excelUrl/pdfUrl — URLs SIN query string, que
-// jamás pueden llevar manual_adjustment. Resultado: la Web se veía ajustada pero
-// el Excel/PDF de cabecera salían SIN el ajuste. Ahora, si hay un ajuste APLICADO
-// (nunca el draft), siempre se construye vía filteredExcelBaseUrl/filteredPdfBaseUrl
-// con manual_scope/manual_amount/manual_notes — exactamente lo que exportFilteredRadiography(Pdf)
-// ya sabe interpretar para scope=general (ver MonthlyReportController::exportWithConfig()).
-function buildActiveScopeUrl(format: 'xlsx' | 'pdf'): string {
-    const applied = appliedManualAdjustment.value
-    if (!hasActiveScope.value && !applied) return format === 'xlsx' ? props.excelUrl : props.pdfUrl
-    const base = format === 'xlsx' ? props.filteredExcelBaseUrl : props.filteredPdfBaseUrl
+// A3: buildActiveReportExportParams() es el ÚNICO lugar que arma
+// report_type/scope/branch_id/employee_id + el ajuste temporal — reutilizado
+// por buildActiveScopeUrl() de cabecera. Bug real corregido en la ronda
+// anterior: con scope=general el botón caía a props.excelUrl/pdfUrl (URLs SIN
+// query string, jamás podían llevar el ajuste) — ahora, si hay un ajuste
+// APLICADO (nunca el draft), siempre se construye vía
+// filteredExcelBaseUrl/filteredPdfBaseUrl.
+function buildActiveReportExportParams(): URLSearchParams {
     const params = new URLSearchParams({ report_type: 'simple', scope: activeScope.value.type })
     if (activeScope.value.type === 'branch' && activeScope.value.branch_id) params.set('branch_id', String(activeScope.value.branch_id))
     if (activeScope.value.type === 'employee' && activeScope.value.employee_id) params.set('employee_id', String(activeScope.value.employee_id))
-    for (const [k, v] of Object.entries(manualAdjustmentParams(activeScope.value.type, activeScope.value.employee_id))) {
+    for (const [k, v] of Object.entries(buildTemporaryAdjustmentParams(activeScope.value.type, activeScope.value.branch_id, activeScope.value.employee_id))) {
         params.set(k, v)
     }
-    return `${base}?${params.toString()}`
+    return params
+}
+
+function buildActiveScopeUrl(format: 'xlsx' | 'pdf'): string {
+    const applied = appliedAdjustment.value
+    if (!hasActiveScope.value && !applied) return format === 'xlsx' ? props.excelUrl : props.pdfUrl
+    const base = format === 'xlsx' ? props.filteredExcelBaseUrl : props.filteredPdfBaseUrl
+    return `${base}?${buildActiveReportExportParams().toString()}`
 }
 
 const activeExcelUrl = computed(() => buildActiveScopeUrl('xlsx'))
@@ -1118,13 +1168,13 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
 
     const clearingFilters = !gestor && !branch
 
-    // Ajuste manual EFÍMERO activo para alcance general — si hay un monto > 0, el
-    // snapshot general cacheado (generalSnapshotOverride, o el general que vino en
-    // props.snapshot) YA NO sirve tal cual: hay que pedirlo de nuevo con
-    // manual_adjustment para que el ajuste se refleje. Sin esta guarda, el atajo de
-    // abajo devolvería el dataset SIN ajuste aunque el usuario acabe de aplicar un
-    // monto (bug real que se evitó aquí, no reportado por el usuario).
-    const hasActiveGeneralManual = appliedManualAdjustment.value?.scope === 'general' && (appliedManualAdjustment.value?.amount ?? 0) > 0
+    // Ajuste temporal activo para alcance general (mode=all_each_employee) — si
+    // hay un monto > 0, el snapshot general cacheado (generalSnapshotOverride, o
+    // el general que vino en props.snapshot) YA NO sirve tal cual: hay que
+    // pedirlo de nuevo con manual_adjustment para que el ajuste se refleje. Sin
+    // esta guarda, el atajo de abajo devolvería el dataset SIN ajuste aunque el
+    // usuario acabe de aplicar un monto.
+    const hasActiveGeneralManual = appliedAdjustment.value?.mode === 'all_each_employee' && (appliedAdjustment.value?.amountPerEmployee ?? 0) > 0
 
     if (clearingFilters && !hasActiveGeneralManual && (initialSnapshotIsGeneral || generalSnapshotOverride)) {
         // Alcance general ya conocido (props.snapshot ya era general, o ya se pidió antes
@@ -1149,6 +1199,7 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
     let params: URLSearchParams
     let scopeTypeForManual: ScopeType
     let employeeIdForManual: number | null = null
+    let branchIdForManual: number | null = null
     if (gestor) {
         const emp = props.employees.find(e => norm(e.name) === norm(gestor))
         if (!emp) { scopedError.value = 'Colaborador no reconocido en este periodo.'; return }
@@ -1160,6 +1211,7 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
         if (!br) { scopedError.value = 'Sucursal no reconocida.'; return }
         params = new URLSearchParams({ scope: 'branch', branch_id: String(br.id) })
         scopeTypeForManual = 'branch'
+        branchIdForManual = br.id
     } else {
         // clearingFilters === true pero el snapshot inicial vino pre-filtrado (deep-link), o
         // hay un ajuste manual general activo — hay que pedirlo al backend.
@@ -1167,11 +1219,11 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
         scopeTypeForManual = 'general'
     }
 
-    // Query enviada al backend (con el ajuste manual EFÍMERO si aplica) — separada de
+    // Query enviada al backend (con el ajuste temporal si aplica) — separada de
     // la que se refleja en la URL visible del navegador (updateScopeQueryString), para
     // que un F5/nueva pestaña NUNCA reabra con el ajuste puesto (requisito: vuelve a 0).
     const requestParams = new URLSearchParams(params)
-    for (const [k, v] of Object.entries(manualAdjustmentParams(scopeTypeForManual, employeeIdForManual))) {
+    for (const [k, v] of Object.entries(buildTemporaryAdjustmentParams(scopeTypeForManual, branchIdForManual, employeeIdForManual))) {
         requestParams.set(k, v)
     }
 
@@ -1223,12 +1275,14 @@ function retryScopedFetch() { fetchScopedDataset() }
 // Controla si se muestra el formulario de captura (draft) o la card "AJUSTE
 // TEMPORAL ACTIVO" con [Modificar]/[Quitar ajuste] — nunca ambos a la vez.
 const isEditingManualDraft = ref(false)
-const showManualDraftForm = computed(() => !appliedManualAdjustment.value || isEditingManualDraft.value)
+const showManualDraftForm = computed(() => !appliedAdjustment.value || isEditingManualDraft.value)
 
-// ── Aplicar / Quitar ajuste manual — ÚNICO punto que dispara una request para el
-// ajuste (A6/A7/A8 del cierre). Nunca se llama desde un watch de los inputs.
+// ── Aplicar / Quitar ajuste temporal — ÚNICO punto que dispara una request para
+// el ajuste (A9/A12/D2 del cierre). Nunca se llama desde un watch de los inputs.
+// El modo se deriva del alcance que se está viendo — employee/branch/general →
+// employee/branch_each_employee/all_each_employee (A10).
 function applyManualAdjustment() {
-    const amountNum = Number(manualDraft.amount)
+    const amountNum = Number(manualDraft.amountPerEmployee)
     if (!(amountNum > 0)) {
         manualDraftError.value = 'Ingresa un monto mayor a $0.'
         return
@@ -1239,13 +1293,22 @@ function applyManualAdjustment() {
     }
     manualDraftError.value = null
 
-    const scope: 'employee' | 'general' = activeScope.value.type === 'employee' ? 'employee' : 'general'
-    appliedManualAdjustment.value = {
-        scope,
-        employeeId: scope === 'employee' ? activeScope.value.employee_id : null,
-        employeeName: scope === 'employee' ? activeScope.value.employee_name : null,
-        amount: amountNum,
+    const mode: TemporaryOpexAdjustmentMode = activeScope.value.type === 'employee'
+        ? 'employee'
+        : activeScope.value.type === 'branch' ? 'branch_each_employee' : 'all_each_employee'
+
+    appliedAdjustment.value = {
+        mode,
+        employeeId: mode === 'employee' ? activeScope.value.employee_id : null,
+        employeeName: mode === 'employee' ? activeScope.value.employee_name : null,
+        branchId: mode === 'branch_each_employee' ? activeScope.value.branch_id : null,
+        branchName: mode === 'branch_each_employee' ? activeScope.value.branch_name : null,
+        amountPerEmployee: amountNum,
         notes: manualDraft.notes.trim(),
+        // Congelado en el momento de aplicar — la card "AJUSTE TEMPORAL ACTIVO"
+        // muestra el conteo que estaba vigente al aplicar, aunque el roster no
+        // cambie durante la sesión (A11).
+        affectedCount: affectedEmployeeCountEstimate.value,
     }
     resetManualDraft()
     isEditingManualDraft.value = false
@@ -1259,8 +1322,8 @@ function applyManualAdjustment() {
 }
 
 function removeManualAdjustment() {
-    if (!appliedManualAdjustment.value) return
-    appliedManualAdjustment.value = null
+    if (!appliedAdjustment.value) return
+    appliedAdjustment.value = null
     resetManualDraft()
     isEditingManualDraft.value = false
     generalSnapshotOverride = null
@@ -1271,13 +1334,13 @@ function removeManualAdjustment() {
 
 // Editar un ajuste ya aplicado ("Modificar") — precarga el draft con lo aplicado
 // para que la persona no tenga que volver a escribir todo desde cero. NO revierte
-// appliedManualAdjustment todavía (los KPIs en pantalla siguen mostrando el
-// ajuste vigente hasta que se pulse "Aplicar ajuste" de nuevo, o "Cancelar").
+// appliedAdjustment todavía (los KPIs en pantalla siguen mostrando el ajuste
+// vigente hasta que se pulse "Aplicar ajuste" de nuevo, o "Cancelar").
 function editManualAdjustment() {
-    const applied = appliedManualAdjustment.value
+    const applied = appliedAdjustment.value
     if (!applied) return
-    manualDraft.amount = String(applied.amount)
-    manualDraft.notes  = applied.notes
+    manualDraft.amountPerEmployee = String(applied.amountPerEmployee)
+    manualDraft.notes = applied.notes
     manualDraftError.value = null
     isEditingManualDraft.value = true
 }
@@ -1764,11 +1827,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </div>
                         </div>
 
-                        <p v-if="!isComparative && appliedManualAdjustment && appliedManualAdjustment.scope === 'employee' && filteredScope === 'employee' && filteredEmployeeId === appliedManualAdjustment.employeeId" class="text-xs text-indigo-700 font-semibold">
-                            Estas descargas incluirán el ajuste temporal activo ({{ money(appliedManualAdjustment.amount) }}) — ver "AJUSTE TEMPORAL DEL REPORTE" más abajo.
+                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'employee' && filteredScope === 'employee' && filteredEmployeeId === appliedAdjustment.employeeId" class="text-xs text-indigo-700 font-semibold">
+                            Estas descargas incluirán el ajuste temporal activo ({{ money(appliedAdjustment.amountPerEmployee) }}) — ver "AJUSTE TEMPORAL DEL REPORTE" más abajo.
                         </p>
-                        <p v-if="!isComparative && appliedManualAdjustment && appliedManualAdjustment.scope === 'general' && filteredScope === 'general'" class="text-xs text-indigo-700 font-semibold">
-                            Estas descargas incluirán el ajuste temporal general activo ({{ money(appliedManualAdjustment.amount) }}).
+                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'branch_each_employee' && filteredScope === 'branch' && filteredBranchId === appliedAdjustment.branchId" class="text-xs text-indigo-700 font-semibold">
+                            Estas descargas incluirán el ajuste temporal de sucursal activo ({{ money(appliedAdjustment.amountPerEmployee) }} × {{ appliedAdjustment.affectedCount }} colaboradores = {{ money(appliedAdjustment.amountPerEmployee * appliedAdjustment.affectedCount) }}).
+                        </p>
+                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'all_each_employee' && filteredScope === 'general'" class="text-xs text-indigo-700 font-semibold">
+                            Estas descargas incluirán el ajuste temporal general activo ({{ money(appliedAdjustment.amountPerEmployee) }} × {{ appliedAdjustment.affectedCount }} colaboradores = {{ money(appliedAdjustment.amountPerEmployee * appliedAdjustment.affectedCount) }}).
                         </p>
 
                         <div class="flex flex-wrap gap-2 pt-1">
@@ -1792,58 +1858,28 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 <span v-else-if="isComparative && filteredScope === 'employee'">Selecciona un gestor.</span>
                             </p>
                         </div>
-                        <p class="text-xs text-slate-400">"Descargar Excel de colaboradores" siempre trae a TODOS los colaboradores del periodo (respeta sucursal cuando aplica) — nunca se limita al gestor seleccionado arriba.</p>
-
-                        <!-- Ajuste manual "a TODOS los colaboradores" (ronda 3, 07-sep-2026) —
-                             SOLO afecta el Excel de colaboradores. A diferencia del ajuste
-                             general (una sola vez al total), este SÍ se suma a CADA
-                             colaborador individualmente. 100% efímero — nunca se guarda. -->
-                        <div class="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
-                            <p class="font-black text-slate-950 text-sm">Ajuste temporal — aplicar a TODOS los colaboradores</p>
-                            <p class="mt-1 text-xs text-slate-600">Suma el MISMO monto al OPEX de CADA colaborador en el Excel de colaboradores (a diferencia del ajuste general, aquí SÍ se multiplica por el número de colaboradores). Solo afecta esta descarga — no modifica los datos guardados.</p>
-                            <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                                <label class="block">
-                                    <span class="text-xs font-bold text-slate-600">Gasto por colaborador (MXN)</span>
-                                    <div class="relative mt-1">
-                                        <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400">$</span>
-                                        <input v-model="manualAllAmount" type="number" min="0" step="100" placeholder="0"
-                                               class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-amber-100" />
-                                    </div>
-                                </label>
-                                <label class="block">
-                                    <span class="text-xs font-bold text-slate-600">Notas (opcional)</span>
-                                    <input v-model="manualAllNotes" type="text" placeholder="Ej. gasto extraordinario del mes"
-                                           class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-4 focus:ring-amber-100" />
-                                </label>
-                            </div>
-                            <div class="mt-3 flex items-center gap-3">
-                                <button type="button" :disabled="!manualAllAmount && !manualAllNotes" @click="clearManualAllAdjustment"
-                                        class="h-9 rounded-2xl border border-slate-300 bg-white px-4 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                                    Limpiar ajuste
-                                </button>
-                                <span v-if="Number(manualAllAmount) > 0" class="text-xs font-bold text-amber-700">Se aplicará a CADA colaborador al descargar el Excel.</span>
-                            </div>
-                        </div>
+                        <p class="text-xs text-slate-400">"Descargar Excel de colaboradores" siempre trae a TODOS los colaboradores del periodo (respeta sucursal cuando aplica) — nunca se limita al gestor seleccionado arriba. Si hay un ajuste temporal aplicado (cualquiera de los 3 paneles de abajo), también se refleja aquí, por colaborador.</p>
                     </div>
                 </div>
 
-                <!-- Ajuste manual EFÍMERO del reporte (cierre, ronda 4 — 17-sep-2026) — vive
+                <!-- Ajuste temporal de OPEX — modelo ÚNICO (cierre 17-sep-2026, ronda 2), vive
                      ÚNICAMENTE en memoria de esta pestaña. Nunca se guarda: al cambiar de
                      colaborador/sucursal/alcance o al salir y volver a entrar, vuelve a
                      $0.00. DRAFT (mientras se escribe, no dispara nada) → APPLIED (solo al
-                     pulsar "Aplicar ajuste", UNA request). -->
+                     pulsar "Aplicar ajuste", UNA request). Un solo panel visible a la vez,
+                     según el alcance activo — A10. -->
                 <div v-if="activeScope.type === 'employee' && activeScope.employee_id" class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5 shadow-sm">
                     <template v-if="showManualDraftForm">
-                        <p class="font-black text-slate-950">Ajuste temporal del reporte</p>
+                        <p class="font-black text-slate-950">Ajuste temporal del gestor</p>
                         <p class="mt-1 text-sm text-slate-600">Monto aproximado de gastos operativos de {{ activeScope.employee_name }} este periodo. Se suma al OPEX automático — nunca lo reemplaza.</p>
                         <p class="mt-1 text-xs text-indigo-700">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
 
                         <div class="mt-4 grid gap-3 sm:grid-cols-2">
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600">Gasto manual del gestor (MXN)</span>
+                                <span class="text-xs font-bold text-slate-600">Monto por gestor (MXN)</span>
                                 <div class="relative mt-1">
                                     <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400">$</span>
-                                    <input v-model="manualDraft.amount" type="number" min="0" step="100" placeholder="0"
+                                    <input v-model="manualDraft.amountPerEmployee" type="number" min="0" step="100" placeholder="0"
                                            class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
                                 </div>
                             </label>
@@ -1860,7 +1896,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     class="h-9 rounded-2xl bg-indigo-600 px-4 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
-                            <button v-if="appliedManualAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
+                            <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
                                     class="h-9 rounded-2xl border border-slate-300 bg-white px-4 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
@@ -1870,9 +1906,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
                                 <p class="text-xs font-black uppercase tracking-wider text-emerald-700">Ajuste temporal activo</p>
-                                <p class="mt-1 text-2xl font-black text-slate-950">+{{ money((appliedManualAdjustment?.amount ?? 0)) }}</p>
-                                <p class="mt-1 text-sm text-slate-600">{{ (appliedManualAdjustment?.notes ?? '') }}</p>
-                                <p class="mt-1 text-xs text-slate-500">Gestor: {{ (appliedManualAdjustment?.employeeName ?? '') }}</p>
+                                <p class="mt-1 text-2xl font-black text-slate-950">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0)) }}</p>
+                                <p class="mt-1 text-sm text-slate-600">{{ (appliedAdjustment?.notes ?? '') }}</p>
+                                <p class="mt-1 text-xs text-slate-500">Gestor: {{ (appliedAdjustment?.employeeName ?? '') }}</p>
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
@@ -1889,20 +1925,21 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </template>
                 </div>
 
-                <!-- Ajuste manual GENERAL — mismo principio, alcance general: se suma UNA sola
-                     vez al resumen general, NUNCA se reparte entre colaboradores. -->
-                <div v-if="activeScope.type === 'general'" class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5 shadow-sm">
+                <!-- Ajuste temporal de SUCURSAL (A5 Caso 2, nuevo en esta ronda) — el monto es
+                     POR colaborador; el total que sube el OPEX de la sucursal es
+                     monto × colaboradores canónicos de esa sucursal este periodo. -->
+                <div v-if="activeScope.type === 'branch' && activeScope.branch_id" class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5 shadow-sm">
                     <template v-if="showManualDraftForm">
-                        <p class="font-black text-slate-950">Ajuste temporal general</p>
-                        <p class="mt-1 text-sm text-slate-600">Monto adicional aplicado UNA sola vez al resumen general de este periodo — nunca se multiplica ni se reparte entre colaboradores.</p>
+                        <p class="font-black text-slate-950">Ajuste temporal de la sucursal</p>
+                        <p class="mt-1 text-sm text-slate-600">Este importe se agregará al OPEX de CADA colaborador de {{ activeScope.branch_name }}.</p>
                         <p class="mt-1 text-xs text-indigo-700">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
 
                         <div class="mt-4 grid gap-3 sm:grid-cols-2">
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600">Gasto general del reporte (MXN)</span>
+                                <span class="text-xs font-bold text-slate-600">Monto por colaborador (MXN)</span>
                                 <div class="relative mt-1">
                                     <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400">$</span>
-                                    <input v-model="manualDraft.amount" type="number" min="0" step="100" placeholder="0"
+                                    <input v-model="manualDraft.amountPerEmployee" type="number" min="0" step="100" placeholder="0"
                                            class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
                                 </div>
                             </label>
@@ -1914,12 +1951,17 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </div>
                         <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600">{{ manualDraftError }}</p>
 
+                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 px-4 py-2.5 text-xs">
+                            <span class="font-bold text-slate-600">Gestores afectados: <span class="text-slate-950">{{ affectedEmployeeCountEstimate }}</span></span>
+                            <span class="font-bold text-slate-600">Impacto total estimado: <span class="text-indigo-700">{{ money(estimatedTotalImpact) }}</span></span>
+                        </div>
+
                         <div class="mt-4 flex items-center gap-3">
                             <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
                                     class="h-9 rounded-2xl bg-indigo-600 px-4 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
-                            <button v-if="appliedManualAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
+                            <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
                                     class="h-9 rounded-2xl border border-slate-300 bg-white px-4 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
@@ -1929,8 +1971,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
                                 <p class="text-xs font-black uppercase tracking-wider text-emerald-700">Ajuste temporal activo</p>
-                                <p class="mt-1 text-2xl font-black text-slate-950">+{{ money((appliedManualAdjustment?.amount ?? 0)) }}</p>
-                                <p class="mt-1 text-sm text-slate-600">{{ (appliedManualAdjustment?.notes ?? '') }}</p>
+                                <p class="mt-1 text-2xl font-black text-slate-950">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0) * (appliedAdjustment?.affectedCount ?? 0)) }}</p>
+                                <p class="mt-1 text-sm text-slate-600">{{ (appliedAdjustment?.notes ?? '') }}</p>
+                                <p class="mt-1 text-xs text-slate-500">Ámbito: Todos los gestores de {{ (appliedAdjustment?.branchName ?? '') }} — {{ money(appliedAdjustment?.amountPerEmployee ?? 0) }} c/u × {{ appliedAdjustment?.affectedCount ?? 0 }} gestores</p>
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
@@ -1943,7 +1986,73 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </button>
                             </div>
                         </div>
-                        <p class="mt-2 text-xs font-bold text-emerald-700">Nunca se reparte entre colaboradores — actualizado en pantalla y en las descargas.</p>
+                        <p class="mt-2 text-xs font-bold text-emerald-700">OPEX/EBITDA de la sucursal actualizados en pantalla y en las descargas — cada gestor recibe el monto individual en el Excel de colaboradores.</p>
+                    </template>
+                </div>
+
+                <!-- Ajuste temporal GENERAL (A5 Caso 3) — el monto es POR colaborador; el total
+                     que sube el OPEX general es monto × colaboradores canónicos del periodo
+                     completo. Reemplaza al viejo "aplicar a TODOS los colaboradores" (antes
+                     solo tocaba el Excel de colaboradores, nunca Web/Excel/PDF general). -->
+                <div v-if="activeScope.type === 'general'" class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5 shadow-sm">
+                    <template v-if="showManualDraftForm">
+                        <p class="font-black text-slate-950">Ajuste temporal general</p>
+                        <p class="mt-1 text-sm text-slate-600">Este importe se agregará al OPEX de CADA colaborador del periodo.</p>
+                        <p class="mt-1 text-xs text-indigo-700">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
+
+                        <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                            <label class="block">
+                                <span class="text-xs font-bold text-slate-600">Monto por colaborador (MXN)</span>
+                                <div class="relative mt-1">
+                                    <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400">$</span>
+                                    <input v-model="manualDraft.amountPerEmployee" type="number" min="0" step="100" placeholder="0"
+                                           class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                                </div>
+                            </label>
+                            <label class="block">
+                                <span class="text-xs font-bold text-slate-600">Notas (obligatorio si hay monto)</span>
+                                <input v-model="manualDraft.notes" type="text" placeholder="Ej. gasto extraordinario del mes"
+                                       class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                            </label>
+                        </div>
+                        <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600">{{ manualDraftError }}</p>
+
+                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 px-4 py-2.5 text-xs">
+                            <span class="font-bold text-slate-600">Colaboradores afectados: <span class="text-slate-950">{{ affectedEmployeeCountEstimate }}</span></span>
+                            <span class="font-bold text-slate-600">Impacto total estimado: <span class="text-indigo-700">{{ money(estimatedTotalImpact) }}</span></span>
+                        </div>
+
+                        <div class="mt-4 flex items-center gap-3">
+                            <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
+                                    class="h-9 rounded-2xl bg-indigo-600 px-4 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50">
+                                {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
+                            </button>
+                            <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
+                                    class="h-9 rounded-2xl border border-slate-300 bg-white px-4 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                                Cancelar
+                            </button>
+                        </div>
+                    </template>
+                    <template v-else>
+                        <div class="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                                <p class="text-xs font-black uppercase tracking-wider text-emerald-700">Ajuste temporal activo</p>
+                                <p class="mt-1 text-2xl font-black text-slate-950">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0) * (appliedAdjustment?.affectedCount ?? 0)) }}</p>
+                                <p class="mt-1 text-sm text-slate-600">{{ (appliedAdjustment?.notes ?? '') }}</p>
+                                <p class="mt-1 text-xs text-slate-500">Ámbito: Todos los gestores del periodo — {{ money(appliedAdjustment?.amountPerEmployee ?? 0) }} c/u × {{ appliedAdjustment?.affectedCount ?? 0 }} colaboradores</p>
+                            </div>
+                            <div class="flex shrink-0 gap-2">
+                                <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
+                                        class="h-9 rounded-2xl border border-slate-300 bg-white px-4 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                                    Modificar
+                                </button>
+                                <button type="button" :disabled="adjustmentLoading" @click="removeManualAdjustment"
+                                        class="h-9 rounded-2xl border border-rose-200 bg-white px-4 text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50">
+                                    {{ adjustmentLoading ? 'Quitando…' : 'Quitar ajuste' }}
+                                </button>
+                            </div>
+                        </div>
+                        <p class="mt-2 text-xs font-bold text-emerald-700">OPEX/EBITDA generales actualizados en pantalla y en las descargas — cada colaborador recibe el monto individual en el Excel de colaboradores.</p>
                     </template>
                 </div>
 

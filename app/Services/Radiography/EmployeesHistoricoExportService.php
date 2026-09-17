@@ -38,17 +38,16 @@ use PhpOffice\PhpSpreadsheet\Style\Fill;
  *   - Estado activo/baja = MISMA condicion que buildOperationalStatus()
  *     (ingreso real O gasto OPEX automatico > 0 - el gasto manual NUNCA activa
  *     por si solo), sobre los MISMOS totales ya calculados en bloque.
- *   - Gasto manual = 100% EFÍMERO (reversión 07-sep-2026, cierre) — nunca lee
+ *   - Gasto manual = 100% EFÍMERO (cierre 17-sep-2026, ronda 2 —
+ *     TemporaryOpexAdjustmentService es la fuente ÚNICA) — nunca lee
  *     employee_period_manual_expenses. Viaja como parámetro `$manualAdjustment`
- *     (`{scope, employee_id, amount, notes}`):
- *       scope='employee' suma solo a la fila de ESE colaborador.
- *       scope='general' NUNCA se reparte entre filas — se refleja UNA sola vez
- *         en la hoja "Resumen" (ver addResumenSheet()).
- *       scope='all' (07-sep-2026, ronda 3) suma el MISMO monto a CADA fila de
- *         colaborador individualmente (a diferencia de 'general' — aquí SÍ se
- *         multiplica por el número de colaboradores, es la semántica que pidió
- *         el usuario explícitamente: "que tuvieron un gasto de 20k TODOS los
- *         colaboradores").
+ *     (`{mode, employee_id, branch_id, amount_per_employee, notes}`):
+ *       mode='employee' suma solo a la fila de ESE colaborador.
+ *       mode='branch_each_employee' suma amount_per_employee a CADA fila
+ *         canónica de esa sucursal (multiplicado por el número de
+ *         colaboradores de esa sucursal — a propósito).
+ *       mode='all_each_employee' suma amount_per_employee a CADA fila del
+ *         periodo completo (multiplicado por el total de colaboradores).
  *   - Desglose de gastos por concepto (07-sep-2026, ronda 3) — hoja "Detalle de
  *     Gastos" aparte: una fila por (colaborador, concepto) de TODO lo que
  *     compone su OPEX AUTOMÁTICO — la suma de sus filas ahí reconcilia EXACTO
@@ -71,22 +70,33 @@ class EmployeesHistoricoExportService
     public function __construct(
         private readonly RadiographySnapshotBuilder $snapshotBuilder,
         private readonly OpexClassificationService $opexClassifier,
+        private readonly \App\Services\TemporaryOpexAdjustmentService $temporaryAdjustment,
     ) {
     }
 
     /**
      * @param  array{branch_id?:int|null}  $filters  Filtros a respetar (ademas de periodo).
      *                                                Deliberadamente NO incluye employee_id.
-     * @param  array{scope?:string,employee_id?:int|null,amount?:float,notes?:string}  $manualAdjustment
-     *         Ajuste manual EFÍMERO de esta descarga (reversión 07-sep-2026, cierre) —
-     *         nunca BD. scope='employee' suma solo a la fila de ese colaborador.
-     *         scope='general' NUNCA se reparte — solo aparece en la hoja "Resumen".
-     *         scope='all' suma el MISMO monto a CADA fila (sí se multiplica por el
-     *         número de colaboradores — a propósito, distinto de 'general').
+     * @param  array{mode?:string,employee_id?:int|null,branch_id?:int|null,amount_per_employee?:float,notes?:string}  $manualAdjustment
+     *         Ajuste manual EFÍMERO de esta descarga (cierre 17-sep-2026, ronda 2 —
+     *         TemporaryOpexAdjustmentService es la fuente única) — nunca BD.
+     *         mode='employee' suma solo a la fila de ese colaborador.
+     *         mode='branch_each_employee' suma amount_per_employee a CADA fila
+     *         canónica de esa sucursal (multiplicado por el número de colaboradores).
+     *         mode='all_each_employee' suma amount_per_employee a CADA fila del
+     *         periodo completo.
      */
     public function build(Period $period, array $filters = [], array $manualAdjustment = []): Spreadsheet
     {
-        $rows = $this->snapshotBuilder->buildAllEmployeeGestorRows($period);
+        // Filas CANÓNICAS del periodo completo (sin filtrar por sucursal todavía) —
+        // fuente ÚNICA para calcular "a quién le toca" el ajuste manual (cierre
+        // 17-sep-2026, ronda 2), independiente del filtro de visualización de abajo.
+        $allRows = $this->snapshotBuilder->buildAllEmployeeGestorRows($period);
+        $manualByEmployeeId = $this->temporaryAdjustment->perEmployeeAmounts($allRows, $manualAdjustment);
+        $manualAdjustmentNormalized = $this->temporaryAdjustment->normalize($manualAdjustment);
+        $manualNotesForRow = (string) ($manualAdjustmentNormalized['notes'] ?? '');
+
+        $rows = $allRows;
         $dataIds = $this->snapshotBuilder->resolveDataIdsPublic($period);
 
         if (!empty($filters['branch_id'])) {
@@ -136,25 +146,11 @@ class EmployeesHistoricoExportService
             $detailItemsByEmployee[$eid][] = ['category' => (string) $r->category, 'concept' => (string) $r->concept, 'amount' => round($amount, 2)];
         }
 
-        // Gasto manual — 100% EFÍMERO (reversión 07-sep-2026, cierre) — nunca BD.
-        //   scope='employee' → aplica solo a UNA fila.
-        //   scope='general'  → nunca toca filas, solo hoja "Resumen".
-        //   scope='all'      → aplica el MISMO monto a CADA fila (ronda 3 — a
-        //     propósito multiplicado por el número de colaboradores, es lo que
-        //     pidió el usuario: "que tuvieron un gasto de 20k TODOS los colaboradores").
-        $manualEmployeeId   = null;
-        $manualAmountForRow = 0.0;
-        $manualNotesForRow  = '';
-        $manualApplyToAll   = false;
-        if (($manualAdjustment['scope'] ?? null) === 'employee') {
-            $manualEmployeeId   = (int) ($manualAdjustment['employee_id'] ?? 0) ?: null;
-            $manualAmountForRow = round(max(0.0, (float) ($manualAdjustment['amount'] ?? 0)), 2);
-            $manualNotesForRow  = $manualAmountForRow > 0 ? trim((string) ($manualAdjustment['notes'] ?? '')) : '';
-        } elseif (($manualAdjustment['scope'] ?? null) === 'all') {
-            $manualAmountForRow = round(max(0.0, (float) ($manualAdjustment['amount'] ?? 0)), 2);
-            $manualNotesForRow  = $manualAmountForRow > 0 ? trim((string) ($manualAdjustment['notes'] ?? '')) : '';
-            $manualApplyToAll   = $manualAmountForRow > 0;
-        }
+        // Gasto manual — 100% EFÍMERO (cierre 17-sep-2026, ronda 2) — nunca BD.
+        // $manualByEmployeeId (calculado arriba, ANTES del filtro de sucursal de
+        // visualización) ya resuelve exactamente a quién le toca cuánto, para los
+        // 3 modos (employee/branch_each_employee/all_each_employee) — ver
+        // TemporaryOpexAdjustmentService::perEmployeeAmounts().
 
         // Percepciones/Deducciones NOI - UNA sola consulta por tipo.
         $percepcionesByEmployee = DB::table('fact_noi_movements')
@@ -178,7 +174,7 @@ class EmployeesHistoricoExportService
         $headers = [
             'PERIODO', 'SUCURSAL', 'NOMBRE COLABORADOR', 'ESTADO ACTIVO/BAJA',
             'RECUPERACIÓN', 'COLOCACIÓN', 'VALOR CARTERA', 'CARTERA VENCIDA', 'MORA %',
-            'OPEX AUTOMÁTICO', 'GASTO MANUAL', 'OPEX TOTAL',
+            'OPEX AUTOMÁTICO', 'GASTO MANUAL', 'OPEX TOTAL', 'NOTA GASTO MANUAL',
             'NÓMINA / CAPITAL HUMANO', 'PERCEPCIONES', 'DEDUCCIONES', 'NETO PAGADO',
             'UTILIDAD BRUTA', 'EBITDA', 'MARGEN EBITDA %',
         ];
@@ -232,14 +228,13 @@ class EmployeesHistoricoExportService
                 }
             }
 
-            // El ajuste manual EFÍMERO por colaborador (scope='employee') solo aplica a
-            // la fila cuyo grupo de identidad (_employee_ids) contiene EXACTAMENTE el
-            // employee_id del ajuste — nunca "de paso" a otro colaborador que comparta
-            // el mismo nombre/branch. scope='all' aplica el MISMO monto a TODAS las
-            // filas (ronda 3 — a propósito, ver docblock de build()).
-            $manual = $manualApplyToAll
-                ? $manualAmountForRow
-                : (($manualEmployeeId !== null && in_array($manualEmployeeId, $employeeIds, true)) ? $manualAmountForRow : 0.0);
+            // El ajuste manual EFÍMERO se resuelve por identidad canónica
+            // ($manualByEmployeeId, calculado arriba por TemporaryOpexAdjustmentService
+            // ANTES del filtro de sucursal de visualización) — nunca "de paso" a otro
+            // colaborador que comparta nombre/sucursal. $primaryId es EXACTAMENTE la
+            // misma clave (_employee_ids[0]) que perEmployeeAmounts() usa para armar
+            // ese mapa — misma fuente, cero riesgo de IDs que no coincidan entre sí.
+            $manual = (float) ($manualByEmployeeId[$primaryId] ?? 0.0);
 
             // Fuente ÚNICA de EBITDA/margen/OPEX total — computeEmployeeFinancialMetrics(),
             // la MISMA función que usa RadiographySnapshotBuilder::summaryFromRow() para
@@ -269,6 +264,7 @@ class EmployeesHistoricoExportService
                 round($opexAuto, 2),
                 round($manual, 2),
                 round($metrics['opex_total'], 2),
+                $manual > 0 ? ($manualNotesForRow ?: '-') : '',
                 round($metrics['neto'], 2),
                 round($percep, 2),
                 round($deduc, 2),
@@ -338,22 +334,17 @@ class EmployeesHistoricoExportService
             $this->addDetailSheet($spreadsheet, $detailRows);
         }
 
-        // Ajuste manual GENERAL (reversión 07-sep-2026, cierre, punto 14) — NUNCA se
-        // reparte entre las filas de arriba (cada colaborador conserva su dato
-        // oficial individual). Se refleja UNA sola vez en una hoja "Resumen" aparte.
-        if (($manualAdjustment['scope'] ?? null) === 'general') {
-            $generalAmount = round(max(0.0, (float) ($manualAdjustment['amount'] ?? 0)), 2);
-            if ($generalAmount > 0) {
-                $this->addResumenSheet($spreadsheet, $totalOpexBase, $totalEbitdaBase, $generalAmount, (string) ($manualAdjustment['notes'] ?? ''));
-            }
-        }
-
-        // Ajuste manual APLICADO A TODOS (ronda 3, 07-sep-2026) — a diferencia de
-        // 'general', aquí SÍ se multiplica por el número de colaboradores (ya
-        // reflejado en cada fila arriba) — la hoja "Resumen" solo documenta el
-        // total agregado resultante, para transparencia, nunca cambia el cálculo.
-        if ($manualApplyToAll) {
-            $this->addResumenAllSheet($spreadsheet, $totalOpexBase, $totalEbitdaBase, $manualAmountForRow, $exportedRowsCount, $manualNotesForRow);
+        // Hoja "Resumen" del ajuste manual EFÍMERO (cierre 17-sep-2026, ronda 2) —
+        // se muestra para CUALQUIER modo activo (employee/branch_each_employee/
+        // all_each_employee): todos aplican por fila (ya reflejado arriba en cada
+        // colaborador afectado) — esta hoja solo documenta el total agregado
+        // resultante para transparencia, nunca cambia ningún cálculo.
+        if ($manualAdjustmentNormalized !== null) {
+            $affectedCount = count(array_filter($manualByEmployeeId, fn ($v) => $v > 0));
+            $this->addResumenAllSheet(
+                $spreadsheet, $totalOpexBase, $totalEbitdaBase,
+                $manualAdjustmentNormalized['amount_per_employee'], $affectedCount, $manualNotesForRow
+            );
         }
 
         // Worksheet::getStyle() tiene un efecto secundario documentado en
@@ -368,68 +359,15 @@ class EmployeesHistoricoExportService
     }
 
     /**
-     * Hoja "Resumen" — ajuste manual GENERAL temporal (auditoría 07-sep-2026,
-     * cierre, punto 14). Se agrega SOLO cuando hay un ajuste general activo (>0) —
-     * nunca modifica ninguna fila de la hoja "Colaboradores", solo informa el
-     * efecto agregado de esta descarga puntual.
-     */
-    private function addResumenSheet(Spreadsheet $spreadsheet, float $opexBase, float $ebitdaBase, float $manualAmount, string $notes): void
-    {
-        $sheet = $spreadsheet->createSheet();
-        $sheet->setTitle('Resumen');
-
-        $opexProyectado   = round($opexBase + $manualAmount, 2);
-        $ebitdaProyectado = round($ebitdaBase - $manualAmount, 2);
-
-        $rows = [
-            ['AJUSTE MANUAL GENERAL TEMPORAL', $manualAmount],
-            ['Notas', $notes ?: '-'],
-            ['', ''],
-            ['OPEX general base', $opexBase],
-            ['Ajuste manual', $manualAmount],
-            ['OPEX general proyectado', $opexProyectado],
-            ['', ''],
-            ['EBITDA base', $ebitdaBase],
-            ['EBITDA proyectado', $ebitdaProyectado],
-        ];
-
-        $sheet->setCellValue('A1', 'CONCEPTO');
-        $sheet->setCellValue('B1', 'VALOR');
-        $sheet->getStyle('A1:B1')->applyFromArray([
-            'font' => ['bold' => true, 'color' => ['argb' => 'FFFFFFFF']],
-            'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => RadiographyStyleHelper::BG_PRIMARY_DARK]],
-        ]);
-
-        $r = 2;
-        $currencyLabels = ['AJUSTE MANUAL GENERAL TEMPORAL', 'OPEX general base', 'Ajuste manual', 'OPEX general proyectado', 'EBITDA base', 'EBITDA proyectado'];
-        foreach ($rows as [$label, $value]) {
-            $sheet->setCellValue("A{$r}", $label);
-            $sheet->setCellValue("B{$r}", $value);
-            if (in_array($label, $currencyLabels, true)) {
-                $sheet->getStyle("B{$r}")->getNumberFormat()->setFormatCode(RadiographyStyleHelper::CURRENCY);
-            }
-            $r++;
-        }
-
-        $sheet->getColumnDimension('A')->setAutoSize(true);
-        $sheet->getColumnDimension('B')->setAutoSize(true);
-
-        // Nota explícita: este ajuste solo afecta esta descarga puntual — nunca se
-        // guardó en ninguna tabla, y una nueva descarga sin manual_amount vuelve a
-        // los valores base de arriba.
-        $sheet->setCellValue('A' . ($r + 1), 'Este ajuste es TEMPORAL — solo afecta esta descarga. No se guardó en la base de datos.');
-        $sheet->mergeCells('A' . ($r + 1) . ':B' . ($r + 1));
-    }
-
-    /**
-     * Hoja "Resumen" — ajuste manual APLICADO A TODOS (ronda 3, 07-sep-2026): a
-     * diferencia de addResumenSheet() (alcance 'general', suma UNA sola vez), este
-     * SÍ se aplica a CADA fila de "Colaboradores" (ya reflejado ahí arriba) — es la
-     * semántica que pidió el usuario explícitamente ("que tuvieron un gasto de 20k
-     * TODOS los colaboradores, entonces se aplica a todos"). $opexConAjuste/
+     * Hoja "Resumen" del ajuste manual EFÍMERO (cierre 17-sep-2026, ronda 2) —
+     * se aplica a CADA fila de "Colaboradores" alcanzada por el modo activo
+     * (ya reflejado ahí arriba, ver $manualByEmployeeId en build()) — sea
+     * mode=employee (1 colaborador), branch_each_employee (los de esa
+     * sucursal) o all_each_employee (todos los del periodo). $opexConAjuste/
      * $ebitdaConAjuste YA incluyen el ajuste (vienen de sumar las filas ya
-     * ajustadas) — aquí solo se resta/suma el total conocido (monto × colaboradores)
-     * para mostrar el comparativo base vs proyectado, sin recalcular nada.
+     * ajustadas) — aquí solo se resta/suma el total conocido (monto ×
+     * colaboradores afectados) para mostrar el comparativo base vs
+     * proyectado, sin recalcular nada.
      */
     private function addResumenAllSheet(Spreadsheet $spreadsheet, float $opexConAjuste, float $ebitdaConAjuste, float $amountPerEmployee, int $employeeCount, string $notes): void
     {

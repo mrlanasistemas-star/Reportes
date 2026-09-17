@@ -303,6 +303,15 @@ $sucursal = $branchRow['sucursal'] ?? 'Sucursal';
 <div class="semantic-box">Sin gastos operativos registrados para esta sucursal en el periodo.</div>
 @endif
 
+@if(($extraAmount ?? 0) > 0)
+<div class="section-bar" style="margin-top:10px;">AJUSTE TEMPORAL<span class="tag">Aplicado a cada colaborador de esta sucursal — no persistido</span></div>
+<table class="tbl avoid">
+    <tbody>
+        <tr><td>{{ $extraNotes ?: 'Sin observación' }}</td><td class="r">{{ $fmt2($extraAmount) }}</td></tr>
+    </tbody>
+</table>
+@endif
+
 <div class="pagebreak"></div>
 
 <div class="section-bar">8. EBITDA<span class="tag">Ingreso base - Gastos totales</span></div>

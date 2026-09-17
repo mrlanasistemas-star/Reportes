@@ -470,3 +470,90 @@ it('finds NOI perceptions even when they were recorded under a different (duplic
         // Antes de consultar el grupo fusionado, esto habría sido 0 (buscaba solo employee_id=canonical).
         ->and((float) $result['summary']['noi_percepciones'])->toBe(7076.26);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// A5 Caso 2 / A17 del cierre 17-sep-2026 (ronda 2) — ajuste temporal de SUCURSAL
+// (mode=branch_each_employee): amount_per_employee × colaboradores CANÓNICOS de
+// esa sucursal. Fixture controlado (3 colaboradores conocidos, NO datos reales)
+// para probar la multiplicación EXACTA sin depender de qué headcount tenga la
+// BD de desarrollo en un periodo dado.
+// ════════════════════════════════════════════════════════════════════════════
+
+it('a branch_each_employee manual adjustment multiplies amount_per_employee by the EXACT canonical headcount of that branch (3 × 5000 = 15000), never a flat amount', function () {
+    $period = Period::query()->create(['name' => 'Junio 2026', 'code' => 'M-SCOPE-BR-ADJ', 'type' => 'monthly', 'year' => 2026, 'month' => 6, 'sequence' => 1, 'start_date' => '2026-06-01', 'end_date' => '2026-06-30', 'is_closed' => false]);
+    $cordoba = Branch::query()->create(['code' => 'CORD', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+
+    $branchRow = ['sucursal' => 'CORDOBA', 'recuperacion_total' => 700000.0, 'colocacion' => 450000.0, 'valor_cartera' => 1080000.0, 'mora_0_30' => 0.0, 'mora_31_60' => 0.0, 'mora_61_90' => 0.0, 'mora_91_120' => 0.0, 'mora_120_plus' => 0.0, 'gastos_operativos' => 50000.0, 'nomina_total' => 40000.0, 'comisiones' => 0.0, 'bonos' => 0.0];
+
+    // 3 colaboradores canónicos de Córdoba (fixture — nunca datos reales de BD).
+    $empGestores = [
+        ['name' => 'GESTOR CORDOBA UNO', 'branch' => 'CORDOBA', '_employee_ids' => [901]],
+        ['name' => 'GESTOR CORDOBA DOS', 'branch' => 'CORDOBA', '_employee_ids' => [902]],
+        ['name' => 'GESTOR CORDOBA TRES', 'branch' => 'CORDOBA', '_employee_ids' => [903]],
+        // Un gestor de OTRA sucursal — NUNCA debe contar para Córdoba.
+        ['name' => 'GESTOR TULA UNO', 'branch' => 'TULA', '_employee_ids' => [904]],
+    ];
+
+    $builder = app(RadiographySnapshotBuilder::class);
+    $snapshotSin = makeGeneralSnapshotFixture($period->id, [$branchRow], $empGestores);
+    $resultSin = invokeScopeMethod($builder, 'applyBranchScope', ['dataIds' => [$period->id], 'args' => [$snapshotSin, $cordoba->id, $period, [], $empGestores]]);
+    $opexSin = round((float) $resultSin['summary']['opex_total'], 2);
+    $ebitdaSin = round((float) $resultSin['summary']['ebitda_final'], 2);
+
+    $adjustment = ['mode' => 'branch_each_employee', 'branch_id' => $cordoba->id, 'amount_per_employee' => 5000.0, 'notes' => 'Viáticos extraordinarios del mes'];
+    $config = ['manual_adjustment' => $adjustment];
+    $snapshotCon = makeGeneralSnapshotFixture($period->id, [$branchRow], $empGestores);
+    $resultCon = invokeScopeMethod($builder, 'applyBranchScope', ['dataIds' => [$period->id], 'args' => [$snapshotCon, $cordoba->id, $period, $config, $empGestores]]);
+    $opexCon = round((float) $resultCon['summary']['opex_total'], 2);
+    $ebitdaCon = round((float) $resultCon['summary']['ebitda_final'], 2);
+
+    // 3 colaboradores × $5,000 = $15,000 — NUNCA $5,000 plano (A17: "NO: 5000").
+    expect(round($opexCon - $opexSin, 2))->toBe(15000.0);
+    expect(round($ebitdaSin - $ebitdaCon, 2))->toBe(15000.0);
+    expect($resultCon['summary']['manual_adjustment_applied']['employee_count'])->toBe(3);
+    expect($resultCon['summary']['manual_adjustment_applied']['notes'])->toBe('Viáticos extraordinarios del mes');
+});
+
+it('a general (all_each_employee) manual adjustment multiplies by ALL canonical employees of the period, and the note travels in manual_adjustment_applied (A18)', function () {
+    $empGestores = [
+        ['name' => 'GESTOR UNO', 'branch' => 'CORDOBA', '_employee_ids' => [921]],
+        ['name' => 'GESTOR DOS', 'branch' => 'TULA', '_employee_ids' => [922]],
+        ['name' => 'GESTOR TRES', 'branch' => 'ORIZABA', '_employee_ids' => [923]],
+    ];
+    $snapshot = ['summary' => ['ingreso_ebitda_base' => 500000.0, 'expenses_total' => 100000.0, 'opex_total' => 100000.0, 'gastos_totales' => 100000.0, 'ebitda_final' => 400000.0]];
+    $config = ['manual_adjustment' => ['mode' => 'all_each_employee', 'amount_per_employee' => 1000.0, 'notes' => 'Gasto extraordinario del mes']];
+
+    $builder = app(RadiographySnapshotBuilder::class);
+    $ref = new ReflectionMethod($builder, 'applyGeneralManualAdjustment');
+    $ref->setAccessible(true);
+    $result = $ref->invoke($builder, $snapshot, $config, $empGestores);
+
+    // 3 colaboradores × $1,000 = $3,000 — NUNCA $1,000 plano.
+    expect((float) $result['summary']['opex_total'])->toBe(103000.0);
+    expect((float) $result['summary']['ebitda_final'])->toBe(397000.0);
+    expect($result['summary']['manual_adjustment_applied']['amount'])->toBe(3000.0);
+    expect($result['summary']['manual_adjustment_applied']['employee_count'])->toBe(3);
+    expect($result['summary']['manual_adjustment_applied']['notes'])->toBe('Gasto extraordinario del mes');
+});
+
+it('a branch_each_employee adjustment for a DIFFERENT branch never leaks into this one', function () {
+    $period = Period::query()->create(['name' => 'Junio 2026', 'code' => 'M-SCOPE-BR-NOLEAK', 'type' => 'monthly', 'year' => 2026, 'month' => 6, 'sequence' => 1, 'start_date' => '2026-06-01', 'end_date' => '2026-06-30', 'is_closed' => false]);
+    $cordoba = Branch::query()->create(['code' => 'CORD', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+    $tula = Branch::query()->create(['code' => 'TULA', 'name' => 'TULA', 'normalized_name' => 'tula', 'is_active' => true]);
+
+    $branchRow = ['sucursal' => 'CORDOBA', 'recuperacion_total' => 700000.0, 'colocacion' => 450000.0, 'valor_cartera' => 1080000.0, 'mora_0_30' => 0.0, 'mora_31_60' => 0.0, 'mora_61_90' => 0.0, 'mora_91_120' => 0.0, 'mora_120_plus' => 0.0, 'gastos_operativos' => 50000.0, 'nomina_total' => 40000.0, 'comisiones' => 0.0, 'bonos' => 0.0];
+    $empGestores = [
+        ['name' => 'GESTOR CORDOBA UNO', 'branch' => 'CORDOBA', '_employee_ids' => [911]],
+        ['name' => 'GESTOR TULA UNO', 'branch' => 'TULA', '_employee_ids' => [912]],
+    ];
+
+    $adjustment = ['mode' => 'branch_each_employee', 'branch_id' => $tula->id, 'amount_per_employee' => 5000.0, 'notes' => 'Ajuste de Tula, no de Córdoba'];
+    $config = ['manual_adjustment' => $adjustment];
+
+    $builder = app(RadiographySnapshotBuilder::class);
+    $snapshot = makeGeneralSnapshotFixture($period->id, [$branchRow], $empGestores);
+    $result = invokeScopeMethod($builder, 'applyBranchScope', ['dataIds' => [$period->id], 'args' => [$snapshot, $cordoba->id, $period, $config, $empGestores]]);
+
+    expect((float) $result['summary']['opex_total'])->toBe(50000.0); // sin cambio
+    expect($result['summary'])->not->toHaveKey('manual_adjustment_applied');
+});

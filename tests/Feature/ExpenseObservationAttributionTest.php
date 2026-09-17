@@ -539,7 +539,7 @@ it('shifts employee EBITDA by exactly the combined automatic+manual OPEX, via th
 
     // Automático $200 (fact_expenses real) + manual $1,500 (EFÍMERO, vía $config — nunca BD).
     makeAttribExpense($period, $upload, ['amount' => 200, 'paid_amount' => 200, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
-    $manualConfig = ['manual_adjustment' => ['scope' => 'employee', 'employee_id' => $employee->id, 'amount' => 1500.0, 'notes' => 'Viáticos y comunicación']];
+    $manualConfig = ['manual_adjustment' => ['mode' => 'employee', 'employee_id' => $employee->id, 'amount_per_employee' => 1500.0, 'notes' => 'Viáticos y comunicación']];
     $snapshotCon = makeGeneralSnapshotFixture($period->id, [], [$rowSin]);
     $resultCon = invokeScopeMethod($builder, 'applyEmployeeScope', ['dataIds' => [$period->id], 'args' => [$snapshotCon, $employee->id, [$rowSin], $period, $manualConfig]]);
 
