@@ -302,7 +302,7 @@ class ReportUploadController extends Controller {
             }
         }
 
-        return Inertia::render('Historico-General/index', [
+        return Inertia::render('historico-general/index', [
             'periods'         => $periods,
             'sources'         => $sources,
             'groupedUploads'  => $groupedUploads,
