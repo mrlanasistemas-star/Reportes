@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
     AlertTriangle, Ban, CheckCircle, Clock, DatabaseZap, Download,
     FileSpreadsheet, FileText, LoaderCircle, Play, RefreshCw, ShieldCheck,
     TriangleAlert, XCircle,
 } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import SectionHeader from './SectionHeader.vue'
-import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps<{
     period: any
@@ -72,7 +71,10 @@ const isSimpleGeneralConfig = computed(() =>
 )
 
 const syncFromProps = () => {
-    if (!isSimpleGeneralConfig.value) return
+    if (!isSimpleGeneralConfig.value) {
+return
+}
+
     liveStatus.value        = props.period?.radiography_run_status ?? null
     liveLog.value           = props.period?.radiography_run_log ?? null
     liveError.value         = props.period?.radiography_run_error ?? null
@@ -94,11 +96,16 @@ watch(() => props.period?.radiography_run_status, syncFromProps, { immediate: tr
 // ── Dedicated polling — independent of Inertia page reload ───────────
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const clearPoll = () => {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+    if (pollTimer) {
+ clearInterval(pollTimer); pollTimer = null 
+}
 }
 
 const pollProgress = async () => {
-    if (!props.period?.id) return
+    if (!props.period?.id) {
+return
+}
+
     try {
         // Identidad del reporte configurado en Etapa 4 — sin esto el backend resolvía
         // "el último run del periodo sin importar de qué reporte era", y un comparativo/
@@ -108,13 +115,23 @@ const pollProgress = async () => {
             report_type: props.reportConfig?.report_type ?? 'simple',
             scope: props.reportConfig?.scope ?? 'general',
         })
-        if (props.reportConfig?.branch_id) identityParams.set('branch_id', String(props.reportConfig.branch_id))
-        if (props.reportConfig?.employee_id) identityParams.set('employee_id', String(props.reportConfig.employee_id))
-        if (props.reportConfig?.compare_period_id) identityParams.set('compare_period_id', String(props.reportConfig.compare_period_id))
+
+        if (props.reportConfig?.branch_id) {
+identityParams.set('branch_id', String(props.reportConfig.branch_id))
+}
+
+        if (props.reportConfig?.employee_id) {
+identityParams.set('employee_id', String(props.reportConfig.employee_id))
+}
+
+        if (props.reportConfig?.compare_period_id) {
+identityParams.set('compare_period_id', String(props.reportConfig.compare_period_id))
+}
 
         const res = await fetch(`/historico-general/${props.period.id}/generar-reporte/progreso?${identityParams.toString()}`, {
             headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
         })
+
         // Un !res.ok (ej. 401/419 por sesión expirada durante una generación larga,
         // o un 5xx transitorio) o una respuesta que no es JSON (ej. redirect al login
         // devuelto como 200 con HTML) NO deben dejarse pasar en silencio: antes esto
@@ -124,9 +141,16 @@ const pollProgress = async () => {
         // lo notaba si hacía F5. Ahora se registra como fallo de POLLING (distinto de
         // un fallo de generación) y se sigue reintentando solo; el job en el backend
         // nunca se toca ni se relanza desde aquí.
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        if (!res.ok) {
+throw new Error(`HTTP ${res.status}`)
+}
+
         const contentType = res.headers.get('content-type') ?? ''
-        if (!contentType.includes('application/json')) throw new Error('respuesta no-JSON (¿sesión expirada?)')
+
+        if (!contentType.includes('application/json')) {
+throw new Error('respuesta no-JSON (¿sesión expirada?)')
+}
+
         const data = await res.json()
 
         pollFailCount.value = 0
@@ -179,7 +203,10 @@ const pollProgress = async () => {
         // la tarjeta de "en proceso" sin motivo real. Solo se avisa tras 2 fallos
         // seguidos (~6-9 s) para no mostrar el aviso por un simple parpadeo de red.
         pollFailCount.value++
-        if (pollFailCount.value >= 2) pollError.value = true
+
+        if (pollFailCount.value >= 2) {
+pollError.value = true
+}
     }
 }
 
@@ -187,6 +214,7 @@ watch(
     () => liveStatus.value,
     (status) => {
         clearPoll()
+
         if (status === 'queued' || status === 'running') {
             pollTimer = setInterval(pollProgress, 3000)
         }
@@ -197,16 +225,23 @@ watch(
 // ── Live elapsed ticker ───────────────────────────────────────────────
 const liveSeconds = ref<number | null>(null)
 let ticker: ReturnType<typeof setInterval> | null = null
-const clearTicker = () => { if (ticker) { clearInterval(ticker); ticker = null } }
+const clearTicker = () => {
+ if (ticker) {
+ clearInterval(ticker); ticker = null 
+} 
+}
 
 watch(
     () => [liveElapsed.value, liveStatus.value] as const,
     ([secs, status]) => {
         clearTicker()
         liveSeconds.value = typeof secs === 'number' ? secs : null
+
         if (status === 'queued' || status === 'running') {
             ticker = setInterval(() => {
-                if (liveSeconds.value !== null) liveSeconds.value++
+                if (liveSeconds.value !== null) {
+liveSeconds.value++
+}
             }, 1000)
         }
     },
@@ -230,7 +265,9 @@ onMounted(() => {
     // montar, sin importar qué diga el prop general.
     pollProgress()
 })
-onUnmounted(() => { clearTicker(); clearPoll() })
+onUnmounted(() => {
+ clearTicker(); clearPoll() 
+})
 
 // ── Computed state ────────────────────────────────────────────────────
 const isQueued    = computed(() => liveStatus.value === 'queued')
@@ -248,9 +285,13 @@ const previousReportAt    = computed(() => props.period?.previous_radiography_at
 
 // Formato reloj "00:42" — el que pide la UX para "Tiempo transcurrido"/"Tiempo total".
 const elapsedClock = computed(() => {
-    if (liveSeconds.value === null) return null
+    if (liveSeconds.value === null) {
+return null
+}
+
     const mins = Math.floor(liveSeconds.value / 60)
     const secs = liveSeconds.value % 60
+
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
 })
 
@@ -304,12 +345,30 @@ const scopeLabel = computed(() => {
 // fuentes, incidencias, etc.), y esos blockers ya no incluyen "en proceso" (ver
 // displayBlockingReasons).
 const stage = computed(() => {
-    if (isQueued.value)    return 'processing'
-    if (isRunning.value)   return 'processing'
-    if (isFailed.value)    return 'failed'
-    if (isCancelled.value) return 'cancelled'
-    if (isDone.value)      return 'success'
-    if (props.canGenerate) return 'ready'
+    if (isQueued.value)    {
+return 'processing'
+}
+
+    if (isRunning.value)   {
+return 'processing'
+}
+
+    if (isFailed.value)    {
+return 'failed'
+}
+
+    if (isCancelled.value) {
+return 'cancelled'
+}
+
+    if (isDone.value)      {
+return 'success'
+}
+
+    if (props.canGenerate) {
+return 'ready'
+}
+
     return 'blocked'
 })
 

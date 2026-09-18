@@ -71,15 +71,30 @@ export function useAsignacionSucursalIndex(props: Props) {
     }
 
     const formatMatchType = (matchType?: AssignmentItem['match_type']) => {
-        if (matchType === 'exact') return 'Exacto'
-        if (matchType === 'normalized') return 'Normalizado'
-        if (matchType === 'manual') return 'Manual'
-        if (matchType === 'unmatched') return 'Sin match'
+        if (matchType === 'exact') {
+return 'Exacto'
+}
+
+        if (matchType === 'normalized') {
+return 'Normalizado'
+}
+
+        if (matchType === 'manual') {
+return 'Manual'
+}
+
+        if (matchType === 'unmatched') {
+return 'Sin match'
+}
+
         return 'Sin definir'
     }
 
     const formatConfidence = (confidence?: number | null) => {
-        if (confidence === null || confidence === undefined) return '—'
+        if (confidence === null || confidence === undefined) {
+return '—'
+}
+
         return `${Math.round(confidence * 100)}%`
     }
 

@@ -5,26 +5,25 @@
 // KPI | Evidencias + Check-in). Sin tabs, sin command-center, sin progress
 // ring gigante, sin Attention Center — esas ideas del rediseño anterior NO
 // están en la referencia.
-import { computed, onMounted, ref, watch } from 'vue'
 import { Link, router } from '@inertiajs/vue3'
 import {
     ArrowDown, ArrowLeft, ArrowUp, Bell, CalendarClock, Flag, Gauge,
     History, Target, TrendingDown, TrendingUp, Upload, X,
 } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
-import AppLayout from '@/layouts/AppLayout.vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
-import { Button } from '@/components/ui/button'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import SelectField from '@/components/forms/SelectField.vue'
-import OkrStatCard from '@/components/okr/OkrStatCard.vue'
-import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
-import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
-import OkrEditGoalDialog from '@/components/okr/OkrEditGoalDialog.vue'
-import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
 import OkrCheckInDialog from '@/components/okr/OkrCheckInDialog.vue'
+import OkrEditGoalDialog from '@/components/okr/OkrEditGoalDialog.vue'
 import OkrEvidenceUploadDialog from '@/components/okr/OkrEvidenceUploadDialog.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
+import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
+import OkrStatCard from '@/components/okr/OkrStatCard.vue'
+import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
+import { Button } from '@/components/ui/button'
+import AppLayout from '@/layouts/AppLayout.vue'
 import { formatByUnit, formatFriendlyDate, formatFriendlyDateTime, formatPp } from '@/lib/okrFormat'
 
 // Historial del OKR (cierre 17-sep-2026 ronda 5) — antes le pegaba " modificada" a
@@ -37,7 +36,10 @@ const FIELD_LABELS: Record<string, string> = {
     target_value: 'Meta',
 }
 function auditLogLabel(log: { action: string; field?: string | null }): string {
-    if (log.field && FIELD_LABELS[log.field]) return `${FIELD_LABELS[log.field]} modificada`
+    if (log.field && FIELD_LABELS[log.field]) {
+return `${FIELD_LABELS[log.field]} modificada`
+}
+
     switch (log.action) {
         case 'created': return 'OKR creado'
         case 'activated': return 'OKR activado'
@@ -57,6 +59,7 @@ function auditLogLabel(log: { action: string; field?: string | null }): string {
 // granularidad que no existe.
 function latestSourceQuality(kr: any): string | null {
     const snaps = kr.snapshots ?? []
+
     return snaps.length ? (snaps[snaps.length - 1]?.source_quality ?? null) : null
 }
 const SOURCE_QUALITY_LABELS: Record<string, string> = {
@@ -85,15 +88,25 @@ const props = defineProps<{
 }>()
 
 const statusLabel: Record<string, string> = { draft: 'Borrador', active: 'Activo', closed: 'Cerrado', cancelled: 'Cancelado' }
-function fmt(v: number | null, unit?: string) { return formatByUnit(v, unit) }
+function fmt(v: number | null, unit?: string) {
+ return formatByUnit(v, unit) 
+}
 
-function activate() { router.post(`/okr/${props.objective.id}/activate`) }
-function refresh() { router.post(`/okr/${props.objective.id}/refresh`) }
+function activate() {
+ router.post(`/okr/${props.objective.id}/activate`) 
+}
+function refresh() {
+ router.post(`/okr/${props.objective.id}/refresh`) 
+}
 function destroyObjective() {
     Swal.fire({
         icon: 'warning', title: '¿Eliminar este OKR?', text: 'Se cancelará y quedará fuera del tablero activo. El histórico se conserva.',
         showCancelButton: true, confirmButtonText: 'Sí, eliminar', cancelButtonText: 'Cancelar', confirmButtonColor: '#e11d48',
-    }).then((r) => { if (r.isConfirmed) router.delete(`/okr/${props.objective.id}`) })
+    }).then((r) => {
+ if (r.isConfirmed) {
+router.delete(`/okr/${props.objective.id}`)
+} 
+})
 }
 
 // ── Filtros de Seguimiento (docs/imagenesOKR/9.png) — cambiar de OKR sin volver al Dashboard. ──
@@ -114,32 +127,67 @@ let objectivesSearchTimer: ReturnType<typeof setTimeout> | null = null
 
 async function loadEmployees() {
     const params = new URLSearchParams()
-    if (filterBranchId.value) params.set('branch_id', String(filterBranchId.value))
+
+    if (filterBranchId.value) {
+params.set('branch_id', String(filterBranchId.value))
+}
+
     const myVersion = ++employeesVersion
     const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-    if (myVersion !== employeesVersion) return
+
+    if (myVersion !== employeesVersion) {
+return
+}
+
     employeeOptions.value = res.ok ? (await res.json()).employees ?? [] : []
 }
 async function loadObjectives() {
     const params = new URLSearchParams()
-    if (filterBranchId.value) params.set('branch_id', String(filterBranchId.value))
-    if (filterEmployeeId.value) params.set('employee_id', String(filterEmployeeId.value))
-    if (filterPeriodId.value) params.set('period_id', filterPeriodId.value)
-    if (filterSearch.value) params.set('search', filterSearch.value)
+
+    if (filterBranchId.value) {
+params.set('branch_id', String(filterBranchId.value))
+}
+
+    if (filterEmployeeId.value) {
+params.set('employee_id', String(filterEmployeeId.value))
+}
+
+    if (filterPeriodId.value) {
+params.set('period_id', filterPeriodId.value)
+}
+
+    if (filterSearch.value) {
+params.set('search', filterSearch.value)
+}
+
     const myVersion = ++objectivesVersion
     const res = await fetch(`/okr/objectives-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-    if (myVersion !== objectivesVersion) return
+
+    if (myVersion !== objectivesVersion) {
+return
+}
+
     objectiveOptions.value = res.ok ? (await res.json()).objectives ?? [] : []
 }
 onMounted(loadEmployees)
-watch(filterBranchId, () => { filterEmployeeId.value = null; loadEmployees(); loadObjectives() })
+watch(filterBranchId, () => {
+ filterEmployeeId.value = null; loadEmployees(); loadObjectives() 
+})
 watch([filterEmployeeId, filterPeriodId], loadObjectives)
 function onObjectiveSearch(term: string) {
     filterSearch.value = term
-    if (objectivesSearchTimer) clearTimeout(objectivesSearchTimer)
+
+    if (objectivesSearchTimer) {
+clearTimeout(objectivesSearchTimer)
+}
+
     objectivesSearchTimer = setTimeout(loadObjectives, 250)
 }
-function goToObjective(id: number | string | null) { if (id && id !== props.objective.id) router.get(`/okr/${id}`) }
+function goToObjective(id: number | string | null) {
+ if (id && id !== props.objective.id) {
+router.get(`/okr/${id}`)
+} 
+}
 function clearTrackingFilters() {
     filterBranchId.value = null; filterEmployeeId.value = null; filterPeriodId.value = ''; filterSearch.value = ''
     loadEmployees(); loadObjectives()
@@ -147,17 +195,21 @@ function clearTrackingFilters() {
 
 const kpiSearch = ref('')
 const filteredKeyResults = computed(() => {
-    if (!kpiSearch.value.trim()) return props.keyResults
+    if (!kpiSearch.value.trim()) {
+return props.keyResults
+}
+
     const term = kpiSearch.value.toLowerCase()
+
     return props.keyResults.filter((kr) => kr.kpi.name.toLowerCase().includes(term) || kr.description.toLowerCase().includes(term))
 })
-
-const weeksLeft = computed(() => Math.max(0, (props.objective.duration_weeks ?? 0) - (props.objective.current_week ?? 0)))
 
 // ── Editar meta / redistribuir pesos ──
 const editGoalOpen = ref(false)
 const editingKr = ref<any | null>(null)
-function openEditGoal(kr: any) { editingKr.value = kr; editGoalOpen.value = true }
+function openEditGoal(kr: any) {
+ editingKr.value = kr; editGoalOpen.value = true 
+}
 const weightsOpen = ref(false)
 
 // ── Check-in / Evidencia (Dialogs) ──

@@ -5,19 +5,19 @@
 // inferior 67/33 (Objetivos y Key Results | Cumplimiento general + Riesgo y
 // proyección). Sin Attention Center, sin sparklines, sin selector de vistas,
 // sin tabs — esas ideas del rediseño anterior NO están en la referencia.
-import { computed, reactive, ref } from 'vue'
 import { Link, router } from '@inertiajs/vue3'
 import { AlertTriangle, Building2, Gauge, History, Target, UserPlus, Users, XCircle } from 'lucide-vue-next'
-import AppLayout from '@/layouts/AppLayout.vue'
+import { computed, reactive, ref } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
-import { Button } from '@/components/ui/button'
+import OkrComplianceDonut from '@/components/okr/OkrComplianceDonut.vue'
 import OkrFilters from '@/components/okr/OkrFilters.vue'
+import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
+import OkrRiskProjectionPanel from '@/components/okr/OkrRiskProjectionPanel.vue'
 import OkrStatCard from '@/components/okr/OkrStatCard.vue'
 import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
-import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
-import OkrComplianceDonut from '@/components/okr/OkrComplianceDonut.vue'
-import OkrRiskProjectionPanel from '@/components/okr/OkrRiskProjectionPanel.vue'
 import OkrAssignDialog from '@/components/okr/wizard/OkrAssignDialog.vue'
+import { Button } from '@/components/ui/button'
+import AppLayout from '@/layouts/AppLayout.vue'
 import { formatFriendlyDate } from '@/lib/okrFormat'
 
 defineOptions({ layout: AppLayout })
@@ -65,7 +65,6 @@ function clearFilters() {
     router.get('/okr', {}, { replace: true })
 }
 
-const statusLabel: Record<string, string> = { draft: 'Borrador', active: 'Activo', closed: 'Cerrado', cancelled: 'Cancelado' }
 const hasAnyObjective = computed(() => props.has_any_objectives)
 
 // Orden por severidad de semáforo — determinista (compara health_status de
@@ -76,9 +75,17 @@ function healthPriority(status: string | null): number {
 }
 const sortedObjectives = computed(() => [...props.objectives].sort((a, b) => {
     const byHealth = healthPriority(a.health_status) - healthPriority(b.health_status)
-    if (byHealth !== 0) return byHealth
+
+    if (byHealth !== 0) {
+return byHealth
+}
+
     const byEndDate = (a.end_date ?? '9999-12-31').localeCompare(b.end_date ?? '9999-12-31')
-    if (byEndDate !== 0) return byEndDate
+
+    if (byEndDate !== 0) {
+return byEndDate
+}
+
     return b.id - a.id
 }))
 

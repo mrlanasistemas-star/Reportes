@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
 import { Head, Link } from '@inertiajs/vue3'
 import {
     ArrowDownRight,
@@ -16,8 +15,9 @@ import {
     Users,
     Wallet,
 } from 'lucide-vue-next'
-import ChartCard from '@/components/radiography/ChartCard.vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import SelectField from '@/components/forms/SelectField.vue'
+import ChartCard from '@/components/radiography/ChartCard.vue'
 import { hideRouteLoading, showRouteLoading } from '@/lib/routeLoadingOverlay'
 import { dashboard } from '@/routes'
 
@@ -81,9 +81,14 @@ const loading = ref(false)
 async function loadTrend() {
     trendLoading.value = true
     trendError.value = false
+
     try {
         const resp = await fetch('/dashboard-trend', { cache: 'no-store', headers: { Accept: 'application/json' } })
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+
+        if (!resp.ok) {
+throw new Error(`HTTP ${resp.status}`)
+}
+
         const json = await resp.json()
         trend.value = json.trend ?? []
     } catch {
@@ -94,7 +99,12 @@ async function loadTrend() {
 }
 
 onMounted(() => {
-    if (!props.hasData) { trendLoading.value = false; return }
+    if (!props.hasData) {
+ trendLoading.value = false;
+
+ return 
+}
+
     loadTrend()
 })
 
@@ -111,6 +121,7 @@ async function loadPeriod(periodId: number) {
     controller = myController
     loading.value = true
     showRouteLoading()
+
     try {
         const resp = await fetch(`/dashboard-data?period_id=${periodId}`, {
             signal: myController.signal,
@@ -118,15 +129,24 @@ async function loadPeriod(periodId: number) {
             headers: { Accept: 'application/json' },
         })
         const json = await resp.json()
-        if (myController.signal.aborted) return
+
+        if (myController.signal.aborted) {
+return
+}
+
         if (json.hasData) {
             kpis.value = json.kpis
             charts.value = json.charts
         }
     } catch (e: unknown) {
-        if ((e as { name?: string })?.name !== 'AbortError') throw e
+        if ((e as { name?: string })?.name !== 'AbortError') {
+throw e
+}
     } finally {
-        if (controller === myController) loading.value = false
+        if (controller === myController) {
+loading.value = false
+}
+
         hideRouteLoading()
     }
 }
@@ -134,15 +154,22 @@ async function loadPeriod(periodId: number) {
 const periodOptions = computed(() => (props.periods ?? []).map((p) => ({ value: p.id, label: p.label })))
 
 watch(selectedPeriodId, (id) => {
-    if (!id) return
+    if (!id) {
+return
+}
+
     loadPeriod(Number(id))
 })
 
 const money = (v: number) => '$' + Number(v || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })
 
 const kpiCards = computed(() => {
-    if (!kpis.value) return []
+    if (!kpis.value) {
+return []
+}
+
     const k = kpis.value
+
     return [
         { label: 'EBITDA', value: money(k.ebitda), icon: TrendingUp, accent: 'text-emerald-600 dark:text-emerald-300', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
         { label: 'Margen EBITDA', value: `${k.margen_ebitda}%`, icon: Target, accent: 'text-indigo-600 dark:text-indigo-300', bg: 'bg-indigo-50 dark:bg-indigo-500/10' },

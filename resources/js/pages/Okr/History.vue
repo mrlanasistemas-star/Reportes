@@ -1,14 +1,14 @@
 <script setup lang="ts">
 // Módulo OKR — Histórico de OKR cerrados (rediseño 08-sep-2026). Ancho
 // completo del contenedor, igual que el resto del módulo — nunca max-w-6xl.
-import { onMounted, reactive, ref, watch } from 'vue'
 import { Link, router } from '@inertiajs/vue3'
 import { ArrowLeft, History as HistoryIcon } from 'lucide-vue-next'
-import AppLayout from '@/layouts/AppLayout.vue'
+import { onMounted, ref, watch } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
-import SelectField from '@/components/forms/SelectField.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
+import SelectField from '@/components/forms/SelectField.vue'
 import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
+import AppLayout from '@/layouts/AppLayout.vue'
 import { formatFriendlyDate } from '@/lib/okrFormat'
 
 defineOptions({ layout: AppLayout })
@@ -36,13 +36,23 @@ let employeesVersion = 0
 async function loadEmployees() {
     const myVersion = ++employeesVersion
     const res = await fetch(`/okr/employees-lookup${branchId.value ? `?branch_id=${branchId.value}` : ''}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-    if (myVersion !== employeesVersion) return
+
+    if (myVersion !== employeesVersion) {
+return
+}
+
     const data = await res.json()
-    if (myVersion !== employeesVersion) return
+
+    if (myVersion !== employeesVersion) {
+return
+}
+
     employeeOptions.value = data.employees ?? []
 }
 onMounted(loadEmployees)
-watch(branchId, () => { employeeId.value = ''; loadEmployees() })
+watch(branchId, () => {
+ employeeId.value = ''; loadEmployees() 
+})
 </script>
 
 <template>
@@ -106,8 +116,9 @@ watch(branchId, () => { employeeId.value = ''; loadEmployees() })
                     :href="link.url ?? '#'"
                     class="rounded-lg px-3 py-1.5 text-xs font-semibold transition"
                     :class="[link.active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted', !link.url ? 'pointer-events-none opacity-40' : '']"
-                    v-html="link.label"
-                />
+                >
+                    <span v-html="link.label" />
+                </Link>
             </div>
         </div>
     </div>

@@ -20,8 +20,15 @@ const barClass = computed(() => {
     if (props.tone !== 'auto') {
         return { success: 'bg-emerald-500', warning: 'bg-amber-500', danger: 'bg-rose-500' }[props.tone]
     }
-    if (props.value >= props.max) return 'bg-emerald-500'
-    if (props.value >= props.max * 0.6) return 'bg-primary'
+
+    if (props.value >= props.max) {
+return 'bg-emerald-500'
+}
+
+    if (props.value >= props.max * 0.6) {
+return 'bg-primary'
+}
+
     return 'bg-amber-500'
 })
 </script>

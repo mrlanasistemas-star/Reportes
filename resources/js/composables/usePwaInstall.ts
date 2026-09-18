@@ -33,7 +33,10 @@ if (typeof window !== 'undefined') {
 
 export function usePwaInstall() {
     async function promptInstall() {
-        if (!deferredPrompt.value) return;
+        if (!deferredPrompt.value) {
+return;
+}
+
         await deferredPrompt.value.prompt();
         await deferredPrompt.value.userChoice;
         deferredPrompt.value = null;

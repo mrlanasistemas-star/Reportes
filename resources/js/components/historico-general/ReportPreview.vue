@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
 import { ExternalLink } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
 import EmptyState from './EmptyState.vue'
 import SectionHeader from './SectionHeader.vue'
 
@@ -14,7 +14,11 @@ const props = defineProps<{ period: any; preview: any | null; config: any; ident
 // identidad exacta) — se prefiere cuando coincide con la configuración actual.
 const identityMatches = computed(() => {
     const s = props.identityState
-    if (!s) return false
+
+    if (!s) {
+return false
+}
+
     return s.reportType === (props.config?.report_type ?? 'simple')
         && s.scope === (props.config?.scope ?? 'general')
         && (s.branchId ?? null) === (props.config?.branch_id ?? null)
@@ -34,22 +38,44 @@ watch(
     async ([scope, branchId, employeeId, periodId, ready]) => {
         if (!ready || !periodId || (scope !== 'branch' && scope !== 'employee')) {
             filteredData.value = null
+
             return
         }
-        if (scope === 'branch' && !branchId) { filteredData.value = null; return }
-        if (scope === 'employee' && !employeeId) { filteredData.value = null; return }
+
+        if (scope === 'branch' && !branchId) {
+ filteredData.value = null;
+
+ return 
+}
+
+        if (scope === 'employee' && !employeeId) {
+ filteredData.value = null;
+
+ return 
+}
 
         filteredLoading.value = true
+
         try {
             const p = new URLSearchParams({ scope: String(scope) })
-            if (scope === 'branch')   p.set('branch_id',   String(branchId))
-            if (scope === 'employee') p.set('employee_id', String(employeeId))
+
+            if (scope === 'branch')   {
+p.set('branch_id',   String(branchId))
+}
+
+            if (scope === 'employee') {
+p.set('employee_id', String(employeeId))
+}
+
             const res = await fetch(`/reportes-mensuales/${periodId}/filtrado-datos?${p}`, {
                 headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             })
             filteredData.value = res.ok ? await res.json() : null
-        } catch { filteredData.value = null }
-        finally { filteredLoading.value = false }
+        } catch {
+ filteredData.value = null 
+} finally {
+ filteredLoading.value = false 
+}
     },
     { immediate: true },
 )
@@ -57,14 +83,22 @@ watch(
 // ── Labels ───────────────────────────────────────────────────────────────────
 const scopeLabel = computed(() => {
     const s = props.config?.scope
-    if (s === 'branch')   return filteredData.value?.label ? `Sucursal: ${filteredData.value.label}` : null
-    if (s === 'employee') return filteredData.value?.label ? `Gestor: ${filteredData.value.label}`   : null
+
+    if (s === 'branch')   {
+return filteredData.value?.label ? `Sucursal: ${filteredData.value.label}` : null
+}
+
+    if (s === 'employee') {
+return filteredData.value?.label ? `Gestor: ${filteredData.value.label}`   : null
+}
+
     return null
 })
 
 // ── Metric cards ─────────────────────────────────────────────────────────────
 const metricCards = computed(() => {
     const d = filteredData.value?.data
+
     if (d) {
         const cards: { l: string; v: any }[] = [
             { l: 'Recuperación', v: money(d.recuperacion ?? 0) },
@@ -72,14 +106,32 @@ const metricCards = computed(() => {
             { l: 'Cartera',      v: money(d.cartera       ?? 0) },
             { l: 'Mora %',       v: (d.mora_pct ?? 0).toFixed(2) + '%' },
         ]
-        if (d.gastos      !== undefined) cards.push({ l: 'Gastos Op.',  v: money(d.gastos) })
-        if (d.nomina      !== undefined) cards.push({ l: 'Nómina',      v: money(d.nomina) })
-        if (d.operaciones !== undefined) cards.push({ l: 'Operaciones', v: d.operaciones })
-        if (d.pagos       !== undefined) cards.push({ l: 'Pagos',       v: money(d.pagos) })
-        if (d.neto        !== undefined) cards.push({ l: 'Neto nómina', v: money(d.neto) })
+
+        if (d.gastos      !== undefined) {
+cards.push({ l: 'Gastos Op.',  v: money(d.gastos) })
+}
+
+        if (d.nomina      !== undefined) {
+cards.push({ l: 'Nómina',      v: money(d.nomina) })
+}
+
+        if (d.operaciones !== undefined) {
+cards.push({ l: 'Operaciones', v: d.operaciones })
+}
+
+        if (d.pagos       !== undefined) {
+cards.push({ l: 'Pagos',       v: money(d.pagos) })
+}
+
+        if (d.neto        !== undefined) {
+cards.push({ l: 'Neto nómina', v: money(d.neto) })
+}
+
         return cards
     }
+
     const gm = props.period?.preview_summary?.global_metrics ?? props.preview?.metrics ?? {}
+
     return [
         { l: 'Empleados',      v: (gm.total_empleados ?? 0) },
         { l: 'Pagos',          v: money(gm.pagos_total ?? 0) },
@@ -94,13 +146,24 @@ const metricCards = computed(() => {
 
 // ── "Ver reporte completo" URL — preserva el filtro aplicado ─────────────────
 const previewUrl = computed(() => {
-    if (identityMatches.value && props.identityState.previewUrl) return props.identityState.previewUrl
-    if (!props.period?.radiography_ready) return null
+    if (identityMatches.value && props.identityState.previewUrl) {
+return props.identityState.previewUrl
+}
+
+    if (!props.period?.radiography_ready) {
+return null
+}
+
     const base = `/reportes-mensuales/${props.period.id}/preview`
-    if (props.config?.scope === 'branch' && props.config?.branch_id)
-        return `${base}?scope=branch&branch_id=${props.config.branch_id}`
-    if (props.config?.scope === 'employee' && props.config?.employee_id)
-        return `${base}?scope=employee&employee_id=${props.config.employee_id}`
+
+    if (props.config?.scope === 'branch' && props.config?.branch_id) {
+return `${base}?scope=branch&branch_id=${props.config.branch_id}`
+}
+
+    if (props.config?.scope === 'employee' && props.config?.employee_id) {
+return `${base}?scope=employee&employee_id=${props.config.employee_id}`
+}
+
     return base
 })
 </script>

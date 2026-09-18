@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
 import { PenSquare, Search, X } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
+import { computed, ref, watch } from 'vue'
 import SelectField from '@/components/forms/SelectField.vue'
 import type { Branch } from '@/types/asignaciones'
 
@@ -27,7 +27,10 @@ const notes = ref('')
 watch(
     () => props.open,
     (isOpen) => {
-        if (!isOpen) return
+        if (!isOpen) {
+return
+}
+
         branchQuery.value = ''
         branchId.value = props.initialBranchId ?? ''
         notes.value = props.initialNotes ?? ''
@@ -36,7 +39,11 @@ watch(
 
 const modalBranches = computed(() => {
     const q = branchQuery.value.trim().toLowerCase()
-    if (!q) return props.branches
+
+    if (!q) {
+return props.branches
+}
+
     return props.branches.filter((b) => b.name.toLowerCase().includes(q))
 })
 
@@ -45,8 +52,10 @@ const modalBranchOptions = computed(() => modalBranches.value.map((b) => ({ valu
 async function save() {
     if (!branchId.value) {
         await Swal.fire({ title: 'Selecciona una sucursal', icon: 'warning', confirmButtonText: 'Entendido' })
+
         return
     }
+
     emit('save', { branchId: branchId.value, notes: notes.value })
 }
 </script>

@@ -91,7 +91,11 @@ export function usePeriodosIndex(props: Props) {
     const filteredWeeksForMonth = computed(() => {
         const year  = Number(monthlyForm.year)
         const month = Number(monthlyForm.month)
-        if (!year || !month) return []
+
+        if (!year || !month) {
+return []
+}
+
         // Muestra todas las semanas sin asignar del año (no filtrar por mes calendario)
         // para que semanas sobrantes del mes anterior estén disponibles
         return [...(props.availableWeeks ?? [])]
@@ -145,6 +149,7 @@ export function usePeriodosIndex(props: Props) {
 
         if (type === 'quarterly') {
             const quarter = Math.ceil(month / 3)
+
             return `Trimestre ${quarter} de ${year}`
         }
 
@@ -194,6 +199,7 @@ export function usePeriodosIndex(props: Props) {
                 icon: 'warning',
                 confirmButtonText: 'Entendido',
             })
+
             return
         }
 
@@ -204,6 +210,7 @@ export function usePeriodosIndex(props: Props) {
                 icon: 'warning',
                 confirmButtonText: 'Entendido',
             })
+
             return
         }
 
@@ -216,7 +223,9 @@ export function usePeriodosIndex(props: Props) {
             cancelButtonText: 'Cancelar',
         })
 
-        if (!result.isConfirmed) return
+        if (!result.isConfirmed) {
+return
+}
 
         monthlyForm.post('/periodos', {
             preserveScroll: true,
@@ -266,7 +275,9 @@ export function usePeriodosIndex(props: Props) {
             confirmButtonColor: '#dc2626',
         })
 
-        if (!result.isConfirmed) return
+        if (!result.isConfirmed) {
+return
+}
 
         router.delete(`/periodos/${period.id}`, {
             preserveScroll: true,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import VueApexCharts from 'vue3-apexcharts'
+import AsyncApexChart from '@/components/charts/AsyncApexChart.vue'
 import { useAppearance } from '@/composables/useAppearance'
 
 const props = defineProps<{
@@ -14,14 +14,22 @@ const props = defineProps<{
 }>()
 
 const isEmpty = computed(() => {
-    if (!props.series || props.series.length === 0) return true
+    if (!props.series || props.series.length === 0) {
+return true
+}
+
     const total = props.series.reduce((sum: number, s: any) => {
         // Donut/pie: series is numbers[] — each element IS the value
-        if (typeof s === 'number') return sum + Math.abs(s)
+        if (typeof s === 'number') {
+return sum + Math.abs(s)
+}
+
         // Bar/line: series is [{name, data: numbers[]}]
         const data = Array.isArray(s) ? s : (s?.data ?? [])
+
         return sum + (data as number[]).reduce((a: number, b: number) => a + Math.abs(Number(b) || 0), 0)
     }, 0)
+
     return total === 0
 })
 
@@ -72,6 +80,6 @@ const themedOptions = computed(() => {
         <div v-else-if="isEmpty" class="flex items-center justify-center text-center text-xs text-muted-foreground" :style="{ height: (height ?? 260) + 'px' }">
             Sin datos disponibles para este periodo.
         </div>
-        <VueApexCharts v-else :type="type ?? 'bar'" :height="height ?? 260" :options="themedOptions" :series="series" />
+        <AsyncApexChart v-else :type="type ?? 'bar'" :height="height ?? 260" :options="themedOptions" :series="series" />
     </div>
 </template>

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { FileSpreadsheet, FileText, ArrowLeft } from 'lucide-vue-next'
 import { Link } from '@inertiajs/vue3'
+import { FileSpreadsheet, FileText, ArrowLeft } from 'lucide-vue-next'
 
-const props = defineProps<{
+defineProps<{
     labelA: string
     labelB: string
     scopeLabel: string

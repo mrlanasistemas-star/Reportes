@@ -2,13 +2,13 @@
 // "Check-in semanal" — Dialog (docs/imagenesOKR/11.png). Conserva el fix de
 // resultados manuales (manual_results[]) — nunca muestra un input manual
 // para un KPI automático (ese valor viene solo de Reportería).
-import { reactive, watch } from 'vue'
 import { useForm } from '@inertiajs/vue3'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { reactive, watch } from 'vue'
+import DatePickerField from '@/components/forms/DatePickerField.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import TextareaField from '@/components/forms/TextareaField.vue'
-import DatePickerField from '@/components/forms/DatePickerField.vue'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { formatByUnit } from '@/lib/okrFormat'
 
 const props = defineProps<{
@@ -27,9 +27,13 @@ const form = useForm({
 const manualValues = reactive<Record<number, string>>({})
 
 watch(open, (isOpen) => {
-    if (!isOpen) return
+    if (!isOpen) {
+return
+}
+
     form.reset()
     form.clearErrors()
+
     for (const kr of props.keyResults.filter((k) => k.kpi.automation !== 'automatic')) {
         manualValues[kr.id] = ''
     }
@@ -41,7 +45,9 @@ function submit() {
         .map((kr) => ({ key_result_id: kr.id, value: Number(manualValues[kr.id]) }))
 
     form.post(`/okr/${props.objectiveId}/check-ins`, {
-        onSuccess: () => { open.value = false; emit('saved') },
+        onSuccess: () => {
+ open.value = false; emit('saved') 
+},
     })
 }
 </script>

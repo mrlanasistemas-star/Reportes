@@ -178,7 +178,9 @@ export function useHistoricoGeneralIndex(props: Props) {
     const filteredPeriods = computed(() => {
         const query = filters.value.query.trim().toLowerCase()
 
-        if (!query) return periodRows.value
+        if (!query) {
+return periodRows.value
+}
 
         return periodRows.value.filter((period) =>
             period.label.toLowerCase().includes(query) ||
@@ -205,7 +207,9 @@ export function useHistoricoGeneralIndex(props: Props) {
     const incompletePeriods = computed(() => totalPeriods.value - completePeriods.value)
 
     const currentProgress = computed(() => {
-        if (!selectedPeriodRow.value) return 0
+        if (!selectedPeriodRow.value) {
+return 0
+}
 
         return Math.round(
             (selectedPeriodRow.value.uploaded_sources_count /
@@ -214,7 +218,9 @@ export function useHistoricoGeneralIndex(props: Props) {
     })
 
     const isCurrentPeriodComplete = computed(() => {
-        if (!selectedPeriodRow.value) return false
+        if (!selectedPeriodRow.value) {
+return false
+}
 
         return (
             selectedPeriodRow.value.required_sources_count > 0 &&
@@ -223,17 +229,33 @@ export function useHistoricoGeneralIndex(props: Props) {
     })
 
     const canUploadCurrentPeriod = computed(() => {
-        if (!selectedPeriodRow.value) return false
-        if (!selectedPeriodRow.value.can_receive_uploads) return false
-        if (isCurrentPeriodComplete.value) return false
+        if (!selectedPeriodRow.value) {
+return false
+}
+
+        if (!selectedPeriodRow.value.can_receive_uploads) {
+return false
+}
+
+        if (isCurrentPeriodComplete.value) {
+return false
+}
 
         return true
     })
 
     const uploadDisabledReason = computed(() => {
-        if (!selectedPeriodRow.value) return 'Selecciona un periodo.'
-        if (!selectedPeriodRow.value.can_receive_uploads) return 'Este periodo se alimenta automáticamente desde semanas. Aquí no se suben archivos.'
-        if (isCurrentPeriodComplete.value) return 'Periodo completo'
+        if (!selectedPeriodRow.value) {
+return 'Selecciona un periodo.'
+}
+
+        if (!selectedPeriodRow.value.can_receive_uploads) {
+return 'Este periodo se alimenta automáticamente desde semanas. Aquí no se suben archivos.'
+}
+
+        if (isCurrentPeriodComplete.value) {
+return 'Periodo completo'
+}
 
         return ''
     })
@@ -244,7 +266,9 @@ export function useHistoricoGeneralIndex(props: Props) {
         const uploads = selectedPeriodRow.value?.uploads ?? []
         const query = quickFilter.value.trim().toLowerCase()
 
-        if (!query) return uploads
+        if (!query) {
+return uploads
+}
 
         return uploads.filter((upload) =>
             (upload.original_name ?? '').toLowerCase().includes(query) ||
@@ -316,9 +340,18 @@ export function useHistoricoGeneralIndex(props: Props) {
     })
 
     const formatUploadStatus = (status: UploadItem['status']) => {
-        if (status === 'processed') return 'Procesado'
-        if (status === 'failed') return 'Error'
-        if (status === 'processing') return 'Procesando'
+        if (status === 'processed') {
+return 'Procesado'
+}
+
+        if (status === 'failed') {
+return 'Error'
+}
+
+        if (status === 'processing') {
+return 'Procesando'
+}
+
         return 'Pendiente'
     }
 
@@ -339,11 +372,26 @@ export function useHistoricoGeneralIndex(props: Props) {
     }
 
     const currentStatusLabel = (period: PeriodRow) => {
-        if (period.is_derived) return 'Automático'
-        if (period.uploaded_sources_count === 0) return 'Sin carga'
-        if (period.failed_count > 0) return 'Con error'
-        if (period.pending_count > 0) return 'Procesando'
-        if (period.missing_sources_count > 0) return 'Incompleto'
+        if (period.is_derived) {
+return 'Automático'
+}
+
+        if (period.uploaded_sources_count === 0) {
+return 'Sin carga'
+}
+
+        if (period.failed_count > 0) {
+return 'Con error'
+}
+
+        if (period.pending_count > 0) {
+return 'Procesando'
+}
+
+        if (period.missing_sources_count > 0) {
+return 'Incompleto'
+}
+
         return 'Completo'
     }
 
@@ -372,11 +420,26 @@ export function useHistoricoGeneralIndex(props: Props) {
     }
 
     const currentStatusIcon = (period: PeriodRow): LucideIcon => {
-        if (period.is_derived) return CheckCircle2
-        if (period.uploaded_sources_count === 0) return FolderOpen
-        if (period.failed_count > 0) return ShieldAlert
-        if (period.pending_count > 0) return Clock3
-        if (period.missing_sources_count > 0) return AlertCircle
+        if (period.is_derived) {
+return CheckCircle2
+}
+
+        if (period.uploaded_sources_count === 0) {
+return FolderOpen
+}
+
+        if (period.failed_count > 0) {
+return ShieldAlert
+}
+
+        if (period.pending_count > 0) {
+return Clock3
+}
+
+        if (period.missing_sources_count > 0) {
+return AlertCircle
+}
+
         return CheckCircle2
     }
 
@@ -396,12 +459,18 @@ export function useHistoricoGeneralIndex(props: Props) {
     }
 
     const openFileDialog = () => {
-        if (!canUploadCurrentPeriod.value || form.processing) return
+        if (!canUploadCurrentPeriod.value || form.processing) {
+return
+}
+
         fileInputRef.value?.click()
     }
 
     const assignFile = (file: File | null) => {
-        if (!file) return
+        if (!file) {
+return
+}
+
         form.file = file
     }
 
@@ -411,7 +480,10 @@ export function useHistoricoGeneralIndex(props: Props) {
     }
 
     const onDragEnter = () => {
-        if (!canUploadCurrentPeriod.value || form.processing) return
+        if (!canUploadCurrentPeriod.value || form.processing) {
+return
+}
+
         dragActive.value = true
     }
 
@@ -420,26 +492,36 @@ export function useHistoricoGeneralIndex(props: Props) {
     }
 
     const onDragOver = () => {
-        if (!canUploadCurrentPeriod.value || form.processing) return
+        if (!canUploadCurrentPeriod.value || form.processing) {
+return
+}
+
         dragActive.value = true
     }
 
     const onDrop = (event: DragEvent) => {
         dragActive.value = false
 
-        if (!canUploadCurrentPeriod.value || form.processing) return
+        if (!canUploadCurrentPeriod.value || form.processing) {
+return
+}
 
         const file = event.dataTransfer?.files?.[0] ?? null
         assignFile(file)
     }
 
     const submitLabel = computed(() => {
-        if (form.processing) return 'Subiendo...'
+        if (form.processing) {
+return 'Subiendo...'
+}
+
         return 'Subir archivo'
     })
 
     const submit = async () => {
-        if (!selectedPeriodRow.value) return
+        if (!selectedPeriodRow.value) {
+return
+}
 
         form.period_id = selectedPeriodRow.value.id
 
@@ -450,6 +532,7 @@ export function useHistoricoGeneralIndex(props: Props) {
                 icon: 'warning',
                 confirmButtonText: 'Entendido',
             })
+
             return
         }
 
@@ -506,7 +589,9 @@ export function useHistoricoGeneralIndex(props: Props) {
             reverseButtons: true,
         })
 
-        if (!result.isConfirmed) return
+        if (!result.isConfirmed) {
+return
+}
 
         deletingIds.value.push(uploadId)
 
@@ -556,7 +641,9 @@ export function useHistoricoGeneralIndex(props: Props) {
             reverseButtons: true,
         })
 
-        if (!result.isConfirmed) return
+        if (!result.isConfirmed) {
+return
+}
 
         Swal.fire({
             title: 'Analizando archivo...',

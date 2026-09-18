@@ -2,7 +2,7 @@
 // Badges semánticos del módulo (sección AS — semáforo, y estados de ciclo de
 // vida/resultado final). Colores suaves, nunca chillones; el texto siempre
 // acompaña al color (accesibilidad — nunca solo color).
-import { AlertTriangle, CheckCircle2, Circle, TrendingDown, TrendingUp, XCircle } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, Circle, TrendingDown, TrendingUp } from 'lucide-vue-next'
 import { computed } from 'vue'
 
 const props = defineProps<{
@@ -31,9 +31,18 @@ const finalMap: Record<string, { label: string; class: string }> = {
 }
 
 const resolved = computed(() => {
-    if (!props.value) return null
-    if (props.kind === 'lifecycle') return lifecycleMap[props.value] ?? null
-    if (props.kind === 'final') return finalMap[props.value] ?? null
+    if (!props.value) {
+return null
+}
+
+    if (props.kind === 'lifecycle') {
+return lifecycleMap[props.value] ?? null
+}
+
+    if (props.kind === 'final') {
+return finalMap[props.value] ?? null
+}
+
     return healthMap[props.value] ?? null
 })
 </script>

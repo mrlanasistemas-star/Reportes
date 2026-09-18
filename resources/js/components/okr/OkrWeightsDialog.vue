@@ -4,11 +4,11 @@
 // hacía IMPOSIBLE mover peso de un KR a otro (60/40 → 70/30) porque cada paso
 // intermedio, por sí solo, ya rompía el 100%. Aquí se editan TODOS juntos y
 // se guardan en una sola llamada — ver PUT /okr/{objective}/weights.
-import { reactive, watch } from 'vue'
 import { useForm } from '@inertiajs/vue3'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { reactive, watch } from 'vue'
 import OkrWeightSummary from '@/components/okr/OkrWeightSummary.vue'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 const props = defineProps<{ objectiveId: number; keyResults: any[] }>()
 const open = defineModel<boolean>('open', { default: false })
@@ -17,7 +17,10 @@ const rows = reactive<{ key_result_id: number; label: string; weight: string }[]
 const form = useForm({ weights: [] as { key_result_id: number; weight: number }[], reason: '' })
 
 watch(open, (isOpen) => {
-    if (!isOpen) return
+    if (!isOpen) {
+return
+}
+
     form.reset()
     form.clearErrors()
     rows.splice(0, rows.length, ...props.keyResults.map((kr) => ({ key_result_id: kr.id, label: kr.kpi.name, weight: String(kr.weight) })))
@@ -29,7 +32,9 @@ function total() {
 
 function submit() {
     form.weights = rows.map((r) => ({ key_result_id: r.key_result_id, weight: Number(r.weight) }))
-    form.put(`/okr/${props.objectiveId}/weights`, { onSuccess: () => { open.value = false } })
+    form.put(`/okr/${props.objectiveId}/weights`, { onSuccess: () => {
+ open.value = false 
+} })
 }
 </script>
 

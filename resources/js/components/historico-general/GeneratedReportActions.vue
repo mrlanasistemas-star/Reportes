@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { Download, ExternalLink, FileSpreadsheet, FileText } from 'lucide-vue-next'
+import { computed } from 'vue'
 import SectionHeader from './SectionHeader.vue'
 import StatusBadge from './StatusBadge.vue'
 
@@ -17,7 +17,11 @@ const props = defineProps<{ period: any; config?: any; identityState?: any }>()
 // aún) se cae al comportamiento anterior basado en period/config.
 const identityMatches = computed(() => {
     const s = props.identityState
-    if (!s) return false
+
+    if (!s) {
+return false
+}
+
     return s.reportType === (props.config?.report_type ?? 'simple')
         && s.scope === (props.config?.scope ?? 'general')
         && (s.branchId ?? null) === (props.config?.branch_id ?? null)
@@ -39,11 +43,24 @@ const isFiltered = computed(() =>
 )
 
 const filteredParams = computed(() => {
-    if (!isFiltered.value) return ''
+    if (!isFiltered.value) {
+return ''
+}
+
     const p = new URLSearchParams({ scope: props.config.scope ?? 'general', report_type: props.config.report_type ?? 'simple' })
-    if (props.config.scope === 'branch'   && props.config.branch_id)   p.set('branch_id',   String(props.config.branch_id))
-    if (props.config.scope === 'employee' && props.config.employee_id) p.set('employee_id', String(props.config.employee_id))
-    if (isComparative.value && props.config.compare_period_id) p.set('compare_period_id', String(props.config.compare_period_id))
+
+    if (props.config.scope === 'branch'   && props.config.branch_id)   {
+p.set('branch_id',   String(props.config.branch_id))
+}
+
+    if (props.config.scope === 'employee' && props.config.employee_id) {
+p.set('employee_id', String(props.config.employee_id))
+}
+
+    if (isComparative.value && props.config.compare_period_id) {
+p.set('compare_period_id', String(props.config.compare_period_id))
+}
+
     return '?' + p.toString()
 })
 
@@ -55,43 +72,95 @@ const filteredParams = computed(() => {
 const runId = computed(() => props.period?.radiography_run_id ?? null)
 
 const excelUrl = computed(() => {
-    if (identityMatches.value && props.identityState.excelUrl) return props.identityState.excelUrl
-    if (!props.period) return '#'
-    if (isFiltered.value && runId.value) return `/reportes-mensuales/runs/${runId.value}/excel`
+    if (identityMatches.value && props.identityState.excelUrl) {
+return props.identityState.excelUrl
+}
+
+    if (!props.period) {
+return '#'
+}
+
+    if (isFiltered.value && runId.value) {
+return `/reportes-mensuales/runs/${runId.value}/excel`
+}
+
     return isFiltered.value
         ? `/reportes-mensuales/${props.period.id}/export-filtrado.xlsx${filteredParams.value}`
         : `/reportes-mensuales/${props.period.id}/radiografia.xlsx`
 })
 
 const pdfUrl = computed(() => {
-    if (identityMatches.value && props.identityState.pdfUrl) return props.identityState.pdfUrl
-    if (!props.period) return '#'
-    if (isFiltered.value && runId.value) return `/reportes-mensuales/runs/${runId.value}/pdf`
+    if (identityMatches.value && props.identityState.pdfUrl) {
+return props.identityState.pdfUrl
+}
+
+    if (!props.period) {
+return '#'
+}
+
+    if (isFiltered.value && runId.value) {
+return `/reportes-mensuales/runs/${runId.value}/pdf`
+}
+
     return isFiltered.value
         ? `/reportes-mensuales/${props.period.id}/export-filtrado.pdf${filteredParams.value}`
         : `/reportes-mensuales/${props.period.id}/radiografia.pdf`
 })
 
 const previewUrl = computed(() => {
-    if (identityMatches.value) return props.identityState.previewUrl ?? null
-    if (!props.period?.radiography_ready) return null
-    if (isFiltered.value && runId.value) return `/reportes-mensuales/runs/${runId.value}/ver`
+    if (identityMatches.value) {
+return props.identityState.previewUrl ?? null
+}
+
+    if (!props.period?.radiography_ready) {
+return null
+}
+
+    if (isFiltered.value && runId.value) {
+return `/reportes-mensuales/runs/${runId.value}/ver`
+}
+
     const base = `/reportes-mensuales/${props.period.id}/preview`
-    if (props.config?.scope === 'branch'   && props.config.branch_id)   return `${base}?scope=branch&branch_id=${props.config.branch_id}`
-    if (props.config?.scope === 'employee' && props.config.employee_id) return `${base}?scope=employee&employee_id=${props.config.employee_id}`
+
+    if (props.config?.scope === 'branch'   && props.config.branch_id)   {
+return `${base}?scope=branch&branch_id=${props.config.branch_id}`
+}
+
+    if (props.config?.scope === 'employee' && props.config.employee_id) {
+return `${base}?scope=employee&employee_id=${props.config.employee_id}`
+}
+
     return base
 })
 
 const excelSubtitle = computed(() => {
-    if (isComparative.value)                return 'Comparativo — archivo distinto al reporte simple'
-    if (props.config?.scope === 'branch')   return 'Filtrado por sucursal · sin plantilla'
-    if (props.config?.scope === 'employee') return 'Filtrado por gestor · sin plantilla'
+    if (isComparative.value)                {
+return 'Comparativo — archivo distinto al reporte simple'
+}
+
+    if (props.config?.scope === 'branch')   {
+return 'Filtrado por sucursal · sin plantilla'
+}
+
+    if (props.config?.scope === 'employee') {
+return 'Filtrado por gestor · sin plantilla'
+}
+
     return 'Generado desde cero · sin plantilla'
 })
 const pdfSubtitle = computed(() => {
-    if (isComparative.value)                return 'Comparativo — archivo distinto al reporte simple'
-    if (props.config?.scope === 'branch')   return 'Diseño filtrado por sucursal'
-    if (props.config?.scope === 'employee') return 'Diseño filtrado por gestor'
+    if (isComparative.value)                {
+return 'Comparativo — archivo distinto al reporte simple'
+}
+
+    if (props.config?.scope === 'branch')   {
+return 'Diseño filtrado por sucursal'
+}
+
+    if (props.config?.scope === 'employee') {
+return 'Diseño filtrado por gestor'
+}
+
     return 'Diseño con tablas y métricas'
 })
 </script>

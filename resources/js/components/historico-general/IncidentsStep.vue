@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Copy, Info, MapPin, Search, Users, XCircle } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
 import EmptyState from './EmptyState.vue'
+import SearchableSelect from './SearchableSelect.vue'
 import SectionHeader from './SectionHeader.vue'
 import StatusBadge from './StatusBadge.vue'
-import SearchableSelect from './SearchableSelect.vue'
 
 const props = defineProps<{
     incidents: any[]
@@ -79,13 +79,25 @@ const confirmedKeys = ref<Set<string>>(new Set())
 
 /** Derive a stable key for a pair (prefer explicit pair_key; fall back to ID-based). */
 function getPairKey(pair: any): string {
-    if (pair.pair_key) return String(pair.pair_key)
-    if (pair.a_id && pair.b_id) return `${Math.min(pair.a_id, pair.b_id)}-${Math.max(pair.a_id, pair.b_id)}`
+    if (pair.pair_key) {
+return String(pair.pair_key)
+}
+
+    if (pair.a_id && pair.b_id) {
+return `${Math.min(pair.a_id, pair.b_id)}-${Math.max(pair.a_id, pair.b_id)}`
+}
+
     return `${pair.a}__${pair.b}`
 }
-function isPairLoading(pair: any)   { return loadingKeys.value.has(getPairKey(pair)) }
-function isPairHidden(pair: any)    { return hiddenKeys.value.has(getPairKey(pair)) }
-function isPairConfirmed(pair: any) { return confirmedKeys.value.has(getPairKey(pair)) }
+function isPairLoading(pair: any)   {
+ return loadingKeys.value.has(getPairKey(pair)) 
+}
+function isPairHidden(pair: any)    {
+ return hiddenKeys.value.has(getPairKey(pair)) 
+}
+function isPairConfirmed(pair: any) {
+ return confirmedKeys.value.has(getPairKey(pair)) 
+}
 
 // ── Called by parent (via template ref) to signal result ──────────────
 function onPairConfirmed(key: string) {
@@ -103,9 +115,16 @@ function clearPairLoading(key: string) {
 defineExpose({ onPairConfirmed, onPairRejected, clearPairLoading })
 
 function confirmDuplicatePair(pair: any) {
-    if (!pair.a_id || !pair.b_id) return
+    if (!pair.a_id || !pair.b_id) {
+return
+}
+
     const key = getPairKey(pair)
-    if (loadingKeys.value.has(key)) return
+
+    if (loadingKeys.value.has(key)) {
+return
+}
+
     loadingKeys.value = new Set([...loadingKeys.value, key])
     emit('confirm-coincidencia-from-duplicates', {
         a_id:     pair.a_id,
@@ -117,9 +136,16 @@ function confirmDuplicatePair(pair: any) {
 }
 
 function rejectDuplicatePair(pair: any) {
-    if (!pair.a_id || !pair.b_id) return
+    if (!pair.a_id || !pair.b_id) {
+return
+}
+
     const key = getPairKey(pair)
-    if (loadingKeys.value.has(key)) return
+
+    if (loadingKeys.value.has(key)) {
+return
+}
+
     loadingKeys.value = new Set([...loadingKeys.value, key])
     emit('discard-coincidencia', {
         a_id:     pair.a_id,
@@ -135,6 +161,7 @@ const filteredGeneric = computed(() => genericIncidents.value.filter((item) => {
     const matchesFilter = filter.value === 'all' || item.severity === filter.value
     const term = query.value.trim().toLowerCase()
     const matchesSearch = !term || [item.type, item.message, JSON.stringify(item.context ?? {})].join(' ').toLowerCase().includes(term)
+
     return matchesFilter && matchesSearch
 }))
 
@@ -170,7 +197,11 @@ function isSamePersonNoBranch(emp: any): boolean {
 
 function confirmMatch(emp: any) {
     const targetId = emp.best_match?.employee_id
-    if (!targetId) return
+
+    if (!targetId) {
+return
+}
+
     emit('confirm-match', { employee_id: emp.employee_id, target_employee_id: targetId, period_id: props.period?.id })
 }
 function rejectMatch(emp: any) {
@@ -179,20 +210,27 @@ function rejectMatch(emp: any) {
 
 // Reload personas list when parent signals a refresh (e.g., after a branch assignment)
 watch(() => props.reloadKey, (newVal, oldVal) => {
-    if (newVal !== oldVal && showPersonas.value) loadPersonas()
+    if (newVal !== oldVal && showPersonas.value) {
+loadPersonas()
+}
 })
 
 const personasNoData    = ref(false)
 const personasNoDataMsg = ref('')
 
 async function loadPersonas() {
-    if (!props.period?.id) return
+    if (!props.period?.id) {
+return
+}
+
     personasLoading.value = true
     personasNoData.value  = false
     personasNoDataMsg.value = ''
+
     try {
         const res  = await fetch(`/historico-general/${props.period.id}/personas-sin-sucursal`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         const data = await res.json()
+
         if (data.no_data) {
             personasNoData.value    = true
             personasNoDataMsg.value = data.message ?? 'Sin datos de nómina para este periodo.'
@@ -201,6 +239,7 @@ async function loadPersonas() {
             personasItems.value = data.items ?? []
             personasNoData.value = false
         }
+
         personaAction.value  = {}
         personaBranch.value  = {}
     } finally {
@@ -210,12 +249,19 @@ async function loadPersonas() {
 
 function togglePersonas() {
     showPersonas.value = !showPersonas.value
-    if (showPersonas.value && !personasItems.value.length) loadPersonas()
+
+    if (showPersonas.value && !personasItems.value.length) {
+loadPersonas()
+}
 }
 
 function asignarSucursalPersona(emp: any) {
     const branchId = personaBranch.value[empKey(emp)]
-    if (!branchId) return
+
+    if (!branchId) {
+return
+}
+
     emit('assign-branch', {
         employee_ids: emp.employee_ids ?? [emp.employee_id],
         employee_id:  emp.employee_id,

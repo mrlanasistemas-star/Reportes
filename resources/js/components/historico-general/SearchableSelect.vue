@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
 import { Check, ChevronDown, Search, X } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
 
 interface SelectItem {
     id: number
@@ -29,14 +29,21 @@ const selected = computed(() => props.items.find((item) => item.id === props.mod
 
 const filtered = computed(() => {
     const q = search.value.trim().toLowerCase()
-    if (!q) return props.items
+
+    if (!q) {
+return props.items
+}
+
     return props.items.filter(
         (item) => item.label.toLowerCase().includes(q) || (item.sublabel?.toLowerCase().includes(q) ?? false)
     )
 })
 
 function openDropdown() {
-    if (props.disabled || open.value) return
+    if (props.disabled || open.value) {
+return
+}
+
     open.value = true
     search.value = ''
     nextTick(() => searchRef.value?.focus())
@@ -48,9 +55,15 @@ function closeDropdown() {
 }
 
 function toggle() {
-    if (props.disabled) return
-    if (open.value) closeDropdown()
-    else openDropdown()
+    if (props.disabled) {
+return
+}
+
+    if (open.value) {
+closeDropdown()
+} else {
+openDropdown()
+}
 }
 
 function pick(id: number) {
@@ -77,8 +90,11 @@ function onOutsideClick(event: MouseEvent) {
 }
 
 watch(open, (val) => {
-    if (val) document.addEventListener('mousedown', onOutsideClick)
-    else document.removeEventListener('mousedown', onOutsideClick)
+    if (val) {
+document.addEventListener('mousedown', onOutsideClick)
+} else {
+document.removeEventListener('mousedown', onOutsideClick)
+}
 })
 </script>
 

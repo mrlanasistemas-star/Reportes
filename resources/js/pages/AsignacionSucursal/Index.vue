@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
 import { Head, router, useForm } from '@inertiajs/vue3'
 import {
     AlertTriangle,
@@ -11,12 +10,13 @@ import {
     UserRound,
     Wand2,
 } from 'lucide-vue-next'
+import { computed, reactive, ref, watch } from 'vue'
 
-import SelectField from '@/components/forms/SelectField.vue'
 import AssignBranchModal from '@/components/asignaciones/AssignBranchModal.vue'
 import BranchHeadcountPanel from '@/components/asignaciones/BranchHeadcountPanel.vue'
 import EmployeeAssignmentCard from '@/components/asignaciones/EmployeeAssignmentCard.vue'
 import PeriodMovementsPanel from '@/components/asignaciones/PeriodMovementsPanel.vue'
+import SelectField from '@/components/forms/SelectField.vue'
 import type { Assignment, BranchHeadcount, Branch, PeriodOption, RosterMovementItem } from '@/types/asignaciones'
 
 const props = withDefaults(
@@ -88,6 +88,7 @@ const filters = reactive({
 
 const branchFilterOptions = computed(() => {
     const names = new Set(props.assignments.map((a) => a.branch_name).filter((n): n is string => !!n))
+
     return [
         { value: '', label: 'Todas las sucursales' },
         ...Array.from(names).sort().map((n) => ({ value: n, label: n })),
@@ -99,11 +100,19 @@ const branchFilterOptions = computed(() => {
 // sucursal con 0 colaboradores este periodo también se ve, no desaparece.
 const branchDistribution = computed<BranchHeadcount[]>(() => {
     const counts = new Map<string, number>()
-    for (const b of props.branches) counts.set(b.name, 0)
+
+    for (const b of props.branches) {
+counts.set(b.name, 0)
+}
+
     for (const a of props.assignments) {
-        if (!a.branch_name) continue
+        if (!a.branch_name) {
+continue
+}
+
         counts.set(a.branch_name, (counts.get(a.branch_name) ?? 0) + 1)
     }
+
     return Array.from(counts.entries())
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count)
@@ -238,12 +247,17 @@ watch([() => filters.query, () => filters.status, () => filters.branch, () => pr
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredAssignments.value.length / PAGE_SIZE)))
 const paginatedAssignments = computed(() => {
     const start = (page.value - 1) * PAGE_SIZE
+
     return filteredAssignments.value.slice(start, start + PAGE_SIZE)
 })
 const pageRangeLabel = computed(() => {
-    if (!filteredAssignments.value.length) return ''
+    if (!filteredAssignments.value.length) {
+return ''
+}
+
     const start = (page.value - 1) * PAGE_SIZE + 1
     const end = Math.min(page.value * PAGE_SIZE, filteredAssignments.value.length)
+
     return `${start}–${end} de ${filteredAssignments.value.length}`
 })
 

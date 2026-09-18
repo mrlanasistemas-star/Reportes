@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import AutomaticPeriodInfo from './AutomaticPeriodInfo.vue'
-import SourceUploadCard from './SourceUploadCard.vue'
 import SectionHeader from './SectionHeader.vue'
+import SourceUploadCard from './SourceUploadCard.vue'
 
 const props = defineProps<{ sources: any[]; uploadsBySource: Record<string, any>; selectedPeriodId: number | null; period: any }>()
 const emit = defineEmits(['upload', 'delete'])
