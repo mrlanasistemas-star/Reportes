@@ -12,6 +12,7 @@ use App\Models\PeriodBranchSummary;
 use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
+use App\Services\PeriodDerivedDataCleaner;
 use App\Services\PeriodRadiographyService;
 use App\Services\RadiografiaExportService;
 use App\Services\Reporting\OperativeBranchService;
@@ -226,6 +227,78 @@ class MonthlyReportController extends Controller {
         }
 
         return ['mode' => 'all_each_employee', 'employee_id' => null, 'branch_id' => null, 'amount_per_employee' => round($amount, 2), 'notes' => $notes];
+    }
+
+    /**
+     * Registra en el Historial (PeriodRadiographyRun + PeriodRadiographyExport) un
+     * Excel/PDF generado por exportFilteredRadiography()/exportFilteredRadiographyPdf()
+     * — comparativo mes vs mes/gestor y export filtrado por sucursal/gestor descargaban
+     * el archivo correcto pero nunca quedaban registrados (bug real: "descarga y listo",
+     * nunca aparecían en Reportes mensuales → Histórico). Reutiliza la MISMA identidad
+     * (period_id/report_type/scope/branch_id/employee_id/comparison_period_id) que ya usa
+     * GenerateRadiographyJob, así que un comparativo generado aquí y otro generado por el
+     * job encolado son indistinguibles para index()/viewRun()/downloadRunExcel().
+     *
+     * Reutiliza el MISMO run para Excel y PDF de una misma identidad (búsqueda por
+     * identidad, no por id) — descargar primero el Excel y después el PDF (o viceversa,
+     * en pestañas o momentos distintos) termina en una sola fila de historial con ambos
+     * archivos, nunca dos filas parciales que se pisen entre sí.
+     */
+    private function persistFilteredRunExport(Period $period, array $config, string $fileType, string $path, PeriodDerivedDataCleaner $cleaner): void
+    {
+        $identity = [
+            'period_id'            => $period->id,
+            'report_type'          => $config['report_type'] ?? 'simple',
+            'scope'                => $config['scope'] ?? 'general',
+            'branch_id'            => !empty($config['branch_id']) ? (int) $config['branch_id'] : null,
+            'employee_id'          => !empty($config['employee_id']) ? (int) $config['employee_id'] : null,
+            'comparison_period_id' => !empty($config['compare_period_id']) ? (int) $config['compare_period_id'] : null,
+        ];
+
+        $run = PeriodRadiographyRun::query()->forIdentity($identity)->latest('id')->first()
+            ?? new PeriodRadiographyRun($identity);
+
+        $summary = PeriodSummary::query()
+            ->where('period_id', $period->id)
+            ->where('status', 'generated')
+            ->whereNull('invalidated_at')
+            ->latest('id')
+            ->first();
+
+        $run->fill(array_merge($identity, [
+            'status'             => 'success',
+            'period_summary_id'  => $summary?->id ?? $run->period_summary_id,
+            'started_at'         => $run->started_at ?? now(),
+            'finished_at'        => now(),
+            'log'                => 'Radiografía generada. Excel y PDF listos para descargar.',
+            'created_by'         => $run->created_by ?? auth()->id(),
+        ]));
+        $run->{"output_{$fileType}_path"} = $path;
+        $run->save();
+
+        PeriodRadiographyExport::query()->updateOrCreate(
+            ['run_id' => $run->id, 'file_type' => $fileType],
+            [
+                'period_summary_id' => $run->period_summary_id,
+                'export_path'       => $path,
+                'template_version'  => config('app.version'),
+                'metadata'          => ['period_id' => $period->id, 'period_label' => $period->label, 'config' => $config],
+                'exported_at'       => now(),
+                'exported_by'       => auth()->id(),
+            ],
+        );
+
+        try {
+            $cleaner->clearGeneratedReportsForIdentity($period, $identity, excludeRunId: $run->id);
+        } catch (\Throwable $cleanupException) {
+            Log::warning('MonthlyReportController: no se pudo limpiar versiones anteriores de esta identidad tras exportar (el archivo nuevo sigue siendo válido).', [
+                'period_id' => $period->id,
+                'run_id'    => $run->id,
+                'identity'  => $identity,
+                'exception' => get_class($cleanupException),
+                'message'   => $cleanupException->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -850,7 +923,7 @@ class MonthlyReportController extends Controller {
     }
 
 
-    public function exportFilteredRadiography(Period $period, Request $request, RadiografiaExportService $service)
+    public function exportFilteredRadiography(Period $period, Request $request, RadiografiaExportService $service, PeriodDerivedDataCleaner $cleaner)
     {
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
@@ -898,6 +971,8 @@ class MonthlyReportController extends Controller {
             return response('El archivo Excel generado está vacío o no existe.', 500);
         }
 
+        $this->persistFilteredRunExport($period, $config, 'excel', $path, $cleaner);
+
         return response()->download($path, basename($path), [
             'Content-Type'  => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
@@ -905,7 +980,7 @@ class MonthlyReportController extends Controller {
         ]);
     }
 
-    public function exportFilteredRadiographyPdf(Period $period, Request $request, RadiografiaExportService $service)
+    public function exportFilteredRadiographyPdf(Period $period, Request $request, RadiografiaExportService $service, PeriodDerivedDataCleaner $cleaner)
     {
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
@@ -936,6 +1011,8 @@ class MonthlyReportController extends Controller {
         if (!file_exists($path) || filesize($path) === 0) {
             return response('El archivo PDF generado está vacío o no existe.', 500);
         }
+
+        $this->persistFilteredRunExport($period, $config, 'pdf', $path, $cleaner);
 
         return response()->download($path, basename($path), [
             'Content-Type'  => 'application/pdf',
