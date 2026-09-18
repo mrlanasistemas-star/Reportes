@@ -1,11 +1,32 @@
 import { createInertiaApp, router } from '@inertiajs/vue3';
 import Swal from 'sweetalert2';
 import { initializeTheme } from '@/composables/useAppearance';
+// Solo por su efecto secundario: engancha el listener de "beforeinstallprompt"
+// lo antes posible (el navegador puede disparar el evento antes de que
+// cualquier componente que use InstallAppButton llegue a montarse).
+import '@/composables/usePwaInstall';
 import AppLayout from '@/layouts/AppLayout.vue';
 import AuthLayout from '@/layouts/AuthLayout.vue';
 import SettingsLayout from '@/layouts/settings/Layout.vue';
+import { attachInertiaRouteLoading } from '@/lib/routeLoadingOverlay';
 
 const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
+
+// Pantalla de carga global (cierre 17-sep-2026, ronda 6 — "tarda muchísimo entrar,
+// no sé si está haciendo algo") — cubre CUALQUIER navegación Inertia del sitio,
+// incluyendo login → dashboard, sin tocar cómo createInertiaApp resuelve/monta cada
+// página. Ver resources/js/lib/routeLoadingOverlay.ts.
+attachInertiaRouteLoading();
+
+// Service worker mínimo (sin caché) solo para que el navegador considere el
+// sitio "instalable" y dispare beforeinstallprompt — ver public/sw.js.
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {
+            // Silencioso: si falla, simplemente no se ofrece instalar la app.
+        });
+    });
+}
 
 // Cierre 17-sep-2026, ronda 4 — "tengo que recargar para que todo funcione". Causa
 // real más probable: una pestaña abierta por horas (SESSION_LIFETIME=120min) cuya
@@ -55,10 +76,12 @@ createInertiaApp({
     title: (title) => (title ? `${title} - ${appName}` : appName),
     layout: (name) => {
         switch (true) {
-            // auth/Login trae su propio layout de pantalla completa (mitad y mitad,
-            // cierre 17-sep-2026 ronda 4) — envolverlo en AuthLayout/AuthSimpleLayout
-            // agregaba un wrapper vacío de más (nunca se le pasa title/description).
+            // auth/Login y auth/ForgotPassword traen su propio layout de pantalla
+            // completa (mitad y mitad, cierre 17-sep-2026 ronda 4) — envolverlos en
+            // AuthLayout/AuthSimpleLayout agregaba un wrapper vacío de más (nunca se
+            // le pasa title/description).
             case name === 'auth/Login':
+            case name === 'auth/ForgotPassword':
                 return null;
             case name.startsWith('auth/'):
                 return AuthLayout;

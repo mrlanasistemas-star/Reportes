@@ -86,29 +86,29 @@ watch(open, (val) => {
     <div ref="containerRef" class="relative" @keydown="onKeydown">
         <button
             type="button"
-            class="flex h-11 w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm transition focus:outline-none focus:ring-4 focus:ring-indigo-100"
-            :class="disabled ? 'cursor-not-allowed opacity-50' : 'hover:border-indigo-200 hover:bg-indigo-50/30'"
+            class="flex h-11 w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm transition focus:outline-none focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-indigo-500/20"
+            :class="disabled ? 'cursor-not-allowed opacity-50' : 'hover:border-indigo-200 hover:bg-indigo-50/30 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10'"
             :disabled="disabled"
             @click.stop="toggle"
         >
-            <span v-if="selected" class="truncate font-semibold text-slate-900">{{ selected.label }}</span>
+            <span v-if="selected" class="truncate font-semibold text-slate-900 dark:text-slate-100">{{ selected.label }}</span>
             <span v-else class="truncate text-slate-400">{{ placeholder }}</span>
             <span class="flex shrink-0 items-center gap-1">
-                <button v-if="selected && !disabled" type="button" class="rounded-full p-0.5 text-slate-400 transition hover:bg-rose-100 hover:text-rose-500" @click="clear"><X class="size-3.5" /></button>
+                <button v-if="selected && !disabled" type="button" class="rounded-full p-0.5 text-slate-400 transition hover:bg-rose-100 hover:text-rose-500 dark:hover:bg-rose-500/15 dark:hover:text-rose-400" @click="clear"><X class="size-3.5" /></button>
                 <ChevronDown class="size-4 shrink-0 text-slate-400 transition" :class="open ? 'rotate-180' : ''" />
             </span>
         </button>
 
         <transition name="dropdown">
-            <div v-if="open" class="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/80">
-                <div class="border-b border-slate-100 p-2">
-                    <div class="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
+            <div v-if="open" class="absolute z-50 mt-2 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:shadow-black/40">
+                <div class="border-b border-slate-100 p-2 dark:border-slate-800">
+                    <div class="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800">
                         <Search class="size-4 shrink-0 text-slate-400" />
                         <input
                             ref="searchRef"
                             v-model="search"
                             type="text"
-                            class="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
+                            class="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400 dark:text-slate-100"
                             placeholder="Buscar..."
                             @keydown.esc.stop="closeDropdown"
                         />
@@ -119,14 +119,14 @@ watch(open, (val) => {
                     <li
                         v-for="item in filtered"
                         :key="item.id"
-                        class="flex cursor-pointer items-center gap-3 px-4 py-2.5 transition hover:bg-indigo-50"
-                        :class="modelValue === item.id ? 'bg-indigo-50/60' : ''"
+                        class="flex cursor-pointer items-center gap-3 px-4 py-2.5 transition hover:bg-indigo-50 dark:hover:bg-indigo-500/10"
+                        :class="modelValue === item.id ? 'bg-indigo-50/60 dark:bg-indigo-500/10' : ''"
                         @mousedown.prevent="pick(item.id)"
                     >
-                        <Check class="size-4 shrink-0 text-indigo-600 transition" :class="modelValue === item.id ? 'opacity-100' : 'opacity-0'" />
+                        <Check class="size-4 shrink-0 text-indigo-600 dark:text-indigo-400 transition" :class="modelValue === item.id ? 'opacity-100' : 'opacity-0'" />
                         <div class="min-w-0">
-                            <p class="truncate text-sm font-semibold text-slate-900">{{ item.label }}</p>
-                            <p v-if="item.sublabel" class="truncate text-xs text-slate-500">{{ item.sublabel }}</p>
+                            <p class="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{{ item.label }}</p>
+                            <p v-if="item.sublabel" class="truncate text-xs text-slate-500 dark:text-slate-400">{{ item.sublabel }}</p>
                         </div>
                     </li>
                 </ul>

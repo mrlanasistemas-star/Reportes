@@ -18,6 +18,7 @@ import {
 } from 'lucide-vue-next'
 import ChartCard from '@/components/radiography/ChartCard.vue'
 import SelectField from '@/components/forms/SelectField.vue'
+import { hideRouteLoading, showRouteLoading } from '@/lib/routeLoadingOverlay'
 import { dashboard } from '@/routes'
 
 defineOptions({
@@ -61,6 +62,7 @@ const kpis = ref<Kpis | undefined>(props.kpis)
 const charts = ref<ChartsData | null | undefined>(props.charts)
 const trend = ref<TrendPoint[]>([])
 const trendLoading = ref(true)
+const trendError = ref(false)
 const selectedPeriodId = ref<string | number>(props.kpis?.period_id ?? '')
 const loading = ref(false)
 
@@ -69,25 +71,46 @@ const loading = ref(false)
 // filtro — es la MISMA para cualquier periodo (siempre "los últimos N del
 // sistema"), así que se pide UNA sola vez aparte, cacheada 15 min en el backend,
 // sin bloquear que KPIs/gráficas del periodo se vean de inmediato.
-onMounted(async () => {
-    if (!props.hasData) { trendLoading.value = false; return }
+//
+// Ronda 6 — bug real reportado: con caché fría (recién generado un periodo nuevo)
+// el backend puede tardar/fallar (ver DashboardController::trend()); antes esto NO
+// se atrapaba, así que `trend` se quedaba en [] PARA SIEMPRE y ChartCard mostraba
+// "Sin datos disponibles" como si de verdad no hubiera nada — indistinguible de un
+// error real. Ahora se distingue "cargando" (spinner) de "sin datos" (loading prop
+// en ChartCard) y un fallo real ofrece reintentar en vez de fallar en silencio.
+async function loadTrend() {
+    trendLoading.value = true
+    trendError.value = false
     try {
         const resp = await fetch('/dashboard-trend', { cache: 'no-store', headers: { Accept: 'application/json' } })
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
         const json = await resp.json()
         trend.value = json.trend ?? []
+    } catch {
+        trendError.value = true
     } finally {
         trendLoading.value = false
     }
+}
+
+onMounted(() => {
+    if (!props.hasData) { trendLoading.value = false; return }
+    loadTrend()
 })
 
 // Selector de periodo EN VIVO — mismo patrón que Preview.vue::fetchScopedDataset()
 // (AbortController, nunca deja que una respuesta vieja pinte encima de una nueva).
+// Ronda 6: además del atenuado local (opacity-50 en KPIs/gráficas), dispara la
+// misma pantalla de carga de página completa que usa cualquier navegación Inertia
+// — el usuario pidió experiencia consistente entre "entrar al sistema" y "cambiar
+// de periodo", ninguna de las dos corre en segundo plano como generar un reporte.
 let controller: AbortController | null = null
 async function loadPeriod(periodId: number) {
     controller?.abort()
     const myController = new AbortController()
     controller = myController
     loading.value = true
+    showRouteLoading()
     try {
         const resp = await fetch(`/dashboard-data?period_id=${periodId}`, {
             signal: myController.signal,
@@ -104,6 +127,7 @@ async function loadPeriod(periodId: number) {
         if ((e as { name?: string })?.name !== 'AbortError') throw e
     } finally {
         if (controller === myController) loading.value = false
+        hideRouteLoading()
     }
 }
 
@@ -120,14 +144,20 @@ const kpiCards = computed(() => {
     if (!kpis.value) return []
     const k = kpis.value
     return [
-        { label: 'EBITDA', value: money(k.ebitda), icon: TrendingUp, accent: 'text-emerald-600', bg: 'bg-emerald-50' },
-        { label: 'Margen EBITDA', value: `${k.margen_ebitda}%`, icon: Target, accent: 'text-indigo-600', bg: 'bg-indigo-50' },
-        { label: 'OPEX', value: money(k.opex), icon: Wallet, accent: 'text-rose-600', bg: 'bg-rose-50' },
-        { label: 'Colocación', value: money(k.colocacion), icon: Banknote, accent: 'text-sky-600', bg: 'bg-sky-50' },
-        { label: 'Recuperación', value: money(k.recuperacion), icon: PiggyBank, accent: 'text-teal-600', bg: 'bg-teal-50' },
-        { label: 'Cartera', value: money(k.cartera), icon: Landmark, accent: 'text-violet-600', bg: 'bg-violet-50' },
-        { label: 'Mora', value: `${k.mora_pct}%`, icon: k.mora_pct > 15 ? ArrowUpRight : ArrowDownRight, accent: k.mora_pct > 15 ? 'text-rose-600' : 'text-emerald-600', bg: k.mora_pct > 15 ? 'bg-rose-50' : 'bg-emerald-50' },
-        { label: 'Colaboradores', value: String(k.colaboradores), icon: Users, accent: 'text-amber-600', bg: 'bg-amber-50' },
+        { label: 'EBITDA', value: money(k.ebitda), icon: TrendingUp, accent: 'text-emerald-600 dark:text-emerald-300', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+        { label: 'Margen EBITDA', value: `${k.margen_ebitda}%`, icon: Target, accent: 'text-indigo-600 dark:text-indigo-300', bg: 'bg-indigo-50 dark:bg-indigo-500/10' },
+        { label: 'OPEX', value: money(k.opex), icon: Wallet, accent: 'text-rose-600 dark:text-rose-300', bg: 'bg-rose-50 dark:bg-rose-500/10' },
+        { label: 'Colocación', value: money(k.colocacion), icon: Banknote, accent: 'text-sky-600 dark:text-sky-300', bg: 'bg-sky-50 dark:bg-sky-500/10' },
+        { label: 'Recuperación', value: money(k.recuperacion), icon: PiggyBank, accent: 'text-teal-600 dark:text-teal-300', bg: 'bg-teal-50 dark:bg-teal-500/10' },
+        { label: 'Cartera', value: money(k.cartera), icon: Landmark, accent: 'text-violet-600 dark:text-violet-300', bg: 'bg-violet-50 dark:bg-violet-500/10' },
+        {
+            label: 'Mora',
+            value: `${k.mora_pct}%`,
+            icon: k.mora_pct > 15 ? ArrowUpRight : ArrowDownRight,
+            accent: k.mora_pct > 15 ? 'text-rose-600 dark:text-rose-300' : 'text-emerald-600 dark:text-emerald-300',
+            bg: k.mora_pct > 15 ? 'bg-rose-50 dark:bg-rose-500/10' : 'bg-emerald-50 dark:bg-emerald-500/10',
+        },
+        { label: 'Colaboradores', value: String(k.colaboradores), icon: Users, accent: 'text-amber-600 dark:text-amber-300', bg: 'bg-amber-50 dark:bg-amber-500/10' },
     ]
 })
 
@@ -206,8 +236,8 @@ const quickLinks = [
                     <Building2 class="size-5 text-white" />
                 </div>
                 <div>
-                    <h1 class="text-xl font-black tracking-tight text-slate-950">Resumen ejecutivo</h1>
-                    <p class="text-xs text-slate-500">{{ kpis?.period_label ?? 'Sin datos' }}</p>
+                    <h1 class="text-xl font-black tracking-tight text-slate-950 dark:text-slate-50">Resumen ejecutivo</h1>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ kpis?.period_label ?? 'Sin datos' }}</p>
                 </div>
             </div>
 
@@ -216,9 +246,9 @@ const quickLinks = [
             </div>
         </section>
 
-        <div v-if="!hasData" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center">
-            <p class="text-sm font-semibold text-slate-500">Todavía no hay ninguna radiografía generada.</p>
-            <Link href="/historico-general" class="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100">
+        <div v-if="!hasData" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center dark:border-slate-700 dark:bg-card">
+            <p class="text-sm font-semibold text-slate-500 dark:text-slate-400">Todavía no hay ninguna radiografía generada.</p>
+            <Link href="/historico-general" class="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-300 dark:hover:bg-indigo-500/20">
                 Ir a Carga de archivos →
             </Link>
         </div>
@@ -229,13 +259,13 @@ const quickLinks = [
                 <div
                     v-for="card in kpiCards"
                     :key="card.label"
-                    class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                    class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-card dark:hover:shadow-black/20"
                 >
                     <div :class="['flex size-8 items-center justify-center rounded-xl', card.bg]">
                         <component :is="card.icon" :class="['size-4', card.accent]" />
                     </div>
-                    <p class="mt-2 text-[11px] font-bold tracking-wide text-slate-500 uppercase">{{ card.label }}</p>
-                    <p class="mt-0.5 text-lg font-black tabular-nums text-slate-950">{{ card.value }}</p>
+                    <p class="mt-2 text-[11px] font-bold tracking-wide text-slate-500 uppercase dark:text-slate-400">{{ card.label }}</p>
+                    <p class="mt-0.5 text-lg font-black tabular-nums text-slate-950 dark:text-slate-50">{{ card.value }}</p>
                 </div>
             </section>
 
@@ -246,15 +276,23 @@ const quickLinks = [
                      siempre reaplica funciones (formatter) al mezclar opciones nuevas
                      sobre una instancia existente; remontar es la forma confiable de que
                      el formato de moneda del eje Y nunca se pierda tras el filtro en vivo. -->
-                <ChartCard
-                    :key="`trend-${kpis?.period_id}`"
-                    title="EBITDA vs OPEX"
-                    subtitle="Tendencia mensual"
-                    type="area"
-                    :series="trendSeries"
-                    :options="trendOptions"
-                    class="lg:col-span-2"
-                />
+                <div class="relative lg:col-span-2">
+                    <ChartCard
+                        :key="`trend-${kpis?.period_id}`"
+                        title="EBITDA vs OPEX"
+                        subtitle="Tendencia mensual"
+                        type="area"
+                        :series="trendSeries"
+                        :options="trendOptions"
+                        :loading="trendLoading"
+                    />
+                    <div v-if="trendError && !trendLoading" class="absolute top-4 right-5 flex items-center gap-2 text-[11px] font-semibold text-rose-500">
+                        No se pudo cargar la tendencia.
+                        <button type="button" class="rounded-full bg-rose-50 px-2.5 py-1 text-rose-600 transition duration-200 hover:bg-rose-100" @click="loadTrend">
+                            Reintentar
+                        </button>
+                    </div>
+                </div>
                 <ChartCard :key="`categoria-${kpis?.period_id}`" title="Categoría EBITDA por sucursal" subtitle="Sucursales según su desempeño" type="donut" :series="categoriaSeries" :options="categoriaOptions" />
                 <ChartCard :key="`mora-${kpis?.period_id}`" title="Cartera vencida por antigüedad" subtitle="Mora por bucket" type="bar" :series="moraSeries" :options="moraOptions" />
                 <ChartCard
@@ -276,12 +314,12 @@ const quickLinks = [
                 v-for="link in quickLinks"
                 :key="link.href"
                 :href="link.href"
-                class="group flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
+                class="group flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md dark:border-slate-800 dark:bg-card dark:hover:border-slate-700 dark:hover:shadow-black/20"
             >
                 <div :class="['flex size-7 shrink-0 items-center justify-center rounded-lg', link.color]">
                     <component :is="link.icon" class="size-3.5 text-white" />
                 </div>
-                <span class="text-xs font-bold text-slate-700 transition-colors group-hover:text-slate-950">{{ link.label }}</span>
+                <span class="text-xs font-bold text-slate-700 transition-colors group-hover:text-slate-950 dark:text-slate-300 dark:group-hover:text-slate-50">{{ link.label }}</span>
             </Link>
         </section>
     </div>

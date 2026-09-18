@@ -53,27 +53,27 @@ const statusLabel = (period: any): string => {
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-5 shadow-xl shadow-slate-200/70 sm:p-6">
+    <section class="rounded-[2rem] border border-white/70 bg-white p-5 shadow-xl shadow-slate-200/70 sm:p-6 dark:border-white/10 dark:bg-card dark:shadow-black/20">
         <div class="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
             <div>
                 <div class="flex items-center gap-3">
-                    <div class="flex size-11 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-200">
+                    <div class="flex size-11 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-indigo-950/40">
                         <CalendarDays class="size-5" />
                     </div>
                     <div>
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-indigo-600">Periodo operativo</p>
-                        <h2 class="text-xl font-black text-slate-950">Selecciona el periodo</h2>
+                        <p class="text-xs font-black uppercase tracking-[0.22em] text-indigo-600 dark:text-indigo-400">Periodo operativo</p>
+                        <h2 class="text-xl font-black text-slate-950 dark:text-slate-50">Selecciona el periodo</h2>
                     </div>
                 </div>
-                <p class="mt-4 text-sm leading-6 text-slate-600">
+                <p class="mt-4 text-sm leading-6 text-slate-600 dark:text-slate-300">
                     Selecciona un <strong>mes operativo</strong> para cargar archivos y generar reportes. Los periodos automáticos (bimestre, trimestre, etc.) solo permiten generar reportes.
                 </p>
-                <div v-if="selected" class="mt-5 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                <div v-if="selected" class="mt-5 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 dark:border-indigo-500/20 dark:bg-indigo-500/10">
                     <div class="flex items-start justify-between gap-4">
                         <div>
-                            <p class="text-sm font-black text-slate-950">{{ selected.label }}</p>
-                            <p class="mt-1 text-xs text-slate-600">{{ selected.code }} • {{ typeLabel(selected.type) }}</p>
-                            <p class="mt-2 text-xs text-slate-500">{{ selected.start_date }} → {{ selected.end_date }}</p>
+                            <p class="text-sm font-black text-slate-950 dark:text-slate-50">{{ selected.label }}</p>
+                            <p class="mt-1 text-xs text-slate-600 dark:text-slate-300">{{ selected.code }} • {{ typeLabel(selected.type) }}</p>
+                            <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ selected.start_date }} → {{ selected.end_date }}</p>
                         </div>
                         <StatusBadge :status="status(selected)" :label="statusLabel(selected)" />
                     </div>
@@ -86,7 +86,7 @@ const statusLabel = (period: any): string => {
                     <input
                         v-model="query"
                         type="search"
-                        class="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm font-medium text-slate-800 outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-4 focus:ring-indigo-100"
+                        class="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm font-medium text-slate-800 outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-indigo-500 dark:focus:bg-slate-800 dark:focus:ring-indigo-500/20"
                         placeholder="Buscar por nombre, código o tipo de periodo..."
                     />
                 </label>
@@ -96,20 +96,20 @@ const statusLabel = (period: any): string => {
                         v-for="period in filteredPeriods"
                         :key="period.id"
                         type="button"
-                        class="w-full rounded-2xl border p-4 text-left transition duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:bg-indigo-50/40 hover:shadow-md focus:outline-none focus:ring-4 focus:ring-indigo-100"
-                        :class="modelValue === period.id ? 'border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-200 bg-white'"
+                        class="w-full rounded-2xl border p-4 text-left transition duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:bg-indigo-50/40 hover:shadow-md focus:outline-none focus:ring-4 focus:ring-indigo-100 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10"
+                        :class="modelValue === period.id ? 'border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:ring-indigo-500/20' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-transparent'"
                         @click="emit('update:modelValue', period.id)"
                     >
                         <div class="flex items-start justify-between gap-3">
                             <div class="min-w-0">
-                                <p class="truncate text-sm font-black text-slate-950">{{ period.label }}</p>
-                                <p class="mt-1 text-xs text-slate-500">{{ typeLabel(period.type) }} • {{ period.start_date }} → {{ period.end_date }}</p>
-                                <p class="mt-2 text-xs text-slate-500">
+                                <p class="truncate text-sm font-black text-slate-950 dark:text-slate-50">{{ period.label }}</p>
+                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ typeLabel(period.type) }} • {{ period.start_date }} → {{ period.end_date }}</p>
+                                <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">
                                     {{ period.uploaded_sources_count }}/{{ period.required_sources_count }} fuentes • {{ period.pending_critical_incidents_count ?? 0 }} incidencia(s) crítica(s)
                                 </p>
                             </div>
                             <div class="flex shrink-0 items-center gap-2">
-                                <CheckCircle2 v-if="modelValue === period.id" class="size-4 text-indigo-600" />
+                                <CheckCircle2 v-if="modelValue === period.id" class="size-4 text-indigo-600 dark:text-indigo-400" />
                                 <StatusBadge :status="status(period)" :label="statusLabel(period)" />
                             </div>
                         </div>

@@ -441,19 +441,19 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
     const step1 = await Swal.fire({
         title: 'Confirmar coincidencia de persona',
         html: `
-            <p class="text-sm text-gray-600 mb-4">Estas dos entradas serán unificadas como <strong>una sola persona</strong>. Elige qué nombre queda como definitivo:</p>
+            <p class="text-sm text-gray-600 dark:text-slate-400 mb-4">Estas dos entradas serán unificadas como <strong>una sola persona</strong>. Elige qué nombre queda como definitivo:</p>
             <div class="flex flex-col gap-3 text-left">
-                <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50 transition">
+                <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
                     <input type="radio" name="swal_canon" value="a" class="mt-0.5 accent-indigo-600">
-                    <span class="text-sm font-bold text-slate-900">${a_name}</span>
+                    <span class="text-sm font-bold text-slate-900 dark:text-slate-100">${a_name}</span>
                 </label>
-                <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50 transition">
+                <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
                     <input type="radio" name="swal_canon" value="b" class="mt-0.5 accent-indigo-600">
-                    <span class="text-sm font-bold text-slate-900">${b_name}</span>
+                    <span class="text-sm font-bold text-slate-900 dark:text-slate-100">${b_name}</span>
                 </label>
-                <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 px-4 py-3 hover:bg-slate-50 transition">
+                <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
                     <input type="radio" name="swal_canon" value="custom" class="mt-0.5 accent-indigo-600">
-                    <span class="text-sm text-slate-600">Escribir nombre personalizado…</span>
+                    <span class="text-sm text-slate-600 dark:text-slate-400">Escribir nombre personalizado…</span>
                 </label>
             </div>
         `,
@@ -642,7 +642,7 @@ const processGenerationNow = async () => {
 
 <template>
     <Head title="Histórico general" />
-    <main class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 lg:p-8">
+    <main class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 lg:p-8 dark:bg-none dark:bg-background">
         <div class="mx-auto max-w-screen-2xl space-y-6">
 
             <!-- Hero header compacto -->
@@ -667,13 +667,13 @@ const processGenerationNow = async () => {
             <!-- Sin periodo: empty state guiado -->
             <div
                 v-if="!selectedPeriodId"
-                class="flex flex-col items-center justify-center rounded-[2rem] border border-dashed border-slate-300 bg-white/60 py-20 text-center shadow-sm"
+                class="flex flex-col items-center justify-center rounded-[2rem] border border-dashed border-slate-300 bg-white/60 py-20 text-center shadow-sm dark:border-slate-700 dark:bg-card/60"
             >
-                <div class="flex size-16 items-center justify-center rounded-3xl bg-indigo-100 shadow-lg shadow-indigo-100">
+                <div class="flex size-16 items-center justify-center rounded-3xl bg-indigo-100 shadow-lg shadow-indigo-100 dark:bg-indigo-500/15 dark:shadow-indigo-950/30">
                     <CalendarDays class="size-8 text-indigo-500" />
                 </div>
-                <h2 class="mt-5 text-xl font-black text-slate-800">Selecciona un periodo para iniciar</h2>
-                <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500">
+                <h2 class="mt-5 text-xl font-black text-slate-800 dark:text-slate-100">Selecciona un periodo para iniciar</h2>
+                <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
                     Elige un mes operativo para cargar archivos y generar reportes, o un periodo compuesto (bimestre, etc.) para reportes agregados.<br />
                     El flujo guiado se desplegará aquí.
                 </p>
@@ -705,12 +705,12 @@ const processGenerationNow = async () => {
                         />
 
                         <!-- Avance a Etapa 2 -->
-                        <div class="flex items-center justify-between rounded-[2rem] border border-white/70 bg-white px-6 py-4 shadow-xl shadow-slate-200/70">
+                        <div class="flex items-center justify-between rounded-[2rem] border border-white/70 bg-white px-6 py-4 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
                             <div class="flex flex-col gap-1.5">
-                                <p v-if="!period?.can_update_database" class="text-sm text-slate-500">
+                                <p v-if="!period?.can_update_database" class="text-sm text-slate-500 dark:text-slate-400">
                                     Carga las fuentes requeridas para continuar a la siguiente etapa.
                                 </p>
-                                <p v-else class="text-sm text-slate-600">
+                                <p v-else class="text-sm text-slate-600 dark:text-slate-300">
                                     Todas las fuentes requeridas están cargadas.
                                 </p>
                                 <button
@@ -776,13 +776,13 @@ const processGenerationNow = async () => {
                     />
                     <div v-else-if="currentStep === 'config'" class="space-y-5">
                         <!-- Bloqueo por incidencias críticas -->
-                        <div v-if="hasCriticalIncidents" class="flex flex-col items-center justify-center gap-4 rounded-[2rem] border-2 border-dashed border-red-300 bg-red-50 p-10 text-center shadow-sm">
-                            <div class="flex size-14 items-center justify-center rounded-2xl bg-red-100 shadow">
+                        <div v-if="hasCriticalIncidents" class="flex flex-col items-center justify-center gap-4 rounded-[2rem] border-2 border-dashed border-red-300 bg-red-50 p-10 text-center shadow-sm dark:border-red-500/30 dark:bg-red-500/10">
+                            <div class="flex size-14 items-center justify-center rounded-2xl bg-red-100 shadow dark:bg-red-500/15">
                                 <svg class="size-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
                             </div>
                             <div>
-                                <p class="text-lg font-black text-red-800">Configuración bloqueada</p>
-                                <p class="mt-1.5 max-w-sm text-sm leading-6 text-red-700">Resuelve las incidencias críticas antes de configurar el reporte.</p>
+                                <p class="text-lg font-black text-red-800 dark:text-red-300">Configuración bloqueada</p>
+                                <p class="mt-1.5 max-w-sm text-sm leading-6 text-red-700 dark:text-red-400">Resuelve las incidencias críticas antes de configurar el reporte.</p>
                             </div>
                             <button type="button" class="inline-flex h-10 items-center gap-2 rounded-2xl bg-red-600 px-5 text-sm font-black text-white shadow-lg shadow-red-200 transition hover:bg-red-700" @click="selectStep('incidents')">
                                 Ir a incidencias

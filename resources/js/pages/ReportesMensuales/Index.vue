@@ -64,17 +64,17 @@ const STATUS_DOT: Record<string, string> = {
     invalidated: 'bg-amber-500',
 }
 const STATUS_BADGE: Record<string, string> = {
-    generated:   'bg-emerald-50 text-emerald-700',
-    processing:  'bg-sky-50 text-sky-700',
-    pending:     'bg-amber-50 text-amber-700',
-    failed:      'bg-rose-50 text-rose-700',
-    cancelled:   'bg-slate-100 text-slate-500',
-    expired:     'bg-slate-50 text-slate-400',
-    invalidated: 'bg-amber-50 text-amber-700',
+    generated:   'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300',
+    processing:  'bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300',
+    pending:     'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300',
+    failed:      'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300',
+    cancelled:   'bg-slate-100 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400',
+    expired:     'bg-slate-50 text-slate-400 dark:bg-slate-800/40 dark:text-slate-500',
+    invalidated: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300',
 }
 const statusLabel = (s: string) => STATUS_LABELS[s?.toLowerCase()] ?? s
 const statusDot   = (s: string) => STATUS_DOT[s?.toLowerCase()] ?? 'bg-slate-400'
-const statusBadge = (s: string) => STATUS_BADGE[s?.toLowerCase()] ?? 'bg-slate-100 text-slate-600'
+const statusBadge = (s: string) => STATUS_BADGE[s?.toLowerCase()] ?? 'bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300'
 
 const SCOPE_LABELS: Record<string, string> = {
     general:  'General',
@@ -134,11 +134,11 @@ function dateRange(startDate?: string | null, endDate?: string | null): string |
                     <FileBarChart2 class="size-5 text-white" />
                 </div>
                 <div>
-                    <h1 class="text-xl font-black tracking-tight text-slate-950">Reportes generados</h1>
-                    <p class="text-xs text-slate-500">{{ message }}</p>
+                    <h1 class="text-xl font-black tracking-tight text-slate-950 dark:text-slate-50">Reportes generados</h1>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ message }}</p>
                 </div>
             </div>
-            <span class="w-fit rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
+            <span class="w-fit rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
                 {{ filteredReports.length }} de {{ generatedReports.length }} disponibles
             </span>
         </section>
@@ -151,13 +151,13 @@ function dateRange(startDate?: string | null, endDate?: string | null): string |
                     v-model="searchQuery"
                     type="search"
                     placeholder="Buscar por nombre, periodo o tipo…"
-                    class="h-11 w-full rounded-2xl border border-slate-200 bg-white pr-4 pl-10 text-sm shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                    class="h-11 w-full rounded-2xl border border-slate-200 bg-white pr-4 pl-10 text-sm shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 dark:border-slate-800 dark:bg-card"
                 />
             </div>
             <div class="flex flex-wrap gap-1.5">
                 <button
                     type="button"
-                    :class="filterStatus === '' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                    :class="filterStatus === '' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:hover:bg-slate-800'"
                     class="rounded-xl px-3 py-2 text-xs font-bold transition"
                     @click="filterStatus = ''"
                 >
@@ -167,7 +167,7 @@ function dateRange(startDate?: string | null, endDate?: string | null): string |
                     v-for="(label, key) in STATUS_LABELS"
                     :key="key"
                     type="button"
-                    :class="filterStatus === key ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                    :class="filterStatus === key ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:hover:bg-slate-800'"
                     class="rounded-xl px-3 py-2 text-xs font-bold transition"
                     @click="filterStatus = key"
                 >
@@ -181,29 +181,29 @@ function dateRange(startDate?: string | null, endDate?: string | null): string |
             <article
                 v-for="report in filteredReports"
                 :key="report.id"
-                class="group flex flex-col rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lg"
+                class="group flex flex-col rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lg dark:border-slate-800 dark:bg-card dark:hover:border-slate-700 dark:hover:shadow-black/20"
             >
                 <div class="flex items-start justify-between gap-2">
                     <div class="flex items-center gap-1.5 text-xs font-bold text-slate-400">
                         <span class="size-2 rounded-full" :class="statusDot(report.status)" />
                         {{ statusLabel(report.status) }}
                     </div>
-                    <span v-if="report.period_type" class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black tracking-wide text-slate-500 uppercase">
+                    <span v-if="report.period_type" class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black tracking-wide text-slate-500 uppercase dark:bg-slate-800/60 dark:text-slate-400">
                         {{ periodTypeLabel(report.period_type) }}
                     </span>
                 </div>
 
-                <h3 class="mt-2.5 text-sm leading-snug font-black text-slate-950" :title="report.name">{{ report.name }}</h3>
+                <h3 class="mt-2.5 text-sm leading-snug font-black text-slate-950 dark:text-slate-50" :title="report.name">{{ report.name }}</h3>
 
-                <div class="mt-3 space-y-1.5 text-xs text-slate-500">
+                <div class="mt-3 space-y-1.5 text-xs text-slate-500 dark:text-slate-400">
                     <p class="flex items-center gap-1.5">
                         <CalendarRange class="size-3.5 shrink-0 text-slate-400" />
-                        <span class="font-semibold text-slate-700">{{ report.period }}</span>
+                        <span class="font-semibold text-slate-700 dark:text-slate-200">{{ report.period }}</span>
                         <span v-if="dateRange(report.period_start, report.period_end)" class="text-slate-400">· {{ dateRange(report.period_start, report.period_end) }}</span>
                     </p>
                     <p v-if="report.comparison_period" class="flex items-center gap-1.5">
                         <GitCompareArrows class="size-3.5 shrink-0 text-slate-400" />
-                        vs <span class="font-semibold text-slate-700">{{ report.comparison_period }}</span>
+                        vs <span class="font-semibold text-slate-700 dark:text-slate-200">{{ report.comparison_period }}</span>
                         <span v-if="dateRange(report.comparison_period_start, report.comparison_period_end)" class="text-slate-400">· {{ dateRange(report.comparison_period_start, report.comparison_period_end) }}</span>
                     </p>
                     <p class="flex items-center gap-1.5">
@@ -214,16 +214,16 @@ function dateRange(startDate?: string | null, endDate?: string | null): string |
                     <p class="text-slate-400">Generado {{ report.generated_at ?? '—' }}</p>
                 </div>
 
-                <div class="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
+                <div class="mt-4 flex items-center justify-between border-t border-slate-100 pt-4 dark:border-slate-800">
                     <span class="rounded-full px-2.5 py-1 text-[10px] font-black" :class="statusBadge(report.status)">{{ statusLabel(report.status) }}</span>
                     <div class="flex gap-1.5">
-                        <a :href="report.preview_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600" title="Ver">
+                        <a :href="report.preview_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 dark:border-slate-800 dark:text-slate-400 dark:hover:border-indigo-500/40 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300" title="Ver">
                             <Eye class="size-4" />
                         </a>
-                        <a :href="report.excel_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-600" title="Excel">
+                        <a :href="report.excel_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-600 dark:border-slate-800 dark:text-slate-400 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-300" title="Excel">
                             <FileSpreadsheet class="size-4" />
                         </a>
-                        <a :href="report.pdf_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600" title="PDF">
+                        <a :href="report.pdf_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:border-slate-800 dark:text-slate-400 dark:hover:border-rose-500/40 dark:hover:bg-rose-500/10 dark:hover:text-rose-300" title="PDF">
                             <FileText class="size-4" />
                         </a>
                     </div>
@@ -231,10 +231,10 @@ function dateRange(startDate?: string | null, endDate?: string | null): string |
             </article>
         </section>
 
-        <div v-if="!generatedReports.length" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">
+        <div v-if="!generatedReports.length" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-card dark:text-slate-400">
             Aún no hay reportes generados. Genéralos desde Histórico general.
         </div>
-        <div v-else-if="!filteredReports.length" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">
+        <div v-else-if="!filteredReports.length" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-card dark:text-slate-400">
             No hay reportes que coincidan con los filtros aplicados.
         </div>
     </div>

@@ -315,18 +315,18 @@ const stage = computed(() => {
 
 const statusConfig = computed(() => {
     switch (stage.value) {
-        case 'processing': return { color: 'bg-indigo-50 border-indigo-200',   text: 'text-indigo-700',   label: 'Generando reporte',      icon: LoaderCircle,   iconClass: 'text-indigo-600 animate-spin' }
-        case 'failed':      return { color: 'bg-rose-50 border-rose-200',       text: 'text-rose-700',     label: 'No se pudo generar',     icon: XCircle,        iconClass: 'text-rose-600' }
-        case 'cancelled':   return { color: 'bg-slate-100 border-slate-300',    text: 'text-slate-600',    label: 'Generación cancelada',   icon: Ban,            iconClass: 'text-slate-500' }
-        case 'success':     return { color: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-700',  label: 'Reporte generado',       icon: CheckCircle,    iconClass: 'text-emerald-600' }
-        case 'ready':       return { color: 'bg-slate-50 border-slate-200',     text: 'text-slate-600',    label: 'Listo para generar',     icon: ShieldCheck,    iconClass: 'text-slate-500' }
-        default:            return { color: 'bg-amber-50 border-amber-200',     text: 'text-amber-700',    label: 'Bloqueado',              icon: TriangleAlert,  iconClass: 'text-amber-600' }
+        case 'processing': return { color: 'bg-indigo-50 border-indigo-200 dark:bg-indigo-500/10 dark:border-indigo-500/20',   text: 'text-indigo-700 dark:text-indigo-300',   label: 'Generando reporte',      icon: LoaderCircle,   iconClass: 'text-indigo-600 dark:text-indigo-400 animate-spin' }
+        case 'failed':      return { color: 'bg-rose-50 border-rose-200 dark:bg-rose-500/10 dark:border-rose-500/20',       text: 'text-rose-700 dark:text-rose-300',     label: 'No se pudo generar',     icon: XCircle,        iconClass: 'text-rose-600 dark:text-rose-400' }
+        case 'cancelled':   return { color: 'bg-slate-100 border-slate-300 dark:bg-slate-800 dark:border-slate-700',    text: 'text-slate-600 dark:text-slate-300',    label: 'Generación cancelada',   icon: Ban,            iconClass: 'text-slate-500' }
+        case 'success':     return { color: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/20', text: 'text-emerald-700 dark:text-emerald-300',  label: 'Reporte generado',       icon: CheckCircle,    iconClass: 'text-emerald-600 dark:text-emerald-400' }
+        case 'ready':       return { color: 'bg-slate-50 border-slate-200 dark:bg-slate-800/40 dark:border-slate-800',     text: 'text-slate-600 dark:text-slate-300',    label: 'Listo para generar',     icon: ShieldCheck,    iconClass: 'text-slate-500' }
+        default:            return { color: 'bg-amber-50 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/20',     text: 'text-amber-700 dark:text-amber-300',    label: 'Bloqueado',              icon: TriangleAlert,  iconClass: 'text-amber-600 dark:text-amber-400' }
     }
 })
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70">
+    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
         <SectionHeader
             eyebrow="Etapa 5"
             title="Generar reporte"
@@ -339,52 +339,52 @@ const statusConfig = computed(() => {
             <div class="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
 
                 <!-- Configuración seleccionada -->
-                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-5 dark:border-slate-800 dark:bg-slate-800/40">
                     <div class="flex items-center gap-3">
-                        <FileText class="size-6 shrink-0 text-indigo-600" />
+                        <FileText class="size-6 shrink-0 text-indigo-600 dark:text-indigo-400" />
                         <div>
-                            <p class="font-black text-slate-950">Configuración del reporte</p>
-                            <p class="text-sm text-slate-500">Tipo y alcance seleccionados en la etapa anterior</p>
+                            <p class="font-black text-slate-950 dark:text-slate-50">Configuración del reporte</p>
+                            <p class="text-sm text-slate-500 dark:text-slate-400">Tipo y alcance seleccionados en la etapa anterior</p>
                         </div>
                     </div>
                     <div class="mt-4 space-y-2">
-                        <div class="flex items-center justify-between rounded-xl bg-white px-4 py-2.5 shadow-sm ring-1 ring-slate-200">
-                            <span class="text-xs font-bold text-slate-500 uppercase tracking-wide">Tipo</span>
-                            <span class="text-sm font-black text-slate-900">{{ reportTypeLabel }}</span>
+                        <div class="flex items-center justify-between rounded-xl bg-white px-4 py-2.5 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+                            <span class="text-xs font-bold text-slate-500 uppercase tracking-wide dark:text-slate-400">Tipo</span>
+                            <span class="text-sm font-black text-slate-900 dark:text-slate-100">{{ reportTypeLabel }}</span>
                         </div>
-                        <div class="flex items-center justify-between rounded-xl bg-white px-4 py-2.5 shadow-sm ring-1 ring-slate-200">
-                            <span class="text-xs font-bold text-slate-500 uppercase tracking-wide">Alcance</span>
-                            <span class="text-sm font-black text-slate-900">{{ scopeLabel }}</span>
+                        <div class="flex items-center justify-between rounded-xl bg-white px-4 py-2.5 shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+                            <span class="text-xs font-bold text-slate-500 uppercase tracking-wide dark:text-slate-400">Alcance</span>
+                            <span class="text-sm font-black text-slate-900 dark:text-slate-100">{{ scopeLabel }}</span>
                         </div>
                         <!-- Solo blockers de NEGOCIO reales (faltan fuentes, incidencias, etc.) —
                              nunca mientras el run activo está procesando: eso tiene su propia
                              tarjeta PROCESSING más abajo (ver Problema 1/5). -->
-                        <div v-if="!isRunning && displayBlockingReasons.length" class="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
-                            <p class="text-xs font-black text-amber-800">Bloqueado — razones:</p>
-                            <ul class="mt-1.5 list-disc pl-4 space-y-0.5 text-xs text-amber-700">
+                        <div v-if="!isRunning && displayBlockingReasons.length" class="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-500/20 dark:bg-amber-500/10">
+                            <p class="text-xs font-black text-amber-800 dark:text-amber-300">Bloqueado — razones:</p>
+                            <ul class="mt-1.5 list-disc pl-4 space-y-0.5 text-xs text-amber-700 dark:text-amber-400">
                                 <li v-for="reason in displayBlockingReasons" :key="reason">{{ reason }}</li>
                             </ul>
                         </div>
                         <!-- Reporte anterior disponible aunque el flujo esté bloqueado -->
-                        <div v-if="hasPreviousReport && !isDone" class="mt-3 rounded-2xl border border-sky-200 bg-sky-50 p-3">
-                            <p class="text-xs font-black text-sky-800">Reporte anterior disponible</p>
-                            <p class="text-xs text-sky-700 mt-1">Generado el {{ previousReportAt }}. Puedes descargarlo mientras se completa la nueva actualización.</p>
+                        <div v-if="hasPreviousReport && !isDone" class="mt-3 rounded-2xl border border-sky-200 bg-sky-50 p-3 dark:border-sky-500/20 dark:bg-sky-500/10">
+                            <p class="text-xs font-black text-sky-800 dark:text-sky-300">Reporte anterior disponible</p>
+                            <p class="text-xs text-sky-700 mt-1 dark:text-sky-400">Generado el {{ previousReportAt }}. Puedes descargarlo mientras se completa la nueva actualización.</p>
                             <div class="mt-2 flex flex-wrap gap-2">
                                 <a
                                     :href="`/reportes-mensuales/${period?.id}/radiografia.xlsx`"
-                                    class="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-700 shadow-sm transition hover:bg-sky-50"
+                                    class="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 dark:border-sky-500/30 dark:bg-slate-900 dark:text-sky-400 dark:hover:bg-sky-500/10"
                                 >
                                     <FileSpreadsheet class="size-3.5" />Excel anterior
                                 </a>
                                 <a
                                     :href="`/reportes-mensuales/${period?.id}/radiografia.pdf`"
-                                    class="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-700 shadow-sm transition hover:bg-sky-50"
+                                    class="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 dark:border-sky-500/30 dark:bg-slate-900 dark:text-sky-400 dark:hover:bg-sky-500/10"
                                 >
                                     <FileText class="size-3.5" />PDF anterior
                                 </a>
                                 <a
                                     :href="`/reportes-mensuales/${period?.id}/preview`"
-                                    class="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-700 shadow-sm transition hover:bg-sky-50"
+                                    class="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 dark:border-sky-500/30 dark:bg-slate-900 dark:text-sky-400 dark:hover:bg-sky-500/10"
                                 >
                                     <Download class="size-3.5" />Vista previa
                                 </a>
@@ -401,7 +401,7 @@ const statusConfig = computed(() => {
                         <div class="flex items-center gap-3">
                             <component :is="statusConfig.icon" class="size-6 shrink-0" :class="statusConfig.iconClass" />
                             <div class="min-w-0 flex-1">
-                                <p class="font-black text-slate-950">{{ statusConfig.label }}</p>
+                                <p class="font-black text-slate-950 dark:text-slate-50">{{ statusConfig.label }}</p>
                                 <!-- PROCESSING: mensaje fijo de espera, nunca "bloqueado" -->
                                 <p v-if="isRunning" class="mt-0.5 text-xs leading-5" :class="statusConfig.text">
                                     Estamos calculando la radiografía y generando los archivos Excel y PDF.
@@ -412,22 +412,22 @@ const statusConfig = computed(() => {
 
                         <!-- Subtexto de espera + paso actual (PROCESSING) -->
                         <div v-if="isRunning" class="mt-2 space-y-1">
-                            <p class="text-xs leading-5 text-slate-500">
+                            <p class="text-xs leading-5 text-slate-500 dark:text-slate-400">
                                 Puedes esperar en esta pantalla. Te enviaremos un correo cuando termine.
                             </p>
-                            <p v-if="currentStep" class="text-xs font-bold text-indigo-700">Procesando: {{ currentStep }}</p>
+                            <p v-if="currentStep" class="text-xs font-bold text-indigo-700 dark:text-indigo-400">Procesando: {{ currentStep }}</p>
                         </div>
 
                         <!-- Barra de progreso -->
                         <div v-if="isRunning && progress !== null" class="mt-4">
-                            <div class="mb-1.5 flex items-center justify-between text-xs font-medium text-slate-600">
+                            <div class="mb-1.5 flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-300">
                                 <span class="truncate pr-3">
-                                    <span v-if="currentStep" class="font-bold text-indigo-700">{{ currentStep }}</span>
+                                    <span v-if="currentStep" class="font-bold text-indigo-700 dark:text-indigo-400">{{ currentStep }}</span>
                                     <span v-else>Procesando…</span>
                                 </span>
-                                <span class="shrink-0 font-black text-indigo-700">{{ progress }}%</span>
+                                <span class="shrink-0 font-black text-indigo-700 dark:text-indigo-400">{{ progress }}%</span>
                             </div>
-                            <div class="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                            <div class="h-2.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                                 <div
                                     class="h-full rounded-full bg-indigo-500 transition-all duration-700"
                                     :style="{ width: `${progress}%` }"
@@ -436,7 +436,7 @@ const statusConfig = computed(() => {
                         </div>
 
                         <!-- Timestamps y tiempo transcurrido -->
-                        <div v-if="liveQueuedAt || liveStartedAt || liveFinishedAt || elapsedClock" class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                        <div v-if="liveQueuedAt || liveStartedAt || liveFinishedAt || elapsedClock" class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
                             <span v-if="liveQueuedAt && !liveStartedAt">En cola: <strong>{{ liveQueuedAt }}</strong></span>
                             <span v-if="liveStartedAt">Inicio: <strong>{{ liveStartedAt }}</strong></span>
                             <span v-if="liveFinishedAt">Fin: <strong>{{ liveFinishedAt }}</strong></span>
@@ -447,13 +447,13 @@ const statusConfig = computed(() => {
                         </div>
 
                         <!-- Error detail -->
-                        <div v-if="isFailed && liveError" class="mt-3 break-all rounded-xl bg-rose-100 p-3 font-mono text-xs leading-5 text-rose-800">{{ liveError }}</div>
+                        <div v-if="isFailed && liveError" class="mt-3 break-all rounded-xl bg-rose-100 p-3 font-mono text-xs leading-5 text-rose-800 dark:bg-rose-500/10 dark:text-rose-300">{{ liveError }}</div>
 
                         <!-- Éxito: checklist Excel/PDF + descarga — nunca se adivina la URL: si
                              isDone pero aún no llegó la respuesta real del backend, el botón se
                              muestra deshabilitado en vez de apuntar a un archivo posiblemente
                              equivocado (p. ej. el simple cuando lo generado fue un comparativo). -->
-                        <div v-if="isDone" class="mt-3 space-y-1 text-xs font-bold text-emerald-700">
+                        <div v-if="isDone" class="mt-3 space-y-1 text-xs font-bold text-emerald-700 dark:text-emerald-400">
                             <p class="flex items-center gap-1.5"><CheckCircle class="size-3.5" />Excel listo</p>
                             <p class="flex items-center gap-1.5"><CheckCircle class="size-3.5" />PDF listo</p>
                         </div>
@@ -461,21 +461,21 @@ const statusConfig = computed(() => {
                             <a
                                 v-if="liveExcelUrl"
                                 :href="liveExcelUrl"
-                                class="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-bold text-emerald-700 shadow-sm transition hover:bg-emerald-50"
+                                class="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-white px-3 py-2 text-xs font-bold text-emerald-700 shadow-sm transition hover:bg-emerald-50 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-400 dark:hover:bg-emerald-500/10"
                             >
                                 <FileSpreadsheet class="size-3.5" />Descargar Excel
                             </a>
-                            <span v-else-if="isDone" class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-400">
+                            <span v-else-if="isDone" class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-400 dark:border-slate-700 dark:bg-slate-800">
                                 <LoaderCircle class="size-3.5 animate-spin" />Descargar Excel
                             </span>
                             <a
                                 v-if="livePdfUrl"
                                 :href="livePdfUrl"
-                                class="inline-flex items-center gap-1.5 rounded-xl border border-rose-300 bg-white px-3 py-2 text-xs font-bold text-rose-700 shadow-sm transition hover:bg-rose-50"
+                                class="inline-flex items-center gap-1.5 rounded-xl border border-rose-300 bg-white px-3 py-2 text-xs font-bold text-rose-700 shadow-sm transition hover:bg-rose-50 dark:border-rose-500/30 dark:bg-slate-900 dark:text-rose-400 dark:hover:bg-rose-500/10"
                             >
                                 <FileText class="size-3.5" />Descargar PDF
                             </a>
-                            <span v-else-if="isDone" class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-400">
+                            <span v-else-if="isDone" class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-400 dark:border-slate-700 dark:bg-slate-800">
                                 <LoaderCircle class="size-3.5 animate-spin" />Descargar PDF
                             </span>
                         </div>
@@ -484,10 +484,10 @@ const statusConfig = computed(() => {
                     <!-- Aviso: la generación tarda más de lo habitual (>5 min corriendo) — nunca
                          marca failed ni bloquea, solo informa; distinto de la alerta dura de
                          "atascado" (30 min) que sí sugiere revisar el worker. -->
-                    <div v-if="isRunningSlow" class="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <div v-if="isRunningSlow" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/20 dark:bg-amber-500/10">
                         <div class="flex items-start gap-2.5">
-                            <Clock class="mt-0.5 size-4 shrink-0 text-amber-600" />
-                            <p class="text-xs leading-5 text-amber-700">
+                            <Clock class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                            <p class="text-xs leading-5 text-amber-700 dark:text-amber-300">
                                 El reporte está tardando más de lo habitual, pero continúa procesándose.
                             </p>
                         </div>
@@ -495,15 +495,15 @@ const statusConfig = computed(() => {
 
                     <!-- Fallo de POLLING (no de generación) — el job puede seguir corriendo en
                          segundo plano; nunca se relanza otro job desde aquí. -->
-                    <div v-if="pollError" class="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <div v-if="pollError" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/20 dark:bg-amber-500/10">
                         <div class="flex items-start gap-2.5">
-                            <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600" />
+                            <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                             <div class="min-w-0 flex-1">
-                                <p class="text-xs leading-5 text-amber-700">
+                                <p class="text-xs leading-5 text-amber-700 dark:text-amber-300">
                                     No se pudo actualizar el estado de generación.
                                     El proceso puede seguir ejecutándose en segundo plano.
                                 </p>
-                                <button type="button" class="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-700 transition hover:bg-amber-50" @click="pollProgress">
+                                <button type="button" class="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-700 transition hover:bg-amber-50 dark:border-amber-500/30 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10" @click="pollProgress">
                                     <RefreshCw class="size-3.5" />Reintentar consulta de estado
                                 </button>
                             </div>
@@ -511,23 +511,23 @@ const statusConfig = computed(() => {
                     </div>
 
                     <!-- Alerta de proceso atascado -->
-                    <div v-if="liveStuck" class="rounded-2xl border border-amber-300 bg-amber-50 p-4">
+                    <div v-if="liveStuck" class="rounded-2xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
                         <div class="flex items-start gap-2.5">
-                            <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600" />
+                            <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                             <div class="min-w-0 flex-1">
-                                <p class="text-sm font-bold text-amber-800">El proceso lleva más tiempo del esperado</p>
-                                <p class="mt-1 text-xs leading-5 text-amber-700">
+                                <p class="text-sm font-bold text-amber-800 dark:text-amber-300">El proceso lleva más tiempo del esperado</p>
+                                <p class="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400">
                                     {{ isQueued ? 'Lleva más de 5 min en cola sin iniciar.' : 'Lleva más de 30 min ejecutando.' }}
                                     Verifica que el worker esté activo:
                                 </p>
-                                <code class="mt-2 block break-all rounded-xl bg-amber-100 px-3 py-2 font-mono text-[11px] leading-5 text-amber-900">
+                                <code class="mt-2 block break-all rounded-xl bg-amber-100 px-3 py-2 font-mono text-[11px] leading-5 text-amber-900 dark:bg-amber-500/15 dark:text-amber-200">
                                     php -d memory_limit=1024M artisan queue:work database --queue=default --tries=1 --timeout=1800 --memory=1024 --sleep=3 -vvv
                                 </code>
                                 <div class="mt-3 flex flex-wrap gap-2">
-                                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-700 transition hover:bg-amber-50" @click="emit('refresh')">
+                                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-700 transition hover:bg-amber-50 dark:border-amber-500/30 dark:bg-slate-900 dark:text-amber-400 dark:hover:bg-amber-500/10" @click="emit('refresh')">
                                         <RefreshCw class="size-3.5" />Verificar estado
                                     </button>
-                                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-300 bg-white px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-50" @click="emit('cancel')">
+                                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-300 bg-white px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-50 dark:border-rose-500/30 dark:bg-slate-900 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('cancel')">
                                         <Ban class="size-3.5" />Cancelar proceso
                                     </button>
                                 </div>
@@ -539,21 +539,21 @@ const statusConfig = computed(() => {
                     <div v-if="isRunning && !liveStuck" class="space-y-3">
 
                         <!-- En cola sin worker -->
-                        <div v-if="isQueued" class="rounded-2xl border border-violet-200 bg-violet-50 p-4">
+                        <div v-if="isQueued" class="rounded-2xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-500/20 dark:bg-violet-500/10">
                             <div class="flex items-start gap-2.5">
-                                <LoaderCircle class="mt-0.5 size-4 shrink-0 animate-spin text-violet-600" />
+                                <LoaderCircle class="mt-0.5 size-4 shrink-0 animate-spin text-violet-600 dark:text-violet-400" />
                                 <div class="min-w-0 flex-1">
-                                    <p class="text-sm font-bold text-violet-800">Job en cola — esperando worker</p>
-                                    <p class="mt-1 text-xs leading-5 text-violet-700">La generación está encolada correctamente. Inicia el worker para procesarla. Puedes cerrar esta ventana; recibirás correo cuando termine.</p>
-                                    <code class="mt-2 block rounded-xl bg-violet-100 px-3 py-2 font-mono text-[11px] leading-5 text-violet-900">php artisan queue:work --tries=1 --timeout=0 -vvv</code>
+                                    <p class="text-sm font-bold text-violet-800 dark:text-violet-300">Job en cola — esperando worker</p>
+                                    <p class="mt-1 text-xs leading-5 text-violet-700 dark:text-violet-400">La generación está encolada correctamente. Inicia el worker para procesarla. Puedes cerrar esta ventana; recibirás correo cuando termine.</p>
+                                    <code class="mt-2 block rounded-xl bg-violet-100 px-3 py-2 font-mono text-[11px] leading-5 text-violet-900 dark:bg-violet-500/15 dark:text-violet-200">php artisan queue:work --tries=1 --timeout=0 -vvv</code>
                                     <div class="mt-3 flex flex-wrap gap-2">
-                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-violet-300 bg-white px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-50" @click="emit('refresh')">
+                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-violet-300 bg-white px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-50 dark:border-violet-500/30 dark:bg-slate-900 dark:text-violet-400 dark:hover:bg-violet-500/10" @click="emit('refresh')">
                                             <RefreshCw class="size-3.5" />Verificar estado
                                         </button>
-                                        <button v-if="liveCanProcessNow" type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-50" @click="emit('process-now')">
+                                        <button v-if="liveCanProcessNow" type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-indigo-400 dark:hover:bg-indigo-500/10" @click="emit('process-now')">
                                             <DatabaseZap class="size-3.5" />Procesar ahora (local)
                                         </button>
-                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50" @click="emit('cancel')">
+                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:bg-slate-900 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('cancel')">
                                             <Ban class="size-3.5" />Cancelar
                                         </button>
                                     </div>
@@ -562,14 +562,14 @@ const statusConfig = computed(() => {
                         </div>
 
                         <!-- Running normalmente -->
-                        <div v-else class="rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
-                            <p class="text-sm font-bold text-indigo-800">La generación corre en segundo plano.</p>
-                            <p class="mt-1 text-xs text-indigo-600">Puedes cerrar esta ventana. Te avisaremos por correo cuando Excel y PDF estén listos.</p>
+                        <div v-else class="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-500/20 dark:bg-indigo-500/10">
+                            <p class="text-sm font-bold text-indigo-800 dark:text-indigo-300">La generación corre en segundo plano.</p>
+                            <p class="mt-1 text-xs text-indigo-600 dark:text-indigo-400">Puedes cerrar esta ventana. Te avisaremos por correo cuando Excel y PDF estén listos.</p>
                             <div class="mt-3 flex flex-wrap gap-2">
-                                <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-50" @click="emit('refresh')">
+                                <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/30 dark:bg-slate-900 dark:text-indigo-400 dark:hover:bg-indigo-500/10" @click="emit('refresh')">
                                     <RefreshCw class="size-3.5" />Actualizar estado
                                 </button>
-                                <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50" @click="emit('cancel')">
+                                <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:bg-slate-900 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('cancel')">
                                     <Ban class="size-3.5" />Cancelar proceso
                                 </button>
                             </div>

@@ -132,7 +132,7 @@ const SCOPES = [
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70">
+    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
         <SectionHeader eyebrow="Etapa 4" title="Configurar reporte" description="Define el tipo, alcance y filtros del reporte. Una vez guardada la configuración podrás proceder a generar el reporte." />
 
         <div class="mt-6 grid gap-5 xl:grid-cols-[1fr_0.85fr]">
@@ -140,33 +140,33 @@ const SCOPES = [
             <div class="space-y-5">
 
                 <!-- Tipo de reporte -->
-                <div class="rounded-2xl border border-slate-200 p-5">
-                    <p class="mb-3 text-sm font-black text-slate-950">Tipo de reporte</p>
+                <div class="rounded-2xl border border-slate-200 p-5 dark:border-slate-800">
+                    <p class="mb-3 text-sm font-black text-slate-950 dark:text-slate-50">Tipo de reporte</p>
                     <div class="grid gap-3 md:grid-cols-2">
                         <button
                             v-for="option in availableReportTypes"
                             :key="option.k"
                             type="button"
-                            class="rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 hover:border-indigo-200 hover:bg-indigo-50/40"
-                            :class="modelValue.report_type === option.k ? 'border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-200'"
+                            class="rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 hover:border-indigo-200 hover:bg-indigo-50/40 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10"
+                            :class="modelValue.report_type === option.k ? 'border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:ring-indigo-500/20' : 'border-slate-200 dark:border-slate-800'"
                             @click="update({ report_type: option.k, compare_period_id: option.k === 'simple' ? null : modelValue.compare_period_id })"
                         >
-                            <p class="font-black text-slate-950">{{ option.l }}</p>
-                            <p class="mt-1 text-xs leading-5 text-slate-500">{{ option.d }}</p>
+                            <p class="font-black text-slate-950 dark:text-slate-50">{{ option.l }}</p>
+                            <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{{ option.d }}</p>
                         </button>
                     </div>
                 </div>
 
                 <!-- Alcance -->
-                <div class="rounded-2xl border border-slate-200 p-5">
-                    <p class="mb-3 text-sm font-black text-slate-950">Alcance</p>
+                <div class="rounded-2xl border border-slate-200 p-5 dark:border-slate-800">
+                    <p class="mb-3 text-sm font-black text-slate-950 dark:text-slate-50">Alcance</p>
                     <div class="grid gap-3 md:grid-cols-3">
                         <button
                             v-for="option in SCOPES"
                             :key="option.k"
                             type="button"
-                            class="rounded-2xl border px-4 py-3 text-sm font-black transition hover:border-indigo-200 hover:bg-indigo-50/40"
-                            :class="modelValue.scope === option.k ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-700'"
+                            class="rounded-2xl border px-4 py-3 text-sm font-black transition hover:border-indigo-200 hover:bg-indigo-50/40 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10"
+                            :class="modelValue.scope === option.k ? 'border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-300' : 'border-slate-200 text-slate-700 dark:border-slate-800 dark:text-slate-300'"
                             @click="update({ scope: option.k, branch_id: null, employee_id: null })"
                         >
                             {{ option.l }}
@@ -175,12 +175,12 @@ const SCOPES = [
                 </div>
 
                 <!-- Filtros condicionales -->
-                <div v-if="hasFilters" class="rounded-2xl border border-slate-200 p-5 space-y-4">
-                    <p class="text-sm font-black text-slate-950">Filtros y comparación</p>
+                <div v-if="hasFilters" class="rounded-2xl border border-slate-200 p-5 space-y-4 dark:border-slate-800">
+                    <p class="text-sm font-black text-slate-950 dark:text-slate-50">Filtros y comparación</p>
 
                     <div v-if="isBranchScope">
                         <label class="block">
-                            <span class="text-xs font-bold text-slate-600">Sucursal</span>
+                            <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Sucursal</span>
                             <div class="mt-1">
                                 <SearchableSelect
                                     :items="operativeBranchItems"
@@ -190,12 +190,12 @@ const SCOPES = [
                                 />
                             </div>
                         </label>
-                        <p v-if="!modelValue.branch_id" class="mt-1.5 text-xs text-amber-600">Selecciona una sucursal para continuar.</p>
+                        <p v-if="!modelValue.branch_id" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Selecciona una sucursal para continuar.</p>
                     </div>
 
                     <div v-if="isEmployeeScope">
                         <label class="block">
-                            <span class="text-xs font-bold text-slate-600">Empleado / gestor</span>
+                            <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Empleado / gestor</span>
                             <div class="mt-1">
                                 <SearchableSelect
                                     :items="employeeItems"
@@ -205,22 +205,22 @@ const SCOPES = [
                                 />
                             </div>
                         </label>
-                        <p v-if="!modelValue.employee_id" class="mt-1.5 text-xs text-amber-600">Selecciona un empleado o gestor para continuar.</p>
+                        <p v-if="!modelValue.employee_id" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Selecciona un empleado o gestor para continuar.</p>
                     </div>
 
                     <div v-if="isComparative">
                         <label class="block">
-                            <span class="text-xs font-bold text-slate-600">Periodo a comparar</span>
+                            <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Periodo a comparar</span>
                             <select
                                 :value="modelValue.compare_period_id ?? ''"
-                                class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100"
+                                class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-indigo-500/20"
                                 @change="update({ compare_period_id: Number(($event.target as HTMLSelectElement).value) || null })"
                             >
                                 <option value="">Selecciona periodo comparable</option>
                                 <option v-for="item in comparablePeriods" :key="item.id" :value="item.id">{{ item.label }}</option>
                             </select>
                         </label>
-                        <p v-if="!modelValue.compare_period_id" class="mt-1.5 text-xs text-amber-600">Selecciona el periodo a comparar.</p>
+                        <p v-if="!modelValue.compare_period_id" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Selecciona el periodo a comparar.</p>
                     </div>
                 </div>
 
@@ -230,13 +230,13 @@ const SCOPES = [
             <div class="space-y-5">
 
                 <!-- Sucursales editables — solo cuando alcance = general -->
-                <div v-if="!isBranchScope && !isEmployeeScope" class="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-5">
+                <div v-if="!isBranchScope && !isEmployeeScope" class="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-5 dark:border-emerald-500/20 dark:bg-emerald-500/10">
                     <div class="mb-3 flex items-center justify-between">
-                        <p class="text-sm font-black text-slate-950">Sucursales que se tomarán en cuenta</p>
+                        <p class="text-sm font-black text-slate-950 dark:text-slate-50">Sucursales que se tomarán en cuenta</p>
                         <div class="flex items-center gap-2 text-xs">
-                            <button type="button" class="font-bold text-indigo-600 hover:underline" @click="selectAllBranches">Todas</button>
-                            <span class="text-slate-300">|</span>
-                            <button type="button" class="font-bold text-rose-600 hover:underline" @click="deselectAllBranches">Ninguna</button>
+                            <button type="button" class="font-bold text-indigo-600 hover:underline dark:text-indigo-400" @click="selectAllBranches">Todas</button>
+                            <span class="text-slate-300 dark:text-slate-600">|</span>
+                            <button type="button" class="font-bold text-rose-600 hover:underline dark:text-rose-400" @click="deselectAllBranches">Ninguna</button>
                         </div>
                     </div>
 
@@ -244,8 +244,8 @@ const SCOPES = [
                         <label
                             v-for="branch in operativeBranches"
                             :key="branch.id"
-                            class="flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 transition hover:bg-emerald-100/60"
-                            :class="modelValue.included_branch_ids.includes(branch.id) ? 'bg-white/80' : 'opacity-50'"
+                            class="flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 transition hover:bg-emerald-100/60 dark:hover:bg-emerald-500/10"
+                            :class="modelValue.included_branch_ids.includes(branch.id) ? 'bg-white/80 dark:bg-slate-900/60' : 'opacity-50'"
                         >
                             <input
                                 type="checkbox"
@@ -253,39 +253,39 @@ const SCOPES = [
                                 :checked="modelValue.included_branch_ids.includes(branch.id)"
                                 @change="toggleBranch(branch.id)"
                             />
-                            <span class="text-sm font-bold text-slate-800">{{ branch.name }}</span>
+                            <span class="text-sm font-bold text-slate-800 dark:text-slate-200">{{ branch.name }}</span>
                         </label>
                     </div>
 
-                    <div class="mt-3 border-t border-emerald-200 pt-3 text-xs text-slate-500 space-y-1">
-                        <p class="text-emerald-700 font-bold">{{ includedCount }} sucursal(es) incluida(s)</p>
-                        <p v-if="excludedBranches.length > 0" class="text-rose-600">
+                    <div class="mt-3 border-t border-emerald-200 pt-3 text-xs text-slate-500 space-y-1 dark:border-emerald-500/20 dark:text-slate-400">
+                        <p class="text-emerald-700 font-bold dark:text-emerald-400">{{ includedCount }} sucursal(es) incluida(s)</p>
+                        <p v-if="excludedBranches.length > 0" class="text-rose-600 dark:text-rose-400">
                             Excluidas para este reporte:
                             <span v-for="(b, i) in excludedBranches" :key="b.id">{{ b.name }}<span v-if="i < excludedBranches.length - 1">, </span></span>
                         </p>
-                        <p>Siempre excluida: <span class="font-bold text-rose-700">CORPORATIVO</span> (no operativo) · SAN JUAN DEL RÍO se incluye si tiene movimiento en el periodo.</p>
+                        <p>Siempre excluida: <span class="font-bold text-rose-700 dark:text-rose-400">CORPORATIVO</span> (no operativo) · SAN JUAN DEL RÍO se incluye si tiene movimiento en el periodo.</p>
                     </div>
 
-                    <p v-if="includedCount === 0" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">
+                    <p v-if="includedCount === 0" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
                         Selecciona al menos una sucursal para continuar.
                     </p>
                 </div>
 
                 <!-- Sucursales en modo lectura cuando alcance = sucursal -->
-                <div v-if="isBranchScope" class="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                    <p class="mb-2 text-xs font-bold text-slate-500">El reporte por sucursal solo incluye la sucursal seleccionada.</p>
+                <div v-if="isBranchScope" class="rounded-2xl border border-slate-200 bg-slate-50 p-5 dark:border-slate-800 dark:bg-slate-800/40">
+                    <p class="mb-2 text-xs font-bold text-slate-500 dark:text-slate-400">El reporte por sucursal solo incluye la sucursal seleccionada.</p>
                 </div>
 
                 <!-- Gasto general por gestor -->
-                <div v-if="isEmployeeScope" class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5">
+                <div v-if="isEmployeeScope" class="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-5 dark:border-indigo-500/20 dark:bg-indigo-500/10">
                     <div class="flex items-center gap-3">
-                        <SlidersHorizontal class="size-5 text-indigo-700" />
-                        <p class="font-black text-slate-950">Gasto general por gestor</p>
+                        <SlidersHorizontal class="size-5 text-indigo-700 dark:text-indigo-400" />
+                        <p class="font-black text-slate-950 dark:text-slate-50">Gasto general por gestor</p>
                     </div>
-                    <p class="mt-2 text-sm leading-6 text-slate-600">Monto aproximado de gastos operativos mensuales asignados al gestor seleccionado. Se guardará en el reporte para auditoría.</p>
+                    <p class="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">Monto aproximado de gastos operativos mensuales asignados al gestor seleccionado. Se guardará en el reporte para auditoría.</p>
                     <div class="mt-4 space-y-3">
                         <label class="block">
-                            <span class="text-xs font-bold text-slate-600">Gasto mensual aproximado (MXN)</span>
+                            <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Gasto mensual aproximado (MXN)</span>
                             <div class="relative mt-1">
                                 <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400">$</span>
                                 <input
@@ -293,18 +293,18 @@ const SCOPES = [
                                     min="0"
                                     step="100"
                                     :value="modelValue.extra_employee_expense_amount"
-                                    class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100"
+                                    class="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-indigo-500/20"
                                     placeholder="0"
                                     @input="update({ extra_employee_expense_amount: Number(($event.target as HTMLInputElement).value) })"
                                 />
                             </div>
                         </label>
                         <label class="block">
-                            <span class="text-xs font-bold text-slate-600">Notas del gasto (opcional)</span>
+                            <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Notas del gasto (opcional)</span>
                             <input
                                 type="text"
                                 :value="modelValue.extra_employee_expense_notes"
-                                class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100"
+                                class="mt-1 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-indigo-500/20"
                                 placeholder="Ej. incluye viáticos y comunicación"
                                 @input="update({ extra_employee_expense_notes: ($event.target as HTMLInputElement).value })"
                             />
@@ -324,7 +324,7 @@ const SCOPES = [
                     </button>
 
                     <!-- Razón de bloqueo cuando la etapa 2 no está completa -->
-                    <div v-if="!canGenerate" class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                    <div v-if="!canGenerate" class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
                         <p class="mb-1 font-semibold">No puedes continuar todavía:</p>
                         <ul v-if="period?.blocking_reasons?.length" class="list-inside list-disc space-y-1">
                             <li v-for="reason in period.blocking_reasons" :key="reason">{{ reason }}</li>
@@ -333,7 +333,7 @@ const SCOPES = [
                     </div>
 
                     <!-- Razón de bloqueo cuando canGenerate=true pero falta configuración -->
-                    <div v-else-if="!canSubmit" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    <div v-else-if="!canSubmit" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
                         <p v-if="isBranchScope && !modelValue.branch_id">Selecciona una sucursal para continuar.</p>
                         <p v-else-if="isEmployeeScope && !modelValue.employee_id">Selecciona un empleado o gestor para continuar.</p>
                         <p v-else-if="isComparative && !modelValue.compare_period_id">Selecciona el periodo a comparar.</p>

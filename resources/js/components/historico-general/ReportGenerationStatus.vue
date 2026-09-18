@@ -23,19 +23,19 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70">
+    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
 
         <!-- Estado fallido — solo si el reporte no quedó listo realmente -->
         <template v-if="isFailed && !isSuccess">
             <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div class="flex gap-4">
-                    <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-red-100 text-red-600">
+                    <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400">
                         <AlertCircle class="size-6" />
                     </div>
                     <div>
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-red-600">Estado de generación</p>
-                        <h3 class="mt-1 text-lg font-black text-slate-950">La generación falló</h3>
-                        <p class="mt-1 text-sm leading-6 text-slate-600">
+                        <p class="text-xs font-black uppercase tracking-[0.22em] text-red-600 dark:text-red-400">Estado de generación</p>
+                        <h3 class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50">La generación falló</h3>
+                        <p class="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
                             {{ publicLog || 'No se pudo generar la Radiografía. Revisa las fuentes cargadas e inténtalo nuevamente.' }}
                         </p>
                         <p v-if="period?.radiography_run_finished_at" class="mt-1 text-xs text-slate-400">
@@ -59,7 +59,7 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
 
                 <button
                     type="button"
-                    class="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+                    class="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 dark:border-slate-700 dark:bg-transparent dark:text-slate-300 dark:hover:border-slate-600 dark:hover:text-slate-50"
                     @click="showTechDetail = !showTechDetail"
                 >
                     <ChevronDown class="size-4 transition-transform" :class="{ 'rotate-180': showTechDetail }" />
@@ -68,8 +68,8 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
             </div>
 
             <!-- Detalle técnico colapsable -->
-            <div v-if="showTechDetail" class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
-                <p class="font-semibold text-slate-700">Información de referencia</p>
+            <div v-if="showTechDetail" class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
+                <p class="font-semibold text-slate-700 dark:text-slate-300">Información de referencia</p>
                 <p class="mt-1">Código de referencia: Run #{{ period?.radiography_run_id ?? '—' }}</p>
                 <p class="mt-1 text-slate-400">El equipo técnico puede consultar el error completo en los logs del sistema usando este código.</p>
             </div>
@@ -83,14 +83,14 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
                         <Clock3 class="size-6" />
                     </div>
                     <div>
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-indigo-600">Estado de generación</p>
-                        <h3 class="mt-1 text-lg font-black text-slate-950">{{ publicLog || 'Sin generación en curso' }}</h3>
-                        <p class="mt-1 text-sm text-slate-600">Cuando el job termine, el usuario recibirá un correo y el reporte quedará en Reportes mensuales.</p>
+                        <p class="text-xs font-black uppercase tracking-[0.22em] text-indigo-600 dark:text-indigo-400">Estado de generación</p>
+                        <h3 class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50">{{ publicLog || 'Sin generación en curso' }}</h3>
+                        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Cuando el job termine, el usuario recibirá un correo y el reporte quedará en Reportes mensuales.</p>
                     </div>
                 </div>
                 <StatusBadge :status="statusKey"  />
             </div>
-            <div class="mt-5 flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-800">
+            <div class="mt-5 flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
                 <MailCheck class="size-5" />
                 Te avisaremos por correo cuando la Radiografía esté lista o si falla.
             </div>

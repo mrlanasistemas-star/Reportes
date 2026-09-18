@@ -1,15 +1,5 @@
 <script setup lang="ts">
 import { Link } from '@inertiajs/vue3';
-import {
-    LayoutGrid,
-    CalendarRange,
-    FolderOpen,
-    FileSpreadsheet,
-    Settings,
-    BookOpen,
-    Target,
-    Users,
-} from 'lucide-vue-next';
 
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -24,51 +14,9 @@ import {
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
 
+import { mainNavItems } from '@/config/mainNav';
 import { dashboard } from '@/routes';
 import type { NavItem } from '@/types';
-
-const mainNavItems: NavItem[] = [
-    {
-        title: 'Dashboard',
-        href: dashboard(),
-        icon: LayoutGrid,
-    },
-    {
-        title: 'Carga de archivos',
-        href: '/historico-general',
-        icon: FolderOpen,
-    },
-    {
-        title: 'Periodos',
-        href: '/periodos',
-        icon: CalendarRange,
-    },
-    {
-        title: 'Colaboradores',
-        href: '/asignaciones-empleado-sucursal',
-        icon: Users,
-    },
-    {
-        title: 'Reportes mensuales',
-        href: '/reportes-mensuales',
-        icon: FileSpreadsheet,
-    },
-    {
-        title: 'OKR',
-        href: '/okr',
-        icon: Target,
-    },
-    {
-        title: 'Guía del sistema',
-        href: '/guia-sistema',
-        icon: BookOpen,
-    },
-    {
-        title: 'Configuración',
-        href: '/settings/profile',
-        icon: Settings,
-    },
-]
 
 const footerNavItems: NavItem[] = [];
 </script>

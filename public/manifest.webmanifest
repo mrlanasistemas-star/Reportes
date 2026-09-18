@@ -1,0 +1,25 @@
+{
+    "name": "Reportes",
+    "short_name": "Reportes",
+    "description": "Panel de gestión Reportes",
+    "start_url": "/dashboard",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "any",
+    "background_color": "#0b0f14",
+    "theme_color": "#4f46e5",
+    "icons": [
+        {
+            "src": "/logoMrLana.png",
+            "sizes": "256x256",
+            "type": "image/png",
+            "purpose": "any"
+        },
+        {
+            "src": "/logoMrLana.png",
+            "sizes": "256x256",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}

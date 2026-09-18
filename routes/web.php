@@ -13,6 +13,37 @@ use App\Http\Controllers\DashboardController;
 
 Route::redirect('/', '/login');
 
+// SEO — servidos por ruta (no archivos estáticos en public/) para que el dominio
+// siempre salga de config('app.url') y nunca quede un localhost/dominio viejo
+// pegado en producción. El único destino público real es /login (todo lo demás
+// exige sesión y redirige ahí) — ver el bloque "noindex por default" en
+// resources/views/app.blade.php para la otra mitad de esta misma decisión.
+Route::get('/robots.txt', function () {
+    $disallow = collect([
+        'dashboard', 'dashboard-data', 'dashboard-trend',
+        'historico-general', 'periodos', 'asignaciones-empleado-sucursal',
+        'empleados', 'validaciones', 'guia-sistema', 'reportes-mensuales',
+        'okr', 'settings',
+    ])->map(fn (string $path) => "Disallow: /{$path}")->implode("\n");
+
+    $body = "User-agent: *\nAllow: /login\n{$disallow}\n\nSitemap: " . url('/sitemap.xml') . "\n";
+
+    return response($body, 200)->header('Content-Type', 'text/plain');
+})->name('robots');
+
+Route::get('/sitemap.xml', function () {
+    $urls = [
+        ['loc' => url('/login'), 'changefreq' => 'monthly', 'priority' => '1.0'],
+    ];
+
+    $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+        . '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n"
+        . collect($urls)->map(fn (array $u) => "  <url>\n    <loc>{$u['loc']}</loc>\n    <changefreq>{$u['changefreq']}</changefreq>\n    <priority>{$u['priority']}</priority>\n  </url>")->implode("\n")
+        . "\n</urlset>\n";
+
+    return response($xml, 200)->header('Content-Type', 'application/xml');
+})->name('sitemap');
+
 Route::middleware(['auth', 'verified'])->group(function () {
     // Cierre 17-sep-2026 ronda 4 — el Dashboard ahora resume el periodo más reciente
     // con radiografía generada (antes era una página estática sin datos). Ver

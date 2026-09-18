@@ -47,23 +47,26 @@
 }
 
 .dark {
-    --background: #020617;
-    --foreground: #f8fafc;
+    /* Negro neutro de verdad (zinc, sin tinte azul) — antes esto era slate-950
+       (#020617), que SÍ tiene un tinte azul notorio ("eso es azul, no negro
+       elegante"). Mismo criterio en cada token de superficie de aquí para abajo. */
+    --background: #0a0a0a;
+    --foreground: #f4f4f5;
 
-    --card: #0f172a;
-    --card-foreground: #f8fafc;
+    --card: #141414;
+    --card-foreground: #f4f4f5;
 
-    --popover: #0f172a;
-    --popover-foreground: #f8fafc;
+    --popover: #141414;
+    --popover-foreground: #f4f4f5;
 
     --primary: #34d399;
     --primary-foreground: #022c22;
 
-    --secondary: #111827;
-    --secondary-foreground: #f8fafc;
+    --secondary: #1c1c1e;
+    --secondary-foreground: #f4f4f5;
 
-    --muted: #1e293b;
-    --muted-foreground: #94a3b8;
+    --muted: #1c1c1e;
+    --muted-foreground: #a1a1aa;
 
     --accent: #052e2b;
     --accent-foreground: #a7f3d0;
@@ -71,8 +74,8 @@
     --destructive: #fb7185;
     --destructive-foreground: #4c0519;
 
-    --border: rgba(255, 255, 255, 0.1);
-    --input: rgba(255, 255, 255, 0.12);
+    --border: rgba(255, 255, 255, 0.08);
+    --input: rgba(255, 255, 255, 0.1);
     --ring: #34d399;
 
     --chart-1: #34d399;
@@ -82,12 +85,12 @@
     --chart-5: #fb7185;
 
     /* compatibilidad con starter kit */
-    --sidebar-background: #0b1120;
-    --sidebar-foreground: #e5e7eb;
+    --sidebar-background: #050505;
+    --sidebar-foreground: #e4e4e7;
     --sidebar-primary: #34d399;
     --sidebar-primary-foreground: #022c22;
-    --sidebar-accent: #0f172a;
-    --sidebar-accent-foreground: #f8fafc;
-    --sidebar-border: rgba(255, 255, 255, 0.08);
+    --sidebar-accent: #141414;
+    --sidebar-accent-foreground: #f4f4f5;
+    --sidebar-border: rgba(255, 255, 255, 0.06);
     --sidebar-ring: #34d399;
 }

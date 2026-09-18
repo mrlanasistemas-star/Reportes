@@ -107,13 +107,13 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                     :class="i === currentIndex
                         ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
                         : i < currentIndex
-                            ? 'text-emerald-700 hover:bg-emerald-50'
-                            : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'"
+                            ? 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-500/10'
+                            : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100'"
                     @click="goTo(i)"
                 >
                     <span
                         class="flex size-5 shrink-0 items-center justify-center rounded-full text-[10px] font-black"
-                        :class="i === currentIndex ? 'bg-white/20 text-white' : i < currentIndex ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'"
+                        :class="i === currentIndex ? 'bg-white/20 text-white' : i < currentIndex ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-300'"
                     >
                         <Check v-if="i < currentIndex" class="size-3" />
                         <template v-else>{{ i + 1 }}</template>
@@ -128,18 +128,18 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                 <Transition :name="direction === 'forward' ? 'guide-forward' : 'guide-back'" mode="out-in">
                     <div :key="current.id" class="app-card space-y-5 p-6 sm:p-8">
                         <div class="flex items-center gap-3">
-                            <div class="flex size-10 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600"><component :is="current.icon" class="size-5" /></div>
-                            <h2 class="text-xl font-black text-slate-950">{{ currentIndex + 1 }}. {{ current.label }}</h2>
+                            <div class="flex size-10 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300"><component :is="current.icon" class="size-5" /></div>
+                            <h2 class="text-xl font-black text-slate-950 dark:text-slate-50">{{ currentIndex + 1 }}. {{ current.label }}</h2>
                         </div>
 
                         <!-- 1. Bienvenida -->
                         <template v-if="current.id === 's1'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Este sistema arma, mes con mes, el reporte financiero completo del negocio: cuánto se
                                 recuperó de cartera, cuánto se colocó en créditos nuevos, cuánto se gastó, cuánto se pagó
                                 de nómina, y cuál fue la utilidad del negocio — en general y por cada sucursal.
                             </p>
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Esta guía te acompaña paso a paso: crear el periodo, cargar los archivos, revisar que todo
                                 esté correcto, generar el reporte y consultarlo cuando lo necesites. Usa
                                 <strong>Siguiente</strong> para avanzar, o entra directo al módulo que te interese desde el
@@ -155,15 +155,15 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                                     { icon: Upload, t: 'Cargar archivos', d: 'Subes los archivos fuente de ese periodo.' },
                                     { icon: Sliders, t: 'Configurar y generar', d: 'Eliges tipo y alcance, y generas el reporte.' },
                                     { icon: Eye, t: 'Revisar y descargar', d: 'Consultas la vista previa y descargas Excel/PDF.' },
-                                ]" :key="i" class="rounded-2xl border border-slate-200 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md">
-                                    <div class="flex size-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+                                ]" :key="i" class="rounded-2xl border border-slate-200 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md dark:border-slate-800 dark:hover:border-indigo-800">
+                                    <div class="flex size-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300">
                                         <component :is="step.icon" class="size-4.5" />
                                     </div>
-                                    <p class="mt-3 text-sm font-black text-slate-900">{{ i + 1 }}. {{ step.t }}</p>
-                                    <p class="mt-1 text-xs leading-5 text-slate-500">{{ step.d }}</p>
+                                    <p class="mt-3 text-sm font-black text-slate-900 dark:text-slate-50">{{ i + 1 }}. {{ step.t }}</p>
+                                    <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{{ step.d }}</p>
                                 </div>
                             </div>
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Una vez generado, el reporte queda guardado — puedes consultarlo y descargarlo cuantas
                                 veces quieras desde <strong>Reportes mensuales</strong>, sin volver a generarlo.
                             </p>
@@ -171,7 +171,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 3. Alta de periodo -->
                         <template v-else-if="current.id === 's3'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Primero se crea el periodo operativo que se va a trabajar. Este periodo define las fechas
                                 y semanas que tomará en cuenta la radiografía.
                             </p>
@@ -209,7 +209,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 4. Carga de archivos -->
                         <template v-else-if="current.id === 's4'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Con el periodo mensual creado, se cargan los archivos fuente de ese mes: nómina, cobranza,
                                 colocación, cartera y gastos. El sistema muestra una tarjeta por cada archivo que se
                                 necesita para ese periodo.
@@ -243,7 +243,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 5. Carga de registros -->
                         <template v-else-if="current.id === 's5'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Después de cargar los archivos, el sistema lee su información y la prepara para el
                                 reporte. Puedes cerrar la ventana mientras procesa; al terminar te muestra si todo salió
                                 correcto o si hay algo que revisar.
@@ -278,7 +278,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 6. Incidencias -->
                         <template v-else-if="current.id === 's6'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Una incidencia es una advertencia: el sistema detectó algo que no pudo resolver solo, por
                                 ejemplo una persona sin sucursal asignada o un gasto sin identificar. No todas las
                                 incidencias bloquean el reporte, pero conviene revisarlas antes de generar.
@@ -300,20 +300,20 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 7. Configurar reporte -->
                         <template v-else-if="current.id === 's7'">
-                            <p class="text-sm leading-7 text-slate-600">Elige el tipo de reporte y qué tanto vas a revisar (alcance).</p>
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">Elige el tipo de reporte y qué tanto vas a revisar (alcance).</p>
                             <div class="grid gap-3 sm:grid-cols-2">
-                                <div class="rounded-2xl border border-slate-200 p-4">
-                                    <p class="text-xs font-black tracking-wide text-indigo-600 uppercase">Tipos de reporte</p>
-                                    <ul class="mt-2 space-y-2 text-sm text-slate-600">
+                                <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+                                    <p class="text-xs font-black tracking-wide text-indigo-600 uppercase dark:text-indigo-400">Tipos de reporte</p>
+                                    <ul class="mt-2 space-y-2 text-sm text-slate-600 dark:text-slate-300">
                                         <li><strong>Radiografía simple</strong> — para ver un periodo individual.</li>
                                         <li><strong>Comparativo mes vs mes</strong> — para comparar un mes contra otro.</li>
                                         <li><strong>Comparativo bimestre vs bimestre</strong> — compara dos bimestres.</li>
                                         <li><strong>Comparativo trimestre vs trimestre</strong> — compara dos trimestres.</li>
                                     </ul>
                                 </div>
-                                <div class="rounded-2xl border border-slate-200 p-4">
-                                    <p class="text-xs font-black tracking-wide text-indigo-600 uppercase">Alcances</p>
-                                    <ul class="mt-2 space-y-2 text-sm text-slate-600">
+                                <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+                                    <p class="text-xs font-black tracking-wide text-indigo-600 uppercase dark:text-indigo-400">Alcances</p>
+                                    <ul class="mt-2 space-y-2 text-sm text-slate-600 dark:text-slate-300">
                                         <li><strong>General</strong> — todas las sucursales juntas.</li>
                                         <li><strong>Por sucursal</strong> — para revisar una sucursal específica.</li>
                                         <li><strong>Por empleado / gestor</strong> — para revisar desempeño individual.</li>
@@ -356,7 +356,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                                     </div>
                                 </GuideMockup>
                             </div>
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Mientras se genera, el reporte pasa por los estados <strong>En cola</strong> →
                                 <strong>Procesando</strong> → <strong>Generado</strong>. Si algo realmente falla, verás
                                 <strong>Error</strong> con el motivo. Si el reporte terminó bien, siempre verás
@@ -366,7 +366,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 9. Vista previa -->
                         <template v-else-if="current.id === 's9'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 La vista previa muestra el reporte completo dentro del sistema, organizado en pestañas:
                                 resumen general, sucursales, ingresos, gastos, nómina, cartera y mora, rotación de
                                 personal y EBITDA. Cada pestaña tiene sus propios filtros para revisar el detalle.
@@ -390,7 +390,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 10. Exportación -->
                         <template v-else-if="current.id === 's10'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Desde la vista previa o desde Reportes generados puedes descargar el reporte completo.
                             </p>
                             <div class="grid gap-2 sm:grid-cols-2">
@@ -401,7 +401,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 11. Reportes generados -->
                         <template v-else-if="current.id === 's11'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Aquí se listan todos los reportes que ya generaste, con buscador y filtros por estado.
                                 Este módulo es solo para consultar reportes existentes.
                             </p>
@@ -429,7 +429,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 12. Reportes mensuales -->
                         <template v-else-if="current.id === 's12'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Un reporte mensual es la radiografía de un solo mes. Es el punto de partida: los
                                 bimestres y trimestres se arman a partir de los meses ya generados.
                             </p>
@@ -437,15 +437,15 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 13. Bimestres y trimestres -->
                         <template v-else-if="current.id === 's13'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Un bimestre o trimestre se arma automáticamente con sus meses operativos. Antes de poder
                                 generarlo, deben existir los reportes mensuales de todos los meses que lo componen — si
                                 falta alguno, el sistema te indica claramente cuál falta.
                             </p>
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 El reporte resultante muestra el rango completo del periodo, incluyendo qué meses abarca:
                             </p>
-                            <div class="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 font-mono text-xs leading-6 text-indigo-800">
+                            <div class="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 font-mono text-xs leading-6 text-indigo-800 dark:border-indigo-500/20 dark:bg-indigo-500/10 dark:text-indigo-300">
                                 Trimestre 2 - 2026<br>
                                 Abril 2026 + Mayo 2026 + Junio 2026<br>
                                 Rango: 2026-03-30 → 2026-06-21
@@ -454,21 +454,21 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 14. Comparativos -->
                         <template v-else-if="current.id === 's14'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Un comparativo pone lado a lado dos periodos del mismo tipo (mes vs mes, bimestre vs
                                 bimestre o trimestre vs trimestre) para ver qué tanto creció o bajó cada indicador.
                             </p>
-                            <div class="overflow-x-auto rounded-2xl border border-slate-200">
+                            <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
                                 <table class="w-full text-xs">
-                                    <thead class="bg-slate-50 text-slate-500">
+                                    <thead class="bg-slate-50 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
                                         <tr><th class="px-3 py-2 text-left font-black">Métrica</th><th class="px-3 py-2 text-right font-black">Mayo 2026</th><th class="px-3 py-2 text-right font-black">Junio 2026</th><th class="px-3 py-2 text-right font-black">Diferencia</th><th class="px-3 py-2 text-right font-black">Variación %</th></tr>
                                     </thead>
                                     <tbody>
-                                        <tr class="border-t"><td class="px-3 py-2 font-bold text-slate-700">Recuperación</td><td class="px-3 py-2 text-right text-slate-500">$17,697,872</td><td class="px-3 py-2 text-right text-slate-500">$17,888,527</td><td class="px-3 py-2 text-right text-emerald-600">+$190,655</td><td class="px-3 py-2 text-right font-black text-emerald-600">+1.08%</td></tr>
+                                        <tr class="border-t dark:border-slate-800"><td class="px-3 py-2 font-bold text-slate-700 dark:text-slate-200">Recuperación</td><td class="px-3 py-2 text-right text-slate-500 dark:text-slate-400">$17,697,872</td><td class="px-3 py-2 text-right text-slate-500 dark:text-slate-400">$17,888,527</td><td class="px-3 py-2 text-right text-emerald-600 dark:text-emerald-400">+$190,655</td><td class="px-3 py-2 text-right font-black text-emerald-600 dark:text-emerald-400">+1.08%</td></tr>
                                     </tbody>
                                 </table>
                             </div>
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Verde significa que la métrica subió; rojo, que bajó. Sirve para ver el crecimiento o la
                                 disminución del negocio entre un periodo y otro.
                             </p>
@@ -476,7 +476,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 15. Por sucursal -->
                         <template v-else-if="current.id === 's15'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Al elegir alcance <strong>Por sucursal</strong> en Configurar reporte, el reporte trae
                                 únicamente la información de esa sucursal: su recuperación, colocación, cartera, mora,
                                 gastos, nómina y utilidad. Útil para revisar el desempeño de una sucursal en particular
@@ -486,7 +486,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
 
                         <!-- 16. Por empleado -->
                         <template v-else-if="current.id === 's16'">
-                            <p class="text-sm leading-7 text-slate-600">
+                            <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                                 Al elegir alcance <strong>Por empleado / gestor</strong>, el reporte trae únicamente la
                                 información de esa persona: su recuperación, colocación, cartera asignada y utilidad
                                 generada. Útil para revisar el desempeño individual de un gestor.
@@ -511,13 +511,13 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                                     { icon: Users, t: 'Deducciones', d: 'Descuentos aplicados a la nómina, solo informativos.' },
                                     { icon: PiggyBank, t: 'Neto pagado', d: 'Lo que efectivamente recibió el personal.' },
                                     { icon: UserRound, t: 'Rotación de personal', d: 'Qué tanto entra y sale personal de la empresa en el periodo.' },
-                                ]" :key="i" class="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 transition hover:border-indigo-200 hover:shadow-sm">
-                                    <div class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700">
+                                ]" :key="i" class="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 transition hover:border-indigo-200 hover:shadow-sm dark:border-slate-800 dark:hover:border-indigo-800">
+                                    <div class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
                                         <component :is="k.icon" class="size-4.5" />
                                     </div>
                                     <div>
-                                        <p class="text-sm font-black text-slate-900">{{ k.t }}</p>
-                                        <p class="mt-0.5 text-xs leading-5 text-slate-500">{{ k.d }}</p>
+                                        <p class="text-sm font-black text-slate-900 dark:text-slate-50">{{ k.t }}</p>
+                                        <p class="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{{ k.d }}</p>
                                     </div>
                                 </div>
                             </div>
@@ -526,17 +526,17 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                         <!-- 18. Errores comunes -->
                         <template v-else-if="current.id === 's18'">
                             <div class="space-y-3">
-                                <div class="rounded-2xl border border-slate-200 p-4">
-                                    <p class="flex items-center gap-2 text-sm font-black text-slate-900"><AlertTriangle class="size-4 text-amber-500" />"Faltan reportes mensuales" al generar un bimestre/trimestre</p>
-                                    <p class="mt-1 text-xs leading-5 text-slate-500">Genera primero el reporte del mes o meses que indica el mensaje; después el consolidado se habilita solo.</p>
+                                <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+                                    <p class="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-slate-50"><AlertTriangle class="size-4 text-amber-500" />"Faltan reportes mensuales" al generar un bimestre/trimestre</p>
+                                    <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">Genera primero el reporte del mes o meses que indica el mensaje; después el consolidado se habilita solo.</p>
                                 </div>
-                                <div class="rounded-2xl border border-slate-200 p-4">
-                                    <p class="flex items-center gap-2 text-sm font-black text-slate-900"><AlertTriangle class="size-4 text-amber-500" />Un archivo queda en incidencia</p>
-                                    <p class="mt-1 text-xs leading-5 text-slate-500">Revisa el detalle de la incidencia y sigue la acción sugerida — casi siempre se resuelve indicando manualmente el dato faltante.</p>
+                                <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+                                    <p class="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-slate-50"><AlertTriangle class="size-4 text-amber-500" />Un archivo queda en incidencia</p>
+                                    <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">Revisa el detalle de la incidencia y sigue la acción sugerida — casi siempre se resuelve indicando manualmente el dato faltante.</p>
                                 </div>
-                                <div class="rounded-2xl border border-slate-200 p-4">
-                                    <p class="flex items-center gap-2 text-sm font-black text-slate-900"><AlertTriangle class="size-4 text-amber-500" />El reporte tarda en generarse</p>
-                                    <p class="mt-1 text-xs leading-5 text-slate-500">Es normal para una radiografía mensual — puede tardar varios minutos. Puedes cerrar la ventana; te avisamos por correo cuando esté listo.</p>
+                                <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+                                    <p class="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-slate-50"><AlertTriangle class="size-4 text-amber-500" />El reporte tarda en generarse</p>
+                                    <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">Es normal para una radiografía mensual — puede tardar varios minutos. Puedes cerrar la ventana; te avisamos por correo cuando esté listo.</p>
                                 </div>
                             </div>
                         </template>
@@ -550,14 +550,14 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                                     'Genera primero los reportes mensuales antes de un bimestre o trimestre.',
                                     'Abre Ver resultado antes de compartir un reporte, para confirmar que los números se ven correctos.',
                                     'Si algo se ve raro, compáralo contra el mes anterior con un comparativo.',
-                                ]" :key="i" class="flex items-start gap-3 rounded-2xl bg-emerald-50 p-3">
-                                    <Lightbulb class="mt-0.5 size-4 shrink-0 text-emerald-600" />
-                                    <p class="text-sm leading-6 text-emerald-800">{{ tip }}</p>
+                                ]" :key="i" class="flex items-start gap-3 rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+                                    <Lightbulb class="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                                    <p class="text-sm leading-6 text-emerald-800 dark:text-emerald-300">{{ tip }}</p>
                                 </div>
                             </div>
-                            <div class="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                                <HelpCircle class="mt-0.5 size-5 shrink-0 text-slate-500" />
-                                <p class="text-sm leading-6 text-slate-600">
+                            <div class="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-800/60">
+                                <HelpCircle class="mt-0.5 size-5 shrink-0 text-slate-500 dark:text-slate-400" />
+                                <p class="text-sm leading-6 text-slate-600 dark:text-slate-300">
                                     ¿Tienes dudas que esta guía no resuelve? Descarga la versión en PDF para consultarla
                                     sin conexión, o contacta al equipo responsable del sistema.
                                 </p>
@@ -570,7 +570,7 @@ function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
                 <div class="flex items-center justify-between">
                     <button
                         type="button"
-                        class="inline-flex h-11 items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-600 shadow-sm transition duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md disabled:pointer-events-none disabled:opacity-40"
+                        class="inline-flex h-11 items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-600 shadow-sm transition duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md disabled:pointer-events-none disabled:opacity-40 dark:border-slate-800 dark:bg-card dark:text-slate-300 dark:hover:border-slate-700"
                         :disabled="isFirst"
                         @click="prev"
                     >
