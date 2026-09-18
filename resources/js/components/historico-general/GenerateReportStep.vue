@@ -457,7 +457,19 @@ const statusConfig = computed(() => {
                             <p class="flex items-center gap-1.5"><CheckCircle class="size-3.5" />Excel listo</p>
                             <p class="flex items-center gap-1.5"><CheckCircle class="size-3.5" />PDF listo</p>
                         </div>
-                        <div v-if="!isFailed && (isDone || liveExcelUrl || livePdfUrl)" class="mt-4 flex flex-wrap gap-2">
+                        <!-- Fix 18-sep-2026: liveExcelUrl/livePdfUrl ya vienen resueltos por el
+                             backend contra el ÚLTIMO ÉXITO de esta identidad (ver
+                             ReportUploadController::generationProgress() — "independiente de si
+                             el intento más reciente... está processing/failed"). Antes este bloque
+                             tenía "v-if=!isFailed" y escondía los botones cuando el intento MÁS
+                             RECIENTE fallaba, aunque una versión anterior de la MISMA identidad
+                             siguiera teniendo Excel/PDF válidos en disco — el usuario solo podía
+                             descargarlos desde el módulo de Historial de reportes, nunca desde
+                             aquí. -->
+                        <p v-if="isFailed && (liveExcelUrl || livePdfUrl)" class="mt-3 text-xs font-bold text-slate-500 dark:text-slate-400">
+                            El último intento falló, pero la versión anterior generada sigue disponible:
+                        </p>
+                        <div v-if="isDone || liveExcelUrl || livePdfUrl" class="mt-4 flex flex-wrap gap-2">
                             <a
                                 v-if="liveExcelUrl"
                                 :href="liveExcelUrl"
@@ -591,8 +603,10 @@ const statusConfig = computed(() => {
                         :disabled="(!canGenerate && !isFailed && !isCancelled) || isSubmitting"
                         @click="emit('generate')"
                     >
-                        <Play class="size-4" />
-                        <span v-if="isFailed">Reintentar generación</span>
+                        <LoaderCircle v-if="isSubmitting" class="size-4 animate-spin" />
+                        <Play v-else class="size-4" />
+                        <span v-if="isSubmitting">Enviando...</span>
+                        <span v-else-if="isFailed">Reintentar generación</span>
                         <span v-else-if="isCancelled">Reiniciar generación</span>
                         <span v-else-if="isDone">Volver a generar</span>
                         <span v-else-if="hasPreviousReport">Regenerar reporte</span>

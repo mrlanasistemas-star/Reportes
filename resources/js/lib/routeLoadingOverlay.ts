@@ -23,6 +23,32 @@ import { router } from '@inertiajs/vue3';
 const OVERLAY_ID = 'fv-route-loading';
 const SHOW_DELAY_MS = 600;
 
+// Cierre 18-sep-2026 — "Generar reporte"/"Cargar registros" solo encolan un Job
+// (GenerateRadiographyJob/UpdatePeriodDatabaseJob) y el backend responde de inmediato;
+// el resto lo hace el worker en segundo plano y avisa por correo. Antes, este mismo
+// router.post (Inertia) disparaba el overlay global de pantalla completa como si fuera
+// una navegación pesada, dando la sensación de que el navegador se quedaba bloqueado
+// esperando terminar TODA la generación. Estas rutas solo confirman "job encolado" —
+// el feedback correcto es el spinner local del botón (ya implementado en
+// Historico-General/index.vue vía isGeneratingReport/isSubmitting) + el toast/alert de
+// "en cola", nunca el overlay de página completa. NO incluye incidencias (fuera de
+// alcance de este fix) ni procesar-ahora (ese sí bloquea la pestaña a propósito, y ya
+// tiene su propio SweetAlert de "Procesando…").
+const BACKGROUND_ENQUEUE_PATH_PATTERNS: RegExp[] = [
+    /\/generar-radiografia$/,
+    /\/generar-reporte\/cancelar$/,
+    /\/actualizar-bd$/,
+    /\/actualizacion-bd\/cancelar$/,
+    /\/actualizacion-bd\/reencolar$/,
+    /\/actualizacion-bd\/limpiar$/,
+    /\/procesar-fuentes-pendientes$/,
+    /\/reprocesar-fuentes-con-error$/,
+];
+
+function isBackgroundEnqueueVisit(url: URL): boolean {
+    return BACKGROUND_ENQUEUE_PATH_PATTERNS.some((pattern) => pattern.test(url.pathname));
+}
+
 let overlayEl: HTMLDivElement | null = null;
 let showTimer: ReturnType<typeof setTimeout> | undefined;
 let refCount = 0;
@@ -69,6 +95,12 @@ export function hideRouteLoading(): void {
 }
 
 export function attachInertiaRouteLoading(): void {
-    router.on('start', () => showRouteLoading());
-    router.on('finish', () => hideRouteLoading());
+    router.on('start', (event) => {
+        if (isBackgroundEnqueueVisit(event.detail.visit.url)) return;
+        showRouteLoading();
+    });
+    router.on('finish', (event) => {
+        if (isBackgroundEnqueueVisit(event.detail.visit.url)) return;
+        hideRouteLoading();
+    });
 }
