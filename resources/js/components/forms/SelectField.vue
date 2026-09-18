@@ -29,6 +29,7 @@ const props = withDefaults(defineProps<{
 
 const internalValue = computed(() => {
   const v = model.value
+
   return v === '' || v === null || v === undefined ? SENTINEL_EMPTY : String(v)
 })
 

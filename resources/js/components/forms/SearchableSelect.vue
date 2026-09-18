@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, ChevronsUpDown, Search, X } from 'lucide-vue-next'
 // FocusScope real de reka-ui (no un hack propio) — el panel se teletransporta a
 // <body>, así que cuando este componente vive DENTRO de un shadcn Dialog, el
@@ -10,6 +9,7 @@ import { Check, ChevronsUpDown, Search, X } from 'lucide-vue-next'
 // arriba en la pila (mismo mecanismo que usan los propios Select/Popover de
 // reka-ui anidados en un Dialog) y lo reanuda al cerrarse.
 import { FocusScope } from 'reka-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 type OptionLike = Record<string, any>
 
@@ -61,7 +61,10 @@ const buttonId = computed(() => props.id ?? uid)
 
 const selected = computed<OptionLike | null>(() => {
   const value = props.modelValue
-  if (value === null || value === undefined || value === '') return null
+
+  if (value === null || value === undefined || value === '') {
+return null
+}
 
   return props.options.find(
     (item) => String(item?.[props.valueKey]) === String(value),
@@ -70,11 +73,15 @@ const selected = computed<OptionLike | null>(() => {
 
 const filteredOptions = computed(() => {
   const term = query.value.trim().toLowerCase()
-  if (!term) return props.options
+
+  if (!term) {
+return props.options
+}
 
   return props.options.filter((item) => {
     const main = String(item?.[props.labelKey] ?? '').toLowerCase()
     const secondary = String(item?.[props.secondaryKey] ?? '').toLowerCase()
+
     return main.includes(term) || secondary.includes(term)
   })
 })
@@ -91,7 +98,10 @@ const close = () => {
 }
 
 const toggle = async () => {
-  if (props.disabled) return
+  if (props.disabled) {
+return
+}
+
   open.value = !open.value
 
   if (open.value) {
@@ -104,7 +114,10 @@ const toggle = async () => {
 const updatePosition = () => {
   const button = buttonRef.value
   const panel = panelRef.value
-  if (!button || !panel) return
+
+  if (!button || !panel) {
+return
+}
 
   const rect = button.getBoundingClientRect()
   const viewportWidth = window.innerWidth
@@ -129,11 +142,15 @@ const updatePosition = () => {
 }
 
 const handleEscape = (event: KeyboardEvent) => {
-  if (event.key === 'Escape' && open.value) close()
+  if (event.key === 'Escape' && open.value) {
+close()
+}
 }
 
 const handleReflow = () => {
-  if (open.value) updatePosition()
+  if (open.value) {
+updatePosition()
+}
 }
 
 onMounted(() => {
@@ -151,7 +168,10 @@ onBeforeUnmount(() => {
 watch(
   () => props.options,
   async () => {
-    if (!open.value) return
+    if (!open.value) {
+return
+}
+
     await nextTick()
     updatePosition()
   },

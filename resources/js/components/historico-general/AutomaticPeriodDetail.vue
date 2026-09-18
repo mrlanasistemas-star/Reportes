@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import {
     Ban, CalendarDays, CheckCircle2, Clock, FileSpreadsheet,
     FileText, Info, Layers3, LoaderCircle, Play, XCircle,
 } from 'lucide-vue-next'
+import { computed } from 'vue'
 import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps<{ period: any }>()
@@ -18,8 +18,14 @@ const canConsolidate  = computed(() => !!props.period?.can_generate_automatic &&
 const isWaiting       = computed(() => !isConsolidated.value && !canConsolidate.value && !isRunning.value && !isFailed.value && !isCancelled.value)
 
 const overallStatus = computed(() => {
-    if (isConsolidated.value) return 'consolidated'
-    if (canConsolidate.value || isRunning.value) return 'ready_to_consolidate'
+    if (isConsolidated.value) {
+return 'consolidated'
+}
+
+    if (canConsolidate.value || isRunning.value) {
+return 'ready_to_consolidate'
+}
+
     return 'waiting'
 })
 

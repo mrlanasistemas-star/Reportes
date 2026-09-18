@@ -1,4 +1,5 @@
-import { computed, ref, type Ref } from 'vue'
+import { computed, ref  } from 'vue'
+import type {Ref} from 'vue';
 
 export function useHistoricWorkflow(period: any, incidents: any, configValid?: Ref<boolean>) {
     const currentStep = ref('files')
@@ -99,7 +100,10 @@ export function useHistoricWorkflow(period: any, incidents: any, configValid?: R
 
     const selectStep = (key: string) => {
         const step = steps.value.find((item: any) => item.key === key)
-        if (step && step.status !== 'blocked') currentStep.value = key
+
+        if (step && step.status !== 'blocked') {
+currentStep.value = key
+}
     }
 
     return { currentStep, steps, selectStep }

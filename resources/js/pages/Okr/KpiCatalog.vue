@@ -2,20 +2,20 @@
 // Módulo OKR — Catálogo de KPI (rediseño 08-sep-2026, sección AF del pedido).
 // Ancho completo del contenedor — nunca max-w-5xl. Solo administradores
 // (users.role='admin') pueden entrar aquí — ver OkrServiceProvider.
-import { ref } from 'vue'
 import { Link, useForm } from '@inertiajs/vue3'
 import { ArrowDown, ArrowLeft, ArrowUp, Plus, Sparkles } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
-import AppLayout from '@/layouts/AppLayout.vue'
+import { ref } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
-import TextField from '@/components/forms/TextField.vue'
 import SelectField from '@/components/forms/SelectField.vue'
-import { Button } from '@/components/ui/button'
+import TextField from '@/components/forms/TextField.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
+import { Button } from '@/components/ui/button'
+import AppLayout from '@/layouts/AppLayout.vue'
 
 defineOptions({ layout: AppLayout })
 
-const props = defineProps<{ kpis: any[]; availableProviders: string[] }>()
+defineProps<{ kpis: any[]; availableProviders: string[] }>()
 
 const showCreate = ref(false)
 const form = useForm({

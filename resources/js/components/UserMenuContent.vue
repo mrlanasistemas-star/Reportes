@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Link, router } from '@inertiajs/vue3';
 import { LogOut, Settings } from 'lucide-vue-next';
+import Swal from 'sweetalert2';
 import {
     DropdownMenuGroup,
     DropdownMenuItem,
@@ -11,7 +12,6 @@ import UserInfo from '@/components/UserInfo.vue';
 import { logout } from '@/routes';
 import { edit } from '@/routes/profile';
 import type { User } from '@/types';
-import Swal from 'sweetalert2';
 
 type Props = {
     user: User;
@@ -48,11 +48,16 @@ const confirmLogout = async () => {
         },
         didOpen: () => {
             const activeInside = document.activeElement as HTMLElement | null;
-            if (activeInside?.blur) activeInside.blur();
+
+            if (activeInside?.blur) {
+activeInside.blur();
+}
         },
     });
 
-    if (!result.isConfirmed) return;
+    if (!result.isConfirmed) {
+return;
+}
 
     router.flushAll();
     router.post(logout());

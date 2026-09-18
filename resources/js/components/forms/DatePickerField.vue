@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { parseDate } from '@internationalized/date'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import { Calendar as CalendarIcon, X } from 'lucide-vue-next'
-import { parseDate } from '@internationalized/date'
 // El tipo DateValue se toma de "reka-ui" (no de "@internationalized/date" directo)
 // porque es el que espera <Calendar> (ver components/ui/calendar/Calendar.vue) —
 // aunque describen el mismo valor en tiempo de ejecución, son declaraciones de tipo
 // distintas y TypeScript las trataba como incompatibles al hacer v-model="selected".
 import type { DateValue } from 'reka-ui'
+import { computed, ref, watch } from 'vue'
 
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
@@ -37,7 +37,10 @@ const open = ref(false)
 const selected = ref<DateValue | undefined>(undefined)
 
 const toDateValue = (value: Model): DateValue | undefined => {
-  if (!value) return undefined
+  if (!value) {
+return undefined
+}
+
   try {
     return parseDate(value)
   } catch {
@@ -55,13 +58,21 @@ watch(
 
 const displayValue = computed(() => {
   const value = selected.value
-  if (!value) return ''
+
+  if (!value) {
+return ''
+}
+
   const localDate = new Date(value.year, value.month - 1, value.day)
+
   return format(localDate, 'dd/MM/yyyy', { locale: es })
 })
 
 const onPick = (value: DateValue | undefined) => {
-  if (!value) return
+  if (!value) {
+return
+}
+
   selected.value = value
   emit('update:modelValue', value.toString())
   open.value = false

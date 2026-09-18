@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { ArrowLeftRight } from 'lucide-vue-next'
+import { computed } from 'vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 
 type PeriodOption = { id: number; label: string; code: string; type: string; has_snapshot: boolean }
@@ -28,7 +28,10 @@ const periodAType = computed(() => props.periods.find(p => p.id === periodA.valu
 
 const periodAOptions = computed(() => props.periods.filter(p => p.has_snapshot))
 const periodBOptions = computed(() => {
-    if (!periodAType.value) return props.periods.filter(p => p.has_snapshot)
+    if (!periodAType.value) {
+return props.periods.filter(p => p.has_snapshot)
+}
+
     return props.periods.filter(p => p.has_snapshot && p.type === periodAType.value && p.id !== periodA.value)
 })
 

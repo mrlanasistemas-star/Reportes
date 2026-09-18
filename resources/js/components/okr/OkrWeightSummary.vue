@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Resumen visual de ponderación (sección V del pedido) — barra + estado.
-import { computed } from 'vue'
 import { AlertTriangle, CheckCircle2 } from 'lucide-vue-next'
+import { computed } from 'vue'
 import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
 
 const props = defineProps<{ total: number }>()
@@ -9,8 +9,6 @@ const props = defineProps<{ total: number }>()
 const rounded = computed(() => Math.round(props.total * 100) / 100)
 const isValid = computed(() => Math.abs(rounded.value - 100) < 0.01)
 const isOver = computed(() => rounded.value > 100)
-
-const tone = computed(() => (isValid.value ? 'success' : 'warning'))
 </script>
 
 <template>

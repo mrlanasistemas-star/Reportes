@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { Filter, Search, X } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 
 defineProps<{
     branchOptions: string[]

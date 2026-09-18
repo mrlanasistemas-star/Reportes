@@ -16,9 +16,6 @@ import {
 
 import { mainNavItems } from '@/config/mainNav';
 import { dashboard } from '@/routes';
-import type { NavItem } from '@/types';
-
-const footerNavItems: NavItem[] = [];
 </script>
 
 <template>

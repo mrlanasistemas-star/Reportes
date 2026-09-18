@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import AppLayout from '@/layouts/AppLayout.vue'
+import ComparativeHero from '@/components/comparative/ComparativeHero.vue'
+import ComparativeKpiCard from '@/components/comparative/ComparativeKpiCard.vue'
+import ComparativeSelectors from '@/components/comparative/ComparativeSelectors.vue'
+import ComparativeTable from '@/components/comparative/ComparativeTable.vue'
 import ChartCard from '@/components/radiography/ChartCard.vue'
 import { Skeleton } from '@/components/ui/skeleton'
-import ComparativeHero from '@/components/comparative/ComparativeHero.vue'
-import ComparativeSelectors from '@/components/comparative/ComparativeSelectors.vue'
-import ComparativeKpiCard from '@/components/comparative/ComparativeKpiCard.vue'
-import ComparativeTable from '@/components/comparative/ComparativeTable.vue'
+import AppLayout from '@/layouts/AppLayout.vue'
 import { columnOptions, percentColumnOptions, donutOptions, radialBarOptions, chartColors } from '@/lib/chart-theme'
 import { HEADLINE_METRICS, CHART_CURRENCY_METRICS, CHART_PERCENT_METRICS, toneFor } from '@/lib/comparative-metrics'
 
@@ -45,24 +45,38 @@ let employeesController: AbortController | null = null
 let employeesVersion = 0
 
 async function fetchEmployees() {
-    if (!periodA.value) { employees.value = []; return }
+    if (!periodA.value) {
+ employees.value = [];
+
+ return 
+}
+
     employeesController?.abort()
     const controller = new AbortController()
     employeesController = controller
     const myVersion = ++employeesVersion
     employeesLoading.value = true
+
     try {
         const resp = await fetch(`${props.employeesLookupUrl}?period_id=${periodA.value}`, {
             signal: controller.signal, cache: 'no-store',
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         })
         const json = await resp.json()
-        if (myVersion !== employeesVersion) return
+
+        if (myVersion !== employeesVersion) {
+return
+}
+
         employees.value = json.employees ?? []
     } catch (e: any) {
-        if (e?.name === 'AbortError') return
+        if (e?.name === 'AbortError') {
+return
+}
     } finally {
-        if (myVersion === employeesVersion) employeesLoading.value = false
+        if (myVersion === employeesVersion) {
+employeesLoading.value = false
+}
     }
 }
 
@@ -82,20 +96,50 @@ let dataVersion = 0
 
 function updateQueryString() {
     const params = new URLSearchParams()
-    if (periodA.value) params.set('period_a', String(periodA.value))
-    if (periodB.value) params.set('period_b', String(periodB.value))
-    if (scope.value !== 'general') params.set('scope', scope.value)
-    if (scope.value === 'branch' && branchId.value) params.set('branch_id', String(branchId.value))
-    if (scope.value === 'employee' && employeeId.value) params.set('employee_id', String(employeeId.value))
+
+    if (periodA.value) {
+params.set('period_a', String(periodA.value))
+}
+
+    if (periodB.value) {
+params.set('period_b', String(periodB.value))
+}
+
+    if (scope.value !== 'general') {
+params.set('scope', scope.value)
+}
+
+    if (scope.value === 'branch' && branchId.value) {
+params.set('branch_id', String(branchId.value))
+}
+
+    if (scope.value === 'employee' && employeeId.value) {
+params.set('employee_id', String(employeeId.value))
+}
+
     const url = new URL(window.location.href)
     url.search = `?${params.toString()}`
     window.history.replaceState({}, '', url)
 }
 
 async function fetchComparativeData() {
-    if (!periodA.value || !periodB.value) { error.value = 'Selecciona los dos periodos a comparar.'; return }
-    if (scope.value === 'branch' && !branchId.value) { error.value = 'Selecciona una sucursal.'; return }
-    if (scope.value === 'employee' && !employeeId.value) { error.value = 'Selecciona un colaborador.'; return }
+    if (!periodA.value || !periodB.value) {
+ error.value = 'Selecciona los dos periodos a comparar.';
+
+ return 
+}
+
+    if (scope.value === 'branch' && !branchId.value) {
+ error.value = 'Selecciona una sucursal.';
+
+ return 
+}
+
+    if (scope.value === 'employee' && !employeeId.value) {
+ error.value = 'Selecciona un colaborador.';
+
+ return 
+}
 
     dataController?.abort()
     const controller = new AbortController()
@@ -103,27 +147,51 @@ async function fetchComparativeData() {
     const myVersion = ++dataVersion
 
     const params = new URLSearchParams({ period_a: String(periodA.value), period_b: String(periodB.value), scope: scope.value })
-    if (scope.value === 'branch' && branchId.value) params.set('branch_id', String(branchId.value))
-    if (scope.value === 'employee' && employeeId.value) params.set('employee_id', String(employeeId.value))
+
+    if (scope.value === 'branch' && branchId.value) {
+params.set('branch_id', String(branchId.value))
+}
+
+    if (scope.value === 'employee' && employeeId.value) {
+params.set('employee_id', String(employeeId.value))
+}
 
     loading.value = true
     error.value = null
+
     try {
         const resp = await fetch(`${props.comparativeDataUrl}?${params}`, {
             signal: controller.signal, cache: 'no-store',
             headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         })
         const json = await resp.json()
-        if (myVersion !== dataVersion) return
-        if (!resp.ok) { error.value = json.error ?? `Error ${resp.status} al construir el comparativo.`; return }
+
+        if (myVersion !== dataVersion) {
+return
+}
+
+        if (!resp.ok) {
+ error.value = json.error ?? `Error ${resp.status} al construir el comparativo.`;
+
+ return 
+}
+
         data.value = json
         updateQueryString()
     } catch (e: any) {
-        if (e?.name === 'AbortError') return
-        if (myVersion !== dataVersion) return
+        if (e?.name === 'AbortError') {
+return
+}
+
+        if (myVersion !== dataVersion) {
+return
+}
+
         error.value = e?.message ?? 'Error de red al construir el comparativo.'
     } finally {
-        if (myVersion === dataVersion) loading.value = false
+        if (myVersion === dataVersion) {
+loading.value = false
+}
     }
 }
 
@@ -134,7 +202,10 @@ function swapPeriods() {
 }
 
 watch(periodA, () => {
-    if (scope.value === 'employee') employeeId.value = null
+    if (scope.value === 'employee') {
+employeeId.value = null
+}
+
     fetchEmployees()
 })
 
@@ -193,6 +264,7 @@ function carteraComposicion(valorRow: Row | undefined, vencidaRow: Row | undefin
     const cartera = valorRow ? valorRow[key] : 0
     const vencida = vencidaRow ? vencidaRow[key] : 0
     const sana = Math.max(0, cartera - vencida)
+
     return [Math.round(sana * 100) / 100, Math.round(vencida * 100) / 100]
 }
 const carteraValorRow = computed(() => rows.value.find(r => r.label === 'Valor cartera'))

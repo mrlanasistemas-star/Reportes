@@ -47,6 +47,7 @@ if ('serviceWorker' in navigator) {
 // Ninguno de los dos cambia el comportamiento normal (200 OK) de ninguna pantalla.
 router.on('httpException', (event) => {
     const status = event.detail.response?.status;
+
     if (status === 419 || status === 401) {
         event.preventDefault();
         window.location.reload();
@@ -57,6 +58,7 @@ const originalFetch = window.fetch.bind(window);
 let sessionExpiredNoticeShown = false;
 window.fetch = async (...args: Parameters<typeof fetch>) => {
     const response = await originalFetch(...args);
+
     if ((response.status === 419 || response.status === 401) && !sessionExpiredNoticeShown) {
         sessionExpiredNoticeShown = true;
         Swal.fire({
@@ -69,6 +71,7 @@ window.fetch = async (...args: Parameters<typeof fetch>) => {
             allowOutsideClick: false,
         }).then(() => window.location.reload());
     }
+
     return response;
 };
 

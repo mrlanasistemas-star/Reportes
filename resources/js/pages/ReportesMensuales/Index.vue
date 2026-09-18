@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { Head } from '@inertiajs/vue3'
 import {
     CalendarRange, Eye, FileBarChart2, FileSpreadsheet, FileText,
     GitCompareArrows, Search, Building2, UserRound,
 } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 
 import AppLayout from '@/layouts/AppLayout.vue'
 
@@ -102,12 +102,14 @@ const filterStatus = ref('')
 const filteredReports = computed(() => {
     const q = searchQuery.value.trim().toLowerCase()
     const s = filterStatus.value.toLowerCase()
+
     return props.generatedReports.filter((r) => {
         const matchSearch = !q
             || r.name?.toLowerCase().includes(q)
             || r.period?.toLowerCase().includes(q)
             || r.type?.toLowerCase().includes(q)
         const matchStatus = !s || r.status?.toLowerCase() === s
+
         return matchSearch && matchStatus
     })
 })
@@ -116,8 +118,14 @@ const filteredReports = computed(() => {
 // más info, nunca solo el nombre del periodo). Nunca inventa nada — solo formatea
 // lo que ya viene del backend (periods.start_date/end_date reales).
 function dateRange(startDate?: string | null, endDate?: string | null): string | null {
-    if (!startDate && !endDate) return null
-    if (startDate && endDate) return `${startDate} → ${endDate}`
+    if (!startDate && !endDate) {
+return null
+}
+
+    if (startDate && endDate) {
+return `${startDate} → ${endDate}`
+}
+
     return startDate || endDate || null
 }
 </script>

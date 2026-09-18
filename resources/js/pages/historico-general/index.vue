@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
 import { Head, router, useForm } from '@inertiajs/vue3'
-import Swal from 'sweetalert2'
 import { CalendarDays } from 'lucide-vue-next'
-import AppLayout from '@/layouts/AppLayout.vue'
-import WorkflowStepper from '@/components/historico-general/WorkflowStepper.vue'
-import PeriodSelector from '@/components/historico-general/PeriodSelector.vue'
-import UploadSourcesStep from '@/components/historico-general/UploadSourcesStep.vue'
-import DatabaseUpdateStep from '@/components/historico-general/DatabaseUpdateStep.vue'
-import IncidentsStep from '@/components/historico-general/IncidentsStep.vue'
-import ReportConfigurationStep from '@/components/historico-general/ReportConfigurationStep.vue'
-import GenerateReportStep from '@/components/historico-general/GenerateReportStep.vue'
-import ReportPreview from '@/components/historico-general/ReportPreview.vue'
-import GeneratedReportActions from '@/components/historico-general/GeneratedReportActions.vue'
+import Swal from 'sweetalert2'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import AutomaticPeriodDetail from '@/components/historico-general/AutomaticPeriodDetail.vue'
+import DatabaseUpdateStep from '@/components/historico-general/DatabaseUpdateStep.vue'
+import GeneratedReportActions from '@/components/historico-general/GeneratedReportActions.vue'
+import GenerateReportStep from '@/components/historico-general/GenerateReportStep.vue'
+import IncidentsStep from '@/components/historico-general/IncidentsStep.vue'
+import PeriodSelector from '@/components/historico-general/PeriodSelector.vue'
+import ReportConfigurationStep from '@/components/historico-general/ReportConfigurationStep.vue'
+import ReportPreview from '@/components/historico-general/ReportPreview.vue'
+import UploadSourcesStep from '@/components/historico-general/UploadSourcesStep.vue'
+import WorkflowStepper from '@/components/historico-general/WorkflowStepper.vue'
 import { useHistoricWorkflow } from '@/composables/useHistoricWorkflow'
+import AppLayout from '@/layouts/AppLayout.vue'
 
 defineOptions({ layout: AppLayout })
 
@@ -64,23 +64,42 @@ const reportConfig     = ref({
 // usuario cambia la configuración sin volver a pasar por Etapa 5, no se reutiliza un
 // estado de una identidad distinta (ver coincide() en cada componente consumidor).
 const identityState = ref<any>(null)
-const handleIdentityState = (payload: any) => { identityState.value = payload }
+const handleIdentityState = (payload: any) => {
+ identityState.value = payload 
+}
 
 const period  = computed(() => props.periods.find((p) => p.id === selectedPeriodId.value) ?? null)
 const grouped = computed(() => props.groupedUploads.find((p) => p.period_id === selectedPeriodId.value) ?? null)
 const uploadsBySource = computed(() => {
     const map: Record<string, any> = {}
-    for (const u of grouped.value?.uploads ?? []) map[u.source_code] = u
+
+    for (const u of grouped.value?.uploads ?? []) {
+map[u.source_code] = u
+}
+
     return map
 })
 
 // True when the report config in Step 4 is complete enough to proceed to Step 5.
 const configValid = computed(() => {
     const cfg = reportConfig.value
-    if (!cfg.report_type) return false
-    if (cfg.report_type !== 'simple' && !cfg.compare_period_id) return false
-    if (cfg.scope === 'branch') return cfg.branch_id !== null
-    if (cfg.scope === 'employee') return cfg.employee_id !== null
+
+    if (!cfg.report_type) {
+return false
+}
+
+    if (cfg.report_type !== 'simple' && !cfg.compare_period_id) {
+return false
+}
+
+    if (cfg.scope === 'branch') {
+return cfg.branch_id !== null
+}
+
+    if (cfg.scope === 'employee') {
+return cfg.employee_id !== null
+}
+
     return cfg.included_branch_ids.length > 0
 })
 
@@ -89,13 +108,17 @@ const form = useForm({ period_id: '', data_source_id: '', file: null as File | n
 
 // ── Carga de incidencias ──────────────────────────────────────────────
 async function loadIncidents() {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const wasBlocked = !period.value?.can_generate_radiography
     const res  = await fetch(`/historico-general/${selectedPeriodId.value}/incidencias`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     const data = await res.json()
     incidents.value      = data.items ?? []
     incidentsHasData.value = data.has_data !== false  // undefined = true (old API compat)
     incidentsNoDataMsg.value = data.message ?? ''
+
     // When the period was blocked and all critical incidents are now resolved, refresh the
     // Inertia period prop so can_generate_radiography updates without a full page reload.
     if (wasBlocked && data.has_data !== false && data.has_critical === false) {
@@ -108,7 +131,12 @@ async function loadIncidents() {
 // en el primer render de la página, que corresponde a otro periodo en cuanto el
 // usuario cambia la selección en el stepper.
 async function loadPeriodEmployees() {
-    if (!selectedPeriodId.value) { periodEmployees.value = []; return }
+    if (!selectedPeriodId.value) {
+ periodEmployees.value = [];
+
+ return 
+}
+
     try {
         const res  = await fetch(`/historico-general/${selectedPeriodId.value}/colaboradores`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         const data = await res.json()
@@ -124,8 +152,11 @@ watch(selectedPeriodId, () => {
     incidentsNoDataMsg.value = ''
     currentStep.value      = 'files'
     loadPeriodEmployees()
+
     // Solo cargar incidencias si los registros ya fueron cargados
-    if (period.value?.database_updated) loadIncidents()
+    if (period.value?.database_updated) {
+loadIncidents()
+}
 }, { immediate: true })
 
 // ── Polling ──────────────────────────────────────────────────────────
@@ -135,25 +166,36 @@ const isRadioGenerating = computed(() => ['queued', 'running'].includes(period.v
 let pollInterval: ReturnType<typeof setInterval> | null = null
 
 function startPolling() {
-    if (pollInterval) return
+    if (pollInterval) {
+return
+}
+
     pollInterval = setInterval(() => {
         router.reload({ only: ['periods', 'groupedUploads'] })
     }, 7000)
 }
 
 function stopPolling() {
-    if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
+    if (pollInterval) {
+ clearInterval(pollInterval); pollInterval = null 
+}
 }
 
 watch([isDbUpdating, isRadioGenerating], ([db, radio]) => {
-    if (db || radio) startPolling()
-    else stopPolling()
+    if (db || radio) {
+startPolling()
+} else {
+stopPolling()
+}
 }, { immediate: true })
 
 // Notificar cuando BD termina (queued/running → success/failed)
 watch(() => period.value?.database_update_run_status, (newStatus, oldStatus) => {
     const wasRunning = ['queued', 'running'].includes(String(oldStatus ?? ''))
-    if (!wasRunning) return
+
+    if (!wasRunning) {
+return
+}
 
     if (newStatus === 'success') {
         loadIncidents().then(() => {
@@ -166,7 +208,9 @@ watch(() => period.value?.database_update_run_status, (newStatus, oldStatus) => 
                 cancelButtonText: 'Continuar después',
                 reverseButtons: true,
             }).then((r) => {
-                if (r.isConfirmed) selectStep('incidents')
+                if (r.isConfirmed) {
+selectStep('incidents')
+}
             })
         })
     } else if (newStatus === 'failed') {
@@ -189,7 +233,10 @@ watch(() => period.value?.database_update_run_status, (newStatus, oldStatus) => 
 // Notificar cuando la generación de reporte termina (queued/running → success/failed)
 watch(() => period.value?.radiography_run_status, (newStatus, oldStatus) => {
     const wasRunning = ['queued', 'running'].includes(String(oldStatus ?? ''))
-    if (!wasRunning) return
+
+    if (!wasRunning) {
+return
+}
 
     if (newStatus === 'success' || (newStatus === 'failed' && period.value?.radiography_ready)) {
         // El run más reciente puede marcar 'failed' (ej. un paso posterior a la
@@ -202,7 +249,9 @@ watch(() => period.value?.radiography_run_status, (newStatus, oldStatus) => {
             icon: 'success',
             confirmButtonText: 'Ver resultado',
         }).then(() => {
-            if (!period.value?.is_derived) selectStep('generate')
+            if (!period.value?.is_derived) {
+selectStep('generate')
+}
         })
     } else if (newStatus === 'failed') {
         Swal.fire({
@@ -229,10 +278,22 @@ const toastError = (title: string, text: string) =>
 
 // ── Acciones ──────────────────────────────────────────────────────────
 const uploadFile = async ({ sourceId, file }: { sourceId: number; file: File }) => {
-    if (!period.value) return toastError('Selecciona periodo', 'Elige un periodo antes de cargar archivos.')
-    if (period.value.type === 'weekly') return toastError('Semana base', 'Los archivos se suben al mes operativo que agrupa esta semana. Selecciona el mes operativo correspondiente.')
-    if (period.value.is_derived) return toastError('Periodo automático', 'Este periodo es automático (bimestral/trimestral/etc.) y no recibe archivos directos.')
-    if (!period.value.can_receive_uploads) return toastError('Mes sin configurar', 'Este mes operativo no tiene semanas asociadas. Ve a Periodos para configurarlo primero.')
+    if (!period.value) {
+return toastError('Selecciona periodo', 'Elige un periodo antes de cargar archivos.')
+}
+
+    if (period.value.type === 'weekly') {
+return toastError('Semana base', 'Los archivos se suben al mes operativo que agrupa esta semana. Selecciona el mes operativo correspondiente.')
+}
+
+    if (period.value.is_derived) {
+return toastError('Periodo automático', 'Este periodo es automático (bimestral/trimestral/etc.) y no recibe archivos directos.')
+}
+
+    if (!period.value.can_receive_uploads) {
+return toastError('Mes sin configurar', 'Este mes operativo no tiene semanas asociadas. Ve a Periodos para configurarlo primero.')
+}
+
     form.period_id         = String(selectedPeriodId.value)
     form.data_source_id    = String(sourceId)
     form.file              = file
@@ -245,14 +306,25 @@ const uploadFile = async ({ sourceId, file }: { sourceId: number; file: File }) 
 
 const deleteUpload = async (id: number) => {
     const result = await Swal.fire({ title: '¿Eliminar archivo?', text: 'Se quitará esta fuente del periodo.', icon: 'warning', showCancelButton: true, confirmButtonText: 'Sí, eliminar', cancelButtonText: 'Cancelar', reverseButtons: true })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     router.delete(`/historico-general/${id}`, { preserveScroll: true, onSuccess: () => Swal.fire('Archivo eliminado', 'La fuente fue retirada correctamente.', 'success'), onError: () => Swal.fire('No se pudo eliminar', 'Intenta nuevamente.', 'error') })
 }
 
 const updateDatabase = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const result = await Swal.fire({ title: 'Cargar registros', text: 'Se enviará el proceso a cola. Recibirás un correo cuando termine.', icon: 'info', showCancelButton: true, confirmButtonText: 'Enviar a cola', cancelButtonText: 'Cancelar', reverseButtons: true })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/actualizar-bd`, {}, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Proceso en cola', text: 'Puedes cerrar esta ventana. Te avisaremos por correo cuando los registros terminen de cargarse.', icon: 'success', confirmButtonText: 'Entendido' }),
@@ -266,7 +338,10 @@ const hasCriticalIncidents = computed(() =>
 )
 
 const cancelDatabaseUpdate = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const result = await Swal.fire({
         title: '¿Cancelar la carga de registros?',
         text: 'El proceso se marcará como cancelado. Podrás reiniciarlo desde la etapa de Cargar registros.',
@@ -277,7 +352,11 @@ const cancelDatabaseUpdate = async () => {
         reverseButtons: true,
         confirmButtonColor: '#ef4444',
     })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/actualizacion-bd/cancelar`, {}, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Carga cancelada', text: 'Puedes reiniciar la carga cuando estés listo.', icon: 'info', confirmButtonText: 'Entendido' }),
@@ -286,7 +365,10 @@ const cancelDatabaseUpdate = async () => {
 }
 
 const processNow = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const result = await Swal.fire({
         title: 'Procesar ahora (local)',
         text: 'Ejecuta el job directamente sin worker. La página esperará hasta que termine (puede tardar varios minutos).',
@@ -296,7 +378,11 @@ const processNow = async () => {
         cancelButtonText: 'Cancelar',
         reverseButtons: true,
     })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     Swal.fire({ title: 'Procesando…', text: 'Ejecutando carga de registros directamente. No cierres esta ventana.', allowOutsideClick: false, showConfirmButton: false, didOpen: () => Swal.showLoading() })
     router.post(`/historico-general/${selectedPeriodId.value}/actualizacion-bd/procesar-ahora`, {}, {
         preserveScroll: true,
@@ -306,9 +392,16 @@ const processNow = async () => {
 }
 
 const processPendingSources = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const pendingCount = grouped.value?.pending_count ?? 0
-    if (!pendingCount) return Swal.fire({ title: 'Sin fuentes pendientes', text: 'No hay archivos pendientes de procesar en este periodo.', icon: 'info', confirmButtonText: 'Entendido' })
+
+    if (!pendingCount) {
+return Swal.fire({ title: 'Sin fuentes pendientes', text: 'No hay archivos pendientes de procesar en este periodo.', icon: 'info', confirmButtonText: 'Entendido' })
+}
+
     const result = await Swal.fire({
         title: 'Procesar fuentes pendientes',
         html: `Se enviarán a procesamiento <strong>${pendingCount}</strong> archivo(s) pendiente(s) (IMSS, Rotación, etc.), sin volver a cargar los registros base.`,
@@ -318,7 +411,11 @@ const processPendingSources = async () => {
         cancelButtonText: 'Cancelar',
         reverseButtons: true,
     })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/procesar-fuentes-pendientes`, {}, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Procesamiento enviado', text: 'Las fuentes están en cola. Recibirás correo cuando terminen.', icon: 'success', confirmButtonText: 'Entendido' }),
@@ -327,9 +424,16 @@ const processPendingSources = async () => {
 }
 
 const reprocessFailedSources = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const failedCount = grouped.value?.failed_count ?? 0
-    if (!failedCount) return Swal.fire({ title: 'Sin fuentes con error', text: 'No hay archivos en error en este periodo.', icon: 'info', confirmButtonText: 'Entendido' })
+
+    if (!failedCount) {
+return Swal.fire({ title: 'Sin fuentes con error', text: 'No hay archivos en error en este periodo.', icon: 'info', confirmButtonText: 'Entendido' })
+}
+
     const result = await Swal.fire({
         title: 'Reprocesar fuentes con error',
         html: `Se reprocesarán únicamente las fuentes vigentes que estén en error (NOI Nómina, NOI Fiscal, Rotación e IMSS si su auditoría falla). No se tocará Cobranza, Cartera, Colocación ni Gastos.`,
@@ -339,7 +443,11 @@ const reprocessFailedSources = async () => {
         cancelButtonText: 'Cancelar',
         reverseButtons: true,
     })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/reprocesar-fuentes-con-error`, {}, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Reprocesamiento enviado', text: 'Las fuentes con error están en cola. Recibirás correo cuando terminen.', icon: 'success', confirmButtonText: 'Entendido' }),
@@ -348,7 +456,10 @@ const reprocessFailedSources = async () => {
 }
 
 const requeueRun = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/actualizacion-bd/reencolar`, {}, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Job reencolado', text: 'Inicia el worker para procesarlo: php artisan queue:work --tries=1 --timeout=0 -vvv', icon: 'info', confirmButtonText: 'Entendido' }),
@@ -357,7 +468,10 @@ const requeueRun = async () => {
 }
 
 const clearStuckDatabaseUpdate = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const result = await Swal.fire({
         title: 'Limpiar estado atascado',
         text: 'Se marcará el proceso como cancelado para que puedas volver a iniciar la carga.',
@@ -367,7 +481,11 @@ const clearStuckDatabaseUpdate = async () => {
         cancelButtonText: 'Cancelar',
         reverseButtons: true,
     })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/actualizacion-bd/limpiar`, {}, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Estado limpiado', text: 'Ya puedes reiniciar la carga de registros.', icon: 'success', confirmButtonText: 'Entendido' }),
@@ -377,25 +495,39 @@ const clearStuckDatabaseUpdate = async () => {
 
 const resolveIncident = async (id: number) => {
     const result = await Swal.fire({ title: 'Resolver incidencia', input: 'textarea', inputLabel: 'Nota de resolución', inputPlaceholder: 'Describe cómo quedó resuelta…', showCancelButton: true, confirmButtonText: 'Guardar resolución', cancelButtonText: 'Cancelar', inputValidator: (value) => !value ? 'Captura una nota de resolución.' : undefined })
-    if (!result.isConfirmed || !selectedPeriodId.value) return
+
+    if (!result.isConfirmed || !selectedPeriodId.value) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/incidencias/${id}/resolver`, { resolution_note: result.value }, {
         preserveScroll: true,
-        onSuccess: () => { Swal.fire('Incidencia resuelta', 'El estado del flujo se actualizó.', 'success'); loadIncidents() },
+        onSuccess: () => {
+ Swal.fire('Incidencia resuelta', 'El estado del flujo se actualizó.', 'success'); loadIncidents() 
+},
         onError:   () => Swal.fire('No se pudo resolver', 'Intenta nuevamente.', 'error'),
     })
 }
 
 const assignBranchFromIncident = async ({ employee_ids, employee_id, branch_id, period_id }: { employee_ids?: number[]; employee_id: number; branch_id: number; period_id: number }) => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const ids  = employee_ids && employee_ids.length > 0 ? employee_ids : [employee_id]
     const csrf = (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content ?? ''
+
     try {
         const res = await fetch('/empleados/batch-asignar-sucursal', {
             method:  'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest' },
             body:    JSON.stringify({ employee_ids: ids, branch_id, period_id, notes: 'Asignado desde incidencias.' }),
         })
-        if (!res.ok) throw new Error()
+
+        if (!res.ok) {
+throw new Error()
+}
+
         // loadIncidents already calls lightweight refreshes (sin-sucursal + coincidencias)
         await loadIncidents()
         incidentsReloadKey.value++
@@ -408,21 +540,34 @@ const assignBranchFromIncident = async ({ employee_ids, employee_id, branch_id, 
 }
 
 const confirmMatchFromIncident = async ({ employee_id, target_employee_id, branch_id, canonical_name }: { employee_id: number; target_employee_id: number; branch_id?: number; canonical_name?: string }) => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     try {
         const csrf = (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content ?? ''
         const body: Record<string, any> = { employee_id, target_employee_id }
-        if (branch_id != null) body.branch_id = branch_id
-        if (canonical_name?.trim()) body.canonical_name = canonical_name.trim()
+
+        if (branch_id != null) {
+body.branch_id = branch_id
+}
+
+        if (canonical_name?.trim()) {
+body.canonical_name = canonical_name.trim()
+}
+
         const res = await fetch(`/historico-general/${selectedPeriodId.value}/personas-sin-sucursal/confirmar-coincidencia`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest' },
             body: JSON.stringify(body),
         })
+
         if (!res.ok) {
             const body = await res.json().catch(() => ({}))
+
             throw new Error((body as any).message || `Error ${res.status}`)
         }
+
         const data = await res.json()
         await loadIncidents()
         incidentsReloadKey.value++
@@ -459,10 +604,13 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
         `,
         preConfirm: () => {
             const checked = document.querySelector<HTMLInputElement>('input[name="swal_canon"]:checked')
+
             if (!checked) {
                 Swal.showValidationMessage('Selecciona una opción para el nombre definitivo.')
+
                 return false
             }
+
             return checked.value
         },
         showCancelButton: true,
@@ -474,10 +622,12 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
 
     if (!step1.isConfirmed) {
         incidentsStepRef.value?.clearPairLoading(pair_key)
+
         return
     }
 
     let canonicalName = ''
+
     if (step1.value === 'a') {
         canonicalName = a_name
     } else if (step1.value === 'b') {
@@ -496,10 +646,13 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
             reverseButtons: true,
             inputValidator: (value) => !value?.trim() ? 'Ingresa el nombre definitivo.' : undefined,
         })
+
         if (!step2.isConfirmed) {
             incidentsStepRef.value?.clearPairLoading(pair_key)
+
             return
         }
+
         canonicalName = (step2.value as string).trim()
     }
 
@@ -507,11 +660,15 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
     if (!a_id || !b_id) {
         incidentsStepRef.value?.clearPairLoading(pair_key)
         Swal.fire('Sin IDs válidos', 'Esta coincidencia no tiene IDs. Pulsa Refrescar en la cabecera y vuelve a intentarlo.', 'warning')
+
         return
     }
 
     // Perform unification directly (so we can manage pair_key state on success/error)
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     try {
         const csrf = (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content ?? ''
         const res = await fetch(`/historico-general/${selectedPeriodId.value}/personas-sin-sucursal/confirmar-coincidencia`, {
@@ -519,10 +676,13 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest' },
             body: JSON.stringify({ employee_id: a_id, target_employee_id: b_id, canonical_name: canonicalName }),
         })
+
         if (!res.ok) {
             const body = await res.json().catch(() => ({}))
+
             throw new Error((body as any).message || `Error ${res.status}`)
         }
+
         const data = await res.json()
         // loadIncidents triggers lightweight refreshes for both counters
         await loadIncidents()
@@ -539,7 +699,9 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
 }
 
 const discardCoincidenciaFromDuplicates = async ({ a_id, b_id, pair_key }: { a_id: number; b_id: number; pair_key: string }) => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
 
     // Confirm before persisting the rejection
     const confirm = await Swal.fire({
@@ -551,8 +713,10 @@ const discardCoincidenciaFromDuplicates = async ({ a_id, b_id, pair_key }: { a_i
         cancelButtonText: 'Cancelar',
         reverseButtons: true,
     })
+
     if (!confirm.isConfirmed) {
         incidentsStepRef.value?.clearPairLoading(pair_key)
+
         return
     }
 
@@ -563,10 +727,13 @@ const discardCoincidenciaFromDuplicates = async ({ a_id, b_id, pair_key }: { a_i
             headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest' },
             body: JSON.stringify({ employee_id_a: a_id, employee_id_b: b_id }),
         })
+
         if (!res.ok) {
             const body = await res.json().catch(() => ({}))
+
             throw new Error((body as any).message || `Error ${res.status}`)
         }
+
         await loadIncidents()
         incidentsStepRef.value?.onPairRejected(pair_key)
     } catch (e: any) {
@@ -576,10 +743,15 @@ const discardCoincidenciaFromDuplicates = async ({ a_id, b_id, pair_key }: { a_i
 }
 
 const resolveLocationFromIncident = ({ incident_id, action, branch_id }: { incident_id: number; action: string; branch_id: number | null }) => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/incidencias/ubicacion-pendiente/resolver`, { incident_id, action, branch_id }, {
         preserveScroll: true,
-        onSuccess: () => { Swal.fire('Ubicación resuelta', 'La ubicación fue clasificada correctamente.', 'success'); loadIncidents() },
+        onSuccess: () => {
+ Swal.fire('Ubicación resuelta', 'La ubicación fue clasificada correctamente.', 'success'); loadIncidents() 
+},
         onError:   () => Swal.fire('No se pudo resolver', 'Intenta nuevamente.', 'error'),
     })
 }
@@ -587,20 +759,34 @@ const resolveLocationFromIncident = ({ incident_id, action, branch_id }: { incid
 const isGeneratingReport = ref(false)
 
 const generateReport = () => {
-    if (isGeneratingReport.value) return
-    if (!period.value?.can_generate_radiography) return toastError('Generación bloqueada', period.value?.blocking_reasons?.join(' ') || 'Completa las etapas previas.')
-    if (reportConfig.value.report_type !== 'simple' && !reportConfig.value.compare_period_id) return toastError('Falta periodo comparable', 'Selecciona explícitamente el periodo a comparar.')
+    if (isGeneratingReport.value) {
+return
+}
+
+    if (!period.value?.can_generate_radiography) {
+return toastError('Generación bloqueada', period.value?.blocking_reasons?.join(' ') || 'Completa las etapas previas.')
+}
+
+    if (reportConfig.value.report_type !== 'simple' && !reportConfig.value.compare_period_id) {
+return toastError('Falta periodo comparable', 'Selecciona explícitamente el periodo a comparar.')
+}
+
     isGeneratingReport.value = true
     router.post(`/historico-general/${selectedPeriodId.value}/generar-radiografia`, { config: reportConfig.value }, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Generación en cola', text: 'El reporte se genera en segundo plano. Puedes cerrar esta ventana; te avisaremos por correo cuando Excel y PDF estén listos.', icon: 'info', confirmButtonText: 'Entendido' }),
         onError:   () => Swal.fire('No se pudo iniciar', 'Ya hay una generación en proceso o faltan pasos previos.', 'error'),
-        onFinish:  () => { isGeneratingReport.value = false },
+        onFinish:  () => {
+ isGeneratingReport.value = false 
+},
     })
 }
 
 const cancelGeneration = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const result = await Swal.fire({
         title: '¿Cancelar la generación?',
         text: 'El proceso se marcará como cancelado. Podrás reiniciarlo desde esta misma etapa.',
@@ -611,7 +797,11 @@ const cancelGeneration = async () => {
         reverseButtons: true,
         confirmButtonColor: '#ef4444',
     })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     router.post(`/historico-general/${selectedPeriodId.value}/generar-reporte/cancelar`, {}, {
         preserveScroll: true,
         onSuccess: () => Swal.fire({ title: 'Generación cancelada', text: 'Puedes reiniciarla cuando estés listo.', icon: 'info', confirmButtonText: 'Entendido' }),
@@ -620,7 +810,10 @@ const cancelGeneration = async () => {
 }
 
 const processGenerationNow = async () => {
-    if (!selectedPeriodId.value) return
+    if (!selectedPeriodId.value) {
+return
+}
+
     const result = await Swal.fire({
         title: 'Procesar ahora (local)',
         text: 'Ejecuta el job directamente sin worker. La página esperará hasta que termine (puede tardar varios minutos).',
@@ -630,7 +823,11 @@ const processGenerationNow = async () => {
         cancelButtonText: 'Cancelar',
         reverseButtons: true,
     })
-    if (!result.isConfirmed) return
+
+    if (!result.isConfirmed) {
+return
+}
+
     Swal.fire({ title: 'Generando reporte…', text: 'Ejecutando directamente. No cierres esta ventana.', allowOutsideClick: false, showConfirmButton: false, didOpen: () => Swal.showLoading() })
     router.post(`/historico-general/${selectedPeriodId.value}/generar-reporte/procesar-ahora`, {}, {
         preserveScroll: true,

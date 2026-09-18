@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
 import { AlertTriangle, PenSquare, UserMinus, UserPlus } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
 import type { Assignment, RosterMovementItem } from '@/types/asignaciones'
 
 const props = defineProps<{
@@ -33,9 +33,16 @@ watch(
     () => [props.incidences.length, props.hires.length, props.leavers.length],
     () => {
         const current = tabs.value.find((t) => t.key === activeTab.value)
-        if (current && current.count > 0) return
+
+        if (current && current.count > 0) {
+return
+}
+
         const firstWithData = tabs.value.find((t) => t.count > 0)
-        if (firstWithData) activeTab.value = firstWithData.key
+
+        if (firstWithData) {
+activeTab.value = firstWithData.key
+}
     },
     { immediate: true },
 )
@@ -56,10 +63,14 @@ const toneClasses: Record<string, { active: string; badge: string }> = {
 }
 
 const emptyMessage = computed(() => {
-    if (activeTab.value === 'incidencias') return 'Sin incidencias — todo el periodo tiene sucursal asignada.'
+    if (activeTab.value === 'incidencias') {
+return 'Sin incidencias — todo el periodo tiene sucursal asignada.'
+}
+
     if (!props.rosterCalculado) {
         return 'El roster de colaboradores de este periodo aún no se ha calculado — corre "Actualizar BD" en Histórico General primero.'
     }
+
     return activeTab.value === 'altas' ? 'Sin altas detectadas.' : 'Sin bajas detectadas.'
 })
 </script>

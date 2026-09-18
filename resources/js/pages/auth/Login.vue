@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { Form, Head } from '@inertiajs/vue3'
 import { Eye, EyeOff, Lock, Mail } from 'lucide-vue-next'
+import { ref } from 'vue'
 import AuthAsidePanel from '@/components/auth/AuthAsidePanel.vue'
 import AuthFormPanel from '@/components/auth/AuthFormPanel.vue'
 import InputError from '@/components/InputError.vue'

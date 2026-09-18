@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { FileCheck2, FileSpreadsheet, FileText, Trash2, UploadCloud, X } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
+import { computed, ref } from 'vue'
 import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps<{ source: any; upload?: any; disabled?: boolean; selectedPeriodId: number | null }>()
@@ -17,13 +17,25 @@ const inputRef = ref<HTMLInputElement | null>(null)
 const isPdf = computed(() => props.source.code === 'gastos_lendus')
 const isMultiFormat = computed(() => ['imss', 'rotacion'].includes(props.source.code))
 const acceptAttr = computed(() => {
-    if (isPdf.value) return '.pdf'
-    if (isMultiFormat.value) return '.pdf,.xls,.xlsx,.xlsm'
+    if (isPdf.value) {
+return '.pdf'
+}
+
+    if (isMultiFormat.value) {
+return '.pdf,.xls,.xlsx,.xlsm'
+}
+
     return '.xls,.xlsx,.xlsm'
 })
 const acceptText = computed(() => {
-    if (isPdf.value) return '.pdf'
-    if (isMultiFormat.value) return '.pdf, .xls, .xlsx, .xlsm'
+    if (isPdf.value) {
+return '.pdf'
+}
+
+    if (isMultiFormat.value) {
+return '.pdf, .xls, .xlsx, .xlsm'
+}
+
     return '.xls, .xlsx, .xlsm'
 })
 const isRequiredForDb      = computed(() => Boolean(props.source.is_required_for_bd))
@@ -32,12 +44,16 @@ const status = computed(() => props.upload?.status ?? 'pending')
 const statusLabel = computed(() => ({ pending: props.upload ? 'Sin procesar' : 'Sin cargar', processing: 'Procesando', processed: 'Procesado', failed: 'Con error' } as Record<string, string>)[status.value] ?? 'Sin cargar')
 
 const assignFile = async (selected: File | null) => {
-    if (!selected) return
+    if (!selected) {
+return
+}
+
     const valid = isPdf.value
         ? /\.pdf$/i.test(selected.name)
         : isMultiFormat.value
             ? /\.(pdf|xls|xlsx|xlsm)$/i.test(selected.name)
             : /\.(xls|xlsx|xlsm)$/i.test(selected.name)
+
     if (!valid) {
         const msg = isPdf.value
             ? 'Carga únicamente archivos PDF para esta fuente.'
@@ -45,23 +61,35 @@ const assignFile = async (selected: File | null) => {
                 ? 'Carga únicamente archivos PDF, xls, xlsx o xlsm.'
                 : 'Carga únicamente archivos Excel: xls, xlsx o xlsm.'
         await Swal.fire({ title: 'Formato no válido', text: msg, icon: 'error', confirmButtonText: 'Entendido' })
+
         return
     }
+
     file.value = selected
     await Swal.fire({ title: 'Archivo seleccionado', text: selected.name, icon: 'info', timer: 1500, showConfirmButton: false })
 }
 
 const onDrop = (event: DragEvent) => {
     dragActive.value = false
-    if (props.disabled) return
+
+    if (props.disabled) {
+return
+}
+
     assignFile(event.dataTransfer?.files?.[0] ?? null)
 }
 
 const doUpload = () => {
-    if (!file.value) return
+    if (!file.value) {
+return
+}
+
     emit('upload', { sourceId: props.source.id, file: file.value })
     file.value = null
-    if (inputRef.value) inputRef.value.value = ''
+
+    if (inputRef.value) {
+inputRef.value.value = ''
+}
 }
 </script>
 

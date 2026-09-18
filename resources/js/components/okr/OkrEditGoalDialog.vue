@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // Editar meta de UN Key Result (sección 20 del pedido) — en Dialog, nunca un
 // form suelto debajo de la tabla. Muestra valor anterior/nuevo/diferencia.
-import { computed, watch } from 'vue'
 import { useForm } from '@inertiajs/vue3'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { computed, watch } from 'vue'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { formatByUnit } from '@/lib/okrFormat'
 
 const props = defineProps<{ objectiveId: number; keyResult: any | null }>()
@@ -13,7 +13,10 @@ const open = defineModel<boolean>('open', { default: false })
 const form = useForm({ key_result_id: null as number | null, target_value: '', reason: '' })
 
 watch(() => props.keyResult, (kr) => {
-    if (!kr) return
+    if (!kr) {
+return
+}
+
     form.reset()
     form.clearErrors()
     form.key_result_id = kr.id
@@ -21,13 +24,17 @@ watch(() => props.keyResult, (kr) => {
 })
 
 const difference = computed(() => {
-    if (!props.keyResult || form.target_value === '') return null
+    if (!props.keyResult || form.target_value === '') {
+return null
+}
 
     return Number(form.target_value) - Number(props.keyResult.target_value)
 })
 
 function submit() {
-    form.put(`/okr/${props.objectiveId}/goal`, { onSuccess: () => { open.value = false } })
+    form.put(`/okr/${props.objectiveId}/goal`, { onSuccess: () => {
+ open.value = false 
+} })
 }
 </script>
 

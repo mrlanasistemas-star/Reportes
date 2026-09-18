@@ -7,21 +7,20 @@
 // referencia: Asignación → Key Results y KPIs → Metas, pesos y trayectoria →
 // Resumen y confirmación — y el Objective de sucursal admite N "OKR
 // individuales" en la MISMA asignación (bug de diseño corregido, sección 8/9).
-import { computed, reactive, ref, watch } from 'vue'
 import { useForm } from '@inertiajs/vue3'
+import type { ApexOptions } from 'apexcharts'
 import {
     AlertTriangle, ArrowLeft, ArrowRight, Building2, CalendarDays, CheckCircle2, GripVertical, Hash, Info, ListChecks, Loader2, Percent, Plus,
     Search, Sparkles, Trash2, UserCheck, Users, Users2, Wallet, X,
 } from 'lucide-vue-next'
-import VueApexCharts from 'vue3-apexcharts'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { computed, reactive, ref, watch } from 'vue'
+import AsyncApexChart from '@/components/charts/AsyncApexChart.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
-import SelectField from '@/components/forms/SelectField.vue'
-import DatePickerField from '@/components/forms/DatePickerField.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { formatByUnit, formatFriendlyDate } from '@/lib/okrFormat'
 
 const props = defineProps<{
@@ -36,7 +35,7 @@ const open = defineModel<boolean>('open', { default: false })
 const STEPS = ['Asignación', 'Key Results y KPIs', 'Metas, pesos y trayectoria', 'Resumen y confirmación']
 const step = ref(1)
 
-type IndividualRow = { employee_id: number | null; employee_name: string; title: string }
+type IndividualRow = { client_key: string; employee_id: number | null; employee_name: string; title: string }
 // type_filter/direction_filter son SOLO estado de UI (nunca se envían al
 // backend — el submit() reconstruye cada key_result con únicamente
 // kpi_id/description/baseline_value/target_value/weight, sección 234-239):
@@ -60,8 +59,12 @@ type KrRow = {
 const KPI_TYPE_LABELS: Record<string, string> = { cumulative: 'Acumulativo', balance: 'Saldo', percentage: 'Porcentual' }
 const KPI_DIRECTION_LABELS: Record<string, string> = { increase: 'Incrementar', decrease: 'Disminuir' }
 const ALL_FILTER = '__all__'
-function kpiTypeLabel(type?: string | null) { return type ? (KPI_TYPE_LABELS[type] ?? type) : '—' }
-function kpiDirectionLabel(direction?: string | null) { return direction ? (KPI_DIRECTION_LABELS[direction] ?? direction) : '—' }
+function kpiTypeLabel(type?: string | null) {
+ return type ? (KPI_TYPE_LABELS[type] ?? type) : '—' 
+}
+function kpiDirectionLabel(direction?: string | null) {
+ return direction ? (KPI_DIRECTION_LABELS[direction] ?? direction) : '—' 
+}
 
 // Ícono + color por KPI (docs/imagenesOKR/7.png y 8.png muestran un ícono
 // circular a la izquierda del nombre en "Definición de metas por KPI"). El
@@ -70,9 +73,18 @@ function kpiDirectionLabel(direction?: string | null) { return direction ? (KPI_
 // `unit`, que sí es un dato real del KPI: currency → billetera, percentage →
 // porcentaje, integer/conteo → numeral.
 function kpiIconFor(kpi: any): { icon: any; class: string } {
-    if (!kpi) return { icon: Hash, class: 'bg-muted text-muted-foreground' }
-    if (kpi.unit === 'currency') return { icon: Wallet, class: 'bg-blue-500/10 text-blue-600 dark:text-blue-300' }
-    if (kpi.unit === 'percentage') return { icon: Percent, class: 'bg-rose-500/10 text-rose-600 dark:text-rose-300' }
+    if (!kpi) {
+return { icon: Hash, class: 'bg-muted text-muted-foreground' }
+}
+
+    if (kpi.unit === 'currency') {
+return { icon: Wallet, class: 'bg-blue-500/10 text-blue-600 dark:text-blue-300' }
+}
+
+    if (kpi.unit === 'percentage') {
+return { icon: Percent, class: 'bg-rose-500/10 text-rose-600 dark:text-rose-300' }
+}
+
     return { icon: Hash, class: 'bg-violet-500/10 text-violet-600 dark:text-violet-300' }
 }
 
@@ -104,7 +116,9 @@ const individualsEnabled = ref(false)
 const individualRows = reactive<IndividualRow[]>([])
 
 watch(individualsEnabled, (enabled) => {
-    if (!enabled) individualRows.splice(0, individualRows.length)
+    if (!enabled) {
+individualRows.splice(0, individualRows.length)
+}
 })
 
 function resetAll() {
@@ -117,7 +131,11 @@ function resetAll() {
     employeeOptions.value = []
     branchEmployeeCount.value = 0
 }
-watch(open, (isOpen) => { if (isOpen) resetAll() })
+watch(open, (isOpen) => {
+ if (isOpen) {
+resetAll()
+} 
+})
 
 // ── Colaboradores de la sucursal — búsqueda remota (nunca precarga todos). ──
 const employeeOptions = ref<{ id: number; full_name: string }[]>([])
@@ -131,32 +149,62 @@ let employeeSearchTimer: ReturnType<typeof setTimeout> | null = null
 // vieja (búsqueda o cambio de sucursal anterior) pise a la más nueva.
 let employeeSearchVersion = 0
 async function loadEmployees(search = '') {
-    if (!form.branch_id) { employeeOptions.value = []; branchEmployeeCount.value = 0; return }
+    if (!form.branch_id) {
+ employeeOptions.value = []; branchEmployeeCount.value = 0;
+
+ return 
+}
+
     const params = new URLSearchParams({ branch_id: String(form.branch_id) })
-    if (search) params.set('search', search)
+
+    if (search) {
+params.set('search', search)
+}
+
     const myVersion = ++employeeSearchVersion
     const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-    if (myVersion !== employeeSearchVersion) return
+
+    if (myVersion !== employeeSearchVersion) {
+return
+}
+
     const data = res.ok ? await res.json() : { employees: [], total_in_branch: 0 }
-    if (myVersion !== employeeSearchVersion) return
+
+    if (myVersion !== employeeSearchVersion) {
+return
+}
+
     employeeOptions.value = data.employees ?? []
     branchEmployeeCount.value = data.total_in_branch ?? 0
 }
 function onEmployeeSearch(term: string) {
-    if (employeeSearchTimer) clearTimeout(employeeSearchTimer)
+    if (employeeSearchTimer) {
+clearTimeout(employeeSearchTimer)
+}
+
     employeeSearchTimer = setTimeout(() => loadEmployees(term), 300)
 }
-watch(() => form.branch_id, () => { individualRows.splice(0, individualRows.length); loadEmployees() })
+watch(() => form.branch_id, () => {
+ individualRows.splice(0, individualRows.length); loadEmployees() 
+})
 
 const addEmployeeId = ref<number | null>(null)
 function addIndividual() {
-    if (!addEmployeeId.value) return
-    if (individualRows.some((r) => r.employee_id === addEmployeeId.value)) return
+    if (!addEmployeeId.value) {
+return
+}
+
+    if (individualRows.some((r) => r.employee_id === addEmployeeId.value)) {
+return
+}
+
     const employee = employeeOptions.value.find((e) => e.id === addEmployeeId.value)
-    individualRows.push({ employee_id: addEmployeeId.value, employee_name: employee?.full_name ?? '', title: '' })
+    individualRows.push({ client_key: crypto.randomUUID(), employee_id: addEmployeeId.value, employee_name: employee?.full_name ?? '', title: '' })
     addEmployeeId.value = null
 }
-function removeIndividual(i: number) { individualRows.splice(i, 1) }
+function removeIndividual(i: number) {
+ individualRows.splice(i, 1) 
+}
 
 const selectedBranchName = computed(() => props.branches.find((b) => b.id === form.branch_id)?.name ?? null)
 const assignmentType = computed(() => individualsEnabled.value && individualRows.length ? 'Sucursal + Individual' : 'Sucursal')
@@ -180,17 +228,27 @@ function addKr() {
         type_filter: null, direction_filter: null,
     })
 }
-function removeKr(i: number) { form.key_results.splice(i, 1) }
-watch(() => step.value, (s) => { if (s === 2 && form.key_results.length === 0) addKr() })
+function removeKr(i: number) {
+ form.key_results.splice(i, 1) 
+}
+watch(() => step.value, (s) => {
+ if (s === 2 && form.key_results.length === 0) {
+addKr()
+} 
+})
 
 // Si queda UN SOLO Key Result, matemáticamente su peso SIEMPRE debe ser 100%
 // — nunca queda a criterio del usuario ni puede quedar en otro valor. Se
 // bloquea el input en el template (:disabled) y aquí se fuerza el valor.
 watch(() => form.key_results.length, (len) => {
-    if (len === 1) form.key_results[0].weight = '100'
+    if (len === 1) {
+form.key_results[0].weight = '100'
+}
 }, { immediate: true })
 
-function kpiOf(id: number | null) { return props.kpis.find((k) => k.id === id) ?? null }
+function kpiOf(id: number | null) {
+ return props.kpis.find((k) => k.id === id) ?? null 
+}
 const totalWeight = computed(() => form.key_results.reduce((sum, kr) => sum + (Number(kr.weight) || 0), 0))
 const weightValid = computed(() => Math.abs(totalWeight.value - 100) < 0.01)
 
@@ -199,10 +257,16 @@ const weightValid = computed(() => Math.abs(totalWeight.value - 100) < 0.01)
 // solo admite hasta 10%, jamás 101% aunque el usuario lo intente escribir.
 function maxWeightForRow(i: number): number {
     const others = form.key_results.reduce((sum, kr, idx) => (idx === i ? sum : sum + (Number(kr.weight) || 0)), 0)
+
     return Math.max(0, round2(100 - others))
 }
 function onWeightInput(kr: KrRow, i: number, value: string) {
-    if (value === '') { kr.weight = ''; return }
+    if (value === '') {
+ kr.weight = '';
+
+ return 
+}
+
     const max = maxWeightForRow(i)
     const clamped = Math.min(Math.max(Number(value) || 0, 0), max)
     // No reformatear mientras el usuario sigue tecleando un decimal (ej. "10.")
@@ -224,25 +288,38 @@ function onWeightInput(kr: KrRow, i: number, value: string) {
 // Ahora "Cualquiera" se guarda como el sentinel ALL_FILTER (NO como null),
 // así se distingue de "sin tocar todavía" y sí se respeta al reabrir el select.
 function typeFilterOf(kr: KrRow): string | null {
-    if (kr.type_filter === ALL_FILTER) return null
+    if (kr.type_filter === ALL_FILTER) {
+return null
+}
+
     return kr.type_filter ?? kpiOf(kr.kpi_id)?.type ?? null
 }
 function directionFilterOf(kr: KrRow): string | null {
-    if (kr.direction_filter === ALL_FILTER) return null
+    if (kr.direction_filter === ALL_FILTER) {
+return null
+}
+
     return kr.direction_filter ?? kpiOf(kr.kpi_id)?.direction ?? null
 }
 function kpisMatchingFilters(kr: KrRow) {
     const type = typeFilterOf(kr)
     const direction = directionFilterOf(kr)
+
     return props.kpis.filter((k) => (!type || k.type === type) && (!direction || k.direction === direction))
 }
 function onTypeFilterChange(kr: KrRow, value: string) {
     kr.type_filter = value
-    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) kr.kpi_id = null
+
+    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) {
+kr.kpi_id = null
+}
 }
 function onDirectionFilterChange(kr: KrRow, value: string) {
     kr.direction_filter = value
-    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) kr.kpi_id = null
+
+    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) {
+kr.kpi_id = null
+}
 }
 function onKpiPick(kr: KrRow, id: number | null) {
     kr.kpi_id = id
@@ -252,9 +329,14 @@ function onKpiPick(kr: KrRow, id: number | null) {
 
 // ── Reordenar Key Results arrastrando el "⠿" (docs/imagenesOKR/5.png) ──
 const dragIndex = ref<number | null>(null)
-function onDragStart(i: number) { dragIndex.value = i }
+function onDragStart(i: number) {
+ dragIndex.value = i 
+}
 function onDropRow(i: number) {
-    if (dragIndex.value === null || dragIndex.value === i) return
+    if (dragIndex.value === null || dragIndex.value === i) {
+return
+}
+
     const [moved] = form.key_results.splice(dragIndex.value, 1)
     form.key_results.splice(i, 0, moved)
     dragIndex.value = null
@@ -265,7 +347,7 @@ function onDropRow(i: number) {
 // pasar `series` con nombre) encima del valor — por eso se veía "series-1"
 // en vez de solo el porcentaje grande y centrado que pide la referencia
 // (docs/imagenesOKR/5.png y 6.png).
-const donutOptions = computed(() => ({
+const donutOptions = computed<ApexOptions>(() => ({
     chart: { sparkline: { enabled: true } },
     colors: [weightValid.value ? '#10b981' : '#f59e0b'],
     plotOptions: {
@@ -289,10 +371,15 @@ function onTargetInput(kr: KrRow, value: string) {
     kr.target_value = value
 }
 function incrementOf(kr: KrRow): string {
-    if (kr.baseline_value === '' || kr.target_value === '') return ''
+    if (kr.baseline_value === '' || kr.target_value === '') {
+return ''
+}
+
     return String(round2(Number(kr.target_value) - Number(kr.baseline_value)))
 }
-function round2(n: number): number { return Math.round(n * 100) / 100 }
+function round2(n: number): number {
+ return Math.round(n * 100) / 100 
+}
 
 // Baseline preview (KPI automático) — GET /okr/baseline-preview, nunca guarda nada.
 const baselinePreviews = reactive<Record<number, { available: boolean; value: number | null; period: { label: string } | null } | null>>({})
@@ -300,14 +387,22 @@ const loadingPreview = reactive<Record<number, boolean>>({})
 async function fetchBaselinePreview(index: number) {
     const kr = form.key_results[index]
     const kpi = kpiOf(kr.kpi_id)
-    if (!kpi || !form.branch_id) return
+
+    if (!kpi || !form.branch_id) {
+return
+}
+
     loadingPreview[index] = true
+
     try {
         const params = new URLSearchParams({ kpi_id: String(kpi.id), scope_type: 'branch', branch_id: String(form.branch_id), start_date: form.start_date })
         const res = await fetch(`/okr/baseline-preview?${params.toString()}`, { headers: { Accept: 'application/json' } })
         const data = res.ok ? await res.json() : null
         baselinePreviews[index] = data
-        if (data?.available) kr.baseline_value = String(data.value)
+
+        if (data?.available) {
+kr.baseline_value = String(data.value)
+}
     } finally {
         loadingPreview[index] = false
     }
@@ -319,12 +414,18 @@ async function fetchBaselinePreview(index: number) {
 const primaryKr = computed(() => form.key_results[0] ?? null)
 const trajectoryPoints = computed(() => {
     const kr = primaryKr.value
-    if (!kr || kr.baseline_value === '' || kr.target_value === '') return []
+
+    if (!kr || kr.baseline_value === '' || kr.target_value === '') {
+return []
+}
+
     const base = Number(kr.baseline_value)
     const target = Number(kr.target_value)
     const weeks = Math.max(1, form.duration_weeks)
+
     return Array.from({ length: weeks }, (_, i) => {
         const week = i + 1
+
         return Math.round((base + ((target - base) * week) / weeks) * 100) / 100
     })
 })
@@ -335,16 +436,25 @@ const trajectoryPoints = computed(() => {
 // OkrTrajectoryService, solo expresada en porcentaje en vez de valor crudo
 // del KPI (que puede estar en pesos, cientos, etc. y no cabría en un eje 0-100).
 const trajectoryPercents = computed(() => {
-    if (trajectoryPoints.value.length === 0) return []
+    if (trajectoryPoints.value.length === 0) {
+return []
+}
+
     const weeks = Math.max(1, form.duration_weeks)
+
     return Array.from({ length: weeks }, (_, i) => Math.round(((i + 1) / weeks) * 100))
 })
 const expectedAtWeek1Pct = computed(() => (form.duration_weeks > 0 ? Math.round((1 / form.duration_weeks) * 100) : 0))
 
 const endDatePreview = computed(() => {
     const start = new Date(`${form.start_date}T00:00:00`)
-    if (Number.isNaN(start.getTime())) return null
+
+    if (Number.isNaN(start.getTime())) {
+return null
+}
+
     start.setDate(start.getDate() + form.duration_weeks * 7 - 1)
+
     return start.toISOString().slice(0, 10)
 })
 
@@ -353,12 +463,17 @@ const endDatePreview = computed(() => {
 // perder un valor ya capturado (ej. si venía de un objective ya editado).
 const weekOptionsList = computed(() => {
     const base = [4, 6, 8, 10, 12, 16, 20, 24, 36, 48, 52]
-    if (!base.includes(form.duration_weeks)) base.push(form.duration_weeks)
+
+    if (!base.includes(form.duration_weeks)) {
+base.push(form.duration_weeks)
+}
+
     return base.sort((a, b) => a - b)
 })
 
-const trajectoryChartOptions = computed(() => {
+const trajectoryChartOptions = computed<ApexOptions>(() => {
     const showDataLabels = trajectoryPercents.value.length > 0 && trajectoryPercents.value.length <= 14
+
     return {
         chart: { toolbar: { show: false }, sparkline: { enabled: false } },
         xaxis: {
@@ -394,6 +509,7 @@ const trajectoryChartOptions = computed(() => {
                 formatter: (val: number, opts: any) => {
                     const raw = trajectoryPoints.value[opts?.dataPointIndex]
                     const unit = kpiOf(primaryKr.value?.kpi_id ?? null)?.unit
+
                     return raw !== undefined ? `${val}% · ${formatByUnit(raw, unit)}` : `${val}%`
                 },
             },
@@ -404,7 +520,10 @@ const trajectoryChartOptions = computed(() => {
 // ── Navegación ──
 function canAdvance(): boolean {
     if (step.value === 1) {
-        if (!form.branch_id || form.title.trim().length < 10) return false
+        if (!form.branch_id || form.title.trim().length < 10) {
+return false
+}
+
         if (individualsEnabled.value) {
             // D11 del cierre (17-sep-2026): bug real — Array.every() en un array
             // vacío es vacuamente true, así que "Agregar OKR individuales" ON con
@@ -412,18 +531,30 @@ function canAdvance(): boolean {
             // exige al menos 1 fila además de que cada una esté completa.
             return individualRows.length >= 1 && individualRows.every((r) => r.employee_id && r.title.trim().length >= 10)
         }
+
         return true
     }
+
     if (step.value === 2) {
         return form.key_results.length > 0 && form.key_results.every((kr) => kr.kpi_id && kr.description && kr.weight !== '') && weightValid.value
     }
+
     if (step.value === 3) {
         return form.key_results.every((kr) => kr.target_value !== '' && (kr.baseline_mode === 'auto' || kr.baseline_value !== ''))
     }
+
     return true
 }
-function next() { if (canAdvance() && step.value < 4) step.value++ }
-function back() { if (step.value > 1) step.value-- }
+function next() {
+ if (canAdvance() && step.value < 4) {
+step.value++
+} 
+}
+function back() {
+ if (step.value > 1) {
+step.value--
+} 
+}
 
 function submit() {
     form.transform((data) => ({
@@ -439,7 +570,9 @@ function submit() {
             weight: Number(kr.weight),
         })),
     })).post('/okr', {
-        onSuccess: () => { open.value = false },
+        onSuccess: () => {
+ open.value = false 
+},
     })
 }
 </script>
@@ -539,7 +672,7 @@ function submit() {
                             </div>
 
                             <div v-if="individualRows.length" class="space-y-2">
-                                <div v-for="(row, i) in individualRows" :key="row.employee_id" class="flex items-start gap-2 rounded-xl border border-border p-2.5">
+                                <div v-for="(row, i) in individualRows" :key="row.client_key" class="flex items-start gap-2 rounded-xl border border-border p-2.5">
                                     <span class="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">{{ row.employee_name.slice(0, 2).toUpperCase() }}</span>
                                     <div class="min-w-0 flex-1">
                                         <p class="mb-1 truncate text-xs font-semibold text-foreground">{{ row.employee_name }}</p>
@@ -691,7 +824,7 @@ function submit() {
 
                     <aside class="app-card h-fit space-y-4 p-4 text-center">
                         <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Resumen del OKR</p>
-                        <div class="mx-auto w-32"><VueApexCharts type="radialBar" :height="128" :options="donutOptions" :series="[Math.min(100, totalWeight)]" /></div>
+                        <div class="mx-auto w-32"><AsyncApexChart type="radialBar" :height="128" :options="donutOptions" :series="[Math.min(100, totalWeight)]" /></div>
                         <p class="-mt-2 text-xs text-muted-foreground">Pesos asignados</p>
 
                         <div class="flex items-center gap-2.5 rounded-xl border border-border bg-muted/20 p-3 text-left">
@@ -799,7 +932,7 @@ function submit() {
                         <div class="app-card space-y-2 p-4">
                             <p class="text-xs font-semibold text-foreground">Trayectoria esperada</p>
                             <p class="text-[11px] text-muted-foreground">Proyección del avance acumulado durante el periodo.</p>
-                            <VueApexCharts v-if="trajectoryPercents.length > 1" type="line" :height="190" :options="trajectoryChartOptions" :series="[{ name: 'Avance esperado', data: trajectoryPercents }]" />
+                            <AsyncApexChart v-if="trajectoryPercents.length > 1" type="line" :height="190" :options="trajectoryChartOptions" :series="[{ name: 'Avance esperado', data: trajectoryPercents }]" />
                             <p v-else class="py-6 text-center text-[11px] text-muted-foreground">Captura base y meta para ver la trayectoria.</p>
                         </div>
                         <div class="app-card space-y-2 p-4">
@@ -856,7 +989,7 @@ function submit() {
                             <Users2 class="size-3.5 text-primary" /> OKR individuales ({{ individualRows.length }})
                         </p>
                         <div
-                            v-for="row in individualRows" :key="row.employee_id"
+                            v-for="row in individualRows" :key="row.client_key"
                             class="flex items-start gap-2.5 rounded-xl border border-border bg-muted/20 p-2.5 text-xs transition hover:border-primary/40 hover:bg-primary/5"
                         >
                             <span class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">{{ row.employee_name.slice(0, 2).toUpperCase() }}</span>

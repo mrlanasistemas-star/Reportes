@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
 import { Link, useForm, router } from '@inertiajs/vue3'
 import { ArrowLeft, Plus, ShieldCheck, UserPlus, Users } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
-import AppLayout from '@/layouts/AppLayout.vue'
-import AppPageHeader from '@/components/app/AppPageHeader.vue'
+import { ref, watch } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
+import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import TextField from '@/components/forms/TextField.vue'
-import { Button } from '@/components/ui/button'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
+import { Button } from '@/components/ui/button'
+import AppLayout from '@/layouts/AppLayout.vue'
 
 defineOptions({ layout: AppLayout })
 
@@ -21,7 +21,10 @@ const props = defineProps<{
 
 // Contraseña temporal — se muestra UNA SOLA VEZ (ver ResponsibleController::index()).
 watch(() => props.temp_password, (pwd) => {
-    if (!pwd) return
+    if (!pwd) {
+return
+}
+
     Swal.fire({
         icon: 'success', title: 'Responsable agregado',
         html: `Contraseña temporal (cópiala ahora, no se volverá a mostrar):<br><code style="font-size:1.1em">${pwd}</code><br><br>Debe usar "¿Olvidaste tu contraseña?" en el login para entrar la primera vez.`,
@@ -36,7 +39,9 @@ const form = useForm({ name: '', email: '' })
 
 function submit() {
     form.post('/okr/responsibles', {
-        onSuccess: () => { form.reset(); showForm.value = false },
+        onSuccess: () => {
+ form.reset(); showForm.value = false 
+},
     })
 }
 
@@ -46,7 +51,9 @@ function enableAccess(responsible: { id: number; name: string }) {
         text: 'Confirma que ya verificaste la identidad de esta persona fuera del sistema.',
         showCancelButton: true, confirmButtonText: 'Habilitar', cancelButtonText: 'Cancelar', confirmButtonColor: '#4f46e5',
     }).then((r) => {
-        if (r.isConfirmed) router.post(`/okr/responsibles/${responsible.id}/enable-access`)
+        if (r.isConfirmed) {
+router.post(`/okr/responsibles/${responsible.id}/enable-access`)
+}
     })
 }
 
@@ -56,7 +63,9 @@ function disableAccess(responsible: { id: number; name: string }) {
         text: 'No podrá entrar al módulo OKR hasta que se le vuelva a habilitar.',
         showCancelButton: true, confirmButtonText: 'Quitar acceso', cancelButtonText: 'Cancelar', confirmButtonColor: '#dc2626',
     }).then((r) => {
-        if (r.isConfirmed) router.post(`/okr/responsibles/${responsible.id}/disable-access`)
+        if (r.isConfirmed) {
+router.post(`/okr/responsibles/${responsible.id}/disable-access`)
+}
     })
 }
 
@@ -64,8 +73,14 @@ function disableAccess(responsible: { id: number; name: string }) {
 // nadie intente algo que el servidor rechazará sin ningún mensaje visible
 // (este repo no comparte flash de sesión a Inertia globalmente).
 function canChangeRole(responsible: { id: number; role: string }): boolean {
-    if (responsible.id === props.current_user_id) return false
-    if (responsible.role === 'admin' && props.admin_count <= 1) return false
+    if (responsible.id === props.current_user_id) {
+return false
+}
+
+    if (responsible.role === 'admin' && props.admin_count <= 1) {
+return false
+}
+
     return true
 }
 
@@ -75,7 +90,9 @@ function toggleRole(responsible: { id: number; name: string; role: string }) {
         icon: 'question', title: `¿Cambiar a ${responsible.name} a ${newRole === 'admin' ? 'Administrador' : 'Colaborador'}?`,
         showCancelButton: true, confirmButtonText: 'Cambiar rol', cancelButtonText: 'Cancelar', confirmButtonColor: '#4f46e5',
     }).then((r) => {
-        if (r.isConfirmed) router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
+        if (r.isConfirmed) {
+router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
+}
     })
 }
 </script>

@@ -22,22 +22,34 @@ const pages = computed(() => {
   const total = props.lastPage
   const current = props.currentPage
 
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  if (total <= 7) {
+return Array.from({ length: total }, (_, i) => i + 1)
+}
 
   const items: (number | '...')[] = [1]
 
-  if (current > 3) items.push('...')
+  if (current > 3) {
+items.push('...')
+}
+
   for (let i = Math.max(2, current - 1); i <= Math.min(total - 1, current + 1); i++) {
     items.push(i)
   }
-  if (current < total - 2) items.push('...')
+
+  if (current < total - 2) {
+items.push('...')
+}
+
   items.push(total)
 
   return items
 })
 
 const go = (page: number) => {
-  if (page < 1 || page > props.lastPage || page === props.currentPage) return
+  if (page < 1 || page > props.lastPage || page === props.currentPage) {
+return
+}
+
   emit('change', page)
 }
 </script>

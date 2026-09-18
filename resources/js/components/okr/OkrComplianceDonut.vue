@@ -4,7 +4,7 @@
 // que son el semáforo YA existente (ahead/on_track/risk/off_track) — nunca
 // una clasificación nueva (ver DashboardController::complianceBreakdown()).
 import { computed } from 'vue'
-import VueApexCharts from 'vue3-apexcharts'
+import AsyncApexChart from '@/components/charts/AsyncApexChart.vue'
 
 const props = defineProps<{
     breakdown: {
@@ -50,7 +50,7 @@ const legend = computed(() => [
         <p class="mb-3 text-sm font-bold text-foreground">Cumplimiento general</p>
         <div v-if="breakdown.total > 0" class="flex items-center gap-4">
             <div class="w-32 shrink-0">
-                <VueApexCharts type="donut" :height="128" :options="options" :series="series" />
+                <AsyncApexChart type="donut" :height="128" :options="options" :series="series" />
             </div>
             <div class="min-w-0 flex-1 space-y-1.5">
                 <div v-for="item in legend" :key="item.label" class="flex items-center justify-between gap-2 text-xs">

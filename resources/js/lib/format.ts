@@ -13,8 +13,15 @@ export function moneyCompact(v: number | null | undefined): string {
     const n = Number(v ?? 0)
     const sign = n < 0 ? '-' : ''
     const abs = Math.abs(n)
-    if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`
-    if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`
+
+    if (abs >= 1_000_000) {
+return `${sign}$${(abs / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`
+}
+
+    if (abs >= 1_000) {
+return `${sign}$${(abs / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`
+}
+
     return `${sign}$${abs.toFixed(0)}`
 }
 

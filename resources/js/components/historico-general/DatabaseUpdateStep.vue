@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { AlertTriangle, Ban, CheckCircle, Clock, DatabaseZap, LoaderCircle, RefreshCw, ShieldCheck, TriangleAlert, XCircle } from 'lucide-vue-next'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import SectionHeader from './SectionHeader.vue'
 import StatusBadge from './StatusBadge.vue'
 
@@ -48,15 +48,26 @@ watch(() => props.period?.database_update_run_status, syncFromProps, { immediate
 // Dedicated polling against the JSON endpoint — independent of Inertia page reload
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const clearPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+const clearPoll = () => {
+ if (pollTimer) {
+ clearInterval(pollTimer); pollTimer = null 
+} 
+}
 
 const pollProgress = async () => {
-    if (!props.period?.id) return
+    if (!props.period?.id) {
+return
+}
+
     try {
         const res = await fetch(`/historico-general/${props.period.id}/actualizacion-bd/progreso`, {
             headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
         })
-        if (!res.ok) return
+
+        if (!res.ok) {
+return
+}
+
         const data = await res.json()
         liveStatus.value        = data.status
         liveLog.value           = data.log
@@ -84,6 +95,7 @@ watch(
     () => liveStatus.value,
     (status) => {
         clearPoll()
+
         if (status === 'queued' || status === 'running') {
             pollTimer = setInterval(pollProgress, 3000)
         }
@@ -95,16 +107,23 @@ watch(
 const liveSeconds = ref<number | null>(null)
 let ticker: ReturnType<typeof setInterval> | null = null
 
-const clearTicker = () => { if (ticker) { clearInterval(ticker); ticker = null } }
+const clearTicker = () => {
+ if (ticker) {
+ clearInterval(ticker); ticker = null 
+} 
+}
 
 watch(
     () => [liveElapsed.value, liveStatus.value] as const,
     ([secs, status]) => {
         clearTicker()
         liveSeconds.value = typeof secs === 'number' ? secs : null
+
         if (status === 'queued' || status === 'running') {
             ticker = setInterval(() => {
-                if (liveSeconds.value !== null) liveSeconds.value++
+                if (liveSeconds.value !== null) {
+liveSeconds.value++
+}
             }, 1000)
         }
     },
@@ -129,11 +148,18 @@ const jobOrphaned    = computed(() => liveOrphaned.value)
 const canProcessNow  = computed(() => liveCanProcessNow.value)
 
 const elapsedFormatted = computed(() => {
-    if (liveSeconds.value === null) return null
+    if (liveSeconds.value === null) {
+return null
+}
+
     const s = liveSeconds.value
     const mins = Math.floor(s / 60)
     const secs = s % 60
-    if (mins === 0) return `${secs} seg`
+
+    if (mins === 0) {
+return `${secs} seg`
+}
+
     return `${mins} min ${String(secs).padStart(2, '0')} seg`
 })
 const isQueued      = computed(() => dbRunStatus.value === 'queued')
@@ -173,12 +199,30 @@ const EXCLUDED_BRANCHES = [
 ]
 
 const statusConfig = computed(() => {
-    if (dbDone.value)      return { color: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/20', text: 'text-emerald-700 dark:text-emerald-300', label: 'Registros cargados',  icon: CheckCircle,  iconClass: 'text-emerald-600 dark:text-emerald-400' }
-    if (isQueued.value)    return { color: 'bg-violet-50 border-violet-200 dark:bg-violet-500/10 dark:border-violet-500/20',   text: 'text-violet-700 dark:text-violet-300',  label: 'En cola…',            icon: LoaderCircle, iconClass: 'text-violet-600 dark:text-violet-400 animate-spin' }
-    if (isRunning.value)   return { color: 'bg-indigo-50 border-indigo-200 dark:bg-indigo-500/10 dark:border-indigo-500/20',   text: 'text-indigo-700 dark:text-indigo-300',  label: 'Cargando…',           icon: LoaderCircle, iconClass: 'text-indigo-600 dark:text-indigo-400 animate-spin' }
-    if (isFailed.value)    return { color: 'bg-rose-50 border-rose-200 dark:bg-rose-500/10 dark:border-rose-500/20',       text: 'text-rose-700 dark:text-rose-300',    label: 'Falló',               icon: XCircle,      iconClass: 'text-rose-600 dark:text-rose-400' }
-    if (isCancelled.value) return { color: 'bg-slate-100 border-slate-300 dark:bg-slate-800 dark:border-slate-700',    text: 'text-slate-600 dark:text-slate-300',   label: 'Carga cancelada',     icon: Ban,          iconClass: 'text-slate-500' }
-    if (props.canUpdate)   return { color: 'bg-slate-50 border-slate-200 dark:bg-slate-800/40 dark:border-slate-800',     text: 'text-slate-600 dark:text-slate-300',   label: 'Lista para cargar',   icon: ShieldCheck,  iconClass: 'text-slate-500' }
+    if (dbDone.value)      {
+return { color: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/20', text: 'text-emerald-700 dark:text-emerald-300', label: 'Registros cargados',  icon: CheckCircle,  iconClass: 'text-emerald-600 dark:text-emerald-400' }
+}
+
+    if (isQueued.value)    {
+return { color: 'bg-violet-50 border-violet-200 dark:bg-violet-500/10 dark:border-violet-500/20',   text: 'text-violet-700 dark:text-violet-300',  label: 'En cola…',            icon: LoaderCircle, iconClass: 'text-violet-600 dark:text-violet-400 animate-spin' }
+}
+
+    if (isRunning.value)   {
+return { color: 'bg-indigo-50 border-indigo-200 dark:bg-indigo-500/10 dark:border-indigo-500/20',   text: 'text-indigo-700 dark:text-indigo-300',  label: 'Cargando…',           icon: LoaderCircle, iconClass: 'text-indigo-600 dark:text-indigo-400 animate-spin' }
+}
+
+    if (isFailed.value)    {
+return { color: 'bg-rose-50 border-rose-200 dark:bg-rose-500/10 dark:border-rose-500/20',       text: 'text-rose-700 dark:text-rose-300',    label: 'Falló',               icon: XCircle,      iconClass: 'text-rose-600 dark:text-rose-400' }
+}
+
+    if (isCancelled.value) {
+return { color: 'bg-slate-100 border-slate-300 dark:bg-slate-800 dark:border-slate-700',    text: 'text-slate-600 dark:text-slate-300',   label: 'Carga cancelada',     icon: Ban,          iconClass: 'text-slate-500' }
+}
+
+    if (props.canUpdate)   {
+return { color: 'bg-slate-50 border-slate-200 dark:bg-slate-800/40 dark:border-slate-800',     text: 'text-slate-600 dark:text-slate-300',   label: 'Lista para cargar',   icon: ShieldCheck,  iconClass: 'text-slate-500' }
+}
+
     return                 { color: 'bg-amber-50 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/20',            text: 'text-amber-700 dark:text-amber-300',   label: 'Faltan fuentes',      icon: TriangleAlert, iconClass: 'text-amber-600 dark:text-amber-400' }
 })
 </script>

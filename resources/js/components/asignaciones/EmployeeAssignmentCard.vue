@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { ArrowRightLeft, Building2, ClipboardList, PenSquare } from 'lucide-vue-next'
+import { computed } from 'vue'
 import type { Assignment } from '@/types/asignaciones'
 
 const props = defineProps<{
@@ -11,7 +11,11 @@ defineEmits<{ assign: [] }>()
 
 const initials = computed(() => {
     const parts = props.item.employee_name.trim().split(/\s+/).filter(Boolean)
-    if (!parts.length) return '?'
+
+    if (!parts.length) {
+return '?'
+}
+
     return (parts[0][0] + (parts[1]?.[0] ?? '')).toUpperCase()
 })
 
@@ -48,7 +52,10 @@ const statusLabel: Record<Assignment['ui_status'], string> = {
 const tone = computed(() => statusTone[props.item.ui_status] ?? statusTone.pending)
 
 function formatConfidence(value?: number | null) {
-    if (value === null || value === undefined) return '—'
+    if (value === null || value === undefined) {
+return '—'
+}
+
     return `${Math.round(value * 100)}%`
 }
 </script>

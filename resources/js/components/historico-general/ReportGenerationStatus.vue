@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { Clock3, MailCheck, AlertCircle, RefreshCw, ChevronDown } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps<{ period: any }>()
@@ -13,9 +13,18 @@ const isRunning = computed(() => props.period?.radiography_running)
 const isSuccess = computed(() => props.period?.radiography_ready)
 
 const statusKey = computed(() => {
-    if (isSuccess.value) return 'completed'
-    if (isRunning.value) return 'running'
-    if (isFailed.value) return 'error'
+    if (isSuccess.value) {
+return 'completed'
+}
+
+    if (isRunning.value) {
+return 'running'
+}
+
+    if (isFailed.value) {
+return 'error'
+}
+
     return 'pending'
 })
 

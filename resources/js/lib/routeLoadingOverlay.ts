@@ -54,7 +54,9 @@ let showTimer: ReturnType<typeof setTimeout> | undefined;
 let refCount = 0;
 
 function ensureOverlay(): HTMLDivElement {
-    if (overlayEl) return overlayEl;
+    if (overlayEl) {
+return overlayEl;
+}
 
     const el = document.createElement('div');
     el.id = OVERLAY_ID;
@@ -75,6 +77,7 @@ function ensureOverlay(): HTMLDivElement {
     `;
     document.body.appendChild(el);
     overlayEl = el;
+
     return el;
 }
 
@@ -89,18 +92,28 @@ export function showRouteLoading(delay = SHOW_DELAY_MS): void {
 
 export function hideRouteLoading(): void {
     refCount = Math.max(0, refCount - 1);
-    if (refCount > 0) return;
+
+    if (refCount > 0) {
+return;
+}
+
     clearTimeout(showTimer);
     ensureOverlay().classList.remove('is-visible');
 }
 
 export function attachInertiaRouteLoading(): void {
     router.on('start', (event) => {
-        if (isBackgroundEnqueueVisit(event.detail.visit.url)) return;
+        if (isBackgroundEnqueueVisit(event.detail.visit.url)) {
+return;
+}
+
         showRouteLoading();
     });
     router.on('finish', (event) => {
-        if (isBackgroundEnqueueVisit(event.detail.visit.url)) return;
+        if (isBackgroundEnqueueVisit(event.detail.visit.url)) {
+return;
+}
+
         hideRouteLoading();
     });
 }

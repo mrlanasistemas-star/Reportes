@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { Users } from 'lucide-vue-next'
+import { computed } from 'vue'
 import ChartCard from '@/components/radiography/ChartCard.vue'
 import type { BranchHeadcount } from '@/types/asignaciones'
 

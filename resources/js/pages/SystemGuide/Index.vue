@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { Head } from '@inertiajs/vue3'
 import {
     BookOpen, Download, Upload, RefreshCw, Play, Eye,
@@ -9,10 +8,11 @@ import {
     FolderOpen, ListChecks, Sliders, Building2, UserRound,
     Sparkles, FileCheck2, Filter, Search, Ban, Check,
 } from 'lucide-vue-next'
-import AppLayout from '@/layouts/AppLayout.vue'
+import { computed, ref } from 'vue'
+import GuideButtonChip from '@/components/guide/GuideButtonChip.vue'
 import GuideMockup from '@/components/guide/GuideMockup.vue'
 import GuideStepList from '@/components/guide/GuideStepList.vue'
-import GuideButtonChip from '@/components/guide/GuideButtonChip.vue'
+import AppLayout from '@/layouts/AppLayout.vue'
 
 defineOptions({ layout: AppLayout })
 
@@ -55,8 +55,16 @@ function goTo(index: number) {
     currentIndex.value = index
     window.scrollTo({ top: 0, behavior: 'smooth' })
 }
-function next() { if (!isLast.value) goTo(currentIndex.value + 1) }
-function prev() { if (!isFirst.value) goTo(currentIndex.value - 1) }
+function next() {
+ if (!isLast.value) {
+goTo(currentIndex.value + 1)
+} 
+}
+function prev() {
+ if (!isFirst.value) {
+goTo(currentIndex.value - 1)
+} 
+}
 </script>
 
 <template>

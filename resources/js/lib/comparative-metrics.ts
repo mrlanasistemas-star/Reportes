@@ -40,11 +40,22 @@ export function directionFor(label: string): MetricDirection {
 
 /** 'good' | 'bad' | 'neutral' — nunca cambia la cifra, solo el tono semántico a aplicar. */
 export function toneFor(label: string, varPct: number): 'good' | 'bad' | 'neutral' {
-    if (varPct === 0) return 'neutral'
+    if (varPct === 0) {
+return 'neutral'
+}
+
     const dir = directionFor(label)
-    if (dir === 'neutral') return 'neutral'
+
+    if (dir === 'neutral') {
+return 'neutral'
+}
+
     const isIncrease = varPct > 0
-    if (dir === 'increase_good') return isIncrease ? 'good' : 'bad'
+
+    if (dir === 'increase_good') {
+return isIncrease ? 'good' : 'bad'
+}
+
     return isIncrease ? 'bad' : 'good'
 }
 

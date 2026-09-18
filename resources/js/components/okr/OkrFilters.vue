@@ -3,11 +3,11 @@
 // Colaborador, Estatus, Periodo, Buscar, Limpiar filtros). Los filtros
 // adicionales exigidos por el PDF/backend (KPI, Responsable, fechas) viven
 // detrás de "Más filtros" — nunca rompen esta composición.
-import { onMounted, ref, watch } from 'vue'
 import { ChevronDown, Search, SlidersHorizontal, X } from 'lucide-vue-next'
+import { onMounted, ref, watch } from 'vue'
+import DatePickerField from '@/components/forms/DatePickerField.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import SelectField from '@/components/forms/SelectField.vue'
-import DatePickerField from '@/components/forms/DatePickerField.vue'
 import { Button } from '@/components/ui/button'
 
 type Option = { id: number; name?: string; full_name?: string }
@@ -46,30 +46,58 @@ let employeeSearchVersion = 0
 
 async function loadEmployees(search = '') {
     const params = new URLSearchParams()
-    if (model.value.branch_id) params.set('branch_id', model.value.branch_id)
-    if (search) params.set('search', search)
+
+    if (model.value.branch_id) {
+params.set('branch_id', model.value.branch_id)
+}
+
+    if (search) {
+params.set('search', search)
+}
+
     const myVersion = ++employeeSearchVersion
+
     try {
         const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-        if (myVersion !== employeeSearchVersion) return // llegó tarde — una búsqueda más nueva ya ganó
-        if (!res.ok) return
+
+        if (myVersion !== employeeSearchVersion) {
+return
+} // llegó tarde — una búsqueda más nueva ya ganó
+
+        if (!res.ok) {
+return
+}
+
         const json = await res.json()
-        if (myVersion !== employeeSearchVersion) return
+
+        if (myVersion !== employeeSearchVersion) {
+return
+}
+
         employeeOptions.value = json.employees ?? []
     } catch {
         // Búsqueda opcional — un fallo de red no debe romper el resto del dashboard.
     }
 }
 function onEmployeeSearch(term: string) {
-    if (employeeSearchTimer) clearTimeout(employeeSearchTimer)
+    if (employeeSearchTimer) {
+clearTimeout(employeeSearchTimer)
+}
+
     employeeSearchTimer = setTimeout(() => loadEmployees(term), 250)
 }
 
 onMounted(() => loadEmployees())
-watch(() => model.value.branch_id, () => { model.value.employee_id = ''; loadEmployees() })
+watch(() => model.value.branch_id, () => {
+ model.value.employee_id = ''; loadEmployees() 
+})
 
-function apply() { emit('apply') }
-function clear() { emit('clear') }
+function apply() {
+ emit('apply') 
+}
+function clear() {
+ emit('clear') 
+}
 
 const showMore = ref(false)
 </script>

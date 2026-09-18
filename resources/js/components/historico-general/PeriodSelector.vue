@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { CalendarDays, CheckCircle2, Search } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps<{ periods: any[]; modelValue: number | null }>()
@@ -12,7 +12,11 @@ const nonWeeklyPeriods = computed(() => props.periods.filter((p) => p.type !== '
 
 const filteredPeriods = computed(() => {
     const term = query.value.trim().toLowerCase()
-    if (!term) return nonWeeklyPeriods.value.slice(0, 18)
+
+    if (!term) {
+return nonWeeklyPeriods.value.slice(0, 18)
+}
+
     return nonWeeklyPeriods.value.filter((period) => [period.label, period.code, period.type].join(' ').toLowerCase().includes(term)).slice(0, 24)
 })
 
@@ -26,28 +30,58 @@ const typeLabel = (type?: string) => ({
 } as Record<string, string>)[type ?? ''] ?? 'Periodo'
 
 const automaticStatus = (period: any): string => {
-    if (period.radiography_ready) return 'consolidated'
-    if (period.can_generate_automatic) return 'ready_to_consolidate'
+    if (period.radiography_ready) {
+return 'consolidated'
+}
+
+    if (period.can_generate_automatic) {
+return 'ready_to_consolidate'
+}
+
     return 'waiting'
 }
 
 const status = (period: any): string => {
-    if (period.is_derived) return automaticStatus(period)
-    if (period.failed_count > 0) return 'error'
-    if (period.missing_sources_count > 0) return 'blocked'
-    if ((period.unprocessed_radiography_sources?.length ?? 0) > 0) return 'running'
+    if (period.is_derived) {
+return automaticStatus(period)
+}
+
+    if (period.failed_count > 0) {
+return 'error'
+}
+
+    if (period.missing_sources_count > 0) {
+return 'blocked'
+}
+
+    if ((period.unprocessed_radiography_sources?.length ?? 0) > 0) {
+return 'running'
+}
+
     return 'completed'
 }
 
 const statusLabel = (period: any): string => {
-    if (period.is_derived) return ({
+    if (period.is_derived) {
+return ({
         consolidated: 'Consolidado',
         ready_to_consolidate: 'Listo para consolidar',
         waiting: 'Esperando meses',
     } as Record<string, string>)[automaticStatus(period)] ?? 'Automático'
-    if (period.failed_count > 0) return 'Con error'
-    if (period.missing_sources_count > 0) return 'Incompleto'
-    if ((period.unprocessed_radiography_sources?.length ?? 0) > 0) return 'Procesando'
+}
+
+    if (period.failed_count > 0) {
+return 'Con error'
+}
+
+    if (period.missing_sources_count > 0) {
+return 'Incompleto'
+}
+
+    if ((period.unprocessed_radiography_sources?.length ?? 0) > 0) {
+return 'Procesando'
+}
+
     return 'Completo'
 }
 </script>

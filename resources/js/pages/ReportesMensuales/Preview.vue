@@ -1,18 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { router } from '@inertiajs/vue3'
 import {
     ArrowLeft, AlertTriangle, FileSpreadsheet, FileText, Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Download,
     HandCoins, TrendingUp, Landmark, Percent, Receipt, Wallet, Gauge, Building2, Banknote, CheckCircle2,
 } from 'lucide-vue-next'
-import AppLayout from '@/layouts/AppLayout.vue'
-import KpiCard from '@/components/radiography/KpiCard.vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import ChartCard from '@/components/radiography/ChartCard.vue'
 import EbitdaBadge from '@/components/radiography/EbitdaBadge.vue'
 import EmptyState from '@/components/radiography/EmptyState.vue'
 import FilterBar from '@/components/radiography/FilterBar.vue'
-import { money, percent as fmtPercent, num, moneyOrNa } from '@/lib/format'
-import { chartColors, categoryPalette, horizontalBarOptions, columnOptions, stackedBarOptions, donutOptions, countColumnOptions, countDonutOptions } from '@/lib/chart-theme'
+import KpiCard from '@/components/radiography/KpiCard.vue'
+import AppLayout from '@/layouts/AppLayout.vue'
+import { chartColors, categoryPalette, columnOptions, donutOptions, countColumnOptions, countDonutOptions } from '@/lib/chart-theme'
+import { money, percent as fmtPercent, num } from '@/lib/format'
 
 defineOptions({ layout: AppLayout })
 
@@ -78,7 +77,11 @@ const activeDataset = computed(() => scopedSnapshot.value ?? props.snapshot)
 // se acaba de tocar.
 const activeScope = computed<{ type: ScopeType; branch_id: number | null; branch_name: string | null; employee_id: number | null; employee_name: string | null; available: boolean }>(() => {
     const s = activeDataset.value?.scope
-    if (s) return s
+
+    if (s) {
+return s
+}
+
     return { type: 'general', branch_id: null, branch_name: null, employee_id: null, employee_name: null, available: true }
 })
 
@@ -95,8 +98,10 @@ const activeScope = computed<{ type: ScopeType; branch_id: number | null; branch
 const hasRecoveryComponents = computed(() => {
     if (activeScope.value.type === 'employee') {
         const rc = snap.value?.sections?.recovery_components
+
         return !!rc && !rc.not_attributable
     }
+
     return !!brGlobal.value
 })
 // Buckets de mora con sus 5 columnas — calculados por backend para los 3 alcances.
@@ -186,12 +191,19 @@ function discardManualAdjustment() {
 // viene en el snapshot cargado. A10: alimenta "Gestores/Colaboradores
 // afectados" y la estimación de impacto EN VIVO mientras se escribe.
 const affectedEmployeeCountEstimate = computed(() => {
-    if (activeScope.value.type === 'employee') return activeScope.value.available ? 1 : 0
+    if (activeScope.value.type === 'employee') {
+return activeScope.value.available ? 1 : 0
+}
+
     return (activeDataset.value?.sections?.employees_gestores ?? []).length
 })
 const estimatedTotalImpact = computed(() => {
     const amt = Number(manualDraft.amountPerEmployee) || 0
-    if (amt <= 0) return 0
+
+    if (amt <= 0) {
+return 0
+}
+
     return activeScope.value.type === 'employee' ? amt : amt * affectedEmployeeCountEstimate.value
 })
 
@@ -206,7 +218,11 @@ const estimatedTotalImpact = computed(() => {
 // para que nunca se filtre a un export de otro colaborador/sucursal/alcance.
 function buildTemporaryAdjustmentParams(scopeType: ScopeType, branchId: number | null, employeeId: number | null): Record<string, string> {
     const applied = appliedAdjustment.value
-    if (!applied || !(applied.amountPerEmployee > 0)) return {}
+
+    if (!applied || !(applied.amountPerEmployee > 0)) {
+return {}
+}
+
     if (applied.mode === 'employee' && scopeType === 'employee' && employeeId && employeeId === applied.employeeId) {
         return {
             manual_mode: 'employee',
@@ -215,6 +231,7 @@ function buildTemporaryAdjustmentParams(scopeType: ScopeType, branchId: number |
             manual_notes: applied.notes ?? '',
         }
     }
+
     if (applied.mode === 'branch_each_employee' && scopeType === 'branch' && branchId && branchId === applied.branchId) {
         return {
             manual_mode: 'branch_each_employee',
@@ -223,6 +240,7 @@ function buildTemporaryAdjustmentParams(scopeType: ScopeType, branchId: number |
             manual_notes: applied.notes ?? '',
         }
     }
+
     if (applied.mode === 'all_each_employee' && scopeType === 'general') {
         return {
             manual_mode: 'all_each_employee',
@@ -230,6 +248,7 @@ function buildTemporaryAdjustmentParams(scopeType: ScopeType, branchId: number |
             manual_notes: applied.notes ?? '',
         }
     }
+
     return {}
 }
 
@@ -240,7 +259,11 @@ function buildTemporaryAdjustmentParams(scopeType: ScopeType, branchId: number |
 // que el modo activo (sea cual sea) viaja tal cual.
 function buildTemporaryAdjustmentParamsRaw(): Record<string, string> {
     const applied = appliedAdjustment.value
-    if (!applied || !(applied.amountPerEmployee > 0)) return {}
+
+    if (!applied || !(applied.amountPerEmployee > 0)) {
+return {}
+}
+
     if (applied.mode === 'employee') {
         return {
             manual_mode: 'employee',
@@ -249,6 +272,7 @@ function buildTemporaryAdjustmentParamsRaw(): Record<string, string> {
             manual_notes: applied.notes ?? '',
         }
     }
+
     if (applied.mode === 'branch_each_employee') {
         return {
             manual_mode: 'branch_each_employee',
@@ -257,6 +281,7 @@ function buildTemporaryAdjustmentParamsRaw(): Record<string, string> {
             manual_notes: applied.notes ?? '',
         }
     }
+
     return {
         manual_mode: 'all_each_employee',
         manual_amount_per_employee: String(applied.amountPerEmployee),
@@ -267,17 +292,33 @@ function buildTemporaryAdjustmentParamsRaw(): Record<string, string> {
 const isComparative = computed(() => filteredType.value !== 'simple')
 
 const periodTypeForFilter = computed((): string | null => {
-    if (filteredType.value === 'month_vs_month') return 'monthly'
-    if (filteredType.value === 'bimester_vs_bimester') return 'bimonthly'
-    if (filteredType.value === 'quarter_vs_quarter') return 'quarterly'
+    if (filteredType.value === 'month_vs_month') {
+return 'monthly'
+}
+
+    if (filteredType.value === 'bimester_vs_bimester') {
+return 'bimonthly'
+}
+
+    if (filteredType.value === 'quarter_vs_quarter') {
+return 'quarterly'
+}
+
     return null
 })
 
 const comparePeriodOptions = computed(() => {
     const ptype = periodTypeForFilter.value
+
     return props.allPeriods.filter(p => {
-        if (p.id === props.period.id) return false
-        if (ptype && p.type !== ptype) return false
+        if (p.id === props.period.id) {
+return false
+}
+
+        if (ptype && p.type !== ptype) {
+return false
+}
+
         return true
     })
 })
@@ -289,14 +330,32 @@ function buildFilteredUrl(format: 'xlsx' | 'pdf'): string {
     params.set('report_type', filteredType.value)
 
     if (isComparative.value) {
-        if (filteredComparePeriodId.value) params.set('compare_period_id', String(filteredComparePeriodId.value))
-        if (filteredScope.value !== 'general') params.set('scope', filteredScope.value)
-        if (filteredScope.value === 'branch' && filteredBranchId.value) params.set('branch_id', String(filteredBranchId.value))
-        if (filteredScope.value === 'employee' && filteredEmployeeId.value) params.set('employee_id', String(filteredEmployeeId.value))
+        if (filteredComparePeriodId.value) {
+params.set('compare_period_id', String(filteredComparePeriodId.value))
+}
+
+        if (filteredScope.value !== 'general') {
+params.set('scope', filteredScope.value)
+}
+
+        if (filteredScope.value === 'branch' && filteredBranchId.value) {
+params.set('branch_id', String(filteredBranchId.value))
+}
+
+        if (filteredScope.value === 'employee' && filteredEmployeeId.value) {
+params.set('employee_id', String(filteredEmployeeId.value))
+}
     } else {
         params.set('scope', filteredScope.value)
-        if (filteredScope.value === 'branch' && filteredBranchId.value) params.set('branch_id', String(filteredBranchId.value))
-        if (filteredScope.value === 'employee' && filteredEmployeeId.value) params.set('employee_id', String(filteredEmployeeId.value))
+
+        if (filteredScope.value === 'branch' && filteredBranchId.value) {
+params.set('branch_id', String(filteredBranchId.value))
+}
+
+        if (filteredScope.value === 'employee' && filteredEmployeeId.value) {
+params.set('employee_id', String(filteredEmployeeId.value))
+}
+
         // Ajuste temporal — SOLO el ya APLICADO (nunca el draft), el mismo que se
         // ve en pantalla (A3: único helper canónico, todos los botones lo usan).
         for (const [k, v] of Object.entries(buildTemporaryAdjustmentParams(filteredScope.value, filteredBranchId.value, filteredEmployeeId.value))) {
@@ -319,13 +378,17 @@ const filteredPdfUrl  = computed(() => buildFilteredUrl('pdf'))
 // encerrado a un alcance, así que usa la versión "cruda" del helper.
 const employeesExportUrl = computed(() => {
     const params = new URLSearchParams()
+
     if (activeScope.value.type === 'branch' && activeScope.value.branch_id) {
         params.set('branch_id', String(activeScope.value.branch_id))
     }
+
     for (const [k, v] of Object.entries(buildTemporaryAdjustmentParamsRaw())) {
         params.set(k, v)
     }
+
     const qs = params.toString()
+
     return `/reportes-mensuales/${props.period.id}/colaboradores.xlsx` + (qs ? `?${qs}` : '')
 })
 
@@ -359,18 +422,31 @@ const hasActiveScope = computed(() => activeScope.value.type !== 'general')
 // filteredExcelBaseUrl/filteredPdfBaseUrl.
 function buildActiveReportExportParams(): URLSearchParams {
     const params = new URLSearchParams({ report_type: 'simple', scope: activeScope.value.type })
-    if (activeScope.value.type === 'branch' && activeScope.value.branch_id) params.set('branch_id', String(activeScope.value.branch_id))
-    if (activeScope.value.type === 'employee' && activeScope.value.employee_id) params.set('employee_id', String(activeScope.value.employee_id))
+
+    if (activeScope.value.type === 'branch' && activeScope.value.branch_id) {
+params.set('branch_id', String(activeScope.value.branch_id))
+}
+
+    if (activeScope.value.type === 'employee' && activeScope.value.employee_id) {
+params.set('employee_id', String(activeScope.value.employee_id))
+}
+
     for (const [k, v] of Object.entries(buildTemporaryAdjustmentParams(activeScope.value.type, activeScope.value.branch_id, activeScope.value.employee_id))) {
         params.set(k, v)
     }
+
     return params
 }
 
 function buildActiveScopeUrl(format: 'xlsx' | 'pdf'): string {
     const applied = appliedAdjustment.value
-    if (!hasActiveScope.value && !applied) return format === 'xlsx' ? props.excelUrl : props.pdfUrl
+
+    if (!hasActiveScope.value && !applied) {
+return format === 'xlsx' ? props.excelUrl : props.pdfUrl
+}
+
     const base = format === 'xlsx' ? props.filteredExcelBaseUrl : props.filteredPdfBaseUrl
+
     return `${base}?${buildActiveReportExportParams().toString()}`
 }
 
@@ -381,24 +457,49 @@ const activePdfUrl   = computed(() => buildActiveScopeUrl('pdf'))
 // general) si el archivo general todavía no existe — nunca por el simple hecho de
 // tener un filtro activo (requisito explícito: eso NO debe deshabilitar el botón).
 const canDownloadActiveExcel = computed(() => {
-    if (scopedLoading.value) return false
-    if (hasActiveScope.value) return activeScope.value.available !== false
+    if (scopedLoading.value) {
+return false
+}
+
+    if (hasActiveScope.value) {
+return activeScope.value.available !== false
+}
+
     return props.hasExcelExport
 })
 const canDownloadActivePdf = computed(() => {
-    if (scopedLoading.value) return false
-    if (hasActiveScope.value) return activeScope.value.available !== false
+    if (scopedLoading.value) {
+return false
+}
+
+    if (hasActiveScope.value) {
+return activeScope.value.available !== false
+}
+
     return props.hasPdfExport
 })
 
 const canDownloadFiltered = computed(() => {
     if (isComparative.value) {
-        if (!filteredComparePeriodId.value) return false
+        if (!filteredComparePeriodId.value) {
+return false
+}
+
         const cmp = props.allPeriods.find((p: any) => p.id === filteredComparePeriodId.value)
-        if (!cmp?.has_snapshot) return false
+
+        if (!cmp?.has_snapshot) {
+return false
+}
     }
-    if (!isComparative.value && filteredScope.value === 'branch' && !filteredBranchId.value) return false
-    if (!isComparative.value && filteredScope.value === 'employee' && !filteredEmployeeId.value) return false
+
+    if (!isComparative.value && filteredScope.value === 'branch' && !filteredBranchId.value) {
+return false
+}
+
+    if (!isComparative.value && filteredScope.value === 'employee' && !filteredEmployeeId.value) {
+return false
+}
+
     return true
 })
 
@@ -420,14 +521,22 @@ const canScrollTabsRight = ref(false)
 
 function updateTabsScrollState() {
     const el = tabsScrollEl.value
-    if (!el) return
+
+    if (!el) {
+return
+}
+
     canScrollTabsLeft.value  = el.scrollLeft > 4
     canScrollTabsRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 4
 }
 
 function scrollTabs(direction: 'left' | 'right') {
     const el = tabsScrollEl.value
-    if (!el) return
+
+    if (!el) {
+return
+}
+
     el.scrollBy({ left: direction === 'left' ? -160 : 160, behavior: 'smooth' })
 }
 
@@ -453,7 +562,6 @@ onUnmounted(() => {
 const snap   = computed(() => activeDataset.value)
 const periodComposite = computed(() => snap.value?.period?.composite ?? null)
 const sum    = computed(() => snap.value?.summary ?? {})
-const charts = computed(() => snap.value?.charts ?? {})
 
 const branchRadiography = computed(() => snap.value?.branch_radiography ?? null)
 // brGlobal puede ser un marcador { not_attributable: true, ... } bajo alcance colaborador
@@ -466,10 +574,22 @@ const brRaw     = computed(() => (branchRadiography.value?.branches ?? []) as an
 
 type EbitdaCategory = 'DIAMANTE' | 'MASTER' | 'SENIOR' | 'JUNIOR' | 'MANTENIDO'
 function ebitdaCategoryOf(value: number): EbitdaCategory {
-    if (value >= 1_000_000) return 'DIAMANTE'
-    if (value >= 600_000)   return 'MASTER'
-    if (value >= 300_000)   return 'SENIOR'
-    if (value >= 100_000)   return 'JUNIOR'
+    if (value >= 1_000_000) {
+return 'DIAMANTE'
+}
+
+    if (value >= 600_000)   {
+return 'MASTER'
+}
+
+    if (value >= 300_000)   {
+return 'SENIOR'
+}
+
+    if (value >= 100_000)   {
+return 'JUNIOR'
+}
+
     return 'MANTENIDO'
 }
 
@@ -481,8 +601,10 @@ function ebitdaCategoryOf(value: number): EbitdaCategory {
 const recoveryComponentsSource = computed(() => {
     if (activeScope.value.type === 'employee') {
         const rc = snap.value?.sections?.recovery_components
+
         return (rc && !rc.not_attributable) ? rc : null
     }
+
     return brGlobal.value
 })
 const ingrCapital      = computed(() => Number(recoveryComponentsSource.value?.capital_recuperado)   || 0)
@@ -495,17 +617,16 @@ const ingrCargosIni    = computed(() => Number(recoveryComponentsSource.value?.c
 const ingrComAper      = computed(() => Number(recoveryComponentsSource.value?.comision_apertura)    || 0)
 const ingrCrece30      = computed(() => Number(recoveryComponentsSource.value?.seguro_crece_reconocido) || 0)
 const ingrOtros        = computed(() => Number(recoveryComponentsSource.value?.otros_recuperacion)   || 0)
-const ingrSumaDesglose = computed(() =>
-    ingrCapital.value + ingrInteres.value + ingrImpuesto.value
-    + ingrMultas.value + ingrCargosAdic.value + ingrExcedente.value
-    + ingrCargosIni.value + ingrComAper.value + ingrCrece30.value + ingrOtros.value
-)
 // "Otros" desglosado por su concepto real de origen — nunca como bolsa genérica. Solo existe
 // a nivel branch/general (otros_detalle); a nivel employee el residual se muestra como una
 // única línea "Otros" vía ingrOtros (ver template).
 const ingrOtrosDetalle = computed<{ label: string; value: number }[]>(() => {
     const det = brGlobal.value?.otros_detalle as Record<string, number> | undefined
-    if (!det) return []
+
+    if (!det) {
+return []
+}
+
     return Object.entries(det).filter(([, v]) => Number(v) !== 0).map(([label, v]) => ({ label, value: Number(v) }))
 })
 
@@ -527,6 +648,7 @@ const recuperacionPorSucursal = computed(() => brRaw.value.map((b: any) => ({
 
 const recuperacionPorProducto = computed(() => {
     const rows = snap.value?.sections?.recovery_by_product?.rows as any[] ?? []
+
     return rows.map((p: any) => ({
         producto:           p.product,
         capital:            Number(p.capital) || 0,
@@ -555,14 +677,26 @@ const PERCEP_LABEL_TO_KEY: Record<string, string> = {
     'Otras percepciones': 'otros_percepciones',
 }
 const payrollCategorySource = computed(() => {
-    if (activeScope.value.type !== 'employee') return brGlobal.value
+    if (activeScope.value.type !== 'employee') {
+return brGlobal.value
+}
+
     const detail = snap.value?.sections?.payroll_detail
-    if (!detail || detail.not_attributable) return null
+
+    if (!detail || detail.not_attributable) {
+return null
+}
+
     const map: Record<string, number> = {}
+
     for (const row of (detail.percepciones ?? []) as { concepto: string; monto: number }[]) {
         const key = PERCEP_LABEL_TO_KEY[row.concepto]
-        if (key) map[key] = Number(row.monto) || 0
+
+        if (key) {
+map[key] = Number(row.monto) || 0
+}
     }
+
     return map
 })
 const nomNomina   = computed(() => Number(payrollCategorySource.value?.nomina_total)    || 0)
@@ -571,7 +705,6 @@ const nomVac      = computed(() => Number(payrollCategorySource.value?.vacacione
 const nomPrimaVac = computed(() => Number(payrollCategorySource.value?.prima_vacacional)|| 0)
 const nomBonos    = computed(() => Number(payrollCategorySource.value?.bonos)           || 0)
 const nomBonosAcel= computed(() => Number(payrollCategorySource.value?.bonos_aceleradores) || 0)
-const nomOtrosPercep = computed(() => Number(payrollCategorySource.value?.otros_percepciones) || 0)
 const nomImssPatronal = computed(() => Number(brGlobal.value?.imss_patronal) || 0)
 const nomGastosEmpleados = computed(() => Number(brGlobal.value?.gastos_empleados_nomina) || 0)
 
@@ -606,19 +739,29 @@ const nomDetalle = computed<{ label: string; value: number }[]>(() => {
     const det = (brGlobal.value?.nomina_detalle ?? {}) as Record<string, number>
     const info = (brGlobal.value?.nomina_informativo ?? {}) as Record<string, number>
     const merged: Record<string, number> = {}
-    for (const [k, v] of Object.entries(det)) merged[k] = (merged[k] ?? 0) + (Number(v) || 0)
-    for (const [k, v] of Object.entries(info)) merged[k] = (merged[k] ?? 0) + (Number(v) || 0)
+
+    for (const [k, v] of Object.entries(det)) {
+merged[k] = (merged[k] ?? 0) + (Number(v) || 0)
+}
+
+    for (const [k, v] of Object.entries(info)) {
+merged[k] = (merged[k] ?? 0) + (Number(v) || 0)
+}
+
     return Object.entries(merged).filter(([, v]) => Number(v) > 0).map(([label, v]) => ({ label, value: Number(v) }))
 })
-// Total = fuente única, replica BranchRadiographyCalculator::nominaTotalFor() exactamente.
-const nomDescuentosNOI = computed(() => nomDetalle.value.filter(r => NOI_DEDUCTION_LABELS.has(r.label)).reduce((s, r) => s + r.value, 0))
-
 // Clasificación Tipo/Afecta total por renglón (regla final 2026-07, sección 7):
 // Deducción informativa → NO afecta. IMSS y Gasto empleado → SÍ afectan (ya incluidos en
 // imss_patronal / gastos_empleados_nomina, sumados dentro de nomTotal).
 function nomRowTipo(label: string): 'Deducción informativa' | 'IMSS' | 'Gasto empleado' {
-    if (label === 'IMSS') return 'IMSS'
-    if (NOI_DEDUCTION_LABELS.has(label)) return 'Deducción informativa'
+    if (label === 'IMSS') {
+return 'IMSS'
+}
+
+    if (NOI_DEDUCTION_LABELS.has(label)) {
+return 'Deducción informativa'
+}
+
     return 'Gasto empleado'
 }
 const nomDeduccionesInformativas = computed(() => nomDetalle.value.filter(r => nomRowTipo(r.label) === 'Deducción informativa'))
@@ -631,7 +774,6 @@ const nomGastoEmpleado = computed(() => nomDetalle.value.filter(r => nomRowTipo(
 // el TOTAL nunca se vuelve a sumar aquí para evitar que diverja de la tarjeta KPI/Resumen
 // Ejecutivo.
 const nomTotal = computed(() => Number(sum.value?.nomina_capital_humano_total) || 0)
-const nomNeto = computed(() => nomTotal.value)
 
 // Percepciones/Deducciones/Neto pagado a trabajadores: informativo — "lo que el trabajador
 // recibió", distinto de Nómina y Capital Humano (concepto de gasto de la empresa).
@@ -648,6 +790,7 @@ const fondeoOperativo = computed(() => loans.value?.operative_fondeos ?? {})
 const fondeoOperTotal = computed(() => Number(fondeoOperativo.value?.fondea_total) || 0)
 const fondeoOperDetalle = computed(() => {
     const detail = fondeoOperativo.value?.detail as any[] ?? []
+
     return detail.map((f: any) => ({
         sucursal_origen:  f.from_branch && f.from_branch !== 'No identificada' ? f.from_branch : '—',
         sucursal_destino: f.to_branch && f.to_branch !== 'No identificada' && f.to_branch !== 'No detectado' ? f.to_branch : '—',
@@ -662,6 +805,7 @@ const excedentesSection = computed(() => loans.value?.excedentes ?? {})
 const excedentesTotal   = computed(() => Number(excedentesSection.value?.total) || 0)
 const excedentesDetalle = computed(() => {
     const detail = excedentesSection.value?.detail as any[] ?? []
+
     return detail.map((f: any) => ({
         sucursal_origen:  f.from_branch && f.from_branch !== 'No identificada' ? f.from_branch : '—',
         destino:          f.to_branch   ?? 'CORPORATIVO',
@@ -669,20 +813,6 @@ const excedentesDetalle = computed(() => {
         observacion:      [f.observation, f.justification].filter(Boolean).join(' | '),
         fecha:            f.date         ?? '',
         fuente:           f.source       ?? '',
-    }))
-})
-
-// Backward compat — tabla completa (todos los rows)
-const fondeoDetalle = computed(() => {
-    const detail = loans.value?.detail as any[] ?? []
-    return detail.map((f: any) => ({
-        sucursal_origen:  f.from_branch && f.from_branch !== 'No identificada' ? f.from_branch : '—',
-        sucursal_destino: f.to_branch && f.to_branch !== 'No identificada' && f.to_branch !== 'No detectado' ? f.to_branch : '—',
-        responsable:      f.observation ?? '',
-        monto:            f.amount       ?? 0,
-        observacion:      [f.observation, f.justification].filter(Boolean).join(' | '),
-        fecha:            f.date         ?? '',
-        tipo:             f.type        ?? 'fondeo',
     }))
 })
 
@@ -734,8 +864,13 @@ const g = (k: string) => Number(brGlobal.value?.[k]) || 0
 // interes/...) — se traduce aquí para reutilizar el mismo shape en toda la plantilla.
 const moraComponentesEmployee = computed<{ label: string; key: string; capital: number; interes: number; impuesto: number; moratorio: number; imp_moratorio: number; total: number; pct: number }[] | null>(() => {
     const buckets = snap.value?.sections?.mora_buckets
-    if (activeScope.value.type !== 'employee' || !Array.isArray(buckets)) return null
+
+    if (activeScope.value.type !== 'employee' || !Array.isArray(buckets)) {
+return null
+}
+
     const totalMora = moraTotalGlobal.value || 1
+
     return buckets.filter((b: any) => b.key !== 'al_corriente').map((b: any) => ({
         label: b.label, key: b.key,
         capital: Number(b.capital_due) || 0,
@@ -748,9 +883,12 @@ const moraComponentesEmployee = computed<{ label: string; key: string; capital: 
     }))
 })
 const moraComponentes = computed(() => {
-    if (moraComponentesEmployee.value !== null) return moraComponentesEmployee.value
+    if (moraComponentesEmployee.value !== null) {
+return moraComponentesEmployee.value
+}
 
     const totalMora = moraTotalGlobal.value || 1
+
     return [
         {
             label: 'Mora 1-30', key: 'mora_0_30',
@@ -798,6 +936,7 @@ const moraTotalesComponentes = computed(() => {
             imp_moratorio: acc.imp_moratorio + b.imp_moratorio, total: acc.total + b.total,
         }), { capital: 0, interes: 0, impuesto: 0, moratorio: 0, imp_moratorio: 0, total: 0 })
     }
+
     return {
         capital:      g('mora_total_capital'),
         interes:      g('mora_total_interes'),
@@ -811,7 +950,11 @@ const moraTotalesComponentes = computed(() => {
 // ── Gastos ─────────────────────────────────────────────────────────────────────
 const brGlobalGastos = computed(() => {
     const det = brGlobal.value?.gastos_detalle as Record<string, number> | undefined
-    if (!det) return []
+
+    if (!det) {
+return []
+}
+
     return Object.entries(det).map(([concepto, total]) => ({ concepto, total: Number(total) })).filter(c => c.total > 0).sort((a, b) => b.total - a.total)
 })
 // Fuente canónica summary.expenses_total (OPEX general/sucursal, gastos directamente
@@ -819,11 +962,7 @@ const brGlobalGastos = computed(() => {
 const brGlobalGastosTotal = computed(() => Number(sum.value?.expenses_total) || 0)
 
 // Desglose bruto (fuente legacy fact_expenses) — complementa la vista canónica
-const gastosDetail     = computed(() => snap.value?.sections?.expenses_detail ?? {})
-const gastosByCategory = computed(() => gastosDetail.value?.byCategory ?? [])
-const gastosByConcept  = computed(() => gastosDetail.value?.byConcept ?? [])
-const gastosByEmployee = computed(() => gastosDetail.value?.byEmployee ?? [])
-const gastosBySource   = computed(() => gastosDetail.value?.bySource ?? [])
+const gastosDetail = computed(() => snap.value?.sections?.expenses_detail ?? {})
 
 // ── EBITDA global — CRITERIO FINAL (2026-07) ────────────────────────────────────
 // EBITDA NO usa Recuperación total (incluye capital recuperado, que no es ingreso real)
@@ -832,8 +971,6 @@ const gastosBySource   = computed(() => gastosDetail.value?.bySource ?? [])
 // por apertura + Cargos adicionales + Excedentes recuperados + Seguro CRECE reconocido (30%).
 // Misma fórmula exacta que el backend (BranchRadiographyCalculator::ingresoEbitdaBaseFor() /
 // ::ebitdaFinalFor() / ::margenEbitdaFor()) y que Excel/PDF — nunca debe divergir.
-const saldoInicialCaja  = computed(() => Number(snap.value?.saldo_inicial_caja) || 0)
-const saldoFinalCaja    = computed(() => snap.value?.saldo_final_caja !== null && snap.value?.saldo_final_caja !== undefined ? Number(snap.value.saldo_final_caja) : null)
 // Fuente CANÓNICA — summary.gastos_totales/ingreso_ebitda_base/ebitda_final/margen_ebitda
 // ya vienen resueltos por alcance en el backend (RadiographySnapshotBuilder::
 // summaryFromRow(), misma fórmula estática que general para sucursal, fórmula propia
@@ -843,31 +980,7 @@ const saldoFinalCaja    = computed(() => snap.value?.saldo_final_caja !== null &
 const gastosEbitdaTotal = computed(() => Number(sum.value?.gastos_totales) || 0)
 const ingresoEbitdaBaseGlobal = computed(() => Number(sum.value?.ingreso_ebitda_base) || 0)
 const utilidadGlobal    = computed(() => Number(sum.value?.ebitda_final) || 0)
-const ventaGlobal       = computed(() => ingresoEbitdaBaseGlobal.value)
 const margenEbitdaPct   = computed(() => Number(sum.value?.margen_ebitda) || 0)
-// Diferencia = EBITDA − Envío de utilidad a corporativo. Puede ser negativa — no se fuerza a 0;
-// ese es justamente el saldo a llevar como saldo inicial del siguiente periodo.
-const diferencia        = computed(() => utilidadGlobal.value - excGlobal.value)
-
-// ── Captura de saldo inicial en caja (único insumo que no viene de ninguna fuente importada) ──
-const saldoInicialEditing = ref(false)
-const saldoInicialInput   = ref('')
-const saldoInicialSaving  = ref(false)
-
-function startEditSaldoInicial() {
-    saldoInicialInput.value = saldoInicialCaja.value ? String(saldoInicialCaja.value) : ''
-    saldoInicialEditing.value = true
-}
-
-function saveSaldoInicial() {
-    const value = Number(saldoInicialInput.value)
-    if (Number.isNaN(value)) return
-    saldoInicialSaving.value = true
-    router.post(props.updateSaldoInicialUrl, { saldo_inicial_caja: value }, {
-        preserveScroll: true,
-        onFinish: () => { saldoInicialSaving.value = false; saldoInicialEditing.value = false },
-    })
-}
 
 // ── Sucursales — fuente canónica única (branch_radiography.branches) ─────────
 // nominaFull replica exactamente BranchRadiographyCalculator::nominaTotalFor(): NOI neto
@@ -896,6 +1009,7 @@ const branchesFull = computed(() => {
         const gastosTotalBranch = gastos + nominaFull
         const ebitda          = ventaBranch - gastosTotalBranch
         const margenEbitda    = ventaBranch > 0 ? (ebitda / ventaBranch) * 100 : 0
+
         return {
             nombre: b.sucursal,
             recuperacion,
@@ -920,42 +1034,23 @@ const branchesFull = computed(() => {
 
 const categoriaCounts = computed(() => {
     const counts: Record<string, number> = { DIAMANTE: 0, MASTER: 0, SENIOR: 0, JUNIOR: 0, MANTENIDO: 0 }
-    for (const b of branchesFull.value) counts[b.categoria] = (counts[b.categoria] ?? 0) + 1
+
+    for (const b of branchesFull.value) {
+counts[b.categoria] = (counts[b.categoria] ?? 0) + 1
+}
+
     return counts
 })
 
 // ── Empleados / Gestores fusionados ───────────────────────────────────────────
 const empGest = computed(() => snap.value?.sections?.employees_gestores ?? [])
 
-// ── Préstamos activos — agregado por sucursal (misma lógica que Excel/PDF) ───
-const activeLoansByBranch = computed(() => {
-    const rows = (snap.value?.sections?.active_loans ?? []) as any[]
-    const map = new Map<string, { sucursal: string; count: number; saldo: number; vencido: number }>()
-    for (const al of rows) {
-        const key = al.sucursal ?? '—'
-        if (!map.has(key)) map.set(key, { sucursal: key, count: 0, saldo: 0, vencido: 0 })
-        const entry = map.get(key)!
-        entry.count++
-        entry.saldo += Number(al.saldo_activo) || 0
-        entry.vencido += Number(al.vencido) || 0
-    }
-    return Array.from(map.values())
-        .map(e => ({ ...e, pct: e.saldo > 0 ? (e.vencido / e.saldo) * 100 : 0 }))
-        .sort((a, b) => a.sucursal.localeCompare(b.sucursal))
-})
-const activeLoansTotals = computed(() => {
-    const rows = activeLoansByBranch.value
-    const count = rows.reduce((s, r) => s + r.count, 0)
-    const saldo = rows.reduce((s, r) => s + r.saldo, 0)
-    const vencido = rows.reduce((s, r) => s + r.vencido, 0)
-    return { count, saldo, vencido, pct: saldo > 0 ? (vencido / saldo) * 100 : 0 }
-})
-
 // Préstamo activo = SUM(Saldo actual) donde dias_vencidos = 0, excluyendo Aguascalientes.
 // "Saldo actual" es saldo_activo (fact_portfolios.balance) — NO capital_activo ("Capital"),
 // que es una columna distinta del mismo Excel y no es la regla de negocio vigente.
 const prestamoActivoKpi = computed(() => {
     const rows = (snap.value?.sections?.active_loans ?? []) as any[]
+
     return rows
         .filter((al: any) => Number(al.dias_vencidos) === 0)
         .reduce((sum: number, al: any) => sum + (Number(al.saldo_activo) || 0), 0)
@@ -975,10 +1070,12 @@ const corpFundingRows = computed(() => (corpFunding.value.by_branch ?? []) as an
 // Fondeos por sucursal origen (agregado)
 const fondeosPorOrigen = computed(() => {
     const map = new Map<string, number>()
+
     for (const r of fondeoDetalleRows.value) {
         const key = r.sucursal_origen ?? '—'
         map.set(key, (map.get(key) ?? 0) + Number(r.monto))
     }
+
     return Array.from(map.entries())
         .map(([sucursal, monto]) => ({ sucursal, monto }))
         .sort((a, b) => b.monto - a.monto)
@@ -990,25 +1087,41 @@ const fondeosPorOrigenSeries  = computed(() => fondeosPorOrigen.value.map(r => r
 // ── Rotación de Personal ───────────────────────────────────────────────────────
 const rotacionData        = computed(() => {
     const r = snap.value?.sections?.rotation
+
     return r && !r.not_attributable ? r : null
 })
 // Contexto individual de rotación bajo scope=employee: activo/alta/baja este periodo,
 // desde rotation_detail (ya filtrado por nombre en applyEmployeeScope()) — nunca la
 // plantilla/altas/bajas de TODA la empresa para una sola persona.
 const rotacionIndividual = computed(() => {
-    if (activeScope.value.type !== 'employee') return null
+    if (activeScope.value.type !== 'employee') {
+return null
+}
+
     const detail = snap.value?.sections?.rotation_detail
-    if (!detail || detail.not_attributable) return null
+
+    if (!detail || detail.not_attributable) {
+return null
+}
+
     const alta = (detail.altas ?? [])[0]
     const baja = (detail.bajas ?? [])[0]
     const activo = (detail.activos ?? [])[0]
-    if (alta) return { estado: 'Alta este periodo', ...alta }
-    if (baja) return { estado: 'Baja este periodo', ...baja }
-    if (activo) return { estado: 'Activo', ...activo }
+
+    if (alta) {
+return { estado: 'Alta este periodo', ...alta }
+}
+
+    if (baja) {
+return { estado: 'Baja este periodo', ...baja }
+}
+
+    if (activo) {
+return { estado: 'Activo', ...activo }
+}
+
     return { estado: 'Sin registro de rotación para este periodo' }
 })
-const rotacionFuente      = computed(() => (rotacionData.value?.fuente) ?? 'noi')
-const rotacionMes         = computed(() => rotacionData.value?.mes ?? '')
 const rotacionAltas       = computed(() => Number(rotacionData.value?.altas) || 0)
 const rotacionBajas       = computed(() => Number(rotacionData.value?.bajas) || 0)
 const rotacionPromedio    = computed(() => Number(rotacionData.value?.promedio) || 0)
@@ -1067,14 +1180,21 @@ const MORA_BUCKET_FIELD: Record<string, string> = {
     'Mora 91-120': 'mora_91_120', 'Mora 120+': 'mora_120_plus',
 }
 const vfBucketValue = computed<number | null>(() => {
-    if (!vfBucket.value) return null
+    if (!vfBucket.value) {
+return null
+}
+
     const field = MORA_BUCKET_FIELD[vfBucket.value]
-    if (!field) return null
+
+    if (!field) {
+return null
+}
+
     const source = vfBranchRow.value ?? { [field]: (moraBucketsGlobal.value.find(b => b.label === vfBucket.value)?.value ?? 0) }
+
     return Number((source as any)[field]) || 0
 })
 
-const vfHasFilters = computed(() => !!(vfBranch.value || vfProduct.value || vfBucket.value || vfGestor.value || vfCategoria.value))
 function vfClearAll() {
     vfBranch.value = ''; vfProduct.value = ''; vfBucket.value = ''; vfGestor.value = ''; vfCategoria.value = ''
 }
@@ -1082,7 +1202,11 @@ function vfClearAll() {
 // Sucursales visibles tras filtro de categoría (afecta tablas/gráficas por sucursal)
 const branchesFiltered = computed(() => {
     let rows = branchesFull.value
-    if (vfCategoria.value) rows = rows.filter(b => b.categoria === vfCategoria.value)
+
+    if (vfCategoria.value) {
+rows = rows.filter(b => b.categoria === vfCategoria.value)
+}
+
     return rows
 })
 
@@ -1095,12 +1219,9 @@ const branchesFiltered = computed(() => {
 // Estos 9 campos SIEMPRE vienen poblados (0 real cuando corresponde) para los 3 alcances
 // — ver RadiographySnapshotBuilder::summaryFromRow(), nunca emite null aquí. Los campos
 // que sí pueden ser "no atribuible" (excedentes/fondeo/seguros puente) se leen aparte,
-// más abajo, con attrOrNull() + moneyOrNa().
+// más abajo.
 function attrNum(value: unknown): number {
     return Number(value) || 0
-}
-function attrOrNull(value: unknown): number | null {
-    return value === null || value === undefined ? null : Number(value) || 0
 }
 
 const kpiRec     = computed(() => attrNum(sum.value?.recovery_total))
@@ -1113,6 +1234,7 @@ const kpiMoraPct = computed(() => {
     if (vfBucketValue.value !== null) {
         return kpiCartera.value > 0 ? (vfBucketValue.value / kpiCartera.value) * 100 : 0
     }
+
     return attrNum(sum.value?.mora_index)
 })
 const kpiGastos = computed(() => attrNum(sum.value?.expenses_total))
@@ -1132,17 +1254,25 @@ const prestamoActivoAttributable = computed(() => activeScope.value.type !== 'em
 // no el texto crudo del selector, para que coincida exactamente con lo que se pintó.
 const scopeChips = computed(() => {
     const chips: { label: string; clear: () => void; removable: boolean }[] = []
+
     if (activeScope.value.type === 'branch') {
-        chips.push({ label: activeScope.value.branch_name ?? vfBranch.value, clear: () => { vfBranch.value = '' }, removable: true })
+        chips.push({ label: activeScope.value.branch_name ?? vfBranch.value, clear: () => {
+ vfBranch.value = '' 
+}, removable: true })
     }
+
     if (activeScope.value.type === 'employee') {
         // Sucursal del colaborador — informativa, no se quita sola (sección 35: la sucursal
         // de un colaborador es implícita a su propia sucursal histórica, no un filtro aparte).
         if (activeScope.value.branch_name) {
             chips.push({ label: activeScope.value.branch_name, clear: () => {}, removable: false })
         }
-        chips.push({ label: activeScope.value.employee_name ?? vfGestor.value, clear: () => { vfGestor.value = '' }, removable: true })
+
+        chips.push({ label: activeScope.value.employee_name ?? vfGestor.value, clear: () => {
+ vfGestor.value = '' 
+}, removable: true })
     }
+
     return chips
 })
 
@@ -1181,9 +1311,14 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
         // en esta sesión) — respuesta instantánea, sin request.
         scopedRequestVersion++
         scopedSnapshot.value = generalSnapshotOverride
-        if (!silent) scopedLoading.value = false
+
+        if (!silent) {
+scopedLoading.value = false
+}
+
         scopedError.value    = null
         updateScopeQueryString(null)
+
         return
     }
 
@@ -1200,15 +1335,28 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
     let scopeTypeForManual: ScopeType
     let employeeIdForManual: number | null = null
     let branchIdForManual: number | null = null
+
     if (gestor) {
         const emp = props.employees.find(e => norm(e.name) === norm(gestor))
-        if (!emp) { scopedError.value = 'Colaborador no reconocido en este periodo.'; return }
+
+        if (!emp) {
+ scopedError.value = 'Colaborador no reconocido en este periodo.';
+
+ return 
+}
+
         params = new URLSearchParams({ scope: 'employee', employee_id: String(emp.id) })
         scopeTypeForManual = 'employee'
         employeeIdForManual = emp.id
     } else if (branch) {
         const br = props.branches.find(b => norm(b.name) === norm(branch))
-        if (!br) { scopedError.value = 'Sucursal no reconocida.'; return }
+
+        if (!br) {
+ scopedError.value = 'Sucursal no reconocida.';
+
+ return 
+}
+
         params = new URLSearchParams({ scope: 'branch', branch_id: String(br.id) })
         scopeTypeForManual = 'branch'
         branchIdForManual = br.id
@@ -1223,6 +1371,7 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
     // la que se refleja en la URL visible del navegador (updateScopeQueryString), para
     // que un F5/nueva pestaña NUNCA reabra con el ajuste puesto (requisito: vuelve a 0).
     const requestParams = new URLSearchParams(params)
+
     for (const [k, v] of Object.entries(buildTemporaryAdjustmentParams(scopeTypeForManual, branchIdForManual, employeeIdForManual))) {
         requestParams.set(k, v)
     }
@@ -1231,7 +1380,10 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
     scopedRequestController = controller
     const myVersion = ++scopedRequestVersion
 
-    if (!silent) scopedLoading.value = true
+    if (!silent) {
+scopedLoading.value = true
+}
+
     scopedError.value = null
 
     try {
@@ -1242,15 +1394,22 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
         })
         const json = await resp.json()
 
-        if (myVersion !== scopedRequestVersion) return // llegó tarde — una selección más nueva ya ganó
+        if (myVersion !== scopedRequestVersion) {
+return
+} // llegó tarde — una selección más nueva ya ganó
 
         if (!resp.ok && !json.snapshot) {
             scopedError.value = json.error ?? `Error ${resp.status} al actualizar la radiografía.`
+
             return
         }
 
         scopedSnapshot.value = json.snapshot
-        if (json.error) scopedError.value = json.error // ej. "sin datos para este alcance" — dataset vacío pero válido
+
+        if (json.error) {
+scopedError.value = json.error
+} // ej. "sin datos para este alcance" — dataset vacío pero válido
+
         if (clearingFilters) {
             // Solo se cachea como "override general reutilizable" cuando NO hay ajuste
             // manual activo — un snapshot con ajuste aplicado nunca debe quedar cacheado
@@ -1262,15 +1421,25 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
             updateScopeQueryString(params)
         }
     } catch (e: any) {
-        if (e?.name === 'AbortError') return
-        if (myVersion !== scopedRequestVersion) return
+        if (e?.name === 'AbortError') {
+return
+}
+
+        if (myVersion !== scopedRequestVersion) {
+return
+}
+
         scopedError.value = e?.message ?? 'Error de red al actualizar la radiografía.'
     } finally {
-        if (myVersion === scopedRequestVersion && !silent) scopedLoading.value = false
+        if (myVersion === scopedRequestVersion && !silent) {
+scopedLoading.value = false
+}
     }
 }
 
-function retryScopedFetch() { fetchScopedDataset() }
+function retryScopedFetch() {
+ fetchScopedDataset() 
+}
 
 // Controla si se muestra el formulario de captura (draft) o la card "AJUSTE
 // TEMPORAL ACTIVO" con [Modificar]/[Quitar ajuste] — nunca ambos a la vez.
@@ -1283,14 +1452,19 @@ const showManualDraftForm = computed(() => !appliedAdjustment.value || isEditing
 // employee/branch_each_employee/all_each_employee (A10).
 function applyManualAdjustment() {
     const amountNum = Number(manualDraft.amountPerEmployee)
+
     if (!(amountNum > 0)) {
         manualDraftError.value = 'Ingresa un monto mayor a $0.'
+
         return
     }
+
     if (manualDraft.notes.trim().length < 3) {
         manualDraftError.value = 'Describe brevemente el motivo del gasto.'
+
         return
     }
+
     manualDraftError.value = null
 
     const mode: TemporaryOpexAdjustmentMode = activeScope.value.type === 'employee'
@@ -1318,18 +1492,25 @@ function applyManualAdjustment() {
     generalSnapshotOverride = null
 
     adjustmentLoading.value = true
-    fetchScopedDataset({ silent: true }).finally(() => { adjustmentLoading.value = false })
+    fetchScopedDataset({ silent: true }).finally(() => {
+ adjustmentLoading.value = false 
+})
 }
 
 function removeManualAdjustment() {
-    if (!appliedAdjustment.value) return
+    if (!appliedAdjustment.value) {
+return
+}
+
     appliedAdjustment.value = null
     resetManualDraft()
     isEditingManualDraft.value = false
     generalSnapshotOverride = null
 
     adjustmentLoading.value = true
-    fetchScopedDataset({ silent: true }).finally(() => { adjustmentLoading.value = false })
+    fetchScopedDataset({ silent: true }).finally(() => {
+ adjustmentLoading.value = false 
+})
 }
 
 // Editar un ajuste ya aplicado ("Modificar") — precarga el draft con lo aplicado
@@ -1338,7 +1519,11 @@ function removeManualAdjustment() {
 // vigente hasta que se pulse "Aplicar ajuste" de nuevo, o "Cancelar").
 function editManualAdjustment() {
     const applied = appliedAdjustment.value
-    if (!applied) return
+
+    if (!applied) {
+return
+}
+
     manualDraft.amountPerEmployee = String(applied.amountPerEmployee)
     manualDraft.notes = applied.notes
     manualDraftError.value = null
@@ -1355,7 +1540,10 @@ function cancelEditManualDraft() {
 // Excel/PDF nunca pueden divergir de lo que se ve en pantalla. Solo aplica a reportes
 // simples; un comparativo tiene su propio alcance independiente (compara otro periodo).
 watch(activeScope, (s) => {
-    if (isComparative.value) return
+    if (isComparative.value) {
+return
+}
+
     filteredScope.value      = s.type as 'general' | 'branch' | 'employee'
     filteredBranchId.value   = s.branch_id
     filteredEmployeeId.value = s.employee_id
@@ -1366,7 +1554,12 @@ watch(activeScope, (s) => {
 // por construcción). Declarado DESPUÉS de vfBranch/vfGestor (const) — referenciarlos antes
 // de su declaración revienta en runtime con TDZ, no solo un warning de tipos.
 watch([vfGestor, vfBranch], () => {
-    if (suppressNextScopeFetch) { suppressNextScopeFetch = false; return }
+    if (suppressNextScopeFetch) {
+ suppressNextScopeFetch = false;
+
+ return 
+}
+
     fetchScopedDataset()
 })
 
@@ -1375,8 +1568,12 @@ watch([vfGestor, vfBranch], () => {
 // snapshot filtrado — ver scopedSnapshot inicial arriba) para que el FilterBar refleje el
 // alcance activo sin disparar una segunda petición redundante.
 onMounted(() => {
-    if (!props.initialScope || props.initialScope.type === 'general') return
+    if (!props.initialScope || props.initialScope.type === 'general') {
+return
+}
+
     suppressNextScopeFetch = true
+
     if (props.initialScope.type === 'branch' && props.initialScope.branch_name) {
         vfBranch.value = props.initialScope.branch_name
     } else if (props.initialScope.type === 'employee' && props.initialScope.employee_name) {
@@ -1395,12 +1592,20 @@ const filterBranch  = ref('')
 const branchOptions = computed(() => props.branches.map(b => b.name).sort())
 const filteredEmp = computed(() => {
     let rows = empGest.value as any[]
+
     if (searchEmp.value.trim()) {
         const q = searchEmp.value.trim().toLowerCase()
         rows = rows.filter((r: any) => (r.name ?? '').toLowerCase().includes(q) || (r.branch ?? '').toLowerCase().includes(q))
     }
-    if (filterBranch.value) rows = rows.filter((r: any) => r.branch === filterBranch.value)
-    if (vfGestor.value) rows = rows.filter((r: any) => r.name === vfGestor.value)
+
+    if (filterBranch.value) {
+rows = rows.filter((r: any) => r.branch === filterBranch.value)
+}
+
+    if (vfGestor.value) {
+rows = rows.filter((r: any) => r.name === vfGestor.value)
+}
+
     return rows
 })
 const showAllEmp = ref(false)
@@ -1415,12 +1620,17 @@ const gastosTreeAll = computed(() => {
         const raw = brRaw.value.find((r: any) => r.sucursal === b.nombre)
         const det = (raw?.gastos_detalle ?? {}) as Record<string, number>
         const conceptos = Object.entries(det).filter(([, v]) => Number(v) > 0).map(([concepto, total]) => ({ concepto, total: Number(total) })).sort((a, b) => b.total - a.total)
+
         return { sucursal: b.nombre, total: b.gastos, conceptos }
     }).filter(g => g.total > 0)
 })
 const gastosTree = computed(() => {
     const q = gastosSearch.value.trim().toLowerCase()
-    if (!q) return gastosTreeAll.value
+
+    if (!q) {
+return gastosTreeAll.value
+}
+
     return gastosTreeAll.value
         .map(g => ({ ...g, conceptos: g.conceptos.filter(c => c.concepto.toLowerCase().includes(q)) }))
         .filter(g => g.sucursal.toLowerCase().includes(q) || g.conceptos.length > 0)
@@ -1434,8 +1644,15 @@ const nominaTree = computed(() => {
     return branchesFull.value.map(b => {
         const raw = brRaw.value.find((r: any) => r.sucursal === b.nombre)
         const det: Record<string, number> = {}
-        for (const [k, v] of Object.entries((raw?.nomina_detalle ?? {}) as Record<string, number>)) det[k] = (det[k] ?? 0) + (Number(v) || 0)
-        for (const [k, v] of Object.entries((raw?.nomina_informativo ?? {}) as Record<string, number>)) det[k] = (det[k] ?? 0) + (Number(v) || 0)
+
+        for (const [k, v] of Object.entries((raw?.nomina_detalle ?? {}) as Record<string, number>)) {
+det[k] = (det[k] ?? 0) + (Number(v) || 0)
+}
+
+        for (const [k, v] of Object.entries((raw?.nomina_informativo ?? {}) as Record<string, number>)) {
+det[k] = (det[k] ?? 0) + (Number(v) || 0)
+}
+
         const base = [
             { concepto: 'Sueldos',          total: Number(raw?.nomina_total) || 0 },
             { concepto: 'Comisiones',       total: Number(raw?.comisiones) || 0 },
@@ -1445,6 +1662,7 @@ const nominaTree = computed(() => {
             ...Object.entries(det).filter(([, v]) => Number(v) > 0).map(([concepto, total]) => ({ concepto, total: Number(total) })),
         ].filter(c => c.total > 0)
         const descuentos = base.filter(c => NOI_DEDUCTION_LABELS.has(c.concepto)).reduce((s, c) => s + c.total, 0)
+
         return { sucursal: b.nombre, total: b.nomina, neto: b.nomina - descuentos, descuentos, conceptos: base }
     }).filter(n => n.total > 0)
 })
@@ -1455,11 +1673,16 @@ const pct = fmtPercent
 // ── Efectividad de Cobranza ─────────────────────────────────────────────────
 const ecData = computed(() => {
     const d = snap.value?.sections?.efectividad_cobranza
+
     return d && !d.not_attributable ? d : null
 })
 const ecStatus = computed(() => {
     const ec = ecData.value
-    if (!ec) return []
+
+    if (!ec) {
+return []
+}
+
     return [
         { key: 'vigente',  label: 'Cobros de créditos vigentes',  tone: 'green', ...ec['vigente']  },
         { key: 'atrasado', label: 'Cobros de créditos atrasados', tone: 'amber', ...ec['atrasado'] },
@@ -1495,7 +1718,11 @@ const tabs: { key: TabKey; label: string }[] = [
 // ════════════════════════════════════════════════════════════════════════════
 function dimColors(labels: string[], selected: string, base: string | string[]): string[] {
     const baseArr = Array.isArray(base) ? base : labels.map(() => base)
-    if (!selected) return baseArr
+
+    if (!selected) {
+return baseArr
+}
+
     return labels.map((l, i) => (l === selected ? baseArr[i % baseArr.length] : '#cbd5e1'))
 }
 
@@ -1506,6 +1733,7 @@ const recColOptions = computed(() => donutOptions(['Recuperación / Cobranza', '
 // Resumen: Cartera vs Vencida (donut)
 const carteraDonutSeries = computed(() => {
     const sana = Math.max(0, kpiCartera.value - kpiMora.value)
+
     return [sana, kpiMora.value]
 })
 const carteraDonutOptions = computed(() => donutOptions(['Cartera sana', 'Cartera vencida'], [chartColors.teal, chartColors.red]))
@@ -1631,17 +1859,6 @@ const nominaPorSucursalSeries = computed(() => nominaPorSucursalSorted.value.map
 const topVencidaBranches = computed(() => [...branchesFiltered.value].filter(b => b.vencida > 0).sort((a, b) => b.vencida - a.vencida).slice(0, 10))
 const topVencidaOptions = computed(() => donutOptions(topVencidaBranches.value.map(b => b.nombre), categoryPalette))
 const topVencidaSeries = computed(() => topVencidaBranches.value.map(b => b.vencida))
-
-// Préstamos activos: saldo / vencido por sucursal
-const prestamosFiltered = computed(() => {
-    let rows = activeLoansByBranch.value
-    if (vfBranch.value) rows = rows.filter(r => r.sucursal === vfBranch.value)
-    return rows
-})
-const prestamosSaldoOptions = computed(() => donutOptions(prestamosFiltered.value.map(r => r.sucursal), categoryPalette))
-const prestamosSaldoSeries = computed(() => prestamosFiltered.value.map(r => r.saldo))
-const prestamosVencidoOptions = computed(() => donutOptions(prestamosFiltered.value.map(r => r.sucursal), categoryPalette))
-const prestamosVencidoSeries = computed(() => prestamosFiltered.value.map(r => r.vencido))
 
 // Gestores: ranking por colocación
 const rankingGestoresOptions = computed(() => donutOptions(topGestoresColocacion.value.map((e: any) => e.name), categoryPalette))

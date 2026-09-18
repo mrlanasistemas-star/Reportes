@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { Head } from '@inertiajs/vue3'
 
 import {
@@ -13,9 +12,10 @@ import {
     Search,
     Sparkles,
 } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 
-import InputError from '@/components/InputError.vue'
 import SelectField from '@/components/forms/SelectField.vue'
+import InputError from '@/components/InputError.vue'
 import { usePeriodosIndex } from '@/composables/usePeriodosIndex'
 import { index as periodosIndex } from '@/routes/periodos'
 
@@ -83,10 +83,6 @@ const {
     monthlyForm,
     filteredWeeksForMonth,
     filteredPeriods,
-    totalPeriods,
-    closedPeriods,
-    openPeriods,
-    blockedPeriods,
     createLabel,
     submitCreate,
     submitConfigureMonth,
@@ -130,10 +126,15 @@ function isWeeklyGroupCollapsed(key: string) {
 }
 
 function formatShortDate(date?: string | null) {
-    if (!date) return 'Sin fecha'
+    if (!date) {
+return 'Sin fecha'
+}
 
     const parsed = new Date(`${date}T00:00:00`)
-    if (Number.isNaN(parsed.getTime())) return date
+
+    if (Number.isNaN(parsed.getTime())) {
+return date
+}
 
     return new Intl.DateTimeFormat('es-MX', {
         day: 'numeric',
@@ -143,10 +144,15 @@ function formatShortDate(date?: string | null) {
 }
 
 function formatLongDate(date?: string | null) {
-    if (!date) return 'Sin fecha'
+    if (!date) {
+return 'Sin fecha'
+}
 
     const parsed = new Date(`${date}T00:00:00`)
-    if (Number.isNaN(parsed.getTime())) return date
+
+    if (Number.isNaN(parsed.getTime())) {
+return date
+}
 
     return new Intl.DateTimeFormat('es-MX', {
         day: 'numeric',
@@ -156,26 +162,42 @@ function formatLongDate(date?: string | null) {
 }
 
 function formatRange(start?: string | null, end?: string | null) {
-    if (!start && !end) return 'Sin rango definido'
-    if (start && !end) return `Desde ${formatLongDate(start)}`
-    if (!start && end) return `Hasta ${formatLongDate(end)}`
+    if (!start && !end) {
+return 'Sin rango definido'
+}
+
+    if (start && !end) {
+return `Desde ${formatLongDate(start)}`
+}
+
+    if (!start && end) {
+return `Hasta ${formatLongDate(end)}`
+}
+
     return `${formatLongDate(start)} al ${formatLongDate(end)}`
 }
 
 // ── Helpers para la selección de semanas en el formulario mensual ──
 
 function weekCrossesMonth(week: { start_date?: string; end_date?: string }): boolean {
-    if (!week.start_date || !week.end_date) return false
+    if (!week.start_date || !week.end_date) {
+return false
+}
+
     return week.start_date.substring(5, 7) !== week.end_date.substring(5, 7)
 }
 
 function weekFromPreviousMonth(week: { start_date?: string }, selectedMonth: number): boolean {
-    if (!week.start_date) return false
+    if (!week.start_date) {
+return false
+}
+
     return parseInt(week.start_date.substring(5, 7)) < selectedMonth
 }
 
 const selectedWeeksDetail = computed(() => {
     const ids = new Set(monthlyForm.week_ids)
+
     return filteredWeeksForMonth.value
         .filter((w) => ids.has(w.id))
         .sort((a, b) => (a.start_date ?? '').localeCompare(b.start_date ?? ''))
@@ -183,9 +205,14 @@ const selectedWeeksDetail = computed(() => {
 
 const selectedWeeksSummary = computed(() => {
     const weeks = selectedWeeksDetail.value
-    if (!weeks.length) return null
+
+    if (!weeks.length) {
+return null
+}
+
     const first = weeks[0]
     const last  = weeks[weeks.length - 1]
+
     return {
         firstSequence: first.sequence,
         lastSequence:  last.sequence,
@@ -197,16 +224,28 @@ const selectedWeeksSummary = computed(() => {
 
 const hasNonConsecutiveWeeks = computed(() => {
     const weeks = selectedWeeksDetail.value
-    if (weeks.length < 2) return false
+
+    if (weeks.length < 2) {
+return false
+}
+
     for (let i = 1; i < weeks.length; i++) {
         const prevEnd   = weeks[i - 1].end_date
         const currStart = weeks[i].start_date
-        if (!prevEnd || !currStart) continue
+
+        if (!prevEnd || !currStart) {
+continue
+}
+
         const expected = new Date(`${prevEnd}T00:00:00`)
         expected.setDate(expected.getDate() + 1)
         const expectedStr = expected.toISOString().split('T')[0]
-        if (expectedStr !== currStart) return true
+
+        if (expectedStr !== currStart) {
+return true
+}
     }
+
     return false
 })
 
@@ -217,7 +256,9 @@ function getProgress(period: {
     const uploaded = Number(period.uploaded_sources_count ?? 0)
     const required = Number(period.required_sources_count ?? 0)
 
-    if (!required) return 0
+    if (!required) {
+return 0
+}
 
     return Math.min((uploaded / required) * 100, 100)
 }
@@ -229,7 +270,9 @@ function getProgressText(period: {
     const uploaded = Number(period.uploaded_sources_count ?? 0)
     const required = Number(period.required_sources_count ?? 0)
 
-    if (!required) return 'No requiere carga de archivos'
+    if (!required) {
+return 'No requiere carga de archivos'
+}
 
     return `${uploaded} de ${required} archivo(s) completados`
 }
@@ -245,6 +288,7 @@ function getMonthTitle(period: {
 
     if (period.start_date) {
         const parsed = new Date(`${period.start_date}T00:00:00`)
+
         if (!Number.isNaN(parsed.getTime())) {
             return new Intl.DateTimeFormat('es-MX', {
                 month: 'long',
@@ -277,11 +321,25 @@ function getPeriodTitle(period: {
     year: number
     label: string
 }) {
-    if (period.type === 'weekly' && period.sequence) return `Semana ${period.sequence}`
-    if (period.type === 'bimonthly' && period.sequence) return `Bimestre ${period.sequence}`
-    if (period.type === 'quarterly' && period.sequence) return `Trimestre ${period.sequence}`
-    if (period.type === 'semiannual' && period.sequence) return `Semestre ${period.sequence}`
-    if (period.type === 'annual') return `Anual ${period.year}`
+    if (period.type === 'weekly' && period.sequence) {
+return `Semana ${period.sequence}`
+}
+
+    if (period.type === 'bimonthly' && period.sequence) {
+return `Bimestre ${period.sequence}`
+}
+
+    if (period.type === 'quarterly' && period.sequence) {
+return `Trimestre ${period.sequence}`
+}
+
+    if (period.type === 'semiannual' && period.sequence) {
+return `Semestre ${period.sequence}`
+}
+
+    if (period.type === 'annual') {
+return `Anual ${period.year}`
+}
 
     return period.label
 }
@@ -354,7 +412,10 @@ const groupedWeeklyPeriods = computed(() => {
             const aSequence = a.sequence ?? 0
             const bSequence = b.sequence ?? 0
 
-            if (aSequence !== bSequence) return aSequence - bSequence
+            if (aSequence !== bSequence) {
+return aSequence - bSequence
+}
+
             return (a.start_date ?? '').localeCompare(b.start_date ?? '')
         }),
     }))
@@ -390,6 +451,7 @@ const groupedOtherPeriods = computed(() => {
         }
 
         group.periods.push(period)
+
         return acc
     }, [])
 
@@ -397,9 +459,13 @@ const groupedOtherPeriods = computed(() => {
         .map((group) => ({
             ...group,
             periods: [...group.periods].sort((a, b) => {
-                if (a.year !== b.year) return b.year - a.year
+                if (a.year !== b.year) {
+return b.year - a.year
+}
+
                 const aSequence = a.sequence ?? 0
                 const bSequence = b.sequence ?? 0
+
                 return aSequence - bSequence
             }),
         }))
@@ -410,8 +476,14 @@ function getStatusLabel(period: {
     is_closed?: boolean
     can_close?: boolean
 }) {
-    if (period.is_closed) return 'Cerrado'
-    if (period.can_close === false) return 'Requiere revisión'
+    if (period.is_closed) {
+return 'Cerrado'
+}
+
+    if (period.can_close === false) {
+return 'Requiere revisión'
+}
+
     return 'Disponible'
 }
 

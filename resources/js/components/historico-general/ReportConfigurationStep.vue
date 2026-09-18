@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
 import { SlidersHorizontal } from 'lucide-vue-next'
-import SectionHeader from './SectionHeader.vue'
+import { computed, watch } from 'vue'
 import SearchableSelect from './SearchableSelect.vue'
+import SectionHeader from './SectionHeader.vue'
 
 interface ReportConfig {
     report_type: string
@@ -52,6 +52,7 @@ const FORBIDDEN_BRANCH_LIKE_ROUTES = new Set([
 const operativeBranches = computed(() =>
     props.branches.filter((b) => {
         const name = b.name.trim().toUpperCase()
+
         return !FORBIDDEN_BRANCH_LIKE_ROUTES.has(name) && OPERATIVE_BRANCH_NAMES.has(name)
     })
 )
@@ -89,11 +90,26 @@ const excludedBranches = computed(() =>
 )
 
 const canSubmit = computed(() => {
-    if (!props.canGenerate || !props.modelValue.report_type) return false
-    if (isComparative.value && !props.modelValue.compare_period_id) return false
-    if (isBranchScope.value && !props.modelValue.branch_id) return false
-    if (isEmployeeScope.value && !props.modelValue.employee_id) return false
-    if (!isBranchScope.value && !isEmployeeScope.value && props.modelValue.included_branch_ids.length === 0) return false
+    if (!props.canGenerate || !props.modelValue.report_type) {
+return false
+}
+
+    if (isComparative.value && !props.modelValue.compare_period_id) {
+return false
+}
+
+    if (isBranchScope.value && !props.modelValue.branch_id) {
+return false
+}
+
+    if (isEmployeeScope.value && !props.modelValue.employee_id) {
+return false
+}
+
+    if (!isBranchScope.value && !isEmployeeScope.value && props.modelValue.included_branch_ids.length === 0) {
+return false
+}
+
     return true
 })
 

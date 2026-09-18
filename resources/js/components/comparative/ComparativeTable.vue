@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { money, percent, num } from '@/lib/format'
 import { HEADLINE_METRICS, toneFor } from '@/lib/comparative-metrics'
+import { money, percent, num } from '@/lib/format'
 
 type Row = { label: string; prev: number; curr: number; diff: number; var_pct: number; fmt: 'currency' | 'percent' | 'integer' }
 

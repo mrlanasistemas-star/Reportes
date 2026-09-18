@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { ArrowUp, ArrowDown, Minus } from 'lucide-vue-next'
-import { money, percent, num } from '@/lib/format'
+import { computed } from 'vue'
 import { toneFor } from '@/lib/comparative-metrics'
+import { money, percent, num } from '@/lib/format'
 
 const props = defineProps<{
     label: string
@@ -23,6 +23,7 @@ const diffLabel = computed(() => {
     const abs = Math.abs(props.diff)
     const formatted = props.fmt === 'percent' ? percent(abs) : props.fmt === 'integer' ? num(abs) : money(abs)
     const sign = props.diff > 0 ? '+' : props.diff < 0 ? '−' : ''
+
     return `${sign}${formatted}`
 })
 </script>

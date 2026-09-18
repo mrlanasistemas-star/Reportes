@@ -10,8 +10,8 @@ import {
     CircleAlert,
 } from 'lucide-vue-next'
 
-import AppLayout from '@/layouts/AppLayout.vue'
 import { useValidacionesIndex } from '@/composables/useValidacionesIndex'
+import AppLayout from '@/layouts/AppLayout.vue'
 
 const props = withDefaults(
     defineProps<{
