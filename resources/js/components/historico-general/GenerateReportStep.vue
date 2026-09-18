@@ -506,7 +506,7 @@ const statusConfig = computed(() => {
                         </div>
 
                         <!-- Error detail -->
-                        <div v-if="isFailed && liveError" class="mt-3 break-all rounded-xl bg-rose-100 p-3 font-mono text-xs leading-5 text-rose-800 dark:bg-rose-500/10 dark:text-rose-300">{{ liveError }}</div>
+                        <div v-if="isFailed && liveError" class="mt-3 rounded-xl bg-rose-100 p-3 font-mono text-xs leading-5 break-all whitespace-pre-line text-rose-800 dark:bg-rose-500/10 dark:text-rose-300">{{ liveError }}</div>
 
                         <!-- Éxito: checklist Excel/PDF + descarga — nunca se adivina la URL: si
                              isDone pero aún no llegó la respuesta real del backend, el botón se

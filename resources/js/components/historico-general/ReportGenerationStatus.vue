@@ -44,7 +44,7 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
                     <div>
                         <p class="text-xs font-black uppercase tracking-[0.22em] text-red-600 dark:text-red-400">Estado de generación</p>
                         <h3 class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50">La generación falló</h3>
-                        <p class="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+                        <p class="mt-1 text-sm leading-6 whitespace-pre-line text-slate-600 dark:text-slate-300">
                             {{ publicLog || 'No se pudo generar la Radiografía. Revisa las fuentes cargadas e inténtalo nuevamente.' }}
                         </p>
                         <p v-if="period?.radiography_run_finished_at" class="mt-1 text-xs text-slate-400">

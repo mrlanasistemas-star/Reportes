@@ -493,6 +493,14 @@ class GenerateRadiographyJob implements ShouldQueue
             return 'GENERATION_SOURCE_NOT_PROCESSED';
         }
 
+        if (str_contains($msg, 'No se pudo emparejar contra el PDF de Lendus')) {
+            return 'GENERATION_EXPENSE_BRANCH_UNRESOLVED';
+        }
+
+        if (str_contains($msg, 'No se pudo determinar empleado/sucursal para')) {
+            return 'GENERATION_MOTOS_UNRESOLVED';
+        }
+
         return 'GENERATION_UNKNOWN_FAILED';
     }
 
@@ -534,6 +542,18 @@ class GenerateRadiographyJob implements ShouldQueue
         }
 
         if (str_contains($msg, 'no quedó procesada') || str_contains($msg, 'no tiene ruta de almacenamiento')) {
+            return $msg;
+        }
+
+        // Estas dos son detenciones de negocio DELIBERADAS (GastosExcelBranchResolverService::
+        // resolveForPeriodOrFail() / FinanciamientoMotosAssignmentService::assignForPeriodOrFail())
+        // — su mensaje ya explica exactamente qué registro falta emparejar y qué hacer al
+        // respecto. Antes caían en el genérico de abajo y el usuario no tenía forma de saber
+        // qué corregir sin pedirle a alguien que revisara storage/logs/laravel.log.
+        if (
+            str_contains($msg, 'No se pudo emparejar contra el PDF de Lendus') ||
+            str_contains($msg, 'No se pudo determinar empleado/sucursal para')
+        ) {
             return $msg;
         }
 
