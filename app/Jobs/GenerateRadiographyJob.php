@@ -323,6 +323,11 @@ class GenerateRadiographyJob implements ShouldQueue
             $this->cleanupPreviousIdentityVersion($cleaner, $period, $identity, $run->id);
         }
 
+        // El periodo recién generado puede cambiar la tendencia EBITDA/OPEX del
+        // dashboard (nueva key de caché) — recalentarla aquí evita que el primer
+        // usuario que abra el dashboard pague ese costo en su propia request.
+        WarmDashboardTrendCacheJob::dispatch();
+
         $tMailStart = microtime(true);
         $this->notifyUser(
             subject: 'Radiografía lista',

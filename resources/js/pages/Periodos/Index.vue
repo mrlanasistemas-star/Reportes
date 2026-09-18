@@ -15,6 +15,7 @@ import {
 } from 'lucide-vue-next'
 
 import InputError from '@/components/InputError.vue'
+import SelectField from '@/components/forms/SelectField.vue'
 import { usePeriodosIndex } from '@/composables/usePeriodosIndex'
 import { index as periodosIndex } from '@/routes/periodos'
 
@@ -110,6 +111,13 @@ const monthNames = [
     'Noviembre',
     'Diciembre',
 ]
+
+// Opciones para los SelectField (antes <select> nativo) — mismos value/label que
+// las <option> que reemplazan, ningún cambio de comportamiento.
+const periodTypeOptions = [{ value: 'weekly', label: 'Semanal (base)' }]
+const monthSelectOptions = monthNames
+    .map((label, value) => ({ value: String(value), label }))
+    .filter((option) => option.value !== '0')
 
 const collapsedWeeklyGroups = ref<Record<string, boolean>>({})
 
@@ -426,21 +434,10 @@ function getStatusClasses(period: {
 <template>
     <Head title="Periodos" />
 
-    <div class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 lg:p-8">
+    <div class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 lg:p-8 dark:bg-none dark:bg-background">
         <div class="mx-auto max-w-screen-2xl space-y-6">
 
-            <section class="overflow-hidden rounded-[2rem] bg-slate-950 p-6 text-white shadow-2xl shadow-slate-300 sm:p-8">
-                <div class="flex items-center gap-3">
-                    <div class="flex size-10 items-center justify-center rounded-2xl bg-violet-500">
-                        <CalendarDays class="size-5 text-white" />
-                    </div>
-                    <p class="text-xs font-black uppercase tracking-[0.28em] text-violet-300">Gestión de periodos</p>
-                </div>
-                <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">Periodos</h1>
-                <p class="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
-                    Genera semanas manualmente. Bimestres, trimestres, semestres y anual se crean automáticamente según las semanas existentes.
-                </p>
-            </section>
+            <!-- El título ya vive en el breadcrumb del navbar — sin div gigante aquí. -->
 
             <section class="app-card overflow-hidden">
                 <div class="border-b px-4 py-4 sm:px-5">
@@ -471,9 +468,7 @@ function getStatusClasses(period: {
                     <div class="grid gap-4 sm:grid-cols-2">
                         <div class="space-y-2 sm:col-span-2">
                             <label class="text-sm font-semibold">Tipo</label>
-                            <select v-model="form.type" class="app-input">
-                                <option value="weekly">Semanal (base)</option>
-                            </select>
+                            <SelectField v-model="form.type" :options="periodTypeOptions" />
                             <InputError :message="form.errors.type" />
                         </div>
 
@@ -492,21 +487,7 @@ function getStatusClasses(period: {
 
                         <div class="space-y-2">
                             <label class="text-sm font-semibold">Mes base</label>
-                            <select v-model="form.month" class="app-input">
-                                <option value="">Selecciona un mes</option>
-                                <option value="1">Enero</option>
-                                <option value="2">Febrero</option>
-                                <option value="3">Marzo</option>
-                                <option value="4">Abril</option>
-                                <option value="5">Mayo</option>
-                                <option value="6">Junio</option>
-                                <option value="7">Julio</option>
-                                <option value="8">Agosto</option>
-                                <option value="9">Septiembre</option>
-                                <option value="10">Octubre</option>
-                                <option value="11">Noviembre</option>
-                                <option value="12">Diciembre</option>
-                            </select>
+                            <SelectField v-model="form.month" :options="monthSelectOptions" placeholder="Selecciona un mes" />
                             <InputError :message="form.errors.month" />
                         </div>
                     </div>
@@ -577,21 +558,7 @@ function getStatusClasses(period: {
 
                         <div class="space-y-2">
                             <label class="text-sm font-semibold">Mes</label>
-                            <select v-model="monthlyForm.month" class="app-input">
-                                <option value="">Selecciona un mes</option>
-                                <option value="1">Enero</option>
-                                <option value="2">Febrero</option>
-                                <option value="3">Marzo</option>
-                                <option value="4">Abril</option>
-                                <option value="5">Mayo</option>
-                                <option value="6">Junio</option>
-                                <option value="7">Julio</option>
-                                <option value="8">Agosto</option>
-                                <option value="9">Septiembre</option>
-                                <option value="10">Octubre</option>
-                                <option value="11">Noviembre</option>
-                                <option value="12">Diciembre</option>
-                            </select>
+                            <SelectField v-model="monthlyForm.month" :options="monthSelectOptions" placeholder="Selecciona un mes" />
                             <InputError :message="monthlyForm.errors.month" />
                         </div>
                     </div>

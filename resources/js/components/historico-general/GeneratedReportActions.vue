@@ -97,7 +97,7 @@ const pdfSubtitle = computed(() => {
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70">
+    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
         <SectionHeader
             eyebrow="Etapa 7"
             title="Exportación"
@@ -110,15 +110,15 @@ const pdfSubtitle = computed(() => {
                 :href="canExport ? excelUrl : '#'"
                 class="flex items-center justify-between rounded-2xl border p-5 transition hover:-translate-y-0.5 hover:shadow-lg"
                 :class="canExport
-                    ? 'border-emerald-200 bg-emerald-50 cursor-pointer'
-                    : 'border-slate-200 bg-slate-50 pointer-events-none opacity-50'"
+                    ? 'border-emerald-200 bg-emerald-50 cursor-pointer dark:border-emerald-500/20 dark:bg-emerald-500/10'
+                    : 'border-slate-200 bg-slate-50 pointer-events-none opacity-50 dark:border-slate-800 dark:bg-slate-800/40'"
             >
                 <span>
-                    <FileSpreadsheet class="mb-3 size-7 text-emerald-700" />
-                    <span class="block font-black text-slate-950">Descargar Excel</span>
-                    <span class="text-xs text-slate-600">{{ excelSubtitle }}</span>
+                    <FileSpreadsheet class="mb-3 size-7 text-emerald-700 dark:text-emerald-400" />
+                    <span class="block font-black text-slate-950 dark:text-slate-50">Descargar Excel</span>
+                    <span class="text-xs text-slate-600 dark:text-slate-300">{{ excelSubtitle }}</span>
                 </span>
-                <Download class="size-5 text-emerald-700" />
+                <Download class="size-5 text-emerald-700 dark:text-emerald-400" />
             </a>
 
             <!-- PDF -->
@@ -126,15 +126,15 @@ const pdfSubtitle = computed(() => {
                 :href="canExport ? pdfUrl : '#'"
                 class="flex items-center justify-between rounded-2xl border p-5 transition hover:-translate-y-0.5 hover:shadow-lg"
                 :class="canExport
-                    ? 'border-rose-200 bg-rose-50 cursor-pointer'
-                    : 'border-slate-200 bg-slate-50 pointer-events-none opacity-50'"
+                    ? 'border-rose-200 bg-rose-50 cursor-pointer dark:border-rose-500/20 dark:bg-rose-500/10'
+                    : 'border-slate-200 bg-slate-50 pointer-events-none opacity-50 dark:border-slate-800 dark:bg-slate-800/40'"
             >
                 <span>
-                    <FileText class="mb-3 size-7 text-rose-700" />
-                    <span class="block font-black text-slate-950">Descargar PDF</span>
-                    <span class="text-xs text-slate-600">{{ pdfSubtitle }}</span>
+                    <FileText class="mb-3 size-7 text-rose-700 dark:text-rose-400" />
+                    <span class="block font-black text-slate-950 dark:text-slate-50">Descargar PDF</span>
+                    <span class="text-xs text-slate-600 dark:text-slate-300">{{ pdfSubtitle }}</span>
                 </span>
-                <Download class="size-5 text-rose-700" />
+                <Download class="size-5 text-rose-700 dark:text-rose-400" />
             </a>
 
             <!-- Preview page -->
@@ -142,15 +142,15 @@ const pdfSubtitle = computed(() => {
                 :href="previewUrl ?? '#'"
                 class="flex items-center justify-between rounded-2xl border p-5 transition hover:-translate-y-0.5 hover:shadow-lg"
                 :class="previewUrl
-                    ? 'border-indigo-200 bg-indigo-50 cursor-pointer'
-                    : 'border-slate-200 bg-slate-50 pointer-events-none opacity-50'"
+                    ? 'border-indigo-200 bg-indigo-50 cursor-pointer dark:border-indigo-500/20 dark:bg-indigo-500/10'
+                    : 'border-slate-200 bg-slate-50 pointer-events-none opacity-50 dark:border-slate-800 dark:bg-slate-800/40'"
             >
                 <span>
-                    <ExternalLink class="mb-3 size-7 text-indigo-700" />
-                    <span class="block font-black text-slate-950">Ver reporte completo</span>
-                    <span class="text-xs text-slate-600">Vista previa web con todas las secciones</span>
+                    <ExternalLink class="mb-3 size-7 text-indigo-700 dark:text-indigo-400" />
+                    <span class="block font-black text-slate-950 dark:text-slate-50">Ver reporte completo</span>
+                    <span class="text-xs text-slate-600 dark:text-slate-300">Vista previa web con todas las secciones</span>
                 </span>
-                <ExternalLink class="size-5 text-indigo-700" />
+                <ExternalLink class="size-5 text-indigo-700 dark:text-indigo-400" />
             </a>
         </div>
 

@@ -37,14 +37,14 @@ const employeeOptions = computed(() => props.employees)
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-white p-5 shadow-sm">
+    <div class="rounded-2xl border bg-white p-5 shadow-sm dark:bg-card">
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_auto_1fr]">
             <SearchableSelect v-model="periodA" :options="periodAOptions" label="Periodo A" label-key="label" secondary-key="code"
                                placeholder="Selecciona el periodo actual" />
             <div class="flex items-end justify-center pb-2 lg:pb-0 lg:items-center">
                 <button type="button" @click="emit('swap')"
                         title="Intercambiar periodos"
-                        class="flex size-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-indigo-300 hover:text-indigo-600">
+                        class="flex size-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-indigo-300 hover:text-indigo-600 dark:border-slate-700 dark:bg-card dark:text-slate-400 dark:hover:border-indigo-500/50 dark:hover:text-indigo-400">
                     <ArrowLeftRight class="size-4" />
                 </button>
             </div>
@@ -55,11 +55,11 @@ const employeeOptions = computed(() => props.employees)
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
             <div>
                 <label class="mb-1.5 block text-sm font-semibold text-foreground">Alcance</label>
-                <div class="flex h-11 items-center gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-1">
+                <div class="flex h-11 items-center gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-800/60">
                     <button v-for="opt in [{ v: 'general', l: 'General' }, { v: 'branch', l: 'Sucursal' }, { v: 'employee', l: 'Gestor' }]" :key="opt.v"
                             type="button" @click="scope = opt.v as any"
                             class="h-full flex-1 rounded-xl text-xs font-bold transition"
-                            :class="scope === opt.v ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'">
+                            :class="scope === opt.v ? 'bg-white text-indigo-600 shadow-sm dark:bg-card dark:text-indigo-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'">
                         {{ opt.l }}
                     </button>
                 </div>

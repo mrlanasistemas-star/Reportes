@@ -4,10 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Models\Period;
 use App\Models\PeriodSummary;
+use App\Services\DashboardTrendService;
 use App\Services\RadiografiaExportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -24,10 +24,10 @@ use Inertia\Response;
  * 6 de tendencia) en la MISMA request, siempre, incluso con caché frío. Ahora:
  *   - index()/data() construyen UN SOLO snapshot (el del periodo pedido) — la carga
  *     inicial y cada cambio de filtro son igual de rápidos.
- *   - La tendencia se sirve aparte (trend()), cacheada 15 min (Cache::remember) —
- *     es la MISMA para cualquier periodo que se esté viendo (siempre "los últimos N
- *     periodos del sistema"), así que solo se recalcula una vez cada 15 min para
- *     TODOS los usuarios, nunca por cada carga de página ni por cada cambio de filtro.
+ *   - La tendencia se sirve aparte (trend(), vía DashboardTrendService), cacheada 15
+ *     min — es la MISMA para cualquier periodo que se esté viendo (siempre "los
+ *     últimos N periodos del sistema"), así que solo se recalcula una vez cada 15
+ *     min para TODOS los usuarios, nunca por cada carga de página ni cambio de filtro.
  *   - El frontend la pide de forma asíncrona después de pintar KPIs/gráficas — nunca
  *     bloquea lo que el usuario ve primero.
  *
@@ -39,11 +39,10 @@ use Inertia\Response;
  */
 class DashboardController extends Controller
 {
-    private const TREND_CACHE_TTL = 900; // 15 min — ver docblock de clase.
-    private const TREND_PERIODS_COUNT = 6;
-
-    public function __construct(private readonly RadiografiaExportService $exportService)
-    {
+    public function __construct(
+        private readonly RadiografiaExportService $exportService,
+        private readonly DashboardTrendService $trendService,
+    ) {
     }
 
     public function index(): Response
@@ -51,6 +50,7 @@ class DashboardController extends Controller
         // buildSnapshot() es una operación pesada (agregaciones financieras completas) —
         // mismo ajuste que ya usa RadiografiaExportService::exportPdfWithConfig().
         @ini_set('memory_limit', '512M');
+        @set_time_limit(120);
 
         $periods = $this->availablePeriods();
         $latestPeriod = $periods->first();
@@ -69,6 +69,7 @@ class DashboardController extends Controller
     public function data(Request $request): JsonResponse
     {
         @ini_set('memory_limit', '512M');
+        @set_time_limit(120);
 
         $periods = $this->availablePeriods();
         $period = $periods->firstWhere('id', (int) $request->integer('period_id')) ?? $periods->first();
@@ -87,40 +88,23 @@ class DashboardController extends Controller
     /**
      * Tendencia EBITDA/OPEX — los últimos hasta 6 periodos mensuales reales del sistema,
      * SIEMPRE los mismos sin importar qué periodo esté viendo el usuario en los KPIs de
-     * arriba. Cacheada 15 min: el frontend la pide una sola vez al montar la página,
-     * nunca en cada cambio de filtro.
+     * arriba. Cacheada 15 min (ver DashboardTrendService): el frontend la pide una sola
+     * vez al montar la página, nunca en cada cambio de filtro. Con caché fría (primera
+     * vez tras generar un periodo nuevo) esto encadena hasta 6 buildSnapshot() — por
+     * eso el mismo margen de tiempo/memoria que index()/data(), y por eso
+     * GenerateRadiographyJob dispara WarmDashboardTrendCacheJob al terminar: casi
+     * nunca debería tocarle a un usuario pagar ese costo en frío.
      */
     public function trend(): JsonResponse
     {
         @ini_set('memory_limit', '512M');
+        @set_time_limit(120);
 
-        $periods = $this->availablePeriods();
-        if ($periods->isEmpty()) {
-            return response()->json(['trend' => []], 200, ['Cache-Control' => 'no-store, no-cache, must-revalidate']);
-        }
-
-        $cacheKey = 'dashboard_trend_' . $periods->take(self::TREND_PERIODS_COUNT)->pluck('id')->implode('_');
-        $exportService = $this->exportService;
-        // ->all() (array PHP plano, nunca un objeto Collection) antes de cachear — el
-        // driver 'database' de cache serializa/deserializa vía serialize() nativo de
-        // PHP; un Collection devuelto por Cache::remember() en este contexto volvía
-        // como __PHP_Incomplete_Class (confirmado con inspección directa de la fila en
-        // la tabla `cache`, que sí tenía el valor correcto serializado — el problema
-        // era la reconstrucción del objeto Collection en el mismo request, no el dato).
-        // Un array plano no tiene esa ambigüedad de clase — json_encode() nunca falla.
-        $trend = Cache::remember($cacheKey, self::TREND_CACHE_TTL, function () use ($periods, $exportService) {
-            return $periods->take(self::TREND_PERIODS_COUNT)->reverse()->map(function (Period $p) use ($exportService) {
-                $s = $exportService->buildSnapshot($p, ['scope' => 'general']);
-
-                return [
-                    'label'  => $p->label,
-                    'ebitda' => round((float) ($s['summary']['ebitda_final'] ?? 0), 2),
-                    'opex'   => round((float) ($s['summary']['opex_total'] ?? 0), 2),
-                ];
-            })->values()->all();
-        });
-
-        return response()->json(['trend' => $trend], 200, ['Cache-Control' => 'no-store, no-cache, must-revalidate']);
+        return response()->json(
+            ['trend' => $this->trendService->build()],
+            200,
+            ['Cache-Control' => 'no-store, no-cache, must-revalidate']
+        );
     }
 
     /** Periodos mensuales reales (nunca de prueba/migración) con radiografía generada, más reciente primero. */

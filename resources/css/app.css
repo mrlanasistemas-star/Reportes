@@ -181,7 +181,7 @@
 
         /* aquí está el cuadro REAL */
         background: #ffffff !important;
-        color: hsl(var(--foreground)) !important;
+        color: var(--foreground) !important;
         border: 1px solid rgba(15, 23, 42, 0.12) !important;
         outline: 1px solid rgba(255, 255, 255, 0.65) !important;
 
@@ -192,11 +192,18 @@
             inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
     }
 
+    /* Bug real encontrado 18-sep-2026: --card/--border/--ring/etc. son HEX
+       (#141414), no tripletas HSL — hsl(var(--card)) es un valor inválido, y para
+       una propiedad no heredada como background eso cae a su valor inicial
+       (transparent). Por eso cualquier modal de confirmación (incluido "¿Cerrar
+       sesión?") se veía transparente en modo oscuro — nunca fue un problema de
+       componente, era este CSS. var(--card) directo (sin hsl()) es lo correcto,
+       mismo criterio que ya usa @theme inline (--color-card: var(--card)). */
     .dark .swal2-container .swal2-popup.app-swal-popup {
-        background: hsl(var(--card)) !important;
-        color: hsl(var(--card-foreground)) !important;
-        border: 1px solid hsl(var(--border) / 0.95) !important;
-        outline: 1px solid hsl(0 0% 100% / 0.04) !important;
+        background: var(--card) !important;
+        color: var(--card-foreground) !important;
+        border: 1px solid var(--border) !important;
+        outline: 1px solid rgba(255, 255, 255, 0.04) !important;
         box-shadow:
             0 28px 70px rgba(0, 0, 0, 0.45),
             0 10px 30px rgba(0, 0, 0, 0.28),
@@ -217,7 +224,7 @@
     .swal2-container .app-swal-title.swal2-title {
         margin: 0 !important;
         padding: 0 !important;
-        color: hsl(var(--foreground)) !important;
+        color: var(--foreground) !important;
         font-size: 1.7rem !important;
         line-height: 1.08 !important;
         font-weight: 800 !important;
@@ -227,7 +234,7 @@
     .swal2-container .app-swal-text.swal2-html-container {
         margin: 0.75rem 0 0 0 !important;
         padding: 0 !important;
-        color: hsl(var(--muted-foreground)) !important;
+        color: var(--muted-foreground) !important;
         font-size: 0.98rem !important;
         line-height: 1.6 !important;
     }
@@ -262,7 +269,7 @@
     .swal2-container .app-swal-confirm.swal2-confirm:focus,
     .swal2-container .app-swal-cancel.swal2-cancel:focus {
         outline: none !important;
-        box-shadow: 0 0 0 4px hsl(var(--ring) / 0.16) !important;
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--ring) 16%, transparent) !important;
     }
 
     .swal2-container .app-swal-confirm.swal2-confirm {
@@ -289,16 +296,16 @@
     .swal2-container .app-swal-cancel.swal2-cancel {
         border: 1px solid rgba(15, 23, 42, 0.12) !important;
         background: #ffffff !important;
-        color: hsl(var(--foreground)) !important;
+        color: var(--foreground) !important;
         box-shadow:
             0 1px 2px rgba(15, 23, 42, 0.04),
             inset 0 1px 0 rgba(255, 255, 255, 0.7) !important;
     }
 
     .dark .swal2-container .app-swal-cancel.swal2-cancel {
-        border: 1px solid hsl(var(--border)) !important;
-        background: hsl(var(--secondary)) !important;
-        color: hsl(var(--secondary-foreground)) !important;
+        border: 1px solid var(--border) !important;
+        background: var(--secondary) !important;
+        color: var(--secondary-foreground) !important;
     }
 
     .swal2-container .app-swal-cancel.swal2-cancel:hover {
@@ -308,8 +315,8 @@
     }
 
     .dark .swal2-container .app-swal-cancel.swal2-cancel:hover {
-        background: hsl(var(--muted)) !important;
-        border-color: hsl(var(--border) / 0.95) !important;
+        background: var(--muted) !important;
+        border-color: var(--border) !important;
     }
 
     @media (max-width: 640px) {
@@ -331,5 +338,213 @@
         .swal2-container .app-swal-cancel.swal2-cancel {
             width: 100% !important;
         }
+    }
+
+    /* Auth (login / recuperar contraseña) — fondo con zoom lento, puntitos
+       flotando y anillo giratorio, compartidos entre AuthAsidePanel y
+       AuthFormPanel. */
+    .fv-kenburns {
+        animation: fv-kenburns 24s ease-in-out infinite alternate;
+        transform-origin: center;
+    }
+
+    .fv-particle {
+        animation-name: fv-float;
+        animation-timing-function: ease-in-out;
+        animation-iteration-count: infinite;
+    }
+
+    .fv-orbit {
+        animation: fv-orbit 34s linear infinite;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .fv-kenburns,
+        .fv-particle,
+        .fv-orbit {
+            animation: none !important;
+        }
+    }
+}
+
+@keyframes fv-kenburns {
+    from {
+        transform: scale(1.06);
+    }
+    to {
+        transform: scale(1.16);
+    }
+}
+
+@keyframes fv-float {
+    0%,
+    100% {
+        transform: translateY(0) translateX(0);
+        opacity: 0.15;
+    }
+    50% {
+        transform: translateY(calc(var(--fv-drift) * -1)) translateX(6px);
+        opacity: 0.75;
+    }
+}
+
+@keyframes fv-orbit {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Pantalla de carga global — ver resources/js/lib/routeLoadingOverlay.ts */
+#fv-route-loading {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(30, 27, 75, 0.45);
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+#fv-route-loading.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.fv-route-loading-card {
+    display: flex;
+    width: min(92vw, 400px);
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 40px 34px 34px;
+    border-radius: 30px;
+    background: linear-gradient(160deg, #6366f1 0%, #4f46e5 55%, #3730a3 100%);
+    box-shadow:
+        0 60px 140px -40px rgba(67, 56, 202, 0.7),
+        0 20px 50px -20px rgba(0, 0, 0, 0.4),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    text-align: center;
+    transform: scale(0.96);
+    transition: transform 0.25s ease;
+}
+
+#fv-route-loading.is-visible .fv-route-loading-card {
+    transform: scale(1);
+}
+
+.fv-route-loading-logo {
+    width: 60px;
+    height: 60px;
+    border-radius: 18px;
+    margin-bottom: 6px;
+    box-shadow:
+        0 18px 40px -14px rgba(0, 0, 0, 0.55),
+        0 0 0 1px rgba(255, 255, 255, 0.18);
+    animation: fv-logo-pulse 1.8s ease-in-out infinite;
+}
+
+.fv-route-loading-title {
+    font-size: 19px;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    color: #ffffff;
+}
+
+.fv-route-loading-text {
+    font-size: 13px;
+    line-height: 1.55;
+    color: rgba(255, 255, 255, 0.82);
+    max-width: 27rem;
+}
+
+.fv-route-loading-bar {
+    position: relative;
+    width: 100%;
+    height: 9px;
+    margin-top: 14px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.2);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.fv-route-loading-bar-fill {
+    position: absolute;
+    inset: 0;
+    width: 38%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.25), #ffffff, rgba(255, 255, 255, 0.25));
+    animation: fv-bar-indeterminate 1.3s ease-in-out infinite;
+}
+
+.fv-route-loading-dots {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.fv-route-loading-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.85);
+    animation: fv-dot-bounce 1s ease-in-out infinite;
+}
+
+.fv-route-loading-dots span:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.fv-route-loading-dots span:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes fv-bar-indeterminate {
+    0% {
+        transform: translateX(-100%);
+    }
+    50% {
+        transform: translateX(60%);
+    }
+    100% {
+        transform: translateX(220%);
+    }
+}
+
+@keyframes fv-dot-bounce {
+    0%,
+    100% {
+        transform: translateY(0);
+        opacity: 0.5;
+    }
+    50% {
+        transform: translateY(-4px);
+        opacity: 1;
+    }
+}
+
+@keyframes fv-logo-pulse {
+    0%,
+    100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.06);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .fv-route-loading-bar-fill,
+    .fv-route-loading-dots span,
+    .fv-route-loading-logo {
+        animation: none !important;
     }
 }

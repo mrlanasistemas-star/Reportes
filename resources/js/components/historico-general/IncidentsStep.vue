@@ -250,38 +250,38 @@ const LOCATION_ACTIONS = [
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70">
+    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
         <SectionHeader eyebrow="Etapa 3" title="Incidencias" description="Resuelve incidencias críticas antes de generar el reporte. Las incidencias críticas bloquean la generación.">
-            <button type="button" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50" @click="emit('refresh')">Refrescar</button>
+            <button type="button" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800" @click="emit('refresh')">Refrescar</button>
         </SectionHeader>
 
         <!-- Estado sin datos: fact tables vacías — no confundir con "0 incidencias limpias" -->
-        <div v-if="incidentsHasData === false" class="mt-6 flex items-start gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+        <div v-if="incidentsHasData === false" class="mt-6 flex items-start gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-500/20 dark:bg-amber-500/10">
             <svg class="mt-0.5 size-6 shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
             </svg>
             <div>
-                <p class="font-bold text-amber-800">Sin registros procesados</p>
-                <p class="mt-1 text-sm text-amber-700">
+                <p class="font-bold text-amber-800 dark:text-amber-300">Sin registros procesados</p>
+                <p class="mt-1 text-sm text-amber-700 dark:text-amber-400">
                     {{ incidentsNoDataMessage || 'No hay registros cargados para este periodo. Las incidencias no pueden calcularse hasta que ejecutes "Cargar registros" (Etapa 2).' }}
                 </p>
-                <p class="mt-2 text-xs text-amber-600">Este estado no significa que no hay incidencias — significa que aún no hay datos para validar.</p>
+                <p class="mt-2 text-xs text-amber-600 dark:text-amber-500">Este estado no significa que no hay incidencias — significa que aún no hay datos para validar.</p>
             </div>
         </div>
 
         <!-- Contadores (solo si hay datos) -->
         <div v-if="incidentsHasData !== false" class="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <!-- Incidencias críticas: count of critical incident groups -->
-            <div class="rounded-2xl border border-rose-100 bg-rose-50 p-4">
-                <p class="text-xs font-bold text-rose-700">Incidencias críticas</p>
-                <p class="mt-1 text-2xl font-black text-rose-800">{{ summary.critical }}</p>
-                <p class="mt-0.5 text-[11px] text-rose-500">grupo(s) bloqueantes</p>
+            <div class="rounded-2xl border border-rose-100 bg-rose-50 p-4 dark:border-rose-500/20 dark:bg-rose-500/10">
+                <p class="text-xs font-bold text-rose-700 dark:text-rose-300">Incidencias críticas</p>
+                <p class="mt-1 text-2xl font-black text-rose-800 dark:text-rose-200">{{ summary.critical }}</p>
+                <p class="mt-0.5 text-[11px] text-rose-500 dark:text-rose-400">grupo(s) bloqueantes</p>
             </div>
             <!-- Personas sin sucursal: unique grouped persons vs raw records -->
-            <div class="rounded-2xl border border-rose-100 bg-rose-50/60 p-4">
-                <p class="text-xs font-bold text-rose-600">Sin sucursal</p>
-                <p class="mt-1 text-2xl font-black text-rose-800">{{ summary.uniquePersons }}</p>
-                <p class="mt-0.5 text-[11px] text-rose-400">
+            <div class="rounded-2xl border border-rose-100 bg-rose-50/60 p-4 dark:border-rose-500/20 dark:bg-rose-500/10">
+                <p class="text-xs font-bold text-rose-600 dark:text-rose-300">Sin sucursal</p>
+                <p class="mt-1 text-2xl font-black text-rose-800 dark:text-rose-200">{{ summary.uniquePersons }}</p>
+                <p class="mt-0.5 text-[11px] text-rose-400 dark:text-rose-400/80">
                     persona(s) agrupada(s)
                     <template v-if="summary.personsAffected > summary.uniquePersons">
                         · {{ summary.personsAffected }} registros
@@ -289,20 +289,20 @@ const LOCATION_ACTIONS = [
                 </p>
             </div>
             <!-- Coincidencias: unique pairs pending resolution -->
-            <div class="rounded-2xl border border-violet-100 bg-violet-50 p-4">
-                <p class="text-xs font-bold text-violet-700">Coincidencias</p>
-                <p class="mt-1 text-2xl font-black text-violet-800">{{ summary.coincidenciasPending }}</p>
-                <p class="mt-0.5 text-[11px] text-violet-400">pares únicos pendientes</p>
+            <div class="rounded-2xl border border-violet-100 bg-violet-50 p-4 dark:border-violet-500/20 dark:bg-violet-500/10">
+                <p class="text-xs font-bold text-violet-700 dark:text-violet-300">Coincidencias</p>
+                <p class="mt-1 text-2xl font-black text-violet-800 dark:text-violet-200">{{ summary.coincidenciasPending }}</p>
+                <p class="mt-0.5 text-[11px] text-violet-400 dark:text-violet-400/80">pares únicos pendientes</p>
             </div>
-            <div class="rounded-2xl border border-amber-100 bg-amber-50 p-4">
-                <p class="text-xs font-bold text-amber-700">Advertencias</p>
-                <p class="mt-1 text-2xl font-black text-amber-800">{{ summary.warnings }}</p>
-                <p class="mt-0.5 text-[11px] text-amber-400">no bloquean generación</p>
+            <div class="rounded-2xl border border-amber-100 bg-amber-50 p-4 dark:border-amber-500/20 dark:bg-amber-500/10">
+                <p class="text-xs font-bold text-amber-700 dark:text-amber-300">Advertencias</p>
+                <p class="mt-1 text-2xl font-black text-amber-800 dark:text-amber-200">{{ summary.warnings }}</p>
+                <p class="mt-0.5 text-[11px] text-amber-400 dark:text-amber-400/80">no bloquean generación</p>
             </div>
-            <div class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                <p class="text-xs font-bold text-emerald-700">Resueltas</p>
-                <p class="mt-1 text-2xl font-black text-emerald-800">{{ summary.resolved }}</p>
-                <p class="mt-0.5 text-[11px] text-emerald-400">incidencias cerradas</p>
+            <div class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 dark:border-emerald-500/20 dark:bg-emerald-500/10">
+                <p class="text-xs font-bold text-emerald-700 dark:text-emerald-300">Resueltas</p>
+                <p class="mt-1 text-2xl font-black text-emerald-800 dark:text-emerald-200">{{ summary.resolved }}</p>
+                <p class="mt-0.5 text-[11px] text-emerald-400 dark:text-emerald-400/80">incidencias cerradas</p>
             </div>
         </div>
 
@@ -311,34 +311,34 @@ const LOCATION_ACTIONS = [
         <div v-else class="mt-6 space-y-5">
 
             <!-- ── Panel: Ubicaciones pendientes ─────────────────────────── -->
-            <div v-if="pendingLocations.length > 0" class="overflow-hidden rounded-2xl border border-rose-200">
-                <div class="flex items-center gap-3 bg-rose-50 px-5 py-4">
-                    <MapPin class="size-5 shrink-0 text-rose-600" />
+            <div v-if="pendingLocations.length > 0" class="overflow-hidden rounded-2xl border border-rose-200 dark:border-rose-500/20">
+                <div class="flex items-center gap-3 bg-rose-50 px-5 py-4 dark:bg-rose-500/10">
+                    <MapPin class="size-5 shrink-0 text-rose-600 dark:text-rose-400" />
                     <div class="flex-1">
-                        <p class="font-black text-slate-950">Ubicaciones pendientes de clasificación</p>
-                        <p class="text-xs text-rose-700">
+                        <p class="font-black text-slate-950 dark:text-slate-50">Ubicaciones pendientes de clasificación</p>
+                        <p class="text-xs text-rose-700 dark:text-rose-300">
                             {{ pendingUnresolved.length }} ubicación(es) no reconocida(s) — bloquean la generación del reporte.
-                            <span v-if="pendingResolved.length > 0" class="text-emerald-700"> · {{ pendingResolved.length }} resuelta(s).</span>
+                            <span v-if="pendingResolved.length > 0" class="text-emerald-700 dark:text-emerald-400"> · {{ pendingResolved.length }} resuelta(s).</span>
                         </p>
                     </div>
                     <StatusBadge status="error" :label="`${pendingUnresolved.length} crítica(s)`" />
                 </div>
 
-                <div class="divide-y divide-slate-100">
+                <div class="divide-y divide-slate-100 dark:divide-slate-800">
                     <div
                         v-for="incident in pendingLocations"
                         :key="incident.id"
                         class="px-5 py-4"
-                        :class="incident.severity === 'resolved' ? 'bg-emerald-50/40' : 'bg-white'"
+                        :class="incident.severity === 'resolved' ? 'bg-emerald-50/40 dark:bg-emerald-500/5' : 'bg-white dark:bg-transparent'"
                     >
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
                             <div class="flex-1">
-                                <p class="font-bold text-slate-900">
-                                    <CheckCircle2 v-if="incident.severity === 'resolved'" class="mr-1.5 inline size-4 text-emerald-600" />
-                                    <AlertTriangle v-else class="mr-1.5 inline size-4 text-rose-600" />
+                                <p class="font-bold text-slate-900 dark:text-slate-100">
+                                    <CheckCircle2 v-if="incident.severity === 'resolved'" class="mr-1.5 inline size-4 text-emerald-600 dark:text-emerald-400" />
+                                    <AlertTriangle v-else class="mr-1.5 inline size-4 text-rose-600 dark:text-rose-400" />
                                     {{ incident.context?.location ?? incident.message }}
                                 </p>
-                                <p v-if="incident.severity === 'resolved'" class="mt-0.5 text-xs text-emerald-700">
+                                <p v-if="incident.severity === 'resolved'" class="mt-0.5 text-xs text-emerald-700 dark:text-emerald-400">
                                     Resuelta: {{ incident.context?.resolved_action ?? 'marcada' }}
                                     <span v-if="incident.context?.resolved_branch"> → {{ incident.context.resolved_branch }}</span>
                                 </p>
@@ -349,7 +349,7 @@ const LOCATION_ACTIONS = [
                                 <div @vue:before-mount="initLocation(incident)">
                                     <select
                                         v-model="locationAction[incident.id]"
-                                        class="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-100"
+                                        class="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-indigo-500/30"
                                     >
                                         <option v-for="opt in LOCATION_ACTIONS" :key="opt.k" :value="opt.k">{{ opt.l }}</option>
                                     </select>
@@ -387,20 +387,20 @@ const LOCATION_ACTIONS = [
                     type="button"
                     class="flex w-full items-center gap-3 px-5 py-4 text-left transition"
                     :class="employeesIncident.severity === 'high'
-                        ? 'bg-rose-50 hover:bg-rose-100/60'
-                        : 'bg-amber-50 hover:bg-amber-100/60'"
+                        ? 'bg-rose-50 hover:bg-rose-100/60 dark:bg-rose-500/10 dark:hover:bg-rose-500/15'
+                        : 'bg-amber-50 hover:bg-amber-100/60 dark:bg-amber-500/10 dark:hover:bg-amber-500/15'"
                     @click="togglePersonas"
                 >
                     <Users
                         class="size-5 shrink-0"
-                        :class="employeesIncident.severity === 'high' ? 'text-rose-600' : 'text-amber-600'"
+                        :class="employeesIncident.severity === 'high' ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400'"
                     />
                     <div class="flex-1">
-                        <p class="font-black text-slate-950">
+                        <p class="font-black text-slate-950 dark:text-slate-50">
                             <span v-if="employeesIncident.severity === 'high'" class="mr-1.5 inline-flex items-center rounded-lg bg-rose-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">Incidencia crítica</span>
                             Personas / gestores sin sucursal asignada
                         </p>
-                        <p class="text-xs" :class="employeesIncident.severity === 'high' ? 'text-rose-700' : 'text-amber-700'">
+                        <p class="text-xs" :class="employeesIncident.severity === 'high' ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'">
                             <!-- unique_persons_count = grouped persons; count = raw records -->
                             <strong>{{ employeesIncident.context?.unique_persons_count ?? employeesIncident.context?.count ?? 0 }}</strong> persona(s) agrupada(s) sin sucursal
                             <template v-if="(employeesIncident.context?.count ?? 0) > (employeesIncident.context?.unique_persons_count ?? employeesIncident.context?.count ?? 0)">
@@ -422,7 +422,7 @@ const LOCATION_ACTIONS = [
 
                 <div v-if="showPersonas" class="p-5">
                     <div v-if="personasLoading" class="py-4 text-center text-sm text-slate-400">Cargando personas...</div>
-                    <div v-else-if="personasNoData" class="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                    <div v-else-if="personasNoData" class="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
                         <svg class="mt-0.5 size-4 shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-3.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
                         {{ personasNoDataMsg }}
                     </div>
@@ -430,7 +430,7 @@ const LOCATION_ACTIONS = [
                     <div v-else class="overflow-x-auto">
                         <table class="w-full text-sm">
                             <thead>
-                                <tr class="border-b border-slate-200 text-left">
+                                <tr class="border-b border-slate-200 text-left dark:border-slate-800">
                                     <th class="pb-2 pr-3 text-xs font-black uppercase tracking-wide text-slate-500">Persona / gestor</th>
                                     <th class="pb-2 pr-3 text-xs font-black uppercase tracking-wide text-slate-500">Fuente</th>
                                     <th class="pb-2 pr-3 text-right text-xs font-black uppercase tracking-wide text-slate-500">Movs.</th>
@@ -442,24 +442,24 @@ const LOCATION_ACTIONS = [
                             <tbody>
                                 <template v-for="emp in personasItems" :key="empKey(emp)">
                                     <!-- Main row -->
-                                    <tr class="border-b border-slate-100 align-middle">
-                                        <td class="py-2.5 pr-3 font-semibold text-slate-900">{{ emp.nombre }}</td>
+                                    <tr class="border-b border-slate-100 align-middle dark:border-slate-800/70">
+                                        <td class="py-2.5 pr-3 font-semibold text-slate-900 dark:text-slate-100">{{ emp.nombre }}</td>
                                         <td class="py-2.5 pr-3">
                                             <div class="flex flex-wrap gap-1">
                                                 <span
                                                     v-for="fuente in (emp.fuentes ?? [emp.fuente])"
                                                     :key="fuente"
                                                     class="inline-flex rounded-lg px-2 py-0.5 text-xs font-bold"
-                                                    :class="fuente === 'noi_nomina_fiscal' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'"
+                                                    :class="fuente === 'noi_nomina_fiscal' ? 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'"
                                                 >{{ fuente === 'noi_nomina_fiscal' ? 'NÓMINA FISCAL' : fuente.replace('noi_nomina', 'NÓMINA REGULAR') }}</span>
                                             </div>
                                         </td>
-                                        <td class="py-2.5 pr-3 text-right text-slate-700">{{ emp.movimientos }}</td>
-                                        <td class="py-2.5 pr-3 text-right font-bold text-slate-900">${{ Number(emp.monto).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</td>
+                                        <td class="py-2.5 pr-3 text-right text-slate-700 dark:text-slate-300">{{ emp.movimientos }}</td>
+                                        <td class="py-2.5 pr-3 text-right font-bold text-slate-900 dark:text-slate-100">${{ Number(emp.monto).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</td>
                                         <td class="py-2.5 pr-3">
                                             <button
                                                 type="button"
-                                                class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+                                                class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                                                 @click="toggleDiagnosis(emp)"
                                             >
                                                 <Info class="size-3.5 shrink-0" />
@@ -472,13 +472,13 @@ const LOCATION_ACTIONS = [
                                             <template v-if="needsConfirmation(emp) && personaAction[empKey(emp)] !== 'reject'">
                                                 <div class="space-y-1.5">
                                                     <div class="rounded-xl border px-3 py-2 text-xs"
-                                                        :class="hasBranchFromMatch(emp) ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'">
-                                                        <p class="font-black" :class="hasBranchFromMatch(emp) ? 'text-emerald-800' : 'text-amber-800'">
+                                                        :class="hasBranchFromMatch(emp) ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/10' : 'border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/10'">
+                                                        <p class="font-black" :class="hasBranchFromMatch(emp) ? 'text-emerald-800 dark:text-emerald-300' : 'text-amber-800 dark:text-amber-300'">
                                                             {{ hasBranchFromMatch(emp) ? 'Persona existente con sucursal' : 'Posible misma persona' }}
                                                         </p>
-                                                        <p class="mt-0.5 truncate font-semibold text-slate-700">{{ emp.best_match?.name }}</p>
-                                                        <p v-if="emp.best_match?.branch" class="text-emerald-700">→ {{ emp.best_match.branch }}</p>
-                                                        <p v-else class="text-amber-700">→ sin sucursal</p>
+                                                        <p class="mt-0.5 truncate font-semibold text-slate-700 dark:text-slate-300">{{ emp.best_match?.name }}</p>
+                                                        <p v-if="emp.best_match?.branch" class="text-emerald-700 dark:text-emerald-400">→ {{ emp.best_match.branch }}</p>
+                                                        <p v-else class="text-amber-700 dark:text-amber-400">→ sin sucursal</p>
                                                         <p class="text-slate-400">score: {{ emp.best_match?.score }}%</p>
                                                     </div>
                                                     <div class="flex flex-wrap gap-1.5">
@@ -488,13 +488,13 @@ const LOCATION_ACTIONS = [
                                                             ✓ Es la misma persona
                                                         </button>
                                                         <button type="button"
-                                                            class="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100"
+                                                            class="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                                                             @click="rejectMatch(emp)">
                                                             No, es otra
                                                         </button>
                                                     </div>
                                                     <button type="button"
-                                                        class="text-xs text-slate-400 hover:text-indigo-600 hover:underline"
+                                                        class="text-xs text-slate-400 hover:text-indigo-600 hover:underline dark:hover:text-indigo-400"
                                                         @click="rejectMatch(emp)">
                                                         · Asignar sucursal manualmente
                                                     </button>
@@ -504,7 +504,7 @@ const LOCATION_ACTIONS = [
                                             <!-- B) Direct branch selector (exact same name grouped, or no fuzzy match) -->
                                             <template v-else>
                                                 <div class="space-y-1.5">
-                                                    <p v-if="isSamePersonNoBranch(emp)" class="text-xs text-slate-500">
+                                                    <p v-if="isSamePersonNoBranch(emp)" class="text-xs text-slate-500 dark:text-slate-400">
                                                         <template v-if="(emp.employee_ids ?? [emp.employee_id]).length > 1">
                                                             Aparece en {{ (emp.fuentes ?? [emp.fuente]).length }} fuentes — sin sucursal en el sistema.
                                                         </template>
@@ -536,23 +536,23 @@ const LOCATION_ACTIONS = [
                                     </tr>
 
                                     <!-- Diagnosis row -->
-                                    <tr v-if="diagnosisOpen[empKey(emp)]" class="bg-slate-50/70">
+                                    <tr v-if="diagnosisOpen[empKey(emp)]" class="bg-slate-50/70 dark:bg-slate-800/40">
                                         <td colspan="6" class="px-4 pb-5 pt-3">
-                                            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                            <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
 
                                                 <!-- Header -->
-                                                <p class="mb-3 text-xs font-black uppercase tracking-wider text-slate-500">Diagnóstico de resolución — {{ emp.nombre }}</p>
+                                                <p class="mb-3 text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Diagnóstico de resolución — {{ emp.nombre }}</p>
 
                                                 <div class="grid gap-4 sm:grid-cols-2">
 
                                                     <!-- Búsquedas realizadas -->
                                                     <div>
-                                                        <p class="mb-1.5 text-xs font-black text-slate-700">Búsquedas realizadas</p>
-                                                        <ul class="space-y-1 text-xs text-slate-600">
+                                                        <p class="mb-1.5 text-xs font-black text-slate-700 dark:text-slate-300">Búsquedas realizadas</p>
+                                                        <ul class="space-y-1 text-xs text-slate-600 dark:text-slate-400">
                                                             <li class="flex items-center gap-1.5">
                                                                 <CheckCircle2 class="size-3.5 shrink-0 text-slate-400" />
                                                                 Nombre exacto normalizado:
-                                                                <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-[11px]">{{ emp.diagnosis?.normalized_name }}</code>
+                                                                <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-[11px] dark:bg-slate-800">{{ emp.diagnosis?.normalized_name }}</code>
                                                             </li>
                                                             <li class="flex items-center gap-1.5">
                                                                 <CheckCircle2 class="size-3.5 shrink-0 text-slate-400" />
@@ -567,16 +567,16 @@ const LOCATION_ACTIONS = [
                                                                 Ministraciones / Colocación (promotor)
                                                             </li>
                                                             <li class="flex items-center gap-1.5">
-                                                                <span :class="emp.diagnosis?.checked_lendus_directory ? 'text-emerald-600' : 'text-slate-300'">
+                                                                <span :class="emp.diagnosis?.checked_lendus_directory ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-300 dark:text-slate-600'">
                                                                     <CheckCircle2 v-if="emp.diagnosis?.checked_lendus_directory" class="size-3.5" />
                                                                     <XCircle v-else class="size-3.5" />
                                                                 </span>
                                                                 Directorio empleados Lendus
-                                                                <span v-if="emp.diagnosis?.lendus_match" class="text-emerald-700 font-bold">
+                                                                <span v-if="emp.diagnosis?.lendus_match" class="text-emerald-700 font-bold dark:text-emerald-400">
                                                                     → {{ emp.diagnosis.lendus_match.branch_name }}
                                                                 </span>
                                                                 <span v-else-if="emp.diagnosis?.checked_lendus_directory" class="text-slate-400 italic">no encontrado</span>
-                                                                <span v-else class="text-slate-300 italic">sin datos cargados</span>
+                                                                <span v-else class="text-slate-300 italic dark:text-slate-600">sin datos cargados</span>
                                                             </li>
                                                             <li class="flex items-center gap-1.5">
                                                                 <CheckCircle2 class="size-3.5 shrink-0 text-slate-400" />
@@ -587,41 +587,41 @@ const LOCATION_ACTIONS = [
 
                                                     <!-- Códigos detectados -->
                                                     <div>
-                                                        <p class="mb-1.5 text-xs font-black text-slate-700">Códigos detectados</p>
+                                                        <p class="mb-1.5 text-xs font-black text-slate-700 dark:text-slate-300">Códigos detectados</p>
                                                         <ul class="space-y-1 text-xs">
                                                             <li class="flex items-center gap-1.5">
-                                                                <span :class="emp.diagnosis?.detected_codes?.employee_code ? 'text-emerald-600' : 'text-slate-400'">
+                                                                <span :class="emp.diagnosis?.detected_codes?.employee_code ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">
                                                                     <CheckCircle2 v-if="emp.diagnosis?.detected_codes?.employee_code" class="size-3.5" />
                                                                     <XCircle v-else class="size-3.5" />
                                                                 </span>
-                                                                <span class="text-slate-600">Código empleado:</span>
+                                                                <span class="text-slate-600 dark:text-slate-400">Código empleado:</span>
                                                                 <span class="font-bold">{{ emp.diagnosis?.detected_codes?.employee_code ?? 'N/D' }}</span>
                                                             </li>
                                                             <li class="flex items-center gap-1.5">
-                                                                <span :class="emp.diagnosis?.detected_codes?.contract_prefix ? 'text-emerald-600' : 'text-slate-400'">
+                                                                <span :class="emp.diagnosis?.detected_codes?.contract_prefix ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">
                                                                     <CheckCircle2 v-if="emp.diagnosis?.detected_codes?.contract_prefix" class="size-3.5" />
                                                                     <XCircle v-else class="size-3.5" />
                                                                 </span>
-                                                                <span class="text-slate-600">Prefijo contrato:</span>
+                                                                <span class="text-slate-600 dark:text-slate-400">Prefijo contrato:</span>
                                                                 <span class="font-bold">{{ emp.diagnosis?.detected_codes?.contract_prefix ?? 'N/D' }}</span>
                                                             </li>
                                                             <li v-if="emp.diagnosis?.detected_codes?.lendus_codigo" class="flex items-center gap-1.5">
-                                                                <CheckCircle2 class="size-3.5 shrink-0 text-emerald-600" />
-                                                                <span class="text-slate-600">Código Lendus:</span>
-                                                                <span class="font-bold text-emerald-700">{{ emp.diagnosis.detected_codes.lendus_codigo }}</span>
-                                                                <span v-if="emp.diagnosis?.detected_codes?.lendus_puesto" class="text-slate-500">({{ emp.diagnosis.detected_codes.lendus_puesto }})</span>
+                                                                <CheckCircle2 class="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                                                                <span class="text-slate-600 dark:text-slate-400">Código Lendus:</span>
+                                                                <span class="font-bold text-emerald-700 dark:text-emerald-400">{{ emp.diagnosis.detected_codes.lendus_codigo }}</span>
+                                                                <span v-if="emp.diagnosis?.detected_codes?.lendus_puesto" class="text-slate-500 dark:text-slate-400">({{ emp.diagnosis.detected_codes.lendus_puesto }})</span>
                                                             </li>
                                                             <li class="flex items-center gap-1.5">
-                                                                <span :class="emp.diagnosis?.detected_codes?.branch_hint ? 'text-emerald-600' : 'text-slate-400'">
+                                                                <span :class="emp.diagnosis?.detected_codes?.branch_hint ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'">
                                                                     <CheckCircle2 v-if="emp.diagnosis?.detected_codes?.branch_hint" class="size-3.5" />
                                                                     <XCircle v-else class="size-3.5" />
                                                                 </span>
-                                                                <span class="text-slate-600">Sucursal sugerida:</span>
+                                                                <span class="text-slate-600 dark:text-slate-400">Sucursal sugerida:</span>
                                                                 <span class="font-bold">{{ emp.diagnosis?.detected_codes?.branch_hint ?? 'N/D' }}</span>
                                                             </li>
                                                         </ul>
                                                         <!-- raw_clues -->
-                                                        <ul v-if="emp.diagnosis?.detected_codes?.raw_clues?.length" class="mt-2 space-y-1 text-xs text-slate-500">
+                                                        <ul v-if="emp.diagnosis?.detected_codes?.raw_clues?.length" class="mt-2 space-y-1 text-xs text-slate-500 dark:text-slate-400">
                                                             <li v-for="clue in emp.diagnosis.detected_codes.raw_clues" :key="clue" class="italic">· {{ clue }}</li>
                                                         </ul>
                                                     </div>
@@ -630,20 +630,20 @@ const LOCATION_ACTIONS = [
 
                                                 <!-- Posibles coincidencias -->
                                                 <div v-if="emp.diagnosis?.candidate_matches?.length" class="mt-4">
-                                                    <p class="mb-1.5 text-xs font-black text-slate-700">Posibles coincidencias</p>
+                                                    <p class="mb-1.5 text-xs font-black text-slate-700 dark:text-slate-300">Posibles coincidencias</p>
                                                     <div class="space-y-1">
                                                         <div
                                                             v-for="m in emp.diagnosis.candidate_matches"
                                                             :key="m.employee_id"
                                                             class="flex items-center gap-3 rounded-xl border px-3 py-2 text-xs"
-                                                            :class="m.accepted ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'"
+                                                            :class="m.accepted ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/10' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800'"
                                                         >
-                                                            <span class="font-bold text-slate-900">{{ m.name }}</span>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100">{{ m.name }}</span>
                                                             <span
                                                                 class="rounded-lg px-2 py-0.5 font-black"
-                                                                :class="m.score >= 80 ? 'bg-emerald-100 text-emerald-700' : m.score >= 70 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'"
+                                                                :class="m.score >= 80 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : m.score >= 70 ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'"
                                                             >{{ m.score }}%</span>
-                                                            <span class="text-slate-500">{{ m.reason }}</span>
+                                                            <span class="text-slate-500 dark:text-slate-400">{{ m.reason }}</span>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -653,11 +653,11 @@ const LOCATION_ACTIONS = [
 
                                                 <!-- Sample movements -->
                                                 <div v-if="emp.diagnosis?.sample_movements?.length" class="mt-4">
-                                                    <p class="mb-1.5 text-xs font-black text-slate-700">Muestra de movimientos</p>
+                                                    <p class="mb-1.5 text-xs font-black text-slate-700 dark:text-slate-300">Muestra de movimientos</p>
                                                     <div class="overflow-x-auto">
                                                         <table class="w-full text-xs">
                                                             <thead>
-                                                                <tr class="border-b border-slate-200">
+                                                                <tr class="border-b border-slate-200 dark:border-slate-700">
                                                                     <th class="pb-1 pr-3 text-left font-black text-slate-500">Fecha</th>
                                                                     <th class="pb-1 pr-3 text-left font-black text-slate-500">Concepto</th>
                                                                     <th class="pb-1 pr-3 text-right font-black text-slate-500">Monto</th>
@@ -665,10 +665,10 @@ const LOCATION_ACTIONS = [
                                                                     <th class="pb-1 text-left font-black text-slate-500">Código</th>
                                                                 </tr>
                                                             </thead>
-                                                            <tbody class="divide-y divide-slate-100">
+                                                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
                                                                 <tr v-for="(mov, mi) in emp.diagnosis.sample_movements" :key="mi">
                                                                     <td class="py-1 pr-3 text-slate-500">{{ mov.date ?? '—' }}</td>
-                                                                    <td class="py-1 pr-3 text-slate-700">{{ mov.concept }}</td>
+                                                                    <td class="py-1 pr-3 text-slate-700 dark:text-slate-300">{{ mov.concept }}</td>
                                                                     <td class="py-1 pr-3 text-right font-bold">${{ Number(mov.amount).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</td>
                                                                     <td class="py-1 pr-3 text-slate-500">{{ mov.source ?? '—' }}</td>
                                                                     <td class="py-1 font-mono text-[11px] text-slate-400">{{ mov.code ?? '—' }}</td>
@@ -680,9 +680,9 @@ const LOCATION_ACTIONS = [
 
                                                 <!-- Result -->
                                                 <div class="mt-4 space-y-1.5 rounded-xl border p-3"
-                                                    :class="(needsConfirmation(emp) || isSamePersonNoBranch(emp)) ? 'border-amber-200 bg-amber-50' : 'border-rose-200 bg-rose-50'">
+                                                    :class="(needsConfirmation(emp) || isSamePersonNoBranch(emp)) ? 'border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/10' : 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10'">
                                                     <p class="text-xs font-black"
-                                                        :class="(needsConfirmation(emp) || isSamePersonNoBranch(emp)) ? 'text-amber-800' : 'text-rose-800'">
+                                                        :class="(needsConfirmation(emp) || isSamePersonNoBranch(emp)) ? 'text-amber-800 dark:text-amber-300' : 'text-rose-800 dark:text-rose-300'">
                                                         <template v-if="emp.resolution_type === 'fuzzy_match_has_branch'">
                                                             Persona equivalente con sucursal detectada — confirma para heredar sucursal.
                                                         </template>
@@ -699,8 +699,8 @@ const LOCATION_ACTIONS = [
                                                             Resultado: No resuelta
                                                         </template>
                                                     </p>
-                                                    <p class="text-xs leading-5" :class="needsConfirmation(emp) ? 'text-amber-700' : 'text-rose-700'">{{ emp.diagnosis?.reason }}</p>
-                                                    <p class="mt-1 text-xs font-bold text-indigo-700">
+                                                    <p class="text-xs leading-5" :class="needsConfirmation(emp) ? 'text-amber-700 dark:text-amber-300' : 'text-rose-700 dark:text-rose-300'">{{ emp.diagnosis?.reason }}</p>
+                                                    <p class="mt-1 text-xs font-bold text-indigo-700 dark:text-indigo-400">
                                                         → {{ emp.diagnosis?.suggested_action }}
                                                     </p>
                                                 </div>
@@ -712,7 +712,7 @@ const LOCATION_ACTIONS = [
                             </tbody>
                         </table>
                         <div class="mt-3 flex justify-end">
-                            <button type="button" class="text-xs font-bold text-indigo-600 hover:underline" @click="loadPersonas">Recargar lista</button>
+                            <button type="button" class="text-xs font-bold text-indigo-600 hover:underline dark:text-indigo-400" @click="loadPersonas">Recargar lista</button>
                         </div>
                     </div>
                 </div>
@@ -722,22 +722,22 @@ const LOCATION_ACTIONS = [
             <div
                 v-if="duplicatesIncident"
                 class="overflow-hidden rounded-2xl border"
-                :class="duplicatesIncident.severity === 'high' ? 'border-rose-300' : 'border-amber-200'"
+                :class="duplicatesIncident.severity === 'high' ? 'border-rose-300 dark:border-rose-500/30' : 'border-amber-200 dark:border-amber-500/20'"
             >
                 <div
                     class="flex items-center gap-3 px-5 py-4"
-                    :class="duplicatesIncident.severity === 'high' ? 'bg-rose-50' : 'bg-amber-50'"
+                    :class="duplicatesIncident.severity === 'high' ? 'bg-rose-50 dark:bg-rose-500/10' : 'bg-amber-50 dark:bg-amber-500/10'"
                 >
                     <Copy
                         class="size-5 shrink-0"
-                        :class="duplicatesIncident.severity === 'high' ? 'text-rose-600' : 'text-amber-600'"
+                        :class="duplicatesIncident.severity === 'high' ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400'"
                     />
                     <div class="flex-1">
-                        <p class="font-black text-slate-950">
+                        <p class="font-black text-slate-950 dark:text-slate-50">
                             <span v-if="duplicatesIncident.severity === 'high'" class="mr-1.5 inline-flex items-center rounded-lg bg-rose-600 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">Crítico</span>
                             Posibles coincidencias de persona
                         </p>
-                        <p class="text-xs" :class="duplicatesIncident.severity === 'high' ? 'text-rose-700' : 'text-amber-700'">
+                        <p class="text-xs" :class="duplicatesIncident.severity === 'high' ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'">
                             <strong>{{ duplicatesIncident.context?.count ?? 0 }}</strong> par(es) detectado(s)
                             <template v-if="(duplicatesIncident.context?.monto ?? 0) > 0">
                                 · Impacto monetario: <strong>${{ Number(duplicatesIncident.context.monto).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}</strong>
@@ -759,10 +759,10 @@ const LOCATION_ACTIONS = [
                                 v-if="isPairHidden(pair)"
                                 class="flex items-center gap-3 rounded-2xl border px-4 py-2.5 text-xs"
                                 :class="isPairConfirmed(pair)
-                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                    : 'border-slate-200 bg-slate-50 text-slate-400'"
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
+                                    : 'border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-700 dark:bg-slate-800'"
                             >
-                                <CheckCircle2 v-if="isPairConfirmed(pair)" class="size-4 shrink-0 text-emerald-600" />
+                                <CheckCircle2 v-if="isPairConfirmed(pair)" class="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                                 <XCircle     v-else                       class="size-4 shrink-0 text-slate-400" />
                                 <span class="font-bold" :class="isPairConfirmed(pair) ? '' : 'line-through'">{{ pair.a }}</span>
                                 <span>·</span>
@@ -775,40 +775,40 @@ const LOCATION_ACTIONS = [
                             <!-- Pending pair -->
                             <div
                                 v-else
-                                class="rounded-2xl border bg-white px-4 py-3"
-                                :class="duplicatesIncident.severity === 'high' ? 'border-rose-100' : 'border-amber-100'"
+                                class="rounded-2xl border bg-white px-4 py-3 dark:bg-slate-900"
+                                :class="duplicatesIncident.severity === 'high' ? 'border-rose-100 dark:border-rose-500/20' : 'border-amber-100 dark:border-amber-500/20'"
                             >
                                 <!-- Names + score row -->
                                 <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-4">
                                     <div class="min-w-0 flex-1">
-                                        <span class="text-sm font-bold text-slate-900">{{ pair.a }}</span>
-                                        <span v-if="pair.a_source" class="ml-2 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">{{ pair.a_source }}</span>
+                                        <span class="text-sm font-bold text-slate-900 dark:text-slate-100">{{ pair.a }}</span>
+                                        <span v-if="pair.a_source" class="ml-2 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">{{ pair.a_source }}</span>
                                     </div>
                                     <div class="flex shrink-0 flex-col items-center gap-0.5">
-                                        <span class="text-xs font-black" :class="duplicatesIncident.severity === 'high' ? 'text-rose-600' : 'text-amber-600'">≈ posible coincidencia ≈</span>
+                                        <span class="text-xs font-black" :class="duplicatesIncident.severity === 'high' ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400'">≈ posible coincidencia ≈</span>
                                         <span v-if="pair.score" class="text-[10px] text-slate-400">{{ pair.score }}% similitud</span>
                                     </div>
                                     <div class="min-w-0 flex-1 sm:text-right">
-                                        <span class="text-sm font-bold text-slate-900">{{ pair.b }}</span>
-                                        <span v-if="pair.b_source" class="ml-2 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">{{ pair.b_source }}</span>
+                                        <span class="text-sm font-bold text-slate-900 dark:text-slate-100">{{ pair.b }}</span>
+                                        <span v-if="pair.b_source" class="ml-2 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">{{ pair.b_source }}</span>
                                     </div>
                                 </div>
 
                                 <!-- Reason + monto -->
                                 <div v-if="pair.reason || (pair.monto_relacionado ?? 0) > 0" class="mt-1.5 text-[11px] text-slate-400">
                                     <span v-if="pair.reason">{{ pair.reason }}</span>
-                                    <span v-if="(pair.monto_relacionado ?? 0) > 0" class="ml-2 font-bold text-amber-600">
+                                    <span v-if="(pair.monto_relacionado ?? 0) > 0" class="ml-2 font-bold text-amber-600 dark:text-amber-400">
                                         Impacto: ${{ Number(pair.monto_relacionado).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }}
                                     </span>
                                 </div>
 
                                 <!-- Warning when IDs missing (stale incident — refresh to fix) -->
-                                <div v-if="!pair.a_id || !pair.b_id" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                                <div v-if="!pair.a_id || !pair.b_id" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
                                     ⚠ Sin IDs — pulsa <strong>Refrescar</strong> en la cabecera para regenerar las coincidencias.
                                 </div>
 
                                 <!-- Action buttons -->
-                                <div v-else class="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                                <div v-else class="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
                                     <button
                                         type="button"
                                         class="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-black text-white transition hover:bg-emerald-700 disabled:opacity-40"
@@ -821,7 +821,7 @@ const LOCATION_ACTIONS = [
                                     </button>
                                     <button
                                         type="button"
-                                        class="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100 disabled:opacity-40"
+                                        class="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                                         :disabled="isPairLoading(pair)"
                                         @click="rejectDuplicatePair(pair)"
                                     >
@@ -833,9 +833,9 @@ const LOCATION_ACTIONS = [
                             </div>
                         </template>
                     </div>
-                    <div class="mt-3 space-y-1 text-xs text-slate-500">
-                        <p><span class="font-bold text-emerald-700">✓ Es la misma persona</span> — crea alias permanente, guarda nombre canónico y hereda sucursal. Se unifica en la BD.</p>
-                        <p><span class="font-bold text-slate-600">✕ No, son diferentes</span> — guarda el descarte en la BD (<code>employee_match_rejections</code>). El par no volverá a aparecer. No se elimina ningún empleado ni movimiento.</p>
+                    <div class="mt-3 space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                        <p><span class="font-bold text-emerald-700 dark:text-emerald-400">✓ Es la misma persona</span> — crea alias permanente, guarda nombre canónico y hereda sucursal. Se unifica en la BD.</p>
+                        <p><span class="font-bold text-slate-600 dark:text-slate-300">✕ No, son diferentes</span> — guarda el descarte en la BD (<code>employee_match_rejections</code>). El par no volverá a aparecer. No se elimina ningún empleado ni movimiento.</p>
                     </div>
                 </div>
             </div>
@@ -845,23 +845,23 @@ const LOCATION_ACTIONS = [
                 <div class="mb-3 flex flex-col gap-3 md:flex-row">
                     <label class="relative flex-1">
                         <Search class="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                        <input v-model="query" class="h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100" placeholder="Buscar incidencia..." />
+                        <input v-model="query" class="h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-indigo-500 dark:focus:ring-indigo-500/20" placeholder="Buscar incidencia..." />
                     </label>
                     <div class="flex flex-wrap gap-2">
-                        <button v-for="option in [{k:'all',l:'Todas'},{k:'high',l:'Críticas'},{k:'warning',l:'Advertencias'},{k:'resolved',l:'Resueltas'}]" :key="option.k" type="button" class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="filter === option.k ? 'bg-indigo-600 text-white' : 'border border-slate-200 text-slate-700 hover:bg-slate-50'" @click="filter = option.k">{{ option.l }}</button>
+                        <button v-for="option in [{k:'all',l:'Todas'},{k:'high',l:'Críticas'},{k:'warning',l:'Advertencias'},{k:'resolved',l:'Resueltas'}]" :key="option.k" type="button" class="rounded-xl px-4 py-2 text-sm font-bold transition" :class="filter === option.k ? 'bg-indigo-600 text-white' : 'border border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'" @click="filter = option.k">{{ option.l }}</button>
                     </div>
                 </div>
 
-                <div class="overflow-hidden rounded-2xl border border-slate-200">
-                    <div v-for="item in filteredGeneric" :key="item.id" class="border-b border-slate-100 p-4 last:border-b-0">
+                <div class="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <div v-for="item in filteredGeneric" :key="item.id" class="border-b border-slate-100 p-4 last:border-b-0 dark:border-slate-800">
                         <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                             <div class="flex gap-3">
-                                <AlertTriangle v-if="item.severity === 'high'" class="mt-1 size-5 shrink-0 text-rose-600" />
-                                <CheckCircle2 v-else-if="item.severity === 'resolved'" class="mt-1 size-5 shrink-0 text-emerald-600" />
-                                <AlertTriangle v-else class="mt-1 size-5 shrink-0 text-amber-600" />
+                                <AlertTriangle v-if="item.severity === 'high'" class="mt-1 size-5 shrink-0 text-rose-600 dark:text-rose-400" />
+                                <CheckCircle2 v-else-if="item.severity === 'resolved'" class="mt-1 size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                                <AlertTriangle v-else class="mt-1 size-5 shrink-0 text-amber-600 dark:text-amber-400" />
                                 <div>
-                                    <p class="font-black text-slate-950">{{ item.type }}</p>
-                                    <p class="mt-1 text-sm leading-6 text-slate-600">{{ item.message }}</p>
+                                    <p class="font-black text-slate-950 dark:text-slate-50">{{ item.type }}</p>
+                                    <p class="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">{{ item.message }}</p>
                                 </div>
                             </div>
                             <div class="flex shrink-0 items-center gap-2">

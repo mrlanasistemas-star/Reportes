@@ -222,7 +222,7 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
             @swap="swapPeriods"
         />
 
-        <div v-if="error" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-700">
+        <div v-if="error" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
             {{ error }}
         </div>
 
@@ -250,21 +250,21 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
                 <ChartCard title="Mora %" subtitle="Comparativo en el mismo anillo" type="radialBar" :height="260" :series="moraRadialSeries" :options="moraRadialOptions" class="sm:col-span-2 xl:col-span-2" />
             </div>
 
-            <div class="rounded-2xl border bg-white p-5 shadow-sm">
-                <h3 class="text-xs font-black uppercase tracking-wider text-slate-500">Mayores variaciones</h3>
-                <p class="mt-0.5 text-[11px] text-slate-400">Ordenadas por magnitud relativa — sin interpretación automática, solo orden determinista.</p>
-                <ul class="mt-3 divide-y divide-slate-100">
+            <div class="rounded-2xl border bg-white p-5 shadow-sm dark:bg-card">
+                <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Mayores variaciones</h3>
+                <p class="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">Ordenadas por magnitud relativa — sin interpretación automática, solo orden determinista.</p>
+                <ul class="mt-3 divide-y divide-slate-100 dark:divide-slate-800">
                     <li v-for="row in topVariations" :key="row.label" class="flex items-center justify-between gap-3 py-2.5 text-sm">
-                        <span class="font-semibold text-slate-700">{{ row.label }}</span>
+                        <span class="font-semibold text-slate-700 dark:text-slate-200">{{ row.label }}</span>
                         <span class="font-bold" :class="{
-                            'text-emerald-700': toneFor(row.label, row.var_pct) === 'good',
-                            'text-rose-700': toneFor(row.label, row.var_pct) === 'bad',
-                            'text-slate-500': toneFor(row.label, row.var_pct) === 'neutral',
+                            'text-emerald-700 dark:text-emerald-400': toneFor(row.label, row.var_pct) === 'good',
+                            'text-rose-700 dark:text-rose-400': toneFor(row.label, row.var_pct) === 'bad',
+                            'text-slate-500 dark:text-slate-400': toneFor(row.label, row.var_pct) === 'neutral',
                         }">
                             {{ row.var_pct > 0 ? '↑' : '↓' }} {{ row.var_pct >= 0 ? '+' : '' }}{{ row.var_pct.toFixed(2) }}%
                         </span>
                     </li>
-                    <li v-if="topVariations.length === 0" class="py-4 text-center text-sm text-slate-400">Sin variaciones para este alcance.</li>
+                    <li v-if="topVariations.length === 0" class="py-4 text-center text-sm text-slate-400 dark:text-slate-500">Sin variaciones para este alcance.</li>
                 </ul>
             </div>
 

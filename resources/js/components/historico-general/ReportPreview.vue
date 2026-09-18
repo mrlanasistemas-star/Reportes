@@ -106,7 +106,7 @@ const previewUrl = computed(() => {
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70">
+    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
         <SectionHeader
             eyebrow="Etapa 5"
             title="Vista previa web"
@@ -133,7 +133,7 @@ const previewUrl = computed(() => {
             </div>
 
             <!-- Metric cards (filtradas si scope=branch/employee) -->
-            <div v-if="filteredLoading" class="flex items-center gap-2 text-sm text-slate-500">
+            <div v-if="filteredLoading" class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
                 <svg class="size-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
                 Cargando datos filtrados…
             </div>
@@ -141,22 +141,22 @@ const previewUrl = computed(() => {
                 <div
                     v-for="card in metricCards"
                     :key="card.l"
-                    class="rounded-2xl border border-slate-200 bg-slate-50 p-3"
+                    class="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/40"
                 >
                     <p class="text-xs font-bold uppercase tracking-wider text-slate-400">{{ card.l }}</p>
-                    <p class="mt-1 text-base font-black text-slate-950">{{ card.v }}</p>
+                    <p class="mt-1 text-base font-black text-slate-950 dark:text-slate-50">{{ card.v }}</p>
                 </div>
             </div>
 
             <!-- Employees mini-table (from preview prop) -->
-            <div v-if="preview?.employees?.length" class="overflow-hidden rounded-2xl border border-slate-200">
-                <div class="border-b border-slate-100 bg-slate-50 px-4 py-2.5">
-                    <p class="text-xs font-black text-slate-700">Empleados (primeros {{ preview.employees.length }})</p>
+            <div v-if="preview?.employees?.length" class="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
+                <div class="border-b border-slate-100 bg-slate-50 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+                    <p class="text-xs font-black text-slate-700 dark:text-slate-300">Empleados (primeros {{ preview.employees.length }})</p>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="min-w-full text-xs">
                         <thead>
-                            <tr class="border-b text-left text-slate-400">
+                            <tr class="border-b text-left text-slate-400 dark:border-slate-800">
                                 <th class="px-3 py-2">Empleado</th>
                                 <th class="px-3 py-2">Sucursal</th>
                                 <th class="px-3 py-2 text-right">Pagos</th>
@@ -165,9 +165,9 @@ const previewUrl = computed(() => {
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="row in preview.employees.slice(0, 10)" :key="row.id" class="border-b last:border-0">
+                            <tr v-for="row in preview.employees.slice(0, 10)" :key="row.id" class="border-b last:border-0 dark:border-slate-800">
                                 <td class="px-3 py-2 font-semibold">{{ row.employee_name }}</td>
-                                <td class="px-3 py-2 text-slate-500">{{ row.branch_name ?? '—' }}</td>
+                                <td class="px-3 py-2 text-slate-500 dark:text-slate-400">{{ row.branch_name ?? '—' }}</td>
                                 <td class="px-3 py-2 text-right">{{ money(row.total_payments) }}</td>
                                 <td class="px-3 py-2 text-right">{{ money(row.total_expenses) }}</td>
                                 <td class="px-3 py-2 text-right font-black">{{ money(row.net_amount) }}</td>
