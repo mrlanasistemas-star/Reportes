@@ -244,6 +244,12 @@ class RadiografiaExportService
         if (in_array($reportType, ['month_vs_month', 'bimester_vs_bimester', 'quarter_vs_quarter'], true)) {
             $viewData      = $this->comparativeViewData($period, $config, $summary, $snapshot);
             $comparePeriod = $viewData['comparePeriod'];
+            // Retoma 21-sep-2026 (pedido "todo debe llevar gráficas"): el PDF comparativo
+            // era solo una tabla — se agregan las MISMAS gráficas que ya muestra el
+            // comparativo Web (ComparativePreview.vue), mismo agrupamiento de métricas
+            // que resources/js/lib/comparative-metrics.ts (CHART_CURRENCY_METRICS/
+            // CHART_PERCENT_METRICS), para que Web y PDF nunca se vean distintos.
+            $viewData = array_merge($viewData, $this->comparativeChartsViewData($viewData['rows']));
 
             $view      = 'reports.radiography-pdf-comparative';
             $margins   = self::PDF_MARGINS['comparative'];
@@ -425,6 +431,47 @@ class RadiografiaExportService
             'categoriaCounts' => $data['categoriaCounts'],
             'categoriaColors' => $data['categoriaColors'],
             'sucursalRows'    => $data['sucursalRows'],
+        ];
+    }
+
+    /** Mismos grupos de métricas que resources/js/lib/comparative-metrics.ts — nunca divergen entre Web y PDF. */
+    private const COMPARATIVE_CHART_CURRENCY_METRICS = ['Recuperación', 'Colocación', 'EBITDA', 'OPEX'];
+    private const COMPARATIVE_CHART_PERCENT_METRICS  = ['Margen EBITDA', 'Mora %', 'Rotación %'];
+
+    /**
+     * Datos de gráficas del PDF comparativo (retoma 21-sep-2026) — reshaping puro sobre
+     * $rows ya calculado por comparativeViewData()/buildComparativeRows(), nunca un
+     * cálculo financiero nuevo. Mismas dos agrupaciones (monto/porcentaje) y misma
+     * composición de cartera (Valor cartera − Cartera vencida = sana) que ya dibuja
+     * ComparativePreview.vue con ApexCharts — aquí se renderizan con Chart.js dentro
+     * del PDF (Browsershot ejecuta JS real, ver BrowsershotPdfRenderer).
+     */
+    private function comparativeChartsViewData(array $rows): array
+    {
+        $findRow = fn (string $label) => collect($rows)->firstWhere('label', $label);
+
+        $currencyRows = array_values(array_filter(array_map($findRow, self::COMPARATIVE_CHART_CURRENCY_METRICS)));
+        $percentRows  = array_values(array_filter(array_map($findRow, self::COMPARATIVE_CHART_PERCENT_METRICS)));
+
+        $carteraRow = $findRow('Valor cartera');
+        $vencidaRow = $findRow('Cartera vencida');
+        $carteraComposicion = function (string $key) use ($carteraRow, $vencidaRow) {
+            $cartera = (float) ($carteraRow[$key] ?? 0);
+            $vencida = (float) ($vencidaRow[$key] ?? 0);
+
+            return [round(max(0, $cartera - $vencida), 2), round($vencida, 2)];
+        };
+
+        return [
+            'chartJsInline'       => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
+            'chartLabelsCurrency' => array_column($currencyRows, 'label'),
+            'chartPrevCurrency'   => array_column($currencyRows, 'prev'),
+            'chartCurrCurrency'   => array_column($currencyRows, 'curr'),
+            'chartLabelsPercent'  => array_column($percentRows, 'label'),
+            'chartPrevPercent'    => array_column($percentRows, 'prev'),
+            'chartCurrPercent'    => array_column($percentRows, 'curr'),
+            'carteraDonutPrev'    => $carteraComposicion('prev'),
+            'carteraDonutCurr'    => $carteraComposicion('curr'),
         ];
     }
 
@@ -1069,16 +1116,31 @@ class RadiografiaExportService
         return $this->buildSnapshotCached($period, $summary, $config);
     }
 
+    /**
+     * Bug real corregido (retoma 21-sep-2026, punto 7): esta consulta no traía
+     * `whereNull('invalidated_at')` ni `latest('id')` — a diferencia de TODAS las
+     * consultas equivalentes en MonthlyReportController (exportRadiography,
+     * exportRadiographyPdf, exportFilteredRadiography(Pdf), previewPage). `->first()`
+     * sin orden explícito no garantiza "el más reciente": si un periodo llegó a tener
+     * más de un PeriodSummary status=generated (reprocesos, reimportaciones), este
+     * método podía devolver uno viejo/invalidado mientras el resto del sistema ya
+     * usaba el vigente — causa raíz más probable del error de BD reportado en el
+     * comparativo (comparativoData() → comparativeViewData() → aquí, sin overrides,
+     * es el único llamador que puede tocar un summary distinto al que ya validó el
+     * controlador). Mismo criterio de "vigente" que el resto del código ahora.
+     */
     private function requireSummary(Period $period): PeriodSummary
     {
         $summary = PeriodSummary::query()
             ->with(['branchSummaries', 'incidents'])
             ->where('period_id', $period->id)
             ->where('status', 'generated')
+            ->whereNull('invalidated_at')
+            ->latest('id')
             ->first();
 
         if (!$summary) {
-            throw new \RuntimeException("No existe una radiografía generada para el periodo {$period->label}.");
+            throw new \RuntimeException("No existe una radiografía vigente para el periodo {$period->label}.");
         }
 
         return $summary;

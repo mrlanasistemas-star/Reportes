@@ -13,6 +13,6 @@
 </script>
 
 <template>
-    <img src="/favicon.ico" alt="Logo"
+    <img src="/logoMrLana.png" alt="MR LANA"
     :class="className" v-bind="$attrs"/>
 </template>
