@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <title>Radiografía {{ $empName }} — {{ $period->label }}</title>
+<script>window.__PDF_READY__ = true;</script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; color: #1e293b; background: #fff; }
-@page {
-    margin: 20mm 14mm 18mm 14mm;
-    @bottom-left { content: "MR LANA · Radiografía Financiera"; font-family: Helvetica, Arial, sans-serif; font-size: 6.8pt; color: #94a3b8; }
-    @bottom-right { content: "Página " counter(page) " de " counter(pages); font-family: Helvetica, Arial, sans-serif; font-size: 6.8pt; color: #94a3b8; }
-}
+/* Márgenes/pie de página reales los controla BrowsershotPdfRenderer — el @bottom-left/
+   @bottom-right de abajo era una extensión CSS de DomPDF (Paged Media), Chrome headless
+   la ignora; el footer con numeración ahora sale de Browsershot::footerHtml(). */
+@page { margin: 20mm 14mm 18mm 14mm; }
 
 /* ── Encabezado de marca ──────────────────────────────────────────────── */
 .cover { background: #0f172a; color: #fff; padding: 16px 20px; border-radius: 10px; margin-bottom: 14px; }

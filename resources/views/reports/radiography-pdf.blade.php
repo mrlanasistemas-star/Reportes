@@ -3,9 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <title>Radiografía {{ $period->label }}</title>
+<script>window.__PDF_READY__ = true;</script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; color: #1e293b; background: #fff; }
+/* Márgenes reales los controla BrowsershotPdfRenderer (Browsershot::margins()) —
+   @page aquí es solo referencia visual, Chrome headless la ignora al imprimir. */
 @page { margin: 18mm 14mm 22mm 14mm; }
 
 /* ── Identidad / encabezado ─────────────────────────────────────────────── */
@@ -932,27 +935,16 @@ $rotPorSucursal = $rot['por_sucursal'] ?? [];
 <div class="note">Sin bajas en este periodo.</div>
 @endif
 
-<!-- ═══ Pie de página repetido + numeración (canvas nativo de DomPDF) ════════ -->
-<script type="text/php">
-if (isset($pdf)) {
-    $footerFont  = $fontMetrics->getFont('Helvetica', 'normal');
-    $footerSize  = 7.5;
-    $footerColor = array(0.39, 0.45, 0.55);
-    $marginX     = 40;
-    $rightEdge   = 572;
-    $lineY       = 758;
-    $textY       = 765;
+<!-- Pie de página + numeración: ya NO se dibuja aquí (era canvas nativo de DomPDF,
+     $pdf->page_text()/{PAGE_NUM}). Ahora lo genera BrowsershotPdfRenderer vía el
+     footerTemplate nativo de Chrome (Puppeteer page.pdf({displayHeaderFooter})),
+     el mismo mecanismo para TODOS los PDFs del sistema — ver footer_left en
+     RadiografiaExportService::exportPdf()/exportPdfWithConfig(). -->
 
-    $pdf->page_line($marginX, $lineY, $rightEdge, $lineY, $footerColor, 0.5);
-
-    $leftText = "MR LANA · Radiografía Financiera · {{ strtoupper($period->label) }}";
-    $pdf->page_text($marginX, $textY, $leftText, $footerFont, $footerSize, $footerColor);
-
-    $rightText  = "Página {PAGE_NUM} de {PAGE_COUNT}";
-    $rightWidth = $fontMetrics->getTextWidth($rightText, $footerFont, $footerSize);
-    $pdf->page_text($rightEdge - $rightWidth, $textY, $rightText, $footerFont, $footerSize, $footerColor);
-}
-</script>
+@if(!empty($executiveCharts))
+<div class="pagebreak"></div>
+@include('reports.partials.radiography-pdf-charts-section')
+@endif
 
 </body>
 </html>

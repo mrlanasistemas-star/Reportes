@@ -35,9 +35,4 @@ return [
         ],
     ],
 
-    'browsershot' => [
-        'node_binary' => env('BROWSERSHOT_NODE_BINARY'),
-        'chrome_path' => env('BROWSERSHOT_CHROME_PATH'),
-    ],
-
 ];

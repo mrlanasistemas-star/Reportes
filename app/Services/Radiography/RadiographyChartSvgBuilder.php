@@ -3,15 +3,16 @@
 namespace App\Services\Radiography;
 
 /**
- * Genera gráficas server-side como SVG inline para el PDF de radiografía (dompdf).
+ * Genera gráficas server-side como SVG inline para los PDF de sucursal/gestor
+ * (renderizados vía Browsershot/Chrome desde la migración de 21-sep-2026 — antes,
+ * con dompdf, SVG era la ÚNICA opción porque dompdf no ejecuta JS/canvas).
  *
- * Por qué SVG y no una librería de charts: dompdf (el renderer PDF vigente de este
- * proyecto, ver RadiografiaExportService — Barryvdh\DomPDF) no ejecuta JavaScript ni
- * canvas, así que cualquier librería de charts basada en JS (Chart.js, ApexCharts,
- * etc.) queda fuera. dompdf SÍ renderiza SVG inline razonablemente bien. Esta clase
- * genera el marcado SVG directamente en PHP a partir del MISMO dataset canónico ya
- * calculado (nunca recalcula nada financiero) — cero dependencias nuevas, cero
- * Chromium, huella de memoria mínima (son cadenas de texto, no imágenes rasterizadas).
+ * Se mantiene SVG generado en PHP (en vez de migrar estas gráficas a Chart.js) aunque
+ * Chrome headless SÍ podría ejecutar JS: es el MISMO dataset canónico ya calculado
+ * (nunca recalcula nada financiero), sin script adicional que esperar/sincronizar vía
+ * window.__PDF_READY__, y cero huella extra de memoria (cadenas de texto, no canvas
+ * rasterizado). El PDF general SÍ usa Chart.js real para su página de gráficas
+ * ejecutivas (ver reports/partials/radiography-pdf-charts-section.blade.php).
  *
  * Nunca genera un gráfico para datos vacíos — cada método devuelve '' si no hay nada
  * que mostrar, y el llamador (blade) debe omitir la sección completa en ese caso.
@@ -130,13 +131,11 @@ class RadiographyChartSvgBuilder
     }
 
     /**
-     * dompdf (v3.1.5, esta instalación) no renderiza <svg> inline embebido directamente
-     * en el flujo HTML — lo trata como marcado desconocido y solo imprime los nodos de
-     * texto en línea, descartando los <rect>/<path> (verificado empíricamente: ver
-     * commit que introduce este método). Envolver el mismo SVG como
-     * <img src="data:image/svg+xml;base64,...">, en cambio, sí lo rasteriza/renderiza
-     * correctamente vía el adaptador de imágenes de dompdf. Mismo SVG, mismo dataset —
-     * solo cambia el contenedor HTML que dompdf sabe interpretar.
+     * Legado de dompdf (v3.1.5): no renderizaba <svg> inline embebido directamente en
+     * el flujo HTML, solo <img src="data:image/svg+xml;base64,...">. Chrome headless
+     * (Browsershot, desde 21-sep-2026) SÍ renderiza <svg> inline nativo, pero se deja
+     * este wrapper sin cambios — mismo SVG, mismo dataset, ambos motores lo interpretan
+     * igual de bien vía <img>, y tocarlo no aporta nada a la migración.
      */
     private function wrapAsImg(string $svg, int $width, int $height): string
     {

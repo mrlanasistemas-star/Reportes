@@ -199,7 +199,7 @@ class GenerateRadiographyJob implements ShouldQueue
                 : $exportService->export($period, $this->config);
             $tExcelEnd = microtime(true);
 
-            // ── 6. Export PDF (via Blade + dompdf) ──
+            // ── 6. Export PDF (via Blade + Browsershot/Puppeteer/Chrome) ──
             $this->updateProgress($run, 90, 'Generando PDF', 'Renderizando el reporte en formato PDF.');
             $tPdfStart = microtime(true);
             $pdfPath = $isComparativeOrScoped
@@ -468,6 +468,10 @@ class GenerateRadiographyJob implements ShouldQueue
      */
     private function publicErrorCode(\Throwable $exception): string
     {
+        if ($exception instanceof \App\Services\Pdf\PdfRenderException) {
+            return $exception->code();
+        }
+
         $msg = $exception->getMessage();
 
         if (
@@ -475,10 +479,6 @@ class GenerateRadiographyJob implements ShouldQueue
             str_contains($msg, 'Spreadsheet') || str_contains(get_class($exception), 'PhpOffice')
         ) {
             return 'GENERATION_EXCEL_FAILED';
-        }
-
-        if (str_contains($msg, 'Dompdf') || str_contains($msg, 'dompdf') || str_contains(get_class($exception), 'Dompdf')) {
-            return 'GENERATION_PDF_FAILED';
         }
 
         if (str_contains($msg, 'SQLSTATE') || str_contains($msg, 'QueryException') || str_contains(get_class($exception), 'QueryException')) {
@@ -506,6 +506,10 @@ class GenerateRadiographyJob implements ShouldQueue
 
     private function publicErrorMessage(\Throwable $exception): string
     {
+        if ($exception instanceof \App\Services\Pdf\PdfRenderException) {
+            return $exception->getMessage();
+        }
+
         $msg = $exception->getMessage();
 
         if (
@@ -524,14 +528,6 @@ class GenerateRadiographyJob implements ShouldQueue
             str_contains(get_class($exception), 'QueryException')
         ) {
             return 'No se pudo consultar la información del reporte. Verifica que los datos del periodo estén procesados correctamente.';
-        }
-
-        if (
-            str_contains($msg, 'Dompdf') ||
-            str_contains($msg, 'dompdf') ||
-            str_contains(get_class($exception), 'Dompdf')
-        ) {
-            return 'No se pudo generar el PDF del reporte. Inténtalo nuevamente o descarga el Excel si está disponible.';
         }
 
         if (
