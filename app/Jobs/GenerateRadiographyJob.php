@@ -5,10 +5,12 @@ namespace App\Jobs;
 use App\Mail\ReportGeneratedMail;
 use App\Mail\ReportGenerationFailedMail;
 use App\Models\Period;
+use App\Models\PeriodIncident;
 use App\Models\PeriodRadiographyExport;
 use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
 use App\Models\User;
+use App\Services\AttributionRequirementService;
 use App\Services\EmployeeBranchAutoMatchService;
 use App\Services\ExpenseObservationAttributionService;
 use App\Services\FinanciamientoMotosAssignmentService;
@@ -68,6 +70,7 @@ class GenerateRadiographyJob implements ShouldQueue
         GastosExcelBranchResolverService $gastosExcelResolver,
         RadiographySnapshotBuilder $snapshotBuilder,
         ExpenseObservationAttributionService $expenseAttribution,
+        AttributionRequirementService $attributionRequirement,
     ): void {
         @ini_set('memory_limit', '1024M');
         @ini_set('max_execution_time', '1800');
@@ -149,16 +152,25 @@ class GenerateRadiographyJob implements ShouldQueue
                 $this->updateProgress($run, 66, 'Asignaciones verificadas', 'Todos los empleados ya tienen sucursal — omitiendo auto-asignación.');
             }
 
-            // ── 3b. Resolve Financiamiento de Motos/Cascos → employee_id/branch_id ─────
-            // Persisted directly on fact_expenses, never left in a "sin asignar" bucket.
-            // Throws (stopping generation) if any record can't be tied to a real employee
-            // and operative branch — see FinanciamientoMotosAssignmentService.
-            $this->updateProgress($run, 66, 'Resolviendo sucursal de gastos Excel', 'Emparejando cada gasto del Excel de Lendus contra su fila equivalente en el PDF (monto + fecha) para asignar sucursal.');
+            // ── 3b. Resolve gastos Excel de Lendus / Financiamiento de Motos-Cascos →
+            // employee_id/branch_id ──────────────────────────────────────────────────
+            // Retoma 21-sep-2026, Parte A: ANTES estos dos pasos lanzaban RuntimeException
+            // y detenían TODA la generación (incluso un comparativo GENERAL) si un solo
+            // gasto del Excel no tenía contraparte exacta (monto+fecha) en el PDF de
+            // Lendus. Bug de regla de negocio, no de datos: OPEX y "Nómina y Capital
+            // Humano" — general Y por sucursal — se calculan SIEMPRE desde el PDF de
+            // Lendus (100% resuelto en su propia columna Sucursal), nunca desde este
+            // Excel — ver AttributionRequirementService. Un gasto sin par en el PDF
+            // SIGUE contando íntegro en OPEX/Nómina; solo queda pendiente el desglose
+            // informativo por sucursal/gestor derivado del Excel. Ya NO bloqueante para
+            // ningún scope — se registra como incidencia informativa (PeriodIncident) +
+            // metadata del run, nunca "generación detenida".
+            $this->updateProgress($run, 66, 'Resolviendo sucursal de gastos Excel', 'Emparejando cada gasto del Excel de Lendus contra su fila equivalente en el PDF (monto + fecha) para enriquecer el desglose por sucursal.');
             $dataIds = $snapshotBuilder->resolveDataIdsPublic($period);
-            $gastosExcelResolver->resolveForPeriodOrFail($period, $dataIds);
+            $this->resolveGastosExcelNonBlocking($gastosExcelResolver, $attributionRequirement, $period, $summary, $dataIds, $reportType, $scope, $run);
 
             $this->updateProgress($run, 67, 'Resolviendo Financiamiento de Motos', 'Vinculando cada movimiento de Financiamiento de Motos/Cascos con su empleado y sucursal.');
-            $motosAssignment->assignForPeriodOrFail($period, $dataIds);
+            $this->resolveMotosNonBlocking($motosAssignment, $attributionRequirement, $period, $summary, $dataIds, $reportType, $scope, $run);
 
             // ── 3c. Atribuir OPEX a colaboradores vía Observación/Justificación ────────
             // NO bloqueante — a diferencia de los pasos anteriores (gastosExcelResolver/
@@ -574,5 +586,167 @@ class GenerateRadiographyJob implements ShouldQueue
             ->count();
 
         return $assigned < $periodEmployeeIds->count();
+    }
+
+    /**
+     * Retoma 21-sep-2026, Parte A — reemplaza la llamada bloqueante a
+     * GastosExcelBranchResolverService::resolveForPeriodOrFail(). Usa la variante
+     * NO throwing (resolveForPeriod()) y decide qué hacer con lo "sin_resolver" vía
+     * AttributionRequirementService (hoy: nunca bloquea, ver esa clase) — nunca "continue"
+     * silencioso: se deja constancia en PeriodIncident + metadata del run + log, y el monto
+     * sigue contando en OPEX/Nómina (viene del PDF, no de este Excel).
+     */
+    private function resolveGastosExcelNonBlocking(
+        GastosExcelBranchResolverService $gastosExcelResolver,
+        AttributionRequirementService $attributionRequirement,
+        Period $period,
+        PeriodSummary $summary,
+        array $dataIds,
+        string $reportType,
+        string $scope,
+        PeriodRadiographyRun $run,
+    ): void {
+        try {
+            $results = $gastosExcelResolver->resolveForPeriod($period, $dataIds);
+        } catch (\Throwable $e) {
+            Log::warning('GenerateRadiographyJob: GastosExcelBranchResolverService::resolveForPeriod() falló de forma inesperada (no bloqueante — el reporte sigue generándose).', [
+                'period_id' => $period->id, 'run_id' => $run->id,
+                'exception' => get_class($e), 'message' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+
+        $unresolved = array_values(array_filter($results, fn (array $r) => $r['estado'] === 'sin_resolver'));
+        if (empty($unresolved)) {
+            return;
+        }
+
+        if ($attributionRequirement->requiresBranchAttribution($reportType, $scope)) {
+            // Nunca ocurre hoy (ver AttributionRequirementService) — futuro-proof para
+            // un caso donde esta atribución SÍ alimente un total financiero.
+            $detail = collect($unresolved)->map(fn (array $r) => sprintf(
+                '  - fact_expenses.id=%d | %s / %s | $%s | %s',
+                $r['fact_expense_id'], $r['category'], $r['concept'], number_format($r['amount'], 2), $r['expense_date'] ?? 'sin fecha'
+            ))->implode("\n");
+
+            throw new \RuntimeException(
+                "No se pudo emparejar contra el PDF de Lendus " . count($unresolved) .
+                " registro(s) del Excel de gastos del periodo {$period->label} — generación detenida:\n" . $detail
+            );
+        }
+
+        $count = count($unresolved);
+        $total = round((float) array_sum(array_column($unresolved, 'amount')), 2);
+        $message = "{$count} gasto(s) del Excel de Lendus por \$" . number_format($total, 2) . ' no se pudieron emparejar '
+            . 'automáticamente contra el PDF (monto + fecha). Su monto ya cuenta en OPEX/Nómina y Capital Humano '
+            . '(fuente autorizada: PDF de Lendus, resuelto al 100%) — solo queda pendiente el desglose informativo '
+            . 'por sucursal/gestor derivado del Excel para estos registros.';
+
+        Log::warning('GenerateRadiographyJob: gastos Excel sin par en el PDF de Lendus (informativo, no bloqueante).', [
+            'period_id' => $period->id, 'run_id' => $run->id, 'count' => $count, 'total' => $total,
+            'fact_expense_ids' => array_column($unresolved, 'fact_expense_id'),
+        ]);
+
+        $this->recordAttributionIncident($summary, $run, 'gastos_excel_sin_par_pdf', $message, [
+            'count' => $count, 'total' => $total, 'fact_expense_ids' => array_column($unresolved, 'fact_expense_id'),
+        ]);
+    }
+
+    /**
+     * Mismo criterio que resolveGastosExcelNonBlocking() para
+     * FinanciamientoMotosAssignmentService::assignForPeriodOrFail() — el gasto de
+     * Financiamiento de Motos/Cascos ya cuenta en "Nómina y Capital Humano" vía el PDF de
+     * Lendus (ver accumulateNomina() en BranchRadiographyCalculator); esta resolución solo
+     * enriquece el desglose informativo por empleado/sucursal del Excel.
+     */
+    private function resolveMotosNonBlocking(
+        FinanciamientoMotosAssignmentService $motosAssignment,
+        AttributionRequirementService $attributionRequirement,
+        Period $period,
+        PeriodSummary $summary,
+        array $dataIds,
+        string $reportType,
+        string $scope,
+        PeriodRadiographyRun $run,
+    ): void {
+        try {
+            $results = $motosAssignment->assignForPeriod($period, $dataIds);
+        } catch (\Throwable $e) {
+            Log::warning('GenerateRadiographyJob: FinanciamientoMotosAssignmentService::assignForPeriod() falló de forma inesperada (no bloqueante — el reporte sigue generándose).', [
+                'period_id' => $period->id, 'run_id' => $run->id,
+                'exception' => get_class($e), 'message' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+
+        $unresolved = array_values(array_filter($results, fn (array $r) => $r['estado'] === 'sin_resolver'));
+        if (empty($unresolved)) {
+            return;
+        }
+
+        if ($attributionRequirement->requiresBranchAttribution($reportType, $scope)) {
+            $detail = collect($unresolved)->map(fn (array $r) => sprintf(
+                '  - fact_expenses.id=%d | %s | "%s" | $%s',
+                $r['fact_expense_id'], $r['concept'], $r['nombre_original'], number_format($r['amount'], 2)
+            ))->implode("\n");
+
+            throw new \RuntimeException(
+                "No se pudo determinar empleado/sucursal para " . count($unresolved) .
+                " registro(s) de Financiamiento de Motos/Cascos del periodo {$period->label} — generación detenida:\n" . $detail
+            );
+        }
+
+        $count = count($unresolved);
+        $total = round((float) array_sum(array_column($unresolved, 'amount')), 2);
+        $message = "{$count} registro(s) de Financiamiento de Motos/Cascos por \$" . number_format($total, 2) . ' no se '
+            . 'pudieron vincular a un colaborador/sucursal por nombre. Su monto ya cuenta en Nómina y Capital Humano '
+            . '(fuente autorizada: PDF de Lendus, resuelto al 100%) — solo queda pendiente el desglose informativo '
+            . 'por colaborador/sucursal para estos registros.';
+
+        Log::warning('GenerateRadiographyJob: Financiamiento de Motos/Cascos sin identidad resuelta (informativo, no bloqueante).', [
+            'period_id' => $period->id, 'run_id' => $run->id, 'count' => $count, 'total' => $total,
+            'fact_expense_ids' => array_column($unresolved, 'fact_expense_id'),
+        ]);
+
+        $this->recordAttributionIncident($summary, $run, 'motos_cascos_sin_identidad', $message, [
+            'count' => $count, 'total' => $total, 'fact_expense_ids' => array_column($unresolved, 'fact_expense_id'),
+        ]);
+    }
+
+    /**
+     * PROBLEMA 6 (mismo criterio que persistFilteredRunExport en MonthlyReportController):
+     * registrar la incidencia es secundario respecto al reporte en sí — un fallo de BD
+     * aquí jamás debe interrumpir la generación. Se deja constancia en dos lugares
+     * independientes (PeriodIncident + metadata del run) para que sea visible desde
+     * Incidencias y desde el detalle del run aunque uno de los dos falle.
+     */
+    private function recordAttributionIncident(PeriodSummary $summary, PeriodRadiographyRun $run, string $type, string $message, array $context): void
+    {
+        try {
+            PeriodIncident::query()->create([
+                'period_summary_id' => $summary->id,
+                'type'              => $type,
+                'severity'          => 'warning',
+                'message'           => $message,
+                'context'           => $context,
+            ]);
+        } catch (\Throwable $incidentException) {
+            Log::error('GenerateRadiographyJob: no se pudo registrar la incidencia de atribución (el reporte sigue siendo válido).', [
+                'period_summary_id' => $summary->id, 'type' => $type,
+                'exception' => get_class($incidentException), 'message' => $incidentException->getMessage(),
+            ]);
+        }
+
+        try {
+            $run->metadata = array_merge(is_array($run->metadata) ? $run->metadata : [], [$type => $context]);
+            $run->save();
+        } catch (\Throwable $metaException) {
+            Log::error('GenerateRadiographyJob: no se pudo guardar la incidencia de atribución en metadata del run (el reporte sigue siendo válido).', [
+                'run_id' => $run->id, 'type' => $type,
+                'exception' => get_class($metaException), 'message' => $metaException->getMessage(),
+            ]);
+        }
     }
 }
