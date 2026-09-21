@@ -341,7 +341,7 @@ class MonthlyReportController extends Controller {
     /**
      * "Ver" de un run específico. Simple+general reutiliza la vista web completa ya
      * existente; comparativo renderiza la misma plantilla del PDF comparativo como
-     * página web normal (sin dompdf) — reutiliza exactamente los mismos datos que el
+     * página web normal (sin Browsershot) — reutiliza exactamente los mismos datos que el
      * PDF, así que nunca se desincroniza de lo que se descarga.
      */
     public function viewRun(PeriodRadiographyRun $run)

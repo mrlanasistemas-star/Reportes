@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Guía del sistema — Radiografía Financiera</title>
+<script>window.__PDF_READY__ = true;</script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: Helvetica, Arial, sans-serif; font-size: 9pt; color: #1e293b; }

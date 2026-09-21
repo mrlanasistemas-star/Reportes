@@ -1,36 +1,32 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>Gráficas — {{ $period->label }}</title>
+<!-- Página de gráficas ejecutivas (Chart.js, renderizado real vía Chrome headless) —
+     incluida DENTRO del mismo documento del PDF general (un solo render Browsershot,
+     sin fusión de PDFs vía FPDI). Estilos/selectores van con prefijo .pdf-charts para
+     no chocar con las clases .brand/.header/.card ya usadas por el resto del reporte. -->
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Segoe UI', Helvetica, Arial, sans-serif; color: #1e293b; background: #fff; }
-@page { margin: 14mm; }
-.page { page-break-after: always; }
-.page:last-child { page-break-after: auto; }
-.header {
+.pdf-charts .page { page-break-after: always; }
+.pdf-charts .page:last-child { page-break-after: auto; }
+.pdf-charts .header {
     display: flex; align-items: center; justify-content: space-between;
     padding-bottom: 10px; margin-bottom: 16px; border-bottom: 2px solid #1f2937;
 }
-.brand { font-size: 15pt; font-weight: 700; color: #106A59; letter-spacing: .5px; }
-.subtitle { font-size: 9.5pt; color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; }
-.grid2 { display: flex; gap: 16px; margin-bottom: 16px; }
-.card {
+.pdf-charts .brand { font-size: 15pt; font-weight: 700; color: #106A59; letter-spacing: .5px; }
+.pdf-charts .subtitle { font-size: 9.5pt; color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; }
+.pdf-charts .grid2 { display: flex; gap: 16px; margin-bottom: 16px; }
+.pdf-charts .card {
     flex: 1; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;
     background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
 }
-.card h3 {
+.pdf-charts .card h3 {
     font-size: 10pt; color: #1f2937; text-transform: uppercase; letter-spacing: .4px;
     margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #e2e8f0;
 }
-.card canvas { width: 100% !important; }
-.card.full { flex: none; width: 100%; }
-.footer-note { margin-top: 10px; font-size: 7.5pt; color: #94a3b8; text-align: center; }
+.pdf-charts .card canvas { width: 100% !important; }
+.pdf-charts .card.full { flex: none; width: 100%; }
+.pdf-charts .footer-note { margin-top: 10px; font-size: 7.5pt; color: #94a3b8; text-align: center; }
 </style>
-</head>
-<body>
+
+<div class="pdf-charts">
 
 <div class="page">
     <div class="header">
@@ -82,6 +78,9 @@ body { font-family: 'Segoe UI', Helvetica, Arial, sans-serif; color: #1e293b; ba
     <div class="footer-note">Generado automáticamente — Radiografía Financiera MR LANA · {{ $period->label }}</div>
 </div>
 
+</div>
+
+<script>window.__PDF_READY__ = false;</script>
 <script>{!! $chartJsInline !!}</script>
 <script>
 Chart.defaults.font.family = "'Segoe UI', Helvetica, Arial, sans-serif";
@@ -137,7 +136,6 @@ new Chart(document.getElementById('chartColocRec'), {
     },
     options: { plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
 });
-</script>
 
-</body>
-</html>
+window.__PDF_READY__ = true;
+</script>

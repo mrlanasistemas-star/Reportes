@@ -6,10 +6,10 @@ use App\Models\Employee;
 use App\Models\Period;
 use App\Models\PeriodSummary;
 use App\Services\EmployeeNameCanonicalizer;
+use App\Services\Pdf\BrowsershotPdfRenderer;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use App\Services\Radiography\RadiographySnapshotBuilder;
 use App\Services\Radiography\RadiographyWorkbookBuilder;
-use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -22,7 +22,20 @@ class RadiografiaExportService
         private RadiographyWorkbookBuilder $workbookBuilder,
         private RadiographySnapshotBuilder $snapshotBuilder,
         private \App\Services\TemporaryOpexAdjustmentService $temporaryAdjustment,
+        private BrowsershotPdfRenderer $pdfRenderer,
     ) {}
+
+    /**
+     * Márgenes (mm) por tipo de vista PDF — MISMOS valores que cada blade declaraba
+     * en su @page (ahora solo documentación, Chrome headless no los lee: los aplica
+     * BrowsershotPdfRenderer vía Browsershot::margins()).
+     */
+    private const PDF_MARGINS = [
+        'general'     => ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14],
+        'comparative' => ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14],
+        'branch'      => ['top' => 20, 'right' => 14, 'bottom' => 18, 'left' => 14],
+        'employee'    => ['top' => 20, 'right' => 14, 'bottom' => 18, 'left' => 14],
+    ];
 
     /**
      * Excel y PDF de un mismo comparativo se piden en requests HTTP separados (dos
@@ -78,16 +91,17 @@ class RadiografiaExportService
 
         $snapshot = $this->snapshotBuilder->build($period, $summary, $config);
 
-        $pdf = Pdf::loadView('reports.radiography-pdf', [
-            'period'   => $period,
-            'snapshot' => $snapshot,
-        ])->setPaper('letter', 'portrait')->setOption('isPhpEnabled', true);
-
         $directory  = storage_path('app/radiografias');
         File::ensureDirectoryExists($directory);
         $outputPath = $directory . '/radiografia_' . ($period->code ?: $period->id) . '_' . now()->format('Ymd_His') . '.pdf';
 
-        $pdf->save($outputPath);
+        $this->pdfRenderer->renderViewToFile('reports.radiography-pdf', array_merge([
+            'period'   => $period,
+            'snapshot' => $snapshot,
+        ], $this->executiveChartsViewData($snapshot)), $outputPath, [
+            'margins'     => self::PDF_MARGINS['general'],
+            'footer_left' => 'MR LANA · Radiografía Financiera · ' . strtoupper($period->label),
+        ]);
 
         return $outputPath;
     }
@@ -231,9 +245,10 @@ class RadiografiaExportService
             $viewData      = $this->comparativeViewData($period, $config, $summary, $snapshot);
             $comparePeriod = $viewData['comparePeriod'];
 
-            $pdf = Pdf::loadView('reports.radiography-pdf-comparative', $viewData)
-                ->setPaper('letter', 'portrait')->setOption('isPhpEnabled', true);
-            $suffix = 'comparativo_' . $comparePeriod->code;
+            $view      = 'reports.radiography-pdf-comparative';
+            $margins   = self::PDF_MARGINS['comparative'];
+            $footerLeft = 'MR LANA · Comparativo · ' . strtoupper($comparePeriod->label) . ' vs ' . strtoupper($period->label);
+            $suffix    = 'comparativo_' . $comparePeriod->code;
         } elseif ($scope === 'branch') {
             $branchId = (int) ($config['branch_id'] ?? 0);
             if (!$branchId) {
@@ -252,13 +267,16 @@ class RadiografiaExportService
             }
             $branchData = $this->resolveBranchPdfData($period, $snapshot, $branchId, $branchRow);
 
-            $pdf = Pdf::loadView('reports.radiography-pdf-branch', array_merge($branchData, [
+            $view = 'reports.radiography-pdf-branch';
+            $viewData = array_merge($branchData, [
                 'period'     => $period,
                 'snap'       => $snapshot,
                 'branchRow'  => $branchRow,
                 'extraAmount' => $branchExtraAmount,
                 'extraNotes'  => $branchExtraNotes,
-            ]))->setPaper('letter', 'portrait')->setOption('isPhpEnabled', true);
+            ]);
+            $margins    = self::PDF_MARGINS['branch'];
+            $footerLeft = 'MR LANA · Radiografía Financiera · ' . strtoupper($branchRow['sucursal'] ?? 'Sucursal');
             $suffix = 'sucursal_' . $branchId;
         } elseif ($scope === 'employee') {
             $employeeId = (int) ($config['employee_id'] ?? 0);
@@ -274,18 +292,24 @@ class RadiografiaExportService
             [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($period, $config, $employeeId);
             $empData = $this->resolveEmployeeRow($period, $snapshot, $employeeId, $extraAmount, $extraNotes);
 
-            $pdf = Pdf::loadView('reports.radiography-pdf-employee', array_merge($empData, [
+            $view = 'reports.radiography-pdf-employee';
+            $viewData = array_merge($empData, [
                 'period'      => $period,
                 'snap'        => $snapshot,
                 'extraAmount' => $empData['expenseDetail']['manual_total'] ?? 0.0,
                 'extraNotes'  => $empData['expenseDetail']['manual_notes'] ?? '',
-            ]))->setPaper('letter', 'portrait')->setOption('isPhpEnabled', true);
+            ]);
+            $margins    = self::PDF_MARGINS['employee'];
+            $footerLeft = 'MR LANA · Radiografía Financiera · ' . strtoupper($empData['empName'] ?? 'Gestor');
             $suffix = 'gestor_' . $employeeId;
         } else {
-            $pdf = Pdf::loadView('reports.radiography-pdf', [
+            $view = 'reports.radiography-pdf';
+            $viewData = array_merge([
                 'period'   => $period,
                 'snapshot' => $snapshot,
-            ])->setPaper('letter', 'portrait')->setOption('isPhpEnabled', true);
+            ], $this->executiveChartsViewData($snapshot));
+            $margins    = self::PDF_MARGINS['general'];
+            $footerLeft = 'MR LANA · Radiografía Financiera · ' . strtoupper($period->label);
             $suffix = 'general';
         }
 
@@ -293,51 +317,12 @@ class RadiografiaExportService
         File::ensureDirectoryExists($directory);
         $outputPath = $directory . '/radiografia_' . ($period->code ?: $period->id) . '_' . $suffix . '_' . now()->format('Ymd_His') . '.pdf';
 
-        $pdf->save($outputPath);
-
-        // Página de gráficas ejecutivas (Chart.js vía Chrome headless/Browsershot) — cierre
-        // 17-sep-2026 ronda 3, a petición explícita del usuario ("quiero PDFs modernos con
-        // gráficas"). SOLO para el PDF general (dompdf no soporta canvas/JS — no toca branch/
-        // employee/comparativo, que siguen 100% dompdf sin cambios). Se agrega DESPUÉS de
-        // guardar el PDF ya verificado (nunca reemplaza su contenido) y NUNCA puede tumbar el
-        // export: si Node/Chrome no están instalados en el servidor o algo falla, se reporta
-        // el error y el usuario recibe el PDF de siempre, sin la página extra.
-        if ($suffix === 'general') {
-            $this->appendExecutiveChartsPageIfPossible($period, $snapshot, $outputPath);
-        }
+        $this->pdfRenderer->renderViewToFile($view, $viewData, $outputPath, [
+            'margins'     => $margins,
+            'footer_left' => $footerLeft,
+        ]);
 
         return $outputPath;
-    }
-
-    /**
-     * Intenta añadir una página de gráficas ejecutivas (Chart.js, renderizado real vía
-     * Chrome headless) al final del PDF general ya generado. Estrictamente aditivo y
-     * best-effort — cualquier fallo (Node/Chrome no instalados, timeout, etc.) se registra
-     * con report() y se ignora, dejando el PDF original intacto.
-     */
-    private function appendExecutiveChartsPageIfPossible(Period $period, array $snapshot, string $outputPath): void
-    {
-        try {
-            $chartsPdfPath = $this->renderExecutiveChartsPdf($period, $snapshot);
-            if ($chartsPdfPath === null) {
-                return;
-            }
-
-            $merged = new \setasign\Fpdi\Fpdi();
-            foreach ([$outputPath, $chartsPdfPath] as $sourcePath) {
-                $pageCount = $merged->setSourceFile($sourcePath);
-                for ($i = 1; $i <= $pageCount; $i++) {
-                    $templateId = $merged->importPage($i);
-                    $size = $merged->getTemplateSize($templateId);
-                    $merged->AddPage($size['orientation'], [$size['width'], $size['height']]);
-                    $merged->useTemplate($templateId);
-                }
-            }
-            $merged->Output('F', $outputPath);
-            @unlink($chartsPdfPath);
-        } catch (\Throwable $e) {
-            report($e);
-        }
     }
 
     /**
@@ -415,20 +400,23 @@ class RadiografiaExportService
     }
 
     /**
-     * Renderiza la página de gráficas ejecutivas a un PDF temporal vía Browsershot (Chrome
-     * headless real — el único motor de este proyecto capaz de ejecutar Chart.js, dompdf no
-     * puede). Devuelve null (nunca lanza) si Node/Chrome no están disponibles o el render
-     * falla — el llamador ya sabe tratar null como "sin página extra, seguir normal".
+     * Datos para la sección de gráficas ejecutivas del PDF general — se incluyen DENTRO
+     * del mismo documento (reports/partials/radiography-pdf-charts-section.blade.php,
+     * ver reports.radiography-pdf), nunca como un PDF aparte fusionado (eliminado el
+     * merge vía FPDI, cierre migración a Browsershot 21-sep-2026: un solo render, un
+     * solo motor). 'executiveCharts' => false cuando el snapshot no trae
+     * branch_radiography completo (alcance sucursal/colaborador) — el blade omite la
+     * sección completa en ese caso.
      */
-    private function renderExecutiveChartsPdf(Period $period, array $snapshot): ?string
+    private function executiveChartsViewData(array $snapshot): array
     {
         $data = $this->buildExecutiveChartsData($snapshot);
         if ($data === null) {
-            return null;
+            return ['executiveCharts' => false];
         }
 
-        $html = view('reports.radiography-pdf-charts', [
-            'period'          => $period,
+        return [
+            'executiveCharts' => true,
             'chartJsInline'   => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
             'moraBuckets'     => $data['moraBuckets'],
             'gastosTopN'      => $data['gastosTopN'],
@@ -437,30 +425,13 @@ class RadiografiaExportService
             'categoriaCounts' => $data['categoriaCounts'],
             'categoriaColors' => $data['categoriaColors'],
             'sucursalRows'    => $data['sucursalRows'],
-        ])->render();
-
-        $tmpPath = storage_path('app/radiografias/tmp_charts_' . uniqid() . '.pdf');
-
-        $shot = \Spatie\Browsershot\Browsershot::html($html)
-            ->waitUntilNetworkIdle()
-            ->showBackground()
-            ->format('Letter')
-            ->margins(0, 0, 0, 0);
-
-        $nodeBinary = config('services.browsershot.node_binary');
-        $chromePath = config('services.browsershot.chrome_path');
-        if ($nodeBinary) { $shot->setNodeBinary($nodeBinary); }
-        if ($chromePath) { $shot->setChromePath($chromePath); }
-
-        $shot->savePdf($tmpPath);
-
-        return file_exists($tmpPath) && filesize($tmpPath) > 0 ? $tmpPath : null;
+        ];
     }
 
     /**
      * Datos de un comparativo (mes/bimestre/trimestre vs mes/bimestre/trimestre),
      * separados de su renderizado — reutilizados tanto por exportPdfWithConfig()
-     * (PDF vía dompdf) como por el "Ver" web de un run comparativo (misma plantilla,
+     * (PDF vía Browsershot) como por el "Ver" web de un run comparativo (misma plantilla,
      * renderizada como página normal), así ambos nunca se desincronizan.
      */
     public function comparativeViewData(Period $period, array $config, ?PeriodSummary $summary = null, ?array $snapshot = null): array
