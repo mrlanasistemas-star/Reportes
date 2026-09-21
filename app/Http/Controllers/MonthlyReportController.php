@@ -243,60 +243,80 @@ class MonthlyReportController extends Controller {
      * identidad, no por id) — descargar primero el Excel y después el PDF (o viceversa,
      * en pestañas o momentos distintos) termina en una sola fila de historial con ambos
      * archivos, nunca dos filas parciales que se pisen entre sí.
+     *
+     * RESILIENCIA (retoma 21-sep-2026, puntos 9/11/14/15): este método corre DESPUÉS de
+     * que el archivo (Excel/PDF) ya existe en disco. Persistir su metadata en
+     * PeriodRadiographyRun/PeriodRadiographyExport es un proceso DISTINTO de haber
+     * generado el archivo — un error de BD aquí (columna, constraint, deadlock) NUNCA
+     * debe convertir una descarga que ya funcionó en un 500. Por eso TODO el cuerpo está
+     * envuelto en try/catch: si falla, se loguea y el caller sigue directo a
+     * response()->download() con el archivo ya generado. El único costo es que esa
+     * descarga concreta no queda registrada en Histórico — mejor que perder la descarga.
      */
     private function persistFilteredRunExport(Period $period, array $config, string $fileType, string $path, PeriodDerivedDataCleaner $cleaner): void
     {
-        $identity = [
-            'period_id'            => $period->id,
-            'report_type'          => $config['report_type'] ?? 'simple',
-            'scope'                => $config['scope'] ?? 'general',
-            'branch_id'            => !empty($config['branch_id']) ? (int) $config['branch_id'] : null,
-            'employee_id'          => !empty($config['employee_id']) ? (int) $config['employee_id'] : null,
-            'comparison_period_id' => !empty($config['compare_period_id']) ? (int) $config['compare_period_id'] : null,
-        ];
-
-        $run = PeriodRadiographyRun::query()->forIdentity($identity)->latest('id')->first()
-            ?? new PeriodRadiographyRun($identity);
-
-        $summary = PeriodSummary::query()
-            ->where('period_id', $period->id)
-            ->where('status', 'generated')
-            ->whereNull('invalidated_at')
-            ->latest('id')
-            ->first();
-
-        $run->fill(array_merge($identity, [
-            'status'             => 'success',
-            'period_summary_id'  => $summary?->id ?? $run->period_summary_id,
-            'started_at'         => $run->started_at ?? now(),
-            'finished_at'        => now(),
-            'log'                => 'Radiografía generada. Excel y PDF listos para descargar.',
-            'created_by'         => $run->created_by ?? auth()->id(),
-        ]));
-        $run->{"output_{$fileType}_path"} = $path;
-        $run->save();
-
-        PeriodRadiographyExport::query()->updateOrCreate(
-            ['run_id' => $run->id, 'file_type' => $fileType],
-            [
-                'period_summary_id' => $run->period_summary_id,
-                'export_path'       => $path,
-                'template_version'  => config('app.version'),
-                'metadata'          => ['period_id' => $period->id, 'period_label' => $period->label, 'config' => $config],
-                'exported_at'       => now(),
-                'exported_by'       => auth()->id(),
-            ],
-        );
-
         try {
-            $cleaner->clearGeneratedReportsForIdentity($period, $identity, excludeRunId: $run->id);
-        } catch (\Throwable $cleanupException) {
-            Log::warning('MonthlyReportController: no se pudo limpiar versiones anteriores de esta identidad tras exportar (el archivo nuevo sigue siendo válido).', [
+            $identity = [
+                'period_id'            => $period->id,
+                'report_type'          => $config['report_type'] ?? 'simple',
+                'scope'                => $config['scope'] ?? 'general',
+                'branch_id'            => !empty($config['branch_id']) ? (int) $config['branch_id'] : null,
+                'employee_id'          => !empty($config['employee_id']) ? (int) $config['employee_id'] : null,
+                'comparison_period_id' => !empty($config['compare_period_id']) ? (int) $config['compare_period_id'] : null,
+            ];
+
+            $run = PeriodRadiographyRun::query()->forIdentity($identity)->latest('id')->first()
+                ?? new PeriodRadiographyRun($identity);
+
+            $summary = PeriodSummary::query()
+                ->where('period_id', $period->id)
+                ->where('status', 'generated')
+                ->whereNull('invalidated_at')
+                ->latest('id')
+                ->first();
+
+            $run->fill(array_merge($identity, [
+                'status'             => 'success',
+                'period_summary_id'  => $summary?->id ?? $run->period_summary_id,
+                'started_at'         => $run->started_at ?? now(),
+                'finished_at'        => now(),
+                'log'                => 'Radiografía generada. Excel y PDF listos para descargar.',
+                'created_by'         => $run->created_by ?? auth()->id(),
+            ]));
+            $run->{"output_{$fileType}_path"} = $path;
+            $run->save();
+
+            PeriodRadiographyExport::query()->updateOrCreate(
+                ['run_id' => $run->id, 'file_type' => $fileType],
+                [
+                    'period_summary_id' => $run->period_summary_id,
+                    'export_path'       => $path,
+                    'template_version'  => config('app.version'),
+                    'metadata'          => ['period_id' => $period->id, 'period_label' => $period->label, 'config' => $config],
+                    'exported_at'       => now(),
+                    'exported_by'       => auth()->id(),
+                ],
+            );
+
+            try {
+                $cleaner->clearGeneratedReportsForIdentity($period, $identity, excludeRunId: $run->id);
+            } catch (\Throwable $cleanupException) {
+                Log::warning('MonthlyReportController: no se pudo limpiar versiones anteriores de esta identidad tras exportar (el archivo nuevo sigue siendo válido).', [
+                    'period_id' => $period->id,
+                    'run_id'    => $run->id,
+                    'identity'  => $identity,
+                    'exception' => get_class($cleanupException),
+                    'message'   => $cleanupException->getMessage(),
+                ]);
+            }
+        } catch (\Throwable $persistException) {
+            Log::error('MonthlyReportController: no se pudo registrar el historial de este export (el archivo generado sigue siendo válido y descargable).', [
                 'period_id' => $period->id,
-                'run_id'    => $run->id,
-                'identity'  => $identity,
-                'exception' => get_class($cleanupException),
-                'message'   => $cleanupException->getMessage(),
+                'config'    => $config,
+                'file_type' => $fileType,
+                'path'      => $path,
+                'exception' => get_class($persistException),
+                'message'   => $persistException->getMessage(),
             ]);
         }
     }

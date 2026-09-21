@@ -30,11 +30,19 @@
             }
         </style>
 
-        <link rel="icon" href="/favicon.ico" sizes="any">
-        <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
-        <link rel="icon" href="/logoMrLana.png" type="image/png" sizes="256x256">
-        <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+        @php
+            // Cache busting (retoma 21-sep-2026, punto 17): sin esto, un navegador que ya
+            // cacheó favicon.ico/og-image.png nunca vuelve a pedirlos aunque el archivo en
+            // disco cambie — filemtime() cambia solo cuando el archivo realmente cambia, así
+            // que la URL solo invalida caché cuando hace falta (nunca en cada request).
+            $assetV = fn (string $path) => file_exists(public_path($path)) ? '?v=' . filemtime(public_path($path)) : '';
+        @endphp
+        <link rel="icon" href="/favicon.ico{{ $assetV('favicon.ico') }}" sizes="any">
+        <link rel="icon" href="/favicon-32.png{{ $assetV('favicon-32.png') }}" type="image/png" sizes="32x32">
+        <link rel="icon" href="/logoMrLana.png{{ $assetV('logoMrLana.png') }}" type="image/png" sizes="256x256">
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png{{ $assetV('apple-touch-icon.png') }}">
         <link rel="manifest" href="/manifest.webmanifest">
+        <meta name="msapplication-TileImage" content="{{ url('/logoMrLana.png' . $assetV('logoMrLana.png')) }}">
         <meta name="theme-color" content="#4f46e5">
         <meta name="mobile-web-app-capable" content="yes">
         <meta name="apple-mobile-web-app-capable" content="yes">
@@ -63,7 +71,7 @@
         <meta property="og:title" content="{{ config('app.name', 'Reportes') }} LANA">
         <meta property="og:description" content="Accede a tu panel de Reportes LANA.">
         <meta property="og:url" content="{{ url()->current() }}">
-        <meta property="og:image" content="{{ asset('og-image.png') }}">
+        <meta property="og:image" content="{{ asset('og-image.png' . $assetV('og-image.png')) }}">
         <meta property="og:image:width" content="1200">
         <meta property="og:image:height" content="630">
         <meta property="og:locale" content="es_MX">
@@ -71,7 +79,7 @@
         <meta name="twitter:card" content="summary_large_image">
         <meta name="twitter:title" content="{{ config('app.name', 'Reportes') }} LANA">
         <meta name="twitter:description" content="Accede a tu panel de Reportes LANA.">
-        <meta name="twitter:image" content="{{ asset('og-image.png') }}">
+        <meta name="twitter:image" content="{{ asset('og-image.png' . $assetV('og-image.png')) }}">
 
         {{--
             La clave '@context' se arma por concatenación a propósito: escrita
