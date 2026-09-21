@@ -1,74 +1,3 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>Radiografía {{ $empName }} — {{ $period->label }}</title>
-<script>window.__PDF_READY__ = true;</script>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; color: #1e293b; background: #fff; }
-/* Márgenes/pie de página reales los controla BrowsershotPdfRenderer — el @bottom-left/
-   @bottom-right de abajo era una extensión CSS de DomPDF (Paged Media), Chrome headless
-   la ignora; el footer con numeración ahora sale de Browsershot::footerHtml(). */
-@page { margin: 20mm 14mm 18mm 14mm; }
-
-/* ── Encabezado de marca ──────────────────────────────────────────────── */
-.cover { background: #0f172a; color: #fff; padding: 16px 20px; border-radius: 10px; margin-bottom: 14px; }
-.cover-mark { font-size: 20pt; font-weight: bold; letter-spacing: 1.5px; }
-.cover-mark span { color: #34d399; }
-.cover-sub { font-size: 10pt; color: #cbd5e1; text-transform: uppercase; letter-spacing: 2.5px; margin-top: 3px; }
-table.cover-meta { width: 100%; margin-top: 12px; border-collapse: collapse; }
-table.cover-meta td { padding: 3px 0; font-size: 8pt; color: #cbd5e1; vertical-align: top; }
-table.cover-meta td.label { width: 34%; color: #64748b; text-transform: uppercase; letter-spacing: .4px; font-size: 6.8pt; }
-table.cover-meta td.value { color: #fff; font-weight: bold; }
-
-/* ── Barra de sección ─────────────────────────────────────────────────── */
-.section-bar { background: #1f2937; color: #fff; padding: 7px 12px; font-size: 9.5pt; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; margin-top: 18px; margin-bottom: 9px; border-radius: 4px 4px 0 0; }
-.section-bar .tag { float: right; font-size: 6.8pt; font-weight: normal; color: #94a3b8; text-transform: none; letter-spacing: 0; }
-.section-bar.alt { background: #106A59; }
-.section-sub { font-size: 7.3pt; color: #64748b; margin: -5px 0 8px 0; font-style: italic; }
-.chart-wrap { margin: 6px 0 10px 0; padding: 8px 6px; border: 0.75pt solid #e2e8f0; border-radius: 6px; background: #fbfdff; }
-.avoid { page-break-inside: avoid; }
-.pagebreak { page-break-before: always; }
-.note { font-size: 7.3pt; color: #64748b; margin-top: 6px; font-style: italic; }
-.spacer { height: 8px; }
-
-/* ── Estado semántico (No aplica / No atribuible / Sin datos) ─────────── */
-.semantic-box { border: 0.75pt dashed #cbd5e1; background: #f8fafc; color: #64748b; font-size: 7.6pt; padding: 8px 10px; border-radius: 4px; text-align: center; font-style: italic; }
-
-/* ── KPI cards ─────────────────────────────────────────────────────────── */
-table.kpi-grid { width: 100%; border-collapse: separate; border-spacing: 5px; margin-top: 2px; }
-table.kpi-grid td.kpi { width: 25%; border: 0.75pt solid #d9e2ec; border-left: 3pt solid #106A59; background: #f8fafc; padding: 8px 10px; vertical-align: top; border-radius: 3px; }
-table.kpi-grid td.kpi.neg-accent { border-left-color: #b91c1c; }
-table.kpi-grid td.kpi.warn-accent { border-left-color: #b45309; }
-.kpi-label { font-size: 6.6pt; color: #64748b; font-weight: bold; text-transform: uppercase; letter-spacing: .6px; }
-.kpi-value { font-size: 12.5pt; font-weight: bold; color: #106A59; margin-top: 4px; }
-.kpi-value.neg { color: #b91c1c; }
-.kpi-value.warn { color: #b45309; }
-
-/* ── Tablas ────────────────────────────────────────────────────────────── */
-table.tbl { width: 100%; border-collapse: collapse; font-size: 7.8pt; }
-table.tbl thead th { background: #1f2937; color: #fff; font-weight: bold; text-align: left; padding: 5.5px 7px; border-bottom: 1px solid #1f2937; }
-table.tbl tbody td { padding: 4.5px 7px; border-bottom: 0.5pt solid #e2e8f0; vertical-align: top; }
-table.tbl tbody tr:nth-child(even) td { background: #f8fafc; }
-table.tbl tfoot td { background: #106A59; color: #fff; font-weight: bold; padding: 5.5px 7px; border-top: 1pt solid #0b4a3e; }
-table.tbl .r { text-align: right; }
-table.tbl .c { text-align: center; }
-table.tbl .b { font-weight: bold; }
-
-/* ── Resumen ejecutivo (2 columnas) ────────────────────────────────────── */
-table.exec-summary { width: 100%; border-collapse: collapse; font-size: 8pt; }
-table.exec-summary td { padding: 6px 8px; border-bottom: 0.5pt solid #e2e8f0; }
-table.exec-summary td.k { color: #475569; width: 60%; }
-table.exec-summary td.v { text-align: right; font-weight: bold; color: #0f172a; width: 40%; }
-table.exec-summary tr:nth-child(even) td { background: #f8fafc; }
-
-/* ── Badge categoría EBITDA ────────────────────────────────────────────── */
-.cat-badge { display: inline-block; padding: 5px 16px; border-radius: 14px; font-size: 10pt; font-weight: bold; letter-spacing: .5px; }
-</style>
-</head>
-<body>
-
 @php
 $fmt  = fn($v) => number_format((float)$v, 2);
 $fmt0 = fn($v) => '$' . number_format((float)$v, 0);
@@ -77,176 +6,152 @@ $fmtp = fn($v) => number_format((float)$v, 2) . '%';
 $catColors = $ebitdaCategoriaColors ?? ['bg' => 'FFF1F5F9', 'fg' => 'FF475569'];
 $catBg = '#' . substr($catColors['bg'], 2);
 $catFg = '#' . substr($catColors['fg'], 2);
-@endphp
 
-<div class="cover avoid">
-    <div class="cover-mark">MR <span>LANA</span></div>
-    <div class="cover-sub">Radiografía Financiera — Alcance Individual</div>
-    <table class="cover-meta">
-        <tr>
-            <td class="label">Colaborador / Gestor</td><td class="value">{{ $empName }}</td>
-            <td class="label">Periodo</td><td class="value">{{ strtoupper($period->label) }}</td>
-        </tr>
-        <tr>
-            <td class="label">Sucursal histórica</td><td class="value">{{ $empBranch }}</td>
-            <td class="label">Fecha de generación</td><td class="value">{{ $snap['generated_at'] ?? now()->format('d/m/Y H:i') }}</td>
-        </tr>
-    </table>
+$payrollDetail = $payrollDetail ?? null;
+$percepciones  = $payrollDetail['percepciones'] ?? [];
+$deducciones   = $payrollDetail['deducciones'] ?? [];
+
+// Reconciliación defensiva: si el desglose no suma contra el KPI del resumen, no
+// se muestra un desglose que lo contradiga (misma fuente que Web).
+$recSum = is_array($recoveryComponents ?? null) ? round(array_sum($recoveryComponents), 2) : null;
+$recReconciles = $recSum === null || abs($recSum - round($rec, 2)) <= 0.01;
+
+$rbpSum = !empty($recoveryByProduct) ? round(array_sum(array_column($recoveryByProduct, 'recuperacion')), 2) : null;
+$rbpReconciles = $rbpSum === null || abs($rbpSum - round($rec, 2)) <= 0.01;
+
+$placSum = !empty($placementsByProduct) ? round(array_sum(array_column($placementsByProduct, 'colocacion')), 2) : null;
+$placReconciles = $placSum === null || abs($placSum - round($coloc, 2)) <= 0.01;
+
+$recoveryComponentLabels = [
+    'capital' => 'Capital recuperado', 'interes' => 'Intereses', 'impuesto' => 'Impuestos',
+    'moratorios' => 'Moratorios', 'cargos_adicionales' => 'Cargos adicionales',
+    'cargos_inicio' => 'Cargos al inicio', 'comision_apertura' => 'Comisión por apertura',
+    'excedentes' => 'Excedentes recuperados', 'otros' => 'Otros',
+];
+@endphp
+<x-pdf.layout :title="'Radiografía ' . $empName . ' — ' . $period->label">
+
+<x-pdf.header
+    title="Radiografía financiera — gestor"
+    :subtitle="$empName"
+    :meta="[
+        'Sucursal histórica' => $empBranch,
+        'Periodo' => strtoupper($period->label),
+        'Generado' => $snap['generated_at'] ?? now()->format('d/m/Y H:i'),
+    ]"
+/>
+
+<x-pdf.section-title title="KPIs principales" />
+<div class="pdf-kpi-grid pdf-avoid">
+    <x-pdf.kpi-card label="Recuperación" :value="$fmt0($rec)" />
+    <x-pdf.kpi-card label="Colocación" :value="$fmt0($coloc)" />
+    <x-pdf.kpi-card label="Cartera" :value="$fmt0($cartera)" />
+    <x-pdf.kpi-card label="Cartera vencida" :value="$fmt0($vencida)" :tone="$mora > 25 ? 'negv' : ''" />
+    <x-pdf.kpi-card label="Mora %" :value="$fmtp($mora)" :tone="$mora > 25 ? 'negv' : ''" />
+    <x-pdf.kpi-card label="Gastos atribuibles" :value="$fmt0($gastos)" />
+    <x-pdf.kpi-card label="Nómina y Capital Humano" :value="$fmt0($neto)" />
+    <x-pdf.kpi-card label="EBITDA estimado" :value="$fmt0($utilidad)" :tone="$utilidad < 0 ? 'negv' : ''" />
+    <x-pdf.kpi-card label="Margen EBITDA" :value="$fmtp($margen ?? 0)" :tone="($margen ?? 0) < 0 ? 'negv' : ''" />
+    <x-pdf.kpi-card label="Percepciones" :value="$fmt0($payrollDetail['percepciones_total'] ?? 0)" />
+    <x-pdf.kpi-card label="Deducciones" :value="$fmt0($payrollDetail['deducciones_total'] ?? 0)" />
+    <x-pdf.kpi-card label="Operaciones" :value="$fmt0($ops)" />
 </div>
 
-<div class="section-bar">1. KPIs principales</div>
-<table class="kpi-grid avoid">
-    <tr>
-        <td class="kpi"><div class="kpi-label">Recuperación</div><div class="kpi-value">{{ $fmt0($rec) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Colocación</div><div class="kpi-value">{{ $fmt0($coloc) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Cartera</div><div class="kpi-value">{{ $fmt0($cartera) }}</div></td>
-        <td class="kpi @if($mora > 25) neg-accent @endif"><div class="kpi-label">Cartera vencida</div><div class="kpi-value @if($mora > 25) neg @endif">{{ $fmt0($vencida) }}</div></td>
-    </tr>
-    <tr>
-        <td class="kpi @if($mora > 25) neg-accent @endif"><div class="kpi-label">Mora %</div><div class="kpi-value @if($mora > 25) neg @endif">{{ $fmtp($mora) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Gastos atribuibles</div><div class="kpi-value">{{ $fmt0($gastos) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Nómina y Capital Humano</div><div class="kpi-value">{{ $fmt0($neto) }}</div></td>
-        <td class="kpi @if($utilidad < 0) neg-accent @endif"><div class="kpi-label">EBITDA estimado</div><div class="kpi-value @if($utilidad < 0) neg @endif">{{ $fmt0($utilidad) }}</div></td>
-    </tr>
-    <tr>
-        <td class="kpi"><div class="kpi-label">Margen EBITDA</div><div class="kpi-value @if(($margen ?? 0) < 0) neg @endif">{{ $fmtp($margen ?? 0) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Percepciones</div><div class="kpi-value">{{ $fmt0($payrollDetail['percepciones_total'] ?? 0) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Deducciones</div><div class="kpi-value">{{ $fmt0($payrollDetail['deducciones_total'] ?? 0) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Operaciones</div><div class="kpi-value">{{ $fmt0($ops) }}</div></td>
-    </tr>
-</table>
+<x-pdf.section-title title="Resumen ejecutivo" alt />
+<x-pdf.table>
+    <tr><td class="b">Recuperación total</td><td class="r">{{ $fmt2($rec) }}</td></tr>
+    <tr><td class="b">Colocación total</td><td class="r">{{ $fmt2($coloc) }}</td></tr>
+    <tr><td class="b">Cartera total</td><td class="r">{{ $fmt2($cartera) }}</td></tr>
+    <tr><td class="b">Cartera vencida</td><td class="r">{{ $fmt2($vencida) }}</td></tr>
+    <tr><td class="b">Índice de mora</td><td class="r">{{ $fmtp($mora) }}</td></tr>
+    <tr><td class="b">Gastos atribuibles</td><td class="r">{{ $fmt2($gastos) }}</td></tr>
+    <tr><td class="b">Nómina y Capital Humano (neto)</td><td class="r">{{ $fmt2($neto) }}</td></tr>
+    <tr><td class="b">Ingreso base EBITDA</td><td class="r">{{ $fmt2($ingresoBase) }}</td></tr>
+    <tr><td class="b">EBITDA</td><td class="r b">{{ $fmt2($utilidad) }}</td></tr>
+    <tr><td class="b">Margen EBITDA</td><td class="r b">{{ $fmtp($margen ?? 0) }}</td></tr>
+    <tr><td class="b">Excedente enviado a corporativo</td><td class="r"><span style="color:#94a3b8; font-style:italic;">No atribuible a nivel individual</span></td></tr>
+    <tr><td class="b">Fondeo entre sucursales</td><td class="r"><span style="color:#94a3b8; font-style:italic;">No atribuible a nivel individual</span></td></tr>
+</x-pdf.table>
 
-<div class="section-bar alt">2. Resumen ejecutivo</div>
-<table class="exec-summary avoid">
-    <tr><td class="k">Recuperación total</td><td class="v">{{ $fmt2($rec) }}</td></tr>
-    <tr><td class="k">Colocación total</td><td class="v">{{ $fmt2($coloc) }}</td></tr>
-    <tr><td class="k">Cartera total</td><td class="v">{{ $fmt2($cartera) }}</td></tr>
-    <tr><td class="k">Cartera vencida</td><td class="v">{{ $fmt2($vencida) }}</td></tr>
-    <tr><td class="k">Índice de mora</td><td class="v">{{ $fmtp($mora) }}</td></tr>
-    <tr><td class="k">Gastos atribuibles</td><td class="v">{{ $fmt2($gastos) }}</td></tr>
-    <tr><td class="k">Nómina y Capital Humano (neto)</td><td class="v">{{ $fmt2($neto) }}</td></tr>
-    <tr><td class="k">Ingreso base EBITDA</td><td class="v">{{ $fmt2($ingresoBase) }}</td></tr>
-    <tr><td class="k"><b>EBITDA</b></td><td class="v">{{ $fmt2($utilidad) }}</td></tr>
-    <tr><td class="k"><b>Margen EBITDA</b></td><td class="v">{{ $fmtp($margen ?? 0) }}</td></tr>
-    <tr><td class="k">Excedente enviado a corporativo</td><td class="v"><span style="color:#94a3b8; font-style:italic;">No atribuible a nivel individual</span></td></tr>
-    <tr><td class="k">Fondeo entre sucursales</td><td class="v"><span style="color:#94a3b8; font-style:italic;">No atribuible a nivel individual</span></td></tr>
-</table>
+<div class="pdf-charts-row">
+    @if(!empty($chartRecuperacionVsColocacion))
+    <div class="pdf-svg-chart">{!! $chartRecuperacionVsColocacion !!}</div>
+    @endif
+    @if(!empty($chartEbitda))
+    <div class="pdf-svg-chart">{!! $chartEbitda !!}</div>
+    @endif
+</div>
 
-@if(!empty($chartRecuperacionVsColocacion))
-<div class="chart-wrap avoid" style="margin-top:10px;">{!! $chartRecuperacionVsColocacion !!}</div>
-@endif
-@if(!empty($chartEbitda))
-<div class="chart-wrap avoid">{!! $chartEbitda !!}</div>
-@endif
-
-@php
-    $payrollDetail = $payrollDetail ?? null;
-    $percepciones  = $payrollDetail['percepciones'] ?? [];
-    $deducciones   = $payrollDetail['deducciones'] ?? [];
-
-    // Reconciliación defensiva: si el desglose no suma contra el KPI del resumen, no
-    // se muestra un desglose que lo contradiga (misma fuente que Web).
-    $recSum = is_array($recoveryComponents ?? null) ? round(array_sum($recoveryComponents), 2) : null;
-    $recReconciles = $recSum === null || abs($recSum - round($rec, 2)) <= 0.01;
-
-    $rbpSum = !empty($recoveryByProduct) ? round(array_sum(array_column($recoveryByProduct, 'recuperacion')), 2) : null;
-    $rbpReconciles = $rbpSum === null || abs($rbpSum - round($rec, 2)) <= 0.01;
-
-    $placSum = !empty($placementsByProduct) ? round(array_sum(array_column($placementsByProduct, 'colocacion')), 2) : null;
-    $placReconciles = $placSum === null || abs($placSum - round($coloc, 2)) <= 0.01;
-
-    $recoveryComponentLabels = [
-        'capital' => 'Capital recuperado', 'interes' => 'Intereses', 'impuesto' => 'Impuestos',
-        'moratorios' => 'Moratorios', 'cargos_adicionales' => 'Cargos adicionales',
-        'cargos_inicio' => 'Cargos al inicio', 'comision_apertura' => 'Comisión por apertura',
-        'excedentes' => 'Excedentes recuperados', 'otros' => 'Otros',
-    ];
-@endphp
-
-<div class="pagebreak"></div>
-
-<div class="section-bar">3. Recuperación<span class="tag">Componentes y desglose por producto</span></div>
-<div class="section-sub">Ingresos por cobranza atribuibles directamente a este colaborador en el periodo.</div>
+<x-pdf.section-title title="Recuperación" subtitle="Componentes y desglose por producto — atribuibles a este colaborador" />
 
 @if($recSum !== null)
     @if($recReconciles)
-    <table class="tbl avoid">
-        <thead><tr><th>Componente</th><th class="r">Monto</th></tr></thead>
-        <tbody>
-            @foreach($recoveryComponents as $key => $val)
-            <tr><td>{{ $recoveryComponentLabels[$key] ?? ucfirst(str_replace('_',' ',$key)) }}</td><td class="r">{{ $fmt2($val) }}</td></tr>
-            @endforeach
-        </tbody>
-        <tfoot><tr><td>Total recuperación</td><td class="r">{{ $fmt2($recSum) }}</td></tr></tfoot>
-    </table>
+    <x-pdf.table>
+        <x-slot:head><tr><th>Componente</th><th class="r">Monto</th></tr></x-slot:head>
+        @foreach($recoveryComponents as $key => $val)
+        <tr><td>{{ $recoveryComponentLabels[$key] ?? ucfirst(str_replace('_',' ',$key)) }}</td><td class="r">{{ $fmt2($val) }}</td></tr>
+        @endforeach
+        <x-slot:foot><tr><td>Total recuperación</td><td class="r">{{ $fmt2($recSum) }}</td></tr></x-slot:foot>
+    </x-pdf.table>
     @else
-    <div class="semantic-box">Desglose no disponible: no reconcilia contra la recuperación total del periodo.</div>
+    <x-pdf.empty-state message="Desglose no disponible: no reconcilia contra la recuperación total del periodo." />
     @endif
 @else
-<div class="semantic-box">Sin movimientos de recuperación para este colaborador en el periodo.</div>
+<x-pdf.empty-state message="Sin movimientos de recuperación para este colaborador en el periodo." />
 @endif
 
 @if(!empty($recoveryByProduct))
-<div style="height:10px"></div>
     @if($rbpReconciles)
-    <table class="tbl avoid">
-        <thead><tr><th>Producto</th><th class="r">Recuperación</th><th class="r">% del total</th></tr></thead>
-        <tbody>
-            @foreach($recoveryByProduct as $rp)
-            <tr>
-                <td>{{ $rp['producto'] ?? '—' }}</td>
-                <td class="r">{{ $fmt2($rp['recuperacion'] ?? 0) }}</td>
-                <td class="r">{{ $rec > 0 ? $fmtp((($rp['recuperacion'] ?? 0) / $rec) * 100) : '—' }}</td>
-            </tr>
-            @endforeach
-        </tbody>
-    </table>
+    <x-pdf.table>
+        <x-slot:head><tr><th>Producto</th><th class="r">Recuperación</th><th class="r">% del total</th></tr></x-slot:head>
+        @foreach($recoveryByProduct as $rp)
+        <tr>
+            <td>{{ $rp['producto'] ?? '—' }}</td>
+            <td class="r">{{ $fmt2($rp['recuperacion'] ?? 0) }}</td>
+            <td class="r">{{ $rec > 0 ? $fmtp((($rp['recuperacion'] ?? 0) / $rec) * 100) : '—' }}</td>
+        </tr>
+        @endforeach
+    </x-pdf.table>
     @if(!empty($chartRecuperacionPorProducto))
-    <div class="chart-wrap avoid">{!! $chartRecuperacionPorProducto !!}</div>
+    <div class="pdf-svg-chart">{!! $chartRecuperacionPorProducto !!}</div>
     @endif
     @else
-    <div class="semantic-box">Desglose por producto no disponible: no reconcilia contra la recuperación total.</div>
+    <x-pdf.empty-state message="Desglose por producto no disponible: no reconcilia contra la recuperación total." />
     @endif
 @endif
 
-<div class="section-bar alt">4. Colocación<span class="tag">Otorgamiento por producto</span></div>
+<x-pdf.section-title title="Colocación" subtitle="Otorgamiento por producto" alt />
 @if(!empty($placementsByProduct))
     @if($placReconciles)
-    <table class="tbl avoid">
-        <thead><tr><th>Producto</th><th class="c">Operaciones</th><th class="r">Colocación</th><th class="r">% del total</th></tr></thead>
-        <tbody>
-            @foreach($placementsByProduct as $pp)
-            <tr>
-                <td>{{ $pp['producto'] ?? '—' }}</td>
-                <td class="c">{{ number_format($pp['operaciones'] ?? 0) }}</td>
-                <td class="r">{{ $fmt2($pp['colocacion'] ?? 0) }}</td>
-                <td class="r">{{ $coloc > 0 ? $fmtp((($pp['colocacion'] ?? 0) / $coloc) * 100) : '—' }}</td>
-            </tr>
-            @endforeach
-        </tbody>
-        <tfoot><tr><td>Total</td><td class="c">{{ number_format($ops) }}</td><td class="r">{{ $fmt2($coloc) }}</td><td class="r">100.00%</td></tr></tfoot>
-    </table>
+    <x-pdf.table>
+        <x-slot:head><tr><th>Producto</th><th class="c">Operaciones</th><th class="r">Colocación</th><th class="r">% del total</th></tr></x-slot:head>
+        @foreach($placementsByProduct as $pp)
+        <tr>
+            <td>{{ $pp['producto'] ?? '—' }}</td>
+            <td class="c">{{ number_format($pp['operaciones'] ?? 0) }}</td>
+            <td class="r">{{ $fmt2($pp['colocacion'] ?? 0) }}</td>
+            <td class="r">{{ $coloc > 0 ? $fmtp((($pp['colocacion'] ?? 0) / $coloc) * 100) : '—' }}</td>
+        </tr>
+        @endforeach
+        <x-slot:foot><tr><td>Total</td><td class="c">{{ number_format($ops) }}</td><td class="r">{{ $fmt2($coloc) }}</td><td class="r">100.00%</td></tr></x-slot:foot>
+    </x-pdf.table>
     @if(!empty($chartColocacionPorProducto))
-    <div class="chart-wrap avoid">{!! $chartColocacionPorProducto !!}</div>
+    <div class="pdf-svg-chart">{!! $chartColocacionPorProducto !!}</div>
     @endif
     @else
-    <div class="semantic-box">Desglose por producto no disponible: no reconcilia contra la colocación total.</div>
+    <x-pdf.empty-state message="Desglose por producto no disponible: no reconcilia contra la colocación total." />
     @endif
 @else
-<div class="semantic-box">Sin colocación registrada para este colaborador en el periodo.</div>
+<x-pdf.empty-state message="Sin colocación registrada para este colaborador en el periodo." />
 @endif
 
-<div class="pagebreak"></div>
-
-<div class="section-bar">5. Cartera y mora<span class="tag">Distribución por antigüedad</span></div>
-<table class="kpi-grid avoid">
-    <tr>
-        <td class="kpi"><div class="kpi-label">Cartera total</div><div class="kpi-value">{{ $fmt0($cartera) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Cartera sana</div><div class="kpi-value">{{ $fmt0(max(0, $cartera - $vencida)) }}</div></td>
-        <td class="kpi neg-accent"><div class="kpi-label">Cartera vencida</div><div class="kpi-value neg">{{ $fmt0($vencida) }}</div></td>
-        <td class="kpi @if($mora > 25) neg-accent @endif"><div class="kpi-label">Mora %</div><div class="kpi-value @if($mora > 25) neg @endif">{{ $fmtp($mora) }}</div></td>
-    </tr>
-</table>
+<x-pdf.section-title title="Cartera y mora" subtitle="Distribución por antigüedad" />
+<div class="pdf-kpi-grid pdf-avoid">
+    <x-pdf.kpi-card label="Cartera total" :value="$fmt0($cartera)" />
+    <x-pdf.kpi-card label="Cartera sana" :value="$fmt0(max(0, $cartera - $vencida))" />
+    <x-pdf.kpi-card label="Cartera vencida" :value="$fmt0($vencida)" tone="negv" />
+    <x-pdf.kpi-card label="Mora %" :value="$fmtp($mora)" :tone="$mora > 25 ? 'negv' : ''" />
+</div>
 
 @if(!empty($moraBuckets))
 @php
@@ -261,174 +166,153 @@ $catFg = '#' . substr($catColors['fg'], 2);
         'mora_120_plus'  => 'Mora 120+',
     ];
 @endphp
-<table class="tbl avoid" style="margin-top:10px;">
-    <thead><tr><th>Bucket de antigüedad</th><th class="c">Contratos</th><th class="r">Monto</th><th class="r">% de cartera</th></tr></thead>
-    <tbody>
-        @foreach($moraBuckets as $bucketKey => $b)
-        <tr>
-            <td>{{ $b['label'] ?? ($moraLabels[$bucketKey] ?? $bucketKey) }}</td>
-            <td class="c">{{ number_format($b['contratos'] ?? 0) }}</td>
-            <td class="r">{{ $fmt2($b['monto'] ?? 0) }}</td>
-            <td class="r">{{ $cartera > 0 ? $fmtp((($b['monto'] ?? 0) / $cartera) * 100) : '—' }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
-@if(!empty($chartMoraPorBucket))
-<div class="chart-wrap avoid" style="margin-top:10px;">{!! $chartMoraPorBucket !!}</div>
-@endif
-@if(!empty($chartCarteraSanaVsVencida))
-<div class="chart-wrap avoid">{!! $chartCarteraSanaVsVencida !!}</div>
-@endif
+<x-pdf.table>
+    <x-slot:head><tr><th>Bucket de antigüedad</th><th class="c">Contratos</th><th class="r">Monto</th><th class="r">% de cartera</th></tr></x-slot:head>
+    @foreach($moraBuckets as $bucketKey => $b)
+    <tr>
+        <td>{{ $b['label'] ?? ($moraLabels[$bucketKey] ?? $bucketKey) }}</td>
+        <td class="c">{{ number_format($b['contratos'] ?? 0) }}</td>
+        <td class="r">{{ $fmt2($b['monto'] ?? 0) }}</td>
+        <td class="r">{{ $cartera > 0 ? $fmtp((($b['monto'] ?? 0) / $cartera) * 100) : '—' }}</td>
+    </tr>
+    @endforeach
+</x-pdf.table>
+<div class="pdf-charts-row">
+    @if(!empty($chartMoraPorBucket))
+    <div class="pdf-svg-chart">{!! $chartMoraPorBucket !!}</div>
+    @endif
+    @if(!empty($chartCarteraSanaVsVencida))
+    <div class="pdf-svg-chart">{!! $chartCarteraSanaVsVencida !!}</div>
+    @endif
+</div>
 @else
-<div class="semantic-box" style="margin-top:10px;">Sin cartera registrada para este colaborador en el periodo.</div>
+<x-pdf.empty-state message="Sin cartera registrada para este colaborador en el periodo." />
 @endif
 
-<div class="pagebreak"></div>
-
-<div class="section-bar">6. Nómina y Capital Humano<span class="tag">Percepciones, deducciones y neto</span></div>
-<table class="tbl avoid">
-    <thead><tr><th>Concepto</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        <tr><td>Pagos</td><td class="r">{{ $fmt2($pagos) }}</td></tr>
-        <tr><td>Bonos</td><td class="r">{{ $fmt2($bonos) }}</td></tr>
-        <tr><td>Descuentos</td><td class="r">{{ $fmt2($desctos) }}</td></tr>
-    </tbody>
-    <tfoot><tr><td>Nómina neta</td><td class="r">{{ $fmt2($neto) }}</td></tr></tfoot>
-</table>
+<x-pdf.section-title title="Nómina y Capital Humano" subtitle="Percepciones, deducciones y neto" />
+<x-pdf.table>
+    <x-slot:head><tr><th>Concepto</th><th class="r">Monto</th></tr></x-slot:head>
+    <tr><td>Pagos</td><td class="r">{{ $fmt2($pagos) }}</td></tr>
+    <tr><td>Bonos</td><td class="r">{{ $fmt2($bonos) }}</td></tr>
+    <tr><td>Descuentos</td><td class="r">{{ $fmt2($desctos) }}</td></tr>
+    <x-slot:foot><tr><td>Nómina neta</td><td class="r">{{ $fmt2($neto) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 
 @if($percepciones || $deducciones)
-<div style="height:10px"></div>
-<table class="tbl avoid">
-    <thead><tr><th>Concepto</th><th class="c">Tipo</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        @foreach($percepciones as $p)
-        <tr><td>{{ $p['concepto'] }}</td><td class="c">Percepción</td><td class="r">{{ $fmt2($p['monto']) }}</td></tr>
-        @endforeach
-        @foreach($deducciones as $d)
-        <tr><td>{{ $d['concepto'] }}</td><td class="c">Deducción</td><td class="r">{{ $fmt2($d['monto']) }}</td></tr>
-        @endforeach
-    </tbody>
-    <tfoot>
+<x-pdf.table>
+    <x-slot:head><tr><th>Concepto</th><th class="c">Tipo</th><th class="r">Monto</th></tr></x-slot:head>
+    @foreach($percepciones as $p)
+    <tr><td>{{ $p['concepto'] }}</td><td class="c">Percepción</td><td class="r">{{ $fmt2($p['monto']) }}</td></tr>
+    @endforeach
+    @foreach($deducciones as $d)
+    <tr><td>{{ $d['concepto'] }}</td><td class="c">Deducción</td><td class="r">{{ $fmt2($d['monto']) }}</td></tr>
+    @endforeach
+    <x-slot:foot>
         <tr><td colspan="2">Percepciones totales</td><td class="r">{{ $fmt2($payrollDetail['percepciones_total'] ?? 0) }}</td></tr>
         <tr><td colspan="2">Deducciones totales</td><td class="r">{{ $fmt2($payrollDetail['deducciones_total'] ?? 0) }}</td></tr>
-    </tfoot>
-</table>
+    </x-slot:foot>
+</x-pdf.table>
 @if(!empty($chartNominaComposicion))
-<div class="chart-wrap avoid">{!! $chartNominaComposicion !!}</div>
+<div class="pdf-svg-chart">{!! $chartNominaComposicion !!}</div>
 @endif
 @endif
 
-<div class="section-bar alt">7. Gastos atribuibles / OPEX</div>
-<div class="section-sub">Dos fuentes que se SUMAN — nunca una reemplaza a la otra: (A) gastos oficiales ya atribuidos a este colaborador (Observación/Justificación del reporte de Gastos, nunca gasto de sucursal repartido arbitrariamente), y (B) el ajuste manual capturado en la configuración de este reporte.</div>
+<x-pdf.section-title title="Gastos atribuibles / OPEX" alt />
+<div class="pdf-note" style="margin-top:0;">Dos fuentes que se SUMAN — nunca una reemplaza a la otra: (A) gastos oficiales ya atribuidos a este colaborador (Observación/Justificación del reporte de Gastos, nunca gasto de sucursal repartido arbitrariamente), y (B) el ajuste manual capturado en la configuración de este reporte.</div>
 @if(!empty($expenseDetail['automatic_items']))
-<table class="tbl avoid">
-    <thead><tr><th>Concepto</th><th class="c">Fuente</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        @foreach($expenseDetail['automatic_items'] as $item)
-        <tr><td>{{ $item['concept'] }}</td><td class="c">Gasto Lendus atribuido</td><td class="r">{{ $fmt2($item['amount']) }}</td></tr>
-        @endforeach
-    </tbody>
-    <tfoot><tr><td colspan="2">OPEX detectado (automático)</td><td class="r">{{ $fmt2($expenseDetail['automatic_total']) }}</td></tr></tfoot>
-</table>
+<x-pdf.table>
+    <x-slot:head><tr><th>Concepto</th><th class="c">Fuente</th><th class="r">Monto</th></tr></x-slot:head>
+    @foreach($expenseDetail['automatic_items'] as $item)
+    <tr><td>{{ $item['concept'] }}</td><td class="c">Gasto Lendus atribuido</td><td class="r">{{ $fmt2($item['amount']) }}</td></tr>
+    @endforeach
+    <x-slot:foot><tr><td colspan="2">OPEX detectado (automático)</td><td class="r">{{ $fmt2($expenseDetail['automatic_total']) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 @endif
 @if($expenseDetail['manual_total'] > 0)
-<div style="height:6px"></div>
-<table class="tbl avoid">
-    <thead><tr><th>Notas</th><th class="c">Fuente</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        <tr><td>{{ $expenseDetail['manual_notes'] ?: 'Sin observación' }}</td><td class="c">Ajuste manual del reporte</td><td class="r">{{ $fmt2($expenseDetail['manual_total']) }}</td></tr>
-    </tbody>
-    <tfoot><tr><td colspan="2">Gasto adicional (manual)</td><td class="r">{{ $fmt2($expenseDetail['manual_total']) }}</td></tr></tfoot>
-</table>
+<x-pdf.table>
+    <x-slot:head><tr><th>Notas</th><th class="c">Fuente</th><th class="r">Monto</th></tr></x-slot:head>
+    <tr><td>{{ $expenseDetail['manual_notes'] ?: 'Sin observación' }}</td><td class="c">Ajuste manual del reporte</td><td class="r">{{ $fmt2($expenseDetail['manual_total']) }}</td></tr>
+    <x-slot:foot><tr><td colspan="2">Gasto adicional (manual)</td><td class="r">{{ $fmt2($expenseDetail['manual_total']) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 @endif
 @if($gastos > 0)
-<table class="exec-summary avoid">
-    <tr><td class="k"><b>OPEX total gestor</b></td><td class="v">{{ $fmt2($gastos) }}</td></tr>
-</table>
+<x-pdf.table>
+    <tr><td class="b">OPEX total gestor</td><td class="r b">{{ $fmt2($gastos) }}</td></tr>
+</x-pdf.table>
 @else
-<div class="semantic-box">Sin gastos atribuibles a este colaborador en el periodo.</div>
+<x-pdf.empty-state message="Sin gastos atribuibles a este colaborador en el periodo." />
 @endif
 
-<div class="pagebreak"></div>
+<x-pdf.section-title title="EBITDA" subtitle="Ingreso base − Gastos totales" />
+<x-pdf.table>
+    <tr><td class="b">Ingreso base EBITDA</td><td class="r">{{ $fmt2($ingresoBase) }}</td></tr>
+    <tr><td class="b">Gastos atribuibles</td><td class="r">{{ $fmt2($gastos) }}</td></tr>
+    <tr><td class="b">Nómina y Capital Humano (neto)</td><td class="r">{{ $fmt2($neto) }}</td></tr>
+    <tr><td class="b">Gastos totales (Gastos + Nómina neta)</td><td class="r">{{ $fmt2($gastos + $neto) }}</td></tr>
+    <tr><td class="b">EBITDA</td><td class="r b">{{ $fmt2($utilidad) }}</td></tr>
+    <tr><td class="b">Margen EBITDA</td><td class="r b">{{ $fmtp($margen ?? 0) }}</td></tr>
+</x-pdf.table>
+<div class="pdf-note">Fórmula: EBITDA = Ingreso base EBITDA - (Gastos atribuibles + Nómina neta). El capital recuperado NO se cuenta como ingreso EBITDA.</div>
 
-<div class="section-bar">8. EBITDA<span class="tag">Ingreso base - Gastos totales</span></div>
-<table class="exec-summary avoid">
-    <tr><td class="k">Ingreso base EBITDA</td><td class="v">{{ $fmt2($ingresoBase) }}</td></tr>
-    <tr><td class="k">Gastos atribuibles</td><td class="v">{{ $fmt2($gastos) }}</td></tr>
-    <tr><td class="k">Nómina y Capital Humano (neto)</td><td class="v">{{ $fmt2($neto) }}</td></tr>
-    <tr><td class="k">Gastos totales (Gastos + Nómina neta)</td><td class="v">{{ $fmt2($gastos + $neto) }}</td></tr>
-    <tr><td class="k"><b>EBITDA</b></td><td class="v">{{ $fmt2($utilidad) }}</td></tr>
-    <tr><td class="k"><b>Margen EBITDA</b></td><td class="v">{{ $fmtp($margen ?? 0) }}</td></tr>
-</table>
-<div class="note">Fórmula: EBITDA = Ingreso base EBITDA - (Gastos atribuibles + Nómina neta). El capital recuperado NO se cuenta como ingreso EBITDA.</div>
-
-<div style="height:14px"></div>
-<div style="text-align:center;">
-    <div class="kpi-label" style="margin-bottom:6px;">CATEGORÍA EBITDA DEL COLABORADOR</div>
-    <span class="cat-badge" style="background:{{ $catBg }}; color:{{ $catFg }};">{{ $ebitdaCategoria ?? 'MANTENIDO' }}</span>
+<div style="text-align:center; margin-top:12px;" class="pdf-avoid">
+    <div class="pdf-note" style="margin-bottom:6px;">CATEGORÍA EBITDA DEL COLABORADOR</div>
+    <span class="pdf-big-badge" style="background:{{ $catBg }}; color:{{ $catFg }};">{{ $ebitdaCategoria ?? 'MANTENIDO' }}</span>
 </div>
 
-@if(!empty($chartEfectividad) || true)
-<div class="section-bar alt" style="margin-top:18px;">9. Efectividad de cobranza</div>
-@endif
+<x-pdf.section-title title="Efectividad de cobranza" alt />
 @if(!empty($efectividad))
 @php($ef = $efectividad['efectividad'] ?? null)
 @if($ef)
-<div style="text-align:center; margin-bottom:10px;">
-    <div class="kpi-label" style="margin-bottom:4px;">EFECTIVIDAD DE COBRANZA</div>
-    <span class="cat-badge" style="background:{{ $ef['efectividad_pct'] === null ? '#e2e8f0' : ($ef['efectividad_pct'] >= 100 ? '#dcfce7' : ($ef['efectividad_pct'] >= 50 ? '#fef3c7' : '#fee2e2')) }}; color:{{ $ef['efectividad_pct'] === null ? '#475569' : ($ef['efectividad_pct'] >= 100 ? '#15803d' : ($ef['efectividad_pct'] >= 50 ? '#92400e' : '#b91c1c')) }};">
+<div style="text-align:center; margin-bottom:10px;" class="pdf-avoid">
+    <div class="pdf-note" style="margin-bottom:4px;">EFECTIVIDAD DE COBRANZA</div>
+    <span class="pdf-big-badge" style="background:{{ $ef['efectividad_pct'] === null ? '#e2e8f0' : ($ef['efectividad_pct'] >= 100 ? '#dcfce7' : ($ef['efectividad_pct'] >= 50 ? '#fef3c7' : '#fee2e2')) }}; color:{{ $ef['efectividad_pct'] === null ? '#475569' : ($ef['efectividad_pct'] >= 100 ? '#15803d' : ($ef['efectividad_pct'] >= 50 ? '#92400e' : '#b91c1c')) }};">
         {{ $ef['efectividad_pct'] !== null ? number_format($ef['efectividad_pct'], 1) . '%' : 'N/D' }}
     </span>
-    <div style="font-size:9px; color:#64748b; margin-top:4px;">
+    <div style="font-size:7.3pt; color:#64748b; margin-top:4px;">
         Recuperado de mora ({{ $fmt2($ef['recuperado_de_mora']) }}) ÷ cartera en mora al cierre de
         {{ $ef['periodo_anterior_label'] ?? 'periodo anterior' }}
         ({{ $ef['cartera_mora_periodo_anterior'] !== null ? $fmt2($ef['cartera_mora_periodo_anterior']) : 'sin datos' }})
     </div>
 </div>
 @endif
-<table class="tbl avoid">
-    <thead><tr><th>Estatus</th><th class="c">Contratos</th><th class="r">Capital</th><th class="r">Interés</th><th class="r">Impuesto</th><th class="r">Moratorios</th><th class="r">Total</th></tr></thead>
-    <tbody>
-        @foreach(['vigente' => 'Vigente', 'atrasado' => 'Atrasado', 'vencido' => 'Vencido'] as $key => $label)
-        @php($e = $efectividad[$key] ?? null)
-        @if($e)
-        <tr>
-            <td>{{ $label }}</td><td class="c">{{ number_format($e['contratos']) }}</td>
-            <td class="r">{{ $fmt2($e['capital']) }}</td><td class="r">{{ $fmt2($e['interes']) }}</td>
-            <td class="r">{{ $fmt2($e['impuesto']) }}</td><td class="r">{{ $fmt2($e['moratorios']) }}</td>
-            <td class="r">{{ $fmt2($e['total']) }}</td>
-        </tr>
-        @endif
-        @endforeach
-    </tbody>
+<x-pdf.table>
+    <x-slot:head><tr><th>Estatus</th><th class="c">Contratos</th><th class="r">Capital</th><th class="r">Interés</th><th class="r">Impuesto</th><th class="r">Moratorios</th><th class="r">Total</th></tr></x-slot:head>
+    @foreach(['vigente' => 'Vigente', 'atrasado' => 'Atrasado', 'vencido' => 'Vencido'] as $key => $label)
+    @php($e = $efectividad[$key] ?? null)
+    @if($e)
+    <tr>
+        <td>{{ $label }}</td><td class="c">{{ number_format($e['contratos']) }}</td>
+        <td class="r">{{ $fmt2($e['capital']) }}</td><td class="r">{{ $fmt2($e['interes']) }}</td>
+        <td class="r">{{ $fmt2($e['impuesto']) }}</td><td class="r">{{ $fmt2($e['moratorios']) }}</td>
+        <td class="r">{{ $fmt2($e['total']) }}</td>
+    </tr>
+    @endif
+    @endforeach
     @if(!empty($efectividad['total']))
-    <tfoot>
+    <x-slot:foot>
         <tr>
             <td>Total</td><td class="c">{{ number_format($efectividad['total']['contratos']) }}</td>
             <td class="r">{{ $fmt2($efectividad['total']['capital']) }}</td><td class="r">{{ $fmt2($efectividad['total']['interes']) }}</td>
             <td class="r">{{ $fmt2($efectividad['total']['impuesto']) }}</td><td class="r">{{ $fmt2($efectividad['total']['moratorios']) }}</td>
             <td class="r">{{ $fmt2($efectividad['total']['total']) }}</td>
         </tr>
-    </tfoot>
+    </x-slot:foot>
     @endif
-</table>
+</x-pdf.table>
 @if(!empty($chartEfectividad))
-<div class="chart-wrap avoid">{!! $chartEfectividad !!}</div>
+<div class="pdf-svg-chart">{!! $chartEfectividad !!}</div>
 @endif
 @else
-<div class="semantic-box">Sin datos de efectividad de cobranza para este colaborador en el periodo.</div>
+<x-pdf.empty-state message="Sin datos de efectividad de cobranza para este colaborador en el periodo." />
 @endif
 
-<div class="section-bar alt" style="margin-top:18px;">10. Notas y aclaraciones</div>
-<table class="tbl avoid">
-    <tbody>
-        <tr><td style="width:22%;"><b>No atribuible</b></td><td>Dato que existe a nivel corporativo/sucursal pero que, por definición, no puede repartirse a un colaborador individual (excedentes, fondeo entre sucursales, rotación general).</td></tr>
-        <tr><td><b>No aplica</b></td><td>Sección que no tiene sentido para este alcance (ej. comparativo de periodos cuando el reporte es simple).</td></tr>
-        <tr><td><b>Sin datos</b></td><td>El colaborador no tuvo movimiento real en esa sección durante el periodo — es un cero real, no un error.</td></tr>
-    </tbody>
-</table>
-<div class="note">Este documento se generó a partir del mismo snapshot canónico que la vista Web y el Excel de este periodo y alcance — ningún valor se recalculó de forma independiente para este PDF.</div>
+<x-pdf.section-title title="Notas y aclaraciones" alt />
+<x-pdf.table>
+    <tr><td style="width:22%;" class="b">No atribuible</td><td>Dato que existe a nivel corporativo/sucursal pero que, por definición, no puede repartirse a un colaborador individual (excedentes, fondeo entre sucursales, rotación general).</td></tr>
+    <tr><td class="b">No aplica</td><td>Sección que no tiene sentido para este alcance (ej. comparativo de periodos cuando el reporte es simple).</td></tr>
+    <tr><td class="b">Sin datos</td><td>El colaborador no tuvo movimiento real en esa sección durante el periodo — es un cero real, no un error.</td></tr>
+</x-pdf.table>
 
-</body>
-</html>
+<div class="pdf-footnote">Este documento se generó a partir del mismo snapshot canónico que la vista Web y el Excel de este periodo y alcance — ningún valor se recalculó de forma independiente para este PDF.</div>
+
+</x-pdf.layout>

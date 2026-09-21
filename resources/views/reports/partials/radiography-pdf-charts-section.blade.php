@@ -1,83 +1,24 @@
-<!-- Página de gráficas ejecutivas (Chart.js, renderizado real vía Chrome headless) —
-     incluida DENTRO del mismo documento del PDF general (un solo render Browsershot,
-     sin fusión de PDFs vía FPDI). Estilos/selectores van con prefijo .pdf-charts para
-     no chocar con las clases .brand/.header/.card ya usadas por el resto del reporte. -->
-<style>
-.pdf-charts .page { page-break-after: always; }
-.pdf-charts .page:last-child { page-break-after: auto; }
-.pdf-charts .header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding-bottom: 10px; margin-bottom: 16px; border-bottom: 2px solid #1f2937;
-}
-.pdf-charts .brand { font-size: 15pt; font-weight: 700; color: #106A59; letter-spacing: .5px; }
-.pdf-charts .subtitle { font-size: 9.5pt; color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; }
-.pdf-charts .grid2 { display: flex; gap: 16px; margin-bottom: 16px; }
-.pdf-charts .card {
-    flex: 1; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;
-    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-}
-.pdf-charts .card h3 {
-    font-size: 10pt; color: #1f2937; text-transform: uppercase; letter-spacing: .4px;
-    margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #e2e8f0;
-}
-.pdf-charts .card canvas { width: 100% !important; }
-.pdf-charts .card.full { flex: none; width: 100%; }
-.pdf-charts .footer-note { margin-top: 10px; font-size: 7.5pt; color: #94a3b8; text-align: center; }
-</style>
-
-<div class="pdf-charts">
-
-<div class="page">
-    <div class="header">
-        <div class="brand">MR LANA — Radiografía Financiera</div>
-        <div class="subtitle">{{ strtoupper($period->label) }} · Gráficas ejecutivas</div>
-    </div>
-
-    <div class="grid2">
-        <div class="card">
-            <h3>Categoría EBITDA por sucursal</h3>
-            <canvas id="chartCategorias" height="220"></canvas>
-        </div>
-        <div class="card">
-            <h3>Cartera vencida por antigüedad (mora)</h3>
-            <canvas id="chartMora" height="220"></canvas>
-        </div>
-    </div>
-
-    <div class="grid2">
-        <div class="card full">
-            <h3>Top conceptos de gasto operativo</h3>
-            <canvas id="chartGastos" height="200"></canvas>
-        </div>
-    </div>
-
-    <div class="footer-note">Generado automáticamente — Radiografía Financiera MR LANA · {{ $period->label }}</div>
+{{-- Gráficas ejecutivas (Chart.js, renderizado real vía Chrome headless) — incluidas
+     DENTRO del mismo documento del PDF general (un solo render Browsershot, sin fusión
+     de PDFs vía FPDI). Reutiliza el sistema visual compartido (x-pdf.*) — retoma
+     21-sep-2026, Parte B. --}}
+<x-pdf.section-title title="Gráficas ejecutivas" :subtitle="strtoupper($period->label)" />
+<div class="pdf-charts-row">
+    <x-pdf.chart-card title="Categoría EBITDA por sucursal" chart-id="chartCategorias" :height="200" />
+    <x-pdf.chart-card title="Cartera vencida por antigüedad (mora)" chart-id="chartMora" :height="200" />
+</div>
+<div class="pdf-avoid" style="border: 0.75pt solid #e2e8f0; border-radius: 8px; padding: 10px 12px; background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%); margin-bottom: 10px;">
+    <h3 style="font-size:8.3pt; color:#1f2937; text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px; padding-bottom:5px; border-bottom:0.5pt solid #e2e8f0;">Top conceptos de gasto operativo</h3>
+    <canvas id="chartGastos" height="180"></canvas>
 </div>
 
-<div class="page">
-    <div class="header">
-        <div class="brand">MR LANA — Radiografía Financiera</div>
-        <div class="subtitle">{{ strtoupper($period->label) }} · EBITDA por sucursal</div>
-    </div>
-
-    <div class="grid2">
-        <div class="card full">
-            <h3>EBITDA por sucursal</h3>
-            <canvas id="chartEbitdaSucursal" height="260"></canvas>
-        </div>
-    </div>
-
-    <div class="grid2">
-        <div class="card full">
-            <h3>Colocación vs. recuperación por sucursal</h3>
-            <canvas id="chartColocRec" height="260"></canvas>
-        </div>
-    </div>
-
-    <div class="footer-note">Generado automáticamente — Radiografía Financiera MR LANA · {{ $period->label }}</div>
+<x-pdf.section-title title="EBITDA por sucursal" alt />
+<div class="pdf-avoid" style="border: 0.75pt solid #e2e8f0; border-radius: 8px; padding: 10px 12px; background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%); margin-bottom: 10px;">
+    <canvas id="chartEbitdaSucursal" height="220"></canvas>
 </div>
-
+<div class="pdf-avoid" style="border: 0.75pt solid #e2e8f0; border-radius: 8px; padding: 10px 12px; background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);">
+    <h3 style="font-size:8.3pt; color:#1f2937; text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px; padding-bottom:5px; border-bottom:0.5pt solid #e2e8f0;">Colocación vs. recuperación por sucursal</h3>
+    <canvas id="chartColocRec" height="220"></canvas>
 </div>
 
 <script>window.__PDF_READY__ = false;</script>

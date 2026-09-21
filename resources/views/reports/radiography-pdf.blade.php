@@ -1,107 +1,12 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>Radiografía {{ $period->label }}</title>
-<script>window.__PDF_READY__ = true;</script>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; color: #1e293b; background: #fff; }
-/* Márgenes reales los controla BrowsershotPdfRenderer (Browsershot::margins()) —
-   @page aquí es solo referencia visual, Chrome headless la ignora al imprimir. */
-@page { margin: 18mm 14mm 22mm 14mm; }
-
-/* ── Identidad / encabezado ─────────────────────────────────────────────── */
-.brand { text-align: center; padding-bottom: 10px; margin-bottom: 14px; border-bottom: 2px solid #1f2937; }
-.brand-mark { font-size: 19pt; font-weight: bold; letter-spacing: 1px; color: #106A59; }
-.brand-sub  { font-size: 9.5pt; color: #334155; text-transform: uppercase; letter-spacing: 2px; margin-top: 2px; }
-.brand-meta { font-size: 8pt; color: #64748b; margin-top: 8px; }
-.brand-meta b { color: #1e293b; }
-
-/* ── Barra de sección (gris oscuro, como el PDF de referencia) ───────────── */
-.section-bar {
-    background: #1f2937; color: #fff;
-    padding: 6px 10px; font-size: 9pt; font-weight: bold;
-    letter-spacing: .3px; text-transform: uppercase;
-    margin-top: 16px; margin-bottom: 8px;
-}
-.section-bar.alt { background: #334155; }
-.block { margin-bottom: 4px; }
-.avoid { page-break-inside: avoid; }
-.pagebreak { page-break-before: always; }
-.note { font-size: 7.3pt; color: #64748b; margin-top: 5px; font-style: italic; }
-.spacer { height: 10px; }
-
-/* ── Layout de 2 columnas (tabla — DomPDF no soporta CSS grid/flex) ───────── */
-table.layout2 { width: 100%; border-collapse: collapse; }
-table.layout2 > tr > td { width: 50%; vertical-align: top; padding: 0; }
-table.layout2 > tr > td.colL { padding-right: 8px; }
-table.layout2 > tr > td.colR { padding-left: 8px; }
-
-/* ── KPI cards ─────────────────────────────────────────────────────────── */
-table.kpi-grid { width: 100%; border-collapse: separate; border-spacing: 4px; margin-top: 4px; }
-table.kpi-grid td.kpi {
-    width: 25%; border: 0.75pt solid #d9e2ec; background: #f8fafc;
-    padding: 7px 9px; vertical-align: top;
-}
-.kpi-label { font-size: 6.8pt; color: #64748b; font-weight: bold; text-transform: uppercase; letter-spacing: .6px; }
-.kpi-value { font-size: 11.5pt; font-weight: bold; color: #106A59; margin-top: 3px; }
-.kpi-value.neg  { color: #b91c1c; }
-.kpi-value.warn { color: #b45309; }
-
-/* ── Tablas compactas ──────────────────────────────────────────────────── */
-table.tbl { width: 100%; border-collapse: collapse; font-size: 7.8pt; }
-table.tbl thead th {
-    background: #1f2937; color: #fff; font-weight: bold; text-align: left;
-    padding: 5px 6px; border-bottom: 1px solid #1f2937;
-}
-table.tbl tbody td { padding: 4px 6px; border-bottom: 0.5pt solid #e2e8f0; vertical-align: top; }
-table.tbl tbody tr:nth-child(even) td { background: #f8fafc; }
-table.tbl tfoot td {
-    background: #1f2937; color: #fff; font-weight: bold;
-    padding: 5px 6px; border-top: 1pt solid #0f172a;
-}
-table.tbl .r { text-align: right; }
-table.tbl .c { text-align: center; }
-table.tbl .b { font-weight: bold; }
-
-/* ── Badges de categoría EBITDA ────────────────────────────────────────── */
-.badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 7.3pt; font-weight: bold; }
-.badge-senior    { background: #d1fae5; color: #065f46; }
-.badge-junior    { background: #fef3c7; color: #92400e; }
-.badge-mantenido { background: #fee2e2; color: #b91c1c; }
-
-/* ── Barras HTML simples (gris claro + relleno proporcional) ──────────────── */
-.bar-row { margin-bottom: 6px; }
-.bar-label { font-size: 7.6pt; color: #334155; margin-bottom: 2px; }
-.bar-track { background: #e7ecf1; width: 100%; height: 11px; border-radius: 2px; }
-.bar-fill  { height: 11px; border-radius: 2px; display: block; min-width: 2px; }
-.bar-fill-teal  { background: #106A59; }
-.bar-fill-blue  { background: #5B9BD5; }
-.bar-fill-red   { background: #b91c1c; }
-.bar-value { font-size: 7.3pt; color: #475569; margin-top: 1px; text-align: right; }
-
-/* ── Alerta / inconsistencia ───────────────────────────────────────────── */
-.alert-box {
-    background: #fef2f2; border: 0.75pt solid #fecaca; color: #991b1b;
-    font-size: 7.6pt; font-weight: bold; padding: 6px 8px; margin-top: 6px;
-}
-.ok-box {
-    background: #ecfdf5; border: 0.75pt solid #a7f3d0; color: #065f46;
-    font-size: 7.6pt; padding: 6px 8px; margin-top: 6px;
-}
-</style>
-</head>
-<body>
-
 @php
+use App\Services\Radiography\RadiographyMetricToneHelper as Tone;
+
 $snap = $snapshot;
 $sum  = $snap['summary'];
 $fmt  = fn($v) => '$' . number_format((float)$v, 2);
 $fmt0 = fn($v) => '$' . number_format((float)$v, 0);
 $fmtp = fn($v) => number_format((float)$v, 2) . '%';
 $fmtn = fn($v) => number_format((float)$v, 0);
-$cat  = fn($c) => match($c) { 'SENIOR' => 'badge-senior', 'JUNIOR' => 'badge-junior', default => 'badge-mantenido' };
 
 // ── Branch radiography — única fuente de verdad ──────────────────────────────
 $brCalc     = $snap['branch_radiography'] ?? null;
@@ -300,152 +205,120 @@ ksort($activeLoansByBranch);
 $alTotalCount   = array_sum(array_column($activeLoansByBranch, 'count'));
 $alTotalSaldo   = array_sum(array_column($activeLoansByBranch, 'saldo'));
 $alTotalVencido = array_sum(array_column($activeLoansByBranch, 'vencido'));
-@endphp
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 1 — RESUMEN EJECUTIVO
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div class="brand">
-    <div class="brand-mark">MR LANA</div>
-    <div class="brand-sub">Radiografía Financiera</div>
-    <div class="brand-meta">
-        <b>Periodo:</b> {{ strtoupper($period->label) }}
-        &nbsp;&nbsp;·&nbsp;&nbsp;
-        <b>Fecha de generación:</b> {{ $snap['generated_at'] }}
-    </div>
-    @if(!empty($snap['period']['composite']))
-    <div class="brand-meta" style="margin-top:2px;">
-        <b>{{ $snap['period']['composite']['component_range'] }}</b>
-        &nbsp;&nbsp;·&nbsp;&nbsp;
-        Periodo: {{ $snap['period']['composite']['week_range'] }}
-        &nbsp;&nbsp;·&nbsp;&nbsp;
-        Rango: {{ $snap['period']['composite']['date_start'] }} → {{ $snap['period']['composite']['date_end'] }}
-    </div>
-    @endif
+// ── Rotación de personal ───────────────────────────────────────────────────────
+$rot       = $snap['sections']['rotation'] ?? [];
+$rotDetail = $snap['sections']['rotation_detail'] ?? [];
+$rotPrevCount = (float)($rot['prev_count'] ?? 0);
+$rotCurrCount = (float)($rot['current_count'] ?? ($rot['promedio'] ?? 0));
+$rotVariacion = (float)($rot['variacion_neta'] ?? ($rotCurrCount - $rotPrevCount));
+$rotPrevMes   = $rot['prev_mes'] ?? null;
+$rotPorSucursal = $rot['por_sucursal'] ?? [];
+
+$manualApplied = $snapshot['summary']['manual_adjustment_applied'] ?? null;
+@endphp
+<x-pdf.layout :title="'Radiografía ' . $period->label" :ready-immediately="empty($executiveCharts)">
+
+<x-pdf.header
+    title="Radiografía financiera"
+    :subtitle="!empty($snap['period']['composite']) ? ($snap['period']['composite']['week_range'] . ' · ' . $snap['period']['composite']['date_start'] . ' → ' . $snap['period']['composite']['date_end']) : null"
+    :meta="array_filter([
+        'Periodo' => strtoupper($period->label),
+        'Rango' => $snap['period']['composite']['component_range'] ?? null,
+        'Generado' => $snap['generated_at'],
+    ])"
+/>
+
+<div class="pdf-kpi-grid pdf-avoid">
+    <x-pdf.kpi-card label="Utilidad bruta" :value="$fmt0($ingresoEbitdaBase)" />
+    <x-pdf.kpi-card label="Gastos Totales" :value="$fmt0($gastosTotal)" />
+    <x-pdf.kpi-card label="EBITDA" :value="$fmt0($utilidad)" :tone="$utilidad < 0 ? 'negv' : ''" />
+    <x-pdf.kpi-card label="Margen EBITDA" :value="$fmtp($margenEbitda)" :tone="$margenEbitda < 0 ? 'negv' : ''" />
+    <x-pdf.kpi-card label="OPEX" :value="$fmt0($gastosOpTotal)" />
+    <x-pdf.kpi-card label="Nómina y Capital Humano" :value="$fmt0($nomTotal)" />
+    <x-pdf.kpi-card label="Cartera" :value="$fmt0($cartera)" />
+    <x-pdf.kpi-card label="Mora %" :value="$fmtp($moraPct)" :tone="$moraPct > 25 ? 'negv' : ''" />
 </div>
 
-<table class="kpi-grid avoid">
-    <tr>
-        <td class="kpi"><div class="kpi-label">Utilidad bruta</div><div class="kpi-value">{{ $fmt0($ingresoEbitdaBase) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Gastos Totales</div><div class="kpi-value">{{ $fmt0($gastosTotal) }}</div></td>
-        <td class="kpi"><div class="kpi-label">EBITDA</div><div class="kpi-value @if($utilidad < 0) neg @endif">{{ $fmt0($utilidad) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Margen EBITDA</div><div class="kpi-value @if($margenEbitda < 0) neg @endif">{{ $fmtp($margenEbitda) }}</div></td>
-    </tr>
-    <tr>
-        <td class="kpi"><div class="kpi-label">OPEX</div><div class="kpi-value">{{ $fmt0($gastosOpTotal) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Nómina y Capital Humano</div><div class="kpi-value">{{ $fmt0($nomTotal) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Cartera</div><div class="kpi-value">{{ $fmt0($cartera) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Mora %</div><div class="kpi-value @if($moraPct > 25) neg @endif">{{ $fmtp($moraPct) }}</div></td>
-    </tr>
-    <tr>
-        <td class="kpi"><div class="kpi-label">Percepciones</div><div class="kpi-value">{{ $fmt0((float)($snap['summary']['noi_percepciones'] ?? 0)) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Deducciones (informativo)</div><div class="kpi-value">{{ $fmt0((float)($snap['summary']['noi_deducciones'] ?? 0)) }}</div></td>
-        <td class="kpi" colspan="2"><div class="kpi-label">Recuperación / Colocación (informativo)</div><div class="kpi-value">{{ $fmt0($recTotal) }} / {{ $fmt0($colocacion) }}</div></td>
-    </tr>
-</table>
+<div class="pdf-cols-2" style="margin-top:12px;">
+    <div>
+        <x-pdf.section-title title="Resumen ejecutivo" alt />
+        <div style="font-size:7.8pt; line-height:1.55; color:#334155;">
+            La cartera total del periodo es de <b>{{ $fmt0($cartera) }}</b>, con una cartera vencida de
+            <b>{{ $fmt0($moraTotal) }}</b> ({{ $fmtp($moraPct) }} de la cartera).
+            La utilidad bruta (intereses, impuestos, moratorios, comisión por apertura,
+            cargos adicionales, excedentes y 30% de Seguro CRECE — sin capital recuperado) fue de
+            <b>{{ $fmt0($ingresoEbitdaBase) }}</b>.
+            Considerando gastos operativos / OPEX (<b>{{ $fmt0($gastosOpTotal) }}</b>) y Nómina y
+            Capital Humano (<b>{{ $fmt0($nomTotal) }}</b>), Gastos Totales suman
+            <b>{{ $fmt0($gastosTotal) }}</b>, para un EBITDA del periodo de
+            <b>{{ $fmt0($utilidad) }}</b> (margen {{ $fmtp($margenEbitda) }}).
+            Como referencia informativa, la recuperación/cobranza total alcanzó
+            <b>{{ $fmt0($recTotal) }}</b> contra una colocación de <b>{{ $fmt0($colocacion) }}</b>.
+        </div>
+    </div>
+    <div>
+        <x-pdf.section-title title="Estado general" alt />
+        <x-pdf.summary-panel tone="ok">Excedente enviado a corporativo: <b>{{ $fmt0($excedentes) }}</b></x-pdf.summary-panel>
+        <div style="font-size:7.6pt; color:#475569; margin-top:6px;">
+            Préstamos intersucursales (fondea): <b>{{ $fmt0($fondeoTotal) }}</b>
+        </div>
+        @if($manualApplied && (float) ($manualApplied['amount'] ?? 0) > 0)
+        <div style="font-size:7.6pt; color:#475569; margin-top:6px; border-top:0.5pt solid #e2e8f0; padding-top:6px;">
+            <b>AJUSTE TEMPORAL</b> (ya incluido arriba): {{ $fmt0($manualApplied['amount']) }}
+            ({{ $fmt0($manualApplied['amount_per_employee'] ?? 0) }} × {{ (int) ($manualApplied['employee_count'] ?? 0) }} colaboradores)
+            — {{ $manualApplied['notes'] ?: 'Sin observación' }}
+        </div>
+        @endif
+    </div>
+</div>
 
-<table class="layout2 avoid" style="margin-top:12px;">
-    <tr>
-        <td class="colL">
-            <div class="section-bar alt">Resumen ejecutivo</div>
-            <div style="font-size:7.8pt; line-height:1.55; color:#334155;">
-                La cartera total del periodo es de <b>{{ $fmt0($cartera) }}</b>, con una cartera vencida de
-                <b>{{ $fmt0($moraTotal) }}</b> ({{ $fmtp($moraPct) }} de la cartera).
-                La utilidad bruta (intereses, impuestos, moratorios, comisión por apertura,
-                cargos adicionales, excedentes y 30% de Seguro CRECE — sin capital recuperado) fue de
-                <b>{{ $fmt0($ingresoEbitdaBase) }}</b>.
-                Considerando gastos operativos / OPEX (<b>{{ $fmt0($gastosOpTotal) }}</b>) y Nómina y
-                Capital Humano (<b>{{ $fmt0($nomTotal) }}</b>), Gastos Totales suman
-                <b>{{ $fmt0($gastosTotal) }}</b>, para un EBITDA del periodo de
-                <b>{{ $fmt0($utilidad) }}</b> (margen {{ $fmtp($margenEbitda) }}).
-                Como referencia informativa, la recuperación/cobranza total alcanzó
-                <b>{{ $fmt0($recTotal) }}</b> contra una colocación de <b>{{ $fmt0($colocacion) }}</b>.
-            </div>
-        </td>
-        <td class="colR">
-            <div class="section-bar alt">Estado general</div>
-            <div class="ok-box">Excedente enviado a corporativo: {{ $fmt0($excedentes) }}</div>
-            <div style="font-size:7.6pt; color:#475569; margin-top:6px;">
-                Préstamos intersucursales (fondea): <b>{{ $fmt0($fondeoTotal) }}</b>
-            </div>
-            <?php $manualApplied = $snapshot['summary']['manual_adjustment_applied'] ?? null; ?>
-            @if($manualApplied && (float) ($manualApplied['amount'] ?? 0) > 0)
-            <div style="font-size:7.6pt; color:#475569; margin-top:6px; border-top:0.5pt solid #e2e8f0; padding-top:6px;">
-                <b>AJUSTE TEMPORAL</b> (ya incluido arriba): {{ $fmt0($manualApplied['amount']) }}
-                ({{ $fmt0($manualApplied['amount_per_employee'] ?? 0) }} × {{ (int) ($manualApplied['employee_count'] ?? 0) }} colaboradores)
-                — {{ $manualApplied['notes'] ?: 'Sin observación' }}
-            </div>
-            @endif
-        </td>
-    </tr>
-</table>
-
-<!-- ═══ CATEGORÍA POR EBITDA ══════════════════════════════════════════════ -->
 @if(!empty($categorias))
-<div class="section-bar">Categoría por EBITDA</div>
-<table class="tbl">
-    <thead>
+<x-pdf.section-title title="Categoría por EBITDA" />
+<x-pdf.table>
+    <x-slot:head>
         <tr>
-            <th>Sucursal</th>
-            <th class="r">Utilidad bruta</th>
-            <th class="r">OPEX</th>
-            <th class="r">Nómina</th>
-            <th class="r">EBITDA</th>
-            <th class="c">Categoría</th>
+            <th>Sucursal</th><th class="r">Utilidad bruta</th><th class="r">OPEX</th>
+            <th class="r">Nómina</th><th class="r">EBITDA</th><th class="c">Categoría</th>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($categorias as $c)
-        <tr>
-            <td class="b">{{ $c['nombre'] }}</td>
-            <td class="r">{{ $fmt($c['ingreso_base']) }}</td>
-            <td class="r">{{ $fmt($c['gastos']) }}</td>
-            <td class="r">{{ $fmt($c['nomina']) }}</td>
-            <td class="r b" @if($c['ebitda'] < 0) style="color:#b91c1c;" @endif>{{ $fmt($c['ebitda']) }}</td>
-            <td class="c"><span class="badge {{ $cat($c['categoria']) }}">{{ $c['categoria'] }}</span></td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
-<div class="note">EBITDA = Utilidad bruta (intereses + impuestos + moratorios + comisión por apertura + cargos adicionales + excedentes + 30% Seguro CRECE) − Gastos Totales (OPEX + Nómina y Capital Humano) por sucursal. No incluye capital recuperado. Categorías: Diamante ≥$1M / Máster ≥$600K / Sénior ≥$300K / Júnior ≥$100K / Mantenido &lt;$100K.</div>
+    </x-slot:head>
+    @foreach($categorias as $c)
+    <tr>
+        <td class="b">{{ $c['nombre'] }}</td>
+        <td class="r">{{ $fmt($c['ingreso_base']) }}</td>
+        <td class="r">{{ $fmt($c['gastos']) }}</td>
+        <td class="r">{{ $fmt($c['nomina']) }}</td>
+        <td class="r b" @if($c['ebitda'] < 0) style="color:#b91c1c;" @endif>{{ $fmt($c['ebitda']) }}</td>
+        <td class="c"><x-pdf.badge :label="$c['categoria']" :category="$c['categoria']" /></td>
+    </tr>
+    @endforeach
+</x-pdf.table>
+<div class="pdf-note">EBITDA = Utilidad bruta (intereses + impuestos + moratorios + comisión por apertura + cargos adicionales + excedentes + 30% Seguro CRECE) − Gastos Totales (OPEX + Nómina y Capital Humano) por sucursal. No incluye capital recuperado. Categorías: Diamante ≥$1M / Máster ≥$600K / Sénior ≥$300K / Júnior ≥$100K / Mantenido &lt;$100K.</div>
 @endif
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 2 — RESUMEN POR SUCURSAL
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div class="pagebreak"></div>
-<div class="section-bar">Resumen por sucursal</div>
+<x-pdf.section-title title="Resumen por sucursal" />
 @if(!empty($sucursalRows))
-<table class="tbl">
-    <thead>
+<x-pdf.table>
+    <x-slot:head>
         <tr>
-            <th>Sucursal</th>
-            <th class="r">Recuperación</th>
-            <th class="r">Colocación</th>
-            <th class="r">Cartera</th>
-            <th class="r">Vencida</th>
-            <th class="r">Mora %</th>
-            <th class="r">Gastos</th>
-            <th class="r">Nómina</th>
-            <th class="r">EBITDA</th>
+            <th>Sucursal</th><th class="r">Recuperación</th><th class="r">Colocación</th><th class="r">Cartera</th>
+            <th class="r">Vencida</th><th class="r">Mora %</th><th class="r">Gastos</th><th class="r">Nómina</th><th class="r">EBITDA</th>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($sucursalRows as $r)
-        <tr>
-            <td class="b">{{ $r['sucursal'] }}</td>
-            <td class="r">{{ $fmt($r['recuperacion']) }}</td>
-            <td class="r">{{ $fmt($r['colocacion']) }}</td>
-            <td class="r">{{ $fmt($r['cartera']) }}</td>
-            <td class="r" @if($r['vencida'] > 0) style="color:#b91c1c;" @endif>{{ $fmt($r['vencida']) }}</td>
-            <td class="r" @if($r['mora_pct'] > 25) style="color:#b91c1c;font-weight:bold;" @endif>{{ $fmtp($r['mora_pct']) }}</td>
-            <td class="r">{{ $fmt($r['gastos']) }}</td>
-            <td class="r">{{ $fmt($r['nomina']) }}</td>
-            <td class="r b" @if($r['ebitda'] < 0) style="color:#b91c1c;" @endif>{{ $fmt($r['ebitda']) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-    <tfoot>
+    </x-slot:head>
+    @foreach($sucursalRows as $r)
+    <tr>
+        <td class="b">{{ $r['sucursal'] }}</td>
+        <td class="r">{{ $fmt($r['recuperacion']) }}</td>
+        <td class="r">{{ $fmt($r['colocacion']) }}</td>
+        <td class="r">{{ $fmt($r['cartera']) }}</td>
+        <td class="r" @if($r['vencida'] > 0) style="color:#b91c1c;" @endif>{{ $fmt($r['vencida']) }}</td>
+        <td class="r" @if($r['mora_pct'] > 25) style="color:#b91c1c;font-weight:bold;" @endif>{{ $fmtp($r['mora_pct']) }}</td>
+        <td class="r">{{ $fmt($r['gastos']) }}</td>
+        <td class="r">{{ $fmt($r['nomina']) }}</td>
+        <td class="r b" @if($r['ebitda'] < 0) style="color:#b91c1c;" @endif>{{ $fmt($r['ebitda']) }}</td>
+    </tr>
+    @endforeach
+    <x-slot:foot>
         <tr>
             <td>GLOBAL ({{ count($sucursalRows) }} sucursales)</td>
             <td class="r">{{ $fmt($recTotal) }}</td>
@@ -457,139 +330,115 @@ $alTotalVencido = array_sum(array_column($activeLoansByBranch, 'vencido'));
             <td class="r">{{ $fmt($nomTotal) }}</td>
             <td class="r">{{ $fmt($utilidad) }}</td>
         </tr>
-    </tfoot>
-</table>
+    </x-slot:foot>
+</x-pdf.table>
 @else
-<div class="note">Sin datos por sucursal para este periodo.</div>
+<x-pdf.empty-state message="Sin datos por sucursal para este periodo." />
 @endif
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 3 — MORA Y CARTERA
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div class="pagebreak"></div>
-<div class="section-bar">Mora por bucket</div>
-<table class="layout2 avoid">
-    <tr>
-        <td class="colL">
-            @foreach($moraBuckets as $mb)
-            <div class="bar-row">
-                <div class="bar-label">{{ $mb['label'] }}</div>
-                <div class="bar-track"><span class="bar-fill bar-fill-red" style="width:{{ $moraBucketMax > 0 ? min(100, round($mb['valor'] / $moraBucketMax * 100)) : 0 }}%;"></span></div>
-                <div class="bar-value">{{ $fmt0($mb['valor']) }}</div>
-            </div>
-            @endforeach
-        </td>
-        <td class="colR">
-            <div class="bar-row">
-                <div class="bar-label">Cartera total</div>
-                <div class="bar-track"><span class="bar-fill bar-fill-teal" style="width:100%;"></span></div>
-                <div class="bar-value">{{ $fmt0($cartera) }}</div>
-            </div>
-            <div class="bar-row">
-                <div class="bar-label">Cartera vencida</div>
-                <div class="bar-track"><span class="bar-fill bar-fill-red" style="width:{{ $cartera > 0 ? min(100, round($moraTotal / $cartera * 100)) : 0 }}%;"></span></div>
-                <div class="bar-value">{{ $fmt0($moraTotal) }} ({{ $fmtp($moraPct) }})</div>
-            </div>
-        </td>
-    </tr>
-</table>
+<x-pdf.section-title title="Mora por bucket" />
+<div class="pdf-cols-2">
+    <div>
+        @foreach($moraBuckets as $mb)
+        <div class="pdf-bar-row">
+            <div class="pdf-bar-label">{{ $mb['label'] }}</div>
+            <div class="pdf-bar-track"><span class="pdf-bar-fill pdf-bar-fill-red" style="width:{{ $moraBucketMax > 0 ? min(100, round($mb['valor'] / $moraBucketMax * 100)) : 0 }}%;"></span></div>
+            <div class="pdf-bar-value">{{ $fmt0($mb['valor']) }}</div>
+        </div>
+        @endforeach
+    </div>
+    <div>
+        <div class="pdf-bar-row">
+            <div class="pdf-bar-label">Cartera total</div>
+            <div class="pdf-bar-track"><span class="pdf-bar-fill pdf-bar-fill-teal" style="width:100%;"></span></div>
+            <div class="pdf-bar-value">{{ $fmt0($cartera) }}</div>
+        </div>
+        <div class="pdf-bar-row">
+            <div class="pdf-bar-label">Cartera vencida</div>
+            <div class="pdf-bar-track"><span class="pdf-bar-fill pdf-bar-fill-red" style="width:{{ $cartera > 0 ? min(100, round($moraTotal / $cartera * 100)) : 0 }}%;"></span></div>
+            <div class="pdf-bar-value">{{ $fmt0($moraTotal) }} ({{ $fmtp($moraPct) }})</div>
+        </div>
+    </div>
+</div>
 
 @if(!empty($snap['sections']['portfolio_buckets']))
-<div class="section-bar alt">Distribución de cartera por días vencidos</div>
-<table class="tbl">
-    <thead><tr><th>Bucket</th><th class="r">Contratos</th><th class="r">Balance</th><th class="r">Vencido</th></tr></thead>
-    <tbody>
-        @foreach($snap['sections']['portfolio_buckets'] as $b)
-        <tr>
-            <td class="b">{{ $b['label'] }}</td>
-            <td class="r">{{ $fmtn($b['contratos']) }}</td>
-            <td class="r">{{ $fmt($b['balance']) }}</td>
-            <td class="r" @if($b['vencida'] > 0 && $b['label'] !== 'Al corriente') style="color:#b91c1c;" @endif>{{ $fmt($b['vencida']) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
+<x-pdf.section-title title="Distribución de cartera por días vencidos" alt />
+<x-pdf.table>
+    <x-slot:head><tr><th>Bucket</th><th class="r">Contratos</th><th class="r">Balance</th><th class="r">Vencido</th></tr></x-slot:head>
+    @foreach($snap['sections']['portfolio_buckets'] as $b)
+    <tr>
+        <td class="b">{{ $b['label'] }}</td>
+        <td class="r">{{ $fmtn($b['contratos']) }}</td>
+        <td class="r">{{ $fmt($b['balance']) }}</td>
+        <td class="r" @if($b['vencida'] > 0 && $b['label'] !== 'Al corriente') style="color:#b91c1c;" @endif>{{ $fmt($b['vencida']) }}</td>
+    </tr>
+    @endforeach
+</x-pdf.table>
 @endif
 
 @if(!empty($topVencida))
-<div class="section-bar alt">Top sucursales con más cartera vencida</div>
+<x-pdf.section-title title="Top sucursales con más cartera vencida" alt />
 @foreach($topVencida as $tv)
-<div class="bar-row">
-    <div class="bar-label">{{ $tv['sucursal'] }}</div>
-    <div class="bar-track"><span class="bar-fill bar-fill-red" style="width:{{ $topVencidaMax > 0 ? min(100, round($tv['vencida'] / $topVencidaMax * 100)) : 0 }}%;"></span></div>
-    <div class="bar-value">{{ $fmt0($tv['vencida']) }} &nbsp;·&nbsp; Mora {{ $fmtp($tv['mora_pct']) }}</div>
+<div class="pdf-bar-row">
+    <div class="pdf-bar-label">{{ $tv['sucursal'] }}</div>
+    <div class="pdf-bar-track"><span class="pdf-bar-fill pdf-bar-fill-red" style="width:{{ $topVencidaMax > 0 ? min(100, round($tv['vencida'] / $topVencidaMax * 100)) : 0 }}%;"></span></div>
+    <div class="pdf-bar-value">{{ $fmt0($tv['vencida']) }} &nbsp;·&nbsp; Mora {{ $fmtp($tv['mora_pct']) }}</div>
 </div>
 @endforeach
 @endif
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 4 — INGRESOS / COBRANZA Y COLOCACIÓN
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div class="pagebreak"></div>
-<div class="section-bar">Ingresos / Recuperación</div>
+<x-pdf.section-title title="Ingresos / Recuperación" />
 
 {{-- A) Desglose por componente --}}
 @if($ingrCapital > 0 || $ingrInteres > 0)
-<div class="section-bar alt">A) Desglose por componente</div>
-<table class="tbl avoid">
-    <thead><tr><th>Componente</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        @if($ingrCapital > 0)<tr><td>Capital recuperado</td><td class="r">{{ $fmt($ingrCapital) }}</td></tr>@endif
-        @if($ingrInteres > 0)<tr><td>Intereses</td><td class="r">{{ $fmt($ingrInteres) }}</td></tr>@endif
-        @if($ingrImpuesto > 0)<tr><td>Impuestos</td><td class="r">{{ $fmt($ingrImpuesto) }}</td></tr>@endif
-        @if($ingrCharges > 0)<tr><td>Moratorios / Multas</td><td class="r">{{ $fmt($ingrCharges) }}</td></tr>@endif
-        @if($ingrCargosIni > 0)<tr><td>Cargos al inicio</td><td class="r">{{ $fmt($ingrCargosIni) }}</td></tr>@endif
-        @if($ingrComAper > 0)<tr><td>Comisión por apertura</td><td class="r">{{ $fmt($ingrComAper) }}</td></tr>@endif
-        @if($ingrCargosAdic > 0)<tr><td>Cargos adicionales</td><td class="r">{{ $fmt($ingrCargosAdic) }}</td></tr>@endif
-        @if($ingrExcedRec > 0)<tr><td>Excedentes recuperados</td><td class="r">{{ $fmt($ingrExcedRec) }}</td></tr>@endif
-        @if($ingrCrece30 > 0)<tr><td>Seguro CRECE reconocido (30%)</td><td class="r">{{ $fmt($ingrCrece30) }}</td></tr>@endif
-        @foreach($ingrOtrosDet as $otrosLabel => $otrosVal)
-            @if($otrosVal != 0)<tr><td>{{ $otrosLabel }}</td><td class="r">{{ $fmt($otrosVal) }}</td></tr>@endif
-        @endforeach
-    </tbody>
-    <tfoot><tr><td><b>Total Recuperación</b></td><td class="r">{{ $fmt($ingrTotal) }}</td></tr></tfoot>
-</table>
+<x-pdf.section-title title="A) Desglose por componente" alt />
+<x-pdf.table>
+    <x-slot:head><tr><th>Componente</th><th class="r">Monto</th></tr></x-slot:head>
+    @if($ingrCapital > 0)<tr><td>Capital recuperado</td><td class="r">{{ $fmt($ingrCapital) }}</td></tr>@endif
+    @if($ingrInteres > 0)<tr><td>Intereses</td><td class="r">{{ $fmt($ingrInteres) }}</td></tr>@endif
+    @if($ingrImpuesto > 0)<tr><td>Impuestos</td><td class="r">{{ $fmt($ingrImpuesto) }}</td></tr>@endif
+    @if($ingrCharges > 0)<tr><td>Moratorios / Multas</td><td class="r">{{ $fmt($ingrCharges) }}</td></tr>@endif
+    @if($ingrCargosIni > 0)<tr><td>Cargos al inicio</td><td class="r">{{ $fmt($ingrCargosIni) }}</td></tr>@endif
+    @if($ingrComAper > 0)<tr><td>Comisión por apertura</td><td class="r">{{ $fmt($ingrComAper) }}</td></tr>@endif
+    @if($ingrCargosAdic > 0)<tr><td>Cargos adicionales</td><td class="r">{{ $fmt($ingrCargosAdic) }}</td></tr>@endif
+    @if($ingrExcedRec > 0)<tr><td>Excedentes recuperados</td><td class="r">{{ $fmt($ingrExcedRec) }}</td></tr>@endif
+    @if($ingrCrece30 > 0)<tr><td>Seguro CRECE reconocido (30%)</td><td class="r">{{ $fmt($ingrCrece30) }}</td></tr>@endif
+    @foreach($ingrOtrosDet as $otrosLabel => $otrosVal)
+        @if($otrosVal != 0)<tr><td>{{ $otrosLabel }}</td><td class="r">{{ $fmt($otrosVal) }}</td></tr>@endif
+    @endforeach
+    <x-slot:foot><tr><td><b>Total Recuperación</b></td><td class="r">{{ $fmt($ingrTotal) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 @endif
 
 {{-- B) Desglose por sucursal --}}
 @if(!empty($brBranches))
-<div class="section-bar alt">B) Desglose por sucursal</div>
-<table class="tbl avoid">
-    <thead>
+<x-pdf.section-title title="B) Desglose por sucursal" alt />
+<x-pdf.table>
+    <x-slot:head>
         <tr>
-            <th>Sucursal</th>
-            <th class="r">Capital</th>
-            <th class="r">Intereses</th>
-            <th class="r">Impuestos</th>
-            <th class="r">Moratorios</th>
-            <th class="r">Cargos adic.</th>
-            <th class="r">Cargos inicio</th>
-            <th class="r">Com. apertura</th>
-            <th class="r">Excedentes</th>
-            <th class="r">Seguro CRECE 30%</th>
-            <th class="r">Otros</th>
-            <th class="r">Total</th>
+            <th>Sucursal</th><th class="r">Capital</th><th class="r">Intereses</th><th class="r">Impuestos</th>
+            <th class="r">Moratorios</th><th class="r">Cargos adic.</th><th class="r">Cargos inicio</th>
+            <th class="r">Com. apertura</th><th class="r">Excedentes</th><th class="r">Seguro CRECE 30%</th>
+            <th class="r">Otros</th><th class="r">Total</th>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($brBranches as $bi => $bb)
-        <tr @if($bi % 2 === 1) style="background:#f8fafc;" @endif>
-            <td class="b">{{ $bb['sucursal'] }}</td>
-            <td class="r">{{ $fmt((float)($bb['capital_recuperado'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['interes_recuperado'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['impuesto_recuperado'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['charges'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['cargos_adicionales'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['cargos_inicio'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['comision_apertura'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['excedente_recuperado'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['seguro_crece_reconocido'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($bb['otros_recuperacion'] ?? 0)) }}</td>
-            <td class="r b">{{ $fmt((float)($bb['recuperacion_total'] ?? 0)) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-    <tfoot>
+    </x-slot:head>
+    @foreach($brBranches as $bb)
+    <tr>
+        <td class="b">{{ $bb['sucursal'] }}</td>
+        <td class="r">{{ $fmt((float)($bb['capital_recuperado'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['interes_recuperado'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['impuesto_recuperado'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['charges'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['cargos_adicionales'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['cargos_inicio'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['comision_apertura'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['excedente_recuperado'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['seguro_crece_reconocido'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($bb['otros_recuperacion'] ?? 0)) }}</td>
+        <td class="r b">{{ $fmt((float)($bb['recuperacion_total'] ?? 0)) }}</td>
+    </tr>
+    @endforeach
+    <x-slot:foot>
         <tr>
             <td>TOTAL</td>
             <td class="r">{{ $fmt((float)($brGlobal['capital_recuperado'] ?? 0)) }}</td>
@@ -604,178 +453,139 @@ $alTotalVencido = array_sum(array_column($activeLoansByBranch, 'vencido'));
             <td class="r">{{ $fmt((float)($brGlobal['otros_recuperacion'] ?? 0)) }}</td>
             <td class="r">{{ $fmt($ingrTotal) }}</td>
         </tr>
-    </tfoot>
-</table>
+    </x-slot:foot>
+</x-pdf.table>
 @endif
 
 {{-- C) Recuperación por producto --}}
 @php $recoveryByProduct = $snap['sections']['recovery_by_product']['rows'] ?? []; @endphp
 @if(!empty($recoveryByProduct))
-<div class="section-bar alt">C) Recuperación por producto</div>
-<table class="tbl avoid">
-    <thead>
+<x-pdf.section-title title="C) Recuperación por producto" alt />
+<x-pdf.table>
+    <x-slot:head>
         <tr>
-            <th>Producto</th>
-            <th class="r">Capital</th>
-            <th class="r">Intereses</th>
-            <th class="r">Impuestos</th>
-            <th class="r">Moratorios</th>
-            <th class="r">Cargos adic.</th>
-            <th class="r">Com. apertura</th>
-            <th class="r">Excedentes</th>
-            <th class="r">Seguro CRECE 30%</th>
-            <th class="r">Otros</th>
-            <th class="r">Total</th>
+            <th>Producto</th><th class="r">Capital</th><th class="r">Intereses</th><th class="r">Impuestos</th>
+            <th class="r">Moratorios</th><th class="r">Cargos adic.</th><th class="r">Com. apertura</th>
+            <th class="r">Excedentes</th><th class="r">Seguro CRECE 30%</th><th class="r">Otros</th><th class="r">Total</th>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($recoveryByProduct as $pi => $pr)
-        <tr @if($pi % 2 === 1) style="background:#f8fafc;" @endif>
-            <td class="b">{{ $pr['product'] }}</td>
-            <td class="r">{{ $fmt((float)($pr['capital'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['interes'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['impuesto'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['moratorios'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['cargos_adicionales'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['comision_apertura'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['excedente_recuperado'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['seguro_crece_reconocido'] ?? 0)) }}</td>
-            <td class="r">{{ $fmt((float)($pr['otros'] ?? 0)) }}</td>
-            <td class="r b">{{ $fmt((float)($pr['total'] ?? 0)) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-    <tfoot>
-        <tr>
-            <td>TOTAL</td>
-            <td colspan="8"></td>
-            <td class="r">{{ $fmt($ingrTotal) }}</td>
-        </tr>
-    </tfoot>
-</table>
+    </x-slot:head>
+    @foreach($recoveryByProduct as $pr)
+    <tr>
+        <td class="b">{{ $pr['product'] }}</td>
+        <td class="r">{{ $fmt((float)($pr['capital'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['interes'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['impuesto'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['moratorios'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['cargos_adicionales'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['comision_apertura'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['excedente_recuperado'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['seguro_crece_reconocido'] ?? 0)) }}</td>
+        <td class="r">{{ $fmt((float)($pr['otros'] ?? 0)) }}</td>
+        <td class="r b">{{ $fmt((float)($pr['total'] ?? 0)) }}</td>
+    </tr>
+    @endforeach
+    <x-slot:foot><tr><td>TOTAL</td><td colspan="8"></td><td class="r">{{ $fmt($ingrTotal) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 @endif
 
 {{-- Seguros y coberturas canalizadas — informativo, no afecta recuperación, OPEX, nómina ni EBITDA --}}
 @if($ingrCrece > 0 || $ingrSavehearts > 0 || $ingrComadres > 0)
-<div class="section-bar alt">Seguros y coberturas canalizadas</div>
-<table class="tbl avoid">
-    <thead><tr><th>Concepto</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        @if($ingrSavehearts > 0)<tr><td>Cobertura Savehearts</td><td class="r">{{ $fmt($ingrSavehearts) }}</td></tr>@endif
-        @if($ingrComadres > 0)<tr style="background:#f8fafc;"><td>Cobertura Crédito Grupal / Comadres</td><td class="r">{{ $fmt($ingrComadres) }}</td></tr>@endif
-        @if($ingrCrece > 0)<tr><td>Seguro CRECE total</td><td class="r">{{ $fmt($ingrCrece) }}</td></tr>@endif
-        @if($ingrCrece30 > 0)<tr style="background:#f8fafc;"><td>&nbsp;&nbsp;Reconocido como ingreso MR Lana (30%)</td><td class="r" style="color:#065f46;">{{ $fmt($ingrCrece30) }}</td></tr>@endif
-        @if($ingrCrece70 > 0)<tr><td>&nbsp;&nbsp;Canalizado a aseguradora (70%)</td><td class="r">{{ $fmt($ingrCrece70) }}</td></tr>@endif
-    </tbody>
-    <tfoot><tr><td><b>Total canalizado a aseguradora</b></td><td class="r">{{ $fmt($ingrCanalizadoAseguradora) }}</td></tr></tfoot>
-</table>
+<x-pdf.section-title title="Seguros y coberturas canalizadas" alt />
+<x-pdf.table>
+    <x-slot:head><tr><th>Concepto</th><th class="r">Monto</th></tr></x-slot:head>
+    @if($ingrSavehearts > 0)<tr><td>Cobertura Savehearts</td><td class="r">{{ $fmt($ingrSavehearts) }}</td></tr>@endif
+    @if($ingrComadres > 0)<tr><td>Cobertura Crédito Grupal / Comadres</td><td class="r">{{ $fmt($ingrComadres) }}</td></tr>@endif
+    @if($ingrCrece > 0)<tr><td>Seguro CRECE total</td><td class="r">{{ $fmt($ingrCrece) }}</td></tr>@endif
+    @if($ingrCrece30 > 0)<tr><td>&nbsp;&nbsp;Reconocido como ingreso MR Lana (30%)</td><td class="r" style="color:#065f46;">{{ $fmt($ingrCrece30) }}</td></tr>@endif
+    @if($ingrCrece70 > 0)<tr><td>&nbsp;&nbsp;Canalizado a aseguradora (70%)</td><td class="r">{{ $fmt($ingrCrece70) }}</td></tr>@endif
+    <x-slot:foot><tr><td><b>Total canalizado a aseguradora</b></td><td class="r">{{ $fmt($ingrCanalizadoAseguradora) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 @endif
 
 {{-- Colocación: info complementaria --}}
-<div class="section-bar alt">Colocación del periodo (informativo)</div>
-<table class="tbl avoid">
-    <thead><tr><th>Concepto</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        <tr><td>Préstamos intersucursales (fondea)</td><td class="r">{{ $fmt($fondeoTotal) }}</td></tr>
-    </tbody>
-    <tfoot><tr><td>Total colocación</td><td class="r">{{ $fmt($colocacion) }}</td></tr></tfoot>
-</table>
+<x-pdf.section-title title="Colocación del periodo (informativo)" alt />
+<x-pdf.table>
+    <x-slot:head><tr><th>Concepto</th><th class="r">Monto</th></tr></x-slot:head>
+    <tr><td>Préstamos intersucursales (fondea)</td><td class="r">{{ $fmt($fondeoTotal) }}</td></tr>
+    <x-slot:foot><tr><td>Total colocación</td><td class="r">{{ $fmt($colocacion) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 
 @if(!empty($productosRows))
-<div class="section-bar alt">Colocación por producto</div>
-<table class="tbl">
-    <thead><tr><th>Producto</th><th class="r">Operaciones</th><th class="r">Colocación</th><th class="r">Recuperación</th></tr></thead>
-    <tbody>
-        @foreach($productosRows as $p)
-        <tr>
-            <td class="b">{{ $p['producto'] }}</td>
-            <td class="r">{{ $fmtn($p['operaciones']) }}</td>
-            <td class="r">{{ $fmt($p['colocacion']) }}</td>
-            <td class="r">{{ $fmt($p['recuperacion'] ?? 0) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
+<x-pdf.section-title title="Colocación por producto" alt />
+<x-pdf.table>
+    <x-slot:head><tr><th>Producto</th><th class="r">Operaciones</th><th class="r">Colocación</th><th class="r">Recuperación</th></tr></x-slot:head>
+    @foreach($productosRows as $p)
+    <tr>
+        <td class="b">{{ $p['producto'] }}</td>
+        <td class="r">{{ $fmtn($p['operaciones']) }}</td>
+        <td class="r">{{ $fmt($p['colocacion']) }}</td>
+        <td class="r">{{ $fmt($p['recuperacion'] ?? 0) }}</td>
+    </tr>
+    @endforeach
+</x-pdf.table>
 @endif
 
 @if(!empty($colocPorSucursal))
-<div class="section-bar alt">Colocación por sucursal</div>
+<x-pdf.section-title title="Colocación por sucursal" alt />
 @foreach($colocPorSucursal as $cp)
-<div class="bar-row">
-    <div class="bar-label">{{ $cp['sucursal'] }}</div>
-    <div class="bar-track"><span class="bar-fill bar-fill-blue" style="width:{{ $colocMax > 0 ? min(100, round($cp['monto'] / $colocMax * 100)) : 0 }}%;"></span></div>
-    <div class="bar-value">{{ $fmt0($cp['monto']) }}</div>
+<div class="pdf-bar-row">
+    <div class="pdf-bar-label">{{ $cp['sucursal'] }}</div>
+    <div class="pdf-bar-track"><span class="pdf-bar-fill pdf-bar-fill-blue" style="width:{{ $colocMax > 0 ? min(100, round($cp['monto'] / $colocMax * 100)) : 0 }}%;"></span></div>
+    <div class="pdf-bar-value">{{ $fmt0($cp['monto']) }}</div>
 </div>
 @endforeach
 @endif
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 5 — GASTOS
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div class="pagebreak"></div>
-<div class="section-bar">Gastos operativos</div>
+<x-pdf.section-title title="Gastos operativos" />
 
 @if(!empty($gastosTopN))
-<div class="section-bar alt">Top gastos por categoría</div>
-<table class="tbl">
-    <thead><tr><th>Categoría</th><th class="r">Monto</th></tr></thead>
-    <tbody>
-        @foreach($gastosTopN as $concepto => $monto)
-        <tr><td class="b">{{ $concepto }}</td><td class="r">{{ $fmt((float)$monto) }}</td></tr>
-        @endforeach
-        @if($gastosOtros > 0)
-        <tr><td>Resto de categorías (fuera del top 10)</td><td class="r">{{ $fmt($gastosOtros) }}</td></tr>
-        @endif
-    </tbody>
-    <tfoot><tr><td>Total gastos operativos</td><td class="r">{{ $fmt($gastosOpTotal) }}</td></tr></tfoot>
-</table>
+<x-pdf.section-title title="Top gastos por categoría" alt />
+<x-pdf.table>
+    <x-slot:head><tr><th>Categoría</th><th class="r">Monto</th></tr></x-slot:head>
+    @foreach($gastosTopN as $concepto => $monto)
+    <tr><td class="b">{{ $concepto }}</td><td class="r">{{ $fmt((float)$monto) }}</td></tr>
+    @endforeach
+    @if($gastosOtros > 0)
+    <tr><td>Resto de categorías (fuera del top 10)</td><td class="r">{{ $fmt($gastosOtros) }}</td></tr>
+    @endif
+    <x-slot:foot><tr><td>Total gastos operativos</td><td class="r">{{ $fmt($gastosOpTotal) }}</td></tr></x-slot:foot>
+</x-pdf.table>
 @endif
 
 @if(!empty($gastosPorSucursal))
-<div class="section-bar alt">Gastos por sucursal</div>
+<x-pdf.section-title title="Gastos por sucursal" alt />
 @foreach($gastosPorSucursal as $gp)
-<div class="bar-row">
-    <div class="bar-label">{{ $gp['sucursal'] }}</div>
-    <div class="bar-track"><span class="bar-fill bar-fill-teal" style="width:{{ $gastosPorSucursalMax > 0 ? min(100, round($gp['monto'] / $gastosPorSucursalMax * 100)) : 0 }}%;"></span></div>
-    <div class="bar-value">{{ $fmt0($gp['monto']) }}</div>
+<div class="pdf-bar-row">
+    <div class="pdf-bar-label">{{ $gp['sucursal'] }}</div>
+    <div class="pdf-bar-track"><span class="pdf-bar-fill pdf-bar-fill-teal" style="width:{{ $gastosPorSucursalMax > 0 ? min(100, round($gp['monto'] / $gastosPorSucursalMax * 100)) : 0 }}%;"></span></div>
+    <div class="pdf-bar-value">{{ $fmt0($gp['monto']) }}</div>
 </div>
 @endforeach
 @endif
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 6 — NÓMINA
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div class="pagebreak"></div>
-<div class="section-bar">Nómina y capital humano</div>
+<x-pdf.section-title title="Nómina y capital humano" />
 @if(!empty($nomPorSucursal))
-<table class="tbl">
-    <thead>
+<x-pdf.table>
+    <x-slot:head>
         <tr>
-            <th>Sucursal</th>
-            <th class="r">Sueldos</th>
-            <th class="r">Comisiones</th>
-            <th class="r">Bonos</th>
-            <th class="r">Vac./Prima/Otras</th>
-            <th class="r">Descuentos (informativo)</th>
-            <th class="r">IMSS + Gasto empleado</th>
-            <th class="r">Total Nómina y Capital Humano</th>
+            <th>Sucursal</th><th class="r">Sueldos</th><th class="r">Comisiones</th><th class="r">Bonos</th>
+            <th class="r">Vac./Prima/Otras</th><th class="r">Descuentos (informativo)</th>
+            <th class="r">IMSS + Gasto empleado</th><th class="r">Total Nómina y Capital Humano</th>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($nomPorSucursal as $n)
-        <tr>
-            <td class="b">{{ $n['sucursal'] }}</td>
-            <td class="r">{{ $fmt($n['sueldos']) }}</td>
-            <td class="r">{{ $fmt($n['comisiones']) }}</td>
-            <td class="r">{{ $fmt($n['bonos']) }}</td>
-            <td class="r">{{ $fmt($n['otros']) }}</td>
-            <td class="r" style="color:#64748b;">{{ $fmt($n['descuentos']) }}</td>
-            <td class="r">{{ $fmt($n['imss_gastos_empleados']) }}</td>
-            <td class="r b">{{ $fmt($n['neto']) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-    <tfoot>
+    </x-slot:head>
+    @foreach($nomPorSucursal as $n)
+    <tr>
+        <td class="b">{{ $n['sucursal'] }}</td>
+        <td class="r">{{ $fmt($n['sueldos']) }}</td>
+        <td class="r">{{ $fmt($n['comisiones']) }}</td>
+        <td class="r">{{ $fmt($n['bonos']) }}</td>
+        <td class="r">{{ $fmt($n['otros']) }}</td>
+        <td class="r" style="color:#64748b;">{{ $fmt($n['descuentos']) }}</td>
+        <td class="r">{{ $fmt($n['imss_gastos_empleados']) }}</td>
+        <td class="r b">{{ $fmt($n['neto']) }}</td>
+    </tr>
+    @endforeach
+    <x-slot:foot>
         <tr>
             <td>TOTAL GLOBAL</td>
             <td class="r">{{ $fmt($nomNomina) }}</td>
@@ -786,42 +596,28 @@ $alTotalVencido = array_sum(array_column($activeLoansByBranch, 'vencido'));
             <td class="r">{{ $fmt((float)($brGlobal['imss_patronal'] ?? 0) + (float)($brGlobal['gastos_empleados_nomina'] ?? 0)) }}</td>
             <td class="r">{{ $fmt($nomTotal) }}</td>
         </tr>
-    </tfoot>
-</table>
-<div class="note">Descuentos NOI: informativos, no se restan del total. Gastos de empleados sí están incluidos.</div>
+    </x-slot:foot>
+</x-pdf.table>
+<div class="pdf-note">Descuentos NOI: informativos, no se restan del total. Gastos de empleados sí están incluidos.</div>
 @else
-<div class="note">Sin datos de nómina por sucursal para este periodo.</div>
+<x-pdf.empty-state message="Sin datos de nómina por sucursal para este periodo." />
 @endif
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 7 — PRÉSTAMOS ACTIVOS
-     ═══════════════════════════════════════════════════════════════════════ -->
-<div class="pagebreak"></div>
-<div class="section-bar">Préstamos activos — resumen por sucursal</div>
+<x-pdf.section-title title="Préstamos activos — resumen por sucursal" />
 @if(!empty($activeLoansByBranch))
-<table class="tbl">
-    <thead>
-        <tr>
-            <th>Sucursal</th>
-            <th class="r">Créditos activos</th>
-            <th class="r">Saldo activo</th>
-            <th class="r">Vencido</th>
-            <th class="r">% Vencido</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach($activeLoansByBranch as $alBranchName => $alData)
-        @php $alPct = $alData['saldo'] > 0 ? round($alData['vencido'] / $alData['saldo'] * 100, 2) : 0; @endphp
-        <tr>
-            <td class="b">{{ $alBranchName === 'Sin sucursal' ? '—' : $alBranchName }}</td>
-            <td class="r">{{ $fmtn($alData['count']) }}</td>
-            <td class="r">{{ $fmt($alData['saldo']) }}</td>
-            <td class="r" @if($alData['vencido'] > 0) style="color:#b91c1c;" @endif>{{ $fmt($alData['vencido']) }}</td>
-            <td class="r" @if($alPct > 25) style="color:#b91c1c;font-weight:bold;" @endif>{{ $fmtp($alPct) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-    <tfoot>
+<x-pdf.table>
+    <x-slot:head><tr><th>Sucursal</th><th class="r">Créditos activos</th><th class="r">Saldo activo</th><th class="r">Vencido</th><th class="r">% Vencido</th></tr></x-slot:head>
+    @foreach($activeLoansByBranch as $alBranchName => $alData)
+    @php $alPct = $alData['saldo'] > 0 ? round($alData['vencido'] / $alData['saldo'] * 100, 2) : 0; @endphp
+    <tr>
+        <td class="b">{{ $alBranchName === 'Sin sucursal' ? '—' : $alBranchName }}</td>
+        <td class="r">{{ $fmtn($alData['count']) }}</td>
+        <td class="r">{{ $fmt($alData['saldo']) }}</td>
+        <td class="r" @if($alData['vencido'] > 0) style="color:#b91c1c;" @endif>{{ $fmt($alData['vencido']) }}</td>
+        <td class="r" @if($alPct > 25) style="color:#b91c1c;font-weight:bold;" @endif>{{ $fmtp($alPct) }}</td>
+    </tr>
+    @endforeach
+    <x-slot:foot>
         <tr>
             <td>TOTAL GENERAL</td>
             <td class="r">{{ $fmtn($alTotalCount) }}</td>
@@ -829,122 +625,80 @@ $alTotalVencido = array_sum(array_column($activeLoansByBranch, 'vencido'));
             <td class="r">{{ $fmt($alTotalVencido) }}</td>
             <td class="r">{{ $alTotalSaldo > 0 ? $fmtp(round($alTotalVencido / $alTotalSaldo * 100, 2)) : '0.00%' }}</td>
         </tr>
-    </tfoot>
-</table>
+    </x-slot:foot>
+</x-pdf.table>
 @else
-<div class="note">Sin préstamos activos registrados para este periodo.</div>
+<x-pdf.empty-state message="Sin préstamos activos registrados para este periodo." />
 @endif
 
-<!-- ═══════════════════════════════════════════════════════════════════════
-     PÁGINA 8 — ROTACIÓN DE PERSONAL
-     ═══════════════════════════════════════════════════════════════════════ -->
-@php
-$rot       = $snap['sections']['rotation'] ?? [];
-$rotDetail = $snap['sections']['rotation_detail'] ?? [];
-$rotPrevCount = (float)($rot['prev_count'] ?? 0);
-$rotCurrCount = (float)($rot['current_count'] ?? ($rot['promedio'] ?? 0));
-$rotVariacion = (float)($rot['variacion_neta'] ?? ($rotCurrCount - $rotPrevCount));
-$rotPrevMes   = $rot['prev_mes'] ?? null;
-$rotPorSucursal = $rot['por_sucursal'] ?? [];
-@endphp
-<div class="pagebreak"></div>
-<div class="section-bar">Rotación de personal</div>
-<table class="kpi-grid">
-    <tr>
-        <td class="kpi"><div class="kpi-label">Plantilla {{ $rotPrevMes ?: 'mes anterior' }}</div><div class="kpi-value">{{ $fmtn($rotPrevCount) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Plantilla {{ $rot['mes'] ?? 'mes actual' }}</div><div class="kpi-value">{{ $fmtn($rotCurrCount) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Altas</div><div class="kpi-value">{{ $fmtn($rot['altas'] ?? 0) }}</div></td>
-        <td class="kpi"><div class="kpi-label">Bajas</div><div class="kpi-value">{{ $fmtn($rot['bajas'] ?? 0) }}</div></td>
-    </tr>
-    <tr>
-        <td class="kpi"><div class="kpi-label">Variación neta de plantilla</div><div class="kpi-value @if($rotVariacion < 0) neg @endif">{{ $rotVariacion >= 0 ? '+' : '' }}{{ $fmtn($rotVariacion) }}</div></td>
-        <td class="kpi" colspan="3"><div class="kpi-label">Índice de rotación</div><div class="kpi-value @if(($rot['indice'] ?? 0) > 5) neg @elseif(($rot['indice'] ?? 0) > 2) warn @endif">{{ $fmtp($rot['indice'] ?? 0) }}</div></td>
-    </tr>
-</table>
+<x-pdf.section-title title="Rotación de personal" />
+<div class="pdf-kpi-grid pdf-avoid">
+    <x-pdf.kpi-card :label="'Plantilla ' . ($rotPrevMes ?: 'mes anterior')" :value="$fmtn($rotPrevCount)" />
+    <x-pdf.kpi-card :label="'Plantilla ' . ($rot['mes'] ?? 'mes actual')" :value="$fmtn($rotCurrCount)" />
+    <x-pdf.kpi-card label="Altas" :value="$fmtn($rot['altas'] ?? 0)" />
+    <x-pdf.kpi-card label="Bajas" :value="$fmtn($rot['bajas'] ?? 0)" />
+    <x-pdf.kpi-card label="Variación neta de plantilla" :value="($rotVariacion >= 0 ? '+' : '') . $fmtn($rotVariacion)" :tone="$rotVariacion < 0 ? 'negv' : ''" />
+    <x-pdf.kpi-card label="Índice de rotación" :value="$fmtp($rot['indice'] ?? 0)" :tone="($rot['indice'] ?? 0) > 5 ? 'negv' : ''" />
+</div>
 
-<div class="section-bar alt">Detalle por sucursal</div>
+<x-pdf.section-title title="Detalle por sucursal" alt />
 @if(!empty($rotPorSucursal))
-<table class="tbl">
-    <thead>
+<x-pdf.table>
+    <x-slot:head>
         <tr>
-            <th>Sucursal</th>
-            <th class="r">Plantilla anterior</th>
-            <th class="r">Plantilla actual</th>
-            <th class="r">Altas</th>
-            <th class="r">Bajas</th>
-            <th class="r">Variación</th>
-            <th class="r">Índice</th>
+            <th>Sucursal</th><th class="r">Plantilla anterior</th><th class="r">Plantilla actual</th>
+            <th class="r">Altas</th><th class="r">Bajas</th><th class="r">Variación</th><th class="r">Índice</th>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($rotPorSucursal as $rs)
-        @php $rsVar = (float)($rs['variacion_plantilla'] ?? ((float)($rs['promedio_personal'] ?? 0) - (float)($rs['plantilla_anterior'] ?? 0))); @endphp
-        <tr>
-            <td class="b">{{ $rs['sucursal'] ?? '' }}</td>
-            <td class="r">{{ $fmtn($rs['plantilla_anterior'] ?? 0) }}</td>
-            <td class="r">{{ $fmtn($rs['promedio_personal'] ?? 0) }}</td>
-            <td class="r">{{ $fmtn($rs['altas'] ?? 0) }}</td>
-            <td class="r">{{ $fmtn($rs['bajas'] ?? 0) }}</td>
-            <td class="r" @if($rsVar < 0) style="color:#b91c1c;" @elseif($rsVar > 0) style="color:#106A59;" @endif>{{ $rsVar >= 0 ? '+' : '' }}{{ $fmtn($rsVar) }}</td>
-            <td class="r">{{ $fmtp($rs['indice_rotacion'] ?? 0) }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
+    </x-slot:head>
+    @foreach($rotPorSucursal as $rs)
+    @php $rsVar = (float)($rs['variacion_plantilla'] ?? ((float)($rs['promedio_personal'] ?? 0) - (float)($rs['plantilla_anterior'] ?? 0))); @endphp
+    <tr>
+        <td class="b">{{ $rs['sucursal'] ?? '' }}</td>
+        <td class="r">{{ $fmtn($rs['plantilla_anterior'] ?? 0) }}</td>
+        <td class="r">{{ $fmtn($rs['promedio_personal'] ?? 0) }}</td>
+        <td class="r">{{ $fmtn($rs['altas'] ?? 0) }}</td>
+        <td class="r">{{ $fmtn($rs['bajas'] ?? 0) }}</td>
+        <td class="r" @if($rsVar < 0) style="color:#b91c1c;" @elseif($rsVar > 0) style="color:#106A59;" @endif>{{ $rsVar >= 0 ? '+' : '' }}{{ $fmtn($rsVar) }}</td>
+        <td class="r">{{ $fmtp($rs['indice_rotacion'] ?? 0) }}</td>
+    </tr>
+    @endforeach
+</x-pdf.table>
 @else
-<div class="note">Sin datos de rotación disponibles para este periodo.</div>
+<x-pdf.empty-state message="Sin datos de rotación disponibles para este periodo." />
 @endif
 
-<div class="section-bar alt">Altas ({{ count($rotDetail['altas'] ?? []) }})</div>
+<x-pdf.section-title :title="'Altas (' . count($rotDetail['altas'] ?? []) . ')'" alt />
 @if(!empty($rotDetail['altas']))
-<table class="tbl">
-    <thead>
-        <tr><th>Sucursal</th><th>Clave</th><th>Colaborador</th></tr>
-    </thead>
-    <tbody>
-        @foreach($rotDetail['altas'] as $a)
-        <tr>
-            <td>{{ $a['sucursal'] ?? '' }}</td>
-            <td>{{ $a['clave'] ?? '—' }}</td>
-            <td>{{ $a['nombre'] ?? '' }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
+<x-pdf.table>
+    <x-slot:head><tr><th>Sucursal</th><th>Clave</th><th>Colaborador</th></tr></x-slot:head>
+    @foreach($rotDetail['altas'] as $a)
+    <tr><td>{{ $a['sucursal'] ?? '' }}</td><td>{{ $a['clave'] ?? '—' }}</td><td>{{ $a['nombre'] ?? '' }}</td></tr>
+    @endforeach
+</x-pdf.table>
 @else
-<div class="note">Sin altas en este periodo.</div>
+<x-pdf.empty-state message="Sin altas en este periodo." />
 @endif
 
-<div class="section-bar alt">Bajas ({{ count($rotDetail['bajas'] ?? []) }})</div>
+<x-pdf.section-title :title="'Bajas (' . count($rotDetail['bajas'] ?? []) . ')'" alt />
 @if(!empty($rotDetail['bajas']))
-<table class="tbl">
-    <thead>
-        <tr><th>Sucursal</th><th>Clave</th><th>Colaborador</th></tr>
-    </thead>
-    <tbody>
-        @foreach($rotDetail['bajas'] as $b)
-        <tr>
-            <td>{{ $b['sucursal'] ?? '' }}</td>
-            <td>{{ $b['clave'] ?? '—' }}</td>
-            <td>{{ $b['nombre'] ?? '' }}</td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
+<x-pdf.table>
+    <x-slot:head><tr><th>Sucursal</th><th>Clave</th><th>Colaborador</th></tr></x-slot:head>
+    @foreach($rotDetail['bajas'] as $b)
+    <tr><td>{{ $b['sucursal'] ?? '' }}</td><td>{{ $b['clave'] ?? '—' }}</td><td>{{ $b['nombre'] ?? '' }}</td></tr>
+    @endforeach
+</x-pdf.table>
 @else
-<div class="note">Sin bajas en este periodo.</div>
+<x-pdf.empty-state message="Sin bajas en este periodo." />
 @endif
 
-<!-- Pie de página + numeración: ya NO se dibuja aquí (era canvas nativo de DomPDF,
-     $pdf->page_text()/{PAGE_NUM}). Ahora lo genera BrowsershotPdfRenderer vía el
-     footerTemplate nativo de Chrome (Puppeteer page.pdf({displayHeaderFooter})),
-     el mismo mecanismo para TODOS los PDFs del sistema — ver footer_left en
+<div class="pdf-footnote">MR LANA · Reportes · Radiografía generada automáticamente · {{ $period->label }}</div>
+
+<!-- Pie de página + numeración: los dibuja BrowsershotPdfRenderer vía el footer nativo
+     de Chrome (Puppeteer page.pdf({displayHeaderFooter})) — ver footer_left en
      RadiografiaExportService::exportPdf()/exportPdfWithConfig(). -->
 
 @if(!empty($executiveCharts))
-<div class="pagebreak"></div>
 @include('reports.partials.radiography-pdf-charts-section')
 @endif
 
-</body>
-</html>
+</x-pdf.layout>

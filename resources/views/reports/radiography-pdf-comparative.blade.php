@@ -1,160 +1,80 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>Comparativo {{ $comparePeriod->label }} vs {{ $period->label }}</title>
-<script>window.__PDF_READY__ = false;</script>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; color: #1e293b; background: #fff; }
-@page { margin: 18mm 14mm 22mm 14mm; }
-
-.brand { text-align: center; padding-bottom: 10px; margin-bottom: 14px; border-bottom: 2px solid #1f2937; }
-.brand-mark { font-size: 19pt; font-weight: bold; letter-spacing: 1px; color: #106A59; }
-.brand-sub  { font-size: 9.5pt; color: #334155; text-transform: uppercase; letter-spacing: 2px; margin-top: 2px; }
-.brand-meta { font-size: 8pt; color: #64748b; margin-top: 8px; }
-.brand-meta b { color: #1e293b; }
-
-.section-bar { background: #1f2937; color: #fff; padding: 6px 10px; font-size: 9pt; font-weight: bold; letter-spacing: .3px; text-transform: uppercase; margin-top: 16px; margin-bottom: 8px; }
-.avoid { page-break-inside: avoid; }
-.page-break { page-break-after: always; }
-
-table.tbl { width: 100%; border-collapse: collapse; font-size: 8pt; }
-table.tbl thead th { background: #1f2937; color: #fff; font-weight: bold; text-align: left; padding: 5px 6px; border-bottom: 1px solid #1f2937; }
-table.tbl tbody td { padding: 5px 6px; border-bottom: 0.5pt solid #e2e8f0; vertical-align: top; }
-table.tbl tbody tr:nth-child(even) td { background: #f8fafc; }
-table.tbl .r { text-align: right; }
-table.tbl .c { text-align: center; }
-table.tbl .b { font-weight: bold; }
-.pos { color: #15803d; }
-.negv { color: #b91c1c; }
-
-/* ── Tira de KPIs (retoma 21-sep-2026: PDF "como estado de resultados", no solo tabla) ── */
-.kpi-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
-.kpi-card {
-    flex: 1 1 22%; min-width: 110px; border: 1px solid #e2e8f0; border-radius: 10px;
-    padding: 10px 12px; background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-}
-.kpi-card .kpi-label { font-size: 6.8pt; text-transform: uppercase; letter-spacing: .4px; color: #64748b; font-weight: bold; }
-.kpi-card .kpi-value { font-size: 12pt; font-weight: bold; color: #106A59; margin-top: 2px; }
-.kpi-card .kpi-delta { font-size: 7.3pt; font-weight: bold; margin-top: 2px; }
-
-/* ── Gráficas (Chart.js, renderizado real vía Chrome headless — ver BrowsershotPdfRenderer) ── */
-.charts-grid2 { display: flex; gap: 16px; margin-bottom: 16px; margin-top: 12px; }
-.chart-card {
-    flex: 1; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;
-    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-}
-.chart-card h3 {
-    font-size: 10pt; color: #1f2937; text-transform: uppercase; letter-spacing: .4px;
-    margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #e2e8f0;
-}
-.chart-card canvas { width: 100% !important; }
-</style>
-</head>
-<body>
-
 @php
+use App\Services\Radiography\RadiographyMetricToneHelper as Tone;
+
 $fmt  = fn($v) => '$' . number_format((float)$v, 2);
 $fmtp = fn($v) => number_format((float)$v, 2) . '%';
 $fmti = fn($v) => number_format((float)$v, 0);
+$rowFmt = fn($v, $f) => $f === 'percent' ? $fmtp($v) : ($f === 'integer' ? $fmti($v) : $fmt($v));
 $typeLabel = match($reportType) {
-    'bimester_vs_bimester' => 'COMPARATIVO BIMESTRE',
-    'quarter_vs_quarter'   => 'COMPARATIVO TRIMESTRE',
-    default                => 'COMPARATIVO MES VS MES',
+    'bimester_vs_bimester' => 'Comparativo bimestre',
+    'quarter_vs_quarter'   => 'Comparativo trimestre',
+    default                => 'Comparativo mes vs mes',
 };
+
 $headlineLabels = ['Recuperación', 'Colocación', 'EBITDA', 'Margen EBITDA', 'OPEX', 'Mora %', 'Valor cartera', 'Cartera vencida'];
 $headlineRows = collect($headlineLabels)->map(fn($l) => collect($rows)->firstWhere('label', $l))->filter()->values();
 
-// Mismo mapa que resources/js/lib/comparative-metrics.ts (DIRECTIONS) — bug real
-// documentado ahí: este PDF coloreaba var_pct > 0 = verde / < 0 = rojo para TODA fila
-// sin importar la métrica, incorrecto para Mora/OPEX/Cartera vencida/Rotación (donde
-// BAJAR es la mejora). Retoma 21-sep-2026: se corrige aquí también — nunca cambia la
-// cifra, solo el tono semántico.
-$metricDirections = [
-    'Recuperación' => 'increase_good', 'Ingreso base EBITDA' => 'increase_good',
-    'Colocación' => 'increase_good', 'Valor cartera' => 'increase_good',
-    'Cartera vencida' => 'decrease_good', 'Mora %' => 'decrease_good',
-    'OPEX' => 'decrease_good', 'Gastos' => 'decrease_good', 'Gastos Totales' => 'decrease_good',
-    'EBITDA' => 'increase_good', 'Margen EBITDA' => 'increase_good',
-    'Préstamos activos (contratos)' => 'increase_good', 'Bajas del periodo' => 'decrease_good',
-    'Rotación %' => 'decrease_good',
-];
-$toneClass = function (string $label, float $varPct) use ($metricDirections) {
-    if ($varPct == 0.0) {
-        return '';
-    }
-    $dir = $metricDirections[$label] ?? 'neutral';
-    if ($dir === 'neutral') {
-        return '';
-    }
-    $isIncrease = $varPct > 0;
-
-    return ($dir === 'increase_good') === $isIncrease ? 'pos' : 'negv';
-};
+// "Mayores variaciones" (mismo criterio que ComparativePreview.vue::topVariations) —
+// orden determinista por magnitud relativa, presentación pura sobre $rows ya calculado.
+$topVariations = collect($rows)->filter(fn($r) => $r['var_pct'] != 0)
+    ->sortByDesc(fn($r) => abs($r['var_pct']))->take(6)->values();
 @endphp
+<x-pdf.layout :title="'Comparativo ' . $comparePeriod->label . ' vs ' . $period->label" :ready-immediately="false">
 
-<div class="brand">
-    <div class="brand-mark">MR LANA</div>
-    <div class="brand-sub">{{ $typeLabel }}</div>
-    <div class="brand-meta">
-        <b>Alcance:</b> {{ $scopeLabel }}
-        &nbsp;&nbsp;·&nbsp;&nbsp;
-        <b>Periodo comparado:</b> {{ $comparePeriod->label }}
-        &nbsp;&nbsp;·&nbsp;&nbsp;
-        <b>Periodo actual:</b> {{ $period->label }}
-    </div>
-    @if(!empty($compareComposite) || !empty($currentComposite))
-    <div class="brand-meta" style="margin-top:2px;">
-        @if(!empty($compareComposite)){{ $compareComposite['component_range'] }}@else{{ $comparePeriod->label }}@endif
-        &nbsp;vs&nbsp;
-        @if(!empty($currentComposite)){{ $currentComposite['component_range'] }}@else{{ $period->label }}@endif
-    </div>
-    @endif
-</div>
+<x-pdf.header
+    :title="$typeLabel"
+    :subtitle="strtoupper($comparePeriod->label) . ' → ' . strtoupper($period->label)"
+    :meta="array_filter([
+        'Alcance' => $scopeLabel,
+        'Rango anterior' => $compareComposite['component_range'] ?? null,
+        'Rango actual' => $currentComposite['component_range'] ?? null,
+    ])"
+/>
 
-<div class="section-bar">Resumen ejecutivo</div>
-<div class="kpi-grid avoid">
-    @php $rowFmt = fn($v, $f) => $f === 'percent' ? $fmtp($v) : ($f === 'integer' ? $fmti($v) : $fmt($v)); @endphp
+<x-pdf.section-title title="Resumen ejecutivo" subtitle="Periodo actual vs periodo anterior — variación semántica (↑ no siempre es bueno)" />
+<div class="pdf-kpi-grid pdf-avoid">
     @foreach($headlineRows as $row)
-    <div class="kpi-card">
-        <div class="kpi-label">{{ $row['label'] }}</div>
-        <div class="kpi-value">{{ $rowFmt($row['curr'], $row['fmt']) }}</div>
-        <div class="kpi-delta {{ $toneClass($row['label'], $row['var_pct']) }}">
-            {{ $row['var_pct'] >= 0 ? '↑ +' : '↓ ' }}{{ number_format($row['var_pct'], 2) }}% vs {{ strtoupper($comparePeriod->label) }}
-        </div>
-    </div>
+    <x-pdf.kpi-card
+        :label="$row['label']"
+        :value="$rowFmt($row['curr'], $row['fmt'])"
+        :sub="($row['var_pct'] >= 0 ? '↑ +' : '↓ ') . number_format($row['var_pct'], 2) . '% vs ' . strtoupper($comparePeriod->label)"
+        :sub-tone="Tone::toneClass($row['label'], $row['var_pct'])"
+    />
     @endforeach
 </div>
 
-<div class="section-bar">Gráficas comparativas</div>
-<div class="charts-grid2 avoid">
-    <div class="chart-card">
-        <h3>Indicadores financieros ({{ strtoupper($comparePeriod->label) }} vs {{ strtoupper($period->label) }})</h3>
-        <canvas id="chartCurrency" height="200"></canvas>
-    </div>
-    <div class="chart-card">
-        <h3>Indicadores porcentuales</h3>
-        <canvas id="chartPercent" height="200"></canvas>
-    </div>
-</div>
-<div class="charts-grid2 avoid">
-    <div class="chart-card">
-        <h3>Cartera sana vs vencida — {{ strtoupper($comparePeriod->label) }}</h3>
-        <canvas id="chartCarteraPrev" height="200"></canvas>
-    </div>
-    <div class="chart-card">
-        <h3>Cartera sana vs vencida — {{ strtoupper($period->label) }}</h3>
-        <canvas id="chartCarteraCurr" height="200"></canvas>
-    </div>
+<x-pdf.section-title title="Gráficas comparativas" alt />
+<div class="pdf-charts-row">
+    <x-pdf.chart-card title="Indicadores financieros" :subtitle="strtoupper($comparePeriod->label) . ' vs ' . strtoupper($period->label)" chart-id="chartCurrency" :height="190" />
+    <x-pdf.chart-card title="Indicadores porcentuales" :subtitle="'Margen EBITDA · Mora % · Rotación %'" chart-id="chartPercent" :height="190" />
 </div>
 
-<div class="page-break"></div>
+{{-- "Mayores variaciones" va ANTES de los donuts a propósito (retoma 21-sep-2026,
+     punto 33) — una tabla SÍ fragmenta con criterio fila por fila en el motor de
+     impresión de Chromium (thead se repite, cada <tr> decide individualmente si
+     cabe), a diferencia de una tarjeta de gráfica (unidad atómica por
+     page-break-inside:avoid) — así aprovecha el espacio que sobra en la página
+     antes de pasar a las gráficas de cartera, en vez de dejarlo en blanco. --}}
+@if($topVariations->isNotEmpty())
+<x-pdf.section-title title="Mayores variaciones" subtitle="Ordenadas por magnitud relativa — sin interpretación automática" alt />
+<x-pdf.table>
+    <x-slot:head>
+        <tr><th>Métrica</th><th class="r">Variación</th></tr>
+    </x-slot:head>
+    @foreach($topVariations as $row)
+    <tr>
+        <td class="b">{{ $row['label'] }}</td>
+        <td class="r {{ Tone::toneClass($row['label'], $row['var_pct']) }}">
+            {{ $row['var_pct'] > 0 ? '↑' : '↓' }} {{ $row['var_pct'] >= 0 ? '+' : '' }}{{ number_format($row['var_pct'], 2) }}%
+        </td>
+    </tr>
+    @endforeach
+</x-pdf.table>
+@endif
 
-<div class="section-bar">Comparativo de métricas — detalle completo</div>
-<table class="tbl avoid">
-    <thead>
+<x-pdf.section-title title="Comparativo de métricas — detalle completo" />
+<x-pdf.table>
+    <x-slot:head>
         <tr>
             <th>Métrica</th>
             <th class="r">{{ strtoupper($comparePeriod->label) }}</th>
@@ -162,19 +82,25 @@ $toneClass = function (string $label, float $varPct) use ($metricDirections) {
             <th class="r">Diferencia</th>
             <th class="r">Var %</th>
         </tr>
-    </thead>
-    <tbody>
-        @foreach($rows as $row)
-        <tr>
-            <td class="b">{{ $row['label'] }}</td>
-            <td class="r">{{ $rowFmt($row['prev'], $row['fmt']) }}</td>
-            <td class="r">{{ $rowFmt($row['curr'], $row['fmt']) }}</td>
-            <td class="r">{{ $row['fmt'] === 'percent' ? $rowFmt($row['diff'], $row['fmt']) : ($row['diff'] >= 0 ? '+' : '') . $rowFmt($row['diff'], $row['fmt']) }}</td>
-            <td class="r {{ $toneClass($row['label'], $row['var_pct']) }}">{{ $row['var_pct'] >= 0 ? '+' : '' }}{{ number_format($row['var_pct'], 2) }}%</td>
-        </tr>
-        @endforeach
-    </tbody>
-</table>
+    </x-slot:head>
+    @foreach($rows as $row)
+    <tr>
+        <td class="b">{{ $row['label'] }}</td>
+        <td class="r">{{ $rowFmt($row['prev'], $row['fmt']) }}</td>
+        <td class="r">{{ $rowFmt($row['curr'], $row['fmt']) }}</td>
+        <td class="r">{{ $row['fmt'] === 'percent' ? $rowFmt($row['diff'], $row['fmt']) : ($row['diff'] >= 0 ? '+' : '') . $rowFmt($row['diff'], $row['fmt']) }}</td>
+        <td class="r {{ Tone::toneClass($row['label'], $row['var_pct']) }}">{{ $row['var_pct'] >= 0 ? '+' : '' }}{{ number_format($row['var_pct'], 2) }}%</td>
+    </tr>
+    @endforeach
+</x-pdf.table>
+
+<x-pdf.section-title title="Composición de cartera" subtitle="Sana vs vencida por periodo" alt />
+<div class="pdf-charts-row">
+    <x-pdf.chart-card :title="'Cartera sana vs vencida — ' . strtoupper($comparePeriod->label)" chart-id="chartCarteraPrev" :height="150" />
+    <x-pdf.chart-card :title="'Cartera sana vs vencida — ' . strtoupper($period->label)" chart-id="chartCarteraCurr" :height="150" />
+</div>
+
+<div class="pdf-footnote">MR LANA · Reportes · Comparativo generado automáticamente</div>
 
 <script>{!! $chartJsInline !!}</script>
 <script>
@@ -220,5 +146,4 @@ new Chart(document.getElementById('chartCarteraCurr'), {
 
 window.__PDF_READY__ = true;
 </script>
-</body>
-</html>
+</x-pdf.layout>

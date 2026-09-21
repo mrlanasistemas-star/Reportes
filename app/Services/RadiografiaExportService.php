@@ -435,7 +435,7 @@ class RadiografiaExportService
     }
 
     /** Mismos grupos de métricas que resources/js/lib/comparative-metrics.ts — nunca divergen entre Web y PDF. */
-    private const COMPARATIVE_CHART_CURRENCY_METRICS = ['Recuperación', 'Colocación', 'EBITDA', 'OPEX'];
+    private const COMPARATIVE_CHART_CURRENCY_METRICS = ['Recuperación', 'Colocación', 'EBITDA', 'OPEX', 'Valor cartera'];
     private const COMPARATIVE_CHART_PERCENT_METRICS  = ['Margen EBITDA', 'Mora %', 'Rotación %'];
 
     /**
