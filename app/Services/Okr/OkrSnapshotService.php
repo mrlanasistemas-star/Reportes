@@ -33,6 +33,7 @@ class OkrSnapshotService
         private readonly OkrHealthService $health,
         private readonly OkrTrackingPeriodResolver $periodResolver,
         private readonly OkrCalendarService $calendar,
+        private readonly OkrWeeklyPlacementResolver $placementResolver,
     ) {
     }
 
@@ -52,11 +53,11 @@ class OkrSnapshotService
         // El periodo se resuelve para ESTA semana concreta (según su fecha
         // calendario), nunca "el último mensual generado" sin relación con la
         // semana que se está evaluando — ver OkrTrackingPeriodResolver.
-        $period   ??= $this->periodResolver->getPeriodForObjectiveWeek($objective->start_date, $weekNumber);
+        $period ??= $this->periodResolver->getPeriodForObjectiveWeek($objective->start_date, $weekNumber);
 
-        $currentValue = $kpi->isAutomatic() && $period
-            ? $this->resolver->getValue($kpi, $objective->scope_type, $objective->branch_id, $objective->employee_id, $period)
-            : $kr->current_value; // manual — el check-in ya lo capturó, nunca se sobreescribe aquí
+        [$currentValue, $sourceMeta] = $kpi->isAutomatic()
+            ? $this->resolveAutomaticValue($kpi, $objective, $weekNumber, $period, $checkInId)
+            : [$kr->current_value, $this->resolveSourceMetadata($kpi, $period, $this->calendar->weekEnd($objective->start_date, $weekNumber), $checkInId)]; // manual — el check-in ya lo capturó, nunca se sobreescribe aquí
 
         $totalWeeks = (int) $objective->duration_weeks;
         $baseline   = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
@@ -81,9 +82,6 @@ class OkrSnapshotService
             'health_status'                    => $healthStatus,
             'last_evaluated_at'                => now(),
         ]);
-
-        $weekEndDate = $this->calendar->weekEnd($objective->start_date, $weekNumber);
-        $sourceMeta  = $this->resolveSourceMetadata($kpi, $period, $weekEndDate, $checkInId);
 
         OkrProgressSnapshot::query()->updateOrCreate(
             ['okr_key_result_id' => $kr->id, 'week_number' => $weekNumber],
@@ -145,6 +143,50 @@ class OkrSnapshotService
             'source_granularity' => 'monthly',
             'source_quality'     => $coversWeek ? OkrProgressSnapshot::QUALITY_MONTHLY_PROXY : OkrProgressSnapshot::QUALITY_LAST_AVAILABLE,
         ];
+    }
+
+    /**
+     * Parte 6/8 del cierre (04-oct-2026): para el KPI de colocación, si el
+     * Objective (o su padre de sucursal) YA tiene al menos una carga semanal,
+     * esa es la fuente ÚNICA — nunca el proxy mensual, nunca ambas sumadas.
+     * Si todavía no se ha usado la carga semanal para este Objective, sigue
+     * el camino de siempre (proxy mensual de Reportería) — esto es un
+     * complemento opt-in, nunca rompe Objectives que no la usan.
+     *
+     * @return array{0: ?float, 1: array} [currentValue, sourceMeta]
+     */
+    private function resolveAutomaticValue(OkrKpi $kpi, OkrObjective $objective, int $weekNumber, ?Period $period, ?int $checkInId): array
+    {
+        $weekEndDate = $this->calendar->weekEnd($objective->start_date, $weekNumber);
+
+        if ($kpi->provider_key === 'reporteria.placement' && $this->placementResolver->hasAnyUpload($objective)) {
+            $placement = $this->placementResolver->resolve($objective, $weekNumber);
+
+            if ($placement['cumulative'] === null) {
+                // Falta el archivo de AL MENOS una semana del rango 1..N — nunca se
+                // finge un acumulado incompleto como si fuera el real (8.1/Test 6).
+                return [null, [
+                    'source_reference' => null, 'source_period_id' => null, 'source_period_code' => null,
+                    'source_date' => $weekEndDate->toDateString(), 'source_granularity' => 'weekly',
+                    'source_quality' => OkrProgressSnapshot::QUALITY_MISSING,
+                ]];
+            }
+
+            return [$placement['cumulative'], [
+                'source_reference'   => $placement['upload_id'] ? "placement_upload:{$placement['upload_id']}" : null,
+                'source_period_id'   => null,
+                'source_period_code' => null,
+                'source_date'        => $weekEndDate->toDateString(),
+                'source_granularity' => 'weekly',
+                'source_quality'     => OkrProgressSnapshot::QUALITY_EXACT,
+            ]];
+        }
+
+        $currentValue = $period
+            ? $this->resolver->getValue($kpi, $objective->scope_type, $objective->branch_id, $objective->employee_id, $period)
+            : null;
+
+        return [$currentValue, $this->resolveSourceMetadata($kpi, $period, $weekEndDate, $checkInId)];
     }
 
     private function project(OkrKeyResult $kr, OkrKpi $kpi, ?float $currentValue, ?float $baseline, float $target, int $weekNumber, int $totalWeeks): array
@@ -223,9 +265,7 @@ class OkrSnapshotService
         $kpi    = $kr->kpi;
         $period = $this->periodResolver->getPeriodForObjectiveWeek($objective->start_date, $weekNumber);
 
-        $currentValue = $period
-            ? $this->resolver->getValue($kpi, $objective->scope_type, $objective->branch_id, $objective->employee_id, $period)
-            : null;
+        [$currentValue, $sourceMeta] = $this->resolveAutomaticValue($kpi, $objective, $weekNumber, $period, null);
 
         $totalWeeks = (int) $objective->duration_weeks;
         $baseline   = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
@@ -238,7 +278,6 @@ class OkrSnapshotService
         $healthStatus     = $this->health->classify($deviation);
 
         $weekEndDate = $this->calendar->weekEnd($objective->start_date, $weekNumber);
-        $sourceMeta  = $this->resolveSourceMetadata($kpi, $period, $weekEndDate, null);
 
         OkrProgressSnapshot::query()->create(array_merge([
             'okr_key_result_id'                 => $kr->id,

@@ -21,6 +21,7 @@ import OkrEvidenceUploadDialog from '@/components/okr/OkrEvidenceUploadDialog.vu
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
 import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
 import OkrStatCard from '@/components/okr/OkrStatCard.vue'
+import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
 import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
 import { Button } from '@/components/ui/button'
 import AppLayout from '@/layouts/AppLayout.vue'
@@ -65,6 +66,7 @@ function latestSourceQuality(kr: any): string | null {
 const SOURCE_QUALITY_LABELS: Record<string, string> = {
     monthly_proxy: 'Este valor es el TOTAL MENSUAL de Reportería (proxy) — el sistema no tiene granularidad semanal real; "Actual" no cambia entre semanas del mismo mes.',
     last_available: 'Reportería todavía no cierra el mes de esta semana — se muestra el último mes con radiografía generada disponible.',
+    missing: 'Sin archivo de colocación cargado para esta semana — nunca se muestra como 0 para no fingir un resultado que no existe.',
 }
 
 defineOptions({ layout: AppLayout })
@@ -221,6 +223,67 @@ const alreadyCheckedInThisWeek = computed(() => props.checkIns.some((c) => c.wee
 function trendIcon(kr: any) {
     return (kr.deviation_pp ?? 0) >= 0 ? TrendingUp : TrendingDown
 }
+
+// ── Colocación semanal (Parte 6/7 del cierre, 04-oct-2026) ──────────────
+const placementWeekNumber = ref<number | null>(null)
+const placementFile = ref<File | null>(null)
+const placementUploading = ref(false)
+function onPlacementFileChange(e: Event) {
+    placementFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
+}
+async function submitPlacement(confirmReplace = false) {
+    if (!placementWeekNumber.value || !placementFile.value) {
+return
+}
+
+    placementUploading.value = true
+    const formData = new FormData()
+    formData.append('week_number', String(placementWeekNumber.value))
+    formData.append('file', placementFile.value)
+
+    if (confirmReplace) {
+formData.append('confirm_replace', '1')
+}
+
+    try {
+        // Sin meta csrf-token en este layout — se lee la cookie XSRF-TOKEN que
+        // Laravel ya pone en cada respuesta (mismo mecanismo que usa axios
+        // internamente para las peticiones de Inertia).
+        const xsrfToken = decodeURIComponent(document.cookie.match(/XSRF-TOKEN=([^;]+)/)?.[1] ?? '')
+        const res = await fetch(`/okr/${props.objective.id}/placement-uploads`, {
+            method: 'POST', body: formData, headers: { 'X-XSRF-TOKEN': xsrfToken, Accept: 'application/json' },
+        })
+        const data = await res.json()
+
+        if (res.status === 409) {
+            placementUploading.value = false
+            Swal.fire({
+                icon: 'warning', title: 'Ya existe colocación cargada para esta semana',
+                html: `Archivo actual: <strong>${data.existing_upload.original_filename}</strong><br>Monto: ${fmt(data.existing_upload.total_amount, 'currency')}<br><br>¿Deseas reemplazarla?`,
+                showCancelButton: true, confirmButtonText: 'Reemplazar', cancelButtonText: 'Cancelar', confirmButtonColor: '#dc2626',
+            }).then((r) => {
+ if (r.isConfirmed) {
+submitPlacement(true)
+}
+})
+
+            return
+        }
+
+        if (!res.ok) {
+            Swal.fire({ icon: 'error', title: 'No se pudo cargar el archivo', text: data.message ?? 'Error desconocido.' })
+
+            return
+        }
+
+        Swal.fire({ icon: 'success', title: data.replaced ? 'Colocación reemplazada' : 'Colocación cargada', text: `Semana ${data.upload.week_number}: ${fmt(data.upload.total_amount, 'currency')}`, timer: 2500, showConfirmButton: false })
+        placementWeekNumber.value = null
+        placementFile.value = null
+        router.reload({ only: ['objective', 'keyResults'] })
+    } finally {
+        placementUploading.value = false
+    }
+}
 </script>
 
 <template>
@@ -350,27 +413,88 @@ function trendIcon(kr: any) {
                 </div>
                 <AppEmptyState v-else title="Sin Key Results" message="Este OKR todavía no tiene resultados clave configurados." />
 
-                <!-- Contribución sucursal ↔ gestores — solo KPI distribuibles, solo si hay individuales -->
+                <!-- Rendimiento por gestor (Parte 9/10 del cierre) — solo KPI distribuibles, solo si hay individuales -->
                 <div v-for="c in objective.contributions ?? []" :key="c.kpi.id" class="mt-4 border-t border-border pt-4">
-                    <p class="mb-2 text-sm font-bold text-foreground">Contribución a la meta — {{ c.kpi.name }}</p>
+                    <p class="mb-2 flex items-center gap-1.5 text-sm font-bold text-foreground">
+                        Rendimiento por gestor — {{ c.kpi.name }}
+                        <OkrHelpTooltip text="La cabecera (Meta sucursal/Suma gestores/Cobertura) sigue mostrando el total de la sucursal — este desglose lo EXPLICA, no lo sustituye." />
+                    </p>
                     <div class="mb-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
                         <div><p class="text-muted-foreground">Meta sucursal</p><p class="font-semibold tabular-nums text-foreground">{{ fmt(c.branch_target, c.kpi.unit) }}</p></div>
-                        <div><p class="text-muted-foreground">Suma gestores</p><p class="font-semibold tabular-nums text-foreground">{{ fmt(c.children_current_sum, c.kpi.unit) }}</p></div>
+                        <div><p class="text-muted-foreground">Suma gestores (real)</p><p class="font-semibold tabular-nums text-foreground">{{ fmt(c.children_current_sum, c.kpi.unit) }}</p></div>
                         <div><p class="text-muted-foreground">Cobertura</p><p class="font-semibold tabular-nums text-primary">{{ c.coverage_percentage === null ? '—' : c.coverage_percentage + '%' }}</p></div>
                         <div><p class="text-muted-foreground">Faltante</p><p class="font-semibold tabular-nums" :class="c.gap > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'">{{ fmt(Math.abs(c.gap), c.kpi.unit) }}</p></div>
                     </div>
                     <OkrProgressBar :value="c.coverage_percentage ?? 0" />
-                    <div class="mt-2 space-y-1">
-                        <div v-for="row in c.rows" :key="row.employee" class="flex items-center justify-between text-xs">
-                            <span class="font-medium text-foreground">{{ row.employee }}</span>
-                            <span class="text-muted-foreground">{{ fmt(row.current_value, c.kpi.unit) }} / {{ fmt(row.target_value, c.kpi.unit) }} <span class="ml-1 font-semibold text-foreground">({{ row.compliance ?? '—' }}%)</span></span>
-                        </div>
+
+                    <!-- Parte 9.2 — distribución de la meta: Σ metas individuales vs meta de sucursal -->
+                    <div class="mt-2 flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2 text-[11px]">
+                        <span class="text-muted-foreground">Σ metas individuales: <span class="font-semibold text-foreground">{{ fmt(c.children_target_sum, c.kpi.unit) }}</span></span>
+                        <span v-if="c.distribution_mismatch" class="font-semibold text-amber-600 dark:text-amber-400">⚠ No coincide con la meta de sucursal — pendiente de distribuir</span>
+                        <span v-else class="font-semibold text-emerald-600 dark:text-emerald-400">✓ Metas individuales distribuidas al 100%</span>
+                    </div>
+
+                    <div class="mt-3 overflow-x-auto rounded-xl border border-border">
+                        <table class="w-full min-w-[640px] text-xs">
+                            <thead class="border-b border-border bg-muted/30 text-muted-foreground">
+                                <tr>
+                                    <th class="px-2 py-2 text-left font-semibold">Gestor</th>
+                                    <th class="px-2 py-2 text-left font-semibold">Estado</th>
+                                    <th class="px-2 py-2 text-left font-semibold">Meta individual</th>
+                                    <th class="px-2 py-2 text-left font-semibold">Semana actual</th>
+                                    <th class="px-2 py-2 text-left font-semibold">Acumulado</th>
+                                    <th class="px-2 py-2 text-left font-semibold">Cumplimiento</th>
+                                    <th class="px-2 py-2 text-left font-semibold">Semáforo</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="row in c.rows" :key="row.employee" class="border-t border-border">
+                                    <td class="px-2 py-2 font-medium text-foreground">{{ row.employee }}</td>
+                                    <td class="px-2 py-2">
+                                        <span class="rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="row.employee_active ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'">
+                                            {{ row.employee_active ? 'Activo' : 'Baja' }}
+                                        </span>
+                                    </td>
+                                    <td class="px-2 py-2 tabular-nums">{{ fmt(row.target_value, c.kpi.unit) }}</td>
+                                    <td class="px-2 py-2 tabular-nums">{{ row.weekly_value === null ? '—' : fmt(row.weekly_value, c.kpi.unit) }}</td>
+                                    <td class="px-2 py-2 font-semibold tabular-nums">{{ fmt(row.current_value, c.kpi.unit) }}</td>
+                                    <td class="px-2 py-2 font-semibold tabular-nums">{{ row.compliance === null ? '—' : row.compliance + '%' }}</td>
+                                    <td class="px-2 py-2"><OkrStatusBadge v-if="row.health_status" kind="health" :value="row.health_status" /><span v-else class="text-muted-foreground">—</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
 
             <!-- Evidencias + Check-in -->
             <div class="space-y-4">
+                <!-- Colocación semanal (Parte 6/7 del cierre) — solo si el OKR tiene un KR de colocación -->
+                <div v-if="(objective.placement_weeks ?? []).length" class="app-card p-4">
+                    <p class="mb-3 flex items-center gap-1.5 text-sm font-bold text-foreground">
+                        Colocación semanal
+                        <OkrHelpTooltip text="Cada semana se carga en su propio archivo — nunca se sobrescribe la anterior. Si una semana no tiene archivo, el seguimiento la muestra como 'sin datos', nunca como 0." />
+                    </p>
+                    <div class="mb-3 space-y-1.5">
+                        <div v-for="w in objective.placement_weeks" :key="w.week_number" class="flex items-center justify-between rounded-lg border border-border px-2.5 py-1.5 text-xs">
+                            <span class="font-semibold text-foreground">Semana {{ w.week_number }}</span>
+                            <span v-if="w.uploaded" class="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
+                                {{ fmt(w.total_amount, 'currency') }}
+                                <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold">Cargada</span>
+                            </span>
+                            <span v-else class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">Sin archivo</span>
+                        </div>
+                    </div>
+                    <div v-if="!objective.is_read_only && canUploadEvidence" class="flex items-center gap-2">
+                        <select v-model="placementWeekNumber" class="app-input h-9 w-28 text-xs">
+                            <option :value="null" disabled>Semana</option>
+                            <option v-for="w in objective.placement_weeks" :key="w.week_number" :value="w.week_number">Semana {{ w.week_number }}</option>
+                        </select>
+                        <input type="file" accept=".xlsx,.xls,.csv" class="app-input h-9 flex-1 text-xs" @change="onPlacementFileChange">
+                        <Button size="sm" class="h-9 shrink-0 text-xs" :disabled="!placementWeekNumber || !placementFile || placementUploading" @click="submitPlacement()">Subir</Button>
+                    </div>
+                </div>
+
                 <div class="app-card p-4">
                     <div class="mb-3 flex items-center justify-between">
                         <p class="text-sm font-bold text-foreground">Evidencias y archivos de seguimiento</p>

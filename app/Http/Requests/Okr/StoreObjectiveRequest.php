@@ -127,6 +127,16 @@ class StoreObjectiveRequest extends FormRequest
             }
             $seen[$employeeId] = true;
 
+            // Parte 1.1 del cierre (04-oct-2026): un colaborador en baja no es
+            // seleccionable para un NUEVO OKR — backend real, nunca solo el
+            // filtro del buscador del wizard (que ya oculta inactivos, pero
+            // esto cubre una petición directa sin pasar por la UI).
+            if (!$resolver->employeeIsActive($employeeId)) {
+                $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador está dado de baja — no se puede asignar un nuevo OKR.');
+
+                continue;
+            }
+
             if ($branchId && !$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
                 $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador no pertenece a la sucursal seleccionada.');
             }
@@ -145,6 +155,15 @@ class StoreObjectiveRequest extends FormRequest
         }
 
         $resolver = app(OkrEmployeeBranchResolver::class);
+
+        // Parte 1.1 del cierre (04-oct-2026): mismo candado que arriba, para
+        // un Objective individual directo (sin pasar por "OKR individuales").
+        if (!$resolver->employeeIsActive($employeeId)) {
+            $validator->errors()->add('employee_id', 'Ese colaborador está dado de baja — no se puede asignar un nuevo OKR.');
+
+            return;
+        }
+
         if (!$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
             $validator->errors()->add('employee_id', 'El colaborador seleccionado no pertenece a la sucursal indicada.');
         }

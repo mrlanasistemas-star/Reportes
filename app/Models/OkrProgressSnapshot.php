@@ -12,6 +12,8 @@ class OkrProgressSnapshot extends Model
     public const QUALITY_MONTHLY_PROXY  = 'monthly_proxy';
     public const QUALITY_LAST_AVAILABLE = 'last_available';
     public const QUALITY_MANUAL_CHECKIN = 'manual_checkin';
+    /** Parte 8.1 del cierre (04-oct-2026): sin archivo de colocación semanal para esta semana — nunca se finge 0. */
+    public const QUALITY_MISSING        = 'missing';
 
     protected $fillable = [
         'okr_key_result_id', 'week_number', 'snapshot_date',

@@ -137,6 +137,18 @@ class OkrEmployeeBranchResolver
         return $this->currentBranchIdFor($employeeId) === $branchId;
     }
 
+    /**
+     * Parte 1.1 del cierre (04-oct-2026): "activo" es la MISMA regla que ya
+     * usa employeesForBranch()/countForBranch() para el dropdown — se expone
+     * aparte para que StoreObjectiveRequest pueda rechazar en BACKEND (nunca
+     * solo ocultar en el wizard) un `employee_id` de alguien en baja enviado
+     * directamente, sin depender de que el frontend ya lo haya filtrado.
+     */
+    public function employeeIsActive(int $employeeId): bool
+    {
+        return Employee::query()->where('id', $employeeId)->where('is_active', true)->exists();
+    }
+
     /** IDs de la fila más reciente (mayor period_id) por employee_id. */
     private function latestAssignmentIdsSubquery(): \Illuminate\Support\Collection|array
     {
