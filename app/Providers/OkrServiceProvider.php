@@ -35,15 +35,33 @@ class OkrServiceProvider extends ServiceProvider
         'okr.view', 'okr.create', 'okr.kpi.manage', 'okr.history.view', 'okr.admin',
     ];
 
-    /** Permisos administrativos — requieren users.role === 'admin'. */
+    /** Permisos administrativos — requieren users.role === 'admin' (usuarios, catálogo KPI). */
     private const ADMIN_ONLY_PERMISSIONS = ['okr.kpi.manage', 'okr.admin'];
+
+    /**
+     * Permisos "gerenciales" (cierre 04-oct-2026, Parte 1): asignación/
+     * individualización de OKR — admin O gerencial, nunca colaborador (su
+     * acceso es solo seguimiento propio: check-in/evidencia sobre lo YA
+     * asignado, ver OkrObjectivePolicy).
+     */
+    private const MANAGERIAL_PERMISSIONS = ['okr.create'];
 
     public function boot(): void
     {
         foreach (self::PERMISSIONS as $permission) {
-            Gate::define($permission, fn ($user) => in_array($permission, self::ADMIN_ONLY_PERMISSIONS, true)
-                ? $user !== null && ($user->role ?? null) === 'admin'
-                : $user !== null);
+            Gate::define($permission, function ($user) use ($permission) {
+                if ($user === null) {
+                    return false;
+                }
+                if (in_array($permission, self::ADMIN_ONLY_PERMISSIONS, true)) {
+                    return $user->isAdmin();
+                }
+                if (in_array($permission, self::MANAGERIAL_PERMISSIONS, true)) {
+                    return $user->hasManagerialAccess();
+                }
+
+                return true;
+            });
         }
 
         // Acciones CON un Objective concreto — ver OkrObjectivePolicy.

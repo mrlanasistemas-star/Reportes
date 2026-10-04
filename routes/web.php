@@ -10,6 +10,7 @@ use App\Http\Controllers\ValidationController;
 use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Middleware\EnsureReporteriaAccess;
 
 Route::redirect('/', '/login');
 
@@ -45,6 +46,24 @@ Route::get('/sitemap.xml', function () {
 })->name('sitemap');
 
 Route::middleware(['auth', 'verified'])->group(function () {
+    // Módulo OKR (08-sep-2026) — dentro del MISMO grupo auth+verified que el
+    // resto de Reportería, nunca autenticación aparte. Fuera del bloque
+    // EnsureReporteriaAccess de abajo: OKR tiene su propia regla de acceso
+    // (EnsureOkrAccessEnabled) y un colaborador SÍ debe poder entrar aquí
+    // (seguimiento propio, check-in, evidencia).
+    require __DIR__ . '/okr.php';
+
+    Route::prefix('guia-sistema')
+        ->name('guia-sistema.')
+        ->group(function () {
+            Route::get('/', [SystemGuideController::class, 'index'])->name('index');
+            Route::get('/pdf', [SystemGuideController::class, 'pdf'])->name('pdf');
+        });
+
+    // Parte 1 del cierre (04-oct-2026): Reportería (financiero global) — solo
+    // admin/gerencial. Ver EnsureReporteriaAccess; un colaborador recibe 403
+    // aquí y vive únicamente en /okr.
+    Route::middleware(EnsureReporteriaAccess::class)->group(function () {
     // Cierre 17-sep-2026 ronda 4 — el Dashboard ahora resume el periodo más reciente
     // con radiografía generada (antes era una página estática sin datos). Ver
     // DashboardController — misma fuente (RadiografiaExportService) que Web/Excel/PDF.
@@ -60,10 +79,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // 'home') hace que Laravel pierda la resolución por nombre de la primera —
     // confirmado con `php artisan route:list --name=dashboard` (vacío) tras probarlo.
     Route::get('/home', [DashboardController::class, 'index'])->name('home');
-
-    // Módulo OKR (08-sep-2026) — dentro del MISMO grupo auth+verified que el
-    // resto de Reportería, nunca autenticación aparte.
-    require __DIR__ . '/okr.php';
 
     Route::prefix('historico-general')
         ->name('historico-general.')
@@ -128,13 +143,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/', [ValidationController::class, 'index'])->name('index');
         });
 
-    Route::prefix('guia-sistema')
-        ->name('guia-sistema.')
-        ->group(function () {
-            Route::get('/', [SystemGuideController::class, 'index'])->name('index');
-            Route::get('/pdf', [SystemGuideController::class, 'pdf'])->name('pdf');
-        });
-
     Route::prefix('reportes-mensuales')
         ->name('reportes-mensuales.')
         ->group(function () {
@@ -165,6 +173,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/runs/{run}/pdf', [MonthlyReportController::class, 'downloadRunPdf'])->name('run-pdf');
             Route::get('/runs/{run}/ver', [MonthlyReportController::class, 'viewRun'])->name('run-ver');
         });
+    }); // fin EnsureReporteriaAccess
 });
 
 if (Features::enabled(Features::updatePasswords())) {

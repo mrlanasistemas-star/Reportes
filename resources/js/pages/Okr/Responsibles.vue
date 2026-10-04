@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Link, useForm, router } from '@inertiajs/vue3'
-import { ArrowLeft, Plus, ShieldCheck, UserPlus, Users } from 'lucide-vue-next'
+import { ArrowLeft, Plus, UserPlus, Users } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { ref, watch } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
@@ -84,10 +84,16 @@ return false
     return true
 }
 
-function toggleRole(responsible: { id: number; name: string; role: string }) {
-    const newRole = responsible.role === 'admin' ? 'colaborador' : 'admin'
+const roleLabels: Record<string, string> = { admin: 'Administrador', gerencial: 'Gerencial', colaborador: 'Colaborador' }
+const roleOptions = ['admin', 'gerencial', 'colaborador'] as const
+
+function changeRole(responsible: { id: number; name: string; role: string }, newRole: string) {
+    if (newRole === responsible.role) {
+return
+}
+
     Swal.fire({
-        icon: 'question', title: `¿Cambiar a ${responsible.name} a ${newRole === 'admin' ? 'Administrador' : 'Colaborador'}?`,
+        icon: 'question', title: `¿Cambiar a ${responsible.name} a ${roleLabels[newRole]}?`,
         showCancelButton: true, confirmButtonText: 'Cambiar rol', cancelButtonText: 'Cancelar', confirmButtonColor: '#4f46e5',
     }).then((r) => {
         if (r.isConfirmed) {
@@ -101,10 +107,10 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
     <div class="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <div class="flex items-center gap-3">
             <Link href="/okr" class="text-muted-foreground transition hover:text-foreground"><ArrowLeft class="size-5" /></Link>
-            <AppPageHeader title="Responsables" subtitle="Personas que pueden dar seguimiento a un OKR. Agrega nuevas o revisa cuántos objetivos tiene cada quien.">
+            <AppPageHeader title="Usuarios y accesos" subtitle="Roles y acceso de cada persona en el sistema: Administrador, Gerencial o Colaborador. Agrega nuevas o revisa cuántos objetivos OKR tiene cada quien.">
                 <template #actions>
                     <Button type="button" class="app-btn app-btn-primary h-11 gap-2" @click="showForm = !showForm">
-                        <Plus class="size-4" /> Agregar responsable
+                        <Plus class="size-4" /> Agregar usuario
                     </Button>
                 </template>
             </AppPageHeader>
@@ -112,17 +118,17 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
 
         <div v-if="showForm" class="app-card animate-in fade-in slide-in-from-top-2 space-y-4 p-5 duration-200">
             <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
-                <UserPlus class="size-4 text-primary" /> Nuevo responsable
+                <UserPlus class="size-4 text-primary" /> Nuevo usuario
                 <OkrHelpTooltip text="Se crea sin acceso todavía — un administrador debe habilitarlo explícitamente después de confirmar la identidad de la persona." />
             </p>
             <div class="grid gap-4 sm:grid-cols-2">
                 <TextField v-model="form.name" label="Nombre completo" placeholder="Ej. Ana López" :error="form.errors.name" />
                 <TextField v-model="form.email" type="email" label="Correo" placeholder="ana@empresa.com" :error="form.errors.email" />
             </div>
-            <p class="text-xs text-muted-foreground">Se crea como Colaborador. Los administradores se gestionan fuera del módulo OKR.</p>
+            <p class="text-xs text-muted-foreground">Se crea como Colaborador. Para Administrador o Gerencial, cambia el rol después de crearlo.</p>
             <div class="flex justify-end gap-2">
                 <Button type="button" variant="outline" class="h-10" @click="showForm = false">Cancelar</Button>
-                <Button type="button" class="h-10" :disabled="form.processing" @click="submit">Guardar responsable</Button>
+                <Button type="button" class="h-10" :disabled="form.processing" @click="submit">Guardar usuario</Button>
             </div>
         </div>
 
@@ -130,7 +136,7 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
             <div class="app-table-toolbar">
                 <div class="flex items-center gap-2">
                     <Users class="size-4 text-primary" />
-                    <h2 class="text-sm font-bold text-foreground">{{ responsibles.length }} responsable(s)</h2>
+                    <h2 class="text-sm font-bold text-foreground">{{ responsibles.length }} usuario(s)</h2>
                 </div>
             </div>
 
@@ -151,19 +157,19 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                             <td class="px-4 py-3 font-semibold text-foreground">{{ r.name }}</td>
                             <td class="px-4 py-3 text-muted-foreground">{{ r.email }}</td>
                             <td class="px-4 py-3">
-                                <button
-                                    type="button"
-                                    class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition"
+                                <select
+                                    class="rounded-full border-0 px-2.5 py-1 text-xs font-semibold transition focus:outline-none focus:ring-2 focus:ring-primary/30"
                                     :class="[
-                                        r.role === 'admin' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground',
-                                        canChangeRole(r) ? 'hover:ring-2 hover:ring-primary/30 cursor-pointer' : 'cursor-default opacity-80',
+                                        r.role === 'admin' ? 'bg-primary/10 text-primary' : r.role === 'gerencial' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-muted text-muted-foreground',
+                                        canChangeRole(r) ? 'cursor-pointer' : 'cursor-default opacity-80',
                                     ]"
                                     :disabled="!canChangeRole(r)"
-                                    :title="canChangeRole(r) ? 'Clic para cambiar el rol' : (r.id === current_user_id ? 'No puedes cambiar tu propio rol' : 'Es el único administrador — no se puede quitar')"
-                                    @click="canChangeRole(r) && toggleRole(r)"
+                                    :title="canChangeRole(r) ? 'Cambiar el rol' : (r.id === current_user_id ? 'No puedes cambiar tu propio rol' : 'Es el único administrador — no se puede quitar')"
+                                    :value="r.role"
+                                    @change="changeRole(r, ($event.target as HTMLSelectElement).value)"
                                 >
-                                    <ShieldCheck v-if="r.role === 'admin'" class="size-3" /> {{ r.role === 'admin' ? 'Administrador' : 'Colaborador' }}
-                                </button>
+                                    <option v-for="opt in roleOptions" :key="opt" :value="opt">{{ roleLabels[opt] }}</option>
+                                </select>
                             </td>
                             <td class="px-4 py-3">
                                 <span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold" :class="r.status === 'active' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'">
@@ -179,7 +185,7 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                     </tbody>
                 </table>
 
-                <AppEmptyState v-if="responsibles.length === 0" title="Sin responsables" message="Agrega el primero para poder asignarle un OKR." />
+                <AppEmptyState v-if="responsibles.length === 0" title="Sin usuarios" message="Agrega el primero para poder asignarle un rol y un OKR." />
             </div>
         </div>
     </div>

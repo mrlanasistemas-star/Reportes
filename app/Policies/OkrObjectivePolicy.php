@@ -37,10 +37,14 @@ class OkrObjectivePolicy
         return $this->isAdmin($user) || $this->isResponsible($user, $objective);
     }
 
-    /** Activar el Objective — decisión administrativa, nunca del propio responsable. */
+    /**
+     * Activar el Objective — decisión administrativa/gerencial (Parte 1,
+     * 04-oct-2026: GERENCIAL tiene "asignación" explícita en su alcance),
+     * nunca del propio responsable ni de un colaborador.
+     */
     public function assign(User $user, OkrObjective $objective): bool
     {
-        return $this->isAdmin($user);
+        return $user->hasManagerialAccess();
     }
 
     public function delete(User $user, OkrObjective $objective): bool

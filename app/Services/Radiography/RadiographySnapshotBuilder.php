@@ -418,13 +418,19 @@ class RadiographySnapshotBuilder
 
         if ($scope === 'branch') {
             $branchId = (int) ($config['branch_id'] ?? 0);
-            if (!$branchId) return $snapshot;
+            if (!$branchId) {
+                $snapshot['scope'] = ['type' => 'branch', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => false, 'identity_resolution' => 'branch_id_missing'];
+                return $snapshot;
+            }
             return $this->applyBranchScope($snapshot, $branchId, $period, $config, $empGestores);
         }
 
         if ($scope === 'employee') {
             $employeeId = (int) ($config['employee_id'] ?? 0);
-            if (!$employeeId) return $snapshot;
+            if (!$employeeId) {
+                $snapshot['scope'] = ['type' => 'employee', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => false, 'identity_resolution' => 'employee_id_missing'];
+                return $snapshot;
+            }
             return $this->applyEmployeeScope($snapshot, $employeeId, $empGestores, $period, $config);
         }
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Link } from '@inertiajs/vue3';
+import { Link, usePage } from '@inertiajs/vue3';
+import { computed } from 'vue';
 
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -14,8 +15,11 @@ import {
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
 
-import { mainNavItems } from '@/config/mainNav';
+import { visibleMainNavItems } from '@/config/mainNav';
 import { dashboard } from '@/routes';
+
+const page = usePage();
+const navItems = computed(() => visibleMainNavItems(page.props.auth.user?.role));
 </script>
 
 <template>
@@ -33,7 +37,7 @@ import { dashboard } from '@/routes';
         </SidebarHeader>
 
         <SidebarContent>
-            <NavMain :items="mainNavItems" />
+            <NavMain :items="navItems" />
         </SidebarContent>
 
         <SidebarFooter>
