@@ -6,6 +6,7 @@ use App\Models\OkrObjective;
 use App\Services\Okr\OkrAlertService;
 use App\Services\Okr\OkrSnapshotService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Módulo OKR (08-sep-2026) — recalcula el progreso de todos los Objectives
@@ -39,6 +40,10 @@ class OkrRefreshCommand extends Command
             $alertService->generateForObjective($objective->fresh());
             $this->line("  ✓ #{$objective->id} {$objective->title}" . ($backfilled ? " (backfill: {$backfilled} semana(s))" : ''));
         }
+
+        // Parte 17 del cierre (04-oct-2026) — marca de "último refresh" para
+        // `okr:health`, nunca para lógica de negocio (solo telemetría).
+        Cache::forever('okr:last_refresh_at', now()->toDateTimeString());
 
         $this->info('Listo.');
 
