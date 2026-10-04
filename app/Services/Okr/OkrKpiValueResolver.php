@@ -47,8 +47,8 @@ class OkrKpiValueResolver
             return null;
         }
 
-        if ($scopeType !== self::scopeGeneral() && (($snapshot['scope']['available'] ?? true) === false)) {
-            return null; // sin datos de radiografía para ese alcance en este periodo
+        if ($scopeType !== self::scopeGeneral() && (($snapshot['scope']['available'] ?? false) === false)) {
+            return null; // sin datos de radiografía para ese alcance en este periodo (o scope no resuelto: nunca cae al general)
         }
 
         return isset($snapshot['summary'][$summaryKey]) ? (float) $snapshot['summary'][$summaryKey] : null;

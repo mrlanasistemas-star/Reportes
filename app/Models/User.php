@@ -23,6 +23,40 @@ class User extends Authenticatable
     use HasFactory, Notifiable, TwoFactorAuthenticatable;
 
     /**
+     * Roles del sistema (cierre 04-oct-2026, Parte 1): ADMIN (acceso total),
+     * GERENCIAL (Reportería + OKR operativo: asignación/individualización/
+     * Carta/Warning/seguimiento, SIN gestión de usuarios ni catálogo KPI) y
+     * COLABORADOR (solo sus propias funciones OKR — check-in, evidencia,
+     * seguimiento propio — NUNCA acceso financiero global de Reportería).
+     */
+    public const ROLE_ADMIN = 'admin';
+    public const ROLE_GERENCIAL = 'gerencial';
+    public const ROLE_COLABORADOR = 'colaborador';
+
+    public const ROLES = [self::ROLE_ADMIN, self::ROLE_GERENCIAL, self::ROLE_COLABORADOR];
+
+    public function isAdmin(): bool
+    {
+        return $this->role === self::ROLE_ADMIN;
+    }
+
+    public function isGerencial(): bool
+    {
+        return $this->role === self::ROLE_GERENCIAL;
+    }
+
+    public function isColaborador(): bool
+    {
+        return !$this->isAdmin() && !$this->isGerencial();
+    }
+
+    /** Admin o gerencial — acceso financiero global de Reportería y operación completa de OKR. */
+    public function hasManagerialAccess(): bool
+    {
+        return $this->isAdmin() || $this->isGerencial();
+    }
+
+    /**
      * Get the attributes that should be cast.
      *
      * @return array<string, string>

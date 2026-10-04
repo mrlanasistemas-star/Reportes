@@ -1,18 +1,30 @@
 <script setup lang="ts">
-import { Link } from '@inertiajs/vue3'
+import { Link, usePage } from '@inertiajs/vue3'
 import { Menu } from 'lucide-vue-next'
+import { computed } from 'vue'
 import { useSidebar } from '@/components/ui/sidebar'
 import { useCurrentUrl } from '@/composables/useCurrentUrl'
-import { mainNavItems } from '@/config/mainNav'
+import { visibleMainNavItems } from '@/config/mainNav'
 
 const { setOpenMobile } = useSidebar()
 const { isCurrentUrl } = useCurrentUrl()
+const page = usePage()
 
-// Solo 4 accesos directos abajo (Dashboard, Carga de archivos, Reportes,
-// OKR) — el resto del menú (Periodos, Colaboradores, Guía, Configuración)
-// vive detrás de "Más", que abre el mismo panel deslizable que ya arma
-// AppSidebar.vue en modo móvil.
-const quickItems = [mainNavItems[0], mainNavItems[1], mainNavItems[4], mainNavItems[5]]
+// Solo 4 accesos directos abajo — el resto del menú vive detrás de "Más",
+// que abre el mismo panel deslizable que ya arma AppSidebar.vue en modo
+// móvil. Cierre 04-oct-2026 (Parte 1): la curaduría ya no asume índices
+// fijos — un colaborador no ve Dashboard/Carga/Reportes (son
+// Reportería financiero global, roles admin/gerencial), así que se rellena
+// con lo que SÍ le queda visible (OKR, Guía, Configuración) en vez de dejar
+// huecos o enlaces a algo que el backend le rechazaría.
+const quickItems = computed(() => {
+    const visible = visibleMainNavItems(page.props.auth.user?.role)
+    const preferredTitles = ['Dashboard', 'Carga de archivos', 'Reportes mensuales', 'OKR']
+    const preferred = preferredTitles.map((t) => visible.find((i) => i.title === t)).filter((i) => !!i)
+    const rest = visible.filter((i) => !preferred.includes(i))
+
+    return [...preferred, ...rest].slice(0, 4)
+})
 </script>
 
 <template>

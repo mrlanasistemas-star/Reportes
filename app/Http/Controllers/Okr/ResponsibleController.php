@@ -159,7 +159,7 @@ class ResponsibleController extends Controller
         $this->authorize('okr.admin');
 
         $data = $request->validate([
-            'role' => ['required', Rule::in(['admin', 'colaborador'])],
+            'role' => ['required', Rule::in(User::ROLES)],
         ]);
 
         if ($user->id === $request->user()->id) {
@@ -175,6 +175,8 @@ class ResponsibleController extends Controller
 
         $user->forceFill(['role' => $data['role']])->save();
 
-        return back()->with('success', "Rol de {$user->name} actualizado a " . ($data['role'] === 'admin' ? 'Administrador' : 'Colaborador') . '.');
+        $roleLabels = ['admin' => 'Administrador', 'gerencial' => 'Gerencial', 'colaborador' => 'Colaborador'];
+
+        return back()->with('success', "Rol de {$user->name} actualizado a " . ($roleLabels[$data['role']] ?? $data['role']) . '.');
     }
 }

@@ -40,8 +40,11 @@ it('a non-admin user cannot delete an objective', function () {
 
 // "Asignar OKR" ya no es una página aparte (10-sep-2026) — es un Dialog
 // embebido en el propio Dashboard (ver DashboardController::index(), props
-// wizard*), así que "puede crear" se verifica con el dashboard + el POST real.
-it('a non-admin user can still perform normal OKR operations (view/create/check-in)', function () {
+// wizard*). Un colaborador SÍ puede verlo, pero YA NO puede crear/asignar
+// (ver OkrServiceProvider::MANAGERIAL_PERMISSIONS, cierre 04-oct-2026 Parte
+// 1: "asignación" es gerencial/admin — colaborador solo tiene seguimiento
+// propio sobre lo YA asignado).
+it('a non-admin, non-managerial user can view the dashboard but NOT create/assign a new objective', function () {
     $colaborador = User::factory()->create(['role' => 'colaborador']);
 
     $this->actingAs($colaborador)->get(route('okr.dashboard'))->assertOk();
@@ -53,5 +56,25 @@ it('a non-admin user can still perform normal OKR operations (view/create/check-
         'title' => 'Objective de prueba creado por colaborador',
         'start_date' => now()->toDateString(), 'duration_weeks' => 8,
         'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR de prueba', 'baseline_value' => 10, 'target_value' => 20, 'weight' => 100]],
+    ])->assertForbidden();
+});
+
+it('a gerencial user CAN create/assign a new objective, same as admin', function () {
+    $gerencial = User::factory()->create(['role' => 'gerencial']);
+
+    $branch = okrBranch('Cordoba');
+    $kpi = okrManualKpi('gerencial_create_kpi');
+    $this->actingAs($gerencial)->post(route('okr.store'), [
+        'scope_type' => 'branch', 'branch_id' => $branch->id,
+        'title' => 'Objective de prueba creado por gerencial',
+        'start_date' => now()->toDateString(), 'duration_weeks' => 8,
+        'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR de prueba', 'baseline_value' => 10, 'target_value' => 20, 'weight' => 100]],
     ])->assertSessionHasNoErrors();
+});
+
+it('a gerencial user still cannot manage the KPI catalog or administer users (admin-only)', function () {
+    $gerencial = User::factory()->create(['role' => 'gerencial']);
+
+    $this->actingAs($gerencial)->get(route('okr.kpis.index'))->assertForbidden();
+    $this->actingAs($gerencial)->get(route('okr.responsibles.index'))->assertForbidden();
 });

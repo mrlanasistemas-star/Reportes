@@ -48,13 +48,13 @@ it('the responsible of an objective CAN check-in on it even without the admin ro
     expect($objective->checkIns()->where('user_id', $responsible->id)->exists())->toBeTrue();
 });
 
-it('the responsible of an objective can update its own goal, but cannot activate it (assignment stays admin-only)', function () {
+it('the responsible of an objective can update its own goal, but cannot activate it (assignment stays admin/gerencial-only)', function () {
     $admin = User::factory()->create();
     $responsible = User::factory()->create(['role' => 'colaborador']);
     $objective = okrDraftObjective($admin, okrBranch('San Luis Potosi'), [100.0]);
     $objective->update(['responsible_user_id' => $responsible->id]);
 
-    // Activar sigue siendo del admin, ni siquiera el responsable puede.
+    // Activar sigue siendo de admin/gerencial — ni siquiera el responsable puede (es colaborador).
     $this->actingAs($responsible)->post(route('okr.activate', $objective))->assertForbidden();
 
     $this->actingAs($admin)->post(route('okr.activate', $objective));
