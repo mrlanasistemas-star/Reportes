@@ -11,7 +11,7 @@ import {
     History, Target, TrendingDown, TrendingUp, Upload, X,
 } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import SelectField from '@/components/forms/SelectField.vue'
@@ -79,6 +79,7 @@ const props = defineProps<{
     evidences: any[]
     alerts: any[]
     warnings: any[]
+    kpis: any[]
     auditLogs: any[]
     canManage: boolean
     canAssign: boolean
@@ -223,6 +224,93 @@ const alreadyCheckedInThisWeek = computed(() => props.checkIns.some((c) => c.wee
 
 function trendIcon(kr: any) {
     return (kr.deviation_pp ?? 0) >= 0 ? TrendingUp : TrendingDown
+}
+
+// ── Editor de Key Results en DRAFT (Parte 5/7 del cierre, 04-oct-2026) ──
+// Un Objective individual creado por el wizard de individualización nace EN
+// BORRADOR y SIN Key Results propios a propósito (ver ObjectiveController::
+// store()) — esto es lo que faltaba para poder completarlo (su propio KPI/
+// baseline/meta/peso) y activarlo. Reutiliza key-results.store/destroy
+// (ya existían en el backend, sin ninguna pantalla que los llamara) y
+// baseline-preview (misma consulta que el wizard de asignación).
+const newKr = reactive({ kpi_id: null as number | null, description: '', baseline_value: '' as string | number, target_value: '' as string | number, weight: '100' })
+const newKrBaselinePreview = ref<{ available: boolean; value: number | null } | null>(null)
+const newKrLoadingPreview = ref(false)
+const newKrSubmitting = ref(false)
+const selectedNewKrKpi = computed(() => props.kpis.find((k) => k.id === newKr.kpi_id) ?? null)
+
+async function fetchNewKrBaseline() {
+    if (!selectedNewKrKpi.value || selectedNewKrKpi.value.automation !== 'automatic') {
+return
+}
+
+    newKrLoadingPreview.value = true
+
+    try {
+        const params = new URLSearchParams({ kpi_id: String(newKr.kpi_id), scope_type: props.objective.scope_type, start_date: props.objective.start_date })
+
+        if (props.objective.branch?.id) {
+params.set('branch_id', String(props.objective.branch.id))
+}
+
+        if (props.objective.employee?.id) {
+params.set('employee_id', String(props.objective.employee.id))
+}
+
+        const res = await fetch(`/okr/baseline-preview?${params.toString()}`, { headers: { Accept: 'application/json' } })
+        const data = res.ok ? await res.json() : null
+        newKrBaselinePreview.value = data
+
+        if (data?.available) {
+newKr.baseline_value = data.value
+}
+    } finally {
+        newKrLoadingPreview.value = false
+    }
+}
+watch(() => newKr.kpi_id, () => {
+    newKrBaselinePreview.value = null
+    newKr.baseline_value = ''
+
+    if (selectedNewKrKpi.value?.automation === 'automatic') {
+fetchNewKrBaseline()
+}
+})
+
+function submitNewKr() {
+    if (!newKr.kpi_id || !newKr.description.trim() || newKr.target_value === '') {
+return
+}
+
+    newKrSubmitting.value = true
+    router.post(`/okr/${props.objective.id}/key-results`, {
+        kpi_id: newKr.kpi_id, description: newKr.description,
+        baseline_value: selectedNewKrKpi.value?.automation === 'automatic' ? null : (newKr.baseline_value === '' ? null : Number(newKr.baseline_value)),
+        target_value: Number(newKr.target_value), weight: Number(newKr.weight),
+    }, {
+        onFinish: () => {
+ newKrSubmitting.value = false
+},
+        onSuccess: () => {
+            newKr.kpi_id = null
+            newKr.description = ''
+            newKr.baseline_value = ''
+            newKr.target_value = ''
+            newKr.weight = '100'
+            newKrBaselinePreview.value = null
+        },
+    })
+}
+
+function removeDraftKr(krId: number) {
+    Swal.fire({
+        icon: 'warning', title: '¿Eliminar este Key Result?', showCancelButton: true,
+        confirmButtonText: 'Eliminar', cancelButtonText: 'Cancelar', confirmButtonColor: '#dc2626',
+    }).then((r) => {
+ if (r.isConfirmed) {
+router.delete(`/okr/${props.objective.id}/key-results/${krId}`)
+}
+})
 }
 
 // Sin meta csrf-token en este layout — se lee la cookie XSRF-TOKEN que
@@ -495,12 +583,38 @@ return
                                 </td>
                                 <td class="px-2 py-2.5">
                                     <button v-if="objective.lifecycle_status === 'active' && canUpdate" class="text-[11px] font-bold text-primary hover:underline" @click="openEditGoal(kr)">Editar</button>
+                                    <button v-if="objective.lifecycle_status === 'draft' && canUpdate" class="text-[11px] font-bold text-destructive hover:underline" @click="removeDraftKr(kr.id)">Eliminar</button>
                                 </td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                <AppEmptyState v-else title="Sin Key Results" message="Este OKR todavía no tiene resultados clave configurados." />
+                <AppEmptyState v-else-if="objective.lifecycle_status !== 'draft'" title="Sin Key Results" message="Este OKR todavía no tiene resultados clave configurados." />
+
+                <!-- Editor de Key Results en DRAFT (Parte 5/7 del cierre) — necesario para poder activar el OKR -->
+                <div v-if="objective.lifecycle_status === 'draft' && canUpdate" class="mt-4 space-y-3 rounded-xl border border-dashed border-border p-3">
+                    <p class="flex items-center gap-1.5 text-xs font-bold text-foreground">
+                        Agregar Key Result
+                        <OkrHelpTooltip text="El OKR necesita al menos un Key Result, con pesos que sumen 100%, antes de poder activarse." />
+                    </p>
+                    <div class="grid grid-cols-1 gap-2 sm:grid-cols-6">
+                        <select v-model="newKr.kpi_id" class="app-input h-9 text-xs">
+                            <option :value="null" disabled>KPI</option>
+                            <option v-for="k in kpis" :key="k.id" :value="k.id">{{ k.name }}</option>
+                        </select>
+                        <input v-model="newKr.description" placeholder="Descripción del resultado clave" class="app-input h-9 text-xs sm:col-span-2">
+                        <template v-if="selectedNewKrKpi?.automation === 'automatic'">
+                            <div class="flex items-center gap-1 rounded-lg border border-border px-2 text-[11px]">
+                                <span class="font-semibold tabular-nums text-foreground">{{ newKr.baseline_value !== '' ? fmt(Number(newKr.baseline_value), selectedNewKrKpi?.unit) : 'Sin consultar' }}</span>
+                                <button type="button" class="ml-auto font-bold text-primary" :disabled="newKrLoadingPreview" @click="fetchNewKrBaseline">↻</button>
+                            </div>
+                        </template>
+                        <input v-else v-model="newKr.baseline_value" type="number" step="0.01" placeholder="Línea base" class="app-input h-9 text-xs">
+                        <input v-model="newKr.target_value" type="number" step="0.01" placeholder="Meta" class="app-input h-9 text-xs">
+                        <input v-model="newKr.weight" type="number" step="0.01" placeholder="Peso %" class="app-input h-9 text-xs">
+                    </div>
+                    <Button size="sm" class="h-9 text-xs" :disabled="!newKr.kpi_id || !newKr.description.trim() || newKr.target_value === '' || newKrSubmitting" @click="submitNewKr">Agregar</Button>
+                </div>
 
                 <!-- Rendimiento por gestor (Parte 9/10 del cierre) — solo KPI distribuibles, solo si hay individuales -->
                 <div v-for="c in objective.contributions ?? []" :key="c.kpi.id" class="mt-4 border-t border-border pt-4">
