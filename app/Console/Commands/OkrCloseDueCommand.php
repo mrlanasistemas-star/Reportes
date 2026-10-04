@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\Okr\OkrClosingService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Módulo OKR (08-sep-2026) — cierre automático de Objectives vencidos
@@ -19,6 +20,8 @@ class OkrCloseDueCommand extends Command
     {
         $count = $closingService->closeDue();
         $this->info("{$count} OKR cerrado(s).");
+
+        Cache::forever('okr:last_close_due_at', now()->toDateTimeString());
 
         return 0;
     }

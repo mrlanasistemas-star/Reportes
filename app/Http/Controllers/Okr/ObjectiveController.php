@@ -283,6 +283,16 @@ class ObjectiveController extends Controller
         if ($objective->scope_type === OkrObjective::SCOPE_BRANCH && $objective->children->isNotEmpty()) {
             $placementResolver = app(\App\Services\Okr\OkrWeeklyPlacementResolver::class);
 
+            // Parte 14 del cierre (04-oct-2026) — en LOTE para TODOS los hijos a
+            // la vez (agrupados por su semana actual, normalmente la misma para
+            // todos): 2 consultas totales, nunca una consulta de colocación por
+            // cada gestor dentro del loop de abajo.
+            $weeklyByChildId = [];
+            $startedChildren = $objective->children->filter(fn ($c) => $c->hasStarted());
+            foreach ($startedChildren->groupBy(fn ($c) => $c->currentWeekNumber()) as $weekNumber => $group) {
+                $weeklyByChildId += $placementResolver->resolveMany($group, (int) $weekNumber);
+            }
+
             foreach ($objective->keyResults as $parentKr) {
                 if ($parentKr->kpi->type === OkrKpi::TYPE_PERCENTAGE) {
                     continue; // no distribuible entre gestores
@@ -296,10 +306,9 @@ class ObjectiveController extends Controller
                     // Parte 9/10 del cierre (04-oct-2026): colocación de ESTA
                     // semana (delta), aparte del acumulado — solo tiene sentido
                     // para el KPI de colocación con carga semanal activa.
-                    $weeklyValue = null;
-                    if ($parentKr->kpi->provider_key === 'reporteria.placement' && $child->hasStarted() && $placementResolver->hasAnyUpload($child)) {
-                        $weeklyValue = $placementResolver->resolve($child, $child->currentWeekNumber())['weekly'];
-                    }
+                    $weeklyValue = $parentKr->kpi->provider_key === 'reporteria.placement'
+                        ? ($weeklyByChildId[$child->id]['weekly'] ?? null)
+                        : null;
 
                     $childRows[] = [
                         'employee' => $child->employee?->full_name ?? $child->title,
