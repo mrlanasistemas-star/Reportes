@@ -220,7 +220,8 @@ class ObjectiveController extends Controller
 
         $objective->load(['branch', 'employee', 'responsibleUser', 'creator', 'parent', 'children.branch', 'children.employee', 'children.keyResults.kpi',
             'keyResults.kpi', 'keyResults.snapshots' => fn ($q) => $q->orderBy('week_number'),
-            'checkIns.user', 'correctiveActions.responsibleUser', 'evidences.uploader', 'alerts' => fn ($q) => $q->whereNull('read_at')->latest()]);
+            'checkIns.user', 'correctiveActions.responsibleUser', 'evidences.uploader', 'alerts' => fn ($q) => $q->whereNull('read_at')->latest(),
+            'commitmentLetter', 'warnings' => fn ($q) => $q->latest('week_number')]);
 
         $calc = app(OkrProgressCalculator::class);
         $krPayload = $objective->keyResults->map(fn ($kr) => [
@@ -368,7 +369,19 @@ class ObjectiveController extends Controller
                 'weight_summary' => $weightSummary,
                 'placement_weeks' => $placementWeeks,
                 'is_read_only' => $objective->isReadOnly(),
+                'activated_at' => $objective->activated_at?->toDateTimeString(),
+                'commitment_letter' => $objective->commitmentLetter ? [
+                    'id' => $objective->commitmentLetter->id, 'folio' => $objective->commitmentLetter->folio,
+                    'generated_at' => $objective->commitmentLetter->generated_at->toDateTimeString(),
+                    'is_signed' => $objective->commitmentLetter->isSigned(),
+                    'download_url' => route('okr.commitment-letters.download', $objective->commitmentLetter),
+                ] : null,
             ],
+            'warnings' => $objective->warnings->map(fn ($w) => [
+                'id' => $w->id, 'folio' => $w->folio, 'week_number' => $w->week_number,
+                'generated_at' => $w->generated_at->toDateTimeString(), 'is_signed' => $w->isSigned(),
+                'download_url' => route('okr.warnings.download', $w),
+            ]),
             'keyResults' => $krPayload,
             'checkIns' => $objective->checkIns->map(fn ($c) => ['id' => $c->id, 'week_number' => $c->week_number, 'check_in_date' => $c->check_in_date->toDateString(), 'user' => $c->user->name, 'main_blocker' => $c->main_blocker, 'corrective_action' => $c->corrective_action]),
             'correctiveActions' => $objective->correctiveActions->map(fn ($a) => ['id' => $a->id, 'description' => $a->description, 'responsible' => $a->responsibleUser->name, 'due_date' => $a->due_date->toDateString(), 'status' => $a->status, 'is_overdue' => $a->isOverdue()]),
