@@ -78,6 +78,7 @@ const props = defineProps<{
     correctiveActions: any[]
     evidences: any[]
     alerts: any[]
+    warnings: any[]
     auditLogs: any[]
     canManage: boolean
     canAssign: boolean
@@ -224,6 +225,16 @@ function trendIcon(kr: any) {
     return (kr.deviation_pp ?? 0) >= 0 ? TrendingUp : TrendingDown
 }
 
+// Sin meta csrf-token en este layout — se lee la cookie XSRF-TOKEN que
+// Laravel ya pone en cada respuesta (mismo mecanismo que usa axios
+// internamente para las peticiones de Inertia). Compartido por colocación/
+// carta/warning — todos postean vía fetch() fuera de Inertia.
+function csrfFetch(url: string, init: RequestInit = {}) {
+    const xsrfToken = decodeURIComponent(document.cookie.match(/XSRF-TOKEN=([^;]+)/)?.[1] ?? '')
+
+    return fetch(url, { ...init, headers: { ...(init.headers ?? {}), 'X-XSRF-TOKEN': xsrfToken, Accept: 'application/json' } })
+}
+
 // ── Colocación semanal (Parte 6/7 del cierre, 04-oct-2026) ──────────────
 const placementWeekNumber = ref<number | null>(null)
 const placementFile = ref<File | null>(null)
@@ -246,13 +257,7 @@ formData.append('confirm_replace', '1')
 }
 
     try {
-        // Sin meta csrf-token en este layout — se lee la cookie XSRF-TOKEN que
-        // Laravel ya pone en cada respuesta (mismo mecanismo que usa axios
-        // internamente para las peticiones de Inertia).
-        const xsrfToken = decodeURIComponent(document.cookie.match(/XSRF-TOKEN=([^;]+)/)?.[1] ?? '')
-        const res = await fetch(`/okr/${props.objective.id}/placement-uploads`, {
-            method: 'POST', body: formData, headers: { 'X-XSRF-TOKEN': xsrfToken, Accept: 'application/json' },
-        })
+        const res = await csrfFetch(`/okr/${props.objective.id}/placement-uploads`, { method: 'POST', body: formData })
         const data = await res.json()
 
         if (res.status === 409) {
@@ -283,6 +288,90 @@ submitPlacement(true)
     } finally {
         placementUploading.value = false
     }
+}
+
+// ── Carta Compromiso (Parte 2 del cierre, 04-oct-2026) ──────────────────
+const letterGenerating = ref(false)
+async function generateCommitmentLetter() {
+    letterGenerating.value = true
+
+    try {
+        const res = await csrfFetch(`/okr/${props.objective.id}/commitment-letter`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ place: 'Ciudad de México' }),
+        })
+        const data = await res.json()
+
+        if (!res.ok) {
+            Swal.fire({ icon: 'error', title: 'No se pudo generar la Carta Compromiso', text: data.message ?? 'Error desconocido.' })
+
+            return
+        }
+
+        router.reload({ only: ['objective'] })
+    } finally {
+        letterGenerating.value = false
+    }
+}
+async function uploadSignedLetter(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0]
+
+    if (!file || !props.objective.commitment_letter) {
+return
+}
+
+    const formData = new FormData()
+    formData.append('file', file)
+    await csrfFetch(`/okr/commitment-letters/${props.objective.commitment_letter.id}/signed`, { method: 'POST', body: formData })
+    router.reload({ only: ['objective'] })
+}
+
+// ── Warning Rojo (Parte 3 del cierre, 04-oct-2026) ──────────────────────
+const warningOpen = ref(false)
+const warningWeekNumber = ref<number | null>(null)
+const warningCorrectiveActions = ref('')
+const warningObservations = ref('')
+const warningSubmitting = ref(false)
+async function submitWarning() {
+    if (!warningWeekNumber.value || !warningCorrectiveActions.value.trim()) {
+return
+}
+
+    warningSubmitting.value = true
+
+    try {
+        const res = await csrfFetch(`/okr/${props.objective.id}/warnings`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ week_number: warningWeekNumber.value, corrective_actions: warningCorrectiveActions.value, observations: warningObservations.value || null }),
+        })
+        const data = await res.json()
+
+        if (!res.ok) {
+            Swal.fire({ icon: 'error', title: 'No se pudo generar el Warning', text: data.message ?? 'Error desconocido.' })
+
+            return
+        }
+
+        Swal.fire({ icon: 'success', title: 'Warning generado', text: `Folio ${data.warning.folio}`, timer: 2500, showConfirmButton: false })
+        warningOpen.value = false
+        warningWeekNumber.value = null
+        warningCorrectiveActions.value = ''
+        warningObservations.value = ''
+        router.reload({ only: ['warnings'] })
+    } finally {
+        warningSubmitting.value = false
+    }
+}
+async function uploadSignedWarning(warningId: number, e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0]
+
+    if (!file) {
+return
+}
+
+    const formData = new FormData()
+    formData.append('file', file)
+    await csrfFetch(`/okr/warnings/${warningId}/signed`, { method: 'POST', body: formData })
+    router.reload({ only: ['warnings'] })
 }
 </script>
 
@@ -492,6 +581,72 @@ submitPlacement(true)
                         </select>
                         <input type="file" accept=".xlsx,.xls,.csv" class="app-input h-9 flex-1 text-xs" @change="onPlacementFileChange">
                         <Button size="sm" class="h-9 shrink-0 text-xs" :disabled="!placementWeekNumber || !placementFile || placementUploading" @click="submitPlacement()">Subir</Button>
+                    </div>
+                </div>
+
+                <!-- Carta Compromiso + Warning Rojo (Parte 2/3/11 del cierre) -->
+                <div class="app-card space-y-4 p-4">
+                    <div>
+                        <p class="mb-2 flex items-center gap-1.5 text-sm font-bold text-foreground">
+                            Carta Compromiso
+                            <OkrHelpTooltip text="Se genera UNA sola vez, cuando el OKR ya está activado. Si la meta cambia después, la carta emitida NUNCA se modifica — es un documento congelado." />
+                        </p>
+                        <div v-if="objective.commitment_letter" class="space-y-2">
+                            <div class="flex items-center justify-between rounded-lg border border-border px-2.5 py-2 text-xs">
+                                <span><span class="font-semibold text-foreground">Folio {{ objective.commitment_letter.folio }}</span> · {{ formatFriendlyDate(objective.commitment_letter.generated_at?.slice(0, 10)) }}</span>
+                                <a :href="objective.commitment_letter.download_url" class="font-bold text-primary hover:underline">Descargar</a>
+                            </div>
+                            <div class="flex items-center gap-2 text-xs">
+                                <span v-if="objective.commitment_letter.is_signed" class="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">Firmada</span>
+                                <template v-else>
+                                    <span class="text-muted-foreground">Sin firma subida —</span>
+                                    <label class="cursor-pointer font-bold text-primary hover:underline">
+                                        subir firmada
+                                        <input type="file" accept=".pdf" class="hidden" @change="uploadSignedLetter">
+                                    </label>
+                                </template>
+                            </div>
+                        </div>
+                        <div v-else-if="objective.activated_at" class="flex items-center gap-2">
+                            <Button size="sm" class="h-9 text-xs" :disabled="letterGenerating" @click="generateCommitmentLetter">Generar Carta Compromiso</Button>
+                            <a :href="`/okr/${objective.id}/commitment-letter/preview`" class="text-xs font-semibold text-muted-foreground hover:underline">Vista previa</a>
+                        </div>
+                        <p v-else class="text-xs text-muted-foreground">Disponible una vez que el OKR se active.</p>
+                    </div>
+
+                    <div class="border-t border-border pt-4">
+                        <div class="mb-2 flex items-center justify-between">
+                            <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
+                                Warnings
+                                <OkrHelpTooltip text="El sistema detecta desviación y HABILITA este botón — nunca sanciona solo. Usa el resultado REAL de la semana elegida, no el dato de hoy." />
+                            </p>
+                            <Button v-if="canAssign" size="sm" variant="outline" class="h-8 text-xs" @click="warningOpen = !warningOpen">Generar Warning</Button>
+                        </div>
+
+                        <div v-if="warningOpen" class="mb-3 space-y-2 rounded-lg border border-border p-3">
+                            <select v-model="warningWeekNumber" class="app-input h-9 w-full text-xs">
+                                <option :value="null" disabled>Semana a evaluar</option>
+                                <option v-for="w in objective.current_week" :key="w" :value="w">Semana {{ w }}</option>
+                            </select>
+                            <textarea v-model="warningCorrectiveActions" rows="2" placeholder="Acciones correctivas (obligatorio)" class="app-textarea text-xs" />
+                            <textarea v-model="warningObservations" rows="2" placeholder="Observaciones (opcional)" class="app-textarea text-xs" />
+                            <Button size="sm" class="h-9 w-full text-xs" :disabled="!warningWeekNumber || !warningCorrectiveActions.trim() || warningSubmitting" @click="submitWarning">Emitir Warning</Button>
+                        </div>
+
+                        <div v-if="warnings.length" class="space-y-2">
+                            <div v-for="w in warnings" :key="w.id" class="flex items-center justify-between rounded-lg border border-border px-2.5 py-2 text-xs">
+                                <span><span class="font-semibold text-foreground">Semana {{ w.week_number }}</span> · Folio {{ w.folio }}</span>
+                                <div class="flex items-center gap-2">
+                                    <a :href="w.download_url" class="font-bold text-primary hover:underline">Descargar</a>
+                                    <span v-if="w.is_signed" class="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">Firmado</span>
+                                    <label v-else class="cursor-pointer font-bold text-primary hover:underline">
+                                        firmar
+                                        <input type="file" accept=".pdf" class="hidden" @change="(e) => uploadSignedWarning(w.id, e)">
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <p v-else class="text-xs text-muted-foreground">Sin warnings emitidos.</p>
                     </div>
                 </div>
 

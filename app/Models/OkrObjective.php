@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
@@ -106,6 +107,16 @@ class OkrObjective extends Model
     public function placementUploads(): HasMany
     {
         return $this->hasMany(OkrPlacementUpload::class, 'okr_objective_id');
+    }
+
+    public function commitmentLetter(): HasOne
+    {
+        return $this->hasOne(OkrCommitmentLetter::class, 'okr_objective_id');
+    }
+
+    public function warnings(): HasMany
+    {
+        return $this->hasMany(OkrWarning::class, 'okr_objective_id');
     }
 
     public function isActive(): bool

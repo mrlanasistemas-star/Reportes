@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Okr\AlertController;
 use App\Http\Controllers\Okr\CheckInController;
+use App\Http\Controllers\Okr\CommitmentLetterController;
 use App\Http\Controllers\Okr\DashboardController;
 use App\Http\Controllers\Okr\EvidenceController;
 use App\Http\Controllers\Okr\HistoryController;
@@ -10,6 +11,7 @@ use App\Http\Controllers\Okr\KpiController;
 use App\Http\Controllers\Okr\ObjectiveController;
 use App\Http\Controllers\Okr\PlacementUploadController;
 use App\Http\Controllers\Okr\ResponsibleController;
+use App\Http\Controllers\Okr\WarningController;
 use App\Http\Middleware\EnsureOkrAccessEnabled;
 use Illuminate\Support\Facades\Route;
 
@@ -43,6 +45,10 @@ Route::prefix('okr')->name('okr.')->middleware(EnsureOkrAccessEnabled::class)->g
     Route::get('/alerts', [AlertController::class, 'index'])->name('alerts.index');
     Route::post('/alerts/{alert}/read', [AlertController::class, 'markRead'])->name('alerts.read');
     Route::get('/evidences/{evidence}/download', [EvidenceController::class, 'download'])->name('evidences.download');
+    Route::get('/commitment-letters/{letter}/download', [CommitmentLetterController::class, 'download'])->name('commitment-letters.download');
+    Route::post('/commitment-letters/{letter}/signed', [CommitmentLetterController::class, 'uploadSigned'])->name('commitment-letters.signed');
+    Route::get('/warnings/{warning}/download', [WarningController::class, 'download'])->name('warnings.download');
+    Route::post('/warnings/{warning}/signed', [WarningController::class, 'uploadSigned'])->name('warnings.signed');
 
     Route::get('/{objective}', [ObjectiveController::class, 'show'])->name('show');
     Route::post('/{objective}/activate', [ObjectiveController::class, 'activate'])->name('activate');
@@ -58,4 +64,7 @@ Route::prefix('okr')->name('okr.')->middleware(EnsureOkrAccessEnabled::class)->g
     Route::post('/{objective}/check-ins', [CheckInController::class, 'store'])->name('check-ins.store');
     Route::post('/{objective}/evidences', [EvidenceController::class, 'store'])->name('evidences.store');
     Route::post('/{objective}/placement-uploads', [PlacementUploadController::class, 'store'])->name('placement-uploads.store');
+    Route::get('/{objective}/commitment-letter/preview', [CommitmentLetterController::class, 'preview'])->name('commitment-letter.preview');
+    Route::post('/{objective}/commitment-letter', [CommitmentLetterController::class, 'generate'])->name('commitment-letter.generate');
+    Route::post('/{objective}/warnings', [WarningController::class, 'store'])->name('warnings.store');
 });
