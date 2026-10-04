@@ -225,7 +225,7 @@ class ObjectiveController extends Controller
         $calc = app(OkrProgressCalculator::class);
         $krPayload = $objective->keyResults->map(fn ($kr) => [
             'id' => $kr->id, 'description' => $kr->description,
-            'kpi' => $kr->kpi->only(['id', 'code', 'name', 'unit', 'type', 'direction', 'automation']),
+            'kpi' => $kr->kpi->only(['id', 'code', 'name', 'unit', 'type', 'direction', 'automation', 'provider_key']),
             'baseline_value' => $kr->baseline_value, 'target_value' => $kr->target_value, 'weight' => $kr->weight,
             'current_value' => $kr->current_value, 'expected_value' => $kr->expected_value,
             'actual_progress_percentage' => $kr->actual_progress_percentage, 'expected_progress_percentage' => $kr->expected_progress_percentage,
@@ -280,6 +280,8 @@ class ObjectiveController extends Controller
         // MISMO kpi_id — nunca mezcla KPIs distintos.
         $contributions = [];
         if ($objective->scope_type === OkrObjective::SCOPE_BRANCH && $objective->children->isNotEmpty()) {
+            $placementResolver = app(\App\Services\Okr\OkrWeeklyPlacementResolver::class);
+
             foreach ($objective->keyResults as $parentKr) {
                 if ($parentKr->kpi->type === OkrKpi::TYPE_PERCENTAGE) {
                     continue; // no distribuible entre gestores
@@ -290,11 +292,22 @@ class ObjectiveController extends Controller
                     if (!$childKr) {
                         continue;
                     }
+                    // Parte 9/10 del cierre (04-oct-2026): colocación de ESTA
+                    // semana (delta), aparte del acumulado — solo tiene sentido
+                    // para el KPI de colocación con carga semanal activa.
+                    $weeklyValue = null;
+                    if ($parentKr->kpi->provider_key === 'reporteria.placement' && $child->hasStarted() && $placementResolver->hasAnyUpload($child)) {
+                        $weeklyValue = $placementResolver->resolve($child, $child->currentWeekNumber())['weekly'];
+                    }
+
                     $childRows[] = [
                         'employee' => $child->employee?->full_name ?? $child->title,
+                        'employee_active' => $child->employee?->is_active ?? true,
                         'target_value' => (float) $childKr->target_value,
                         'current_value' => $childKr->current_value !== null ? (float) $childKr->current_value : null,
+                        'weekly_value' => $weeklyValue,
                         'compliance' => $childKr->actual_progress_percentage,
+                        'health_status' => $childKr->health_status,
                     ];
                 }
                 if (empty($childRows)) {
@@ -302,14 +315,38 @@ class ObjectiveController extends Controller
                 }
                 $sumTarget  = array_sum(array_column($childRows, 'target_value'));
                 $sumCurrent = array_sum(array_map(fn ($r) => $r['current_value'] ?? 0, $childRows));
+                $branchTarget = (float) $parentKr->target_value;
                 $contributions[] = [
                     'kpi' => $parentKr->kpi->only(['id', 'name', 'unit']),
-                    'branch_target' => (float) $parentKr->target_value,
+                    'branch_target' => $branchTarget,
                     'children_target_sum' => $sumTarget,
                     'children_current_sum' => $sumCurrent,
                     'coverage_percentage' => $sumTarget > 0 ? round(($sumCurrent / $sumTarget) * 100, 1) : null,
-                    'gap' => (float) $parentKr->target_value - $sumTarget,
+                    'gap' => $branchTarget - $sumTarget,
+                    // Parte 9.2 — distribución de la meta entre gestores: si Σ
+                    // metas individuales != meta de sucursal, warning visible
+                    // (nunca bloquea, ver spec) — nunca silencioso.
+                    'distribution_mismatch' => abs($branchTarget - $sumTarget) > 0.01,
                     'rows' => $childRows,
+                ];
+            }
+        }
+
+        // Parte 6/7 del cierre (04-oct-2026) — estado de la carga semanal de
+        // colocación, semana por semana, solo si este Objective tiene un KR
+        // ligado al KPI de colocación (nunca se ofrece el widget para KPIs
+        // que no lo usan).
+        $placementWeeks = [];
+        if ($objective->keyResults->contains(fn ($kr) => $kr->kpi->provider_key === 'reporteria.placement')) {
+            $uploads = $objective->placementUploads()->where('status', \App\Models\OkrPlacementUpload::STATUS_ACTIVE)->get()->keyBy('week_number');
+            for ($w = 1; $w <= (int) $objective->duration_weeks; $w++) {
+                $upload = $uploads->get($w);
+                $placementWeeks[] = [
+                    'week_number' => $w,
+                    'uploaded' => $upload !== null,
+                    'total_amount' => $upload?->total_amount,
+                    'original_filename' => $upload?->original_filename,
+                    'uploaded_at' => $upload?->created_at?->toDateTimeString(),
                 ];
             }
         }
@@ -329,6 +366,8 @@ class ObjectiveController extends Controller
                 'compliance' => $compliance, 'expected_compliance' => $expectedCompliance,
                 'projected_compliance' => $projectedCompliance, 'deviation_pp' => $deviation,
                 'weight_summary' => $weightSummary,
+                'placement_weeks' => $placementWeeks,
+                'is_read_only' => $objective->isReadOnly(),
             ],
             'keyResults' => $krPayload,
             'checkIns' => $objective->checkIns->map(fn ($c) => ['id' => $c->id, 'week_number' => $c->week_number, 'check_in_date' => $c->check_in_date->toDateString(), 'user' => $c->user->name, 'main_blocker' => $c->main_blocker, 'corrective_action' => $c->corrective_action]),
@@ -440,6 +479,7 @@ class ObjectiveController extends Controller
     public function updateGoal(Request $request, OkrObjective $objective, OkrWeightValidator $weightValidator, OkrAuditLogger $logger): RedirectResponse
     {
         $this->authorize('update', $objective);
+        abort_if($objective->isReadOnly(), 422, 'Este OKR está cerrado/cancelado — es de solo lectura.');
         $request->validate([
             'key_result_id' => ['required', 'integer', 'exists:okr_key_results,id'],
             'target_value'  => ['nullable', 'numeric'],
@@ -491,6 +531,7 @@ class ObjectiveController extends Controller
     public function updateWeights(Request $request, OkrObjective $objective, OkrAuditLogger $logger): RedirectResponse
     {
         $this->authorize('update', $objective);
+        abort_if($objective->isReadOnly(), 422, 'Este OKR está cerrado/cancelado — es de solo lectura.');
 
         $data = $request->validate([
             'weights'                  => ['required', 'array', 'min:1'],

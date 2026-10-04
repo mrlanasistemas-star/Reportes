@@ -8,6 +8,7 @@ use App\Http\Controllers\Okr\HistoryController;
 use App\Http\Controllers\Okr\KeyResultController;
 use App\Http\Controllers\Okr\KpiController;
 use App\Http\Controllers\Okr\ObjectiveController;
+use App\Http\Controllers\Okr\PlacementUploadController;
 use App\Http\Controllers\Okr\ResponsibleController;
 use App\Http\Middleware\EnsureOkrAccessEnabled;
 use Illuminate\Support\Facades\Route;
@@ -56,4 +57,5 @@ Route::prefix('okr')->name('okr.')->middleware(EnsureOkrAccessEnabled::class)->g
 
     Route::post('/{objective}/check-ins', [CheckInController::class, 'store'])->name('check-ins.store');
     Route::post('/{objective}/evidences', [EvidenceController::class, 'store'])->name('evidences.store');
+    Route::post('/{objective}/placement-uploads', [PlacementUploadController::class, 'store'])->name('placement-uploads.store');
 });

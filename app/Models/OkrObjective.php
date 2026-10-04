@@ -103,9 +103,25 @@ class OkrObjective extends Model
         return $this->hasMany(OkrAlert::class, 'okr_objective_id');
     }
 
+    public function placementUploads(): HasMany
+    {
+        return $this->hasMany(OkrPlacementUpload::class, 'okr_objective_id');
+    }
+
     public function isActive(): bool
     {
         return $this->lifecycle_status === self::STATUS_ACTIVE;
+    }
+
+    /**
+     * Parte 12 del cierre (04-oct-2026): closed/cancelled son de SOLO
+     * LECTURA — ningún check-in, evidencia, carga semanal de colocación ni
+     * edición de meta/peso nuevos (ver CheckInController, EvidenceController,
+     * PlacementUploadController, ObjectiveController::updateGoal/updateWeights).
+     */
+    public function isReadOnly(): bool
+    {
+        return in_array($this->lifecycle_status, [self::STATUS_CLOSED, self::STATUS_CANCELLED], true);
     }
 
     /**

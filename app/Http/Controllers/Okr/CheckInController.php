@@ -44,6 +44,8 @@ class CheckInController extends Controller
 
     public function store(StoreCheckInRequest $request, OkrObjective $objective, OkrSnapshotService $snapshotService): RedirectResponse
     {
+        abort_if($objective->isReadOnly(), 422, 'Este OKR está cerrado/cancelado — no admite nuevos check-ins.');
+
         $weekNumber = $objective->currentWeekNumber();
         if ($weekNumber <= 0) {
             return back()->withErrors(['check_in' => 'El OKR todavía no ha iniciado su primera semana.']);
@@ -68,6 +70,7 @@ class CheckInController extends Controller
             // 2. Aplica resultados manuales (ya validados: pertenecen al
             // Objective y su KPI NUNCA es automático — ver StoreCheckInRequest)
             // y recalcula cada KR afectado.
+            $manualKeyResultIds = [];
             foreach ($request->input('manual_results', []) as $row) {
                 $kr = $objective->keyResults()->findOrFail($row['key_result_id']);
                 $kr->update([
@@ -81,6 +84,22 @@ class CheckInController extends Controller
                 // OkrSnapshotService::evaluateKeyResult(), preserva current_value
                 // para manual/híbrido).
                 $snapshotService->evaluateKeyResult($kr->fresh(), null, $checkIn->id);
+                $manualKeyResultIds[] = $kr->id;
+            }
+
+            // Parte 13 del cierre (04-oct-2026) — bug real: los KR AUTOMÁTICOS
+            // que NO vinieron en manual_results nunca se refrescaban antes de
+            // congelar actual_value_snapshot — si nadie había llamado refresh()
+            // hoy, el check-in capturaba el current_value de la ÚLTIMA
+            // evaluación (potencialmente de días atrás, o de ANTES de que se
+            // cargara la colocación semanal de esta semana). Ahora cada KR
+            // automático se reevalúa aquí mismo — para colocación semanal,
+            // usa el snapshot semanal EXACTO recién cargado, nunca un valor
+            // mensual/semanal viejo cacheado.
+            foreach ($objective->keyResults()->with('kpi')->get() as $kr) {
+                if ($kr->kpi->isAutomatic() && !in_array($kr->id, $manualKeyResultIds, true)) {
+                    $snapshotService->evaluateKeyResult($kr->fresh());
+                }
             }
 
             // 3-4. Vuelve a leer TODOS los current_value YA actualizados (post

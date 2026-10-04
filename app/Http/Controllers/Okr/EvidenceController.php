@@ -28,6 +28,7 @@ class EvidenceController extends Controller
     public function store(StoreEvidenceRequest $request, OkrObjective $objective): RedirectResponse
     {
         $this->authorize('uploadEvidence', $objective);
+        abort_if($objective->isReadOnly(), 422, 'Este OKR está cerrado/cancelado — no admite nuevas evidencias.');
 
         $file = $request->file('file');
         $disk = 'local';
