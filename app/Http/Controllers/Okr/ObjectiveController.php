@@ -391,6 +391,12 @@ class ObjectiveController extends Controller
                 'generated_at' => $w->generated_at->toDateTimeString(), 'is_signed' => $w->isSigned(),
                 'download_url' => route('okr.warnings.download', $w),
             ]),
+            // Parte 5/7 del cierre (04-oct-2026) — catálogo de KPI para el
+            // editor de Key Results en DRAFT (ver Show.vue): un Objective
+            // individual creado por el wizard de individualización nace SIN
+            // KRs propios (a propósito, ver ObjectiveController::store()) —
+            // esto es lo que permite completarlo y poder activarlo.
+            'kpis' => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(['id', 'code', 'name', 'unit', 'type', 'direction', 'automation', 'provider_key']),
             'keyResults' => $krPayload,
             'checkIns' => $objective->checkIns->map(fn ($c) => ['id' => $c->id, 'week_number' => $c->week_number, 'check_in_date' => $c->check_in_date->toDateString(), 'user' => $c->user->name, 'main_blocker' => $c->main_blocker, 'corrective_action' => $c->corrective_action]),
             'correctiveActions' => $objective->correctiveActions->map(fn ($a) => ['id' => $a->id, 'description' => $a->description, 'responsible' => $a->responsibleUser->name, 'due_date' => $a->due_date->toDateString(), 'status' => $a->status, 'is_overdue' => $a->isOverdue()]),
