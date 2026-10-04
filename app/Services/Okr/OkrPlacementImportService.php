@@ -3,6 +3,7 @@
 namespace App\Services\Okr;
 
 use App\Models\Employee;
+use App\Models\EmployeeBranchAssignment;
 use App\Models\OkrObjective;
 use App\Models\OkrPlacementMovement;
 use App\Models\OkrPlacementUpload;
@@ -29,8 +30,10 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
  */
 class OkrPlacementImportService
 {
-    public function __construct(private readonly OkrCalendarService $calendar)
-    {
+    public function __construct(
+        private readonly OkrCalendarService $calendar,
+        private readonly OkrTrackingPeriodResolver $periodResolver,
+    ) {
     }
 
     /**
@@ -57,8 +60,9 @@ class OkrPlacementImportService
         $absolutePath = Storage::disk($disk)->path($path);
 
         $parsed = $this->parseFile($absolutePath, $objective, $weekStart, $weekEnd);
+        $coverageStatus = $this->resolveCoverageStatus($objective, $weekStart, $weekEnd, $parsed['employee_ids_seen']);
 
-        return DB::transaction(function () use ($objective, $weekNumber, $weekStart, $weekEnd, $file, $path, $disk, $user, $existing, $parsed) {
+        return DB::transaction(function () use ($objective, $weekNumber, $weekStart, $weekEnd, $file, $path, $disk, $user, $existing, $parsed, $coverageStatus) {
             if ($existing) {
                 $existing->update(['status' => OkrPlacementUpload::STATUS_SUPERSEDED]);
             }
@@ -78,6 +82,7 @@ class OkrPlacementImportService
                 'rows_count'                => count($parsed['rows']),
                 'unattributed_amount'       => $parsed['unattributed_amount'],
                 'rows_outside_week_range'   => $parsed['rows_outside_week_range'],
+                'coverage_status'           => $coverageStatus,
             ]);
 
             foreach ($parsed['rows'] as $row) {
@@ -120,6 +125,11 @@ class OkrPlacementImportService
         $unattributedAmount = 0.0;
         $hasUnattributed = false;
         $rowsOutsideWeekRange = 0;
+        // 18: empleados que aparecen en el archivo CON TODO Y fila de monto
+        // cero (el filtro de amount==0 más abajo los saca de $rows/movements,
+        // pero SÍ cuentan para saber si el archivo mencionó a ese gestor —
+        // nunca confundir "no tiene fila" con "tiene fila en $0").
+        $employeeIdsSeen = [];
 
         // scope_type=employee: solo se cuentan filas de ESE colaborador — un
         // archivo de sucursal cargado por error en un Objective individual
@@ -133,12 +143,14 @@ class OkrPlacementImportService
 
             $employeeNameRaw = $this->str($row[$colMap['employee']] ?? null);
             $amount = $this->toDecimal($row[$colMap['amount']] ?? null);
+            $employee = $employeeNameRaw ? $this->resolveEmployee($employeeNameRaw) : null;
+            if ($employee !== null) {
+                $employeeIdsSeen[$employee->id] = true; // cuenta aunque el monto sea 0/nulo
+            }
             if ($amount === null || $amount == 0.0) {
                 continue;
             }
             $operationDate = isset($colMap['date']) ? $this->toDate($row[$colMap['date']] ?? null) : null;
-
-            $employee = $employeeNameRaw ? $this->resolveEmployee($employeeNameRaw) : null;
 
             if ($restrictToEmployeeId !== null) {
                 $matches = $employee?->id === $restrictToEmployeeId;
@@ -190,7 +202,43 @@ class OkrPlacementImportService
             'total_amount' => round($totalAmount, 2),
             'unattributed_amount' => $hasUnattributed ? round($unattributedAmount, 2) : null,
             'rows_outside_week_range' => $rowsOutsideWeekRange,
+            'employee_ids_seen' => array_keys($employeeIdsSeen),
         ];
+    }
+
+    /**
+     * 18: ¿este archivo de sucursal mencionó a TODOS los empleados con
+     * asignación activa a esa sucursal en el periodo de la semana cargada?
+     * Si no se puede resolver un periodo real (mes todavía sin radiografía
+     * generada) o la sucursal no tiene roster registrado, se devuelve
+     * UNKNOWN — nunca se asume cobertura que no se pudo verificar.
+     */
+    private function resolveCoverageStatus(OkrObjective $objective, \Illuminate\Support\Carbon $weekStart, \Illuminate\Support\Carbon $weekEnd, array $employeeIdsSeen): string
+    {
+        if ($objective->scope_type !== OkrObjective::SCOPE_BRANCH || $objective->branch_id === null) {
+            return OkrPlacementUpload::COVERAGE_UNKNOWN; // solo aplica a archivos de sucursal (6.4) — un archivo individual no "cubre" a nadie más
+        }
+
+        $period = $this->periodResolver->getPeriodForDate($weekEnd) ?? $this->periodResolver->getPeriodForDate($weekStart);
+        if ($period === null) {
+            return OkrPlacementUpload::COVERAGE_UNKNOWN;
+        }
+
+        $roster = EmployeeBranchAssignment::query()
+            ->where('period_id', $period->id)
+            ->where('branch_id', $objective->branch_id)
+            ->whereHas('employee', fn ($q) => $q->where('is_active', true))
+            ->pluck('employee_id')
+            ->unique()
+            ->values();
+
+        if ($roster->isEmpty()) {
+            return OkrPlacementUpload::COVERAGE_UNKNOWN;
+        }
+
+        $missing = $roster->diff($employeeIdsSeen);
+
+        return $missing->isEmpty() ? OkrPlacementUpload::COVERAGE_FULL : OkrPlacementUpload::COVERAGE_PARTIAL;
     }
 
     private function detectHeaderRowIndex(array $rows): ?int

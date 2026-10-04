@@ -92,11 +92,13 @@ class OkrWeeklyPlacementResolver
             ->whereIn('okr_objective_id', $allIds)
             ->where('status', OkrPlacementUpload::STATUS_ACTIVE)
             ->where('week_number', '<=', $weekNumber)
-            ->get(['id', 'okr_objective_id', 'week_number', 'total_amount']);
+            ->get(['id', 'okr_objective_id', 'week_number', 'total_amount', 'coverage_status']);
 
         $uploadsByObjectiveWeek = [];
         foreach ($uploads as $upload) {
-            $uploadsByObjectiveWeek[$upload->okr_objective_id][$upload->week_number] = ['amount' => (float) $upload->total_amount, 'id' => $upload->id];
+            $uploadsByObjectiveWeek[$upload->okr_objective_id][$upload->week_number] = [
+                'amount' => (float) $upload->total_amount, 'id' => $upload->id, 'coverage_status' => $upload->coverage_status,
+            ];
         }
 
         $parentUploadIds = $uploads->whereIn('okr_objective_id', $parentIds)->pluck('id')->all();
@@ -129,9 +131,13 @@ class OkrWeeklyPlacementResolver
                 if ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE && $objective->parent_id && $objective->employee_id) {
                     $parentUpload = $uploadsByObjectiveWeek[$objective->parent_id][$w] ?? null;
                     if ($parentUpload) {
-                        $weeklyValues[$w] = round($movementSums[$parentUpload['id']][$objective->employee_id] ?? 0.0, 2);
+                        $hasOwnRow = isset($movementSums[$parentUpload['id']][$objective->employee_id]);
+                        // 18: sin fila propia Y archivo no exhaustivo → dato faltante, nunca 0 asumido.
+                        if ($hasOwnRow || $parentUpload['coverage_status'] === OkrPlacementUpload::COVERAGE_FULL) {
+                            $weeklyValues[$w] = round($movementSums[$parentUpload['id']][$objective->employee_id] ?? 0.0, 2);
 
-                        continue;
+                            continue;
+                        }
                     }
                 }
 
@@ -163,8 +169,10 @@ class OkrWeeklyPlacementResolver
 
         // Hijo individual sin carga propia esa semana — se deriva del archivo
         // de LA SUCURSAL (6.4), nunca sumando aparte (6.5). Si la sucursal SÍ
-        // cargó esa semana pero este colaborador no tiene fila, es un CERO
-        // real (el archivo cubre a todos), no "falta información".
+        // cargó esa semana Y el archivo es exhaustivo (coverage_status=full,
+        // 18), la ausencia de fila es un CERO real. Si el archivo es parcial
+        // o no se pudo verificar su cobertura, NUNCA se asume 0 — se trata
+        // como dato faltante (igual que si la sucursal no hubiera cargado).
         if ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE && $objective->parent_id && $objective->employee_id) {
             $parentUpload = OkrPlacementUpload::query()
                 ->where('okr_objective_id', $objective->parent_id)
@@ -173,6 +181,11 @@ class OkrWeeklyPlacementResolver
                 ->first();
 
             if ($parentUpload) {
+                $hasOwnRow = $parentUpload->movements()->where('employee_id', $objective->employee_id)->exists();
+                if (!$hasOwnRow && $parentUpload->coverage_status !== OkrPlacementUpload::COVERAGE_FULL) {
+                    return [null, null];
+                }
+
                 $sum = $parentUpload->movements()->where('employee_id', $objective->employee_id)->sum('amount');
 
                 return [round((float) $sum, 2), $parentUpload->id];

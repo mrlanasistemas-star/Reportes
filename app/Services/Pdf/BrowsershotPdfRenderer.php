@@ -35,6 +35,7 @@ class BrowsershotPdfRenderer
      *     footer_right?: string,
      *     wait_for_ready?: bool,
      *     ready_timeout?: int,
+     *     full_bleed?: bool,
      * } $options
      */
     public function renderHtmlToFile(string $html, string $outputPath, array $options = []): void
@@ -43,7 +44,14 @@ class BrowsershotPdfRenderer
 
         File::ensureDirectoryExists(dirname($outputPath));
 
-        $margins = $options['margins'] ?? ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14];
+        // full_bleed (sección 1/3 — machotes CARTA COMPROMISO y WARNING ROJO):
+        // esas dos vistas traen su propio fondo = la página original escaneada a
+        // 612x792pt exactos; cualquier margen o footer inyectado por Puppeteer
+        // desalinearía el overlay y pintaría un pie de página ajeno al machote.
+        $fullBleed = $options['full_bleed'] ?? false;
+        $margins = $options['margins'] ?? ($fullBleed
+            ? ['top' => 0, 'right' => 0, 'bottom' => 0, 'left' => 0]
+            : ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14]);
         $format  = $options['format'] ?? config('pdf.defaults.format', 'Letter');
         $waitForReady = $options['wait_for_ready'] ?? true;
         $readyTimeout = $options['ready_timeout'] ?? config('pdf.defaults.pdf_ready_timeout', 20000);
@@ -78,12 +86,14 @@ class BrowsershotPdfRenderer
             $shot->waitForFunction('window.__PDF_READY__ === true', timeout: (int) $readyTimeout);
         }
 
-        $shot->showBrowserHeaderAndFooter()
-            ->hideHeader()
-            ->footerHtml($this->footerTemplate(
-                $options['footer_left'] ?? config('pdf.branding.app_name'),
-                $options['footer_right'] ?? null,
-            ));
+        if (!$fullBleed) {
+            $shot->showBrowserHeaderAndFooter()
+                ->hideHeader()
+                ->footerHtml($this->footerTemplate(
+                    $options['footer_left'] ?? config('pdf.branding.app_name'),
+                    $options['footer_right'] ?? null,
+                ));
+        }
 
         try {
             $shot->savePdf($outputPath);

@@ -384,8 +384,10 @@ async function generateCommitmentLetter() {
     letterGenerating.value = true
 
     try {
+        // 5/9: lugar y puesto los resuelve el backend (config corporativa +
+        // Employee.position) — el colaborador nunca captura nada aquí.
         const res = await csrfFetch(`/okr/${props.objective.id}/commitment-letter`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ place: 'Ciudad de México' }),
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
         })
         const data = await res.json()
 
@@ -414,6 +416,25 @@ return
 }
 
 // ── Warning Rojo (Parte 3 del cierre, 04-oct-2026) ──────────────────────
+// 12: el botón "Generar Warning" solo se habilita cuando existe una semana
+// con incumplimiento REAL — mismo criterio canónico que el backend
+// (OkrWarningService::buildWeekSnapshot, deviation_pp < 0, calculado por
+// OkrProgressCalculator). Nunca basta con "hay semanas disponibles": una
+// semana sin datos o en cumplimiento NO habilita el botón.
+const weeksWithBreach = computed<number[]>(() => {
+    const weeks = new Set<number>()
+
+    for (const kr of props.keyResults) {
+        for (const s of kr.snapshots ?? []) {
+            if (s.deviation_pp !== null && s.deviation_pp !== undefined && Number(s.deviation_pp) < 0) {
+                weeks.add(s.week_number)
+            }
+        }
+    }
+
+    return [...weeks].sort((a, b) => a - b)
+})
+
 const warningOpen = ref(false)
 const warningWeekNumber = ref<number | null>(null)
 const warningCorrectiveActions = ref('')
@@ -734,13 +755,14 @@ return
                                 Warnings
                                 <OkrHelpTooltip text="El sistema detecta desviación y HABILITA este botón — nunca sanciona solo. Usa el resultado REAL de la semana elegida, no el dato de hoy." />
                             </p>
-                            <Button v-if="canAssign" size="sm" variant="outline" class="h-8 text-xs" @click="warningOpen = !warningOpen">Generar Warning</Button>
+                            <Button v-if="canAssign && weeksWithBreach.length" size="sm" variant="outline" class="h-8 text-xs" @click="warningOpen = !warningOpen">Generar Warning</Button>
                         </div>
+                        <p v-if="canAssign && !weeksWithBreach.length" class="text-xs text-muted-foreground">Sin incumplimiento detectado todavía — el botón se habilita solo cuando una semana evaluada muestra una desviación real.</p>
 
                         <div v-if="warningOpen" class="mb-3 space-y-2 rounded-lg border border-border p-3">
                             <select v-model="warningWeekNumber" class="app-input h-9 w-full text-xs">
                                 <option :value="null" disabled>Semana a evaluar</option>
-                                <option v-for="w in objective.current_week" :key="w" :value="w">Semana {{ w }}</option>
+                                <option v-for="w in weeksWithBreach" :key="w" :value="w">Semana {{ w }}</option>
                             </select>
                             <textarea v-model="warningCorrectiveActions" rows="2" placeholder="Acciones correctivas (obligatorio)" class="app-textarea text-xs" />
                             <textarea v-model="warningObservations" rows="2" placeholder="Observaciones (opcional)" class="app-textarea text-xs" />

@@ -67,7 +67,7 @@ class OkrCommitmentLetterService
         $this->renderer->renderViewToFile('reports.okr-commitment-letter-pdf', [
             'folio' => 'VISTA PREVIA — SIN EMITIR', 'snapshot' => $snapshot,
             'generatedAt' => now(), 'generatedByName' => null, 'isPreview' => true,
-        ], $path, ['footer_left' => 'MR LANA · Carta Compromiso (vista previa)']);
+        ], $path, ['full_bleed' => true]);
 
         return $path;
     }
@@ -107,7 +107,7 @@ class OkrCommitmentLetterService
             $this->renderer->renderViewToFile('reports.okr-commitment-letter-pdf', [
                 'folio' => $folio, 'snapshot' => $snapshot,
                 'generatedAt' => $letter->generated_at, 'generatedByName' => $user->name, 'isPreview' => false,
-            ], $absolutePath, ['footer_left' => 'MR LANA · Carta Compromiso']);
+            ], $absolutePath, ['full_bleed' => true]);
 
             $letter->update(['folio' => $folio, 'stored_path' => $path, 'disk' => $disk]);
 

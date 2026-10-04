@@ -11,11 +11,18 @@ class OkrPlacementUpload extends Model
     public const STATUS_ACTIVE = 'active';
     public const STATUS_SUPERSEDED = 'superseded';
 
+    /** 18: el archivo de sucursal cubrió a TODOS los empleados con asignación activa a esa sucursal. */
+    public const COVERAGE_FULL = 'full';
+    /** 18: el archivo de sucursal dejó fuera al menos un empleado con asignación activa — ausencia ≠ 0. */
+    public const COVERAGE_PARTIAL = 'partial';
+    /** 18: no se pudo determinar el roster real de la sucursal (sin asignaciones registradas) — se trata igual que 'partial', nunca se asume cobertura. */
+    public const COVERAGE_UNKNOWN = 'unknown';
+
     protected $fillable = [
         'okr_objective_id', 'week_number', 'week_start', 'week_end',
         'original_filename', 'stored_path', 'disk', 'uploaded_by', 'status',
         'replaced_upload_id', 'total_amount', 'rows_count', 'unattributed_amount',
-        'rows_outside_week_range',
+        'rows_outside_week_range', 'coverage_status',
     ];
 
     protected $casts = [

@@ -68,7 +68,7 @@ class EmployeeBranchAssignmentController extends Controller
         if ($selectedPeriod) {
             $rawAssignments = EmployeeBranchAssignment::query()
                 ->with([
-                    'employee:id,full_name,normalized_name',
+                    'employee:id,full_name,normalized_name,position',
                     'branch:id,name',
                     'period:id,name,code,type,year,month,sequence,start_date,end_date',
                 ])
@@ -360,6 +360,7 @@ class EmployeeBranchAssignmentController extends Controller
             'branch_id' => $branchIdDisplay,
             'employee_name' => $employee?->full_name ?? 'Sin empleado',
             'normalized_name' => $employee?->normalized_name,
+            'position' => $employee?->position,
             'branch_name' => $branchNameDisplay,
             'source_name' => $this->formatSourceType($sourceType),
             'source_reference' => $assignment->source_reference,

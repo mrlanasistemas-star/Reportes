@@ -26,9 +26,24 @@ use App\Models\User;
  */
 class OkrObjectivePolicy
 {
+    /**
+     * CORRECCIÓN 04-oct-2026 (cierre real OKR, punto 15): antes CUALQUIER
+     * autenticado veía CUALQUIER Objective (incluyendo por URL directa
+     * /okr/123) — bug de privacidad. Regla real:
+     *   - ADMIN: todo.
+     *   - GERENCIAL: todo (sin alcance regional/sucursal definido todavía en
+     *     el modelo — mínimo vigente es ver todo el seguimiento gerencial).
+     *   - COLABORADOR: solo su propio Objective — único vínculo real
+     *     User↔Objective es responsible_user_id (Employee no tiene FK a
+     *     users), mismo criterio que update/checkin/uploadEvidence.
+     */
     public function view(User $user, OkrObjective $objective): bool
     {
-        return true; // mismo criterio que el resto de Reportería: autenticado = puede ver
+        if ($this->isAdmin($user) || $user->hasManagerialAccess()) {
+            return true;
+        }
+
+        return $this->isResponsible($user, $objective);
     }
 
     /** Editar meta/peso, recalcular progreso. */

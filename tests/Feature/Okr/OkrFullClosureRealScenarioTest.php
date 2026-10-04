@@ -113,7 +113,12 @@ it('PARTE 20 — real end-to-end scenario: branch with 3 individualized gestores
     // contra un archivo de sucursal consolidado, Parte 6.5).
     $weeklyAmounts = [
         'JUAN REAL GESTOR'   => [1 => 175_000, 2 => 175_000, 3 => 175_000, 4 => 175_000],   // 700,000 total
-        'PEDRO REAL GESTOR'  => [1 => 300_000, 2 => 300_000, 3 => 200_000, 4 => 200_000],   // 1,000,000 total
+        // Semana 3 cae a 100k (vs. 250k/sem esperado para ir al ritmo de la
+        // meta) — real incumplimiento en semana 3 (700k vs 750k esperado,
+        // deviation_pp negativo), no solo "bajó el ritmo semanal" en abstracto
+        // — el Warning de más abajo (12/13) exige una desviación REAL, no solo
+        // datos cargados.
+        'PEDRO REAL GESTOR'  => [1 => 300_000, 2 => 300_000, 3 => 100_000, 4 => 300_000],   // 1,000,000 total
         'MARIA REAL GESTORA' => [1 => 400_000, 2 => 300_000, 3 => 300_000, 4 => 300_000],   // 1,300,000 total
     ];
     // Avanza el reloj a mitad de la semana 4 — importar un archivo no
@@ -176,14 +181,15 @@ it('PARTE 20 — real end-to-end scenario: branch with 3 individualized gestores
     //    snapshot CONGELADO de esa semana, no el current_value final de hoy ──
     $pedroKr = $children['PEDRO REAL GESTOR']->fresh()->keyResults()->first();
     $week3Snapshot = OkrProgressSnapshot::query()->where('okr_key_result_id', $pedroKr->id)->where('week_number', 3)->first();
-    expect((float) $week3Snapshot->actual_value)->toBe(800000.0); // 300k+300k+200k acumulado a la semana 3
+    expect((float) $week3Snapshot->actual_value)->toBe(700000.0); // 300k+300k+100k acumulado a la semana 3
+    expect((float) $week3Snapshot->deviation_pp)->toBeLessThan(0); // incumplimiento REAL (12/13) — no solo datos
 
     $warningResponse = $this->actingAs($admin)->postJson(route('okr.warnings.store', $children['PEDRO REAL GESTOR']), [
         'week_number' => 3, 'corrective_actions' => 'Reunión de seguimiento con Pedro — reforzar colocación semanal.',
     ]);
     $warningResponse->assertOk();
     $warning = OkrWarning::query()->findOrFail($warningResponse->json('warning.id'));
-    expect((float) $warning->snapshot['rows'][0]['actual_value'])->toBe(800000.0)
+    expect((float) $warning->snapshot['rows'][0]['actual_value'])->toBe(700000.0)
         ->and((float) $warning->snapshot['rows'][0]['actual_value'])->not->toBe(1000000.0); // nunca el acumulado final de hoy
     expect(file_exists(Storage::disk($warning->disk)->path($warning->stored_path)))->toBeTrue();
 

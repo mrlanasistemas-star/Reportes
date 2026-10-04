@@ -135,6 +135,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->group(function () {
             Route::post('/batch-asignar-sucursal', [EmployeeController::class, 'batchAssignBranch'])->name('batch-assign-branch');
             Route::post('/{employee}/asignar-sucursal', [EmployeeController::class, 'assignBranch'])->name('assign-branch');
+            Route::post('/{employee}/puesto', [EmployeeController::class, 'updatePosition'])->name('update-position');
         });
 
     Route::prefix('validaciones')
