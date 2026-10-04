@@ -177,6 +177,14 @@ function closeModal() {
     modal.saving = false
 }
 
+function updatePosition(employeeId: number | null | undefined, position: string) {
+    if (!employeeId) {
+return
+}
+
+    router.post(`/empleados/${employeeId}/puesto`, { position: position || null }, { preserveScroll: true })
+}
+
 function saveModal(payload: { branchId: string; notes: string }) {
     modal.saving = true
 
@@ -351,6 +359,7 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                             :key="item.id"
                             :item="item"
                             @assign="openAssignModal(item)"
+                            @update-position="(value) => updatePosition(item.employee_id, value)"
                         />
                     </div>
 

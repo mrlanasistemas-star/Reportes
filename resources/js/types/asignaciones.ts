@@ -12,6 +12,7 @@ export type Assignment = {
     branch_id?: number | null
     employee_name: string
     normalized_name?: string | null
+    position?: string | null
     branch_name?: string | null
     source_name?: string | null
     source_reference?: string | null

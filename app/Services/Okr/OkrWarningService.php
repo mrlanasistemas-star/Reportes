@@ -2,6 +2,7 @@
 
 namespace App\Services\Okr;
 
+use App\Models\OkrKpi;
 use App\Models\OkrObjective;
 use App\Models\OkrProgressSnapshot;
 use App\Models\OkrWarning;
@@ -29,12 +30,13 @@ class OkrWarningService
     }
 
     /**
-     * @return array{rows: array, has_any_data: bool}
+     * @return array{rows: array, has_any_data: bool, has_breach: bool}
      */
     public function buildWeekSnapshot(OkrObjective $objective, int $weekNumber): array
     {
         $rows = [];
         $hasAnyData = false;
+        $hasBreach = false;
 
         foreach ($objective->keyResults()->with('kpi')->get() as $kr) {
             $snapshot = OkrProgressSnapshot::query()
@@ -47,6 +49,27 @@ class OkrWarningService
                 $hasAnyData = true;
             }
 
+            // 14: brecha en unidades/$ — MISMA semántica de dirección que
+            // OkrProgressCalculator (nunca "target - actual" a secas, que da
+            // signo equivocado en KPI tipo DECREASE como mora/cartera vencida).
+            //   INCREASE (colocación, EBITDA): brecha = meta - real (positivo = falta por cubrir).
+            //   DECREASE (mora): brecha = real - límite (positivo = se excedió el límite).
+            $gap = null;
+            if ($hasData && $snapshot->actual_value !== null) {
+                $gap = $kr->kpi->direction === OkrKpi::DIRECTION_DECREASE
+                    ? (float) $snapshot->actual_value - (float) $kr->target_value
+                    : (float) $kr->target_value - (float) $snapshot->actual_value;
+            }
+
+            // 12/13: incumplimiento real = desviación negativa (real por debajo de
+            // lo esperado) en el deviation_pp CANÓNICO ya calculado por
+            // OkrProgressCalculator sobre este snapshot — nunca una segunda
+            // semántica inventada aquí.
+            $hasRowBreach = $hasData && $snapshot->deviation_pp !== null && (float) $snapshot->deviation_pp < 0;
+            if ($hasRowBreach) {
+                $hasBreach = true;
+            }
+
             $rows[] = [
                 'kpi_name' => $kr->kpi->name,
                 'unit' => $kr->kpi->unit,
@@ -54,19 +77,20 @@ class OkrWarningService
                 'expected_value' => $hasData ? $snapshot->expected_value : null,
                 'actual_value' => $hasData ? $snapshot->actual_value : null,
                 'compliance_percentage' => $hasData ? $snapshot->actual_progress_percentage : null,
-                // Brecha = cuánto falta para la meta final del Objective, con el
-                // resultado REAL de esa semana (nunca el de hoy) — mismo criterio
-                // de signo que OkrProgressCalculator (positivo = falta por cubrir).
-                'gap' => $hasData && $snapshot->actual_value !== null ? (float) $kr->target_value - (float) $snapshot->actual_value : null,
+                'gap' => $gap,
                 'has_data' => $hasData,
+                'has_breach' => $hasRowBreach,
             ];
         }
 
-        return ['rows' => $rows, 'has_any_data' => $hasAnyData];
+        return ['rows' => $rows, 'has_any_data' => $hasAnyData, 'has_breach' => $hasBreach];
     }
 
     /**
-     * @throws RuntimeException si la semana no tiene NINGÚN dato real todavía.
+     * @throws RuntimeException si la semana no tiene NINGÚN dato real todavía,
+     *   o si tiene datos pero NINGÚN KR muestra incumplimiento real (12/13 —
+     *   nunca se permite emitir un Warning "porque sí", ni esquivando el botón
+     *   deshabilitado del frontend llamando al endpoint directo).
      */
     public function generate(OkrObjective $objective, int $weekNumber, string $correctiveActions, ?string $observations, User $user): OkrWarning
     {
@@ -78,8 +102,11 @@ class OkrWarningService
         if (!$weekData['has_any_data']) {
             throw new RuntimeException("La semana {$weekNumber} todavía no tiene información cargada — no se puede generar un Warning sin datos reales (nunca se finge un incumplimiento).");
         }
+        if (!$weekData['has_breach']) {
+            throw new RuntimeException('No existe incumplimiento en la semana seleccionada.');
+        }
 
-        $objective->loadMissing(['branch', 'employee', 'responsibleUser']);
+        $objective->loadMissing(['branch', 'employee', 'responsibleUser', 'commitmentLetter']);
         $weekStart = $this->calendar->weekStart($objective->start_date, $weekNumber);
         $weekEnd   = $this->calendar->weekEnd($objective->start_date, $weekNumber);
 
@@ -88,7 +115,12 @@ class OkrWarningService
             'scope_type' => $objective->scope_type,
             'branch_name' => $objective->branch?->name,
             'employee_name' => $objective->employee?->full_name,
+            'position' => $objective->employee?->position,
             'responsible_name' => $objective->responsibleUser?->name,
+            // 11: referencia a la Carta Compromiso original — solo si ya existe
+            // (nunca se finge una fecha/folio de una carta que no se ha emitido).
+            'letter_folio' => $objective->commitmentLetter?->folio,
+            'letter_date' => $objective->commitmentLetter?->generated_at?->toDateString(),
             'week_number' => $weekNumber,
             'week_start' => $weekStart->toDateString(),
             'week_end' => $weekEnd->toDateString(),
@@ -118,7 +150,7 @@ class OkrWarningService
                 'folio' => $folio, 'snapshot' => $snapshot,
                 'correctiveActions' => $correctiveActions, 'observations' => $observations,
                 'generatedAt' => $warning->generated_at, 'generatedByName' => $user->name,
-            ], $absolutePath, ['footer_left' => 'MR LANA · Warning Rojo']);
+            ], $absolutePath, ['full_bleed' => true]);
 
             $warning->update(['folio' => $folio, 'stored_path' => $path, 'disk' => $disk]);
 

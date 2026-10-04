@@ -26,12 +26,12 @@ class CommitmentLetterController extends Controller
     public function preview(Request $request, OkrObjective $objective, OkrCommitmentLetterService $service): StreamedResponse
     {
         $this->authorize('view', $objective);
-        $data = $request->validate([
-            'place' => ['nullable', 'string', 'max:120'],
-            'position' => ['nullable', 'string', 'max:120'],
-        ]);
 
-        $path = $service->renderPreviewPdf($objective, $data['place'] ?? 'Ciudad de México', $data['position'] ?? null);
+        // 5/9: el colaborador NUNCA captura nombre/sucursal/puesto/lugar — el
+        // sistema ya los conoce (lugar = config corporativa, puesto = dato
+        // persistente del Employee). La vista previa usa las MISMAS fuentes
+        // que la emisión oficial, nunca un formulario de captura.
+        $path = $service->renderPreviewPdf($objective, config('company.document_place'), $objective->employee?->position);
 
         return response()->streamDownload(function () use ($path) {
             echo File::get($path);
@@ -41,14 +41,13 @@ class CommitmentLetterController extends Controller
 
     public function generate(Request $request, OkrObjective $objective, OkrCommitmentLetterService $service): JsonResponse
     {
-        $this->authorize('update', $objective);
-        $data = $request->validate([
-            'place' => ['required', 'string', 'max:120'],
-            'position' => ['nullable', 'string', 'max:120'],
-        ]);
+        // 16: emisión OFICIAL es decisión admin/gerencial — igual que asignar
+        // (WarningController::store usa el mismo criterio) — nunca el propio
+        // colaborador responsable, aunque tenga 'update' sobre su Objective.
+        $this->authorize('assign', $objective);
 
         try {
-            $letter = $service->generate($objective, $request->user(), $data['place'], $data['position'] ?? null);
+            $letter = $service->generate($objective, $request->user(), config('company.document_place'), $objective->employee?->position);
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }

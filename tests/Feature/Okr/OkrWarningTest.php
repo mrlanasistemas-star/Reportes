@@ -117,7 +117,11 @@ it('a gerencial user CAN generate a Warning, same as admin', function () {
     $gerencial = User::factory()->create(['role' => 'gerencial']);
     OkrProgressSnapshot::query()->create([
         'okr_key_result_id' => $kr->id, 'week_number' => 1, 'snapshot_date' => now()->toDateString(),
-        'actual_value' => 100_000, 'target_value' => null, 'calculated_at' => now(),
+        // 12/13: generate() ahora también exige incumplimiento REAL (deviation_pp
+        // negativo), no solo datos — este fixture simula una desviación real.
+        'actual_value' => 100_000, 'expected_value' => 250_000,
+        'actual_progress_percentage' => 10.0, 'expected_progress_percentage' => 25.0, 'deviation_pp' => -15.0,
+        'calculated_at' => now(),
     ]);
 
     $this->actingAs($gerencial)->postJson(route('okr.warnings.store', $objective), [

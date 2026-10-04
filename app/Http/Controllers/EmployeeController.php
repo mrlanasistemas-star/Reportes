@@ -79,4 +79,22 @@ class EmployeeController extends Controller
 
         return back()->with('success', "Sucursal asignada: {$branch->name} → {$employee->full_name}.");
     }
+
+    /**
+     * Cierre real OKR (04-oct-2026, punto 7) — puesto/cargo del colaborador:
+     * ninguna fuente del proyecto (NOI, roster, directorio, asignaciones) lo
+     * trae, así que se gestiona aquí como dato persistente mínimo. Una vez
+     * guardado, la Carta Compromiso lo precarga automáticamente — nunca se
+     * vuelve a escribir a mano por carta.
+     */
+    public function updatePosition(Employee $employee, Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'position' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        $employee->update(['position' => $validated['position'] ?: null]);
+
+        return back()->with('success', "Puesto actualizado: {$employee->full_name}.");
+    }
 }

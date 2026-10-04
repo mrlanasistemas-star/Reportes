@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ArrowRightLeft, Building2, ClipboardList, PenSquare } from 'lucide-vue-next'
+import { ArrowRightLeft, Briefcase, Building2, ClipboardList, PenSquare } from 'lucide-vue-next'
+import Swal from 'sweetalert2'
 import { computed } from 'vue'
 import type { Assignment } from '@/types/asignaciones'
 
@@ -7,7 +8,27 @@ const props = defineProps<{
     item: Assignment
 }>()
 
-defineEmits<{ assign: [] }>()
+const emit = defineEmits<{ assign: []; 'update-position': [value: string] }>()
+
+// 7 del cierre OKR (04-oct-2026): puesto/cargo no existe en ninguna fuente
+// real del proyecto — se captura aquí, mínimo y persistente, y desde ahí la
+// Carta Compromiso lo precarga sin volver a pedirlo.
+async function editPosition() {
+    const { value, isConfirmed } = await Swal.fire({
+        title: 'Puesto del colaborador',
+        input: 'text',
+        inputLabel: props.item.employee_name,
+        inputValue: props.item.position ?? '',
+        inputPlaceholder: 'Ej. Gestor de Cobranza',
+        showCancelButton: true,
+        confirmButtonText: 'Guardar',
+        cancelButtonText: 'Cancelar',
+    })
+
+    if (isConfirmed) {
+        emit('update-position', (value ?? '').trim())
+    }
+}
 
 const initials = computed(() => {
     const parts = props.item.employee_name.trim().split(/\s+/).filter(Boolean)
@@ -107,6 +128,18 @@ return '—'
             <div class="flex items-center gap-2 text-sm">
                 <Building2 class="size-4 shrink-0 text-muted-foreground" />
                 <span class="font-medium">{{ item.branch_name || 'Sin sucursal asignada' }}</span>
+            </div>
+
+            <div class="flex items-center gap-2 text-sm">
+                <Briefcase class="size-4 shrink-0 text-muted-foreground" />
+                <span :class="item.position ? 'font-medium' : 'text-muted-foreground italic'">{{ item.position || 'Sin puesto registrado' }}</span>
+                <button
+                    type="button"
+                    class="ml-auto text-xs font-semibold text-sky-600 hover:underline dark:text-sky-400"
+                    @click="editPosition"
+                >
+                    Editar
+                </button>
             </div>
 
             <div class="flex items-center gap-2 text-sm">
