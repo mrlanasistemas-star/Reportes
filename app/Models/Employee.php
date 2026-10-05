@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Employee extends Model {
 
@@ -37,6 +38,11 @@ class Employee extends Model {
 
     public function monthlyEmployeeSummaries(): HasMany {
         return $this->hasMany(MonthlyEmployeeSummary::class);
+    }
+
+    /** 05-oct-2026 — identidad persistente User↔Employee (0/1 User por Employee, ver migración users.employee_id). */
+    public function user(): HasOne {
+        return $this->hasOne(User::class);
     }
 
 }

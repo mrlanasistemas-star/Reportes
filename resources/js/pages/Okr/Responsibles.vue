@@ -12,8 +12,15 @@ import AppLayout from '@/layouts/AppLayout.vue'
 
 defineOptions({ layout: AppLayout })
 
+type Responsible = {
+    id: number; name: string; email: string; role: string; status: 'active' | 'pending'; objectives_count: number
+    employee_id: number | null; employee_name: string | null; employee_is_active: boolean | null; current_branch: string | null
+}
+type LinkableEmployee = { id: number; full_name: string; is_active: boolean; linked_user_id: number | null }
+
 const props = defineProps<{
-    responsibles: { id: number; name: string; email: string; role: string; status: 'active' | 'pending'; objectives_count: number }[]
+    responsibles: Responsible[]
+    employees: LinkableEmployee[]
     temp_password?: string | null
     current_user_id: number
     admin_count: number
@@ -84,6 +91,39 @@ return false
     return true
 }
 
+// 2 del cierre (05-oct-2026) — vincular/desvincular el Employee real de este
+// User. Opciones = empleados SIN vínculo (linked_user_id === null) + el que
+// ya pertenece a ESTA fila (para poder verlo seleccionado / desvincularlo) —
+// nunca un empleado ya vinculado a OTRO usuario.
+function linkableEmployeesFor(responsible: Responsible): LinkableEmployee[] {
+    return props.employees.filter((e) => e.linked_user_id === null || e.linked_user_id === responsible.id)
+}
+
+function editEmployeeLink(responsible: Responsible) {
+    const options = linkableEmployeesFor(responsible)
+    const optionsHtml = ['<option value="">— Sin vincular —</option>']
+        .concat(options.map((e) => `<option value="${e.id}" ${e.id === responsible.employee_id ? 'selected' : ''}>${e.full_name}${e.is_active ? '' : ' (inactivo)'}</option>`))
+        .join('')
+
+    Swal.fire({
+        title: `Colaborador vinculado — ${responsible.name}`,
+        html: `<select id="employee-link-select" class="swal2-select" style="display:block;width:100%;">${optionsHtml}</select>`,
+        showCancelButton: true,
+        confirmButtonText: 'Guardar',
+        cancelButtonText: 'Cancelar',
+        confirmButtonColor: '#4f46e5',
+        preConfirm: () => {
+            const select = document.getElementById('employee-link-select') as HTMLSelectElement
+
+            return select.value ? Number(select.value) : null
+        },
+    }).then((r) => {
+        if (r.isConfirmed) {
+            router.put(`/okr/responsibles/${responsible.id}/employee`, { employee_id: r.value })
+        }
+    })
+}
+
 const roleLabels: Record<string, string> = { admin: 'Administrador', gerencial: 'Gerencial', colaborador: 'Colaborador' }
 const roleOptions = ['admin', 'gerencial', 'colaborador'] as const
 
@@ -148,6 +188,8 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                             <th class="px-4 py-3 text-left font-semibold">Correo</th>
                             <th class="px-4 py-3 text-left font-semibold">Rol</th>
                             <th class="px-4 py-3 text-left font-semibold">Acceso</th>
+                            <th class="px-4 py-3 text-left font-semibold">Colaborador vinculado</th>
+                            <th class="px-4 py-3 text-left font-semibold">Sucursal actual</th>
                             <th class="px-4 py-3 text-left font-semibold">OKR a cargo</th>
                             <th class="px-4 py-3 text-left font-semibold"></th>
                         </tr>
@@ -176,6 +218,13 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                                     {{ r.status === 'active' ? 'Activo' : 'Pendiente' }}
                                 </span>
                             </td>
+                            <td class="px-4 py-3">
+                                <button type="button" class="text-left text-xs font-semibold hover:underline" :class="r.employee_name ? 'text-foreground' : 'text-muted-foreground italic'" @click="editEmployeeLink(r)">
+                                    {{ r.employee_name ?? 'Sin vincular' }}
+                                    <span v-if="r.employee_name && r.employee_is_active === false" class="text-rose-600">(inactivo)</span>
+                                </button>
+                            </td>
+                            <td class="px-4 py-3 text-muted-foreground">{{ r.current_branch ?? '—' }}</td>
                             <td class="px-4 py-3 font-semibold tabular-nums text-foreground">{{ r.objectives_count }}</td>
                             <td class="px-4 py-3">
                                 <button v-if="r.status === 'pending'" type="button" class="text-xs font-bold text-primary hover:underline" @click="enableAccess(r)">Habilitar acceso</button>
