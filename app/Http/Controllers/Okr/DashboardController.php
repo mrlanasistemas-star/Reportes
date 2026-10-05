@@ -10,6 +10,7 @@ use App\Models\OkrObjective;
 use App\Models\Period;
 use App\Models\User;
 use App\Services\Okr\OkrEmployeeBranchResolver;
+use App\Services\Okr\OkrObjectiveVisibilityService;
 use App\Services\Okr\OkrProgressCalculator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
@@ -35,14 +36,23 @@ class DashboardController extends Controller
 {
     use ResolvesOperativeBranches, AuthorizesRequests;
 
-    public function index(Request $request): Response
+    public function index(Request $request, OkrObjectiveVisibilityService $visibility): Response
     {
         $this->authorize('okr.view');
+
+        // 4 del cierre (05-oct-2026) — BUG CRÍTICO: autorizaba `okr.view`
+        // (gate global, true para cualquier autenticado) pero baseQuery()
+        // traía TODOS los Objectives del sistema — un colaborador veía
+        // cards/tabla con OKR ajenos. El scope de visibilidad central
+        // (MISMO que la Policy) se aplica AQUÍ, antes de cualquier filtro de
+        // usuario — todo lo demás (cards, breakdown, proyección, has_any_objectives)
+        // sale de este mismo conjunto YA autorizado.
+        $scoped = $visibility->applyScope($this->baseQuery(), $request->user());
 
         // Un único conjunto filtrado (mismos filtros para tabla Y cards).
         // Incluye cerrados: el card "no cumplidos" (final_status) SOLO existe
         // en Objectives cerrados, y debe respetar los mismos filtros.
-        $filtered = $this->applyDashboardFilters($this->baseQuery(), $request)->orderByDesc('id')->get();
+        $filtered = $this->applyDashboardFilters($scoped, $request)->orderByDesc('id')->get();
 
         // D8 del cierre (17-sep-2026) — bug real: SIN filtro de status, la tabla
         // operativa excluía SOLO 'closed', dejando 'cancelled' mezclado con
@@ -77,8 +87,11 @@ class DashboardController extends Controller
         $employeesWithOkr = $activeOnly->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)->pluck('employee_id')->filter()->unique()->count();
 
         // Punto 14 de la auditoría 09-sep-2026 — distingue "sistema vacío" de
-        // "filtros sin resultados": consulta GLOBAL (ignora los filtros).
-        $hasAnyObjectives = OkrObjective::query()->exists();
+        // "filtros sin resultados": ignora los filtros de usuario, pero SÍ
+        // respeta el scope de visibilidad (4 del cierre 05-oct-2026) — para
+        // un colaborador, "hay Objectives" significa "hay Objectives
+        // VISIBLES para él", nunca "existe cualquier Objective en la BD".
+        $hasAnyObjectives = $visibility->applyScope(OkrObjective::query(), $request->user())->exists();
 
         return Inertia::render('Okr/Dashboard', [
             'objectives' => $openObjectives->map(fn ($o) => $this->toCard($o))->values(),

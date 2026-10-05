@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\OkrObjective;
 use App\Models\User;
+use App\Services\Okr\OkrObjectiveVisibilityService;
 
 /**
  * Módulo OKR — CORRECCIÓN 09-sep-2026 (punto 11 de la auditoría): antes TODAS
@@ -26,30 +27,29 @@ use App\Models\User;
  */
 class OkrObjectivePolicy
 {
+    public function __construct(private readonly OkrObjectiveVisibilityService $visibility)
+    {
+    }
+
     /**
-     * CORRECCIÓN 04-oct-2026 (cierre real OKR, punto 15): antes CUALQUIER
-     * autenticado veía CUALQUIER Objective (incluyendo por URL directa
-     * /okr/123) — bug de privacidad. Regla real:
-     *   - ADMIN: todo.
-     *   - GERENCIAL: todo (sin alcance regional/sucursal definido todavía en
-     *     el modelo — mínimo vigente es ver todo el seguimiento gerencial).
-     *   - COLABORADOR: solo su propio Objective — único vínculo real
-     *     User↔Objective es responsible_user_id (Employee no tiene FK a
-     *     users), mismo criterio que update/checkin/uploadEvidence.
+     * CORRECCIÓN 04-oct-2026 (cierre real OKR, punto 15) / 05-oct-2026
+     * (identidad User↔Employee): antes CUALQUIER autenticado veía CUALQUIER
+     * Objective (incluyendo por URL directa /okr/123) — bug de privacidad.
+     * Regla real, centralizada en OkrObjectiveVisibilityService (misma que
+     * usan Dashboard/History/Lookup/Alerts, nunca una copia separada):
+     *   - ADMIN/GERENCIAL: todo.
+     *   - COLABORADOR: responsible_user_id === user.id, O es el DUEÑO real
+     *     del Objective individual (user.employee_id === objective.employee_id).
      */
     public function view(User $user, OkrObjective $objective): bool
     {
-        if ($this->isAdmin($user) || $user->hasManagerialAccess()) {
-            return true;
-        }
-
-        return $this->isResponsible($user, $objective);
+        return $this->visibility->canView($user, $objective);
     }
 
     /** Editar meta/peso, recalcular progreso. */
     public function update(User $user, OkrObjective $objective): bool
     {
-        return $this->isAdmin($user) || $this->isResponsible($user, $objective);
+        return $this->isAdmin($user) || $this->visibility->isResponsible($user, $objective);
     }
 
     /**
@@ -67,23 +67,29 @@ class OkrObjectivePolicy
         return $this->isAdmin($user);
     }
 
+    /**
+     * 11 del cierre (05-oct-2026): el DUEÑO real del Objective (vínculo
+     * employee_id) puede dar seguimiento a SU PROPIO Objective aunque
+     * responsible_user_id sea su gerente — sin que esto lo autorice a
+     * editar meta/peso, activar, cancelar, emitir Carta o Warning (eso sigue
+     * siendo admin/responsable/gerencial exclusivamente, ver update/assign).
+     */
     public function checkin(User $user, OkrObjective $objective): bool
     {
-        return $this->isAdmin($user) || $this->isResponsible($user, $objective);
+        return $this->isAdmin($user)
+            || $this->visibility->isResponsible($user, $objective)
+            || $this->visibility->isOwner($user, $objective);
     }
 
     public function uploadEvidence(User $user, OkrObjective $objective): bool
     {
-        return $this->isAdmin($user) || $this->isResponsible($user, $objective);
+        return $this->isAdmin($user)
+            || $this->visibility->isResponsible($user, $objective)
+            || $this->visibility->isOwner($user, $objective);
     }
 
     private function isAdmin(User $user): bool
     {
         return ($user->role ?? null) === 'admin';
-    }
-
-    private function isResponsible(User $user, OkrObjective $objective): bool
-    {
-        return $objective->responsible_user_id !== null && (int) $objective->responsible_user_id === (int) $user->id;
     }
 }

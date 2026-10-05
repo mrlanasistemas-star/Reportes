@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Okr\Concerns\ResolvesOperativeBranches;
 use App\Models\Branch;
 use App\Models\OkrObjective;
+use App\Services\Okr\OkrObjectiveVisibilityService;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -16,13 +17,19 @@ class HistoryController extends Controller
 {
     use ResolvesOperativeBranches, AuthorizesRequests;
 
-    public function index(Request $request): Response
+    public function index(Request $request, OkrObjectiveVisibilityService $visibility): Response
     {
         $this->authorize('okr.history.view');
 
-        $query = OkrObjective::query()
-            ->with(['branch:id,name', 'employee:id,full_name', 'responsibleUser:id,name'])
-            ->where('lifecycle_status', OkrObjective::STATUS_CLOSED);
+        // 7 del cierre (05-oct-2026): consultaba TODOS los cerrados del
+        // sistema — el scope central se aplica ANTES de los filtros de
+        // usuario (branch_id/employee_id/final_status).
+        $query = $visibility->applyScope(
+            OkrObjective::query()
+                ->with(['branch:id,name', 'employee:id,full_name', 'responsibleUser:id,name'])
+                ->where('lifecycle_status', OkrObjective::STATUS_CLOSED),
+            $request->user(),
+        );
 
         if ($branchId = $request->integer('branch_id')) {
             $query->where('branch_id', $branchId);

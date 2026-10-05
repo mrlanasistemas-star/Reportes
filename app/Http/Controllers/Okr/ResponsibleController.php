@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Okr;
 
 use App\Http\Controllers\Controller;
+use App\Models\Branch;
+use App\Models\Employee;
 use App\Models\OkrObjective;
 use App\Models\User;
+use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -50,7 +53,7 @@ class ResponsibleController extends Controller
 {
     use AuthorizesRequests;
 
-    public function index(Request $request): Response
+    public function index(Request $request, OkrEmployeeBranchResolver $branchResolver): Response
     {
         $this->authorize('okr.admin');
 
@@ -60,17 +63,44 @@ class ResponsibleController extends Controller
             ->groupBy('responsible_user_id')
             ->pluck('total', 'responsible_user_id');
 
-        $responsibles = User::query()->orderBy('name')->get(['id', 'name', 'email', 'role', 'access_enabled_at'])->map(fn ($u) => [
-            'id' => $u->id, 'name' => $u->name, 'email' => $u->email, 'role' => $u->role,
-            // Activo = el admin habilitó el acceso explícitamente. Pendiente =
-            // creado pero sin habilitar todavía. Campo propio — NUNCA
-            // email_verified_at (ver docblock de la clase).
-            'status' => $u->access_enabled_at !== null ? 'active' : 'pending',
-            'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
-        ]);
+        $responsibles = User::query()->with('employee:id,full_name,is_active')->orderBy('name')
+            ->get(['id', 'name', 'email', 'role', 'access_enabled_at', 'employee_id'])
+            ->map(function ($u) use ($usageCounts, $branchResolver) {
+                $currentBranchId = $u->employee_id ? $branchResolver->currentBranchIdFor($u->employee_id) : null;
+
+                return [
+                    'id' => $u->id, 'name' => $u->name, 'email' => $u->email, 'role' => $u->role,
+                    // Activo = el admin habilitó el acceso explícitamente. Pendiente =
+                    // creado pero sin habilitar todavía. Campo propio — NUNCA
+                    // email_verified_at (ver docblock de la clase).
+                    'status' => $u->access_enabled_at !== null ? 'active' : 'pending',
+                    'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
+                    // 1/2 del cierre (05-oct-2026) — identidad persistente User↔Employee.
+                    'employee_id' => $u->employee_id,
+                    'employee_name' => $u->employee?->full_name,
+                    'employee_is_active' => $u->employee?->is_active,
+                    'current_branch' => $currentBranchId ? Branch::find($currentBranchId)?->name : null,
+                ];
+            });
+
+        // Catálogo de Employees vinculables: activos, MÁS cualquiera que ya
+        // esté vinculado a un User (aunque esté inactivo, para no ocultar un
+        // vínculo histórico existente — 2 del cierre). linked_user_id deja
+        // que el frontend excluya, por fila, los que ya pertenecen a OTRO
+        // usuario, sin pedir al backend fila por fila.
+        $employees = Employee::query()
+            ->where(fn ($q) => $q->where('is_active', true)->orWhereHas('user'))
+            ->with('user:id,employee_id')
+            ->orderBy('full_name')
+            ->get(['id', 'full_name', 'is_active'])
+            ->map(fn ($e) => [
+                'id' => $e->id, 'full_name' => $e->full_name, 'is_active' => $e->is_active,
+                'linked_user_id' => $e->user?->id,
+            ]);
 
         return Inertia::render('Okr/Responsibles', [
             'responsibles' => $responsibles,
+            'employees' => $employees,
             // Se muestra UNA SOLA VEZ justo después de crear un responsable —
             // session()->pull() la lee Y la borra en el mismo golpe, así que
             // un refresh posterior de esta misma pantalla ya no la repite.
@@ -178,5 +208,34 @@ class ResponsibleController extends Controller
         $roleLabels = ['admin' => 'Administrador', 'gerencial' => 'Gerencial', 'colaborador' => 'Colaborador'];
 
         return back()->with('success', "Rol de {$user->name} actualizado a " . ($roleLabels[$data['role']] ?? $data['role']) . '.');
+    }
+
+    /**
+     * 1/2 del cierre (05-oct-2026) — vincula/desvincula el Employee real de
+     * este User. Backend valida también (nunca solo el frontend): un
+     * Employee no puede quedar vinculado a dos Users a la vez (además hay
+     * UNIQUE a nivel BD, pero aquí se devuelve un mensaje claro en vez de un
+     * 500 por violación de constraint).
+     */
+    public function linkEmployee(User $user, Request $request): RedirectResponse
+    {
+        $this->authorize('okr.admin');
+
+        $data = $request->validate([
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+        ]);
+
+        if ($data['employee_id'] !== null) {
+            $alreadyLinked = User::query()->where('employee_id', $data['employee_id'])->where('id', '!=', $user->id)->exists();
+            if ($alreadyLinked) {
+                return back()->with('error', 'Ese colaborador ya está vinculado a otro usuario.');
+            }
+        }
+
+        $user->forceFill(['employee_id' => $data['employee_id']])->save();
+
+        return back()->with('success', $data['employee_id'] !== null
+            ? "Colaborador vinculado a {$user->name}."
+            : "Vínculo de colaborador removido para {$user->name}.");
     }
 }

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Okr\Concerns\ResolvesOperativeBranches;
 use App\Http\Requests\Okr\StoreObjectiveRequest;
 use App\Models\Branch;
+use App\Models\Employee;
 use App\Models\OkrKpi;
 use App\Models\OkrObjective;
 use App\Models\Period;
@@ -14,6 +15,7 @@ use App\Services\Okr\OkrAuditLogger;
 use App\Services\Okr\OkrCalendarService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use App\Services\Okr\OkrKpiValueResolver;
+use App\Services\Okr\OkrObjectiveVisibilityService;
 use App\Services\Okr\OkrProgressCalculator;
 use App\Services\Okr\OkrSnapshotService;
 use App\Services\Okr\OkrTrackingPeriodResolver;
@@ -49,6 +51,18 @@ class ObjectiveController extends Controller
         $this->authorize('okr.view');
         $request->validate(['branch_id' => ['nullable', 'integer', 'exists:branches,id'], 'search' => ['nullable', 'string', 'max:100']]);
 
+        // 6 del cierre (05-oct-2026): este lookup es, en la práctica, un
+        // directorio de colaboradores de una sucursal — pensado para el
+        // wizard de asignación (okr.create, admin/gerencial). Un colaborador
+        // autenticado NO debe poder usarlo como directorio general; solo ve
+        // su propio Employee vinculado (si tiene uno), nunca el de otros.
+        if (!$request->user()->hasManagerialAccess()) {
+            $own = $request->user()->employee_id ? Employee::find($request->user()->employee_id) : null;
+            $employees = $own ? [['id' => $own->id, 'full_name' => $own->full_name, 'is_active' => $own->is_active]] : [];
+
+            return response()->json(['employees' => $employees, 'total_in_branch' => count($employees)], 200, self::NO_STORE_HEADERS);
+        }
+
         $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
         $employees = $resolver->employeesForBranch($branchId, $request->string('search')->toString());
 
@@ -69,7 +83,7 @@ class ObjectiveController extends Controller
      * Seguimiento (docs/imagenesOKR/9.png) — permite cambiar de OKR sin volver
      * al Dashboard. Nunca precarga todos los Objectives del sistema.
      */
-    public function objectivesLookup(Request $request): JsonResponse
+    public function objectivesLookup(Request $request, OkrObjectiveVisibilityService $visibility): JsonResponse
     {
         $this->authorize('okr.view');
         $request->validate([
@@ -79,7 +93,14 @@ class ObjectiveController extends Controller
             'search' => ['nullable', 'string', 'max:100'],
         ]);
 
-        $query = OkrObjective::query()->whereNull('deleted_at')->where('lifecycle_status', '!=', OkrObjective::STATUS_CANCELLED);
+        // 5 del cierre (05-oct-2026): este lookup devolvía id/title de
+        // CUALQUIER Objective — un colaborador podía descubrir OKR ajenos
+        // (incluso solo buscando texto) sin abrir la ficha. Mismo scope
+        // central que Policy/Dashboard/History/Alerts.
+        $query = $visibility->applyScope(
+            OkrObjective::query()->whereNull('deleted_at')->where('lifecycle_status', '!=', OkrObjective::STATUS_CANCELLED),
+            $request->user(),
+        );
         if ($branchId = $request->integer('branch_id')) {
             $query->where(fn ($q) => $q->where('branch_id', $branchId)->orWhereHas('parent', fn ($p) => $p->where('branch_id', $branchId)));
         }

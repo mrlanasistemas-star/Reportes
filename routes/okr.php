@@ -42,6 +42,7 @@ Route::prefix('okr')->name('okr.')->middleware(EnsureOkrAccessEnabled::class)->g
     Route::post('/responsibles/{user}/enable-access', [ResponsibleController::class, 'enableAccess'])->name('responsibles.enable-access');
     Route::post('/responsibles/{user}/disable-access', [ResponsibleController::class, 'disableAccess'])->name('responsibles.disable-access');
     Route::put('/responsibles/{user}/role', [ResponsibleController::class, 'updateRole'])->name('responsibles.update-role');
+    Route::put('/responsibles/{user}/employee', [ResponsibleController::class, 'linkEmployee'])->name('responsibles.link-employee');
     Route::get('/alerts', [AlertController::class, 'index'])->name('alerts.index');
     Route::post('/alerts/{alert}/read', [AlertController::class, 'markRead'])->name('alerts.read');
     Route::get('/evidences/{evidence}/download', [EvidenceController::class, 'download'])->name('evidences.download');

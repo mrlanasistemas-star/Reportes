@@ -7,6 +7,7 @@ use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Fortify\TwoFactorAuthenticatable;
@@ -15,7 +16,12 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
 // App\Providers\OkrServiceProvider): columna real ya existente en la tabla
 // `users` (default 'admin' en la migración original) que nadie más leía ni
 // escribía — se reutiliza tal cual, nunca se creó una columna nueva.
-#[Fillable(['name', 'email', 'password', 'role'])]
+// 'employee_id' agregado 05-oct-2026 — identidad persistente User↔Employee
+// (ver migración 2026_10_05_000001): 1 User = 0/1 Employee, nullable,
+// UNIQUE. ADMIN/GERENCIAL típicamente NULL. Es el vínculo REAL que resuelve
+// "¿este colaborador es el DUEÑO de este Objective individual?" — nunca por
+// nombre/email en runtime (ver OkrObjectiveVisibilityService).
+#[Fillable(['name', 'email', 'password', 'role', 'employee_id'])]
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -54,6 +60,11 @@ class User extends Authenticatable
     public function hasManagerialAccess(): bool
     {
         return $this->isAdmin() || $this->isGerencial();
+    }
+
+    public function employee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class);
     }
 
     /**

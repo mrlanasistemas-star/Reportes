@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
@@ -100,4 +101,50 @@ it('demoting the sole remaining admin is rejected — the system never ends up w
 
     expect($soleAdmin->fresh()->role)->toBe('admin');
     expect(User::where('role', 'admin')->count())->toBe(1);
+});
+
+// ── 1/2/23 del cierre (05-oct-2026) — vínculo User↔Employee ──
+it('an admin can link a colaborador to their real Employee', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $colaborador = User::factory()->create(['role' => 'colaborador']);
+    $employee = Employee::query()->create(['full_name' => 'JUAN VINCULABLE', 'normalized_name' => 'juan vinculable', 'is_active' => true]);
+
+    $this->actingAs($admin)->put("/okr/responsibles/{$colaborador->id}/employee", ['employee_id' => $employee->id])
+        ->assertSessionHasNoErrors();
+
+    expect($colaborador->fresh()->employee_id)->toBe($employee->id);
+});
+
+it('an admin can unlink a colaborador from their Employee (employee_id => null)', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $employee = Employee::query()->create(['full_name' => 'JUAN DESVINCULABLE', 'normalized_name' => 'juan desvinculable', 'is_active' => true]);
+    $colaborador = User::factory()->create(['role' => 'colaborador', 'employee_id' => $employee->id]);
+
+    $this->actingAs($admin)->put("/okr/responsibles/{$colaborador->id}/employee", ['employee_id' => null])
+        ->assertSessionHasNoErrors();
+
+    expect($colaborador->fresh()->employee_id)->toBeNull();
+});
+
+it('the backend rejects linking an Employee already linked to a DIFFERENT user — never two Users on the same Employee', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $employee = Employee::query()->create(['full_name' => 'EMPLEADO COMPARTIDO', 'normalized_name' => 'empleado compartido', 'is_active' => true]);
+    $alreadyLinked = User::factory()->create(['role' => 'colaborador', 'employee_id' => $employee->id]);
+    $other = User::factory()->create(['role' => 'colaborador']);
+
+    $this->actingAs($admin)->put("/okr/responsibles/{$other->id}/employee", ['employee_id' => $employee->id]);
+
+    expect($other->fresh()->employee_id)->toBeNull(); // rechazado, no se vinculó
+    expect($alreadyLinked->fresh()->employee_id)->toBe($employee->id); // el vínculo original queda intacto
+});
+
+it('a non-admin cannot link employees', function () {
+    $colaborador = User::factory()->create(['role' => 'colaborador']);
+    $target = User::factory()->create(['role' => 'colaborador']);
+    $employee = Employee::query()->create(['full_name' => 'NO AUTORIZADO', 'normalized_name' => 'no autorizado', 'is_active' => true]);
+
+    $this->actingAs($colaborador)->put("/okr/responsibles/{$target->id}/employee", ['employee_id' => $employee->id])
+        ->assertForbidden();
+
+    expect($target->fresh()->employee_id)->toBeNull();
 });
