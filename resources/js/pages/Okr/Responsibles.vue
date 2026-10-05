@@ -52,10 +52,15 @@ function submit() {
     })
 }
 
-function enableAccess(responsible: { id: number; name: string }) {
+// 05-oct-2026: acceso habilitado/deshabilitado y colaborador activo/inactivo
+// son el MISMO estado acoplado (ver ResponsibleController::enableAccess/
+// disableAccess) — el diálogo lo dice explícitamente solo cuando hay un
+// Employee vinculado, para no confundir a un admin/gerencial sin colaborador.
+function enableAccess(responsible: Responsible) {
+    const employeeNote = responsible.employee_name ? ` Su colaborador vinculado (${responsible.employee_name}) también se reactivará.` : ''
     Swal.fire({
         icon: 'question', title: `¿Habilitar acceso para ${responsible.name}?`,
-        text: 'Confirma que ya verificaste la identidad de esta persona fuera del sistema.',
+        text: `Confirma que ya verificaste la identidad de esta persona fuera del sistema.${employeeNote}`,
         showCancelButton: true, confirmButtonText: 'Habilitar', cancelButtonText: 'Cancelar', confirmButtonColor: '#4f46e5',
     }).then((r) => {
         if (r.isConfirmed) {
@@ -64,10 +69,11 @@ router.post(`/okr/responsibles/${responsible.id}/enable-access`)
     })
 }
 
-function disableAccess(responsible: { id: number; name: string }) {
+function disableAccess(responsible: Responsible) {
+    const employeeNote = responsible.employee_name ? ` Su colaborador vinculado (${responsible.employee_name}) también quedará marcado como inactivo.` : ''
     Swal.fire({
         icon: 'warning', title: `¿Quitar acceso a ${responsible.name}?`,
-        text: 'No podrá entrar al módulo OKR hasta que se le vuelva a habilitar.',
+        text: `No podrá entrar al módulo OKR hasta que se le vuelva a habilitar.${employeeNote}`,
         showCancelButton: true, confirmButtonText: 'Quitar acceso', cancelButtonText: 'Cancelar', confirmButtonColor: '#dc2626',
     }).then((r) => {
         if (r.isConfirmed) {
