@@ -55,6 +55,40 @@ it('an admin can disable access for an already-enabled responsible', function ()
     expect($colaborador->fresh()->access_enabled_at)->toBeNull();
 });
 
+// ── 05-oct-2026, a petición explícita del usuario — acceso y Employee.is_active van acoplados ──
+it('disabling access ALSO marks the linked Employee as inactive', function () {
+    $admin = User::factory()->create();
+    $employee = Employee::query()->create(['full_name' => 'COLAB CON EMPLEADO', 'normalized_name' => 'colab con empleado', 'is_active' => true]);
+    $colaborador = User::factory()->create(['role' => 'colaborador', 'access_enabled_at' => now(), 'employee_id' => $employee->id]);
+
+    $this->actingAs($admin)->post("/okr/responsibles/{$colaborador->id}/disable-access")->assertSessionHasNoErrors();
+
+    expect($colaborador->fresh()->access_enabled_at)->toBeNull();
+    expect($employee->fresh()->is_active)->toBeFalse();
+});
+
+it('enabling access ALSO reactivates the linked Employee', function () {
+    $admin = User::factory()->create();
+    $employee = Employee::query()->create(['full_name' => 'COLAB DE BAJA', 'normalized_name' => 'colab de baja', 'is_active' => false]);
+    $colaborador = User::factory()->create(['role' => 'colaborador', 'employee_id' => $employee->id]);
+
+    $this->actingAs($admin)->post("/okr/responsibles/{$colaborador->id}/enable-access")->assertSessionHasNoErrors();
+
+    expect($colaborador->fresh()->access_enabled_at)->not->toBeNull();
+    expect($employee->fresh()->is_active)->toBeTrue();
+});
+
+it('enabling/disabling access for a user WITHOUT a linked Employee never errors and touches no Employee', function () {
+    $admin = User::factory()->create();
+    $colaborador = User::factory()->create(['role' => 'colaborador']); // sin employee_id
+
+    $this->actingAs($admin)->post("/okr/responsibles/{$colaborador->id}/enable-access")->assertSessionHasNoErrors();
+    expect($colaborador->fresh()->access_enabled_at)->not->toBeNull();
+
+    $this->actingAs($admin)->post("/okr/responsibles/{$colaborador->id}/disable-access")->assertSessionHasNoErrors();
+    expect($colaborador->fresh()->access_enabled_at)->toBeNull();
+});
+
 it('an admin can promote a colaborador to admin, and demote an admin back to colaborador', function () {
     $admin = User::factory()->create();
     $colaborador = User::factory()->create(['role' => 'colaborador']);

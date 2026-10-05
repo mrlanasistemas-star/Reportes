@@ -150,12 +150,20 @@ class ResponsibleController extends Controller
      * Habilita el acceso de un responsable ya creado — decisión EXPLÍCITA del
      * administrador (nunca automática), después de confirmar la identidad de
      * la persona fuera de este sistema.
+     *
+     * 05-oct-2026 (acoplado a petición explícita del usuario): si tiene un
+     * Employee vinculado, también lo reactiva (is_active=true) — "acceso
+     * habilitado" y "colaborador activo" son el MISMO estado para este
+     * sistema, nunca dos interruptores que puedan quedar desincronizados
+     * (un acceso habilitado con el Employee todavía marcado de baja sería
+     * un estado inconsistente).
      */
     public function enableAccess(User $user): RedirectResponse
     {
         $this->authorize('okr.admin');
 
         $user->forceFill(['access_enabled_at' => now()])->save();
+        $user->employee?->update(['is_active' => true]);
 
         return back()->with('success', "Acceso habilitado para {$user->name}. Debe usar \"¿Olvidaste tu contraseña?\" para entrar la primera vez.");
     }
@@ -165,12 +173,19 @@ class ResponsibleController extends Controller
      * esta pantalla solo podía HABILITAR, nunca deshabilitar de nuevo. Sin
      * efecto sobre un admin (EnsureOkrAccessEnabled ya lo deja pasar siempre,
      * sin importar access_enabled_at) — solo aplica de verdad a colaboradores.
+     *
+     * 05-oct-2026: "quitar acceso" para un colaborador operativo SIGNIFICA
+     * que causó baja — también marca su Employee vinculado como inactivo
+     * (is_active=false), lo que a su vez lo saca de roster/reportes de
+     * Reportería que ya filtran por empleados activos. Sin efecto si el
+     * usuario no tiene Employee vinculado (ej. admin/gerencial puros).
      */
     public function disableAccess(User $user): RedirectResponse
     {
         $this->authorize('okr.admin');
 
         $user->forceFill(['access_enabled_at' => null])->save();
+        $user->employee?->update(['is_active' => false]);
 
         return back()->with('success', "Acceso deshabilitado para {$user->name}.");
     }
