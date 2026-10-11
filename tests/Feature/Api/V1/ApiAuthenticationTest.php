@@ -5,6 +5,18 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
 
+function makeConsumer(array $attributes, array $abilities): array
+{
+    $consumer = ApiConsumer::query()->create(array_merge([
+        'abilities' => $abilities,
+        'is_active' => true,
+    ], $attributes));
+
+    $token = $consumer->createToken('test', $abilities)->plainTextToken;
+
+    return [$consumer, $token];
+}
+
 it('exposes health without authentication and without sensitive data', function () {
     $response = $this->getJson('/api/v1/health');
 
@@ -17,10 +29,7 @@ it('rejects protected endpoints without a token', function () {
 });
 
 it('rejects a token that lacks the required ability', function () {
-    $consumer = ApiConsumer::query()->create([
-        'name' => 'Auditoría Operativa', 'system_code' => 'auditoria', 'is_active' => true,
-    ]);
-    $token = $consumer->createToken('test', ['employees.read'])->plainTextToken;
+    [, $token] = makeConsumer(['name' => 'Auditoría Operativa', 'system_code' => 'auditoria'], ['employees.read']);
 
     $this->withHeader('Authorization', "Bearer {$token}")
         ->getJson('/api/v1/branches')
@@ -28,10 +37,7 @@ it('rejects a token that lacks the required ability', function () {
 });
 
 it('rejects an inactive consumer even with a valid token and ability', function () {
-    $consumer = ApiConsumer::query()->create([
-        'name' => 'Auditoría Operativa', 'system_code' => 'auditoria-inactiva', 'is_active' => false,
-    ]);
-    $token = $consumer->createToken('test', ['branches.read'])->plainTextToken;
+    [, $token] = makeConsumer(['name' => 'Auditoría Operativa', 'system_code' => 'auditoria-inactiva', 'is_active' => false], ['branches.read']);
 
     $this->withHeader('Authorization', "Bearer {$token}")
         ->getJson('/api/v1/branches')
@@ -39,10 +45,7 @@ it('rejects an inactive consumer even with a valid token and ability', function 
 });
 
 it('allows a consumer with the matching ability to list branches', function () {
-    $consumer = ApiConsumer::query()->create([
-        'name' => 'Auditoría Operativa', 'system_code' => 'auditoria-ok', 'is_active' => true,
-    ]);
-    $token = $consumer->createToken('test', ['branches.read'])->plainTextToken;
+    [, $token] = makeConsumer(['name' => 'Auditoría Operativa', 'system_code' => 'auditoria-ok'], ['branches.read']);
 
     $this->withHeader('Authorization', "Bearer {$token}")
         ->getJson('/api/v1/branches')
@@ -50,12 +53,21 @@ it('allows a consumer with the matching ability to list branches', function () {
         ->assertJsonStructure(['data', 'meta']);
 });
 
+it('rejects a token with an ability the consumer itself was never granted (Fase 2.9 — the consumer is a real ceiling, not just the token)', function () {
+    [$consumer] = makeConsumer(['name' => 'Auditoría Operativa', 'system_code' => 'auditoria-ceiling'], ['branches.read']);
+    // El token dice tener 'financial.read', pero el consumidor NUNCA lo tuvo en su propia lista.
+    $token = $consumer->createToken('rogue', ['financial.read'])->plainTextToken;
+
+    $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson('/api/v1/financial/metrics')
+        ->assertForbidden();
+});
+
 it('rejects a branch-restricted consumer requesting scope=general', function () {
-    $consumer = ApiConsumer::query()->create([
-        'name' => 'Auditoría Córdoba', 'system_code' => 'auditoria-cordoba', 'is_active' => true,
-        'allowed_branch_ids' => [999],
-    ]);
-    $token = $consumer->createToken('test', ['financial.read'])->plainTextToken;
+    [, $token] = makeConsumer([
+        'name' => 'Auditoría Córdoba', 'system_code' => 'auditoria-cordoba',
+        'allowed_branch_ids' => [999], 'branch_access_mode' => ApiConsumer::BRANCH_ACCESS_RESTRICTED,
+    ], ['financial.read']);
 
     $period = App\Models\Period::query()->create([
         'name' => 'Semana API Test', 'code' => 'W-API-' . uniqid(), 'type' => 'weekly',
@@ -69,11 +81,10 @@ it('rejects a branch-restricted consumer requesting scope=general', function () 
 });
 
 it('rejects a branch-restricted consumer requesting a branch it is not allowed to see', function () {
-    $consumer = ApiConsumer::query()->create([
-        'name' => 'Auditoría Córdoba', 'system_code' => 'auditoria-cordoba-2', 'is_active' => true,
-        'allowed_branch_ids' => [999],
-    ]);
-    $token = $consumer->createToken('test', ['financial.read'])->plainTextToken;
+    [, $token] = makeConsumer([
+        'name' => 'Auditoría Córdoba', 'system_code' => 'auditoria-cordoba-2',
+        'allowed_branch_ids' => [999], 'branch_access_mode' => ApiConsumer::BRANCH_ACCESS_RESTRICTED,
+    ], ['financial.read']);
 
     $period = App\Models\Period::query()->create([
         'name' => 'Semana API Test 2', 'code' => 'W-API-' . uniqid(), 'type' => 'weekly',
@@ -88,10 +99,7 @@ it('rejects a branch-restricted consumer requesting a branch it is not allowed t
 });
 
 it('enforces the throttle limiter is actually attached to v1 routes', function () {
-    $consumer = ApiConsumer::query()->create([
-        'name' => 'Auditoría Operativa', 'system_code' => 'auditoria-throttle', 'is_active' => true,
-    ]);
-    $token = $consumer->createToken('test', ['branches.read'])->plainTextToken;
+    [, $token] = makeConsumer(['name' => 'Auditoría Operativa', 'system_code' => 'auditoria-throttle'], ['branches.read']);
 
     $response = $this->withHeader('Authorization', "Bearer {$token}")->getJson('/api/v1/branches');
 

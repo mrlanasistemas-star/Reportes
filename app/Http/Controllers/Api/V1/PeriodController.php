@@ -5,18 +5,22 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Period;
 use App\Models\PeriodSummary;
+use App\Services\Api\ApiValidation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class PeriodController extends Controller
 {
+    private const PERIOD_TYPES = ['weekly', 'monthly', 'bimonthly', 'quarterly', 'semiannual', 'annual'];
+
     public function index(Request $request): JsonResponse
     {
-        $perPage = min((int) $request->query('per_page', 50), 100);
+        $perPage = ApiValidation::perPage($request);
+        $type    = ApiValidation::enumValue($request, 'type', self::PERIOD_TYPES);
 
         $query = Period::query()->orderByDesc('start_date');
 
-        if ($type = $request->query('type')) {
+        if ($type) {
             $query->where('type', $type);
         }
 

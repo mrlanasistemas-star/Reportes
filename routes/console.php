@@ -12,6 +12,10 @@ use Illuminate\Support\Facades\Schedule;
 Schedule::command('okr:refresh')->dailyAt('06:00');
 Schedule::command('okr:close-due')->dailyAt('06:15');
 
+// Fase 3.3 (auditoría de rendimiento API, 2026-10-11) — retención de
+// api_query_logs, nunca crecimiento ilimitado.
+Schedule::command('api:query-logs:prune')->dailyAt('03:00');
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');

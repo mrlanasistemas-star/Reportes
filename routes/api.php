@@ -19,6 +19,7 @@ Route::get('/v1/health', [HealthController::class, 'index']);
 
 Route::prefix('v1')
     ->middleware(['auth:sanctum', 'throttle:api-v1', 'log.api-query'])
+    ->where(['employeeId' => '[0-9]+', 'branchId' => '[0-9]+', 'periodId' => '[0-9]+'])
     ->group(function () {
         Route::get('/capabilities', [CapabilitiesController::class, 'index']);
 
@@ -29,7 +30,14 @@ Route::prefix('v1')
         Route::middleware('ensure.ability:employees.read')->group(function () {
             Route::get('/employees', [EmployeeController::class, 'index']);
             Route::get('/employees/{employeeId}', [EmployeeController::class, 'show']);
-            Route::get('/employees/{employeeId}/financial-summary', [EmployeeController::class, 'financialSummary']);
+
+            // Fase 2.1 (corrección de seguridad): la ficha financiera de un
+            // colaborador exige AMBAS abilities — tener acceso al catálogo de
+            // empleados NUNCA debe bastar, por sí solo, para leer sus datos
+            // financieros. `ensure.ability` verifica TODAS las que reciba.
+            Route::middleware('ensure.ability:employees.read,financial.read')->group(function () {
+                Route::get('/employees/{employeeId}/financial-summary', [EmployeeController::class, 'financialSummary']);
+            });
         });
 
         Route::middleware('ensure.ability:periods.read')->group(function () {

@@ -6,10 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Models\ApiConsumer;
 use App\Models\Period;
 use App\Services\Api\ApiScopeResolver;
+use App\Services\Api\ApiValidation;
 use App\Services\Api\FinancialMetricResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * GET /api/v1/collections/effectiveness — Fase 1.3 exige "distinguiendo
@@ -25,12 +25,9 @@ class CollectionsController extends Controller
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
 
-        $periodId = $request->query('period_id');
-        if (!$periodId) {
-            throw new HttpException(422, "El parámetro 'period_id' es obligatorio.");
-        }
-        $period = Period::query()->findOrFail((int) $periodId);
-        $scope  = $scopeResolver->resolve($request, $consumer);
+        $periodId = ApiValidation::requiredId($request, 'period_id');
+        $period = Period::query()->findOrFail($periodId);
+        $scope  = $scopeResolver->resolve($request, $consumer, $period);
 
         $legacy = $resolver->resolve('collections_effectiveness_legacy', $period, $scope['type'], $scope['branch_id'], $scope['employee_id']);
 
@@ -42,8 +39,8 @@ class CollectionsController extends Controller
                 'approved' => [
                     'available' => false,
                     'status'    => 'blocked',
-                    'reason'    => 'Fuente VBA (CALCULADORA DE EFECTIVIDAD DE COBRANZA APROBADO.xlsm) no disponible en el repositorio — ver docs/efectividad-cobranza-aprobada.md.',
-                    'version'   => 'approved_pending_validation',
+                    'reason'    => 'Motor de cálculo implementado y probado fielmente contra el VBA real (EfectividadCobranzaAprobadaCalculator, 17 pruebas unitarias) — pero NO conectado a datos reales: faltan columnas de CARTERA (Estatus/Substatus/Fecha primer pago/Cuota total/Pagos atrasados) en fact_portfolios, y no existe un resultado ya calculado en el archivo aprobado para validar numéricamente. Ver docs/efectividad-cobranza-aprobada.md.',
+                    'version'   => 'approved_pending_data_wiring',
                 ],
             ],
         ]);
