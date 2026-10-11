@@ -44,6 +44,10 @@ paths:
     get:
       tags: [capabilities]
       summary: Funciones y versiones disponibles para el consumidor autenticado
+      description: >
+        Fase 2.8 — cada recurso en `resources` trae tres campos: `implemented` (verdad del
+        sistema), `permitted` (si ESTE consumidor puede usarlo ahora) y `blocked_reason`
+        (razón explícita cuando `implemented=false`, nunca un booleano sin contexto).
       responses:
         "200":
           description: OK
@@ -93,6 +97,13 @@ paths:
     get:
       tags: [employees]
       summary: Ficha financiera atribuible del colaborador para un periodo
+      description: >
+        Requiere AMBAS abilities `employees.read` Y `financial.read` (corrección Fase 2.1 —
+        tener acceso al catálogo de empleados nunca basta por sí solo). La autorización se
+        verifica contra la sucursal HISTÓRICA del colaborador en `period_id`, nunca su
+        asignación más reciente (Fase 2.2/2.3).
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/EmployeeIdPath"
         - $ref: "#/components/parameters/PeriodIdQueryRequired"
@@ -105,7 +116,9 @@ paths:
                 type: object
                 properties:
                   employee_id: { type: integer }
+                  period_id: { type: integer }
                   branch_id: { type: integer, nullable: true }
+                  branch_status: { type: string, enum: [known, unknown] }
                   metrics:
                     type: array
                     items: { $ref: "#/components/schemas/MetricValue" }

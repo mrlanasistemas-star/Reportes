@@ -61,23 +61,41 @@ específica vía middleware `ensure.ability:<ability>`:
 | Ability | Recursos |
 |---|---|
 | `branches.read` | `/branches` |
-| `employees.read` | `/employees`, `/employees/{id}`, `/employees/{id}/financial-summary` |
+| `branches.read.global` | override: ver el catálogo COMPLETO de sucursales aunque el consumidor esté restringido (Fase 2.4) |
+| `employees.read` | `/employees`, `/employees/{id}` |
 | `periods.read` | `/periods`, `/periods/{id}` |
 | `financial.read` | `/financial/*` |
+| `employees.read` **Y** `financial.read` (ambas) | `/employees/{id}/financial-summary` — corrección Fase 2.1: tener acceso al catálogo de empleados nunca basta por sí solo para leer su ficha financiera |
 | `collections.read` | `/collections/effectiveness` |
 | `okr.read` | `/okr/*` |
 
 `/health` no requiere autenticación ni ability (no expone datos sensibles).
 `/capabilities` solo requiere estar autenticado — informa qué puede hacer ESE token.
 
+**Fase 2.9 — el consumidor es un techo real, no solo el token**: `ensure.ability` verifica
+que la ability esté TANTO en el token (`tokenCan()`) COMO en `ApiConsumer.abilities`. Un token
+nunca puede tener más privilegios que su consumidor, aunque alguna vez se emitiera por error
+con una ability de más.
+
 ## 4. Restricción por sucursal
 
-`ApiConsumer.allowed_branch_ids` (nullable):
+**Corrección Fase 2.5**: `ApiConsumer.branch_access_mode` es un estado EXPLÍCITO de 3 valores
+— antes, `allowed_branch_ids = null` y `= []` eran indistinguibles (ambos daban acceso
+global, un bug real). Ahora:
 
-- `null` → sin restricción, puede pedir `scope=general` o cualquier sucursal/colaborador.
-- `[5, 9]` → **nunca** puede pedir `scope=general` (403), y solo puede pedir la sucursal 5 o
-  9, o colaboradores cuya asignación más reciente apunte a esas sucursales (403 en caso
-  contrario).
+- `global` → sin restricción, puede pedir `scope=general` o cualquier sucursal/colaborador.
+- `restricted` → solo las sucursales en `allowed_branch_ids`. Si ese array queda vacío por
+  error de datos, se trata como `none` — **nunca** como global.
+- `none` → sin acceso a ninguna sucursal (catálogos vacíos, 403 en todo lo que pida una
+  sucursal/colaborador/scope=general).
+
+**Corrección Fase 2.2/2.3 — IDOR y sucursal histórica**: un consumidor restringido NUNCA se
+autoriza por la asignación "más reciente" de un colaborador. Se verifica su sucursal
+EXACTA en el `period_id` solicitado (`App\Services\Api\EmployeeBranchHistoryResolver`). Si
+el colaborador perteneció a Tula en junio y hoy está en Cuernavaca, un consumidor restringido
+a Tula puede leer sus datos de junio (403 para octubre); uno restringido a Cuernavaca puede
+leer octubre (403 para junio). Si la sucursal de ese periodo es desconocida (sin asignación
+registrada), se niega el acceso por defecto — nunca se concede por una coincidencia insegura.
 
 ## 5. Rate limiting
 
@@ -161,10 +179,11 @@ Cada valor de `/financial/*` tiene esta forma (Fase 1.5):
 - `versions.legacy` — la que YA EXISTE en Reportería hoy (vigente/atrasado/vencido +
   `efectividad_pct`). Nunca se modificó para construir esta API.
 - `versions.approved` — la calculadora **"Aprobada"** del cliente (Fase 2). **Bloqueada**:
-  `available: false`, `status: "blocked"`. Falta el `.xlsm` fuente para extraer su lógica
-  VBA real — ver `docs/efectividad-cobranza-aprobada.md`. Se activará aquí únicamente
-  cuando ese módulo quede implementado y validado contra el Excel aprobado; hasta entonces
-  la API nunca inventa ese valor.
+  `available: false`, `status: "blocked"`. El motor de cálculo YA está implementado y
+  probado fielmente contra el VBA real (`App\Services\Efectividad\EfectividadCobranzaAprobadaCalculator`,
+  17 pruebas) pero no conectado a datos reales — faltan columnas de CARTERA en el esquema y
+  no hay un resultado aprobado real contra el cual validar numéricamente. Ver
+  `docs/efectividad-cobranza-aprobada.md`. La API nunca inventa ese valor mientras tanto.
 
 ## 10. Errores
 
@@ -173,7 +192,7 @@ Cada valor de `/financial/*` tiene esta forma (Fase 1.5):
 | 401 | Sin token / token inválido |
 | 403 | Token sin la ability requerida, consumidor inactivo, o fuera de su alcance de sucursal |
 | 404 | Recurso (period/employee/branch) no encontrado |
-| 422 | Parámetros inválidos o faltantes (`scope`, `period_id`, `metrics` desconocidas) |
+| 422 | Parámetros inválidos o faltantes (`scope`, `period_id`, `metrics` desconocidas, `per_page` fuera de 1-100, IDs no numéricos en query — ver Fase 2.7, `App\Services\Api\ApiValidation`) |
 | 429 | Rate limit excedido |
 
 Todas las respuestas de error son JSON: `{"message": "..."}`.
@@ -190,5 +209,14 @@ de nombre. Ver `App\Models\EmployeeExternalIdentity` y
 
 - Pantalla de administración de `ApiConsumer`/tokens (solo comandos artisan por ahora).
 - Endpoints de detalle de clientes/créditos (fuera de alcance explícito, Fase 1.2).
-- Escritura (la API es de solo lectura).
-- `collections.effectiveness.approved` con datos reales (bloqueado por falta de fuente VBA).
+- Escritura (la API es de solo lectura — verificado explícitamente: 0 rutas con método
+  distinto de GET/HEAD en todo `/api/v1`, ver `ApiFinalSecurityChecklistTest`).
+- `collections.effectiveness.approved` con datos reales (motor implementado y probado, pero
+  sin conexión a datos reales ni validación numérica contra un resultado aprobado — ver
+  `docs/efectividad-cobranza-aprobada.md`).
+
+## 13. Correcciones de seguridad y rendimiento (2026-10-11)
+
+Ver `docs/seguridad-fase2-correcciones.md` (9 hallazgos de una auditoría externa, todos
+corregidos y probados) y `docs/rendimiento-fase3-mediciones.md` (mediciones reales, no
+estimadas, de las optimizaciones de esta misma fecha).

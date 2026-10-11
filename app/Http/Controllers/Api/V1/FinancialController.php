@@ -5,9 +5,10 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\ApiConsumer;
 use App\Models\Employee;
-use App\Models\EmployeeBranchAssignment;
 use App\Models\Period;
 use App\Services\Api\ApiScopeResolver;
+use App\Services\Api\ApiValidation;
+use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Api\FinancialMetricRegistry;
 use App\Services\Api\FinancialMetricResolver;
 use Illuminate\Http\JsonResponse;
@@ -33,7 +34,7 @@ class FinancialController extends Controller
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
         $period   = $this->resolvePeriod($request);
-        $scope    = $scopeResolver->resolve($request, $consumer);
+        $scope    = $scopeResolver->resolve($request, $consumer, $period);
 
         $metrics = collect(self::GENERAL_METRICS)
             ->map(fn (string $code) => $resolver->resolve($code, $period, $scope['type'], $scope['branch_id'], $scope['employee_id']))
@@ -56,24 +57,32 @@ class FinancialController extends Controller
         return response()->json(['period_id' => $period->id, 'branch_id' => $branchId, 'metrics' => $metrics]);
     }
 
-    public function employeeSummary(Request $request, int $employeeId, FinancialMetricResolver $resolver): JsonResponse
+    /**
+     * Fase 2.2/2.3 — la autorización se verifica contra la sucursal HISTÓRICA
+     * del colaborador en el periodo solicitado (nunca su asignación "más
+     * reciente"), de forma centralizada vía ApiScopeResolver.
+     */
+    public function employeeSummary(Request $request, int $employeeId, FinancialMetricResolver $resolver, ApiScopeResolver $scopeResolver, EmployeeBranchHistoryResolver $branchHistory): JsonResponse
     {
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
         $employee = Employee::query()->findOrFail($employeeId);
-        $branchId = EmployeeBranchAssignment::query()->where('employee_id', $employeeId)->latest('id')->value('branch_id');
+        $period   = $this->resolvePeriod($request);
 
-        if ($consumer->isRestrictedToBranches() && !$consumer->canAccessBranch($branchId)) {
-            throw new HttpException(403, 'Este consumidor no está autorizado para el colaborador solicitado.');
-        }
-
-        $period = $this->resolvePeriod($request);
+        $scopeResolver->assertEmployeeAllowedForPeriod($consumer, $employeeId, $period);
+        $resolvedBranch = $branchHistory->resolveForPeriod($employeeId, $period);
 
         $metrics = collect(['ebitda', 'ebitda_margin', 'opex', 'placement', 'recovery', 'portfolio_total', 'portfolio_overdue', 'portfolio_current', 'mora', 'collections_effectiveness_legacy'])
             ->map(fn (string $code) => $resolver->resolve($code, $period, 'employee', null, $employee->id))
             ->values();
 
-        return response()->json(['period_id' => $period->id, 'employee_id' => $employee->id, 'branch_id' => $branchId, 'metrics' => $metrics]);
+        return response()->json([
+            'period_id'      => $period->id,
+            'employee_id'    => $employee->id,
+            'branch_id'      => $resolvedBranch['branch_id'],
+            'branch_status'  => $resolvedBranch['status'],
+            'metrics'        => $metrics,
+        ]);
     }
 
     /** GET /api/v1/financial/metrics — catálogo de indicadores y definiciones. */
@@ -101,9 +110,10 @@ class FinancialController extends Controller
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
         $period   = $this->resolvePeriod($request);
-        $scope    = $scopeResolver->resolve($request, $consumer);
+        $scope    = $scopeResolver->resolve($request, $consumer, $period);
 
-        $requested = array_filter(explode(',', (string) $request->query('metrics', '')));
+        $requestedRaw = (string) $request->query('metrics', '');
+        $requested = array_values(array_filter(array_map('trim', explode(',', $requestedRaw))));
         if (empty($requested)) {
             throw new HttpException(422, "El parámetro 'metrics' es obligatorio (lista separada por comas de codes del catálogo /financial/metrics).");
         }
@@ -122,11 +132,8 @@ class FinancialController extends Controller
 
     private function resolvePeriod(Request $request): Period
     {
-        $periodId = $request->query('period_id');
-        if (!$periodId) {
-            throw new HttpException(422, "El parámetro 'period_id' es obligatorio.");
-        }
+        $periodId = ApiValidation::requiredId($request, 'period_id');
 
-        return Period::query()->findOrFail((int) $periodId);
+        return Period::query()->findOrFail($periodId);
     }
 }

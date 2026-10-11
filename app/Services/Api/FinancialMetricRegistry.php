@@ -68,9 +68,9 @@ class FinancialMetricRegistry
             ],
             'portfolio_current' => [
                 'label' => 'Cartera vigente', 'unit' => 'MXN', 'direction' => 'increase',
-                'source' => 'derived', 'derived_from' => ['portfolio_total', 'overdue_portfolio'],
+                'source' => 'derived', 'derived_from' => ['portfolio_total', 'portfolio_overdue'],
                 'scopes' => ['general', 'branch', 'employee'],
-                'definition' => 'portfolio_total - portfolio_overdue (resta aritmética directa, no una regla nueva).',
+                'definition' => 'portfolio_total - portfolio_overdue — identidad matemática (vigente = total − vencida), no existe un campo "cartera vigente" ya calculado en el sistema (ver auditoría Fase 4.1, docs/correcciones-financieras.md). Devuelve null si el resultado sería negativo (inconsistencia de datos), nunca un valor inválido.',
             ],
             'turnover' => [
                 'label' => 'Rotación de personal', 'unit' => 'percentage', 'direction' => 'decrease',

@@ -30,6 +30,18 @@ class FinancialMetricResolver
 
     public const SCOPE_EMPLOYEE = 'employee';
 
+    /**
+     * Fase 3.1 — memoización POR PETICIÓN. Un endpoint como /financial/summary
+     * resuelve ~10 métricas con el MISMO periodo+alcance: sin esto, cada una
+     * dispara su propio paso por RadiografiaExportService::buildSnapshot()
+     * (que ya cachea 180s en el store configurado, pero eso sigue siendo una
+     * lectura de caché por métrica). Esta instancia vive solo lo que dura la
+     * inyección en el controlador (una petición) — nunca cruza peticiones.
+     *
+     * @var array<string, array|null>
+     */
+    private array $snapshotMemo = [];
+
     public function __construct(
         private readonly RadiografiaExportService $exportService,
     ) {
@@ -117,14 +129,19 @@ class FinancialMetricResolver
      */
     private function buildSnapshotSafely(Period $period, array $config): ?array
     {
+        $memoKey = $period->id . ':' . md5(json_encode($config));
+        if (array_key_exists($memoKey, $this->snapshotMemo)) {
+            return $this->snapshotMemo[$memoKey];
+        }
+
         try {
-            return $this->exportService->buildSnapshot($period, $config);
+            return $this->snapshotMemo[$memoKey] = $this->exportService->buildSnapshot($period, $config);
         } catch (RuntimeException $e) {
             Log::info('Api\\FinancialMetricResolver: sin radiografía generada para el periodo.', [
                 'period_id' => $period->id, 'config' => $config, 'error' => $e->getMessage(),
             ]);
 
-            return null;
+            return $this->snapshotMemo[$memoKey] = null;
         }
     }
 
@@ -133,6 +150,20 @@ class FinancialMetricResolver
         return isset($snapshot['summary'][$summaryKey]) ? (float) $snapshot['summary'][$summaryKey] : null;
     }
 
+    /**
+     * Fase 4.1 (revisión financiera 2026-10-11) — se auditó el repo buscando una
+     * "cartera vigente" ya calculada en algún lado (BranchRadiographyCalculator,
+     * RadiographyWorkbookBuilder, Preview.vue): NO existe — todo lo que se llama
+     * "vigente" en el código es la clasificación DPD de Efectividad de Cobranza
+     * (cobros, no saldo de cartera), un concepto distinto. La única definición
+     * matemáticamente forzada de "vigente" es el complemento de "vencida" sobre
+     * el total (vigente = total − vencida) — no es una fórmula nueva inventada,
+     * es la identidad que define qué significa "vencida" en primer lugar.
+     *
+     * Guardia defensiva: si el resultado fuera negativo (total < vencida), eso
+     * indicaría una inconsistencia de datos entre ambos campos de origen — se
+     * devuelve null (nunca un "vigente" negativo presentado como válido).
+     */
     private function fromDerived(array $snapshot, array $derivedFrom): ?float
     {
         $values = [];
@@ -146,7 +177,17 @@ class FinancialMetricResolver
         }
 
         // Única combinación soportada hoy: portfolio_current = portfolio_total - portfolio_overdue.
-        return $values[0] - $values[1];
+        $result = $values[0] - $values[1];
+
+        if ($result < 0) {
+            Log::warning('Api\\FinancialMetricResolver: portfolio_current salió negativo — inconsistencia entre portfolio_total y portfolio_overdue, se devuelve null en vez de un valor inválido.', [
+                'portfolio_total' => $values[0], 'portfolio_overdue' => $values[1],
+            ]);
+
+            return null;
+        }
+
+        return $result;
     }
 
     /** Rotación — branch/general únicamente (ver OkrKpiValueResolver::resolveSpecial, misma lógica). */

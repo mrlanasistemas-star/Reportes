@@ -9,7 +9,7 @@ uses(RefreshDatabase::class);
 function makeApiToken(string $systemCode, array $abilities): string
 {
     $consumer = ApiConsumer::query()->create([
-        'name' => 'Test Consumer', 'system_code' => $systemCode, 'is_active' => true,
+        'name' => 'Test Consumer', 'system_code' => $systemCode, 'is_active' => true, 'abilities' => $abilities,
     ]);
 
     return $consumer->createToken('test', $abilities)->plainTextToken;
@@ -94,5 +94,12 @@ it('exposes capabilities scoped to the authenticated consumer', function () {
 
     $response->assertOk()
         ->assertJsonPath('consumer.system_code', 'capabilities-consumer')
-        ->assertJsonPath('resources.collections_effectiveness_approved', false);
+        ->assertJsonPath('resources.collections_effectiveness_approved.implemented', false)
+        ->assertJsonPath('resources.collections_effectiveness_approved.permitted', false)
+        ->assertJsonPath('resources.collections_effectiveness_legacy.implemented', true)
+        // Este consumidor solo tiene 'financial.read' — financial_summary sí está permitido,
+        // pero collections/branches NO (implementado ≠ permitido para ESTE consumidor).
+        ->assertJsonPath('resources.financial_summary.permitted', true)
+        ->assertJsonPath('resources.collections_effectiveness_legacy.permitted', false)
+        ->assertJsonPath('resources.branches.permitted', false);
 });

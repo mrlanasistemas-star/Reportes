@@ -58,17 +58,27 @@ documentadas ahí desde antes de esta sesión.
 Sin cambios — no se requirió ninguna extensión PHP adicional para lo implementado en esta
 sesión (Sanctum y las nuevas tablas usan solo Eloquent/DB estándar).
 
-## 6. Migraciones de esta sesión (todas aditivas)
+## 6. Migraciones (todas aditivas)
 
 ```
 2026_10_11_011757_create_personal_access_tokens_table   (Sanctum, paquete oficial)
 2026_10_11_011801_create_api_consumers_table
 2026_10_11_011802_create_employee_external_identities_table
 2026_10_11_011803_create_api_query_logs_table
+2026_10_11_071254_add_branch_access_mode_to_api_consumers_table   (Fase 2.5, corrección de seguridad)
 ```
 
-Ninguna modifica ni borra una tabla existente. Correr `php artisan migrate --force` en el
-VPS es seguro y no destructivo.
+Ninguna modifica ni borra una tabla existente. La última agrega la columna
+`branch_access_mode` con backfill automático que PRESERVA el comportamiento de cualquier
+`ApiConsumer` ya creado (ver `docs/seguridad-fase2-correcciones.md` punto 2.5) — portable
+entre MySQL/MariaDB y SQLite (backfill en PHP, no `JSON_LENGTH`). Correr
+`php artisan migrate --force` en el VPS es seguro y no destructivo.
+
+## 7. Nuevo comando agendado
+
+```
+api:query-logs:prune   diario 03:00   (retención API_QUERY_LOG_RETENTION_DAYS, default 90)
+```
 
 ## 7. Verificación posterior al despliegue (checklist)
 

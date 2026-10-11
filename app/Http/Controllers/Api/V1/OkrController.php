@@ -7,6 +7,7 @@ use App\Models\ApiConsumer;
 use App\Models\Employee;
 use App\Models\EmployeeBranchAssignment;
 use App\Models\OkrObjective;
+use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Okr\OkrProgressCalculator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -25,10 +26,14 @@ class OkrController extends Controller
         $consumer = $request->user();
 
         $query = OkrObjective::query()->where('lifecycle_status', OkrObjective::STATUS_ACTIVE);
-        if ($consumer->isRestrictedToBranches()) {
+
+        if ($consumer->hasNoBranchAccess()) {
+            $query->whereRaw('1 = 0');
+        } elseif ($consumer->isRestrictedToBranches()) {
             $query->where(function ($q) use ($consumer) {
                 $q->whereIn('branch_id', $consumer->allowed_branch_ids)
-                    ->orWhereIn('employee_id', $this->employeeIdsForAllowedBranches($consumer));
+                    ->orWhereIn('employee_id', $this->employeeIdsForAllowedBranches($consumer))
+                    ->orWhereHas('parent', fn ($p) => $p->whereIn('branch_id', $consumer->allowed_branch_ids));
             });
         }
 
@@ -42,26 +47,39 @@ class OkrController extends Controller
         ]);
     }
 
-    public function employeeSummary(Request $request, int $employeeId, OkrProgressCalculator $calculator): JsonResponse
+    /**
+     * Fase 2.6 — "no debe ser posible consultar objetivos de otra sucursal
+     * simplemente porque el trabajador perteneció a ella en otro momento".
+     * El filtro es POR OBJETIVO (su propia sucursal, o la de su Objective
+     * padre si es individual — nunca la asignación "actual" del colaborador
+     * como proxy de TODOS sus objetivos). Si existen objetivos pero ninguno
+     * es visible para este consumidor, se responde 403 (sin acceso real a
+     * este colaborador); si el colaborador simplemente no tiene objetivos,
+     * se responde 200 con lista vacía — ausencia de datos, no de permiso.
+     */
+    public function employeeSummary(Request $request, int $employeeId, OkrProgressCalculator $calculator, EmployeeBranchHistoryResolver $branchHistory): JsonResponse
     {
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
         $employee = Employee::query()->findOrFail($employeeId);
-        $branchId = EmployeeBranchAssignment::query()->where('employee_id', $employeeId)->latest('id')->value('branch_id');
 
-        if ($consumer->isRestrictedToBranches() && !$consumer->canAccessBranch($branchId)) {
-            throw new HttpException(403, 'Este consumidor no está autorizado para el colaborador solicitado.');
-        }
-
-        $objectives = OkrObjective::query()
+        $allObjectives = OkrObjective::query()
             ->where('employee_id', $employeeId)
-            ->with('keyResults')
+            ->with(['keyResults', 'parent'])
             ->orderByDesc('id')
             ->get();
 
+        $visibleObjectives = $allObjectives->filter(
+            fn (OkrObjective $objective) => $consumer->canAccessBranch($objective->branch_id ?? $objective->parent?->branch_id)
+        )->values();
+
+        if ($allObjectives->isNotEmpty() && $visibleObjectives->isEmpty()) {
+            throw new HttpException(403, 'Este consumidor no está autorizado para el colaborador solicitado.');
+        }
+
         return response()->json([
             'employee_id' => $employeeId,
-            'objectives'  => $objectives->map(fn (OkrObjective $objective) => [
+            'objectives'  => $visibleObjectives->map(fn (OkrObjective $objective) => [
                 'id'               => $objective->id,
                 'title'            => $objective->title,
                 'lifecycle_status' => $objective->lifecycle_status,
