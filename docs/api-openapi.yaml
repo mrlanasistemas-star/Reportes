@@ -1,0 +1,389 @@
+openapi: 3.0.3
+info:
+  title: Reportería MR Lana — API general (v1)
+  description: >
+    API de solo lectura, servidor a servidor, para consumir los indicadores ya
+    calculados por el sistema de Reportería. Nunca recalcula fórmulas
+    financieras: toda métrica proviene de la misma fuente que usan Web, Excel,
+    PDF y OKR (RadiografiaExportService::buildSnapshot). Ver docs/api-reporteria.md.
+  version: "1.0.0"
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+tags:
+  - name: health
+  - name: capabilities
+  - name: branches
+  - name: employees
+  - name: periods
+  - name: financial
+  - name: collections
+  - name: okr
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Salud del servicio, sin autenticación ni exposición sensible
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: reportes-api }
+                  version: { type: string, example: v1 }
+                  time: { type: string, format: date-time }
+
+  /capabilities:
+    get:
+      tags: [capabilities]
+      summary: Funciones y versiones disponibles para el consumidor autenticado
+      responses:
+        "200":
+          description: OK
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /branches:
+    get:
+      tags: [branches]
+      summary: Catálogo de sucursales activas
+      parameters:
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedBranches" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /employees:
+    get:
+      tags: [employees]
+      summary: Colaboradores paginados
+      parameters:
+        - $ref: "#/components/parameters/PerPage"
+        - in: query
+          name: branch_id
+          schema: { type: integer }
+      responses:
+        "200": { description: OK }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /employees/{employeeId}:
+    get:
+      tags: [employees]
+      summary: Identificación del colaborador
+      parameters:
+        - $ref: "#/components/parameters/EmployeeIdPath"
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /employees/{employeeId}/financial-summary:
+    get:
+      tags: [employees]
+      summary: Ficha financiera atribuible del colaborador para un periodo
+      parameters:
+        - $ref: "#/components/parameters/EmployeeIdPath"
+        - $ref: "#/components/parameters/PeriodIdQueryRequired"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employee_id: { type: integer }
+                  branch_id: { type: integer, nullable: true }
+                  metrics:
+                    type: array
+                    items: { $ref: "#/components/schemas/MetricValue" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /periods:
+    get:
+      tags: [periods]
+      summary: Periodos disponibles y su cobertura
+      parameters:
+        - $ref: "#/components/parameters/PerPage"
+        - in: query
+          name: type
+          schema: { type: string, enum: [weekly, monthly, bimonthly, quarterly, semiannual, annual] }
+      responses:
+        "200": { description: OK }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /periods/{periodId}:
+    get:
+      tags: [periods]
+      summary: Metadatos de un periodo
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdPath"
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /financial/summary:
+    get:
+      tags: [financial]
+      summary: Indicadores financieros (general, por sucursal o por colaborador vía query)
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdQueryRequired"
+        - $ref: "#/components/parameters/ScopeQuery"
+        - $ref: "#/components/parameters/BranchIdQuery"
+        - $ref: "#/components/parameters/EmployeeIdQuery"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period_id: { type: integer }
+                  scope: { $ref: "#/components/schemas/Scope" }
+                  metrics:
+                    type: array
+                    items: { $ref: "#/components/schemas/MetricValue" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /financial/branches/{branchId}:
+    get:
+      tags: [financial]
+      summary: Indicadores financieros de una sucursal
+      parameters:
+        - $ref: "#/components/parameters/BranchIdPath"
+        - $ref: "#/components/parameters/PeriodIdQueryRequired"
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /financial/employees/{employeeId}:
+    get:
+      tags: [financial]
+      summary: Indicadores atribuibles a un colaborador/gestor
+      parameters:
+        - $ref: "#/components/parameters/EmployeeIdPath"
+        - $ref: "#/components/parameters/PeriodIdQueryRequired"
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /financial/metrics:
+    get:
+      tags: [financial]
+      summary: Catálogo de indicadores y definiciones (estable, versionado)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/MetricDefinition" }
+
+  /financial/metric-values:
+    get:
+      tags: [financial]
+      summary: Valores filtrados por periodo, alcance y lista explícita de métricas
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdQueryRequired"
+        - $ref: "#/components/parameters/ScopeQuery"
+        - $ref: "#/components/parameters/BranchIdQuery"
+        - $ref: "#/components/parameters/EmployeeIdQuery"
+        - in: query
+          name: metrics
+          required: true
+          schema: { type: string, example: "ebitda,mora,portfolio_total" }
+          description: Lista separada por comas de codes de /financial/metrics
+      responses:
+        "200": { description: OK }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /collections/effectiveness:
+    get:
+      tags: [collections]
+      summary: Efectividad de cobranza, distinguiendo versión histórica vs "Aprobada" (bloqueada)
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdQueryRequired"
+        - $ref: "#/components/parameters/ScopeQuery"
+        - $ref: "#/components/parameters/BranchIdQuery"
+        - $ref: "#/components/parameters/EmployeeIdQuery"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period_id: { type: integer }
+                  scope: { $ref: "#/components/schemas/Scope" }
+                  versions:
+                    type: object
+                    properties:
+                      legacy: { $ref: "#/components/schemas/MetricValue" }
+                      approved:
+                        type: object
+                        properties:
+                          available: { type: boolean, example: false }
+                          status: { type: string, example: blocked }
+                          reason: { type: string }
+                          version: { type: string, example: approved_pending_validation }
+
+  /okr/summary:
+    get:
+      tags: [okr]
+      summary: Indicadores OKR autorizados (resumen agregado)
+      responses:
+        "200": { description: OK }
+
+  /okr/employees/{employeeId}:
+    get:
+      tags: [okr]
+      summary: Cumplimiento OKR del colaborador autorizado
+      parameters:
+        - $ref: "#/components/parameters/EmployeeIdPath"
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "Sanctum personal access token"
+
+  parameters:
+    PerPage:
+      in: query
+      name: per_page
+      schema: { type: integer, maximum: 100, default: 50 }
+    ScopeQuery:
+      in: query
+      name: scope
+      schema: { type: string, enum: [general, branch, employee], default: general }
+    BranchIdQuery:
+      in: query
+      name: branch_id
+      schema: { type: integer }
+    EmployeeIdQuery:
+      in: query
+      name: employee_id
+      schema: { type: integer }
+    PeriodIdQueryRequired:
+      in: query
+      name: period_id
+      required: true
+      schema: { type: integer }
+    EmployeeIdPath:
+      in: path
+      name: employeeId
+      required: true
+      schema: { type: integer }
+    PeriodIdPath:
+      in: path
+      name: periodId
+      required: true
+      schema: { type: integer }
+    BranchIdPath:
+      in: path
+      name: branchId
+      required: true
+      schema: { type: integer }
+
+  schemas:
+    Scope:
+      type: object
+      properties:
+        type: { type: string, enum: [general, branch, employee] }
+        branch_id: { type: integer, nullable: true }
+        employee_id: { type: integer, nullable: true }
+    MetricValue:
+      type: object
+      properties:
+        metric: { type: string, example: ebitda }
+        period_id: { type: integer }
+        period_type: { type: string }
+        period_label: { type: string }
+        start_date: { type: string, format: date, nullable: true }
+        end_date: { type: string, format: date, nullable: true }
+        calculated_at: { type: string, nullable: true }
+        source: { type: string, example: reporteria.radiography_snapshot }
+        status: { type: string, enum: [ok, not_available, not_attributable] }
+        scope: { $ref: "#/components/schemas/Scope" }
+        value: { type: number, nullable: true }
+        unit: { type: string, nullable: true, example: MXN }
+        definition_version: { type: string, example: v1 }
+    MetricDefinition:
+      type: object
+      properties:
+        code: { type: string }
+        label: { type: string }
+        unit: { type: string }
+        direction: { type: string, enum: [increase, decrease, neutral] }
+        scopes:
+          type: array
+          items: { type: string }
+        source: { type: string, enum: [summary, derived, special, legacy_section] }
+        definition: { type: string, nullable: true }
+        definition_version: { type: string }
+    PaginatedBranches:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              code: { type: string, nullable: true }
+              name: { type: string }
+        meta:
+          type: object
+          properties:
+            current_page: { type: integer }
+            per_page: { type: integer }
+            total: { type: integer }
+            last_page: { type: integer }
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Sin token válido
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/Error" } }
+    Forbidden:
+      description: Sin la ability requerida, consumidor inactivo, o fuera de su alcance de sucursal
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/Error" } }
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/Error" } }
+    UnprocessableEntity:
+      description: Parámetros inválidos o faltantes
+      content:
+        application/json: { schema: { $ref: "#/components/schemas/Error" } }

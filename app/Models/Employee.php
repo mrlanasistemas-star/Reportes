@@ -45,4 +45,9 @@ class Employee extends Model {
         return $this->hasOne(User::class);
     }
 
+    /** Fase 1 (API) — correspondencias con identificadores de sistemas externos. */
+    public function externalIdentities(): HasMany {
+        return $this->hasMany(EmployeeExternalIdentity::class);
+    }
+
 }

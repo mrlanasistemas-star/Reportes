@@ -86,6 +86,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/', [ReportUploadController::class, 'index'])->name('index');
             Route::post('/', [ReportUploadController::class, 'store'])->name('store');
             Route::delete('/{reportUpload}', [ReportUploadController::class, 'destroy'])->name('destroy');
+            Route::get('/{reportUpload}/descargar', [ReportUploadController::class, 'download'])->name('download');
             Route::post('/{reportUpload}/analizar', [ReportUploadController::class, 'analyze'])->name('analyze');
             Route::post('/{period}/actualizar-bd', [ReportUploadController::class, 'updateDatabase'])->name('update-database');
             Route::post('/{period}/actualizacion-bd/cancelar', [ReportUploadController::class, 'cancelDatabaseUpdate'])->name('cancel-database-update');

@@ -266,6 +266,9 @@ class ReportUploadController extends Controller {
                     'status'               => (string) ($upload->status?->value ?? $upload->status),
                     'uploaded_at'          => optional($upload->created_at)->format('d/m/Y H:i'),
                     'notes'                => $upload->notes,
+                    'file_size'            => $upload->file_size,
+                    'mime_type'            => $upload->mime_type,
+                    'can_download'         => (bool) $upload->stored_path,
                     'source_code'          => $upload->dataSource?->code,
                     'source_name'          => $upload->dataSource?->name,
                     'covered_period_ids'   => $upload->covered_period_ids ?? [],
@@ -368,6 +371,34 @@ class ReportUploadController extends Controller {
         }
         $reportUpload->delete();
         return back()->with('success', 'Archivo eliminado correctamente.');
+    }
+
+    /**
+     * Fase 3 (descarga de archivos originales): devuelve los bytes físicos tal
+     * cual se subieron — nunca una reconstrucción — preservando el nombre
+     * original. 404 controlado si el registro ya no tiene archivo físico en
+     * disco (borrado manualmente del storage, inconsistencia histórica, etc.)
+     * en vez de dejar que Storage lance una excepción genérica.
+     */
+    public function download(ReportUpload $reportUpload): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $disk = Storage::disk('public');
+
+        if (!$reportUpload->stored_path || !$disk->exists($reportUpload->stored_path)) {
+            abort(404, 'El archivo original ya no está disponible en el almacenamiento.');
+        }
+
+        \Illuminate\Support\Facades\Log::info('report_upload.download', [
+            'report_upload_id' => $reportUpload->id,
+            'user_id'           => auth()->id(),
+            'original_name'     => $reportUpload->original_name,
+        ]);
+
+        return $disk->download(
+            $reportUpload->stored_path,
+            $reportUpload->original_name,
+            $reportUpload->mime_type ? ['Content-Type' => $reportUpload->mime_type] : []
+        );
     }
 
     public function updateDatabase(Period $period): RedirectResponse

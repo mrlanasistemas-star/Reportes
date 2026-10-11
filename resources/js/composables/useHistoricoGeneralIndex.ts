@@ -55,6 +55,9 @@ type UploadItem = {
     notes?: string | null
     source_code?: string | null
     source_name?: string | null
+    file_size?: number | null
+    mime_type?: string | null
+    can_download?: boolean
     covered_period_ids?: number[]
     covered_period_labels?: string[]
     last_process_run?: {

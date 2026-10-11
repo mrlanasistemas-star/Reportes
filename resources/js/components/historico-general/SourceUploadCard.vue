@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FileCheck2, FileSpreadsheet, FileText, Trash2, UploadCloud, X } from 'lucide-vue-next'
+import { Download, FileCheck2, FileSpreadsheet, FileText, Trash2, UploadCloud, X } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, ref } from 'vue'
 import StatusBadge from './StatusBadge.vue'
@@ -38,6 +38,23 @@ return '.pdf, .xls, .xlsx, .xlsm'
 
     return '.xls, .xlsx, .xlsm'
 })
+const formatFileSize = (bytes: number | null | undefined) => {
+    if (!bytes || bytes <= 0) {
+return null
+}
+
+    const units = ['B', 'KB', 'MB', 'GB']
+    let value = bytes
+    let unitIndex = 0
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024
+        unitIndex += 1
+    }
+
+    return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+
 const isRequiredForDb      = computed(() => Boolean(props.source.is_required_for_bd))
 const isRequiredForReport  = computed(() => Boolean(props.source.is_required_for_report))
 const status = computed(() => props.upload?.status ?? 'pending')
@@ -119,7 +136,7 @@ inputRef.value.value = ''
                 <FileCheck2 class="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 <div class="min-w-0 text-xs">
                     <p class="truncate font-bold text-slate-800 dark:text-slate-200">{{ upload.original_name }}</p>
-                    <p class="mt-1 text-slate-500 dark:text-slate-400">Cargado: {{ upload.uploaded_at ?? '—' }}</p>
+                    <p class="mt-1 text-slate-500 dark:text-slate-400">Cargado: {{ upload.uploaded_at ?? '—' }}<span v-if="formatFileSize(upload.file_size)"> · {{ formatFileSize(upload.file_size) }}</span></p>
                     <p v-if="upload.covered_period_labels?.length" class="mt-1 text-slate-500 dark:text-slate-400">Cobertura: {{ upload.covered_period_labels.join(', ') }}</p>
                     <p v-if="upload.notes" class="mt-2 rounded-xl bg-rose-50 p-2 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{{ upload.notes }}</p>
                 </div>
@@ -150,6 +167,13 @@ inputRef.value.value = ''
             <button type="button" class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white shadow-lg shadow-indigo-100 transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 dark:shadow-indigo-950/40" :disabled="disabled || !file" @click="doUpload">
                 {{ upload ? 'Reemplazar archivo' : 'Subir archivo' }}
             </button>
+            <a
+                v-if="upload?.can_download"
+                :href="`/historico-general/${upload.id}/descargar`"
+                target="_blank"
+                rel="noopener"
+                class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10"
+            ><Download class="mr-1 inline size-4" /> Descargar original</a>
             <button v-if="upload" type="button" class="rounded-xl border border-rose-200 px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('delete', upload.id)"><Trash2 class="mr-1 inline size-4" /> Eliminar</button>
         </div>
     </article>
