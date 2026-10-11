@@ -175,18 +175,28 @@ sobre `(okr_key_result_id, week_number)` — nunca duplica. Se dispara:
 Ambos comandos son idempotentes y seguros de correr manualmente si el cron no
 corrió a tiempo.
 
-## 8. Permisos — hallazgo de auditoría
+## 8. Permisos — ACTUALIZADO (ver auditoría Fase 4, docs/okr-matriz-cumplimiento.md)
 
-**Este repo no tiene ningún sistema de roles/permisos** (no hay
-spatie/laravel-permission, ni Policies, ni Gates, ni columna de rol en
-`users`, ni vínculo User↔Employee). Toda la app exige solo `auth`+`verified`.
-`OkrServiceProvider` define Gates NOMBRADOS (`okr.view`, `okr.create`, ...)
-que hoy conceden acceso a cualquier usuario autenticado — mismo criterio que
-el resto de Reportería. Activar restricciones reales por rol en el futuro es
-un cambio de una línea por permiso en `OkrServiceProvider::boot()`, sin tocar
-controladores. Restringir "un gestor solo ve su propio OKR" requeriría un
-vínculo User↔Employee que no existe hoy — deliberadamente no se inventó
-(fuera de alcance).
+**Corrección (2026-10-11): esta sección estaba obsoleta.** Desde el cierre del
+04-oct-2026 (commits `d9803cf`, `bf49e3d`) el repo SÍ tiene roles reales y un
+vínculo User↔Employee real:
+
+- `users.role` (`App\Models\User::ROLE_ADMIN|ROLE_GERENCIAL|ROLE_COLABORADOR`)
+  con autorización backend real — ver `EnsureReporteriaAccess` (bloquea
+  Reportería financiero global a COLABORADOR, 403 real, no solo UI) y los
+  Gates de `OkrServiceProvider` (ya consultan el rol, no conceden a cualquiera).
+- `users.employee_id` (nullable, UNIQUE — migración
+  `2026_10_05_000001_add_employee_id_to_users_table`): vínculo persistente
+  1 User ↔ 0/1 Employee. Resuelve "¿este colaborador es el DUEÑO de este
+  Objective individual?" vía `OkrObjectiveVisibilityService` — nunca por
+  nombre/email en runtime.
+
+Sigue sin existir una tabla `roles` separada tipo spatie/laravel-permission —
+los 3 roles son un string fijo en `users.role`. El PDF original (`SoliOKR.pdf`,
+sección 29) describe 4 niveles (Administrador/Dirección/Regional-Gerente/
+Gestor-Colaborador); el código actual simplifica Dirección y Regional/Gerente
+en un único rol `GERENCIAL` — cumplimiento parcial aceptado (ver matriz),
+nunca documentado como los 4 niveles completos hasta ahora.
 
 ## 9. Cómo agregar un KPI nuevo
 
