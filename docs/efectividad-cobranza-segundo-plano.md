@@ -31,20 +31,23 @@ todo lo descrito aquí es orquestación, seguimiento, diagnóstico y notificaci�
 
 ## 3. Etapas reales (`App\Enums\EfectividadCobranzaStage`)
 
+> Actualizado 12-oct-2026: las etapas corresponden al motor V4 (`mrlana-v4-2026-10`).
+
 | # | Clave | Qué ocurre | Avance |
 |---|---|---|---|
-| 1 | `validate_files` | `report_uploads` / `process_runs` del corte (Saldos) y del periodo (Ingresos), archivo físico, cobertura de fechas | indeterminado |
-| 2 | `verify_columns` | Encabezados del archivo físico (OpenSpout, primeras 30 filas) contra `ColumnMapService` + conteo agregado de vacíos en BD + `importer_version` | indeterminado |
-| 3 | `prepare_portfolio` | Lectura de CARTERA del adaptador aprobado | **medible** (registros) |
-| 4 | `process_income` | Lectura del histórico de INGRESOS y regla de pagos válidos | **medible** (registros) |
-| 5 | `calculate` | Calculadora aprobada (una sola llamada) | indeterminado |
-| 6 | `reconcile` | Conciliación **interna**: promotores = oficinas = GRAN TOTAL. No es comparación externa | indeterminado |
-| 7 | `build_excel` | Exportador existente → disco privado `local` | indeterminado |
-| 8 | `finish` | Persistencia del resultado | — |
+| 1 | `validate_files` | Disponibilidad: 8 fotografías activas (domingo base…corte, o hasta el día en DIARIO) e Ingresos del rango; bloqueo con fecha exacta si falta alguna; confirmación de semana parcial | indeterminado |
+| 2 | `verify_columns` | Encabezados obligatorios de la V4 en cada fotografía (`portfolio_snapshots.headers`) | indeterminado |
+| 3 | `prepare_portfolio` | Lectura de las filas de las fotografías (`fact_portfolio_snapshot_rows`) | **medible** (registros) |
+| 4 | `process_income` | Ingresos del corte + historial con reconocimiento en el rango (`fact_recoveries`) | **medible** (registros) |
+| 5 | `calculate` | `EfectividadV4Calculator` (una sola llamada) | indeterminado |
+| 6 | `reconcile` | Conciliación **interna**: promotores = oficinas = GRAN TOTAL | indeterminado |
+| 7 | `audit` | Bitácora `_AUDITORIA_EFECTIVIDAD` → `efectividad_cobranza_run_incidents` | indeterminado |
+| 8 | `build_excel` | `EfectividadV4ExcelExporter` → disco privado `local` (EFECTIVIDAD, _AUDITORIA_EFECTIVIDAD, FUENTES) | indeterminado |
+| 9 | `finish` | Persistencia del resultado, huella de fuentes y notificaciones | — |
 
 El avance de las etapas 3-4 se escribe cada `EFECTIVIDAD_PROGRESS_EVERY_ROWS` registros o
 `EFECTIVIDAD_PROGRESS_EVERY_SECONDS` segundos (nunca por registro). El porcentaje solo se
-muestra en esas etapas; el resto usa un indicador indeterminado + "Paso N de 8".
+muestra en esas etapas; el resto usa un indicador indeterminado + "Paso N de 9".
 
 ## 4. Estados
 

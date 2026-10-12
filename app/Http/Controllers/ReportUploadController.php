@@ -41,8 +41,10 @@ class ReportUploadController extends Controller {
 
     public function index(): Response {
         // Fuentes activas con sus flags de requerimiento
+        // La fotografía diaria de cartera (Efectividad V4) se carga con fecha desde su propio módulo.
         $sources = DataSource::query()
             ->where('is_active', true)
+            ->where('code', '!=', \App\Enums\DataSourceCode::LendusSaldosClienteFoto->value)
             ->orderBy('name')
             ->get(['id', 'code', 'name', 'description', 'is_required_for_bd', 'is_required_for_report']);
 

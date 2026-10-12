@@ -27,3 +27,8 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
+
+# Libros de referencia de Efectividad: contienen información financiera real y
+# datos personales. Se conservan solo en local; nunca deben versionarse.
+/docs/efectividad/MR_LANA_EFECTIVIDAD.xlsm
+/docs/efectividad/CALCULADORA DE EFECTIVIDAD DE COBRANZA APROBADO.xlsm

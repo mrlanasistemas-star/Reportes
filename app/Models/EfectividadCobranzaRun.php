@@ -188,6 +188,20 @@ class EfectividadCobranzaRun extends Model
         $this->update(['subscriber_ids' => [...($this->subscriber_ids ?? []), $userId]]);
     }
 
+    /**
+     * Quién puede abrir una ejecución por su ID (detalle, progreso, Excel, incidencias):
+     * admin cualquiera; los demás roles con acceso a Reportería, solo las que
+     * solicitaron o a las que quedaron suscritos — la misma regla del historial.
+     */
+    public function isVisibleTo(?User $user): bool
+    {
+        if (!$user || !$user->hasManagerialAccess()) {
+            return false;
+        }
+
+        return $user->isAdmin() || in_array((int) $user->id, $this->recipientUserIds(), true);
+    }
+
     /** Ejecuciones solicitadas por el usuario o a las que quedó suscrito. */
     public function scopeRequestedBy(Builder $query, int $userId): Builder
     {

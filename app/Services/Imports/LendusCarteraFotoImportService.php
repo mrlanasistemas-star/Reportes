@@ -226,6 +226,22 @@ class LendusCarteraFotoImportService
         ];
     }
 
+    /**
+     * Bitácora apta para la UI: una excepción genérica del lector (OpenSpout) puede
+     * traer la ruta física del archivo; nunca se muestra una ruta del servidor.
+     */
+    public static function mensajePublico(?string $log): ?string
+    {
+        if ($log === null) {
+            return null;
+        }
+        foreach ([storage_path(), base_path()] as $ruta) {
+            $log = str_replace([$ruta, str_replace('\\', '/', $ruta)], '', $log);
+        }
+
+        return preg_replace('#(?:[A-Za-z]:)?[\\\\/](?:[^\s\\\\/:"\']+[\\\\/])+([^\s\\\\/:"\']+\.(?:xlsx|xlsm|xls|csv))#u', '$1', $log);
+    }
+
     private function crearSnapshot(ReportUpload $upload, string $fecha, array $map, int $headerRow, int $sourceColumns, string $path): PortfolioSnapshot
     {
         // Reproceso del mismo archivo: se reemplazan sus filas anteriores.

@@ -58,6 +58,8 @@ class EfectividadCobranzaController extends Controller
     /** URL estable del detalle de una ejecución (enlaces de correo y notificaciones). */
     public function show(Request $request, EfectividadCobranzaRun $run): Response
     {
+        $this->authorizeRun($request, $run);
+
         return $this->renderPage($request, $run);
     }
 
@@ -199,6 +201,8 @@ class EfectividadCobranzaController extends Controller
 
     public function progress(Request $request, EfectividadCobranzaRun $run): JsonResponse
     {
+        $this->authorizeRun($request, $run);
+
         return response()->json($this->presenter->detail($run, $request->user()));
     }
 
@@ -221,6 +225,7 @@ class EfectividadCobranzaController extends Controller
     /** Incidencias de cálculo (bitácora _AUDITORIA_EFECTIVIDAD) — paginadas y filtrables. */
     public function incidents(Request $request, EfectividadCobranzaRun $run): JsonResponse
     {
+        $this->authorizeRun($request, $run);
         $filters = $request->validate([
             'code' => ['nullable', 'string', 'max:20'],
             'q' => ['nullable', 'string', 'max:60'],
@@ -252,6 +257,7 @@ class EfectividadCobranzaController extends Controller
     /** Exporta las incidencias a CSV (UTF-8 con BOM para abrir directo en Excel). */
     public function exportIncidents(Request $request, EfectividadCobranzaRun $run): \Symfony\Component\HttpFoundation\StreamedResponse
     {
+        $this->authorizeRun($request, $run);
         $filters = $request->validate(['code' => ['nullable', 'string', 'max:20'], 'q' => ['nullable', 'string', 'max:60']]);
         $query = $this->incidentQuery($run, $filters);
         $name = "incidencias_efectividad_run{$run->id}.csv";
@@ -261,11 +267,30 @@ class EfectividadCobranzaController extends Controller
             fwrite($out, "\xEF\xBB\xBF");
             fputcsv($out, ['#', 'ID', 'Código', 'Contrato', 'Fecha reconocimiento', 'Importe', 'Motivo', 'Tratamiento', 'Acción recomendada']);
             foreach ($query->lazy(500) as $i) {
-                fputcsv($out, [$i->position, $i->incident_key, $i->code, $i->contract, $i->occurred_on?->format('d/m/Y'),
-                    $i->amount !== null ? number_format($i->amount, 2, '.', '') : '', $i->description, $i->treatment, EfectividadV4Incidents::accion($i->code)]);
+                fputcsv($out, [$i->position, $this->csvText($i->incident_key), $this->csvText($i->code), $this->csvText($i->contract), $i->occurred_on?->format('d/m/Y'),
+                    $i->amount !== null ? number_format($i->amount, 2, '.', '') : '', $this->csvText($i->description), $this->csvText($i->treatment), EfectividadV4Incidents::accion($i->code)]);
             }
             fclose($out);
         }, $name, ['Content-Type' => 'text/csv; charset=UTF-8', 'Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * Un ID de ejecución ajeno responde 404 (no revela que existe): admin ve todas; los
+     * demás roles de Reportería, solo las que solicitaron o a las que quedaron suscritos.
+     */
+    private function authorizeRun(Request $request, EfectividadCobranzaRun $run): void
+    {
+        if (!$run->isVisibleTo($request->user())) {
+            abort(404);
+        }
+    }
+
+    /** Texto de origen (Lendus) que empiece con = + - @ o tabulador se neutraliza: Excel no lo evalúa como fórmula. */
+    private function csvText(?string $value): string
+    {
+        $value = (string) $value;
+
+        return $value !== '' && in_array($value[0], ['=', '+', '-', '@', "\t", "\r"], true) ? "'".$value : $value;
     }
 
     private function incidentQuery(EfectividadCobranzaRun $run, array $filters)
@@ -277,8 +302,10 @@ class EfectividadCobranzaController extends Controller
             ->orderBy('position');
     }
 
-    public function download(EfectividadCobranzaRun $run): \Symfony\Component\HttpFoundation\BinaryFileResponse
+    public function download(Request $request, EfectividadCobranzaRun $run): \Symfony\Component\HttpFoundation\BinaryFileResponse
     {
+        $this->authorizeRun($request, $run);
+
         $absolutePath = $this->presenter->resolveExcelAbsolutePath($run);
 
         if ($run->status !== EfectividadCobranzaRun::STATUS_SUCCESS || !$absolutePath) {
@@ -315,7 +342,12 @@ class EfectividadCobranzaController extends Controller
         // usuario; si no hay activas, su ejecución más reciente.
         if (!$focus) {
             if ($periodId) {
-                $focus = EfectividadCobranzaRun::latestFor($periodId, $branchId);
+                // Misma regla de visibilidad que el historial: un no-admin solo enfoca lo que solicitó.
+                $focus = EfectividadCobranzaRun::query()
+                    ->forIdentity($periodId, $branchId)
+                    ->when(!$isAdmin, fn ($q) => $q->requestedBy($user->id))
+                    ->latest('id')
+                    ->first();
             } else {
                 $focus = $activeRuns->first()
                     ?? EfectividadCobranzaRun::query()->requestedBy($user->id)->latest('id')->first();

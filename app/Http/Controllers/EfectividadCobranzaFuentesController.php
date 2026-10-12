@@ -12,6 +12,7 @@ use App\Models\PortfolioSnapshot;
 use App\Models\ReportUpload;
 use App\Services\Efectividad\V4\EfectividadV4DataAdapter;
 use App\Services\Efectividad\V4\EfectividadV4Exception;
+use App\Services\Imports\LendusCarteraFotoImportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -71,7 +72,7 @@ class EfectividadCobranzaFuentesController extends Controller
             'snapshot_status' => $snapshots[$u->id]->status ?? null,
             'rows' => $snapshots[$u->id]->rows_count ?? null,
             'offices' => $snapshots[$u->id]->offices ?? [],
-            'log' => isset($logs[$u->id]) ? mb_strimwidth((string) $logs[$u->id]->log, 0, 400, '…') : null,
+            'log' => isset($logs[$u->id]) ? mb_strimwidth((string) LendusCarteraFotoImportService::mensajePublico($logs[$u->id]->log), 0, 400, '…') : null,
         ])->values()]);
     }
 

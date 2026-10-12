@@ -256,19 +256,29 @@ paths:
                       approved:
                         type: object
                         description: >
-                          Fase 11 — NUNCA una bandera global: se recalcula en vivo contra
-                          fact_portfolios/fact_recoveries para el period_id/scope exacto
-                          solicitado (mismo adaptador/calculador que respalda el módulo web
-                          "Efectividad de Cobranza"). `available` solo es true cuando hay
-                          cálculo real y válido para ESE periodo/alcance específico.
+                          Efectividad de Cobranza V4 (motor mrlana-v4-2026-10). Nunca se
+                          recalcula en vivo: lee la última ejecución V4 SEMANAL exitosa del
+                          period_id (semanal) y alcance exactos, generada desde el módulo web.
+                          Si las fotografías o los Ingresos cambiaron después de generarla,
+                          status=stale (nunca ok). Una ejecución de la calculadora anterior
+                          nunca se entrega como vigente. Por colaborador exige asignación de
+                          sucursal verificada en el periodo y exactamente una fila con su
+                          nombre (homónimos → not_attributable).
                         properties:
-                          available: { type: boolean, example: false }
-                          status: { type: string, enum: [ok, blocked, not_attributable], example: blocked }
+                          available: { type: boolean, example: true }
+                          status: { type: string, enum: [ok, stale, not_available, not_attributable, not_supported_period], example: ok }
+                          is_stale: { type: boolean, example: false }
                           reason: { type: string, description: "Presente solo cuando available=false." }
-                          coverage: { type: object, description: "Diagnóstico real de cobertura (filas CARTERA/Ingresos, cuántas pasan whitelist/tienen ambas fechas)." }
+                          run_id: { type: integer, nullable: true }
+                          generated_at: { type: string, format: date-time, nullable: true }
+                          coverage: { type: object, description: "Fotografías y movimientos de Ingresos leídos." }
+                          parameters: { type: object, nullable: true, description: "modo, domingo_base, fecha_corte, inicio_ingresos, fin_ingresos." }
+                          incidents: { type: object, nullable: true, description: "count y by_code (bitácora _AUDITORIA_EFECTIVIDAD)." }
                           summary: { type: object, nullable: true, description: "Fila GRAN TOTAL (solo scope=general/branch)." }
+                          rows: { type: array, items: { type: object }, description: "Filas A-M (promotores, totales por oficina, GRAN TOTAL)." }
                           row: { type: object, nullable: true, description: "Fila del promotor resuelto (solo scope=employee)." }
-                          version: { type: string, example: approved_real_adapter_v1 }
+                          engine_version: { type: string, example: mrlana-v4-2026-10 }
+                          version: { type: string, example: approved_snapshot_v4 }
 
   /okr/summary:
     get:

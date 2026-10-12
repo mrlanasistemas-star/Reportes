@@ -10,6 +10,7 @@ use App\Models\PortfolioSnapshotRow;
 use App\Models\Recovery;
 use App\Models\ReportUpload;
 use App\Services\Efectividad\EfectividadCobranzaIssue as Issue;
+use App\Services\Imports\LendusCarteraFotoImportService;
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -498,6 +499,6 @@ class EfectividadV4DataAdapter
     {
         $log = DB::table('process_runs')->where('report_upload_id', $u->id)->orderByDesc('id')->value('log');
 
-        return $log ? mb_strimwidth((string) $log, 0, 300, '…') : 'El procesamiento falló.';
+        return $log ? mb_strimwidth((string) LendusCarteraFotoImportService::mensajePublico($log), 0, 300, '…') : 'El procesamiento falló.';
     }
 }

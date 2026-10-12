@@ -1,5 +1,11 @@
 # Migración a un nuevo VPS — notas relevantes a este trabajo
 
+> **Decisión vigente (12-oct-2026): instalación LIMPIA sin transportar información histórica.**
+> Seguir **`docs/despliegue-vps-limpio.md`**. Las secciones 1, 2 y 4 de este documento
+> (copiar `storage/`, reprocesar originales, invalidar proyecciones) solo aplicarían a una
+> migración con datos y **no** se usan en esta instalación. No borres el servidor anterior
+> hasta validar el nuevo.
+
 No se ejecutó ninguna migración de infraestructura real desde esta sesión (sin acceso al
 VPS). Este documento son las notas que un futuro traslado debe considerar, en relación
 específica con lo construido en Fases 1-4.
@@ -44,11 +50,11 @@ simplemente lee lo que ya esté calculado (`buildSnapshot()`), así que una radi
 invalidada/reimportada se refleja automáticamente en la próxima consulta a `/api/v1/financial/*`
 sin ningún paso adicional de migración.
 
-## 5. Efectividad de Cobranza Aprobada (Fase 2) — bloqueada, no migrar nada todavía
+## 5. Efectividad de Cobranza V4
 
-No existe código ni tabla nueva para este módulo (ver
-`docs/efectividad-cobranza-aprobada.md`) — no hay nada que migrar en este frente hasta que
-se resuelva el bloqueo de la fuente VBA.
+Ya no está bloqueada: el motor vigente es V4 (`docs/efectividad/nueva-version/README.md`).
+En la instalación limpia no se migra nada de este módulo. Después de instalar, se cargan las
+8 fotografías diarias y los Ingresos de la semana y se genera desde la web.
 
 ## 6. Configuración específica de Browsershot por servidor
 
