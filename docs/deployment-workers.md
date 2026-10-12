@@ -34,7 +34,15 @@ Debe seguir corriendo exactamente un worker por servidor (o varios con cuidado d
 concurrencia) vía `supervisor`/`systemd` — la configuración real del VPS no se tocó ni se
 verificó desde este entorno de desarrollo (no hay acceso a él).
 
+**Nuevo (procesamiento en segundo plano de Efectividad, 2026-10-12):** seguimiento
+persistente por etapas, detección de trabajos atascados, correo + notificaciones internas.
+Configuración de Supervisor/systemd, `pcntl`, `DB_QUEUE_RETRY_AFTER` y SMTP en
+`docs/efectividad-cobranza-segundo-plano.md` sección 8.
+
 ## 2. Scheduler
+
+**Nuevo (2026-10-12):** `efectividad:recover-stalled --apply` cada 10 min y
+`efectividad:retry-notifications` cada 15 min (ver `routes/console.php`).
 
 `routes/console.php` ya registra (sin cambios en esta sesión):
 

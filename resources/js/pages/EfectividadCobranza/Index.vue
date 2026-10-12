@@ -1,112 +1,184 @@
 <script setup lang="ts">
-import { Head, router } from '@inertiajs/vue3'
+import { Head, router } from '@inertiajs/vue3';
+import { Loader2, RotateCw, TrendingUp, XCircle } from 'lucide-vue-next';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+
+import EfectividadResults from '@/components/efectividad/EfectividadResults.vue';
 import {
-    AlertTriangle,
-    CheckCircle2,
-    Download,
-    FileSpreadsheet,
-    Loader2,
-    RotateCw,
-    TrendingUp,
-    XCircle,
-} from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-
-import SelectField from '@/components/forms/SelectField.vue'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { download as downloadRoute, generate as generateRoute, index as efectividadIndex } from '@/routes/efectividad-cobranza'
-
-type Row = {
-    promotor: string
-    oficina?: string | null
-    sano_pc: number
-    sano_cob: number
-    sano_pct: number
-    atraso_pc: number
-    atraso_cob: number
-    atraso_pct: number
-    vencido_pc: number
-    vencido_cob: number
-    vencido_pct: number
-    cobranza_total: number
-    pct_total: number
-    mora: number
-    es_total?: boolean
-}
-
-type Coverage = {
-    status: string
-    message: string
-    cartera_rows_total: number
-    ingresos_rows_total: number
-    ingresos_rows_whitelist_pass: number
-    ingresos_rows_usables: number
-}
-
-type RunStatus = 'queued' | 'running' | 'success' | 'blocked' | 'failed'
-
-type RunPayload = {
-    id: number
-    status: RunStatus
-    log: string | null
-    metadata: { progress_percent?: number; current_step?: string } | null
-    coverage: Coverage | null
-    rows: Row[]
-    has_excel: boolean
-    error_message: string | null
-}
+    csrfToken,
+    describeHttpFailure,
+    formatTime,
+    isActiveStatus,
+} from '@/components/efectividad/format';
+import RunDetailSheet from '@/components/efectividad/RunDetailSheet.vue';
+import RunHistoryTable from '@/components/efectividad/RunHistoryTable.vue';
+import RunStatusBadge from '@/components/efectividad/RunStatusBadge.vue';
+import RunStatusCard from '@/components/efectividad/RunStatusCard.vue';
+import type {
+    HistoryFilters,
+    RunDetail,
+    RunSummary,
+    StageInfo,
+} from '@/components/efectividad/types';
+import { toast } from '@/components/feedback/Toast';
+import SelectField from '@/components/forms/SelectField.vue';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { useEfectividadRunPolling } from '@/composables/useEfectividadRunPolling';
+import {
+    generate as generateRoute,
+    index as efectividadIndex,
+} from '@/routes/efectividad-cobranza';
 
 const props = defineProps<{
-    periods: Array<{ id: number; label: string; code: string; type: string }>
-    branches: Array<{ id: number; name: string }>
-    selected: { period_id: number | null; branch_id: number | null }
-    latestRun: RunPayload | null
-    history: Array<{
-        id: number
-        status: string
-        coverage: Coverage | null
-        has_excel: boolean
-        created_at: string | null
-        finished_at: string | null
-    }>
-}>()
+    periods: Array<{ id: number; label: string; code: string; type: string }>;
+    branches: Array<{ id: number; name: string }>;
+    selected: { period_id: number | null; branch_id: number | null };
+    focusRun: RunDetail | null;
+    activeRuns: RunSummary[];
+    history: {
+        data: RunSummary[];
+        meta: {
+            current_page: number;
+            last_page: number;
+            total: number;
+            per_page: number;
+        };
+    };
+    filters: HistoryFilters;
+    canFilterByUser: boolean;
+    requesters: Array<{ id: number; name: string }>;
+    stageCatalog: StageInfo[];
+    openDetail?: boolean;
+}>();
 
 defineOptions({
     layout: {
-        breadcrumbs: [{ title: 'Efectividad de Cobranza', href: efectividadIndex() }],
+        breadcrumbs: [
+            { title: 'Efectividad de Cobranza', href: efectividadIndex() },
+        ],
     },
-})
+});
 
-const periodOptions = computed(() => props.periods.map((p) => ({ value: p.id, label: p.label })))
+const periodOptions = computed(() =>
+    props.periods.map((p) => ({ value: p.id, label: p.label })),
+);
 const branchOptions = computed(() => [
     { value: '', label: 'Todas las sucursales (general)' },
     ...props.branches.map((b) => ({ value: b.id, label: b.name })),
-])
+]);
 
-const selectedPeriodId = ref<number | string>(props.selected.period_id ?? '')
-const selectedBranchId = ref<number | string>(props.selected.branch_id ?? '')
+const selectedPeriodId = ref<number | string>(props.selected.period_id ?? '');
+const selectedBranchId = ref<number | string>(props.selected.branch_id ?? '');
 
-const run = ref<RunPayload | null>(props.latestRun)
-const generating = ref(false)
-// Fase 6 (auditoría 2026-10-12) — banner de error real, visible al usuario. Antes los
-// fetch() fallidos (red caída, 419/422/403/409/500, JSON inválido) se tragaban en
-// silencio: el botón quedaba "generando" para siempre o el error solo salía en la
-// consola del navegador, nunca en pantalla.
-const errorMessage = ref<string | null>(null)
-let isPolling = false // evita solicitudes de progreso solapadas si una tarda más que el intervalo
+// La ejecución enfocada SIEMPRE llega del servidor (BD): al volver al módulo,
+// recargar o abrir el enlace del correo, se restaura sin depender del navegador.
+const focus = ref<RunDetail | RunSummary | null>(props.focusRun);
+const submitting = ref(false);
+const errorMessage = ref<string | null>(null);
+
+const detailOpen = ref(false);
+const detailRunId = ref<number | null>(null);
 
 watch(
-    () => props.latestRun,
+    () => props.focusRun,
     (value) => {
-        run.value = value
+        focus.value = value;
+        trackFocus();
     },
-)
+);
+
+watch(
+    () => props.selected,
+    (value) => {
+        selectedPeriodId.value = value.period_id ?? '';
+        selectedBranchId.value = value.branch_id ?? '';
+    },
+);
+
+const polling = useEfectividadRunPolling({
+    onUpdate: (detail) => {
+        if (focus.value?.id === detail.id) {
+            focus.value = detail;
+        }
+    },
+    onFinished: (detail) => {
+        const messages = {
+            success: {
+                icon: 'success',
+                title: 'Tu reporte de Efectividad de Cobranza está listo.',
+            },
+            blocked: {
+                icon: 'warning',
+                title: 'No se pudo generar el reporte porque faltan datos obligatorios.',
+            },
+            failed: {
+                icon: 'error',
+                title: 'Se produjo un error durante la generación.',
+            },
+        } as const;
+        const msg = messages[detail.status as keyof typeof messages];
+
+        if (msg) {
+            void toast.fire({ icon: msg.icon, title: msg.title });
+        }
+
+        router.reload({
+            only: ['history', 'activeRuns', 'backgroundActivity'],
+        });
+    },
+});
+
+function trackFocus() {
+    if (focus.value && isActiveStatus(focus.value.status)) {
+        polling.start(focus.value.id);
+    } else {
+        polling.stop();
+    }
+}
+
+// Otras ejecuciones activas del usuario (distintas a la enfocada) se refrescan
+// desde la BD con una recarga parcial ligera mientras existan.
+const otherActiveRuns = computed(() =>
+    props.activeRuns.filter((r) => r.id !== focus.value?.id),
+);
+let othersTimer: ReturnType<typeof setInterval> | null = null;
+watch(
+    () => otherActiveRuns.value.length,
+    (count) => {
+        if (count > 0 && !othersTimer) {
+            othersTimer = setInterval(() => {
+                if (document.visibilityState === 'visible') {
+                    router.reload({
+                        only: ['activeRuns', 'history', 'backgroundActivity'],
+                    });
+                }
+            }, 10000);
+        } else if (count === 0 && othersTimer) {
+            clearInterval(othersTimer);
+            othersTimer = null;
+        }
+    },
+    { immediate: true },
+);
+
+onMounted(() => {
+    trackFocus();
+
+    if (props.openDetail && props.focusRun) {
+        openDetails(props.focusRun.id);
+    }
+});
+
+onBeforeUnmount(() => {
+    if (othersTimer) {
+        clearInterval(othersTimer);
+    }
+});
 
 function reloadForSelection() {
-    errorMessage.value = null
+    errorMessage.value = null;
     router.get(
         efectividadIndex().url,
         {
@@ -114,241 +186,164 @@ function reloadForSelection() {
             branch_id: selectedBranchId.value || undefined,
         },
         { preserveState: true, preserveScroll: true },
-    )
+    );
 }
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
-
-function stopPolling() {
-    if (pollTimer) {
-        clearInterval(pollTimer)
-        pollTimer = null
-    }
-    isPolling = false
+function openDetails(runId: number) {
+    detailRunId.value = runId;
+    detailOpen.value = true;
 }
 
-/**
- * Traduce una respuesta HTTP no exitosa (o una excepción de red/JSON) a un
- * mensaje real para el usuario — nunca un fetch silencioso.
- */
-async function describeHttpFailure(res: Response | null, error: unknown): Promise<string> {
-    if (!res) {
-        return error instanceof Error && error.name === 'AbortError'
-            ? 'La solicitud tardó demasiado y se canceló. Verifica tu conexión e intenta de nuevo.'
-            : 'No se pudo conectar con el servidor. Verifica tu conexión a internet e intenta de nuevo.'
-    }
-
-    if (res.status === 401 || res.status === 419) {
-        return 'Tu sesión expiró. Recarga la página para iniciar sesión de nuevo antes de continuar.'
-    }
-    if (res.status === 403) {
-        return 'No tienes permiso para realizar esta acción.'
-    }
-    if (res.status === 409) {
-        try {
-            const body = await res.json()
-            return body?.error ?? 'Ya hay una generación en curso para este periodo/sucursal. Intenta de nuevo en unos segundos.'
-        } catch {
-            return 'Ya hay una generación en curso para este periodo/sucursal. Intenta de nuevo en unos segundos.'
-        }
-    }
-    if (res.status === 422) {
-        try {
-            const body = await res.json()
-            const firstError = body?.errors ? Object.values(body.errors)[0] : null
-            return Array.isArray(firstError) ? String(firstError[0]) : (body?.message ?? 'Selecciona un periodo válido.')
-        } catch {
-            return 'Selecciona un periodo válido.'
-        }
-    }
-    if (res.status === 404) {
-        return 'El reporte solicitado ya no existe.'
-    }
-    if (res.status >= 500) {
-        return 'Ocurrió un error en el servidor al procesar la solicitud. Intenta de nuevo; si el problema persiste, contacta a soporte.'
-    }
-
-    return `No se pudo completar la solicitud (código ${res.status}).`
+function followRun(run: RunSummary) {
+    router.get(
+        efectividadIndex().url,
+        { period_id: run.period_id, branch_id: run.branch_id ?? undefined },
+        { preserveScroll: true },
+    );
 }
-
-async function pollProgress(runId: number) {
-    if (isPolling) {
-        return
-    }
-    isPolling = true
-
-    try {
-        const res = await fetch(`/efectividad-cobranza/runs/${runId}/progreso`, {
-            headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        })
-
-        if (!res.ok) {
-            errorMessage.value = await describeHttpFailure(res, null)
-            stopPolling()
-            generating.value = false
-            return
-        }
-
-        const payload = (await res.json()) as RunPayload
-        run.value = payload
-        errorMessage.value = null
-
-        if (payload.status === 'success' || payload.status === 'blocked' || payload.status === 'failed') {
-            stopPolling()
-            generating.value = false
-            router.reload({ only: ['history'] })
-        }
-    } catch (error) {
-        // Red caída a medio polling, o la respuesta no era JSON válido (p.ej. una
-        // página HTML de error inesperada) — nunca se deja la UI en "Procesando…"
-        // para siempre sin explicar por qué.
-        errorMessage.value = await describeHttpFailure(null, error)
-        stopPolling()
-        generating.value = false
-    } finally {
-        isPolling = false
-    }
-}
-
-function startPolling(runId: number) {
-    stopPolling()
-    pollTimer = setInterval(() => pollProgress(runId), 2500)
-}
-
-onBeforeUnmount(stopPolling)
-
-// Fase 6 — si la página se recarga (F5, o se vuelve de otra pestaña) mientras una
-// generación sigue en cola/corriendo, el estado real (BD) ya llega en props.latestRun
-// — pero antes el polling nunca se reanudaba, así que la pantalla se quedaba
-// mostrando "Procesando…" congelado hasta que el usuario recargara manualmente otra
-// vez. Ahora se reanuda automáticamente.
-onMounted(() => {
-    if (run.value && (run.value.status === 'queued' || run.value.status === 'running')) {
-        generating.value = true
-        startPolling(run.value.id)
-    }
-})
 
 async function generar() {
-    if (!selectedPeriodId.value || generating.value) {
-        return
+    if (!selectedPeriodId.value || submitting.value) {
+        return;
     }
 
-    generating.value = true
-    errorMessage.value = null
-    run.value = null
-
-    let res: Response | null = null
+    submitting.value = true;
+    errorMessage.value = null;
+    let res: Response | null = null;
 
     try {
         res = await fetch(generateRoute().url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                Accept: 'application/json',
                 'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '',
+                'X-CSRF-TOKEN': csrfToken(),
             },
             body: JSON.stringify({
                 period_id: selectedPeriodId.value,
                 branch_id: selectedBranchId.value || null,
             }),
-        })
+        });
 
         if (!res.ok) {
-            errorMessage.value = await describeHttpFailure(res, null)
-            generating.value = false
-            return
+            // Incluye 503 (la cola no aceptó el trabajo): NUNCA se muestra la confirmación.
+            errorMessage.value = await describeHttpFailure(res, null);
+            router.reload({ only: ['history'] });
+
+            return;
         }
 
-        const { run_id } = (await res.json()) as { run_id: number; status: string }
-        await pollProgress(run_id)
-        startPolling(run_id)
+        const payload = (await res.json()) as {
+            run_id: number;
+            reused: boolean;
+            accepted: boolean;
+            run: RunSummary;
+        };
+
+        if (!payload.accepted) {
+            errorMessage.value =
+                'El servidor no confirmó la recepción del trabajo. Intenta de nuevo.';
+
+            return;
+        }
+
+        focus.value = payload.run;
+        trackFocus();
+
+        if (payload.reused) {
+            void toast.fire({
+                icon: 'info',
+                title: `Ya había una generación en curso para este periodo y sucursal. Te mostramos su avance (#${payload.run_id}).`,
+            });
+        }
+
+        router.reload({
+            only: ['history', 'activeRuns', 'backgroundActivity'],
+        });
     } catch (error) {
-        errorMessage.value = await describeHttpFailure(res, error)
-        generating.value = false
+        errorMessage.value = await describeHttpFailure(res, error);
+    } finally {
+        submitting.value = false;
     }
 }
 
-const granTotal = computed(() => run.value?.rows?.find((r) => r.promotor === 'GRAN TOTAL') ?? null)
-
-const isAvailable = computed(() => run.value?.status === 'success' && (run.value?.coverage?.status === 'ok' || run.value?.coverage?.status === 'sin_ingresos_usables'))
-
-const progressPercent = computed(() => run.value?.metadata?.progress_percent ?? 0)
-const currentStep = computed(() => run.value?.metadata?.current_step ?? '')
-
-function formatMoney(value: number | null | undefined): string {
-    if (value === null || value === undefined) {
-        return '—'
-    }
-    return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', maximumFractionDigits: 0 }).format(value)
-}
-
-function formatPct(value: number | null | undefined): string {
-    if (value === null || value === undefined) {
-        return '—'
-    }
-    return new Intl.NumberFormat('es-MX', { style: 'percent', maximumFractionDigits: 1 }).format(value)
-}
-
-function statusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-    return (
-        ({ queued: 'secondary', running: 'secondary', success: 'default', blocked: 'outline', failed: 'destructive' }[status] as never) ?? 'outline'
-    )
-}
-
-function statusLabel(status: string): string {
-    // Fase 5 (auditoría 2026-10-12) — "blocked" es un estado real y distinto de
-    // "success": antes el backend guardaba datos insuficientes como success y la UI
-    // mostraba "Listo" aunque no hubiera ni Excel ni resultado utilizable.
-    return { queued: 'En cola', running: 'Procesando', success: 'Listo', blocked: 'Bloqueado — datos insuficientes', failed: 'Error' }[status] ?? status
-}
-
-function coverageAlertVariant(status: string | undefined): 'default' | 'destructive' {
-    if (!status) {
-        return 'default'
-    }
-    return ['bloqueado_sin_fechas', 'sin_cartera', 'sin_datos'].includes(status) ? 'destructive' : 'default'
-}
+const focusIsActive = computed(
+    () => !!focus.value && isActiveStatus(focus.value.status),
+);
+const focusDetail = computed(() =>
+    focus.value && 'rows' in focus.value ? focus.value : null,
+);
+const showResults = computed(
+    () =>
+        focusDetail.value?.status === 'success' &&
+        focusDetail.value.rows.length > 0,
+);
 </script>
 
 <template>
     <Head title="Efectividad de Cobranza" />
 
-    <div class="flex flex-col gap-6 p-4 md:p-6">
-        <div class="flex items-center gap-3">
-            <TrendingUp class="size-7 text-primary" />
-            <div>
-                <h1 class="text-2xl font-bold tracking-tight">Efectividad de Cobranza — Aprobada</h1>
+    <div class="flex flex-col gap-5 p-4 md:p-6">
+        <!-- Encabezado -->
+        <header class="flex items-start gap-3">
+            <div
+                class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"
+            >
+                <TrendingUp class="size-5" aria-hidden="true" />
+            </div>
+            <div class="min-w-0">
+                <h1 class="text-2xl font-bold tracking-tight">
+                    Efectividad de Cobranza
+                </h1>
                 <p class="text-sm text-muted-foreground">
-                    Cálculo real sobre los archivos de Ingresos Cobranza y Saldos por Cliente ya importados en Reportería —
-                    misma macro aprobada, nunca un segundo motor.
+                    Genera y consulta reportes de recuperación por periodo,
+                    sucursal y promotor.
                 </p>
             </div>
-        </div>
+        </header>
 
-        <Card>
-            <CardHeader>
-                <CardTitle class="text-base">Filtros</CardTitle>
-            </CardHeader>
-            <CardContent class="flex flex-col gap-4 md:flex-row md:items-end">
-                <div class="w-full md:w-72">
-                    <SelectField v-model="selectedPeriodId" label="Periodo" :options="periodOptions" placeholder="Selecciona un periodo" @update:model-value="reloadForSelection" />
-                </div>
-                <div class="w-full md:w-72">
-                    <SelectField v-model="selectedBranchId" label="Sucursal" :options="branchOptions" placeholder="Todas (general)" @update:model-value="reloadForSelection" />
-                </div>
-                <Button :disabled="!selectedPeriodId || generating" @click="generar">
-                    <Loader2 v-if="generating" class="animate-spin" />
+        <!-- Filtros + Generar: el botón nunca sale de la tarjeta -->
+        <Card class="py-4">
+            <CardContent
+                class="grid grid-cols-1 items-end gap-3 px-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
+            >
+                <SelectField
+                    v-model="selectedPeriodId"
+                    label="Periodo"
+                    :options="periodOptions"
+                    placeholder="Selecciona un periodo"
+                    @update:model-value="reloadForSelection"
+                />
+                <SelectField
+                    v-model="selectedBranchId"
+                    label="Sucursal"
+                    :options="branchOptions"
+                    placeholder="Todas (general)"
+                    @update:model-value="reloadForSelection"
+                />
+                <Button
+                    class="w-full sm:col-span-2 lg:col-span-1 lg:w-auto"
+                    :disabled="!selectedPeriodId || submitting || focusIsActive"
+                    @click="generar"
+                >
+                    <Loader2 v-if="submitting" class="animate-spin" />
                     <TrendingUp v-else />
-                    Generar reporte
+                    {{
+                        focusIsActive
+                            ? 'Generación en curso'
+                            : 'Generar reporte'
+                    }}
                 </Button>
             </CardContent>
         </Card>
 
         <Alert v-if="errorMessage" variant="destructive">
             <XCircle />
-            <AlertTitle>No se pudo completar la solicitud</AlertTitle>
-            <AlertDescription class="flex items-center justify-between gap-3">
+            <AlertTitle>No se pudo iniciar la generación</AlertTitle>
+            <AlertDescription
+                class="flex flex-wrap items-center justify-between gap-3"
+            >
                 <span>{{ errorMessage }}</span>
                 <Button variant="outline" size="sm" @click="generar">
                     <RotateCw />
@@ -357,130 +352,89 @@ function coverageAlertVariant(status: string | undefined): 'default' | 'destruct
             </AlertDescription>
         </Alert>
 
-        <Card v-if="run">
-            <CardHeader class="flex flex-row items-center justify-between gap-3">
-                <CardTitle class="text-base">Estado de la generación</CardTitle>
-                <Badge :variant="statusBadgeVariant(run.status)">{{ statusLabel(run.status) }}</Badge>
-            </CardHeader>
-            <CardContent class="space-y-3">
-                <div v-if="run.status === 'queued' || run.status === 'running'" class="space-y-2">
-                    <div class="h-2 w-full overflow-hidden rounded-full bg-muted">
-                        <div class="h-full bg-primary transition-all" :style="{ width: `${progressPercent}%` }" />
-                    </div>
-                    <p class="text-sm text-muted-foreground">{{ currentStep }} — {{ run.log }}</p>
-                </div>
-
-                <div v-if="run.status === 'failed'" class="flex items-center justify-between gap-3">
-                    <p class="text-sm font-medium text-destructive">
-                        {{ run.error_message ?? run.log }}
-                    </p>
-                    <Button variant="outline" size="sm" @click="generar">
-                        <RotateCw />
-                        Reintentar
-                    </Button>
-                </div>
-
-                <Alert v-if="run.coverage" :variant="coverageAlertVariant(run.coverage.status)">
-                    <AlertTriangle v-if="coverageAlertVariant(run.coverage.status) === 'destructive'" />
-                    <CheckCircle2 v-else />
-                    <AlertTitle>Cobertura real de datos</AlertTitle>
-                    <AlertDescription>
-                        {{ run.coverage.message }}
-                        <div class="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                            <span>CARTERA: {{ run.coverage.cartera_rows_total }} filas</span>
-                            <span>Ingresos: {{ run.coverage.ingresos_rows_total }} filas</span>
-                            <span>Whitelist: {{ run.coverage.ingresos_rows_whitelist_pass }}</span>
-                            <span>Utilizables: {{ run.coverage.ingresos_rows_usables }}</span>
-                        </div>
-                    </AlertDescription>
-                </Alert>
-
-                <div v-if="run.has_excel">
-                    <a :href="downloadRoute(run.id).url">
-                        <Button variant="outline">
-                            <Download />
-                            Descargar Excel
-                        </Button>
-                    </a>
-                </div>
-            </CardContent>
-        </Card>
-
-        <div v-if="isAvailable && granTotal" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Card>
-                <CardHeader class="pb-2"><CardTitle class="text-sm text-muted-foreground">Sano por cobrar</CardTitle></CardHeader>
-                <CardContent class="text-2xl font-bold">{{ formatMoney(granTotal.sano_pc) }}</CardContent>
-            </Card>
-            <Card>
-                <CardHeader class="pb-2"><CardTitle class="text-sm text-muted-foreground">Total cobrado</CardTitle></CardHeader>
-                <CardContent class="text-2xl font-bold">{{ formatMoney(granTotal.cobranza_total) }}</CardContent>
-            </Card>
-            <Card>
-                <CardHeader class="pb-2"><CardTitle class="text-sm text-muted-foreground">% Efectividad total</CardTitle></CardHeader>
-                <CardContent class="text-2xl font-bold">{{ formatPct(granTotal.pct_total) }}</CardContent>
-            </Card>
-            <Card>
-                <CardHeader class="pb-2"><CardTitle class="text-sm text-muted-foreground">Mora</CardTitle></CardHeader>
-                <CardContent class="text-2xl font-bold">{{ formatMoney(granTotal.mora) }}</CardContent>
-            </Card>
-        </div>
-
-        <Card v-if="isAvailable && run?.rows?.length">
-            <CardHeader><CardTitle class="text-base">Detalle por promotor / oficina</CardTitle></CardHeader>
-            <CardContent class="overflow-x-auto">
-                <table class="w-full min-w-[960px] text-sm">
-                    <thead>
-                        <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                            <th class="py-2 pr-3">Promotor</th>
-                            <th class="py-2 pr-3 text-right">Sano por cobrar</th>
-                            <th class="py-2 pr-3 text-right">Sano cobrado</th>
-                            <th class="py-2 pr-3 text-right">% Sano</th>
-                            <th class="py-2 pr-3 text-right">Atraso cobrado</th>
-                            <th class="py-2 pr-3 text-right">Vencido cobrado</th>
-                            <th class="py-2 pr-3 text-right">Total cobrado</th>
-                            <th class="py-2 pr-3 text-right">% Total</th>
-                            <th class="py-2 pr-3 text-right">Mora</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr
-                            v-for="(row, idx) in run.rows"
-                            :key="idx"
-                            :class="[row.es_total ? 'font-bold bg-muted/50' : '', 'border-b last:border-0']"
-                        >
-                            <td class="py-2 pr-3">{{ row.promotor }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatMoney(row.sano_pc) }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatMoney(row.sano_cob) }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatPct(row.sano_pct) }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatMoney(row.atraso_cob) }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatMoney(row.vencido_cob) }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatMoney(row.cobranza_total) }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatPct(row.pct_total) }}</td>
-                            <td class="py-2 pr-3 text-right">{{ formatMoney(row.mora) }}</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </CardContent>
-        </Card>
-
-        <Card v-if="history.length">
-            <CardHeader><CardTitle class="text-base">Historial de generaciones (esta sucursal/periodo)</CardTitle></CardHeader>
-            <CardContent>
+        <!-- Otras ejecuciones activas del usuario (restauradas desde la BD) -->
+        <Card v-if="otherActiveRuns.length" class="gap-2 py-3">
+            <CardContent class="space-y-2 px-4">
+                <p
+                    class="text-xs font-medium tracking-wide text-muted-foreground uppercase"
+                >
+                    Otras generaciones en segundo plano
+                </p>
                 <ul class="divide-y">
-                    <li v-for="item in history" :key="item.id" class="flex items-center justify-between gap-3 py-2 text-sm">
-                        <div class="flex items-center gap-2">
-                            <Badge :variant="statusBadgeVariant(item.status)">{{ statusLabel(item.status) }}</Badge>
-                            <span class="text-muted-foreground">{{ item.created_at ? new Date(item.created_at).toLocaleString('es-MX') : '' }}</span>
+                    <li
+                        v-for="run in otherActiveRuns"
+                        :key="run.id"
+                        class="flex flex-wrap items-center justify-between gap-2 py-2 text-sm"
+                    >
+                        <div class="min-w-0">
+                            <p class="truncate font-medium">
+                                #{{ run.id }} · {{ run.period_label }} ·
+                                {{ run.branch_label }}
+                            </p>
+                            <p class="text-xs text-muted-foreground">
+                                Solicitado {{ formatTime(run.queued_at) }}
+                                <template v-if="run.current_stage">
+                                    · Paso {{ run.current_stage.position }}/{{
+                                        run.stage_count
+                                    }}
+                                    {{ run.current_stage.label }}</template
+                                >
+                            </p>
                         </div>
-                        <a v-if="item.has_excel" :href="downloadRoute(item.id).url">
-                            <Button variant="ghost" size="sm">
-                                <FileSpreadsheet />
-                                Excel
-                            </Button>
-                        </a>
+                        <div class="flex items-center gap-2">
+                            <RunStatusBadge
+                                :state="run.display_state"
+                                :label="run.display_label"
+                            />
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                @click="followRun(run)"
+                                >Seguir</Button
+                            >
+                        </div>
                     </li>
                 </ul>
             </CardContent>
         </Card>
+
+        <!-- Estado de la generación enfocada -->
+        <RunStatusCard
+            v-if="focus"
+            :run="focus"
+            :catalog="stageCatalog"
+            :refreshing="polling.refreshing.value"
+            @details="openDetails(focus.id)"
+            @refresh="polling.refreshNow(focus.id)"
+            @retry="generar"
+        />
+        <Card v-else-if="selectedPeriodId" class="border-dashed py-6">
+            <CardContent class="px-4 text-center text-sm text-muted-foreground">
+                No hay reportes generados para este periodo y sucursal. Presiona
+                <strong>Generar reporte</strong> para crear uno.
+            </CardContent>
+        </Card>
+
+        <EfectividadResults
+            v-if="showResults && focusDetail"
+            :run="focusDetail"
+        />
+
+        <RunHistoryTable
+            :history="history"
+            :filters="filters"
+            :periods="periods"
+            :branches="branches"
+            :requesters="requesters"
+            :can-filter-by-user="canFilterByUser"
+            :selected="selected"
+            @view="openDetails"
+        />
+
+        <RunDetailSheet
+            v-model:open="detailOpen"
+            :run-id="detailRunId"
+            :seed="focusDetail"
+        />
     </div>
 </template>

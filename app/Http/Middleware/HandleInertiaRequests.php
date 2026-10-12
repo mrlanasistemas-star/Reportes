@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\EfectividadCobranzaRun;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 use Symfony\Component\HttpFoundation\Response;
@@ -49,7 +50,30 @@ class HandleInertiaRequests extends Middleware
                 'user' => $request->user(),
             ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
+            // Indicador de trabajos en segundo plano + notificaciones internas (campana
+            // de la cabecera). Dos COUNT por página; el detalle se pide bajo demanda a
+            // /notificaciones. Nunca rompe la página si aún no se migró la tabla.
+            'backgroundActivity' => fn () => $this->backgroundActivity($request),
         ];
+    }
+
+    private function backgroundActivity(Request $request): ?array
+    {
+        $user = $request->user();
+        if (!$user) {
+            return null;
+        }
+
+        try {
+            return [
+                'active_count' => $user->hasManagerialAccess()
+                    ? EfectividadCobranzaRun::query()->requestedBy($user->id)->active()->count()
+                    : 0,
+                'unread_count' => $user->unreadNotifications()->count(),
+            ];
+        } catch (\Throwable) {
+            return ['active_count' => 0, 'unread_count' => 0];
+        }
     }
 
     /**

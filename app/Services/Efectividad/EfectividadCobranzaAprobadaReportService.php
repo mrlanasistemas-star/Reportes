@@ -21,9 +21,16 @@ class EfectividadCobranzaAprobadaReportService
     /**
      * @return array{period_id:int, branch_id:int|null, is_available:bool, coverage:array<string,mixed>, rows:array<int,array<string,mixed>>, generated_at:string}
      */
-    public function generate(Period $period, ?int $branchId = null): array
+    /**
+     * `$onProgress` se pasa tal cual al adaptador (conteos de cartera/ingresos).
+     * `$onStage` recibe `'calculate'` justo antes de invocar al calculador aprobado
+     * — solo informa el cambio de etapa; no altera entradas ni resultados.
+     */
+    public function generate(Period $period, ?int $branchId = null, ?callable $onProgress = null, ?callable $onStage = null): array
     {
-        $built = $this->adapter->build($period, $branchId);
+        $built = $this->adapter->build($period, $branchId, $onProgress);
+
+        $onStage && $onStage('calculate', $built['coverage']);
 
         $rows = $this->calculator->calculate(
             $built['cartera'],
