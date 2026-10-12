@@ -233,7 +233,7 @@ paths:
   /collections/effectiveness:
     get:
       tags: [collections]
-      summary: Efectividad de cobranza, distinguiendo versión histórica vs "Aprobada" (bloqueada)
+      summary: Efectividad de cobranza, distinguiendo versión histórica vs "Aprobada" (real, por periodo/alcance)
       parameters:
         - $ref: "#/components/parameters/PeriodIdQueryRequired"
         - $ref: "#/components/parameters/ScopeQuery"
@@ -255,11 +255,20 @@ paths:
                       legacy: { $ref: "#/components/schemas/MetricValue" }
                       approved:
                         type: object
+                        description: >
+                          Fase 11 — NUNCA una bandera global: se recalcula en vivo contra
+                          fact_portfolios/fact_recoveries para el period_id/scope exacto
+                          solicitado (mismo adaptador/calculador que respalda el módulo web
+                          "Efectividad de Cobranza"). `available` solo es true cuando hay
+                          cálculo real y válido para ESE periodo/alcance específico.
                         properties:
                           available: { type: boolean, example: false }
-                          status: { type: string, example: blocked }
-                          reason: { type: string }
-                          version: { type: string, example: approved_pending_validation }
+                          status: { type: string, enum: [ok, blocked, not_attributable], example: blocked }
+                          reason: { type: string, description: "Presente solo cuando available=false." }
+                          coverage: { type: object, description: "Diagnóstico real de cobertura (filas CARTERA/Ingresos, cuántas pasan whitelist/tienen ambas fechas)." }
+                          summary: { type: object, nullable: true, description: "Fila GRAN TOTAL (solo scope=general/branch)." }
+                          row: { type: object, nullable: true, description: "Fila del promotor resuelto (solo scope=employee)." }
+                          version: { type: string, example: approved_real_adapter_v1 }
 
   /okr/summary:
     get:

@@ -13,6 +13,10 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class LendusSaldosClienteImportService
 {
+    // Máx 20 chars — columna `importer_version` es VARCHAR(20) en MySQL/MariaDB real
+    // (SQLite, usado en tests, no valida longitud y deja pasar strings más largos sin error).
+    public const IMPORTER_VERSION = 'ea_aprobada_2026_10';
+
     public function __construct(
         private readonly BranchResolverService $branchResolver,
         private readonly ColumnMapService $columnMap,
@@ -77,8 +81,10 @@ class LendusSaldosClienteImportService
                 $capitalActivo = $this->toDecimal($this->value($row, $map, 'capital_activo'));
                 $pastDue       = 0.0; // computed from mora components below
 
-                // Contract/client code — used for real branch resolution
-                $contract = $this->clean($this->value($row, $map, 'contract'));
+                // Contract/client code — used for real branch resolution.
+                // Fallback: algunos exportes legacy de Lendus solo traen "Cliente" (= contrato).
+                $contract = $this->clean($this->value($row, $map, 'contract'))
+                    ?? $this->clean($this->value($row, $map, 'client_code'));
 
                 // Promoter fields
                 $promoterCode = $this->clean($this->value($row, $map, 'promoter_code'));
@@ -140,6 +146,25 @@ class LendusSaldosClienteImportService
 
                 $clientName = $this->clean($this->value($row, $map, 'client_name'));
 
+                // ── Campos de la macro Efectividad de Cobranza Aprobada ──────
+                $status      = $this->clean($this->value($row, $map, 'status'));
+                $substatus   = $this->clean($this->value($row, $map, 'substatus'));
+                $contractDueDate      = $this->toDate($this->value($row, $map, 'contract_due_date'));
+                $firstPaymentDate     = $this->toDate($this->value($row, $map, 'first_payment_date'));
+                $nextPaymentDate      = $this->toDate($this->value($row, $map, 'next_payment_date'));
+                $installmentAmount    = $this->toDecimal($this->value($row, $map, 'installment_amount'));
+                $overdueInstallments  = (int) ($this->toDecimal($this->value($row, $map, 'overdue_installments')) ?? 0) ?: null;
+                $totalOverdueRaw      = $this->toDecimal($this->value($row, $map, 'total_overdue_raw'));
+                $totalPendingRaw      = $this->toDecimal($this->value($row, $map, 'total_pending_raw'));
+                $saldoInteresVencido        = $this->toDecimal($this->value($row, $map, 'saldo_interes_vencido'));
+                $saldoImpuestoVencido       = $this->toDecimal($this->value($row, $map, 'saldo_impuesto_vencido'));
+                $saldoCargoCalVencido       = $this->toDecimal($this->value($row, $map, 'saldo_cargo_calendario_vencido'));
+                $saldoImpuestoCargoCalVenc  = $this->toDecimal($this->value($row, $map, 'saldo_impuesto_cargo_calendario_vencido'));
+                // "Saldo capital" ya fue resuelto arriba como $balance (alias 'saldo_capital' de
+                // ColumnMapService::balance). Se copia aquí para exponerlo con el nombre que
+                // espera la macro Efectividad Aprobada, sin tocar el alias de 'balance'.
+                $saldoCapitalVencido = $balance > 0 ? $balance : null;
+
                 Portfolio::query()->create([
                     'period_id'                          => $upload->period_id,
                     'report_upload_id'                   => $upload->id,
@@ -168,6 +193,22 @@ class LendusSaldosClienteImportService
                     'impuesto_cargos_calendario_atrasado' => $impuestoCargosCalAtr ?: null,
                     'days_past_due'                      => $daysPastDue,
                     'portfolio_date'                     => $this->toDate($this->value($row, $map, 'portfolio_date')),
+                    // Campos de la macro Efectividad de Cobranza Aprobada (Fase 3/4/5)
+                    'status'                              => $status,
+                    'substatus'                           => $substatus,
+                    'first_payment_date'                  => $firstPaymentDate,
+                    'next_payment_date'                   => $nextPaymentDate,
+                    'contract_due_date'                   => $contractDueDate,
+                    'installment_amount'                  => $installmentAmount,
+                    'overdue_installments'                => $overdueInstallments,
+                    'total_overdue_raw'                   => $totalOverdueRaw,
+                    'total_pending_raw'                   => $totalPendingRaw,
+                    'saldo_capital_vencido'                => $saldoCapitalVencido,
+                    'saldo_interes_vencido'                => $saldoInteresVencido,
+                    'saldo_impuesto_vencido'               => $saldoImpuestoVencido,
+                    'saldo_cargo_calendario_vencido'       => $saldoCargoCalVencido,
+                    'saldo_impuesto_cargo_calendario_vencido' => $saldoImpuestoCargoCalVenc,
+                    'importer_version'                    => self::IMPORTER_VERSION,
                     'raw_payload'                        => null,
                 ]);
 

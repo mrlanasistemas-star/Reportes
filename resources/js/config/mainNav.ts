@@ -7,6 +7,7 @@ import {
     Settings,
     ShieldCheck,
     Target,
+    TrendingUp,
     Users,
 } from 'lucide-vue-next';
 import { dashboard } from '@/routes';
@@ -49,6 +50,12 @@ export const mainNavItems: NavItem[] = [
         title: 'Reportes mensuales',
         href: '/reportes-mensuales',
         icon: FileSpreadsheet,
+        roles: ['admin', 'gerencial'],
+    },
+    {
+        title: 'Efectividad de Cobranza',
+        href: '/efectividad-cobranza',
+        icon: TrendingUp,
         roles: ['admin', 'gerencial'],
     },
     {

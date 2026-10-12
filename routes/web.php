@@ -10,6 +10,7 @@ use App\Http\Controllers\ValidationController;
 use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\EfectividadCobranzaController;
 use App\Http\Middleware\EnsureReporteriaAccess;
 
 Route::redirect('/', '/login');
@@ -24,7 +25,7 @@ Route::get('/robots.txt', function () {
         'dashboard', 'dashboard-data', 'dashboard-trend',
         'historico-general', 'periodos', 'asignaciones-empleado-sucursal',
         'empleados', 'validaciones', 'guia-sistema', 'reportes-mensuales',
-        'okr', 'settings',
+        'efectividad-cobranza', 'okr', 'settings',
     ])->map(fn (string $path) => "Disallow: /{$path}")->implode("\n");
 
     $body = "User-agent: *\nAllow: /login\n{$disallow}\n\nSitemap: " . url('/sitemap.xml') . "\n";
@@ -174,6 +175,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/runs/{run}/excel', [MonthlyReportController::class, 'downloadRunExcel'])->name('run-excel');
             Route::get('/runs/{run}/pdf', [MonthlyReportController::class, 'downloadRunPdf'])->name('run-pdf');
             Route::get('/runs/{run}/ver', [MonthlyReportController::class, 'viewRun'])->name('run-ver');
+        });
+
+    Route::prefix('efectividad-cobranza')
+        ->name('efectividad-cobranza.')
+        ->group(function () {
+            Route::get('/', [EfectividadCobranzaController::class, 'index'])->name('index');
+            Route::post('/generar', [EfectividadCobranzaController::class, 'generate'])->name('generate');
+            Route::get('/runs/{run}/progreso', [EfectividadCobranzaController::class, 'progress'])->name('progress');
+            Route::get('/runs/{run}/descargar', [EfectividadCobranzaController::class, 'download'])->name('download');
         });
     }); // fin EnsureReporteriaAccess
 });

@@ -32,9 +32,17 @@ class CapabilitiesController extends Controller
         'okr_summary' => 'okr.read',
     ];
 
-    private const BLOCKED_RESOURCES = [
-        'collections_effectiveness_approved' => 'Falta la fuente VBA (.xlsm) para extraer la lógica aprobada — ver docs/efectividad-cobranza-aprobada.md. No se expone ningún valor hasta validarlo contra el Excel aprobado real.',
-    ];
+    /**
+     * Fase 11 — "collections_effectiveness_approved" quedó CONECTADO a datos
+     * reales (fact_portfolios + fact_recoveries → EfectividadCobranzaAprobadaCalculator,
+     * el mismo motor ya probado contra el VBA). `implemented` ahora es true: el
+     * sistema SÍ tiene el recurso construido. La disponibilidad real para un
+     * period_id/scope específico (puede no haber Excel importado todavía, o
+     * faltar Fecha transacción/Fecha cuota en el Excel real) se expone en
+     * `versions.approved.available` de la respuesta del endpoint en sí —
+     * nunca aquí, que es verdad-del-sistema, no verdad-de-este-periodo.
+     */
+    private const BLOCKED_RESOURCES = [];
 
     public function index(Request $request): JsonResponse
     {

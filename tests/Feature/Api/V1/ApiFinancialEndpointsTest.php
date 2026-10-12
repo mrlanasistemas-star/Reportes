@@ -74,7 +74,7 @@ it('rejects unknown metric codes on metric-values', function () {
         ->assertStatus(422);
 });
 
-it('marks the approved collections effectiveness as blocked and distinguishes it from the legacy version', function () {
+it('marks the approved collections effectiveness as blocked (real, per-period) when there is no CARTERA/Ingresos data for this period, and distinguishes it from the legacy version', function () {
     $token = makeApiToken('collections-consumer', ['collections.read']);
     $period = makeApiPeriod();
 
@@ -82,9 +82,41 @@ it('marks the approved collections effectiveness as blocked and distinguishes it
         ->getJson("/api/v1/collections/effectiveness?period_id={$period->id}");
 
     $response->assertOk();
+    // Este periodo no tiene ninguna fila de fact_portfolios/fact_recoveries — bloqueado
+    // por falta de datos REAL para este period_id específico, nunca una bandera global.
     expect($response->json('versions.approved.available'))->toBeFalse();
     expect($response->json('versions.approved.status'))->toBe('blocked');
+    expect($response->json('versions.approved.coverage.status'))->toBe('sin_datos');
     expect($response->json('versions.legacy.version'))->toBe('legacy_vigente_atrasado_vencido');
+});
+
+it('marks the approved collections effectiveness as available and returns real numbers when this period/scope has usable CARTERA + Ingresos data', function () {
+    $token = makeApiToken('collections-consumer-real', ['collections.read']);
+    $period = makeApiPeriod();
+    $branch = \App\Models\Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+
+    \App\Models\Portfolio::query()->create([
+        'period_id' => $period->id, 'branch_id' => $branch->id,
+        'contract' => '25COR1270278', 'promoter_name' => 'LUIS GOMEZ', 'route_name' => 'CORDOBA',
+        'status' => 'VIGENTE', 'substatus' => 'VIGENTE',
+        'installment_amount' => 100, 'periodicity' => 'SEMANAL', 'num_payments' => 10,
+        'first_payment_date' => '2026-04-01',
+    ]);
+    \App\Models\Recovery::query()->create([
+        'period_id' => $period->id, 'branch_id' => $branch->id,
+        'contract' => '25COR1270278', 'promoter_name' => 'LUIS GOMEZ', 'office_name_raw' => 'CORDOBA',
+        'operation' => 'PAGO A CONTRATO', 'transaction' => 'PAGO',
+        'capital' => 100, 'interest' => 0, 'tax' => 0, 'total_amount' => 100,
+        'payment_date' => '2026-04-01', 'installment_due_date' => '2026-04-01',
+    ]);
+
+    $response = $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson("/api/v1/collections/effectiveness?period_id={$period->id}&scope=branch&branch_id={$branch->id}");
+
+    $response->assertOk();
+    expect($response->json('versions.approved.available'))->toBeTrue();
+    expect($response->json('versions.approved.status'))->toBe('ok');
+    expect((float) $response->json('versions.approved.summary.sano_cob'))->toBe(100.0);
 });
 
 it('exposes capabilities scoped to the authenticated consumer', function () {
@@ -94,7 +126,10 @@ it('exposes capabilities scoped to the authenticated consumer', function () {
 
     $response->assertOk()
         ->assertJsonPath('consumer.system_code', 'capabilities-consumer')
-        ->assertJsonPath('resources.collections_effectiveness_approved.implemented', false)
+        // Fase 11 — "approved" quedó conectado a datos reales: implemented=true es
+        // verdad-del-sistema (el recurso existe y funciona), independiente de si ESTE
+        // periodo en particular tiene datos suficientes (eso vive en available, por request).
+        ->assertJsonPath('resources.collections_effectiveness_approved.implemented', true)
         ->assertJsonPath('resources.collections_effectiveness_approved.permitted', false)
         ->assertJsonPath('resources.collections_effectiveness_legacy.implemented', true)
         // Este consumidor solo tiene 'financial.read' — financial_summary sí está permitido,
