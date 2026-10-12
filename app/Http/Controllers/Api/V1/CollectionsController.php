@@ -166,9 +166,21 @@ class CollectionsController extends Controller
         $employee = Employee::query()->find($employeeId);
         $normalizedTarget = $employee ? $calculator->normalizar($employee->normalized_name ?: $employee->full_name) : null;
 
-        $row = $normalizedTarget
-            ? collect($run->result_rows ?? [])->first(fn (array $r) => empty($r['es_total']) && $calculator->normalizar($r['promotor']) === $normalizedTarget)
-            : null;
+        $matches = $normalizedTarget
+            ? collect($run->result_rows ?? [])->filter(fn (array $r) => empty($r['es_total']) && $calculator->normalizar($r['promotor']) === $normalizedTarget)->values()
+            : collect();
+
+        // Homonimia: el mismo nombre en dos oficinas de la sucursal es ambiguo — nunca se elige "la primera".
+        if ($matches->count() > 1) {
+            return [
+                'available' => false,
+                'status'    => 'not_attributable',
+                'reason'    => 'Hay '.$matches->count().' filas de promotor con el mismo nombre normalizado en la sucursal verificada de este colaborador (oficinas: '.$matches->pluck('oficina')->implode(', ').'). No se atribuye un resultado por homonimia.',
+                'coverage'  => $run->coverage,
+                'version'   => self::VERSION,
+            ];
+        }
+        $row = $matches->first();
 
         if (!$row) {
             return [

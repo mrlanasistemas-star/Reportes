@@ -3,9 +3,11 @@
 use App\Models\PortfolioSnapshot;
 use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use App\Services\Efectividad\V4\EfectividadV4DataAdapter;
+use App\Services\Efectividad\V4\EfectividadV4ExcelExporter;
 use App\Services\Efectividad\V4\EfectividadV4ParityComparator;
 use App\Services\ReportAnalysisService;
 use Illuminate\Support\Facades\Storage;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 use Tests\Support\EfectividadV4Reference as Ref;
 
 /**
@@ -69,6 +71,25 @@ it('reproduce exactamente la hoja EFECTIVIDAD y la auditoría del libro (motor p
         ->and($fila['cobranza_total'])->toBe(53626.82)
         ->and($fila['pct_total'])->toBe(0.9920237522660845)
         ->and($fila['mora'])->toBe(431.1800000000003);
+
+    // El XLSX exportado conserva bit a bit las 31 filas (A-M) y las 237 incidencias, en orden.
+    $path = tempnam(sys_get_temp_dir(), 'efv4ref').'.xlsx';
+    (new EfectividadV4ExcelExporter)->export($res['filas'], $res['parametros'], $res['incidencias'], $path);
+    $book = IOFactory::load($path);
+    @unlink($path);
+    $ws = $book->getSheetByName('EFECTIVIDAD');
+    $campos = ['sano_pc', 'sano_cob', 'sano_pct', 'atraso_pc', 'atraso_cob', 'atraso_pct', 'vencido_pc', 'vencido_cob', 'vencido_pct', 'cobranza_total', 'pct_total', 'mora'];
+    $leidas = [];
+    for ($r = 6; $r <= $ws->getHighestDataRow('A'); $r++) {
+        if (! isset($ws->getMergeCells()["A{$r}:M{$r}"])) {
+            $leidas[] = [$ws->getCell("A{$r}")->getValue(), ...array_map(fn ($j) => (float) $ws->getCell(chr(ord('B') + $j).$r)->getValue(), array_keys($campos))];
+        }
+    }
+    $esperadas = array_map(fn ($f) => [$f['promotor'], ...array_map(fn ($c) => (float) $f[$c], $campos)], $res['filas']);
+    expect($leidas)->toBe($esperadas)->and(count($leidas))->toBe(31);
+    $aud = $book->getSheetByName('_AUDITORIA_EFECTIVIDAD');
+    expect($aud->getHighestDataRow('A') - 5)->toBe(237)
+        ->and(array_map(fn ($r) => $aud->getCell("A{$r}")->getValue(), range(6, 242)))->toBe(array_column($ref['incidencias_esperadas'], 'id'));
 })->group('referencia');
 
 it('reproduce el libro de punta a punta: Excel de Lendus → importadores → BD → adaptador → motor', function () {

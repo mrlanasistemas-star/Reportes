@@ -122,3 +122,23 @@ api:query-logs:prune   diario 03:00   (retención API_QUERY_LOG_RETENTION_DAYS, 
 Sin cambios de esta sesión — las migraciones son aditivas y reversibles
 (`php artisan migrate:rollback`), así que un respaldo estándar de base de datos antes de
 desplegar basta como red de seguridad. No se tocó ningún proceso de respaldo existente.
+
+## 9. Efectividad de Cobranza V4 (12-oct-2026)
+
+Instalación completa desde cero: **`docs/despliegue-vps-limpio.md`**.
+
+- **Jobs nuevos en la misma cola `database`** (no requieren otro worker):
+  - `ImportPortfolioSnapshotJob`: importa cada fotografía diaria de cartera (timeout 900 s, 1 intento).
+  - `GenerateEfectividadCobranzaAprobadaJob`: ahora ejecuta el motor V4 en 9 etapas (timeout
+    `EFECTIVIDAD_JOB_TIMEOUT`, 2 intentos, `WithoutOverlapping` por periodo + sucursal + modo + corte).
+- **Migraciones aditivas:**
+  - `2026_10_13_090000_create_portfolio_snapshot_tables`
+  - `2026_10_13_090100_add_engine_v4_fields_to_efectividad`
+  - `2026_10_13_090200_add_foreign_keys_to_efectividad_v4_tables` (solo InnoDB; no borra datos)
+- **Variable nueva opcional:** `DB_ENGINE` (`config/database.php`, conexiones `mysql`/`mariadb`).
+  Vacía equivale al comportamiento anterior (motor por defecto del servidor). En el VPS:
+  `DB_ENGINE=InnoDB`. Nota: el MySQL local de desarrollo (WAMP) tiene **MyISAM** por defecto,
+  así que en local las claves foráneas no se aplican.
+- **Extensión PHP** `calendar` (`cal_days_in_month`, periodicidad mensual del motor V4).
+- **Nginx:** bloquear `/storage/reports/` y `/storage/report_uploads/` (originales con datos
+  financieros y personales en el disco `public`).

@@ -61,6 +61,14 @@ class StoreReportUploadRequest extends FormRequest
     public function withValidator($validator): void
     {
         $validator->after(function ($validator) {
+            // Las fotografías diarias de cartera (Efectividad V4) necesitan FECHA, no mes: se
+            // cargan desde Efectividad de Cobranza › Disponibilidad de información.
+            if (DataSource::query()->whereKey($this->integer('data_source_id'))->value('code') === \App\Enums\DataSourceCode::LendusSaldosClienteFoto->value) {
+                $validator->errors()->add('data_source_id', 'Las fotografías diarias de cartera se cargan en Efectividad de Cobranza › Disponibilidad de información, indicando la fecha de cada fotografía.');
+
+                return;
+            }
+
             $anchorPeriod = Period::query()->find($this->integer('period_id'));
 
             if (!$anchorPeriod) {

@@ -57,37 +57,63 @@ class EfectividadV4Calculator
 
     // Estado de una corrida (equivalente a los Scripting.Dictionary de la macro).
     private array $rutaPromo = [];
+
     private array $grupos = [];
+
     private array $oficinaDe = [];
+
     private array $promotorDe = [];
+
     private array $nombreGrupo = [];
+
     private array $contratoGrupo = [];
+
     private array $contratoVenc = [];
+
     private array $firmaContrato = [];
+
     private array $cuotaMonto = [];
+
     private array $cuotaGrupo = [];
+
     private array $estadoDia = [];
+
     private array $atrasosDia = [];
+
     private array $observados = [];
+
     private array $excluidos = [];
+
     private array $stockAtraso = [];
+
     private array $stockVencido = [];
+
     private array $incidencias = [];
+
     private array $cobroUnico = [];
+
     private array $sanoPC = [];
+
     private array $atrasoPC = [];
+
     private array $vencidoPC = [];
+
     private array $cobSano = [];
+
     private array $cobAtraso = [];
+
     private array $cobVencido = [];
+
     private array $estadisticas = [];
+
     private array $movimientos = [];
+
     private bool $conTraza = false;
 
     /**
      * @param  array{modo:string, domingo_base:mixed, fecha_corte:mixed}  $parametros
      * @param  array<int, array{columnas: list<string>, filas: iterable<array<string,mixed>>, nombre?: string}>  $fotos
-     *                                                                                                               índice = días desde el domingo base (0 = domingo base … 7 = domingo corte)
+     *                                                                                                                   índice = días desde el domingo base (0 = domingo base … 7 = domingo corte)
      * @param  array{columnas: list<string>, filas: iterable<array<string,mixed>>}  $ingresos  INGRESOS del corte (solo para el mapa de ruta)
      * @param  array{columnas: list<string>, filas: iterable<array<string,mixed>>}  $historial  _HIST_INGRESOS (histórico + corte, sin duplicar fechas)
      * @return array{engine_version:string, parametros:array<string,string>, filas:list<array<string,mixed>>, incidencias:list<array<string,mixed>>, estadisticas:array<string,int>, sin_movimientos:bool}

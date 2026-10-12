@@ -2,6 +2,8 @@
 
 namespace App\Services\Efectividad\V4;
 
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
@@ -62,7 +64,16 @@ class EfectividadV4ExcelExporter
         $this->hojaFuentes($book->createSheet(), $fuentes, $parametros, $engineVersion);
 
         $book->setActiveSheetIndex(0);
-        (new Xlsx($book))->save($outputPath);
+        // El writer convierte cada Double a texto con `precision` (14 dígitos por omisión):
+        // 0.9166666666666666 se guardaría como 0.91666666666667. Con -1 se escribe la
+        // representación exacta más corta, la misma que conserva el XLSM de la macro.
+        $precision = ini_get('precision');
+        ini_set('precision', '-1');
+        try {
+            (new Xlsx($book))->save($outputPath);
+        } finally {
+            ini_set('precision', (string) $precision);
+        }
 
         return $outputPath;
     }
@@ -112,7 +123,8 @@ class EfectividadV4ExcelExporter
             if ($f['tipo'] === 'promotor' && ($oficinaAnterior === null || $f['oficina_titulo'] !== $oficinaAnterior)) {
                 $ws->mergeCells("A{$fila}:M{$fila}");
                 $combinadas[$fila] = true;
-                $ws->setCellValue("A{$fila}", $f['oficina_titulo']);
+                // Texto explícito: una oficina que empiece con «=» nunca se interpreta como fórmula.
+                $ws->setCellValueExplicit("A{$fila}", (string) $f['oficina_titulo'], DataType::TYPE_STRING);
                 $s = $ws->getStyle("A{$fila}:M{$fila}");
                 $s->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setRGB(self::BLANCO);
                 $s->getFont()->setBold(true)->setSize(9)->getColor()->setRGB(self::NEGRO);
@@ -122,7 +134,7 @@ class EfectividadV4ExcelExporter
                 $fila++;
             }
 
-            $ws->setCellValueExplicit("A{$fila}", (string) $f['promotor'], \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $ws->setCellValueExplicit("A{$fila}", (string) $f['promotor'], DataType::TYPE_STRING);
             foreach (['sano_pc', 'sano_cob', 'sano_pct', 'atraso_pc', 'atraso_cob', 'atraso_pct', 'vencido_pc', 'vencido_cob', 'vencido_pct', 'cobranza_total', 'pct_total', 'mora'] as $i => $campo) {
                 $ws->setCellValue($this->col($i + 2).$fila, (float) $f[$campo]);
             }
@@ -228,10 +240,10 @@ class EfectividadV4ExcelExporter
         }
         $r = 6;
         foreach ($incidencias as $i) {
-            $ws->setCellValueExplicit("A{$r}", (string) $i['id'], \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
-            $ws->setCellValue("B{$r}", (string) $i['descripcion']);
+            $ws->setCellValueExplicit("A{$r}", (string) $i['id'], DataType::TYPE_STRING);
+            $ws->setCellValueExplicit("B{$r}", (string) $i['descripcion'], DataType::TYPE_STRING);
             $ws->setCellValue("C{$r}", (string) $i['codigo']);
-            $ws->setCellValueExplicit("D{$r}", (string) ($i['contrato'] ?? ''), \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $ws->setCellValueExplicit("D{$r}", (string) ($i['contrato'] ?? ''), DataType::TYPE_STRING);
             if (! empty($i['fecha'])) {
                 $ws->setCellValue("E{$r}", ExcelDate::PHPToExcel(new \DateTimeImmutable($i['fecha'])));
             }
@@ -299,7 +311,7 @@ class EfectividadV4ExcelExporter
 
     private function col(int $n): string
     {
-        return \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($n);
+        return Coordinate::stringFromColumnIndex($n);
     }
 
     private function dmy(string $ymd): string

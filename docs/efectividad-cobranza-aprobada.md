@@ -1,4 +1,13 @@
-# Efectividad de Cobranza — Aprobada
+# Efectividad de Cobranza — Aprobada (SOLO COMPATIBILIDAD HISTÓRICA)
+
+> **Motor vigente desde el 12-oct-2026: V4** (`mrlana-v4-2026-10`, `MR_LANA_EFECTIVIDAD.xlsm`).
+> Ver [`docs/efectividad/nueva-version/README.md`](efectividad/nueva-version/README.md).
+>
+> Este documento describe la calculadora **anterior** (`aprobada-2026-10`,
+> `EfectividadCobranzaAprobadaCalculator`). Ya **no** es la definitiva: el Job, la UI y la API
+> calculan y publican solo V4. El código anterior se conserva para leer ejecuciones
+> históricas, que se muestran como **obsoletas** y nunca como vigentes. Donde abajo dice
+> "TERMINADO" o "definitivo", se refiere al estado de esta calculadora en su momento.
 
 Estado (cierre 2026-10-11): **TERMINADO end-to-end.** Motor de cálculo (Fase 2, sesión previa),
 esquema real, importadores, adaptador, módulo web, exportador Excel, cola, historial y API

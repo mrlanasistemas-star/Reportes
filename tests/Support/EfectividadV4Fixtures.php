@@ -10,6 +10,7 @@ use App\Models\PortfolioSnapshot;
 use App\Models\PortfolioSnapshotRow;
 use App\Models\Recovery;
 use App\Models\ReportUpload;
+use App\Services\Efectividad\V4\EfectividadV4ColumnMap;
 
 /**
  * Datos mínimos y deterministas del motor V4 (BD aislada de pruebas):
@@ -55,7 +56,7 @@ final class EfectividadV4Fixtures
             $snap = PortfolioSnapshot::query()->create([
                 'report_upload_id' => $upload->id, 'period_id' => $week->id, 'snapshot_date' => $fecha, 'status' => 'active',
                 'rows_count' => count(self::CONTRATOS), 'branch_ids' => [$branch->id], 'offices' => ['CORDOBA'],
-                'headers' => array_keys(\App\Services\Efectividad\V4\EfectividadV4ColumnMap::FOTO), 'file_sha1' => sha1($fecha),
+                'headers' => array_keys(EfectividadV4ColumnMap::FOTO), 'file_sha1' => sha1($fecha),
                 'importer_version' => 'test', 'imported_at' => now(),
             ]);
             foreach (self::CONTRATOS as $i => $contrato) {

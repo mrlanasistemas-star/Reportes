@@ -147,10 +147,14 @@ it('1-12: solicitud persistente → cola → worker sin sesión → estado resta
         ->and($run->attempts)->toBe(1);
 
     // 8. Etapas reales registradas, en orden, todas completadas; las medibles con conteos.
-    expect(array_keys($run->stages))->toBe([
-        'validate_files', 'verify_columns', 'prepare_portfolio', 'process_income',
-        'calculate', 'reconcile', 'audit', 'build_excel', 'finish',
-    ]);
+    // Una columna JSON de MySQL no conserva el orden de las llaves: el orden real se
+    // comprueba con las marcas de tiempo, y la UI recibe la línea de tiempo del catálogo.
+    $ordenEtapas = ['validate_files', 'verify_columns', 'prepare_portfolio', 'process_income', 'calculate', 'reconcile', 'audit', 'build_excel', 'finish'];
+    expect(array_keys($run->stages))->toEqualCanonicalizing($ordenEtapas);
+    $inicios = array_map(fn ($k) => $run->stages[$k]['started_at'], $ordenEtapas);
+    $ordenados = $inicios;
+    sort($ordenados);
+    expect($inicios)->toBe($ordenados);
     expect(collect($run->stages)->pluck('status')->unique()->all())->toBe(['done']);
     // 8 fotografías × 4 contratos leídos; 4 movimientos de ingresos.
     expect($run->stages['prepare_portfolio']['total'])->toBe(32)
@@ -325,8 +329,9 @@ it('15 + 17 + 18: una falla técnica reintenta como "Reintentando" (sin correo),
         && $m->envelope()->subject === 'Efectividad de Cobranza — No fue posible completar el reporte');
     expect($admin->notifications()->count())->toBe(1);
 
-    // Un colaborador gerencial ve el mensaje comprensible; la referencia técnica solo admin.
+    // Un gerencial con acceso a la ejecución (suscrito) ve el mensaje comprensible; la referencia técnica solo admin.
     $gerente = User::factory()->create(['role' => 'gerencial']);
+    $run->update(['subscriber_ids' => [$gerente->id]]);
     $this->actingAs($gerente)->getJson("/efectividad-cobranza/runs/{$run->id}/progreso")
         ->assertJson(['status' => 'failed', 'technical_reference' => null]);
 });

@@ -178,12 +178,16 @@ Cada valor de `/financial/*` tiene esta forma (Fase 1.5):
 
 - `versions.legacy` — la que YA EXISTE en Reportería hoy (vigente/atrasado/vencido +
   `efectividad_pct`). Nunca se modificó para construir esta API.
-- `versions.approved` — la calculadora **"Aprobada"** del cliente (Fase 2). **Bloqueada**:
-  `available: false`, `status: "blocked"`. El motor de cálculo YA está implementado y
-  probado fielmente contra el VBA real (`App\Services\Efectividad\EfectividadCobranzaAprobadaCalculator`,
-  17 pruebas) pero no conectado a datos reales — faltan columnas de CARTERA en el esquema y
-  no hay un resultado aprobado real contra el cual validar numéricamente. Ver
-  `docs/efectividad-cobranza-aprobada.md`. La API nunca inventa ese valor mientras tanto.
+- `versions.approved` — **Efectividad de Cobranza V4** (actualizado 12-oct-2026, motor
+  `mrlana-v4-2026-10`, `version: approved_snapshot_v4`). Lee, sin recalcular, la última
+  ejecución V4 **SEMANAL** exitosa del `period_id` (semanal) y el alcance exactos, generada
+  desde el módulo web. Estados: `ok`, `stale` (cambiaron fotografías o Ingresos después de
+  generarla; nunca se presenta como `ok`), `not_available`, `not_attributable` y
+  `not_supported_period` (meses/bimestres). Una ejecución de la calculadora anterior
+  (`aprobada-2026-10`) **nunca** se entrega como vigente; solo se menciona en `reason`. Por
+  colaborador: asignación de sucursal verificada en ese periodo **y exactamente una** fila de
+  promotor con su nombre; dos homónimos en la sucursal dan `not_attributable`. Requiere la
+  ability `collections.read`. Detalle en `docs/efectividad/nueva-version/README.md`.
 
 ## 10. Errores
 
@@ -211,9 +215,7 @@ de nombre. Ver `App\Models\EmployeeExternalIdentity` y
 - Endpoints de detalle de clientes/créditos (fuera de alcance explícito, Fase 1.2).
 - Escritura (la API es de solo lectura — verificado explícitamente: 0 rutas con método
   distinto de GET/HEAD en todo `/api/v1`, ver `ApiFinalSecurityChecklistTest`).
-- `collections.effectiveness.approved` con datos reales (motor implementado y probado, pero
-  sin conexión a datos reales ni validación numérica contra un resultado aprobado — ver
-  `docs/efectividad-cobranza-aprobada.md`).
+- Recalcular la Efectividad V4 desde la API (solo se lee lo generado en el módulo web).
 
 ## 13. Correcciones de seguridad y rendimiento (2026-10-11)
 
