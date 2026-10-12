@@ -5,14 +5,17 @@ namespace App\Jobs;
 use App\Enums\EfectividadCobranzaStage;
 use App\Models\EfectividadCobranzaRun;
 use App\Models\Period;
-use App\Services\Efectividad\EfectividadCobranzaAprobadaExcelExporter;
-use App\Services\Efectividad\EfectividadCobranzaAprobadaReportService;
+use App\Models\PortfolioSnapshot;
 use App\Services\Efectividad\EfectividadCobranzaIssue;
 use App\Services\Efectividad\EfectividadCobranzaProgressTracker;
 use App\Services\Efectividad\EfectividadCobranzaReconciler;
 use App\Services\Efectividad\EfectividadCobranzaRunNotifier;
-use App\Services\Efectividad\EfectividadCobranzaSourceFingerprintService;
-use App\Services\Efectividad\EfectividadCobranzaSourceInspector;
+use App\Services\Efectividad\V4\EfectividadV4Calculator;
+use App\Services\Efectividad\V4\EfectividadV4DataAdapter;
+use App\Services\Efectividad\V4\EfectividadV4ExcelExporter;
+use App\Services\Efectividad\V4\EfectividadV4Exception;
+use App\Services\Efectividad\V4\EfectividadV4FingerprintService;
+use App\Services\Efectividad\V4\EfectividadV4Incidents;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -25,27 +28,21 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * Genera el reporte de Efectividad de Cobranza Aprobada ÍNTEGRAMENTE en el
- * worker de colas (nunca en la petición HTTP). Reutiliza el adaptador y el
- * calculador aprobados (EfectividadCobranzaAprobadaReportService) y el
- * exportador Excel existente — no cambia ninguna fórmula.
+ * Genera la Efectividad de Cobranza con el motor V4 (MR_LANA_EFECTIVIDAD.xlsm)
+ * ÍNTEGRAMENTE en el worker de colas (nunca en la petición HTTP).
  *
  * Etapas reales persistidas (ver EfectividadCobranzaStage):
- *   1 validación de archivos · 2 verificación de columnas · 3 cartera (medible)
- *   · 4 ingresos (medible) · 5 cálculo · 6 conciliación interna · 7 Excel ·
- *   8 finalización.
+ *   1 fotografías + ingresos disponibles · 2 encabezados · 3 fotografías diarias
+ *   (medible) · 4 ingresos (medible) · 5 cálculo V4 · 6 comparación de totales
+ *   · 7 auditoría de incidencias · 8 Excel · 9 finalización.
  *
- * Garantías:
- *  - Idempotente: si la ejecución ya está en un estado final, el Job no hace
- *    nada (un Job duplicado o un reintento tardío nunca recalcula ni duplica
- *    el Excel ni las notificaciones).
- *  - Reintento honesto: si un intento falla y quedan intentos, el estado es
- *    `retrying` (nunca `failed` seguido de un "resucitado"); solo el último
- *    intento fallido termina en `failed`.
- *  - `blocked` (datos insuficientes) es distinto de `failed` (error técnico).
- *  - Las notificaciones (interna + correo) tienen estado propio; una falla de
- *    SMTP nunca convierte un reporte exitoso en fallido.
- *  - Independiente de la sesión web: todo se lee/escribe en BD/almacenamiento.
+ * Garantías (sin cambios respecto a la infraestructura existente):
+ *  - Idempotente: una ejecución en estado final nunca se recalcula.
+ *  - Reintento honesto (`retrying`), `blocked` (datos) ≠ `failed` (técnico).
+ *  - Notificaciones con estado propio; una falla SMTP no altera el resultado.
+ *  - Guarda versión del motor y huella de las fuentes: si cambian fotografías o
+ *    ingresos, el resultado queda obsoleto (nunca se presenta como vigente).
+ *  - Nunca fabrica fotografías faltantes ni devuelve 0% por falta de datos.
  */
 class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
 {
@@ -74,16 +71,18 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
     public function middleware(): array
     {
         $run = EfectividadCobranzaRun::query()->find($this->runId);
-        $key = $run ? "efectividad-cobranza-{$run->period_id}-" . ($run->branch_id ?? 'general') : "efectividad-cobranza-run-{$this->runId}";
+        $key = $run
+            ? "efectividad-cobranza-{$run->period_id}-".($run->branch_id ?? 'general').'-'.($run->mode ?? 'SEMANAL').'-'.($run->cutoff_date?->format('Ymd') ?? 'semana')
+            : "efectividad-cobranza-run-{$this->runId}";
 
         return [(new WithoutOverlapping($key))->releaseAfter(60)->expireAfter($this->timeout + 60)];
     }
 
     public function handle(
-        EfectividadCobranzaAprobadaReportService $reportService,
-        EfectividadCobranzaAprobadaExcelExporter $exporter,
-        EfectividadCobranzaSourceFingerprintService $fingerprintService,
-        EfectividadCobranzaSourceInspector $inspector,
+        EfectividadV4DataAdapter $adapter,
+        EfectividadV4Calculator $calculator,
+        EfectividadV4ExcelExporter $exporter,
+        EfectividadV4FingerprintService $fingerprints,
         EfectividadCobranzaReconciler $reconciler,
         EfectividadCobranzaRunNotifier $notifier,
     ): void {
@@ -92,7 +91,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
 
         $run = EfectividadCobranzaRun::query()->find($this->runId);
 
-        if (!$run) {
+        if (! $run) {
             return;
         }
 
@@ -104,63 +103,102 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
         }
 
         $period = Period::query()->findOrFail($run->period_id);
+        $mode = $run->mode ?: EfectividadCobranzaRun::MODE_SEMANAL;
+        $cutoff = $run->cutoff_date?->format('Y-m-d');
 
         $run->forceFill([
-            'status'         => EfectividadCobranzaRun::STATUS_RUNNING,
-            'started_at'     => $run->started_at ?: now(),
-            'heartbeat_at'   => now(),
-            'attempts'       => $this->attempts(),
+            'status' => EfectividadCobranzaRun::STATUS_RUNNING,
+            'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+            'mode' => $mode,
+            'started_at' => $run->started_at ?: now(),
+            'heartbeat_at' => now(),
+            'attempts' => $this->attempts(),
             'queue_job_uuid' => rescue(fn () => $this->job?->uuid(), null, false) ?: $run->queue_job_uuid,
-            'failure_kind'   => null,
-            'error_message'  => null,
-            'issues'         => [],
-            'stages'         => [],
+            'failure_kind' => null,
+            'error_message' => null,
+            'issues' => [],
+            'stages' => [],
         ])->save();
 
         $tracker = new EfectividadCobranzaProgressTracker($run);
         $issues = [];
 
         try {
-            // ── 1. Validación de archivos ───────────────────────────────────
+            // ── 1. Fotografías e ingresos disponibles ──────────────────────
             $tracker->start(EfectividadCobranzaStage::ValidateFiles);
-            $sources = $inspector->inspectSources($period, $run->branch_id);
-            $issues = [...$issues, ...$sources['issues']];
+            try {
+                $disp = $adapter->availability($period, $run->branch_id, $mode, $cutoff);
+            } catch (EfectividadV4Exception $e) {
+                $this->closeAsBlocked($run, $tracker, $notifier, [$this->issueFromException($e, $period)], EfectividadCobranzaRun::FAILURE_INCOMPATIBLE, $e->getMessage());
+
+                return;
+            }
+            $issues = $disp['issues'];
+            $w = $disp['ventana'];
 
             $run->forceFill([
-                'sources'                   => $sources['sources'],
-                'saldos_report_upload_id'   => $sources['saldos_upload_id'],
-                'ingresos_report_upload_id' => $sources['ingresos_upload_id'],
-                'source_fingerprint'        => $fingerprintService->compute($period, $run->branch_id),
-                'issues'                    => EfectividadCobranzaIssue::normalize($issues),
+                'base_date' => $w['domingo_base'],
+                'cutoff_date' => $w['fecha_corte'],
+                'sources' => ['ventana' => $w, 'fotos' => $disp['fotos'], 'ingresos' => $disp['ingresos']],
+                'source_fingerprint' => $fingerprints->compute($period, $run->branch_id, $mode, $w['fecha_corte']),
+                'issues' => EfectividadCobranzaIssue::normalize($issues),
             ])->save();
+
+            if ($disp['bloqueante']) {
+                $critica = collect($issues)->firstWhere('severity', EfectividadCobranzaIssue::SEVERITY_CRITICAL);
+                $this->closeAsBlocked($run, $tracker, $notifier, $issues, $this->failureKindFor($critica['category'] ?? null), $critica['message'] ?? 'Faltan fuentes indispensables.');
+
+                return;
+            }
+
+            if ($disp['requiere_confirmacion'] && empty($run->metadata['confirmed_partial'])) {
+                $issues[] = EfectividadCobranzaIssue::make(
+                    'EC-V4-CONFIRMACION-REQUERIDA',
+                    EfectividadCobranzaIssue::SEVERITY_CRITICAL,
+                    EfectividadCobranzaIssue::CATEGORY_PARTIAL_COVERAGE,
+                    'Los Ingresos del periodo parecen incompletos y no se confirmó que la semana esté completa (la calculadora V4 exige esa confirmación).',
+                    'Revisa la disponibilidad de información y, si los datos son correctos, genera de nuevo confirmando la semana.',
+                    ['source' => 'ingresos', 'period' => $period->label],
+                );
+                $this->closeAsBlocked($run, $tracker, $notifier, $issues, EfectividadCobranzaRun::FAILURE_PARTIAL_COVERAGE, 'Se requiere confirmar que los Ingresos cubren la semana completa.');
+
+                return;
+            }
 
             $tracker->complete(EfectividadCobranzaStage::ValidateFiles, sprintf(
-                'Saldos por Cliente (%s): %s registros en %d archivo(s). Ingresos Cobranza: %s movimientos del periodo en %d archivo(s); %s en el histórico.',
-                $sources['sources']['saldos']['period_label'],
-                number_format($sources['sources']['saldos']['rows_in_db']),
-                count($sources['sources']['saldos']['uploads']),
-                number_format($sources['sources']['ingresos']['rows_in_period']),
-                count($sources['sources']['ingresos']['uploads']),
-                number_format($sources['sources']['ingresos']['history_rows']),
+                '%d de %d fotografías de cartera disponibles (%s a %s). Ingresos Cobranza: %s movimientos del %s al %s en %d día(s); histórico desde %s.',
+                $disp['fotos_disponibles'], $disp['fotos_requeridas'],
+                date('d/m/Y', strtotime($w['domingo_base'])), date('d/m/Y', strtotime($w['fecha_corte'])),
+                number_format($disp['ingresos']['movimientos_corte']),
+                date('d/m/Y', strtotime($w['inicio'])), date('d/m/Y', strtotime($w['fin'])),
+                $disp['ingresos']['dias_con_movimientos'],
+                $disp['ingresos']['historial_desde'] ? date('d/m/Y', strtotime($disp['ingresos']['historial_desde'])) : 'sin histórico previo',
             ));
 
-            // ── 2. Verificación de columnas ─────────────────────────────────
+            // ── 2. Encabezados de fotografías e ingresos ───────────────────
             $tracker->start(EfectividadCobranzaStage::VerifyColumns);
-            $columns = $inspector->inspectColumns($period, $run->branch_id, $sources['sources']);
-            $issues = [...$issues, ...$columns['issues']];
+            $snapshotIds = collect($disp['fotos'])->flatMap(fn ($f) => collect($f['archivos'])->pluck('snapshot_id'))->all();
+            $faltantes = [];
+            foreach (PortfolioSnapshot::query()->whereIn('id', $snapshotIds)->get(['id', 'snapshot_date', 'headers']) as $s) {
+                $falta = array_diff(EfectividadV4Calculator::COLUMNAS_FOTO_OBLIGATORIAS, $s->headers ?? []);
+                if ($falta) {
+                    $faltantes[] = $s->snapshot_date->format('d/m/Y').': '.implode(', ', $falta);
+                }
+            }
+            if ($faltantes) {
+                $issues[] = EfectividadCobranzaIssue::make('EC-V4-920', EfectividadCobranzaIssue::SEVERITY_CRITICAL, EfectividadCobranzaIssue::CATEGORY_MISSING_COLUMNS,
+                    'Columnas obligatorias faltantes en fotografías: '.implode(' | ', $faltantes).'.',
+                    'Carga el reporte Saldos por Cliente completo (156 columnas) de esas fechas.', ['source' => 'fotos']);
+                $this->closeAsBlocked($run, $tracker, $notifier, $issues, EfectividadCobranzaRun::FAILURE_MISSING_COLUMNS, 'Faltan columnas obligatorias en las fotografías.');
 
-            $run->forceFill([
-                'issues'   => EfectividadCobranzaIssue::normalize($issues),
-                'metadata' => [...($run->metadata ?? []), 'columns' => $columns['columns']],
-            ])->save();
+                return;
+            }
+            $tracker->complete(EfectividadCobranzaStage::VerifyColumns, sprintf(
+                'Encabezados obligatorios de la calculadora V4 presentes en %d archivo(s) de fotografía; Ingresos con Fecha transacción, Fecha cuota y Oficina.',
+                count($snapshotIds),
+            ));
 
-            $missingColumns = collect($columns['issues'])->where('category', EfectividadCobranzaIssue::CATEGORY_MISSING_COLUMNS)->count();
-            $checkedFields = collect($columns['columns'])->sum(fn ($c) => count($c['fields']));
-            $tracker->complete(EfectividadCobranzaStage::VerifyColumns, $missingColumns === 0
-                ? "{$checkedFields} campos requeridos verificados contra el mapeo de encabezados de los importadores."
-                : "{$checkedFields} campos verificados; {$missingColumns} columna(s) no encontradas en los archivos de origen.");
-
-            // ── 3-5. Cartera, ingresos y cálculo (adaptador + calculador aprobados) ──
+            // ── 3-4. Fotografías diarias e ingresos (medibles) ─────────────
             $phase = null;
             $lastProcessed = 0;
             $onProgress = function (string $newPhase, int $processed, ?int $total) use ($tracker, &$phase, &$lastProcessed): void {
@@ -175,58 +213,46 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
                 $tracker->advance($processed);
             };
 
-            $onStage = function (string $stage, array $coverage) use ($tracker, &$lastProcessed): void {
-                $tracker->complete(EfectividadCobranzaStage::ProcessIncome, sprintf(
-                    '%s movimientos revisados; %s pasan la regla de pagos válidos y %s tienen ambas fechas (utilizables).',
-                    number_format($coverage['ingresos_rows_total'] ?? 0),
-                    number_format($coverage['ingresos_rows_whitelist_pass'] ?? 0),
-                    number_format($coverage['ingresos_rows_usables'] ?? 0),
-                ), [], $lastProcessed);
-                $tracker->start(EfectividadCobranzaStage::Calculate);
-            };
+            $input = $adapter->build($period, $run->branch_id, $mode, $cutoff, $onProgress);
+            $cob = $input['cobertura'];
+            $tracker->summarize(EfectividadCobranzaStage::PreparePortfolio, sprintf(
+                '%s registros leídos de %d fotografías diarias (%s).',
+                number_format($cob['filas_fotos']), count($cob['fotos']),
+                collect($cob['fotos'])->map(fn ($f) => date('d/m', strtotime($f['fecha'])).': '.number_format($f['filas']))->implode(' · '),
+            ));
+            $tracker->complete(EfectividadCobranzaStage::ProcessIncome, sprintf(
+                '%s movimientos del corte; %s movimientos del historial con reconocimiento en el periodo.%s',
+                number_format($cob['ingresos_corte']), number_format($cob['ingresos_historial']),
+                $cob['fechas_con_cargas_solapadas'] ? ' '.count($cob['fechas_con_cargas_solapadas']).' fecha(s) estaban en más de una carga: se usó la más reciente.' : '',
+            ), [], $lastProcessed);
+            if ($cob['fechas_con_cargas_solapadas']) {
+                $issues[] = EfectividadCobranzaIssue::make('EC-V4-INGRESOS-SOLAPADOS', EfectividadCobranzaIssue::SEVERITY_WARNING, EfectividadCobranzaIssue::CATEGORY_INCOMPATIBLE,
+                    'Hay fechas de transacción presentes en más de un archivo de Ingresos: '.implode(', ', array_map(fn ($d) => date('d/m/Y', strtotime($d)), array_keys($cob['fechas_con_cargas_solapadas']))).'. Se usó el archivo más reciente para cada fecha (no se suman).',
+                    'Verifica que los archivos de Ingresos cargados no se traslapen.', ['source' => 'ingresos']);
+            }
 
-            $result = $reportService->generate($period, $run->branch_id, $onProgress, $onStage);
-            $coverage = $result['coverage'];
-
-            $this->patchPortfolioSummary($tracker, $coverage);
-
-            $coverageIssues = $inspector->coverageIssues($coverage, $period, $columns['incompatible_ingresos'], $columns['reprocess_ingresos_dates']);
-            $issues = [...$issues, ...$coverageIssues['issues']];
-
-            if (!$result['is_available']) {
-                // Bloqueado por datos — NUNCA es success ni failed técnico.
-                if (($coverage['status'] ?? null) === 'bloqueado_sin_fechas') {
-                    $issues = $this->promoteDateColumnIssues($issues);
-                }
-
-                $tracker->halt('blocked', collect($coverageIssues['issues'])->firstWhere('severity', 'critical')['message'] ?? ($coverage['message'] ?? null));
-                $run->forceFill([
-                    'status'       => EfectividadCobranzaRun::STATUS_BLOCKED,
-                    'finished_at'  => now(),
-                    'heartbeat_at' => now(),
-                    'coverage'     => $coverage,
-                    'result_rows'  => [],
-                    'issues'       => EfectividadCobranzaIssue::normalize($issues),
-                    'failure_kind' => $coverageIssues['failure_kind'] ?? EfectividadCobranzaRun::FAILURE_MISSING_DATA,
-                    'log'          => 'No se pudo generar el reporte porque faltan datos obligatorios.',
-                    'metadata'     => [...($run->metadata ?? []), 'is_available' => false],
-                ])->save();
-
-                $notifier->notify($run);
+            // ── 5. Cálculo V4 ───────────────────────────────────────────────
+            $tracker->start(EfectividadCobranzaStage::Calculate);
+            try {
+                $result = $calculator->calculate($input['parametros'], $input['fotos'], $input['ingresos'], $input['historial']);
+            } catch (EfectividadV4Exception $e) {
+                $issues[] = $this->issueFromException($e, $period);
+                $this->closeAsBlocked($run, $tracker, $notifier, $issues, EfectividadCobranzaRun::FAILURE_MISSING_DATA, $e->getMessage());
 
                 return;
             }
-
             $tracker->complete(EfectividadCobranzaStage::Calculate, sprintf(
-                '%d filas calculadas (promotores y totales por oficina).',
-                count($result['rows']),
+                '%d filas calculadas (promotores, totales por oficina y GRAN TOTAL); %s pagos clasificados.',
+                count($result['filas']), number_format($result['estadisticas']['ingresos_clasificados'] ?? 0),
             ));
 
-            // ── 6. Conciliación interna ─────────────────────────────────────
+            // ── 6. Comparación de totales ──────────────────────────────────
             $tracker->start(EfectividadCobranzaStage::Reconcile);
-            $reconciliation = $reconciler->check($result['rows']);
+            $reconciliation = $result['sin_movimientos']
+                ? ['ok' => true, 'offices' => 0, 'promoters' => 0, 'differences' => [], 'summary' => 'Sin movimientos para el periodo: no hay totales que comparar.']
+                : $reconciler->check($result['filas']);
 
-            if (!$reconciliation['ok']) {
+            if (! $reconciliation['ok']) {
                 $issues[] = EfectividadCobranzaIssue::make(
                     'EC-TEC-CONCILIACION',
                     EfectividadCobranzaIssue::SEVERITY_CRITICAL,
@@ -241,49 +267,54 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
 
                 return;
             }
-
             $tracker->complete(EfectividadCobranzaStage::Reconcile, $reconciliation['summary'], [
-                'offices'   => $reconciliation['offices'],
+                'offices' => $reconciliation['offices'],
                 'promoters' => $reconciliation['promoters'],
-                'external'  => false,
+                'external' => false,
             ]);
 
-            // ── 7. Generación de Excel ──────────────────────────────────────
-            $tracker->start(EfectividadCobranzaStage::BuildExcel);
+            // ── 7. Auditoría de incidencias ────────────────────────────────
+            $tracker->start(EfectividadCobranzaStage::Audit);
+            $resumenIncidencias = EfectividadV4Incidents::persist($run, $result['incidencias']);
+            $tracker->complete(EfectividadCobranzaStage::Audit, $result['incidencias']
+                ? count($result['incidencias']).' incidencia(s) registradas: '.collect($resumenIncidencias)->map(fn ($r) => "{$r['cantidad']} {$r['codigo']}")->implode(', ').'. Ningún movimiento se forzó al cálculo.'
+                : 'Sin incidencias de cálculo.', ['por_codigo' => $resumenIncidencias]);
 
-            // Disco PRIVADO ('local'), ruta RELATIVA guardada en BD — el controlador
-            // de descarga la reconstruye en el servidor donde corre.
+            // ── 8. Excel ────────────────────────────────────────────────────
+            $tracker->start(EfectividadCobranzaStage::BuildExcel);
+            // Disco PRIVADO ('local'), ruta RELATIVA guardada en BD.
             $scopeLabel = $run->branch_id ? "sucursal_{$run->branch_id}" : 'general';
-            $relativePath = "efectividad_cobranza/efectividad_aprobada_{$period->id}_{$scopeLabel}_run{$run->id}_" . now()->format('Ymd_His') . '.xlsx';
+            $relativePath = "efectividad_cobranza/efectividad_v4_{$period->id}_{$scopeLabel}_".strtolower($mode).'_'.str_replace('-', '', $w['fecha_corte'])."_run{$run->id}_".now()->format('Ymd_His').'.xlsx';
 
             Storage::disk('local')->makeDirectory('efectividad_cobranza');
-            $exporter->export($result['rows'], $period->label ?? $period->code, Storage::disk('local')->path($relativePath));
+            $exporter->export($result['filas'], $result['parametros'], $result['incidencias'], Storage::disk('local')->path($relativePath), $cob, $result['engine_version']);
 
-            if (!Storage::disk('local')->exists($relativePath) || Storage::disk('local')->size($relativePath) === 0) {
+            if (! Storage::disk('local')->exists($relativePath) || Storage::disk('local')->size($relativePath) === 0) {
                 throw new \RuntimeException('El archivo Excel generado está vacío o no existe.');
             }
-
             $tracker->complete(EfectividadCobranzaStage::BuildExcel, sprintf(
-                'Archivo XLSX generado (%s KB).',
+                'Archivo XLSX generado (%s KB): hoja EFECTIVIDAD, _AUDITORIA_EFECTIVIDAD y FUENTES.',
                 number_format(Storage::disk('local')->size($relativePath) / 1024, 1),
             ));
 
-            // ── 8. Finalización ─────────────────────────────────────────────
+            // ── 9. Finalización ─────────────────────────────────────────────
             $tracker->start(EfectividadCobranzaStage::Finish);
             $run->forceFill([
-                'coverage'          => $coverage,
-                'result_rows'       => $result['rows'],
+                'coverage' => $cob + ['estadisticas' => $result['estadisticas'], 'sin_movimientos' => $result['sin_movimientos']],
+                'result_rows' => $result['filas'],
                 'output_excel_path' => $relativePath,
-                'issues'            => EfectividadCobranzaIssue::normalize($issues),
-                'metadata'          => [...($run->metadata ?? []), 'is_available' => true, 'reconciliation' => $reconciliation],
+                'incidents_count' => count($result['incidencias']),
+                'issues' => EfectividadCobranzaIssue::normalize($issues),
+                'metadata' => [...($run->metadata ?? []), 'is_available' => true, 'reconciliation' => $reconciliation,
+                    'parametros' => $result['parametros'], 'incidencias_resumen' => $resumenIncidencias],
             ])->save();
             $tracker->complete(EfectividadCobranzaStage::Finish, EfectividadCobranzaStage::Finish->description());
 
             $run->forceFill([
-                'status'       => EfectividadCobranzaRun::STATUS_SUCCESS,
-                'finished_at'  => now(),
+                'status' => EfectividadCobranzaRun::STATUS_SUCCESS,
+                'finished_at' => now(),
                 'heartbeat_at' => now(),
-                'log'          => EfectividadCobranzaStage::Finish->description(),
+                'log' => EfectividadCobranzaStage::Finish->description(),
             ])->save();
         } catch (\Throwable $exception) {
             $this->handleException($run, $tracker, $notifier, $issues, $exception, $period);
@@ -293,6 +324,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
 
         $notifier->notify($run);
     }
+
 
     /**
      * Llamado por el worker cuando el Job falla definitivamente (incluye
@@ -410,28 +442,46 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
         $notifier->notify($run);
     }
 
-    /** Resumen de la etapa de cartera con las exclusiones reales del adaptador. */
-    private function patchPortfolioSummary(EfectividadCobranzaProgressTracker $tracker, array $coverage): void
+    /** Bloqueo por datos: nunca es success ni failed técnico, y nunca muestra 0%. */
+    private function closeAsBlocked(EfectividadCobranzaRun $run, EfectividadCobranzaProgressTracker $tracker, EfectividadCobranzaRunNotifier $notifier, array $issues, string $failureKind, string $message): void
     {
-        $tracker->summarize(EfectividadCobranzaStage::PreparePortfolio, sprintf(
-            '%s registros de cartera identificados y procesados (%s cerrados/inactivos, %s sin contrato).',
-            number_format($coverage['cartera_rows_total'] ?? 0),
-            number_format($coverage['cartera_rows_excluidas_cerrado_inactivo'] ?? 0),
-            number_format($coverage['cartera_rows_sin_contrato'] ?? 0),
-        ));
+        $tracker->halt('blocked', $message);
+        $run->forceFill([
+            'status' => EfectividadCobranzaRun::STATUS_BLOCKED,
+            'finished_at' => now(),
+            'heartbeat_at' => now(),
+            'result_rows' => [],
+            'issues' => EfectividadCobranzaIssue::normalize($issues),
+            'failure_kind' => $failureKind,
+            'log' => 'No se pudo generar el reporte porque faltan datos obligatorios.',
+            'metadata' => [...($run->metadata ?? []), 'is_available' => false],
+        ])->save();
+
+        $notifier->notify($run);
     }
 
-    /** Si el bloqueo es por fechas, las columnas de fecha faltantes pasan a ser críticas. */
-    private function promoteDateColumnIssues(array $issues): array
+    private function issueFromException(EfectividadV4Exception $e, Period $period): array
     {
-        return array_map(function (array $issue) {
-            if (in_array($issue['code'] ?? '', ['EC-COL-FALTANTE', 'EC-DATA-CAMPO-VACIO', 'EC-DATA-REPROCESAR', 'EC-COL-VARIANTE-INCOMPATIBLE'], true)
-                && ($issue['source'] ?? null) === 'ingresos'
-                && (in_array($issue['field'] ?? null, ['payment_date', 'installment_due_date'], true) || $issue['code'] === 'EC-COL-VARIANTE-INCOMPATIBLE')) {
-                $issue['severity'] = EfectividadCobranzaIssue::SEVERITY_CRITICAL;
-            }
+        return EfectividadCobranzaIssue::make(
+            $e->codigo,
+            EfectividadCobranzaIssue::SEVERITY_CRITICAL,
+            $e->codigo === 'EC-V4-PERIODO' ? EfectividadCobranzaIssue::CATEGORY_INCOMPATIBLE : EfectividadCobranzaIssue::CATEGORY_MISSING_DATA,
+            $e->getMessage(),
+            $e->codigo === 'EC-V4-PERIODO'
+                ? 'Selecciona una semana operativa (lunes a domingo).'
+                : 'Revisa la disponibilidad de información del periodo y carga las fuentes faltantes.',
+            ['period' => $period->label, 'sheet' => $e->contexto['foto'] ?? null],
+        );
+    }
 
-            return $issue;
-        }, $issues);
+    private function failureKindFor(?string $category): string
+    {
+        return match ($category) {
+            EfectividadCobranzaIssue::CATEGORY_MISSING_COLUMNS => EfectividadCobranzaRun::FAILURE_MISSING_COLUMNS,
+            EfectividadCobranzaIssue::CATEGORY_PARTIAL_COVERAGE => EfectividadCobranzaRun::FAILURE_PARTIAL_COVERAGE,
+            EfectividadCobranzaIssue::CATEGORY_INCOMPATIBLE => EfectividadCobranzaRun::FAILURE_INCOMPATIBLE,
+            EfectividadCobranzaIssue::CATEGORY_STALE => 'stale',
+            default => EfectividadCobranzaRun::FAILURE_MISSING_DATA,
+        };
     }
 }

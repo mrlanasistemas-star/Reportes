@@ -9,6 +9,7 @@ enum DataSourceCode: string {
     case LendusMinistraciones = 'lendus_ministraciones';
     case LendusIngresosCobranza = 'lendus_ingresos_cobranza';
     case LendusSaldosCliente = 'lendus_saldos_cliente';
+    case LendusSaldosClienteFoto = 'lendus_saldos_cliente_foto';
     case Gastos = 'gastos';
     case GastosLendus = 'gastos_lendus';
     case GastosErp = 'gastos_erp';

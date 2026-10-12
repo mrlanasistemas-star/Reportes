@@ -236,6 +236,20 @@ function duration(run: RunSummary): string {
                             >
                                 <td class="px-3 py-2.5">
                                     <p class="font-medium">{{ run.report }}</p>
+                                    <span
+                                        class="inline-block rounded border px-1.5 text-[10px] font-medium"
+                                        :class="
+                                            run.is_current_engine
+                                                ? 'border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300'
+                                                : 'border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300'
+                                        "
+                                        :title="run.engine_version ?? ''"
+                                        >{{
+                                            run.is_current_engine
+                                                ? 'Motor V4'
+                                                : 'Calculadora anterior'
+                                        }}</span
+                                    >
                                     <p class="text-xs text-muted-foreground">
                                         #{{ run.id
                                         }}<template v-if="run.requested_by">
@@ -248,6 +262,18 @@ function duration(run: RunSummary): string {
                                 </td>
                                 <td class="px-3 py-2.5">
                                     {{ run.period_label ?? '—' }}
+                                    <p
+                                        v-if="run.mode"
+                                        class="text-xs text-muted-foreground"
+                                    >
+                                        {{ run.mode }} · corte
+                                        {{
+                                            run.cutoff_date
+                                                ?.split('-')
+                                                .reverse()
+                                                .join('/')
+                                        }}
+                                    </p>
                                 </td>
                                 <td class="px-3 py-2.5">
                                     {{ run.branch_label }}
@@ -325,7 +351,12 @@ function duration(run: RunSummary): string {
                                 </p>
                                 <p class="text-xs text-muted-foreground">
                                     #{{ run.id }} ·
-                                    {{ formatDateTime(run.queued_at) }}
+                                    {{ formatDateTime(run.queued_at) }} ·
+                                    {{
+                                        run.is_current_engine
+                                            ? 'Motor V4'
+                                            : 'Calculadora anterior'
+                                    }}
                                 </p>
                             </div>
                             <RunStatusBadge

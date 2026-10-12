@@ -20,8 +20,22 @@ function makeApiPeriod(): Period
     return Period::query()->create([
         'name' => 'Semana Financial Test', 'code' => 'W-FIN-' . uniqid(), 'type' => 'weekly',
         'year' => 2026, 'month' => 4, 'sequence' => 1,
-        'start_date' => '2026-04-01', 'end_date' => '2026-04-05', 'is_closed' => false,
+        'start_date' => '2026-03-30', 'end_date' => '2026-04-05', 'is_closed' => false,
     ]);
+}
+
+/** Identidad de una ejecución del motor V4 vigente (semanal, corte = domingo del periodo). */
+function v4RunAttrs(Period $period): array
+{
+    return [
+        'engine_version' => \App\Models\EfectividadCobranzaRun::currentEngineVersion(), 'mode' => 'SEMANAL',
+        'base_date' => $period->start_date->copy()->subDay()->format('Y-m-d'), 'cutoff_date' => $period->end_date->format('Y-m-d'),
+    ];
+}
+
+function v4Fingerprint(Period $period, ?int $branchId): ?string
+{
+    return app(\App\Services\Efectividad\V4\EfectividadV4FingerprintService::class)->compute($period, $branchId, 'SEMANAL', null);
 }
 
 it('returns the metrics catalog with stable codes and definitions', function () {
@@ -101,7 +115,7 @@ it('marks the approved collections effectiveness as available with real numbers 
     $period = makeApiPeriod();
     $branch = \App\Models\Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
 
-    \App\Models\EfectividadCobranzaRun::query()->create([
+    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [
@@ -137,9 +151,9 @@ it('marks the approved collections effectiveness as status=ok (not stale) when t
         'first_payment_date' => '2026-04-01',
     ]);
 
-    $fingerprint = app(\App\Services\Efectividad\EfectividadCobranzaSourceFingerprintService::class)->compute($period, $branch->id);
+    $fingerprint = v4Fingerprint($period, $branch->id);
 
-    \App\Models\EfectividadCobranzaRun::query()->create([
+    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [['promotor' => 'GRAN TOTAL', 'sano_cob' => 100, 'es_total' => true]],
@@ -174,11 +188,11 @@ it('Fase 1 (auditoría 2026-10-12): never attributes an employee-scoped result b
 
     // Solo existe un snapshot generado para la sucursal A (Atlacomulco), con la fila
     // del promotor homónimo.
-    \App\Models\EfectividadCobranzaRun::query()->create([
+    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branchA->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [['promotor' => 'JUAN PEREZ LOPEZ', 'sano_cob' => 555, 'es_total' => false]],
-        'source_fingerprint' => app(\App\Services\Efectividad\EfectividadCobranzaSourceFingerprintService::class)->compute($period, $branchA->id),
+        'source_fingerprint' => v4Fingerprint($period, $branchA->id),
     ]);
 
     $token = makeApiToken('homonym-consumer', ['collections.read']);
@@ -240,11 +254,11 @@ it('Fase 1 (auditoría 2026-10-12): a route takeover (gestor sustituido) never l
     // ...pero el snapshot ya generado (el calculador aprobado ya resuelve la reasignación
     // de ruta internamente) solo tiene la fila a nombre del gestor nuevo — el residual del
     // gestor anterior nunca debe aparecer como una fila separada atribuible a otra persona.
-    \App\Models\EfectividadCobranzaRun::query()->create([
+    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [['promotor' => 'PEDRO RAMIREZ', 'sano_cob' => 321, 'es_total' => false]],
-        'source_fingerprint' => app(\App\Services\Efectividad\EfectividadCobranzaSourceFingerprintService::class)->compute($period, $branch->id),
+        'source_fingerprint' => v4Fingerprint($period, $branch->id),
     ]);
 
     $token = makeApiToken('route-takeover-consumer', ['collections.read']);
@@ -274,4 +288,39 @@ it('exposes capabilities scoped to the authenticated consumer', function () {
         ->assertJsonPath('resources.financial_summary.permitted', true)
         ->assertJsonPath('resources.collections_effectiveness_legacy.permitted', false)
         ->assertJsonPath('resources.branches.permitted', false);
+});
+
+it('V4: la API nunca entrega como vigente un resultado de la calculadora anterior y declara la versión del motor', function () {
+    $token = makeApiToken('collections-legacy-engine', ['collections.read']);
+    $period = makeApiPeriod();
+    $branch = \App\Models\Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+
+    $legacy = \App\Models\EfectividadCobranzaRun::query()->create([
+        'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success', 'engine_version' => 'aprobada-2026-10',
+        'finished_at' => now(), 'result_rows' => [['promotor' => 'GRAN TOTAL', 'sano_cob' => 999, 'es_total' => true]],
+    ]);
+
+    $response = $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson("/api/v1/collections/effectiveness?period_id={$period->id}&scope=branch&branch_id={$branch->id}");
+    $response->assertOk();
+    expect($response->json('versions.approved.available'))->toBeFalse()
+        ->and($response->json('versions.approved.status'))->toBe('not_available')
+        ->and($response->json('versions.approved.reason'))->toContain("run {$legacy->id}")
+        ->and($response->json('versions.approved.engine_version'))->toBe('mrlana-v4-2026-10')
+        ->and($response->json('versions.approved.version'))->toBe('approved_snapshot_v4')
+        ->and($response->json('versions.approved.summary'))->toBeNull();
+});
+
+it('V4: un periodo mensual no tiene resultado V4 (no se agregan semanas) — not_supported_period', function () {
+    $token = makeApiToken('collections-monthly', ['collections.read']);
+    $month = Period::query()->create([
+        'name' => 'Abril', 'code' => 'M-FIN-'.uniqid(), 'type' => 'monthly', 'year' => 2026, 'month' => 4, 'sequence' => 1,
+        'start_date' => '2026-03-30', 'end_date' => '2026-04-26', 'is_closed' => false,
+    ]);
+
+    $response = $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson("/api/v1/collections/effectiveness?period_id={$month->id}");
+    $response->assertOk();
+    expect($response->json('versions.approved.status'))->toBe('not_supported_period')
+        ->and($response->json('versions.legacy.version'))->toBe('legacy_vigente_atrasado_vencido');
 });

@@ -20,6 +20,7 @@ class Recovery extends Model {
         'normalized_client_name',
         'promoter_name',
         'product_name',
+        'product_name_raw',
         'operation',
         'concept',
         'transaction',

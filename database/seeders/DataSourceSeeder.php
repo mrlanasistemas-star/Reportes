@@ -50,6 +50,14 @@ class DataSourceSeeder extends Seeder {
                 'is_required_for_report' => true,
             ],
             [
+                'code'                => 'lendus_saldos_cliente_foto',
+                'name'                => 'Lendus Saldos por Cliente — fotografía diaria (Efectividad)',
+                'description'         => 'Mismo reporte Saldos por Cliente de Lendus, identificado con la fecha de la fotografía. Lo usa exclusivamente la Efectividad de Cobranza V4 (domingo base + lunes a domingo).',
+                'is_active'           => true,
+                'is_required_for_bd'  => false,
+                'is_required_for_report' => false,
+            ],
+            [
                 'code'                => 'gastos_lendus',
                 'name'                => 'Gastos Lendus (PDF)',
                 'description'         => 'Reporte de gastos operativos exportado desde Lendus en formato PDF',
