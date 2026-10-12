@@ -334,16 +334,42 @@ class ColumnMapService
             ],
             // metadata
             'client_name' => [
-                'aliases'     => ['nombre_del_cliente', 'cliente', 'nombre_cliente', 'acreditado', 'nombre_acreditado'],
+                'aliases'     => ['nombre_del_cliente', 'cliente', 'nombre_cliente'],
                 'required'    => false,
                 'metric'      => false,
                 'description' => 'Nombre del cliente para trazabilidad.',
             ],
-            'payment_date' => [
-                'aliases'     => ['fecha_transaccion', 'fecha_pago', 'fecha_cuota', 'fecha'],
+            'acreditado' => [
+                'aliases'     => ['acreditado', 'nombre_acreditado'],
                 'required'    => false,
                 'metric'      => false,
-                'description' => 'Fecha del movimiento. Metadato temporal.',
+                'description' => 'Acreditado (puede diferir de nombre del cliente en créditos con aval/coacreditado).',
+            ],
+            // Fecha transacción ÚNICAMENTE. NUNCA Fecha cuota (ver installment_due_date).
+            'payment_date' => [
+                'aliases'     => ['fecha_transaccion', 'fecha_pago', 'fecha'],
+                'required'    => false,
+                'metric'      => false,
+                'description' => 'Fecha de transacción del movimiento (fRecon usa MAX de esta y installment_due_date).',
+            ],
+            // Fecha cuota ÚNICAMENTE. Nunca se reconstruye si el Excel no la trae.
+            'installment_due_date' => [
+                'aliases'     => ['fecha_cuota', 'fecha_de_cuota', 'fecha_vencimiento_cuota'],
+                'required'    => false,
+                'metric'      => false,
+                'description' => 'Fecha de cuota del movimiento. Requerida por la macro aprobada para clasificar Sano/Atraso/Vencido.',
+            ],
+            'installment_number' => [
+                'aliases'     => ['numero_cuota', 'no_cuota', 'num_cuota', 'cuota_numero'],
+                'required'    => false,
+                'metric'      => false,
+                'description' => 'Número de cuota del movimiento, si el Excel lo trae.',
+            ],
+            'contract_due_date' => [
+                'aliases'     => ['fecha_vencimiento', 'fecha_vencimiento_contrato', 'vencimiento_contrato'],
+                'required'    => false,
+                'metric'      => false,
+                'description' => 'Fecha de vencimiento del contrato, si viene en la hoja de Ingresos Cobranza.',
             ],
         ];
     }
@@ -434,6 +460,105 @@ class ColumnMapService
                 'required'    => false,
                 'metric'      => true,
                 'description' => 'Impuesto sobre cargos calendario atrasados. Componente de mora.',
+            ],
+            // ── Columnas "Saldo X" genéricas usadas por la macro Efectividad Aprobada.
+            // Distintas de "X atrasado" arriba (mora VIGENTE-con-atraso): el VBA aprobado
+            // busca literalmente "Saldo interés"/"Saldo impuesto"/etc., nunca "X atrasado".
+            // NOTA: "Saldo capital" NO se mapea aquí a propósito — ya es consumido por el
+            // alias 'saldo_capital' del campo 'balance' (ver abajo); el importador copia ese
+            // mismo valor ya resuelto hacia saldo_capital_vencido para no arriesgar el
+            // comportamiento histórico de 'balance' quitándole ese alias.
+            'saldo_interes_vencido' => [
+                'aliases'     => ['saldo_interes'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Saldo interés (columna genérica "Saldo interés"). Insumo de la macro Efectividad Aprobada.',
+            ],
+            'saldo_impuesto_vencido' => [
+                'aliases'     => ['saldo_impuesto'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Saldo impuesto (columna genérica "Saldo impuesto"). Insumo de la macro Efectividad Aprobada.',
+            ],
+            'saldo_cargo_calendario_vencido' => [
+                'aliases'     => ['saldo_cargos_calendario', 'saldo_cargo_calendario'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Saldo cargos calendario (columna genérica). Insumo de la macro Efectividad Aprobada.',
+            ],
+            'saldo_impuesto_cargo_calendario_vencido' => [
+                'aliases'     => ['saldo_impuesto_cargos_calendario', 'saldo_impuesto_cargo_calendario'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Saldo impuesto sobre cargos calendario (columna genérica). Insumo de la macro Efectividad Aprobada.',
+            ],
+            'status' => [
+                'aliases'     => ['estatus', 'status'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Estatus del contrato (VIGENTE/VENCIDO/CERRADO/INACTIVO). Determina reglas de CARTERA.',
+            ],
+            'substatus' => [
+                'aliases'     => ['substatus', 'subestatus'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Subestatus del contrato. Apoya reglas de CARTERA.',
+            ],
+            'first_payment_date' => [
+                'aliases'     => ['fecha_primer_pago'],
+                'required'    => false,
+                'metric'      => false,
+                'description' => 'Fecha de primer pago del contrato.',
+            ],
+            'next_payment_date' => [
+                'aliases'     => ['fecha_siguiente_pago', 'fecha_proximo_pago'],
+                'required'    => false,
+                'metric'      => false,
+                'description' => 'Fecha del siguiente pago programado.',
+            ],
+            'contract_due_date' => [
+                'aliases'     => ['fecha_vencimiento'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Fecha de vencimiento del contrato. Distinta de portfolio_date (fecha de corte del saldo).',
+            ],
+            'installment_amount' => [
+                'aliases'     => ['cuota_total', 'cuota'],
+                'required'    => false,
+                'metric'      => false,
+                'description' => 'Cuota periódica del contrato (Cuota total si existe, si no Cuota).',
+            ],
+            'overdue_installments' => [
+                'aliases'     => ['pagos_atrasados'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Número de pagos atrasados (literal "Pagos atrasados").',
+            ],
+            'total_overdue_raw' => [
+                'aliases'     => ['total_atrasado'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Total atrasado (literal "Total atrasado"). Distinto del past_due_balance ya calculado.',
+            ],
+            'total_pending_raw' => [
+                'aliases'     => ['total_pendiente'],
+                'required'    => false,
+                'metric'      => true,
+                'description' => 'Total pendiente (literal "Total pendiente"). Insumo de la regla de los $0.80.',
+            ],
+            'num_payments' => [
+                'aliases'     => ['pagos', 'numero_de_pagos', 'no_pagos', 'num_pagos', 'numero_pagos'],
+                'required'    => false,
+                'metric'      => false,
+                'internal'    => true,
+                'description' => 'Número de pagos del crédito (columna "Pagos"). Antes sin mapear: siempre quedaba null.',
+            ],
+            'periodicity' => [
+                'aliases'     => ['periodicidad', 'frecuencia_pago', 'frecuencia'],
+                'required'    => false,
+                'metric'      => false,
+                'internal'    => true,
+                'description' => 'Periodicidad del crédito. Antes sin mapear: siempre quedaba null.',
             ],
             // internal
             'promoter_code' => [

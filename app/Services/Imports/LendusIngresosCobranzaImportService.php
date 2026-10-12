@@ -21,6 +21,10 @@ use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 
 class LendusIngresosCobranzaImportService {
 
+    // Máx 20 chars — columna `importer_version` es VARCHAR(20) en MySQL/MariaDB real
+    // (SQLite, usado en tests, no valida longitud y deja pasar strings más largos sin error).
+    public const IMPORTER_VERSION = 'ea_aprobada_2026_10';
+
     private array $branchCache = [];
 
     public function __construct(
@@ -171,8 +175,10 @@ class LendusIngresosCobranzaImportService {
                         'period_id'               => $upload->period_id,
                         'report_upload_id'        => $upload->id,
                         'branch_id'               => $branch?->id,
+                        'office_name_raw'         => $mapped['branch_name_raw'],
                         'contract'                => $mapped['contract'],
                         'client_name'             => $mapped['client_name'],
+                        'acreditado'              => $mapped['acreditado'],
                         'normalized_client_name'  => $mapped['client_name']
                             ? $this->normalizeHumanName($mapped['client_name'])
                             : null,
@@ -190,17 +196,25 @@ class LendusIngresosCobranzaImportService {
                         'total_amount'            => $mapped['total_amount'],
                         'days_past_due'           => $mapped['days_past_due'],
                         'payment_date'            => $mapped['payment_date'],
+                        'installment_due_date'    => $mapped['installment_due_date'],
+                        'installment_number'      => $mapped['installment_number'],
+                        'contract_due_date'       => $mapped['contract_due_date'],
                         'is_savehearts'           => $isSavehearts,
                         'savehearts_crece_share'  => $saveheartsShare,
+                        'importer_version'        => self::IMPORTER_VERSION,
                         'raw_payload'             => json_encode([
                             'branch_name_raw'       => $mapped['branch_name_raw'],
                             'promoter_name'         => $mapped['promoter_name'],
                             'client_name'           => $mapped['client_name'],
+                            'acreditado'            => $mapped['acreditado'],
                             'product_name'          => $mapped['product_name'],
                             'operation'             => $mapped['operation'],
                             'concept'               => $mapped['concept'],
                             'transaction'           => $mapped['transaction'],
                             'total_amount_original' => $mapped['total_amount'],
+                            'installment_due_date'  => $mapped['installment_due_date'],
+                            'installment_number'    => $mapped['installment_number'],
+                            'contract_due_date'     => $mapped['contract_due_date'],
                         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                         'created_at'              => now(),
                         'updated_at'              => now(),
@@ -814,6 +828,13 @@ class LendusIngresosCobranzaImportService {
         $concept     = $this->cleanString($this->valueFromRow($row, $headerMap, 'concept'));
         $transaction = $this->cleanString($this->valueFromRow($row, $headerMap, 'transaction'));
         $paymentDate = $this->toDateValue($this->valueFromRow($row, $headerMap, 'payment_date'));
+        $acreditado  = $this->cleanString($this->valueFromRow($row, $headerMap, 'acreditado'));
+
+        // Fecha cuota / número de cuota / vencimiento de contrato: solo si el Excel los trae.
+        // Nunca se reconstruyen (p.ej. a partir de "Días vencidos pago").
+        $installmentDueDate = $this->toDateValue($this->valueFromRow($row, $headerMap, 'installment_due_date'));
+        $installmentNumber  = $this->cleanString($this->valueFromRow($row, $headerMap, 'installment_number'));
+        $contractDueDate     = $this->toDateValue($this->valueFromRow($row, $headerMap, 'contract_due_date'));
 
         $capital     = $this->toDecimal($this->valueFromRow($row, $headerMap, 'capital'))      ?? 0;
         $interest    = $this->toDecimal($this->valueFromRow($row, $headerMap, 'interest'))     ?? 0;
@@ -830,12 +851,16 @@ class LendusIngresosCobranzaImportService {
             'promoter_name'   => $promoterName,
             'contract'        => $contract,
             'client_name'     => $clientName,
+            'acreditado'      => $acreditado,
             'branch_name_raw' => $branchNameRaw,
             'product_name'    => $productName,
             'operation'       => $operation,
             'concept'         => $concept,
             'transaction'     => $transaction,
             'payment_date'    => $paymentDate,
+            'installment_due_date' => $installmentDueDate,
+            'installment_number'   => $installmentNumber,
+            'contract_due_date'     => $contractDueDate,
             'capital'         => $capital,
             'interest'        => $interest,
             'tax'             => $tax,

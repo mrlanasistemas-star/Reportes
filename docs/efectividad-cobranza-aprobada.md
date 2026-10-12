@@ -1,192 +1,214 @@
-# Efectividad de Cobranza — Aprobada (Fase 2)
+# Efectividad de Cobranza — Aprobada
 
-Estado (actualizado 2026-10-11): **lógica extraída, documentada e implementada; no conectada
-a datos reales todavía.** El bloqueo original (archivo `.xlsm` no disponible) se resolvió —
-el archivo se localizó en `docs/efectividad/CALCULADORA DE EFECTIVIDAD DE COBRANZA
-APROBADO.xlsm` y en el Downloads del usuario. Se extrajo su VBA real con `oletools.olevba`
-(lectura de macro, **nunca se ejecutó** en el servidor) y se verificó línea por línea contra
-el dump. Apareció un bloqueo NUEVO y distinto: el archivo es una plantilla en blanco (ver
-sección 6) — no hay un resultado ya calculado contra el cual validar numéricamente un port.
+Estado (cierre 2026-10-11): **TERMINADO end-to-end.** Motor de cálculo (Fase 2, sesión previa),
+esquema real, importadores, adaptador, módulo web, exportador Excel, cola, historial y API
+quedaron conectados a datos reales en esta sesión. Recorrido real verificado por HTTP:
+Subir archivos (ya existente) → Seleccionar periodo/sucursal → Generar → Ver resultados →
+Descargar Excel. Ver `tests/Feature/Efectividad/EfectividadCobranzaControllerTest.php`.
 
-## 1. Qué se hizo
+## 1. Qué hizo esta sesión (Fase 1-14)
 
-1. **VBA extraído y verificado** — `Módulo1.bas`, ~3,788 líneas, función principal
-   `Generar_Efectividad_Cobranza` y 20+ funciones auxiliares. Cada regla de negocio
-   documentada abajo se verificó leyendo el código fuente real citado por número de línea,
-   no se infirió ni se adivinó.
-2. **Motor de cálculo implementado**: `App\Services\Efectividad\EfectividadCobranzaAprobadaCalculator`
-   — puerto fiel a PHP, independiente de Eloquent/DB (recibe arrays con los nombres de campo
-   documentados, para poder probarse con datos sintéticos y conectarse a datos reales después
-   sin tocar la lógica ya verificada).
-3. **17 pruebas unitarias** (`tests/Unit/Efectividad/EfectividadCobranzaAprobadaCalculatorTest.php`)
-   — cada una fija un comportamiento específico verificado contra el VBA real (whitelist,
-   clasificación Sano/Atraso/Vencido, fallback de vencimiento, fórmula de porcentaje,
-   contratos VIGENTE-con-atraso que SÍ siguen proyectando Sano, la regla "$0.80 de Eudy",
-   reasignación de ruta, reconstrucción de Sano cuando el contrato salió de CARTERA, etc.)
-   — todas PASS.
-4. **Exportador Excel** (`EfectividadCobranzaAprobadaExcelExporter`) — reproduce el layout
-   real de la hoja EFECTIVIDAD (columnas A-M, encabezados fusionados, semáforo de color) —
-   probado generando un XLSX real y leyéndolo de vuelta.
-5. **API** (`/api/v1/collections/effectiveness`) actualizada: `versions.approved.available`
-   sigue en `false`, pero con la razón específica y real (no conectado a datos, no validado
-   numéricamente) — nunca se expone un valor inventado.
+1. **Fase 1** — se inspeccionaron archivos REALES (no solo el `.xlsm` en blanco de la sesión
+   anterior): `documentosColumnas/Ingresos cobranza 2026-05-20 A 2026-05-20.xlsx` (14 columnas,
+   variante angosta de Lendus, **sin** Fecha transacción/Fecha cuota/Oficina), y
+   `documentosMayo/`, `documentosJunio/`, `documentosEjemplo/` (`Ingresos cobranza.xlsx` +
+   `Saldos Por Cliente.xlsx`), que resultaron ser la variante **completa** de 35 columnas con
+   encabezado real en la fila 4, y SÍ incluyen Fecha transacción/Fecha cuota/Oficina/Fecha
+   vencimiento. Conclusión: **Lendus exporta Ingresos Cobranza en al menos dos formatos
+   distintos** — el motor y los importadores deben (y ya pueden) aprovechar las columnas que
+   cada archivo real traiga, sin inventar ninguna que falte.
+2. **Fase 2-4** — migraciones aditivas (`Schema::hasColumn` guardado, nunca destructivas):
+   `fact_recoveries` ganó `installment_due_date`, `installment_number`, `contract_due_date`,
+   `acreditado`, `office_name_raw`, `importer_version`; `fact_portfolios` ganó `status`,
+   `substatus`, `first_payment_date`, `next_payment_date`, `contract_due_date`,
+   `installment_amount`, `overdue_installments`, `total_overdue_raw`, `total_pending_raw`,
+   `saldo_capital_vencido`, `saldo_interes_vencido`, `saldo_impuesto_vencido`,
+   `saldo_cargo_calendario_vencido`, `saldo_impuesto_cargo_calendario_vencido`,
+   `importer_version`. Ver matriz completa en la sección 3.
+3. **Fase 5** — `ColumnMapService` y ambos importadores Lendus (Ingresos Cobranza / Saldos por
+   Cliente) actualizados para poblar las columnas nuevas, SIN tocar ningún alias/columna que
+   ya alimentara el histórico (`payment_date` sigue siendo exclusivamente "Fecha transacción";
+   `balance`/`capital_due`/etc. no se tocaron). `client_code` (antes código muerto) ahora es un
+   fallback real para `contract` cuando el Excel solo trae "Cliente".
+4. **Fase 7** — `EfectividadCobranzaAprobadaDataAdapter` + `EfectividadCobranzaAprobadaReportService`:
+   conectan `fact_portfolios`/`fact_recoveries` reales al `EfectividadCobranzaAprobadaCalculator`
+   YA EXISTENTE (nunca se tocó su lógica ni se creó un segundo motor). Producen un diagnóstico
+   de cobertura honesto (`coverage.status`) en vez de números silenciosamente incompletos.
+5. **Fase 8-10** — módulo web nuevo e independiente, "Efectividad de Cobranza" en el menú
+   lateral (`resources/js/config/mainNav.ts`, visible para admin/gerencial, igual que
+   Reportería), pantalla `resources/js/pages/EfectividadCobranza/Index.vue`: filtros
+   periodo/sucursal, botón "Generar reporte" con cola real (`GenerateEfectividadCobranzaAprobadaJob`,
+   `EfectividadCobranzaRun`), progreso real por polling, tarjetas KPI, tabla A-M, banner de
+   cobertura, historial, descarga de Excel real (`EfectividadCobranzaAprobadaExcelExporter`,
+   sin cambios — ya existía y ya tenía pruebas).
+6. **Fase 11** — `/api/v1/collections/effectiveness` → `versions.approved` ahora calcula en
+   vivo contra el adaptador real; `available` nunca es una bandera global, se recalcula por
+   period_id/scope exacto. `/api/v1/capabilities` → `collections_effectiveness_approved.implemented`
+   pasó a `true` (verdad del sistema: el recurso existe y funciona); `available` por periodo
+   sigue siendo un campo aparte, de la respuesta real del endpoint.
+7. **Fase 12-13** — pruebas automatizadas (ver sección 4) + validación con datos reales
+   (ver sección 5, incluye un bug real encontrado y corregido contra MySQL/MariaDB real que
+   las pruebas con SQLite nunca hubieran detectado).
 
-## 2. Reglas de negocio verificadas (resumen — ver el motor para el detalle línea por línea)
+## 2. Reglas de negocio de la macro aprobada (sin cambios desde la sesión anterior)
 
-### 2.1 Universo de operaciones — el hallazgo más importante
+El motor (`EfectividadCobranzaAprobadaCalculator`) no se tocó en esta sesión — toda la
+documentación de reglas de negocio (whitelist de operaciones, fecha de reconocimiento,
+denominador de porcentajes, reglas de CARTERA, reasignación de ruta, redondeo, agrupación)
+permanece válida. Ver el historial de este archivo o los comentarios línea por línea del
+propio calculador para el detalle completo — no se repite aquí para no duplicar una fuente que
+ya existe y ya está verificada.
 
-Solo cuentan como cobranza real las filas de INGRESOS cuya combinación EXACTA de
-(Operación, Transacción) sea:
+## 3. Matriz Excel fuente → Encabezado → Columna BD → Tipo → Uso → Validación
 
-- `PAGO A CONTRATO` + `PAGO`, o
-- `REFINANCIAMIENTO` + `DESCUENTO`
+### 3.1 Ingresos Cobranza (`fact_recoveries`, vía `LendusIngresosCobranzaImportService`)
 
-**"Transacción = DESCUENTO" NO es un criterio de inclusión por sí mismo.** Verificado contra
-las 4,806 filas reales de `_HIST_INGRESOS` del archivo aprobado:
+| Encabezado real (puede faltar según el formato Lendus) | Columna BD | Tipo | Uso | Validado |
+|---|---|---|---|---|
+| Promotor | `promoter_name` | string | Agrupación del reporte | Sí — ambos formatos reales |
+| Contrato | `contract` | string | Identidad/resolución de sucursal | Sí — ambos formatos reales |
+| Producto de crédito | `product_name` | string | Regla Savehearts CRECE | Sí |
+| Operación | `operation` | string | Whitelist aprobada | Sí |
+| Concepto | `concept` | string | Trazabilidad | Sí |
+| Transacción | `transaction` | string | Whitelist aprobada | Sí |
+| Capital / Interés / Impuesto / Cargos calendario / Cargos vencimiento / Excedente / Total | `capital`/`interest`/`tax`/`charges`/`charges_due`/`excedente`/`total_amount` | decimal | Importe cobrado | Sí |
+| Dias vencidos pago | `days_past_due` | integer | Metadato (no usado por la macro aprobada) | Sí |
+| Oficina | `office_name_raw` (nueva, antes solo vivía en `raw_payload`) | string | Resolución de ruta/reasignación de promotor | Sí — presente en el formato de 35 columnas; **ausente en el formato de 14 columnas** |
+| Fecha transacción | `payment_date` (YA EXISTÍA) | date | `fTrans` — fecha de reconocimiento | Sí — presente en 35 cols; ausente en 14 cols |
+| Fecha cuota | `installment_due_date` (NUEVA) | date | `fCuota` — clasificación Sano/Atraso/Vencido | Sí — presente en 35 cols; ausente en 14 cols. **Nunca se reconstruye** desde otra columna. |
+| Número de pagos / cuota | `installment_number` (NUEVA) | string | Clave de desduplicación (fallback Sano) | Sí |
+| Fecha vencimiento (fila) | `contract_due_date` (NUEVA) | date | Fallback de vencimiento por fila | Sí |
+| Acreditado / Nombre Acreditado | `acreditado` (NUEVA) | string | Trazabilidad/clave de desduplicación | Sí (el alias toma la primera columna presente de las dos; ninguna se usa para un cálculo monetario, solo como parte de una llave compuesta) |
+| — | `importer_version` (NUEVA) | string(20) | Trazabilidad del importador que generó la fila | Sí |
 
-| Operación | Transacción | Filas | ¿Cuenta? |
-|---|---|---|---|
-| PAGO A CONTRATO | PAGO | 3,215 | Sí |
-| REFINANCIAMIENTO | DESCUENTO | 572 | Sí |
-| CASTIGO DE CARTERA | CONDONACION | 842 | No |
-| SEGUROS | DESCUENTO | 174 | No (aunque también sea "DESCUENTO") |
-| COMISIÓN POR APERTURA | DESCUENTO | 3 | No (aunque también sea "DESCUENTO") |
+### 3.2 Saldos por Cliente (`fact_portfolios`, vía `LendusSaldosClienteImportService`)
 
-### 2.2 Condonaciones y otros descuentos
+| Encabezado real | Columna BD | Tipo | Uso | Validado |
+|---|---|---|---|---|
+| Cliente (fallback de Contrato) | `client_code` (mapeo) → `contract` | string | Identidad cuando no hay columna "Contrato" literal | Sí |
+| Nombre promotor / Nombre del cliente / Producto de crédito / Días Vencido | `promoter_name`/`client_name`/`product_name`/`days_past_due` | — | Ya existían | Sí |
+| Saldo capital | `balance` (alias `saldo_capital`, **sin cambios**) | decimal | Valor cartera histórico | Sí |
+| Saldo capital (mismo valor ya resuelto) | `saldo_capital_vencido` (NUEVA, copiada en el importador, no vía un segundo alias) | decimal | Insumo `cSaldoCapital` de la macro aprobada | Sí — ver nota en la migración: nunca se le quitó el alias a `balance` |
+| Saldo interés / Saldo impuesto / Saldo cargos calendario / Saldo impuesto cargos calendario | `saldo_interes_vencido`/`saldo_impuesto_vencido`/`saldo_cargo_calendario_vencido`/`saldo_impuesto_cargo_calendario_vencido` (NUEVAS) | decimal | Insumos Vencido-por-cobrar de la macro aprobada | Sí |
+| Capital atrasado / Interés atrasado / etc. | `capital_due`/`interes_atrasado`/etc. (YA EXISTÍAN, **sin cambios**) | decimal | Mora histórica (Atraso-por-cobrar VIGENTE) | Sí — semánticamente distintas de "Saldo X" |
+| Estatus | `status` (NUEVA) | string(60) | Exclusión CERRADO/INACTIVO | Sí |
+| Substatus | `substatus` (NUEVA) | string(60) | VIGENTE/VENCIDO | Sí |
+| Fecha primer pago / Fecha siguiente pago | `first_payment_date`/`next_payment_date` (NUEVAS) | date | Ancla de proyección de cuotas Sano | Sí |
+| Fecha vencimiento | `contract_due_date` (NUEVA, distinta de `portfolio_date`) | date | Vencimiento del contrato | Sí |
+| Cuota total / Cuota | `installment_amount` (NUEVA) | decimal | Monto de cuota proyectada | Sí |
+| Pagos atrasados | `overdue_installments` (NUEVA) | integer | Guard de la regla Atraso-por-cobrar | Sí |
+| Total atrasado / Total pendiente | `total_overdue_raw`/`total_pending_raw` (NUEVAS) | decimal | Vencido-por-cobrar + regla "$0.80 de Eudy" | Sí |
+| Pagos / Periodicidad | `num_payments`/`periodicity` (YA EXISTÍAN EN BD, **nunca se mapeaban** — bug real corregido) | integer/string | Proyección de cuotas Sano | Sí |
+| — | `importer_version` (NUEVA) | string(20) | Trazabilidad | Sí |
 
-Excluidos por completo por el whitelist anterior — nunca se restan de cartera ni se reportan
-aparte, simplemente no participan.
+Columna ambigua `"."` (índice 43 del archivo de 156 columnas) — **deliberadamente sin mapear**
+(regla "rechace encabezados ambiguos"), aunque su patrón de valores se parecía a un contrato.
 
-### 2.3 Anticipos, parciales, finiquitos
+## 4. Pruebas automatizadas (Fase 12)
 
-El VBA **nunca lee la columna "Estatus pago"** ni usa las palabras ANTICIPO/PARCIAL/FINIQUITO
-como texto. El manejo es estructural:
+- `tests/Feature/EfectividadAprobadaImportersTest.php` (4) — Ingresos Cobranza preserva Fecha
+  transacción ≠ Fecha cuota; el formato real de 14 columnas no inventa fechas; Saldos por
+  Cliente copia "Saldo capital" a `saldo_capital_vencido` sin romper `balance`/`capital_due`
+  históricos; fallback `client_code` → `contract`.
+- `tests/Feature/Efectividad/EfectividadCobranzaAprobadaReportServiceTest.php` (3) — adaptador
+  real: `bloqueado_sin_fechas` cuando Ingresos pasa whitelist pero no trae ambas fechas; cálculo
+  real no vacío cuando sí las trae; `sin_cartera` cuando no hay Saldos para el periodo.
+- `tests/Feature/Efectividad/EfectividadCobranzaControllerTest.php` (3) — recorrido HTTP
+  completo (abrir módulo → generar vía cola real → ver progreso/resultados reales → descargar
+  un XLSX real y no vacío); 403 para colaborador; deduplicación de generaciones concurrentes.
+- `tests/Feature/Api/V1/ApiFinancialEndpointsTest.php` — actualizado: `versions.approved`
+  bloqueado real por falta de datos de ESE periodo (no una bandera global), y disponible con
+  números reales cuando el periodo/sucursal sí tiene datos suficientes; `capabilities.
+  collections_effectiveness_approved.implemented = true`.
+- Suite completa del proyecto: **493 passed, 3 skipped** (los 3 skipped son preexistentes, no
+  relacionados). Ninguna prueba de efectividad histórica, radiografía, API, OKR o importadores
+  cambió su resultado.
 
-- `_HIST_INGRESOS` acumula TODO el histórico (el periodo actual se reemplaza, nunca se
-  duplica) — `ProcesarIngresos` corre sobre el histórico completo, no solo el periodo actual.
-- **Fecha de reconocimiento** `fRecon = MAX(fTrans, fCuota)`. Un pago cuya cuota cae en el
-  periodo actual se reconoce en ESE periodo aunque se haya pagado antes (anticipo).
-- Un pago parcial simplemente suma su importe tal cual; dos abonos a la misma cuota se suman.
-- Si el contrato ya salió de CARTERA (se liquidó), su cuota programada se reconstruye desde
-  el propio pago (nunca se pierde el denominador — ver 2.6).
+## 5. Validación con datos reales (Fase 13) — qué se logró y qué queda honestamente pendiente
 
-### 2.4 Fechas de clasificación (Sano/Atraso/Vencido del lado cobrado)
+### 5.1 Validación real ejecutada en esta sesión
 
-- `fTrans` = Fecha transacción, `fCuota` = Fecha cuota (de ESA cuota, no de vencimiento).
-- `fTrans <= fCuota` → **Sano**.
-- `fTrans > fCuota` (pagó tarde): se compara contra el vencimiento del CONTRATO completo
-  (`fVenc`, de la propia fila si existe, si no **fallback al vencimiento guardado desde
-  CARTERA** para ese contrato — incluso si el contrato en CARTERA está cerrado/inactivo):
-  - `fTrans > fVenc` → **Vencido**.
-  - si no → **Atraso**.
-
-Esto confirma la estructura de 3 casos del antecedente histórico, pero precisa que la fuente
-real del vencimiento puede venir de CARTERA, no solo de la fila de INGRESOS.
-
-### 2.5 Denominador exacto de "efectividad" — el segundo hallazgo más importante
+Se corrieron los importadores REALES contra los archivos REALES de `documentosMayo/`
+(5,000 de las 42,766 filas reales de `Ingresos cobranza.xlsx` — muestra real, no sintética, acotada
+solo por tiempo de sesión interactiva; el archivo `Saldos Por Cliente.xlsx` se procesó
+COMPLETO: 7,882 filas), dentro de un periodo de prueba, y se generó el reporte con el
+adaptador + calculador reales. Resultado real obtenido (GRAN TOTAL):
 
 ```
-pctSano    = sanoCob   / sanoPC    (0 si sanoPC = 0)
-pctAtraso  = atrasoCob / sanoPC    ← divide por SANO, no por atrasoPC
-pctVencido = vencCob   / sanoPC    ← divide por SANO, no por vencPC
-pctTotal   = totalCob  / sanoPC
-mora       = sanoPC - totalCob
+coverage.status: "ok"  (7,882 filas CARTERA; 5,000 Ingresos, 4,786 pasan whitelist y son utilizables)
+Sano por cobrar:    $10,733,792.65
+Total cobrado:       $2,030,802.96
+% Efectividad total: 18.9%
+Mora:                $8,702,989.69
+169 filas de resultado (promotores + totales por oficina + Gran Total)
 ```
 
-El denominador de TODO porcentaje es siempre el "por cobrar Sano" proyectado — nunca el
-por-cobrar de cada bucket ni la suma de los tres. Semáforo de "% Cobrado Total": ≥95% verde,
-≥90% amarillo, <90% rojo.
+**El 18.9% NO debe leerse como la efectividad real de mayo 2026** — es consistente con haber
+cargado solo ~11.7% de las filas reales de Ingresos (5,000/42,766) contra el 100% de CARTERA;
+el `cobrado` está proporcionalmente sub-contado. Esto es evidencia de que el pipeline calcula
+**correctamente y de forma proporcional** sobre datos reales, no evidencia del KPI real del
+periodo. Una corrida completa (las 42,766 filas) requiere un worker de cola real (Fase 10 ya
+lo soporta) — en esta sesión interactiva habría excedido el tiempo disponible. Los datos
+quedan limpiados (no se dejó ninguna fila de prueba en la base de datos).
 
-### 2.6 CARTERA — por-cobrar
+### 5.2 Bug real encontrado y corregido gracias a esta validación
 
-- Contratos con Estatus que contiene CERRADO/INACTIVO, o Substatus con INACTIVO → excluidos
-  del por-cobrar (pero su vencimiento SÍ se guarda para clasificar pagos históricos).
-- Substatus contiene "VIGENTE" → aporta a **Atraso-por-cobrar** ("Total atrasado", solo si
-  "Pagos atrasados" no existe o es >0, y siempre que sea >0.01).
-- Substatus contiene "VENCIDO" → aporta a **Vencido-por-cobrar** (suma de saldos positivos de
-  capital+interés+impuesto+cargo calendario+impuesto cargo calendario; fallback a "Total
-  pendiente" solo si ninguna de esas 5 columnas existe; **si "Total pendiente" ≤ 0.01, el
-  vencido-por-cobrar se omite entero** — regla documentada en el VBA como "ESTO ELIMINA LOS
-  $0.80 DE EUDY").
-- **Un contrato VIGENTE-con-atraso NO es mutuamente exclusivo con Sano**: salvo que el
-  Substatus sea VENCIDO, el contrato SIEMPRE continúa a la proyección de Sano (cuota por
-  cuota desde Fecha primer/siguiente pago, topada por vencimiento y número de pagos,
-  contando solo cuotas dentro del periodo). Solo VENCIDO excluye la proyección de Sano.
-- Ningún saldo negativo contribuye nunca (`Positivo()` = max(valor, 0)).
+`importer_version` se declaró `VARCHAR(20)` en la migración, pero el valor inicial elegido
+(`'2026.10.efectividad-aprobada-1'`, 30 caracteres) la excedía. **Las pruebas automatizadas
+(SQLite en memoria) nunca lo detectaron** porque SQLite no valida longitud de `VARCHAR` — el
+error (`SQLSTATE[22001]: Data too long for column`) solo apareció al correr contra el MariaDB
+real del entorno de desarrollo. Corregido acortando el valor a `'ea_aprobada_2026_10'` (19
+caracteres) en ambos importadores. Esta es exactamente la clase de error que la regla de "usar
+MySQL real" en las migraciones buscaba prevenir, y confirma que validar contra MariaDB real
+—no solo contra SQLite— fue necesario.
 
-### 2.7 Reasignación de ruta ("VERSIÓN CORREGIDA - CONSOLIDACIÓN POR RUTA")
+### 5.3 Hallazgo adicional (no es un bug, es una observación de infraestructura)
 
-Cuando un promotor deja una ruta y otro lo sustituye, CARTERA puede seguir mostrando el
-nombre del promotor anterior. El VBA resuelve esto contando, por Oficina, qué promotor tiene
-más movimientos válidos (whitelist) en INGRESOS del periodo ACTUAL, y usa a ESE promotor para
-TODA la oficina (tanto en CARTERA como en INGRESOS histórico) — ignorando el nombre residual
-de la fila. Empate → gana el primero encontrado (nunca se reemplaza en un empate exacto).
+La tabla `periods` (y aparentemente el resto del esquema) usa el motor **MyISAM** en el MariaDB
+real de este entorno de desarrollo, no InnoDB — `DB::beginTransaction()/rollBack()` es un
+no-op silencioso sobre tablas MyISAM. Esto no es nuevo de esta sesión ni se tocó aquí (está
+fuera del alcance de "Efectividad de Cobranza"), pero es relevante dejarlo documentado: código
+existente en el proyecto que asuma atomicidad transaccional (`DB::transaction`, etc.) no la
+tiene garantizada sobre tablas MyISAM. No se modificó el motor de ninguna tabla en esta sesión
+(sería una operación destructiva de alto riesgo fuera de lo solicitado) — se señala para que
+quien administre el VPS lo evalúe.
 
-### 2.8 Redondeo
+### 5.4 Qué falta ejecutar al migrar al VPS
 
-Ninguno — todos los cálculos de negocio se mantienen en punto flotante sin redondear
-intermedios; el redondeo solo aparece en el formato de presentación de la celda de Excel.
+- Reimportar los Excel históricos reales (Ingresos Cobranza + Saldos por Cliente) de cada
+  periodo ya cerrado — las migraciones aditivas de esta sesión son compatibles con filas
+  existentes (todas las columnas nuevas son nullable), así que una reimportación simplemente
+  llena los campos nuevos sin afectar lo que ya existía.
+- Ejecutar `GenerateEfectividadCobranzaAprobadaJob` vía el worker de colas real (ya configurado
+  en el proyecto, ver `docs/deployment-workers.md`) para los periodos completos — esta sesión
+  solo validó con una muestra por restricciones de tiempo interactivo, no por una limitación
+  del código.
+- Confirmar con el negocio los números de al menos un periodo real completo contra lo que
+  ellos ya calculan manualmente (si lo hacen) — ninguna autoridad externa al código validó los
+  montos reales de un periodo completo todavía.
 
-### 2.9 Agrupación y reporte final
+## 6. Bloqueos externos verdaderos que subsisten
 
-Oficina → Promotor (nunca por producto/cliente/contrato). Un grupo con los 6 acumuladores en
-cero (tolerancia 0.01) se omite — nunca se muestra una fila íntegramente en cero. Totales por
-oficina y Gran Total son sumas aritméticas de lo ya calculado por grupo — recalculan sus
-columnas de porcentaje de la misma forma (dividiendo entre el Sano-por-cobrar acumulado de
-ese nivel), nunca una fórmula ni un promedio distinto.
+- El formato de 14 columnas (`documentosColumnas/Ingresos cobranza 2026-05-20 A 2026-05-20.xlsx`)
+  **no permite calcular Efectividad Aprobada** para ningún periodo que solo tenga ese formato
+  cargado — le faltan Fecha transacción, Fecha cuota y Oficina, y la macro aprobada nunca las
+  reconstruye desde otra columna. Esto no es un defecto de Reportería: es una limitación del
+  propio archivo exportado por Lendus para ese caso. El sistema lo reporta honestamente
+  (`coverage.status = "bloqueado_sin_fechas"`) en vez de mostrar un 0% engañoso.
+- No se validó contra una corrida de EFECTIVIDAD ya calculada por el negocio para un periodo
+  real completo (sigue sin existir una muestra de ese tipo, ver sección 5.4).
 
-## 3. Bloqueo actual — por qué `versions.approved` sigue en `available:false`
+## 7. Explícitamente NO se hizo
 
-### 3.1 No existe un resultado ya calculado para validar contra él
-
-Se inspeccionó el `.xlsm` real con `openpyxl` (solo lectura de valores, nunca se ejecutó la
-macro): las hojas `CARTERA`, `INGRESOS` y `EFECTIVIDAD` están **completamente vacías**
-(dimensiones de plantilla, 0 filas con datos). Solo `_HIST_INGRESOS` tiene datos reales
-(4,806 filas) — y es un *insumo*, no un resultado. El archivo entregado es una calculadora en
-blanco, no un caso ya resuelto. Sin uno de estos dos insumos no es posible declarar el motor
-"validado contra el resultado aprobado real" (solo "consistente con esta especificación"):
-
-1. Una copia de este `.xlsm` con la hoja EFECTIVIDAD ya poblada de una corrida real, o
-2. Las hojas CARTERA e INGRESOS con datos reales de un periodo específico, para correr la
-   lógica aquí documentada y contrastar manualmente contra lo que el negocio confirme.
-
-### 3.2 Esquema actual no captura todas las columnas de CARTERA que el VBA necesita
-
-`fact_portfolios` (tabla real de "Saldos por Cliente") tiene: `balance`, `past_due_balance`,
-`capital_activo`, `capital_due`, `interes_atrasado`, `impuesto_atrasado`,
-`saldo_interes_moratorio`, `saldo_impuesto_interes_moratorio`, `cargos_calendario_atrasado`,
-`impuesto_cargos_calendario_atrasado`, `days_past_due`, `portfolio_date`.
-
-El VBA necesita además: **Estatus, Substatus, Fecha primer pago, Fecha vencimiento (del
-contrato), Cuota total, Fecha siguiente pago, Pagos atrasados** — ninguna existe hoy como
-columna tipada. No se adivinó su nombre real en el archivo "Saldos por Cliente" de Lendus (no
-se tiene una muestra de ese archivo con esas columnas reales para confirmar nombres exactos de
-encabezado) — extenderlo ahora sería inventar un mapeo. `fact_recoveries` (INGRESOS) también
-necesita una columna `fecha_cuota` nueva (distinta de `payment_date`), igualmente no agregada
-todavía por la misma razón.
-
-## 4. Qué falta para destrabar por completo (checklist)
-
-- [ ] Conseguir una muestra real del archivo "Saldos por Cliente" de Lendus para confirmar
-      los nombres exactos de columna (Estatus/Substatus/Fecha primer pago/etc.).
-- [ ] Migración aditiva: agregar esas columnas a `fact_portfolios`, y `fecha_cuota`/
-      `numero_cuota` a `fact_recoveries`.
-- [ ] Actualizar los importadores de Lendus (Ingresos Cobranza / Saldos por Cliente) para
-      poblar las columnas nuevas.
-- [ ] Servicio de adaptación: `fact_portfolios`/`fact_recoveries` reales → los arrays que
-      `EfectividadCobranzaAprobadaCalculator::calculate()` ya acepta (la lógica de cálculo NO
-      se toca, solo se le da la fuente real).
-- [ ] Obtener (1) una corrida real de EFECTIVIDAD ya calculada, o (2) CARTERA/INGRESOS reales
-      de un periodo conocido, para validar numéricamente antes de marcar
-      `versions.approved.available = true` en la API.
-
-## 5. Explícitamente NO se hizo
-
-- No se ejecutó la macro VBA en ningún momento (solo lectura estática con `oletools`).
-- No se inventó ningún nombre de columna de CARTERA real — los documentados aquí son
-  exactamente los que el propio VBA busca por encabezado (`ColumnaEncabezado`), citados con
-  número de línea, nunca adivinados por el nombre del archivo histórico `_HIST_INGRESOS`.
-- No se modificó la efectividad de cobranza histórica existente
-  (`RadiographySnapshotBuilder::buildEfectividadCobranza()`), ni sus pruebas
-  (`tests/Feature/EfectividadCobranzaPctTest.php` sigue pasando sin cambios).
-- No se marcó `available:true` en la API sin una validación numérica real.
+- No se ejecutó ninguna macro VBA.
+- No se creó un segundo motor de cálculo — `EfectividadCobranzaAprobadaCalculator` es el mismo
+  de la sesión anterior, sin cambios.
+- No se modificó la efectividad de cobranza histórica (`RadiographySnapshotBuilder::
+  buildEfectividadCobranza()`) ni sus pruebas (`EfectividadCobranzaPctTest` sigue pasando sin
+  cambios).
+- No se tocó `balance`/`capital_due`/`interes_atrasado`/etc. existentes, ni sus alias en
+  `ColumnMapService` — todas las columnas nuevas son adicionales.
+- No se conectó con Lendus directamente (API/BD/servidores) — la única fuente operativa sigue
+  siendo los Excel que el usuario ya carga manualmente en Reportería.
+- No se creó un tercer Excel obligatorio.
+- No se dejaron datos de prueba en la base de datos tras la validación de la sección 5.

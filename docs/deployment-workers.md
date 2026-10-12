@@ -13,10 +13,14 @@ php -d memory_limit=1024M -d max_execution_time=0 artisan queue:work database \
     --queue=default --tries=1 --timeout=1800 --memory=1024 --sleep=3 -vvv
 ```
 
-`QUEUE_CONNECTION=database` (ver `.env`). Nada de la Fase 1-4 de este trabajo agregó jobs
-nuevos que requieran una cola separada — la API (`/api/v1`) es síncrona (lectura), y el
-exportador "Efectividad Aprobada" (Fase 2) no se implementó por estar bloqueado (ver
-`docs/efectividad-cobranza-aprobada.md`), así que no hay un Job nuevo que supervisar todavía.
+`QUEUE_CONNECTION=database` (ver `.env`). La API (`/api/v1`) sigue siendo síncrona (lectura).
+
+**Nuevo (cierre Efectividad de Cobranza Aprobada, 2026-10-11):**
+`App\Jobs\GenerateEfectividadCobranzaAprobadaJob` — generado por el módulo web
+"Efectividad de Cobranza" (`/efectividad-cobranza`), corre en la misma cola `database` que el
+resto del proyecto (ningún worker/cola adicional que configurar). Usa `WithoutOverlapping` por
+periodo+sucursal — dos clics en "Generar reporte" para la misma combinación nunca corren en
+paralelo. Ver `docs/efectividad-cobranza-aprobada.md` sección 1 para el detalle completo.
 
 Debe seguir corriendo exactamente un worker por servidor (o varios con cuidado de
 concurrencia) vía `supervisor`/`systemd` — la configuración real del VPS no se tocó ni se
@@ -66,6 +70,9 @@ sesión (Sanctum y las nuevas tablas usan solo Eloquent/DB estándar).
 2026_10_11_011802_create_employee_external_identities_table
 2026_10_11_011803_create_api_query_logs_table
 2026_10_11_071254_add_branch_access_mode_to_api_consumers_table   (Fase 2.5, corrección de seguridad)
+2026_10_11_225022_add_efectividad_aprobada_fields_to_fact_recoveries_table
+2026_10_11_225023_add_efectividad_aprobada_fields_to_fact_portfolios_table
+2026_10_11_230756_create_efectividad_cobranza_runs_table
 ```
 
 Ninguna modifica ni borra una tabla existente. La última agrega la columna
