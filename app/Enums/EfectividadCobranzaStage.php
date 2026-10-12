@@ -3,7 +3,7 @@
 namespace App\Enums;
 
 /**
- * Etapas REALES del Job de Efectividad de Cobranza Aprobada, en orden.
+ * Etapas REALES del Job de Efectividad de Cobranza (motor V4), en orden.
  * Cada una corresponde a un bloque de código identificable en
  * GenerateEfectividadCobranzaAprobadaJob — nunca a un porcentaje arbitrario.
  *
@@ -18,18 +18,20 @@ enum EfectividadCobranzaStage: string
     case ProcessIncome = 'process_income';
     case Calculate = 'calculate';
     case Reconcile = 'reconcile';
+    case Audit = 'audit';
     case BuildExcel = 'build_excel';
     case Finish = 'finish';
 
     public function label(): string
     {
         return match ($this) {
-            self::ValidateFiles => 'Validación de archivos',
-            self::VerifyColumns => 'Verificación de columnas',
-            self::PreparePortfolio => 'Preparación de cartera',
+            self::ValidateFiles => 'Validación de fotografías e ingresos',
+            self::VerifyColumns => 'Verificación de encabezados y registros',
+            self::PreparePortfolio => 'Preparación de fotografías diarias',
             self::ProcessIncome => 'Procesamiento de ingresos',
             self::Calculate => 'Cálculo de efectividad',
-            self::Reconcile => 'Conciliación',
+            self::Reconcile => 'Comparación de totales',
+            self::Audit => 'Auditoría de incidencias',
             self::BuildExcel => 'Generación de Excel',
             self::Finish => 'Finalización',
         };
@@ -38,13 +40,14 @@ enum EfectividadCobranzaStage: string
     public function description(): string
     {
         return match ($this) {
-            self::ValidateFiles => 'Verificando que los archivos de Ingresos Cobranza y Saldos por Cliente estén disponibles y procesados.',
-            self::VerifyColumns => 'Comprobando campos necesarios para calcular la efectividad aprobada.',
-            self::PreparePortfolio => 'Preparando la cartera correspondiente al corte seleccionado.',
-            self::ProcessIncome => 'Revisando movimientos históricos y clasificando pagos válidos.',
-            self::Calculate => 'Calculando Sano, Atraso y Vencido, por oficina y promotor.',
-            self::Reconcile => 'Verificando totales por sucursal y resultado general.',
-            self::BuildExcel => 'Preparando el archivo XLSX con los resultados aprobados.',
+            self::ValidateFiles => 'Verificando que existan las fotografías de cartera de cada día (domingo base a corte) y los Ingresos Cobranza del periodo.',
+            self::VerifyColumns => 'Comprobando los encabezados que exige la calculadora V4 en fotografías e ingresos.',
+            self::PreparePortfolio => 'Leyendo las fotografías diarias de cartera, identificadas por fecha.',
+            self::ProcessIncome => 'Leyendo Ingresos Cobranza del corte y el histórico necesario para anticipos.',
+            self::Calculate => 'Calculando Sano, Vigente con atraso y Vencido por oficina y promotor (motor V4).',
+            self::Reconcile => 'Verificando que promotores, oficinas y GRAN TOTAL sumen lo mismo.',
+            self::Audit => 'Registrando las incidencias de cálculo (movimientos excluidos y su motivo).',
+            self::BuildExcel => 'Preparando el archivo XLSX con el formato de la calculadora V4.',
             self::Finish => 'El reporte se generó correctamente y está disponible para descarga.',
         };
     }

@@ -10,6 +10,10 @@ use App\Models\Period;
 use App\Models\User;
 use App\Services\Efectividad\EfectividadCobranzaIssue;
 use App\Services\Efectividad\EfectividadCobranzaRunPresenter;
+use App\Models\EfectividadCobranzaRunIncident;
+use App\Services\Efectividad\V4\EfectividadV4DataAdapter;
+use App\Services\Efectividad\V4\EfectividadV4Exception;
+use App\Services\Efectividad\V4\EfectividadV4Incidents;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -41,7 +45,10 @@ class EfectividadCobranzaController extends Controller
 {
     private const HISTORY_PER_PAGE = 10;
 
-    public function __construct(private readonly EfectividadCobranzaRunPresenter $presenter) {}
+    public function __construct(
+        private readonly EfectividadCobranzaRunPresenter $presenter,
+        private readonly EfectividadV4DataAdapter $adapter,
+    ) {}
 
     public function index(Request $request): Response
     {
@@ -59,21 +66,49 @@ class EfectividadCobranzaController extends Controller
         $data = $request->validate([
             'period_id' => ['required', 'integer', 'exists:periods,id'],
             'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
+            'mode' => ['nullable', 'string', 'in:SEMANAL,DIARIO'],
+            'cutoff_date' => ['nullable', 'date', 'required_if:mode,DIARIO'],
+            'confirm_partial' => ['nullable', 'boolean'],
         ]);
 
         $period   = Period::query()->findOrFail($data['period_id']);
         $branchId = $data['branch_id'] ?? null;
         $userId   = $request->user()?->id;
+        $mode     = $data['mode'] ?? EfectividadCobranzaRun::MODE_SEMANAL;
+        $confirm  = (bool) ($data['confirm_partial'] ?? false);
+
+        // Motor V4: solo semanas operativas (lunes-domingo) o un día de ellas.
+        try {
+            $window = $this->adapter->window($period, $mode, $data['cutoff_date'] ?? null);
+        } catch (EfectividadV4Exception $e) {
+            return response()->json(['error' => $e->getMessage(), 'code' => $e->codigo, 'accepted' => false], 422);
+        }
+        $cutoff = $window['fecha_corte'];
+
+        // Igual que la macro (MsgBox "¿Confirmas que descargaste la SEMANA COMPLETA…?"):
+        // con ingresos aparentemente parciales se pide confirmación explícita antes de encolar.
+        $hasActive = EfectividadCobranzaRun::query()->forV4Identity($period->id, $branchId, $mode, $cutoff)->active()->exists();
+        if (! $confirm && ! $hasActive) {
+            $disp = $this->adapter->availability($period, $branchId, $mode, $cutoff);
+            if ($disp['requiere_confirmacion']) {
+                return response()->json([
+                    'accepted' => false,
+                    'requires_confirmation' => true,
+                    'message' => collect($disp['issues'])->whereIn('code', ['EC-V4-INGRESOS-SEMANA-PARCIAL', 'EC-V4-INGRESOS-SIN-MOVIMIENTOS'])->pluck('message')->implode(' '),
+                    'issues' => $disp['issues'],
+                ], 409);
+            }
+        }
 
         // "check-then-create" atómico: el lock se adquiere ANTES de consultar si ya
         // hay una corrida activa. Dos POST simultáneos para la MISMA identidad nunca
         // crean dos filas/Jobs.
-        $lockKey = "efectividad-cobranza-generate-{$period->id}-" . ($branchId ?? 'general');
+        $lockKey = "efectividad-cobranza-generate-{$period->id}-" . ($branchId ?? 'general') . "-{$mode}-{$cutoff}";
 
         try {
-            [$run, $reused] = Cache::lock($lockKey, 15)->block(5, function () use ($period, $branchId, $userId) {
+            [$run, $reused] = Cache::lock($lockKey, 15)->block(5, function () use ($period, $branchId, $userId, $mode, $cutoff, $window, $confirm) {
                 $existing = EfectividadCobranzaRun::query()
-                    ->forIdentity($period->id, $branchId)
+                    ->forV4Identity($period->id, $branchId, $mode, $cutoff)
                     ->active()
                     ->latest('id')
                     ->first();
@@ -89,6 +124,11 @@ class EfectividadCobranzaController extends Controller
                 $run = EfectividadCobranzaRun::query()->create([
                     'period_id'  => $period->id,
                     'branch_id'  => $branchId,
+                    'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+                    'mode'       => $mode,
+                    'base_date'  => $window['domingo_base'],
+                    'cutoff_date' => $cutoff,
+                    'metadata'   => ['confirmed_partial' => $confirm],
                     'status'     => EfectividadCobranzaRun::STATUS_QUEUED,
                     'queued_at'  => now(),
                     'log'        => 'En cola. Esperando a que el servidor tome el trabajo.',
@@ -178,6 +218,65 @@ class EfectividadCobranzaController extends Controller
         ]);
     }
 
+    /** Incidencias de cálculo (bitácora _AUDITORIA_EFECTIVIDAD) — paginadas y filtrables. */
+    public function incidents(Request $request, EfectividadCobranzaRun $run): JsonResponse
+    {
+        $filters = $request->validate([
+            'code' => ['nullable', 'string', 'max:20'],
+            'q' => ['nullable', 'string', 'max:60'],
+            'page' => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        $page = $this->incidentQuery($run, $filters)->paginate(25)->withQueryString();
+
+        return response()->json([
+            'data' => collect($page->items())->map(fn (EfectividadCobranzaRunIncident $i) => [
+                'id' => $i->id,
+                'position' => $i->position,
+                'code' => $i->code,
+                'label' => EfectividadV4Incidents::etiqueta($i->code),
+                'key' => $i->incident_key,
+                'contract' => $i->contract,
+                'reference' => $i->reference,
+                'date' => $i->occurred_on?->format('Y-m-d'),
+                'amount' => $i->amount,
+                'description' => $i->description,
+                'status' => $i->treatment,
+                'action' => EfectividadV4Incidents::accion($i->code),
+            ])->values(),
+            'meta' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'total' => $page->total(), 'per_page' => $page->perPage()],
+            'summary' => array_values($run->metadata['incidencias_resumen'] ?? []),
+        ]);
+    }
+
+    /** Exporta las incidencias a CSV (UTF-8 con BOM para abrir directo en Excel). */
+    public function exportIncidents(Request $request, EfectividadCobranzaRun $run): \Symfony\Component\HttpFoundation\StreamedResponse
+    {
+        $filters = $request->validate(['code' => ['nullable', 'string', 'max:20'], 'q' => ['nullable', 'string', 'max:60']]);
+        $query = $this->incidentQuery($run, $filters);
+        $name = "incidencias_efectividad_run{$run->id}.csv";
+
+        return response()->streamDownload(function () use ($query) {
+            $out = fopen('php://output', 'w');
+            fwrite($out, "\xEF\xBB\xBF");
+            fputcsv($out, ['#', 'ID', 'Código', 'Contrato', 'Fecha reconocimiento', 'Importe', 'Motivo', 'Tratamiento', 'Acción recomendada']);
+            foreach ($query->lazy(500) as $i) {
+                fputcsv($out, [$i->position, $i->incident_key, $i->code, $i->contract, $i->occurred_on?->format('d/m/Y'),
+                    $i->amount !== null ? number_format($i->amount, 2, '.', '') : '', $i->description, $i->treatment, EfectividadV4Incidents::accion($i->code)]);
+            }
+            fclose($out);
+        }, $name, ['Content-Type' => 'text/csv; charset=UTF-8', 'Cache-Control' => 'no-store']);
+    }
+
+    private function incidentQuery(EfectividadCobranzaRun $run, array $filters)
+    {
+        return EfectividadCobranzaRunIncident::query()
+            ->where('efectividad_cobranza_run_id', $run->id)
+            ->when(! empty($filters['code']), fn ($q) => $q->where('code', $filters['code']))
+            ->when(! empty($filters['q']), fn ($q) => $q->where('contract', 'like', '%'.str_replace(['%', '_'], ['\%', '\_'], $filters['q']).'%'))
+            ->orderBy('position');
+    }
+
     public function download(EfectividadCobranzaRun $run): \Symfony\Component\HttpFoundation\BinaryFileResponse
     {
         $absolutePath = $this->presenter->resolveExcelAbsolutePath($run);
@@ -257,13 +356,15 @@ class EfectividadCobranzaController extends Controller
             'periods'    => Period::query()
                 ->orderByDesc('start_date')
                 ->get(['id', 'code', 'name', 'type', 'year', 'month', 'start_date', 'end_date'])
-                ->map(fn (Period $p) => ['id' => $p->id, 'label' => $p->label, 'code' => $p->code, 'type' => $p->type]),
+                ->map(fn (Period $p) => ['id' => $p->id, 'label' => $p->label, 'code' => $p->code, 'type' => $p->type,
+                    'start_date' => $p->start_date?->format('Y-m-d'), 'end_date' => $p->end_date?->format('Y-m-d')]),
             'branches'   => Branch::query()
                 ->where('is_active', true)
                 ->orderBy('name')
                 ->get(['id', 'name'])
                 ->map(fn (Branch $b) => ['id' => $b->id, 'name' => $b->name]),
-            'selected'   => ['period_id' => $periodId, 'branch_id' => $branchId],
+            'selected'   => ['period_id' => $periodId, 'branch_id' => $branchId, 'mode' => $focus?->mode ?? EfectividadCobranzaRun::MODE_SEMANAL, 'cutoff_date' => $focus?->mode === EfectividadCobranzaRun::MODE_DIARIO ? $focus->cutoff_date?->format('Y-m-d') : null],
+            'engineVersion' => EfectividadCobranzaRun::currentEngineVersion(),
             'focusRun'   => $focus ? $this->presenter->detail($focus, $user) : null,
             'activeRuns' => $activeRuns->map(fn (EfectividadCobranzaRun $r) => $this->presenter->summary($r))->values(),
             'history'    => [

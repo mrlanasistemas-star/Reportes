@@ -184,6 +184,8 @@ class LendusIngresosCobranzaImportService {
                             : null,
                         'promoter_name'           => $mapped['promoter_name'],
                         'product_name'            => $mapped['product_name'],
+                        // Texto original (la Efectividad V4 excluye por REESTRUCT/UNIFICAC/CONDONAC/COBERTURA).
+                        'product_name_raw'        => $mapped['product_name_raw'] !== null ? mb_substr($mapped['product_name_raw'], 0, 160) : null,
                         'operation'               => $mapped['operation'],
                         'concept'                 => $mapped['concept'],
                         'transaction'             => $mapped['transaction'],
@@ -854,6 +856,7 @@ class LendusIngresosCobranzaImportService {
             'acreditado'      => $acreditado,
             'branch_name_raw' => $branchNameRaw,
             'product_name'    => $productName,
+            'product_name_raw' => $rawProductName,
             'operation'       => $operation,
             'concept'         => $concept,
             'transaction'     => $transaction,

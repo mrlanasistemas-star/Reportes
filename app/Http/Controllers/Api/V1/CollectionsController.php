@@ -11,8 +11,8 @@ use App\Services\Api\ApiScopeResolver;
 use App\Services\Api\ApiValidation;
 use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Api\FinancialMetricResolver;
-use App\Services\Efectividad\EfectividadCobranzaAprobadaCalculator;
-use App\Services\Efectividad\EfectividadCobranzaSourceFingerprintService;
+use App\Services\Efectividad\V4\EfectividadV4Calculator;
+use App\Services\Efectividad\V4\EfectividadV4FingerprintService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -52,6 +52,12 @@ use Illuminate\Http\Request;
  *          ese snapshot ya acotado a la sucursal verificada — la coincidencia
  *          de nombre deja de ser la única defensa contra homónimos, es la
  *          última verificación sobre un universo ya correcto.
+ *
+ * Motor V4 (2026-10-13): `approved` SOLO sirve ejecuciones del motor vigente
+ * (`engine_version` = mrlana-v4-2026-10, modo SEMANAL sobre un periodo semanal).
+ * Un resultado de la calculadora anterior jamás se entrega como versión actual:
+ * si solo existe ese, la respuesta es `not_available` e indica que debe
+ * regenerarse. `legacy` (efectividad histórica de la radiografía) no cambia.
  */
 class CollectionsController extends Controller
 {
@@ -60,8 +66,8 @@ class CollectionsController extends Controller
         FinancialMetricResolver $resolver,
         ApiScopeResolver $scopeResolver,
         EmployeeBranchHistoryResolver $employeeBranchHistoryResolver,
-        EfectividadCobranzaSourceFingerprintService $fingerprintService,
-        EfectividadCobranzaAprobadaCalculator $calculator,
+        EfectividadV4FingerprintService $fingerprintService,
+        EfectividadV4Calculator $calculator,
     ): JsonResponse {
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
@@ -93,20 +99,18 @@ class CollectionsController extends Controller
      * simular el general, nunca se parte un snapshot general para simular uno
      * de sucursal.
      */
-    private function resolveApprovedSnapshot(Period $period, ?int $branchId, EfectividadCobranzaSourceFingerprintService $fingerprintService): array
+    private function resolveApprovedSnapshot(Period $period, ?int $branchId, EfectividadV4FingerprintService $fingerprintService): array
     {
-        $run = EfectividadCobranzaRun::latestSuccessFor($period->id, $branchId);
+        if ($unsupported = $this->unsupportedPeriod($period)) {
+            return $unsupported;
+        }
+        $run = $this->latestV4Success($period->id, $branchId);
 
         if (!$run) {
-            return [
-                'available' => false,
-                'status'    => 'not_available',
-                'reason'    => 'Aún no se ha generado Efectividad de Cobranza Aprobada para este periodo/alcance. Generarlo desde el módulo web "Efectividad de Cobranza" (o vía el Job autorizado) antes de consultarlo por API.',
-                'version'   => 'approved_snapshot_v1',
-            ];
+            return $this->notAvailable($period->id, $branchId, 'Aún no se ha generado la Efectividad de Cobranza (motor V4) para este periodo/alcance. Generarla desde el módulo web "Efectividad de Cobranza" antes de consultarla por API.');
         }
 
-        $isStale = $fingerprintService->isStale($period, $branchId, $run->source_fingerprint);
+        $isStale = $fingerprintService->isStale($run);
         $rows = $run->result_rows ?? [];
 
         return [
@@ -120,7 +124,10 @@ class CollectionsController extends Controller
             'summary'       => collect($rows)->firstWhere('promotor', 'GRAN TOTAL'),
             'rows'          => $rows,
             'coverage'      => $run->coverage,
-            'version'       => 'approved_snapshot_v1',
+            'parameters'    => $run->metadata['parametros'] ?? null,
+            'incidents'     => ['count' => (int) $run->incidents_count, 'by_code' => array_values($run->metadata['incidencias_resumen'] ?? [])],
+            'engine_version' => $run->engine_version,
+            'version'       => self::VERSION,
         ];
     }
 
@@ -128,9 +135,12 @@ class CollectionsController extends Controller
         Period $period,
         array $scope,
         EmployeeBranchHistoryResolver $employeeBranchHistoryResolver,
-        EfectividadCobranzaSourceFingerprintService $fingerprintService,
-        EfectividadCobranzaAprobadaCalculator $calculator,
+        EfectividadV4FingerprintService $fingerprintService,
+        EfectividadV4Calculator $calculator,
     ): array {
+        if ($unsupported = $this->unsupportedPeriod($period)) {
+            return $unsupported;
+        }
         $employeeId = $scope['employee_id'];
 
         // Fase 1 — identidad verificable, nunca "la asignación más reciente" ni una
@@ -142,20 +152,15 @@ class CollectionsController extends Controller
                 'available' => false,
                 'status'    => 'not_attributable',
                 'reason'    => 'No existe una asignación de sucursal verificada (employee_branch_assignments) para este colaborador en el periodo exacto consultado. Sin esa identidad verificada, nunca se atribuye un resultado financiero solo por coincidencia de nombre.',
-                'version'   => 'approved_snapshot_v1',
+                'version'   => self::VERSION,
             ];
         }
 
         $branchId = $historical['branch_id'];
-        $run = EfectividadCobranzaRun::latestSuccessFor($period->id, $branchId);
+        $run = $this->latestV4Success($period->id, $branchId);
 
         if (!$run) {
-            return [
-                'available' => false,
-                'status'    => 'not_available',
-                'reason'    => "Aún no se ha generado Efectividad de Cobranza Aprobada para la sucursal verificada de este colaborador en este periodo (branch_id={$branchId}). Generarlo desde el módulo web antes de consultarlo por API.",
-                'version'   => 'approved_snapshot_v1',
-            ];
+            return $this->notAvailable($period->id, $branchId, "Aún no se ha generado la Efectividad de Cobranza (motor V4) para la sucursal verificada de este colaborador en este periodo (branch_id={$branchId}). Generarla desde el módulo web antes de consultarla por API.");
         }
 
         $employee = Employee::query()->find($employeeId);
@@ -171,11 +176,11 @@ class CollectionsController extends Controller
                 'status'    => 'not_attributable',
                 'reason'    => 'El cálculo ya existe para la sucursal verificada de este colaborador en este periodo, pero ninguna fila de promotor coincide con su nombre normalizado — no se atribuye por aproximación.',
                 'coverage'  => $run->coverage,
-                'version'   => 'approved_snapshot_v1',
+                'version'   => self::VERSION,
             ];
         }
 
-        $isStale = $fingerprintService->isStale($period, $branchId, $run->source_fingerprint);
+        $isStale = $fingerprintService->isStale($run);
 
         return [
             'available'    => true,
@@ -186,7 +191,50 @@ class CollectionsController extends Controller
             'generated_at' => $run->finished_at?->toISOString(),
             'row'          => $row,
             'coverage'     => $run->coverage,
-            'version'      => 'approved_snapshot_v1',
+            'engine_version' => $run->engine_version,
+            'version'      => self::VERSION,
+        ];
+    }
+
+    public const VERSION = 'approved_snapshot_v4';
+
+    private function latestV4Success(int $periodId, ?int $branchId): ?EfectividadCobranzaRun
+    {
+        return EfectividadCobranzaRun::query()
+            ->forV4Identity($periodId, $branchId, EfectividadCobranzaRun::MODE_SEMANAL, null)
+            ->where('status', EfectividadCobranzaRun::STATUS_SUCCESS)
+            ->latest('id')
+            ->first();
+    }
+
+    /** La macro V4 es semanal: un mes/bimestre no tiene resultado verificable. */
+    private function unsupportedPeriod(Period $period): ?array
+    {
+        if ($period->type === 'weekly') {
+            return null;
+        }
+
+        return [
+            'available' => false,
+            'status' => 'not_supported_period',
+            'reason' => 'La Efectividad de Cobranza (motor V4) se calcula por semana operativa lunes-domingo. Consulta un period_id semanal; no se agregan semanas para simular meses.',
+            'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+            'version' => self::VERSION,
+        ];
+    }
+
+    private function notAvailable(int $periodId, ?int $branchId, string $reason): array
+    {
+        $previous = EfectividadCobranzaRun::latestSuccessFor($periodId, $branchId);
+
+        return [
+            'available' => false,
+            'status' => 'not_available',
+            'reason' => $previous && ! $previous->isCurrentEngine()
+                ? $reason.' Existe un resultado de la calculadora anterior (run '.$previous->id.'), pero no se entrega como versión vigente.'
+                : $reason,
+            'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+            'version' => self::VERSION,
         ];
     }
 }

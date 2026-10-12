@@ -11,6 +11,7 @@ use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EfectividadCobranzaController;
+use App\Http\Controllers\EfectividadCobranzaFuentesController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Middleware\EnsureReporteriaAccess;
 
@@ -199,6 +200,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/runs/{run}', [EfectividadCobranzaController::class, 'show'])->name('runs.show');
             Route::get('/runs/{run}/progreso', [EfectividadCobranzaController::class, 'progress'])->name('progress');
             Route::get('/runs/{run}/descargar', [EfectividadCobranzaController::class, 'download'])->name('download');
+            Route::get('/runs/{run}/incidencias', [EfectividadCobranzaController::class, 'incidents'])->name('incidents');
+            Route::get('/runs/{run}/incidencias/exportar', [EfectividadCobranzaController::class, 'exportIncidents'])->name('incidents.export');
+            // Motor V4 — disponibilidad de fuentes y fotografías diarias de cartera.
+            Route::get('/disponibilidad', [EfectividadCobranzaFuentesController::class, 'availability'])->name('availability');
+            Route::get('/fotos', [EfectividadCobranzaFuentesController::class, 'index'])->name('snapshots.index');
+            Route::post('/fotos', [EfectividadCobranzaFuentesController::class, 'store'])->name('snapshots.store');
+            Route::post('/fotos/{upload}/reprocesar', [EfectividadCobranzaFuentesController::class, 'reprocess'])->whereNumber('upload')->name('snapshots.reprocess');
         });
     }); // fin EnsureReporteriaAccess
 });

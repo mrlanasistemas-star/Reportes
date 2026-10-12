@@ -11,7 +11,7 @@ use App\Models\Recovery;
 use App\Models\ReportUpload;
 use App\Models\User;
 use App\Notifications\EfectividadCobranzaRunFinished;
-use App\Services\Efectividad\EfectividadCobranzaAprobadaReportService;
+use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use App\Services\Efectividad\EfectividadCobranzaIssue;
 use App\Services\Efectividad\EfectividadCobranzaRunHealthService;
 use App\Services\Efectividad\EfectividadCobranzaRunNotifier;
@@ -27,6 +27,7 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use Symfony\Component\Mailer\Exception\TransportException;
 use Symfony\Component\Mailer\SentMessage;
 use Symfony\Component\Mailer\Transport\AbstractTransport;
+use Tests\Support\EfectividadV4Fixtures as V4;
 
 uses(RefreshDatabase::class);
 
@@ -45,36 +46,27 @@ beforeEach(function () {
     Storage::fake('public');
 });
 
+/** Motor V4: la efectividad se calcula por semana operativa (lunes-domingo). */
 function bgPeriod(): Period
 {
-    return Period::query()->create([
-        'name' => 'Septiembre BG', 'code' => 'M-BGTEST-2026-9', 'type' => 'monthly',
-        'year' => 2026, 'month' => 9, 'sequence' => 1,
-        'start_date' => '2026-09-01', 'end_date' => '2026-09-30', 'is_closed' => false,
-    ]);
+    return V4::week();
 }
 
 function bgBranch(): Branch
 {
-    return Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+    return V4::branch();
 }
 
+/** 8 fotografías diarias + Ingresos de 4 días (ver Tests\Support\EfectividadV4Fixtures). */
 function bgSeedValidData(Period $period, Branch $branch): void
 {
-    Portfolio::query()->create([
-        'period_id' => $period->id, 'branch_id' => $branch->id,
-        'contract' => '25COR1270278', 'promoter_name' => 'LUIS GOMEZ', 'route_name' => 'CORDOBA',
-        'status' => 'VIGENTE', 'substatus' => 'VIGENTE',
-        'installment_amount' => 100, 'periodicity' => 'SEMANAL', 'num_payments' => 10,
-        'first_payment_date' => '2026-09-05',
-    ]);
-    Recovery::query()->create([
-        'period_id' => $period->id, 'branch_id' => $branch->id,
-        'contract' => '25COR1270278', 'promoter_name' => 'LUIS GOMEZ', 'office_name_raw' => 'CORDOBA',
-        'operation' => 'PAGO A CONTRATO', 'transaction' => 'PAGO',
-        'capital' => 100, 'interest' => 0, 'tax' => 0, 'total_amount' => 100,
-        'payment_date' => '2026-09-30', 'installment_due_date' => '2026-09-05',
-    ]);
+    V4::seedValid($period, $branch);
+}
+
+/** Atributos de una ejecución V4 creada directamente (sin pasar por el controlador). */
+function bgV4(array $attrs): array
+{
+    return $attrs + ['engine_version' => EfectividadV4Calculator::ENGINE_VERSION, 'mode' => 'SEMANAL', 'base_date' => '2026-10-04', 'cutoff_date' => '2026-10-11'];
 }
 
 /** Ejecuta el Job tal como lo haría el worker (sin sesión web, sin middleware HTTP). */
@@ -157,14 +149,23 @@ it('1-12: solicitud persistente → cola → worker sin sesión → estado resta
     // 8. Etapas reales registradas, en orden, todas completadas; las medibles con conteos.
     expect(array_keys($run->stages))->toBe([
         'validate_files', 'verify_columns', 'prepare_portfolio', 'process_income',
-        'calculate', 'reconcile', 'build_excel', 'finish',
+        'calculate', 'reconcile', 'audit', 'build_excel', 'finish',
     ]);
     expect(collect($run->stages)->pluck('status')->unique()->all())->toBe(['done']);
-    expect($run->stages['prepare_portfolio']['total'])->toBe(1)
-        ->and($run->stages['prepare_portfolio']['processed'])->toBe(1)
-        ->and($run->stages['process_income']['total'])->toBe(1);
+    // 8 fotografías × 4 contratos leídos; 4 movimientos de ingresos.
+    expect($run->stages['prepare_portfolio']['total'])->toBe(32)
+        ->and($run->stages['prepare_portfolio']['processed'])->toBe(32)
+        ->and($run->stages['process_income']['total'])->toBe(4);
     expect($run->stages['reconcile']['details']['external'])->toBeFalse(); // nunca se afirma conciliación externa
-    expect($run->sources['saldos']['rows_in_db'])->toBe(1);
+    expect(collect($run->sources['fotos'])->pluck('estado')->unique()->all())->toBe(['disponible'])
+        ->and($run->sources['fotos'])->toHaveCount(8)
+        ->and($run->engine_version)->toBe(EfectividadV4Calculator::ENGINE_VERSION)
+        ->and($run->mode)->toBe('SEMANAL')
+        ->and($run->cutoff_date->format('Y-m-d'))->toBe('2026-10-11');
+    // Resultado real del fixture: Sano 400 por cobrar, 100 cobrado; atraso cobrado 250.
+    $gt = collect($run->result_rows)->firstWhere('tipo', 'gran_total');
+    expect($gt['sano_pc'])->toEqual(400.0)->and($gt['sano_cob'])->toEqual(100.0)
+        ->and($gt['atraso_cob'])->toEqual(250.0)->and($gt['pct_total'])->toEqual(0.875)->and($gt['mora'])->toEqual(50.0);
 
     // 6-7. Al volver, la interfaz muestra el resultado correcto.
     $this->actingAs($admin)->get('/efectividad-cobranza')->assertInertia(fn ($page) => $page
@@ -172,7 +173,8 @@ it('1-12: solicitud persistente → cola → worker sin sesión → estado resta
         ->where('focusRun.status', 'success')
         ->where('focusRun.display_state', 'success')
         ->where('focusRun.has_excel', true)
-        ->where('focusRun.stages.7.status', 'done')
+        ->where('focusRun.stages.8.status', 'done')
+        ->where('focusRun.is_current_engine', true)
         ->has('activeRuns', 0)
         // 10. El historial conserva la ejecución.
         ->where('history.data.0.id', $runId)
@@ -208,76 +210,85 @@ it('1-12: solicitud persistente → cola → worker sin sesión → estado resta
     $this->get("/efectividad-cobranza/runs/{$runId}")->assertRedirect('/login');
 });
 
-it('13: si el archivo de Ingresos no trae Fecha cuota ni Fecha transacción, queda BLOQUEADO con diagnóstico de columnas (archivo, hoja, columna esperada)', function () {
+it('13: si los Ingresos no traen Fecha cuota, queda BLOQUEADO (dato obsoleto/incompleto) con acción concreta — nunca 0%', function () {
     Mail::fake();
     $admin = User::factory()->create(['role' => 'admin']);
     $period = bgPeriod();
     $branch = bgBranch();
+    V4::snapshots($period, $branch);
+    // Variante real de Ingresos sin Fecha cuota (o importada con un importador anterior).
+    V4::ingresos($period, $branch, ['installment_due_date' => null]);
 
-    Portfolio::query()->create([
-        'period_id' => $period->id, 'branch_id' => $branch->id, 'contract' => 'C-1', 'promoter_name' => 'ANA',
-        'route_name' => 'CORDOBA', 'status' => 'VIGENTE', 'installment_amount' => 100, 'periodicity' => 'SEMANAL',
-        'num_payments' => 10, 'first_payment_date' => '2026-09-05',
-    ]);
-
-    // Variante real de Ingresos sin columnas de fecha (solo "Días vencidos pago").
-    $upload = bgUpload($period, 'lendus_ingresos_cobranza', 'ingresos_sept_resumido.xlsx',
-        ['Contrato', 'Promotor', 'Oficina', 'Operación', 'Transacción', 'Capital', 'Días vencidos pago'],
-        [['C-1', 'ANA', 'CORDOBA', 'PAGO A CONTRATO', 'PAGO', 100, 0]],
-    );
-    Recovery::query()->create([
-        'period_id' => $period->id, 'branch_id' => $branch->id, 'report_upload_id' => $upload->id,
-        'contract' => 'C-1', 'promoter_name' => 'ANA', 'office_name_raw' => 'CORDOBA',
-        'operation' => 'PAGO A CONTRATO', 'transaction' => 'PAGO', 'capital' => 100, 'total_amount' => 100,
-        'payment_date' => null, 'installment_due_date' => null,
-    ]);
-
-    $run = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]);
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
     bgRunJob($run->id);
     $run->refresh();
 
     expect($run->status)->toBe('blocked')
         ->and($run->output_excel_path)->toBeNull()
-        ->and($run->failure_kind)->toBe('incompatible');
+        ->and($run->result_rows)->toBe([])
+        ->and($run->failure_kind)->toBe('stale');
 
-    $issues = collect($run->issues);
-    $fechaCuota = $issues->first(fn ($i) => $i['code'] === 'EC-COL-FALTANTE' && $i['expected_column'] === 'Fecha cuota');
-    expect($fechaCuota)->not->toBeNull()
-        ->and($fechaCuota['severity'])->toBe('critical')
-        ->and($fechaCuota['file'])->toBe('ingresos_sept_resumido.xlsx')
-        ->and($fechaCuota['sheet'])->toBe('Hoja1')
-        ->and($fechaCuota['period'])->toBe($period->label)
-        ->and($fechaCuota['affected_rows'])->toBeNull() // nunca se inventan filas
-        ->and($fechaCuota['message'])->toContain('no contiene Fecha cuota')
-        ->and($fechaCuota['message'])->toContain('distinguir pagos sanos, atrasados y vencidos');
-
-    expect($issues->pluck('code'))->toContain('EC-COL-VARIANTE-INCOMPATIBLE', 'EC-COB-INGRESOS-SIN-FECHAS');
-
-    // Encabezados reales detectados con el mismo mapeo de los importadores.
-    $contrato = collect($run->metadata['columns']['ingresos']['fields'])->firstWhere('field', 'contract');
-    expect($contrato['status'])->toBe('found')->and($contrato['original_header'])->toBe('Contrato');
+    $issue = collect($run->issues)->firstWhere('code', 'EC-V4-INGRESOS-SIN-FECHA-CUOTA');
+    expect($issue['severity'])->toBe('critical')
+        ->and($issue['message'])->toContain('Fecha cuota')
+        ->and($issue['record_count'])->toBe(4)
+        ->and($issue['action'])->toContain('Vuelve a procesar');
+    expect($run->stages['validate_files']['status'])->toBe('blocked');
 
     Mail::assertSent(EfectividadCobranzaRunMail::class, fn ($m) => $m->kind === 'blocked'
         && $m->envelope()->subject === 'Efectividad de Cobranza — Se requiere corregir información');
     expect($admin->notifications()->first()->data['title'])->toBe('No se pudo generar el reporte porque faltan datos obligatorios.');
 });
 
-it('14: si falta cartera, explica que no existe un Saldos por Cliente válido para el corte', function () {
+it('14: si falta una fotografía (aunque sea un día intermedio) queda bloqueado, indica qué fotografía y fecha faltan, y NUNCA la sustituye', function () {
     Mail::fake();
     $admin = User::factory()->create(['role' => 'admin']);
     $period = bgPeriod();
+    $branch = bgBranch();
+    // Todas menos el miércoles 07/10.
+    V4::snapshots($period, $branch, ['2026-10-04', '2026-10-05', '2026-10-06', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11']);
+    V4::ingresos($period, $branch);
 
-    $run = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]);
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
     bgRunJob($run->id);
     $run->refresh();
 
     expect($run->status)->toBe('blocked')->and($run->failure_kind)->toBe('missing_data');
-    $messages = collect($run->issues)->where('severity', 'critical')->pluck('message')->implode(' | ');
-    expect($messages)->toContain('No existe un archivo Saldos por Cliente procesado y válido para el corte requerido');
+    $faltante = collect($run->issues)->firstWhere('code', 'EC-V4-FOTO-FALTANTE');
+    expect($faltante['message'])->toContain('CARTERA MIERCOLES')->toContain('07/10/2026')
+        ->and($faltante['sheet'])->toBe('CARTERA MIERCOLES')
+        ->and($faltante['action'])->toContain('No se sustituye con otra fotografía');
+    expect(collect($run->sources['fotos'])->firstWhere('fecha', '2026-10-07')['estado'])->toBe('faltante');
 
     $this->actingAs($admin)->getJson("/efectividad-cobranza/runs/{$run->id}/progreso")
         ->assertOk()
         ->assertJson(['status' => 'blocked', 'display_label' => 'Bloqueado por datos', 'has_excel' => false, 'rows' => []]);
+});
+
+it('14b: sin ninguna fotografía queda bloqueado con las 8 fotografías faltantes', function () {
+    Mail::fake();
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = bgPeriod();
+
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
+    bgRunJob($run->id);
+    $run->refresh();
+
+    expect($run->status)->toBe('blocked')->and($run->failure_kind)->toBe('missing_data');
+    expect(collect($run->issues)->where('code', 'EC-V4-FOTO-FALTANTE'))->toHaveCount(8);
+});
+
+it('14c: un periodo mensual no se calcula con la V4 (no se inventa una agregación) y queda bloqueado', function () {
+    Mail::fake();
+    $admin = User::factory()->create(['role' => 'admin']);
+    $month = Period::query()->create(['name' => 'Octubre', 'code' => 'M-V4-10', 'type' => 'monthly', 'year' => 2026, 'month' => 10, 'sequence' => 1, 'start_date' => '2026-09-28', 'end_date' => '2026-10-25']);
+
+    $this->actingAs($admin)->postJson('/efectividad-cobranza/generar', ['period_id' => $month->id])
+        ->assertStatus(422)->assertJson(['accepted' => false, 'code' => 'EC-V4-PERIODO']);
+
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $month->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
+    bgRunJob($run->id);
+    expect($run->refresh()->status)->toBe('blocked')->and($run->issues[0]['code'])->toBe('EC-V4-PERIODO');
 });
 
 it('15 + 17 + 18: una falla técnica reintenta como "Reintentando" (sin correo), y solo el último intento termina en Error — nunca éxito falso ni detalles técnicos al usuario', function () {
@@ -285,11 +296,12 @@ it('15 + 17 + 18: una falla técnica reintenta como "Reintentando" (sin correo),
     $admin = User::factory()->create(['role' => 'admin']);
     $period = bgPeriod();
 
-    $this->mock(EfectividadCobranzaAprobadaReportService::class, function ($mock) {
-        $mock->shouldReceive('generate')->andThrow(new RuntimeException('SQLSTATE[HY000] secreto interno host=db-prod'));
+    bgSeedValidData($period, bgBranch());
+    $this->mock(EfectividadV4Calculator::class, function ($mock) {
+        $mock->shouldReceive('calculate')->andThrow(new RuntimeException('SQLSTATE[HY000] secreto interno host=db-prod'));
     });
 
-    $run = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]);
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
 
     expect(fn () => bgRunJob($run->id, attempt: 1))->toThrow(RuntimeException::class);
     $run->refresh();
@@ -340,7 +352,7 @@ it('16 + 17: si el SMTP falla el reporte sigue disponible; el reintento envía U
     });
     config(['mail.default' => 'failing', 'mail.mailers.failing' => ['transport' => 'failing']]);
 
-    $run = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]);
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
     bgRunJob($run->id);
     $run->refresh();
 
@@ -370,7 +382,7 @@ it('SMTP sin configurar: no se afirma un envío; queda en failed con motivo y el
     $branch = bgBranch();
     bgSeedValidData($period, $branch);
 
-    $run = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]);
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
     bgRunJob($run->id);
     $run->refresh();
 
@@ -387,7 +399,7 @@ it('18: reintentos y Jobs duplicados no regeneran una ejecución cerrada ni dupl
     $branch = bgBranch();
     bgSeedValidData($period, $branch);
 
-    $run = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]);
+    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
     bgRunJob($run->id);
     $path = $run->refresh()->output_excel_path;
     $finishedAt = $run->finished_at;
@@ -549,8 +561,8 @@ it('historial: filtros por periodo, sucursal, estado, fecha y solicitante (solo 
     $period = bgPeriod();
     $branch = bgBranch();
 
-    $old = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success', 'created_by' => $gerente->id]);
-    $new = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success', 'created_by' => $admin->id]);
+    $old = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success', 'created_by' => $gerente->id]));
+    $new = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success', 'created_by' => $admin->id]));
     $blocked = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'status' => 'blocked', 'created_by' => $gerente->id]);
     foreach (range(1, 11) as $_) {
         EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'status' => 'failed', 'created_by' => $admin->id]);
@@ -562,7 +574,17 @@ it('historial: filtros por periodo, sucursal, estado, fecha y solicitante (solo 
         ->where('history.data.1.id', $old->id)
         ->where('history.data.1.display_state', 'obsolete')
         ->where('history.data.1.superseded_by_id', $new->id)
+        ->where('history.data.0.display_state', 'success')
+        ->where('history.data.0.is_current_engine', true)
     );
+
+    // Un resultado de la calculadora anterior nunca se presenta como vigente.
+    $legacy = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'engine_version' => 'aprobada-2026-10', 'status' => 'success', 'created_by' => $admin->id]);
+    $legacyJson = $this->actingAs($admin)->getJson("/efectividad-cobranza/runs/{$legacy->id}/progreso")->json();
+    expect($legacyJson['display_state'])->toBe('obsolete')
+        ->and($legacyJson['is_current_engine'])->toBeFalse()
+        ->and($legacyJson['health_message'])->toContain('calculadora anterior');
+    $legacy->delete();
     $this->actingAs($admin)->get('/efectividad-cobranza?f_branch=general&f_status=blocked')->assertInertia(fn ($page) => $page->has('history.data', 1)->where('history.data.0.id', $blocked->id));
     $this->actingAs($admin)->get("/efectividad-cobranza?f_user={$gerente->id}")->assertInertia(fn ($page) => $page->has('history.data', 2)->where('canFilterByUser', true));
     $this->actingAs($admin)->get('/efectividad-cobranza')->assertInertia(fn ($page) => $page->where('history.meta.total', 14)->where('history.meta.last_page', 2)->has('history.data', 10));
@@ -607,48 +629,4 @@ it('los tres correos se renderizan con periodo, sucursal, estado y enlace autent
             expect($html)->toContain('no contiene Fecha cuota')->toContain('Fecha cuota');
         }
     }
-});
-
-it('caso real: el archivo SÍ trae Fecha cuota pero los registros se importaron con un importador anterior → bloqueo por datos obsoletos con acción "reprocesar"', function () {
-    Mail::fake();
-    $admin = User::factory()->create(['role' => 'admin']);
-    $period = bgPeriod();
-    $branch = bgBranch();
-
-    Portfolio::query()->create([
-        'period_id' => $period->id, 'branch_id' => $branch->id, 'contract' => 'C-1', 'promoter_name' => 'ANA',
-        'route_name' => 'CORDOBA', 'status' => 'VIGENTE', 'installment_amount' => 100, 'periodicity' => 'SEMANAL',
-        'num_payments' => 10, 'first_payment_date' => '2026-09-05',
-    ]);
-    $upload = bgUpload($period, 'lendus_ingresos_cobranza', 'Ingresos cobranza.xlsx',
-        ['Contrato', 'Promotor', 'Oficina', 'Operación', 'Transacción', 'Fecha transacción', 'Fecha cuota', 'Capital'],
-        [['C-1', 'ANA', 'CORDOBA', 'PAGO A CONTRATO', 'PAGO', '2026-09-10', '2026-09-05', 100]],
-    );
-    Recovery::query()->create([
-        'period_id' => $period->id, 'branch_id' => $branch->id, 'report_upload_id' => $upload->id,
-        'contract' => 'C-1', 'promoter_name' => 'ANA', 'office_name_raw' => 'CORDOBA',
-        'operation' => 'PAGO A CONTRATO', 'transaction' => 'PAGO', 'capital' => 100, 'total_amount' => 100,
-        'payment_date' => '2026-09-10', 'installment_due_date' => null, 'importer_version' => null,
-    ]);
-
-    $run = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]);
-    bgRunJob($run->id);
-    $run->refresh();
-
-    expect($run->status)->toBe('blocked')->and($run->failure_kind)->toBe('stale');
-
-    $issues = collect($run->issues);
-    // La columna SÍ existe en el archivo: nunca se afirma que falta.
-    expect($issues->where('code', 'EC-COL-FALTANTE')->pluck('expected_column'))->not->toContain('Fecha cuota');
-
-    $reprocess = $issues->firstWhere('code', 'EC-DATA-REPROCESAR');
-    expect($reprocess['severity'])->toBe('critical')
-        ->and($reprocess['category'])->toBe('stale')
-        ->and($reprocess['file'])->toBe('Ingresos cobranza.xlsx')
-        ->and($reprocess['message'])->toContain('sí contiene Fecha cuota')
-        ->and($reprocess['message'])->toContain('versión anterior del importador')
-        ->and($reprocess['action'])->toContain('Vuelve a procesar');
-
-    $fechaCuota = collect($run->metadata['columns']['ingresos']['fields'])->firstWhere('field', 'installment_due_date');
-    expect($fechaCuota['status'])->toBe('found')->and($fechaCuota['original_header'])->toBe('Fecha cuota')->and($fechaCuota['empty_rows'])->toBe(1);
 });

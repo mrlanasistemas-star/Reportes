@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { Head, router } from '@inertiajs/vue3';
 import { Loader2, RotateCw, TrendingUp, XCircle } from 'lucide-vue-next';
+import Swal from 'sweetalert2';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
+import DisponibilidadInformacion from '@/components/efectividad/DisponibilidadInformacion.vue';
 import EfectividadResults from '@/components/efectividad/EfectividadResults.vue';
 import {
     csrfToken,
@@ -15,6 +17,7 @@ import RunHistoryTable from '@/components/efectividad/RunHistoryTable.vue';
 import RunStatusBadge from '@/components/efectividad/RunStatusBadge.vue';
 import RunStatusCard from '@/components/efectividad/RunStatusCard.vue';
 import type {
+    Availability,
     HistoryFilters,
     RunDetail,
     RunSummary,
@@ -31,10 +34,25 @@ import {
     index as efectividadIndex,
 } from '@/routes/efectividad-cobranza';
 
+type Mode = 'SEMANAL' | 'DIARIO';
+
 const props = defineProps<{
-    periods: Array<{ id: number; label: string; code: string; type: string }>;
+    periods: Array<{
+        id: number;
+        label: string;
+        code: string;
+        type: string;
+        start_date: string | null;
+        end_date: string | null;
+    }>;
     branches: Array<{ id: number; name: string }>;
-    selected: { period_id: number | null; branch_id: number | null };
+    selected: {
+        period_id: number | null;
+        branch_id: number | null;
+        mode: Mode;
+        cutoff_date: string | null;
+    };
+    engineVersion: string;
     focusRun: RunDetail | null;
     activeRuns: RunSummary[];
     history: {
@@ -61,16 +79,81 @@ defineOptions({
     },
 });
 
+function dm(ymd: string | null): string {
+    return ymd ? ymd.slice(5, 10).split('-').reverse().join('/') : '';
+}
+
+// La calculadora V4 es semanal (lunes-domingo): solo se generan semanas operativas.
+// Un periodo de otro tipo solo aparece si es el de una ejecución anterior enfocada.
 const periodOptions = computed(() =>
-    props.periods.map((p) => ({ value: p.id, label: p.label })),
+    props.periods
+        .filter((p) => p.type === 'weekly' || p.id === props.selected.period_id)
+        .map((p) => ({
+            value: p.id,
+            label:
+                p.type === 'weekly'
+                    ? `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)})`
+                    : `${p.label} (no semanal)`,
+        })),
 );
 const branchOptions = computed(() => [
     { value: '', label: 'Todas las sucursales (general)' },
     ...props.branches.map((b) => ({ value: b.id, label: b.name })),
 ]);
+const modeOptions = [
+    { value: 'SEMANAL', label: 'Semanal (lunes a domingo)' },
+    { value: 'DIARIO', label: 'Diario (un día de la semana)' },
+];
 
 const selectedPeriodId = ref<number | string>(props.selected.period_id ?? '');
 const selectedBranchId = ref<number | string>(props.selected.branch_id ?? '');
+const selectedMode = ref<string | number>(props.selected.mode ?? 'SEMANAL');
+const selectedCutoff = ref<string | number>(props.selected.cutoff_date ?? '');
+const availability = ref<Availability | null>(null);
+
+const selectedPeriod = computed(
+    () =>
+        props.periods.find((p) => p.id === Number(selectedPeriodId.value)) ??
+        null,
+);
+const isWeeklySelected = computed(
+    () => selectedPeriod.value?.type === 'weekly',
+);
+
+/** Días lunes-domingo de la semana seleccionada (fecha de corte en modo DIARIO). */
+const cutoffOptions = computed(() => {
+    const p = selectedPeriod.value;
+
+    if (!p || p.type !== 'weekly' || !p.start_date) {
+        return [];
+    }
+
+    const dias = [
+        'Lunes',
+        'Martes',
+        'Miércoles',
+        'Jueves',
+        'Viernes',
+        'Sábado',
+        'Domingo',
+    ];
+    const base = new Date(`${p.start_date.slice(0, 10)}T00:00:00Z`).getTime();
+
+    return dias.map((dia, i) => {
+        const ymd = new Date(base + i * 86400000).toISOString().slice(0, 10);
+
+        return {
+            value: ymd,
+            label: `${dia} ${ymd.split('-').reverse().join('/')}`,
+        };
+    });
+});
+
+const cutoffForAvailability = computed(() =>
+    selectedMode.value === 'DIARIO' && selectedCutoff.value
+        ? String(selectedCutoff.value)
+        : null,
+);
 
 // La ejecución enfocada SIEMPRE llega del servidor (BD): al volver al módulo,
 // recargar o abrir el enlace del correo, se restaura sin depender del navegador.
@@ -94,6 +177,8 @@ watch(
     (value) => {
         selectedPeriodId.value = value.period_id ?? '';
         selectedBranchId.value = value.branch_id ?? '';
+        selectedMode.value = value.mode ?? 'SEMANAL';
+        selectedCutoff.value = value.cutoff_date ?? '';
     },
 );
 
@@ -179,6 +264,18 @@ onBeforeUnmount(() => {
 
 function reloadForSelection() {
     errorMessage.value = null;
+
+    if (!isWeeklySelected.value) {
+        selectedMode.value = 'SEMANAL';
+    }
+
+    if (
+        selectedCutoff.value &&
+        !cutoffOptions.value.some((o) => o.value === selectedCutoff.value)
+    ) {
+        selectedCutoff.value = '';
+    }
+
     router.get(
         efectividadIndex().url,
         {
@@ -202,8 +299,14 @@ function followRun(run: RunSummary) {
     );
 }
 
-async function generar() {
+async function generar(confirmPartial = false) {
     if (!selectedPeriodId.value || submitting.value) {
+        return;
+    }
+
+    if (selectedMode.value === 'DIARIO' && !selectedCutoff.value) {
+        errorMessage.value = 'En modo diario selecciona la fecha de corte.';
+
         return;
     }
 
@@ -223,8 +326,50 @@ async function generar() {
             body: JSON.stringify({
                 period_id: selectedPeriodId.value,
                 branch_id: selectedBranchId.value || null,
+                mode: selectedMode.value,
+                cutoff_date:
+                    selectedMode.value === 'DIARIO'
+                        ? selectedCutoff.value
+                        : null,
+                confirm_partial: confirmPartial,
             }),
         });
+
+        if (res.status === 409) {
+            const body = await res
+                .clone()
+                .json()
+                .catch(() => null);
+
+            if (body?.requires_confirmation) {
+                // Mismo control que la macro: confirmar que Ingresos trae la semana completa.
+                const answer = await Swal.fire({
+                    icon: 'warning',
+                    title: 'Confirma la semana de Ingresos',
+                    text: `${body.message} ¿Confirmas que el archivo cargado incluye la semana completa (o que no hubo movimientos)?`,
+                    showCancelButton: true,
+                    confirmButtonText: 'Sí, generar',
+                    cancelButtonText: 'No, revisar archivos',
+                });
+                submitting.value = false;
+
+                if (answer.isConfirmed) {
+                    await generar(true);
+                }
+
+                return;
+            }
+        }
+
+        if (res.status === 422) {
+            const body = await res.json().catch(() => null);
+            errorMessage.value =
+                body?.error ??
+                body?.message ??
+                'Los parámetros de generación no son válidos.';
+
+            return;
+        }
 
         if (!res.ok) {
             // Incluye 503 (la cola no aceptó el trabajo): NUNCA se muestra la confirmación.
@@ -279,6 +424,12 @@ const showResults = computed(
         focusDetail.value?.status === 'success' &&
         focusDetail.value.rows.length > 0,
 );
+const sourcesBlocked = computed(
+    () =>
+        !!availability.value &&
+        availability.value.supported &&
+        availability.value.bloqueante,
+);
 </script>
 
 <template>
@@ -297,8 +448,8 @@ const showResults = computed(
                     Efectividad de Cobranza
                 </h1>
                 <p class="text-sm text-muted-foreground">
-                    Genera y consulta reportes de recuperación por periodo,
-                    sucursal y promotor.
+                    Calculadora V4 MR LANA: fotografías diarias de cartera +
+                    Ingresos Cobranza, por oficina y promotor.
                 </p>
             </div>
         </header>
@@ -306,13 +457,13 @@ const showResults = computed(
         <!-- Filtros + Generar: el botón nunca sale de la tarjeta -->
         <Card class="py-4">
             <CardContent
-                class="grid grid-cols-1 items-end gap-3 px-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
+                class="grid grid-cols-1 items-end gap-3 px-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
             >
                 <SelectField
                     v-model="selectedPeriodId"
-                    label="Periodo"
+                    label="Semana operativa"
                     :options="periodOptions"
-                    placeholder="Selecciona un periodo"
+                    placeholder="Selecciona una semana"
                     @update:model-value="reloadForSelection"
                 />
                 <SelectField
@@ -322,10 +473,37 @@ const showResults = computed(
                     placeholder="Todas (general)"
                     @update:model-value="reloadForSelection"
                 />
+                <SelectField
+                    v-model="selectedMode"
+                    label="Modo"
+                    :options="modeOptions"
+                    :disabled="!isWeeklySelected"
+                />
+                <SelectField
+                    v-model="selectedCutoff"
+                    label="Fecha de corte"
+                    :options="
+                        selectedMode === 'DIARIO'
+                            ? cutoffOptions
+                            : [
+                                  {
+                                      value: '',
+                                      label: 'Domingo de la semana',
+                                  },
+                              ]
+                    "
+                    placeholder="Selecciona el día"
+                    :disabled="selectedMode !== 'DIARIO'"
+                />
                 <Button
-                    class="w-full sm:col-span-2 lg:col-span-1 lg:w-auto"
-                    :disabled="!selectedPeriodId || submitting || focusIsActive"
-                    @click="generar"
+                    class="w-full sm:col-span-2 xl:col-span-1 xl:w-auto"
+                    :disabled="
+                        !selectedPeriodId ||
+                        !isWeeklySelected ||
+                        submitting ||
+                        focusIsActive
+                    "
+                    @click="generar()"
                 >
                     <Loader2 v-if="submitting" class="animate-spin" />
                     <TrendingUp v-else />
@@ -335,6 +513,15 @@ const showResults = computed(
                             : 'Generar reporte'
                     }}
                 </Button>
+                <p
+                    v-if="sourcesBlocked"
+                    class="text-xs text-amber-700 sm:col-span-2 xl:col-span-5 dark:text-amber-300"
+                >
+                    Faltan fuentes indispensables (ver «Disponibilidad de
+                    información»). Si generas ahora, el reporte quedará
+                    bloqueado con el detalle de lo que falta; nunca se calcula
+                    con fotografías incompletas.
+                </p>
             </CardContent>
         </Card>
 
@@ -345,12 +532,20 @@ const showResults = computed(
                 class="flex flex-wrap items-center justify-between gap-3"
             >
                 <span>{{ errorMessage }}</span>
-                <Button variant="outline" size="sm" @click="generar">
+                <Button variant="outline" size="sm" @click="generar()">
                     <RotateCw />
                     Reintentar
                 </Button>
             </AlertDescription>
         </Alert>
+
+        <DisponibilidadInformacion
+            :period-id="selectedPeriodId || null"
+            :branch-id="selectedBranchId || null"
+            :mode="selectedMode === 'DIARIO' ? 'DIARIO' : 'SEMANAL'"
+            :cutoff-date="cutoffForAvailability"
+            @update="availability = $event"
+        />
 
         <!-- Otras ejecuciones activas del usuario (restauradas desde la BD) -->
         <Card v-if="otherActiveRuns.length" class="gap-2 py-3">
@@ -406,7 +601,7 @@ const showResults = computed(
             :refreshing="polling.refreshing.value"
             @details="openDetails(focus.id)"
             @refresh="polling.refreshNow(focus.id)"
-            @retry="generar"
+            @retry="generar()"
         />
         <Card v-else-if="selectedPeriodId" class="border-dashed py-6">
             <CardContent class="px-4 text-center text-sm text-muted-foreground">

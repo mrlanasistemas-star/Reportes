@@ -13,6 +13,7 @@ use App\Services\Imports\GastosImportService;
 use App\Services\Imports\GastosLendusExcelImportService;
 use App\Services\Imports\GastosLendusPdfImportService;
 use App\Services\Imports\ImssExcelImportService;
+use App\Services\Imports\LendusCarteraFotoImportService;
 use App\Services\Imports\LendusIngresosCobranzaImportService;
 use App\Services\Imports\NoiNominaImportService;
 use App\Services\Imports\LendusEmployeeDirectoryImportService;
@@ -35,6 +36,7 @@ class ReportAnalysisService
         protected LendusMinistracionesImportService $lendusMinistracionesImportService,
         protected LendusSaldosClienteImportService $lendusSaldosClienteImportService,
         protected LendusEmployeeDirectoryImportService $lendusEmployeeDirectoryImportService,
+        protected LendusCarteraFotoImportService $lendusCarteraFotoImportService,
     ) {
     }
 
@@ -97,6 +99,7 @@ class ReportAnalysisService
                     DataSourceCode::LendusIngresosCobranza->value => $this->lendusIngresosCobranzaImportService->handle($upload, $progress),
                     DataSourceCode::LendusMinistraciones->value   => $this->lendusMinistracionesImportService->handle($upload, $progress),
                     DataSourceCode::LendusSaldosCliente->value    => $this->lendusSaldosClienteImportService->handle($upload, $progress),
+                    DataSourceCode::LendusSaldosClienteFoto->value => $this->lendusCarteraFotoImportService->handle($upload, $progress),
                     DataSourceCode::LendusEmpleados->value        => $this->lendusEmployeeDirectoryImportService->handle($upload, $progress),
                     DataSourceCode::Imss->value                   => $this->imssExcelImportService->handle($upload, $progress),
                     DataSourceCode::Rotacion->value               => $this->rotacionExcelImportService->handle($upload, $progress),

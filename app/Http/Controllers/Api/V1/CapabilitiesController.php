@@ -64,6 +64,11 @@ class CapabilitiesController extends Controller
                 'permitted'   => $implemented && $consumerHasAbility,
                 'blocked_reason' => self::BLOCKED_RESOURCES[$resource] ?? null,
             ];
+            if ($resource === 'collections_effectiveness_approved') {
+                // Versión del motor que respalda `versions.approved` (nunca la calculadora anterior).
+                $resources[$resource]['engine_version'] = \App\Models\EfectividadCobranzaRun::currentEngineVersion();
+                $resources[$resource]['period_type'] = 'weekly';
+            }
         }
 
         return response()->json([

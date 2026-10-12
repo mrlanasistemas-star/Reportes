@@ -40,6 +40,7 @@ import {
 } from './format';
 import RunIssuesList from './RunIssuesList.vue';
 import RunStatusBadge from './RunStatusBadge.vue';
+import { isV4Sources } from './types';
 import type { RunDetail, StageEntry } from './types';
 
 const props = defineProps<{ runId: number | null; seed?: RunDetail | null }>();
@@ -136,6 +137,21 @@ function stageDuration(stage: StageEntry): string | null {
     );
 }
 
+const v4Sources = computed(() =>
+    detail.value && isV4Sources(detail.value.sources)
+        ? detail.value.sources
+        : null,
+);
+const legacySources = computed(() =>
+    detail.value?.sources && !isV4Sources(detail.value.sources)
+        ? detail.value.sources
+        : null,
+);
+
+function dmy(ymd: string | null | undefined): string {
+    return ymd ? ymd.slice(0, 10).split('-').reverse().join('/') : '—';
+}
+
 const hasLegacyTimeline = computed(() =>
     detail.value?.stages.every((s) => s.status === 'unknown'),
 );
@@ -167,7 +183,7 @@ function openInModule() {
                 </div>
                 <SheetDescription>
                     <template v-if="detail"
-                        >Efectividad Aprobada · {{ detail.period_label }} ·
+                        >{{ detail.report }} · {{ detail.period_label }} ·
                         {{ detail.branch_label }}</template
                     >
                     <template v-else
@@ -195,6 +211,31 @@ function openInModule() {
                     <dl
                         class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-3"
                     >
+                        <div>
+                            <dt class="text-xs text-muted-foreground">
+                                Motor de cálculo
+                            </dt>
+                            <dd class="font-medium">
+                                {{ detail.engine_label }}
+                            </dd>
+                        </div>
+                        <div v-if="detail.mode">
+                            <dt class="text-xs text-muted-foreground">
+                                Modo y corte
+                            </dt>
+                            <dd class="font-medium">
+                                {{ detail.mode }} ·
+                                {{ dmy(detail.cutoff_date) }}
+                            </dd>
+                        </div>
+                        <div v-if="detail.incidents_count !== null">
+                            <dt class="text-xs text-muted-foreground">
+                                Incidencias de cálculo
+                            </dt>
+                            <dd class="font-medium">
+                                {{ formatNumber(detail.incidents_count) }}
+                            </dd>
+                        </div>
                         <div>
                             <dt class="text-xs text-muted-foreground">
                                 Solicitado por
@@ -376,8 +417,69 @@ function openInModule() {
                     <RunIssuesList v-else :issues="detail.issues" />
                 </section>
 
-                <!-- Fuentes utilizadas -->
-                <section v-if="detail.sources" class="space-y-3">
+                <!-- Fuentes utilizadas (motor V4: fotografías diarias + ingresos) -->
+                <section v-if="v4Sources" class="space-y-3">
+                    <h3 class="text-sm font-semibold">Fuentes utilizadas</h3>
+                    <ul class="divide-y rounded-lg border">
+                        <li
+                            v-for="f in v4Sources.fotos"
+                            :key="f.fecha"
+                            class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm"
+                        >
+                            <FileSpreadsheet
+                                class="size-4 shrink-0 text-muted-foreground"
+                                aria-hidden="true"
+                            />
+                            <span class="w-32 shrink-0 font-medium"
+                                >{{ f.dia }} {{ dmy(f.fecha) }}</span
+                            >
+                            <span
+                                class="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+                            >
+                                {{
+                                    f.archivos
+                                        .map((a) => a.archivo)
+                                        .join(', ') || 'Sin fotografía'
+                                }}
+                            </span>
+                            <span class="text-xs tabular-nums"
+                                >{{ formatNumber(f.contratos) }} contratos</span
+                            >
+                            <span
+                                class="text-xs"
+                                :class="
+                                    f.estado === 'disponible'
+                                        ? 'text-emerald-600 dark:text-emerald-400'
+                                        : 'text-amber-600'
+                                "
+                                >{{
+                                    {
+                                        disponible: 'Disponible',
+                                        pendiente: 'Procesando',
+                                        fallida: 'Error',
+                                        faltante: 'Faltante',
+                                    }[f.estado]
+                                }}</span
+                            >
+                        </li>
+                        <li class="px-3 py-2 text-sm">
+                            Ingresos Cobranza:
+                            {{
+                                formatNumber(
+                                    v4Sources.ingresos.movimientos_corte,
+                                )
+                            }}
+                            movimientos del corte ·
+                            {{
+                                formatNumber(
+                                    v4Sources.ingresos.historial_movimientos,
+                                )
+                            }}
+                            en el histórico previo
+                        </li>
+                    </ul>
+                </section>
+                <section v-else-if="legacySources" class="space-y-3">
                     <h3 class="text-sm font-semibold">Fuentes utilizadas</h3>
                     <div
                         v-for="key in ['saldos', 'ingresos'] as const"
@@ -388,15 +490,15 @@ function openInModule() {
                             class="flex flex-wrap items-baseline justify-between gap-2 border-b bg-muted/40 px-3 py-2"
                         >
                             <p class="text-sm font-medium">
-                                {{ detail.sources[key].label }}
+                                {{ legacySources[key].label }}
                             </p>
                             <p class="text-xs text-muted-foreground">
                                 <template v-if="key === 'saldos'"
                                     >Corte
-                                    {{ detail.sources.saldos.period_label }} ·
+                                    {{ legacySources.saldos.period_label }} ·
                                     {{
                                         formatNumber(
-                                            detail.sources.saldos.rows_in_db,
+                                            legacySources.saldos.rows_in_db,
                                         )
                                     }}
                                     registros</template
@@ -404,36 +506,33 @@ function openInModule() {
                                 <template v-else>
                                     {{
                                         formatNumber(
-                                            detail.sources.ingresos
+                                            legacySources.ingresos
                                                 .rows_in_period,
                                         )
                                     }}
                                     del periodo ·
                                     {{
                                         formatNumber(
-                                            detail.sources.ingresos
-                                                .history_rows,
+                                            legacySources.ingresos.history_rows,
                                         )
                                     }}
                                     en histórico
                                     <template
-                                        v-if="
-                                            detail.sources.ingresos.history_to
-                                        "
+                                        v-if="legacySources.ingresos.history_to"
                                         >(hasta
                                         {{
-                                            detail.sources.ingresos.history_to
+                                            legacySources.ingresos.history_to
                                         }})</template
                                     >
                                 </template>
                             </p>
                         </div>
                         <ul
-                            v-if="detail.sources[key].uploads.length"
+                            v-if="legacySources[key].uploads.length"
                             class="divide-y"
                         >
                             <li
-                                v-for="u in detail.sources[key].uploads"
+                                v-for="u in legacySources[key].uploads"
                                 :key="u.id"
                                 class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm"
                             >

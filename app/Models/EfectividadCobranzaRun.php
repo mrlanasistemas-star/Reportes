@@ -4,7 +4,9 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class EfectividadCobranzaRun extends Model
 {
@@ -39,6 +41,11 @@ class EfectividadCobranzaRun extends Model
     protected $fillable = [
         'period_id',
         'branch_id',
+        'engine_version',
+        'mode',
+        'base_date',
+        'cutoff_date',
+        'incidents_count',
         'status',
         'current_stage',
         'stage_started_at',
@@ -92,7 +99,33 @@ class EfectividadCobranzaRun extends Model
         'heartbeat_at'       => 'datetime',
         'notified_at'        => 'datetime',
         'in_app_notified_at' => 'datetime',
+        'base_date'          => 'date',
+        'cutoff_date'        => 'date',
+        'incidents_count'    => 'integer',
     ];
+
+    /** Motor anterior (CALCULADORA DE EFECTIVIDAD DE COBRANZA APROBADO.xlsm) — solo histórico. */
+    public const ENGINE_APROBADA_2026_10 = 'aprobada-2026-10';
+
+    public const MODE_SEMANAL = 'SEMANAL';
+
+    public const MODE_DIARIO = 'DIARIO';
+
+    /** Versión vigente del motor (MR_LANA_EFECTIVIDAD.xlsm V4). */
+    public static function currentEngineVersion(): string
+    {
+        return EfectividadV4Calculator::ENGINE_VERSION;
+    }
+
+    public function isCurrentEngine(): bool
+    {
+        return $this->engine_version === self::currentEngineVersion();
+    }
+
+    public function incidents(): HasMany
+    {
+        return $this->hasMany(EfectividadCobranzaRunIncident::class)->orderBy('position');
+    }
 
     public function period(): BelongsTo
     {
@@ -186,6 +219,18 @@ class EfectividadCobranzaRun extends Model
             ->where('status', self::STATUS_SUCCESS)
             ->latest('id')
             ->first();
+    }
+
+    /**
+     * Identidad V4: periodo semanal + sucursal + modo (+ fecha de corte en DIARIO).
+     * Solo considera ejecuciones del motor vigente.
+     */
+    public function scopeForV4Identity(Builder $query, int $periodId, ?int $branchId, string $mode, ?string $cutoff): Builder
+    {
+        return $query->forIdentity($periodId, $branchId)
+            ->where('engine_version', self::currentEngineVersion())
+            ->where('mode', $mode)
+            ->when($mode === self::MODE_DIARIO, fn ($q) => $q->whereDate('cutoff_date', $cutoff));
     }
 
     public static function latestFor(int $periodId, ?int $branchId): ?self

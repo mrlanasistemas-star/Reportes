@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import type { RunStatus, StageInfo } from './types';
 
-// Segmentos = las 8 etapas REALES del Job. Indica en qué paso va, no un % inventado.
+// Segmentos = las etapas REALES del Job (catálogo del servidor). Indica en qué paso va, no un % inventado.
 const props = defineProps<{
     catalog: StageInfo[];
     current: StageInfo | null;

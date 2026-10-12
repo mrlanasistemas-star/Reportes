@@ -81,7 +81,7 @@ final class EfectividadCobranzaIssue
         $rank = [self::SEVERITY_CRITICAL => 0, self::SEVERITY_WARNING => 1, self::SEVERITY_INFO => 2];
 
         return collect($issues)
-            ->unique(fn (array $i) => ($i['code'] ?? '').'|'.($i['upload_id'] ?? '').'|'.($i['expected_column'] ?? ''))
+            ->unique(fn (array $i) => ($i['code'] ?? '').'|'.($i['upload_id'] ?? '').'|'.($i['expected_column'] ?? '').'|'.($i['sheet'] ?? ''))
             ->sortBy(fn (array $i) => $rank[$i['severity'] ?? self::SEVERITY_INFO] ?? 3)
             ->values()
             ->all();
