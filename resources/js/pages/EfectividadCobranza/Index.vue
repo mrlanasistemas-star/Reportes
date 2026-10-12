@@ -6,9 +6,11 @@ import {
     Download,
     FileSpreadsheet,
     Loader2,
+    RotateCw,
     TrendingUp,
+    XCircle,
 } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import SelectField from '@/components/forms/SelectField.vue'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -44,9 +46,11 @@ type Coverage = {
     ingresos_rows_usables: number
 }
 
+type RunStatus = 'queued' | 'running' | 'success' | 'blocked' | 'failed'
+
 type RunPayload = {
     id: number
-    status: 'queued' | 'running' | 'success' | 'failed'
+    status: RunStatus
     log: string | null
     metadata: { progress_percent?: number; current_step?: string } | null
     coverage: Coverage | null
@@ -87,6 +91,12 @@ const selectedBranchId = ref<number | string>(props.selected.branch_id ?? '')
 
 const run = ref<RunPayload | null>(props.latestRun)
 const generating = ref(false)
+// Fase 6 (auditoría 2026-10-12) — banner de error real, visible al usuario. Antes los
+// fetch() fallidos (red caída, 419/422/403/409/500, JSON inválido) se tragaban en
+// silencio: el botón quedaba "generando" para siempre o el error solo salía en la
+// consola del navegador, nunca en pantalla.
+const errorMessage = ref<string | null>(null)
+let isPolling = false // evita solicitudes de progreso solapadas si una tarda más que el intervalo
 
 watch(
     () => props.latestRun,
@@ -96,6 +106,7 @@ watch(
 )
 
 function reloadForSelection() {
+    errorMessage.value = null
     router.get(
         efectividadIndex().url,
         {
@@ -113,22 +124,89 @@ function stopPolling() {
         clearInterval(pollTimer)
         pollTimer = null
     }
+    isPolling = false
+}
+
+/**
+ * Traduce una respuesta HTTP no exitosa (o una excepción de red/JSON) a un
+ * mensaje real para el usuario — nunca un fetch silencioso.
+ */
+async function describeHttpFailure(res: Response | null, error: unknown): Promise<string> {
+    if (!res) {
+        return error instanceof Error && error.name === 'AbortError'
+            ? 'La solicitud tardó demasiado y se canceló. Verifica tu conexión e intenta de nuevo.'
+            : 'No se pudo conectar con el servidor. Verifica tu conexión a internet e intenta de nuevo.'
+    }
+
+    if (res.status === 401 || res.status === 419) {
+        return 'Tu sesión expiró. Recarga la página para iniciar sesión de nuevo antes de continuar.'
+    }
+    if (res.status === 403) {
+        return 'No tienes permiso para realizar esta acción.'
+    }
+    if (res.status === 409) {
+        try {
+            const body = await res.json()
+            return body?.error ?? 'Ya hay una generación en curso para este periodo/sucursal. Intenta de nuevo en unos segundos.'
+        } catch {
+            return 'Ya hay una generación en curso para este periodo/sucursal. Intenta de nuevo en unos segundos.'
+        }
+    }
+    if (res.status === 422) {
+        try {
+            const body = await res.json()
+            const firstError = body?.errors ? Object.values(body.errors)[0] : null
+            return Array.isArray(firstError) ? String(firstError[0]) : (body?.message ?? 'Selecciona un periodo válido.')
+        } catch {
+            return 'Selecciona un periodo válido.'
+        }
+    }
+    if (res.status === 404) {
+        return 'El reporte solicitado ya no existe.'
+    }
+    if (res.status >= 500) {
+        return 'Ocurrió un error en el servidor al procesar la solicitud. Intenta de nuevo; si el problema persiste, contacta a soporte.'
+    }
+
+    return `No se pudo completar la solicitud (código ${res.status}).`
 }
 
 async function pollProgress(runId: number) {
-    const res = await fetch(`/efectividad-cobranza/runs/${runId}/progreso`, {
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-    })
-    if (!res.ok) {
+    if (isPolling) {
         return
     }
-    const payload = (await res.json()) as RunPayload
-    run.value = payload
+    isPolling = true
 
-    if (payload.status === 'success' || payload.status === 'failed') {
+    try {
+        const res = await fetch(`/efectividad-cobranza/runs/${runId}/progreso`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        })
+
+        if (!res.ok) {
+            errorMessage.value = await describeHttpFailure(res, null)
+            stopPolling()
+            generating.value = false
+            return
+        }
+
+        const payload = (await res.json()) as RunPayload
+        run.value = payload
+        errorMessage.value = null
+
+        if (payload.status === 'success' || payload.status === 'blocked' || payload.status === 'failed') {
+            stopPolling()
+            generating.value = false
+            router.reload({ only: ['history'] })
+        }
+    } catch (error) {
+        // Red caída a medio polling, o la respuesta no era JSON válido (p.ej. una
+        // página HTML de error inesperada) — nunca se deja la UI en "Procesando…"
+        // para siempre sin explicar por qué.
+        errorMessage.value = await describeHttpFailure(null, error)
         stopPolling()
         generating.value = false
-        router.reload({ only: ['history'] })
+    } finally {
+        isPolling = false
     }
 }
 
@@ -139,35 +217,56 @@ function startPolling(runId: number) {
 
 onBeforeUnmount(stopPolling)
 
+// Fase 6 — si la página se recarga (F5, o se vuelve de otra pestaña) mientras una
+// generación sigue en cola/corriendo, el estado real (BD) ya llega en props.latestRun
+// — pero antes el polling nunca se reanudaba, así que la pantalla se quedaba
+// mostrando "Procesando…" congelado hasta que el usuario recargara manualmente otra
+// vez. Ahora se reanuda automáticamente.
+onMounted(() => {
+    if (run.value && (run.value.status === 'queued' || run.value.status === 'running')) {
+        generating.value = true
+        startPolling(run.value.id)
+    }
+})
+
 async function generar() {
-    if (!selectedPeriodId.value) {
+    if (!selectedPeriodId.value || generating.value) {
         return
     }
 
     generating.value = true
+    errorMessage.value = null
     run.value = null
 
-    const res = await fetch(generateRoute().url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '',
-        },
-        body: JSON.stringify({
-            period_id: selectedPeriodId.value,
-            branch_id: selectedBranchId.value || null,
-        }),
-    })
+    let res: Response | null = null
 
-    if (!res.ok) {
+    try {
+        res = await fetch(generateRoute().url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '',
+            },
+            body: JSON.stringify({
+                period_id: selectedPeriodId.value,
+                branch_id: selectedBranchId.value || null,
+            }),
+        })
+
+        if (!res.ok) {
+            errorMessage.value = await describeHttpFailure(res, null)
+            generating.value = false
+            return
+        }
+
+        const { run_id } = (await res.json()) as { run_id: number; status: string }
+        await pollProgress(run_id)
+        startPolling(run_id)
+    } catch (error) {
+        errorMessage.value = await describeHttpFailure(res, error)
         generating.value = false
-        return
     }
-
-    const { run_id } = (await res.json()) as { run_id: number; status: string }
-    await pollProgress(run_id)
-    startPolling(run_id)
 }
 
 const granTotal = computed(() => run.value?.rows?.find((r) => r.promotor === 'GRAN TOTAL') ?? null)
@@ -192,11 +291,16 @@ function formatPct(value: number | null | undefined): string {
 }
 
 function statusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-    return { queued: 'secondary', running: 'secondary', success: 'default', failed: 'destructive' }[status] as never ?? 'outline'
+    return (
+        ({ queued: 'secondary', running: 'secondary', success: 'default', blocked: 'outline', failed: 'destructive' }[status] as never) ?? 'outline'
+    )
 }
 
 function statusLabel(status: string): string {
-    return { queued: 'En cola', running: 'Procesando', success: 'Listo', failed: 'Error' }[status] ?? status
+    // Fase 5 (auditoría 2026-10-12) — "blocked" es un estado real y distinto de
+    // "success": antes el backend guardaba datos insuficientes como success y la UI
+    // mostraba "Listo" aunque no hubiera ni Excel ni resultado utilizable.
+    return { queued: 'En cola', running: 'Procesando', success: 'Listo', blocked: 'Bloqueado — datos insuficientes', failed: 'Error' }[status] ?? status
 }
 
 function coverageAlertVariant(status: string | undefined): 'default' | 'destructive' {
@@ -241,6 +345,18 @@ function coverageAlertVariant(status: string | undefined): 'default' | 'destruct
             </CardContent>
         </Card>
 
+        <Alert v-if="errorMessage" variant="destructive">
+            <XCircle />
+            <AlertTitle>No se pudo completar la solicitud</AlertTitle>
+            <AlertDescription class="flex items-center justify-between gap-3">
+                <span>{{ errorMessage }}</span>
+                <Button variant="outline" size="sm" @click="generar">
+                    <RotateCw />
+                    Reintentar
+                </Button>
+            </AlertDescription>
+        </Alert>
+
         <Card v-if="run">
             <CardHeader class="flex flex-row items-center justify-between gap-3">
                 <CardTitle class="text-base">Estado de la generación</CardTitle>
@@ -254,9 +370,15 @@ function coverageAlertVariant(status: string | undefined): 'default' | 'destruct
                     <p class="text-sm text-muted-foreground">{{ currentStep }} — {{ run.log }}</p>
                 </div>
 
-                <p v-if="run.status === 'failed'" class="text-sm font-medium text-destructive">
-                    {{ run.error_message ?? run.log }}
-                </p>
+                <div v-if="run.status === 'failed'" class="flex items-center justify-between gap-3">
+                    <p class="text-sm font-medium text-destructive">
+                        {{ run.error_message ?? run.log }}
+                    </p>
+                    <Button variant="outline" size="sm" @click="generar">
+                        <RotateCw />
+                        Reintentar
+                    </Button>
+                </div>
 
                 <Alert v-if="run.coverage" :variant="coverageAlertVariant(run.coverage.status)">
                     <AlertTriangle v-if="coverageAlertVariant(run.coverage.status) === 'destructive'" />

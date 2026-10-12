@@ -22,6 +22,14 @@ resto del proyecto (ningún worker/cola adicional que configurar). Usa `WithoutO
 periodo+sucursal — dos clics en "Generar reporte" para la misma combinación nunca corren en
 paralelo. Ver `docs/efectividad-cobranza-aprobada.md` sección 1 para el detalle completo.
 
+**Nuevo (auditoría 2026-10-12):** `EfectividadCobranzaController::generate()` usa
+`Cache::lock()` para proteger la CREACIÓN de la fila/Job (no solo su ejecución) contra
+dos solicitudes HTTP simultáneas. Esto depende de que el store de caché configurado
+(`CACHE_STORE`, hoy `database`) tenga sus tablas migradas (`cache`, `cache_locks` —
+incluidas en las migraciones estándar de Laravel, ya presentes). Verificado que el
+`INSERT` atómico de `Cache::lock()` funciona correctamente aunque el esquema use MyISAM
+(no depende de transacciones) — ver `docs/auditoria-2026-10-12.md` sección 17.
+
 Debe seguir corriendo exactamente un worker por servidor (o varios con cuidado de
 concurrencia) vía `supervisor`/`systemd` — la configuración real del VPS no se tocó ni se
 verificó desde este entorno de desarrollo (no hay acceso a él).

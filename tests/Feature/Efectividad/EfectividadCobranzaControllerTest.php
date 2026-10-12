@@ -7,6 +7,7 @@ use App\Models\Portfolio;
 use App\Models\Recovery;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
@@ -77,8 +78,10 @@ it('a manager can open the module, generate a real report, and download the Exce
     $run = EfectividadCobranzaRun::query()->findOrFail($runId);
     $downloadResponse = $this->actingAs($admin)->get("/efectividad-cobranza/runs/{$runId}/descargar");
     $downloadResponse->assertOk();
-    expect(file_exists($run->output_excel_path))->toBeTrue();
-    expect(filesize($run->output_excel_path))->toBeGreaterThan(0);
+    // Fase 10 (auditoría 2026-10-12) — output_excel_path ahora es una ruta RELATIVA
+    // al disco privado 'local' (storage/app/private), no una ruta absoluta.
+    expect(Storage::disk('local')->exists($run->output_excel_path))->toBeTrue();
+    expect(Storage::disk('local')->size($run->output_excel_path))->toBeGreaterThan(0);
 });
 
 it('a colaborador (non-managerial role) gets 403 on the Efectividad de Cobranza module, same as the rest of Reportería', function () {
@@ -104,4 +107,45 @@ it('generating twice for the same identity while queued/running reuses the exist
     $response->assertOk();
     expect($response->json('run_id'))->toBe($existing->id);
     expect(EfectividadCobranzaRun::query()->where('period_id', $period->id)->count())->toBe(1);
+});
+
+it('Fase 4 (auditoría 2026-10-12): a genuinely concurrent request (lock already held by another request) gets 409 and never creates a second row', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = makeControllerTestPeriodo();
+
+    // Simula la ventana de carrera real: otra request YA tiene el lock de esta
+    // identidad exacta (period_id+branch_id=general) cuando llega esta segunda.
+    $lock = \Illuminate\Support\Facades\Cache::lock('efectividad-cobranza-generate-' . $period->id . '-general', 15);
+    expect($lock->get())->toBeTrue();
+
+    try {
+        $response = $this->actingAs($admin)->postJson('/efectividad-cobranza/generar', [
+            'period_id' => $period->id,
+        ]);
+
+        $response->assertStatus(409);
+        expect(EfectividadCobranzaRun::query()->where('period_id', $period->id)->count())->toBe(0);
+    } finally {
+        $lock->release();
+    }
+});
+
+it('Fase 5 (auditoría 2026-10-12): status=blocked (not success) when there is no usable data, no Excel is produced, and the UI never gets a download link', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = makeControllerTestPeriodo();
+
+    // Ningún Portfolio/Recovery para este periodo → coverage.status = sin_datos → bloqueado.
+    $generateResponse = $this->actingAs($admin)->postJson('/efectividad-cobranza/generar', [
+        'period_id' => $period->id,
+    ]);
+    $generateResponse->assertOk();
+    $runId = $generateResponse->json('run_id');
+
+    $progressResponse = $this->actingAs($admin)->getJson("/efectividad-cobranza/runs/{$runId}/progreso");
+    $progressResponse->assertOk();
+    $progressResponse->assertJson(['status' => EfectividadCobranzaRun::STATUS_BLOCKED, 'has_excel' => false]);
+    expect($progressResponse->json('rows'))->toBe([]);
+
+    $downloadResponse = $this->actingAs($admin)->get("/efectividad-cobranza/runs/{$runId}/descargar");
+    $downloadResponse->assertNotFound();
 });
