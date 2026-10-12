@@ -7,6 +7,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class EfectividadCobranzaRun extends Model
 {
+    /** Fase 5 (auditoría 2026-10-12) — estados reales, nunca mezclados. */
+    public const STATUS_QUEUED  = 'queued';
+    public const STATUS_RUNNING = 'running';
+    public const STATUS_SUCCESS = 'success';
+    public const STATUS_BLOCKED = 'blocked';
+    public const STATUS_FAILED  = 'failed';
+
     protected $fillable = [
         'period_id',
         'branch_id',
@@ -21,6 +28,9 @@ class EfectividadCobranzaRun extends Model
         'queued_at',
         'started_at',
         'finished_at',
+        'source_fingerprint',
+        'saldos_report_upload_id',
+        'ingresos_report_upload_id',
     ];
 
     protected $casts = [
@@ -45,6 +55,16 @@ class EfectividadCobranzaRun extends Model
     public function createdBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function saldosReportUpload(): BelongsTo
+    {
+        return $this->belongsTo(ReportUpload::class, 'saldos_report_upload_id');
+    }
+
+    public function ingresosReportUpload(): BelongsTo
+    {
+        return $this->belongsTo(ReportUpload::class, 'ingresos_report_upload_id');
     }
 
     /**

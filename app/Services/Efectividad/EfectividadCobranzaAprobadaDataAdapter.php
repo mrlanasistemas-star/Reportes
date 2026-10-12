@@ -17,6 +17,20 @@ use Illuminate\Support\LazyCollection;
  *  - CARTERA es un SNAPSHOT: solo las filas de fact_portfolios cuyo period_id
  *    es el periodo evaluado (igual que el VBA lee la hoja CARTERA tal como
  *    está en el Excel vigente, nunca histórico acumulado).
+ *  - Auditoría 2026-10-12 (Fase 8) — PERIODOS COMPUESTOS: solo los periodos
+ *    `monthly` reciben cargas directas de Saldos por Cliente
+ *    (`Period::canReceiveUploads()`); un periodo bimestral/trimestral/
+ *    semestral/anual NUNCA tiene su propia fila en `fact_portfolios` bajo su
+ *    propio `period_id` — antes de esta corrección, evaluar Efectividad
+ *    Aprobada para uno de esos periodos compuestos encontraba 0 filas de
+ *    CARTERA (`sin_cartera`) aunque el negocio sí tuviera Saldos cargados,
+ *    porque viven bajo el `period_id` de su ÚLTIMO mes componente. Mismo
+ *    criterio YA USADO por el resto de Reportería para cartera/mora/préstamo
+ *    activo (ver `Period::resolveLastMonthlyComponent()` — "cartera es un
+ *    estado, no un flujo: nunca se suma entre meses, se toma del cierre más
+ *    reciente"). Un periodo `weekly` nunca recibe Saldos directamente
+ *    tampoco — para esos, CARTERA queda honestamente vacía (`sin_cartera`),
+ *    no se inventa un mes "más cercano".
  *  - INGRESOS es HISTÓRICO COMPLETO: el calculador espera "_HIST_INGRESOS"
  *    completo (ver docstring de EfectividadCobranzaAprobadaCalculator::calculate),
  *    porque internamente filtra por fRecon dentro de [fechaIni,fechaFin]. Por
@@ -27,9 +41,34 @@ use Illuminate\Support\LazyCollection;
  *  - Nunca se inventa una columna que el Excel no trajo: si falta, el campo
  *    correspondiente llega como null al calculador (que ya sabe tratar null
  *    como "sin dato", igual que el VBA original).
+ *
+ * Auditoría 2026-10-12 (Fase 3) — `->select()` explícito en ambas consultas:
+ * `fact_portfolios`/`fact_recoveries` tienen muchas columnas heredadas (mora
+ * histórica, trazabilidad) que esta macro no usa; traerlas todas a memoria
+ * por cada una de potencialmente decenas de miles de filas es desperdicio
+ * real, medible, y no afecta el resultado (el calculador solo ve los campos
+ * que `carteraRow()`/`ingresoRow()` ya seleccionaban de cualquier forma).
+ * `cursor()` se mantiene — NO se cambia a `chunk()` ni a streaming a disco:
+ * medido con datos reales (documentosMayo), el cuello de botella real es el
+ * importador (lectura del .xlsx), no este adaptador — ver
+ * docs/efectividad-cobranza-aprobada.md sección de rendimiento.
  */
 class EfectividadCobranzaAprobadaDataAdapter
 {
+    private const CARTERA_COLUMNS = [
+        'id', 'contract', 'branch_id', 'route_name', 'promoter_name', 'promoter_code',
+        'status', 'substatus', 'contract_due_date', 'total_overdue_raw', 'overdue_installments',
+        'total_pending_raw', 'saldo_capital_vencido', 'saldo_interes_vencido', 'saldo_impuesto_vencido',
+        'saldo_cargo_calendario_vencido', 'saldo_impuesto_cargo_calendario_vencido',
+        'installment_amount', 'periodicity', 'num_payments', 'first_payment_date', 'next_payment_date',
+    ];
+
+    private const INGRESOS_COLUMNS = [
+        'id', 'contract', 'branch_id', 'operation', 'transaction', 'payment_date', 'installment_due_date',
+        'capital', 'interest', 'tax', 'charges', 'office_name_raw', 'promoter_name', 'acreditado',
+        'installment_number', 'contract_due_date',
+    ];
+
     /**
      * @return array{cartera: array<int,array<string,mixed>>, ingresos: array<int,array<string,mixed>>, fecha_ini: DateTimeImmutable, fecha_fin: DateTimeImmutable, coverage: array<string,mixed>}
      */
@@ -42,18 +81,25 @@ class EfectividadCobranzaAprobadaDataAdapter
         $fechaIni = new DateTimeImmutable($period->start_date->format('Y-m-d'));
         $fechaFin = new DateTimeImmutable($period->end_date->format('Y-m-d'));
 
-        $carteraQuery = Portfolio::query()->where('period_id', $period->id);
+        // Fase 8 — fechaIni/fechaFin SIEMPRE son las del periodo evaluado completo (p.ej.
+        // el bimestre entero): eso es lo que usa ProcesarIngresos para clasificar
+        // movimientos, y no cambia. Solo el ORIGEN de CARTERA se resuelve aparte.
+        $carteraPeriod = $this->resolveCarteraPeriod($period);
+
+        $carteraQuery = Portfolio::query()->select(self::CARTERA_COLUMNS)
+            ->where('period_id', $carteraPeriod?->id ?? -1); // -1: compuesto sin mes componente → 0 filas, nunca todas las filas
         if ($branchId) {
             $carteraQuery->where('branch_id', $branchId);
         }
 
-        $ingresosQuery = Recovery::query();
+        $ingresosQuery = Recovery::query()->select(self::INGRESOS_COLUMNS);
         if ($branchId) {
             $ingresosQuery->where('branch_id', $branchId);
         }
 
         $cartera  = [];
         $coverage = $this->emptyCoverage();
+        $coverage['cartera_period_id'] = $carteraPeriod?->id;
 
         foreach ($this->chunkCursor($carteraQuery) as $row) {
             $coverage['cartera_rows_total']++;
@@ -125,6 +171,31 @@ class EfectividadCobranzaAprobadaDataAdapter
         return $query->cursor();
     }
 
+    /**
+     * Fase 8 — ¿bajo qué period_id viven realmente las filas de
+     * fact_portfolios (CARTERA) que corresponden a este periodo evaluado?
+     *  - monthly → el propio periodo (ahí es donde se cargó el Excel).
+     *  - weekly  → ninguno (los periodos semanales nunca reciben Saldos
+     *    directamente; CARTERA queda vacía honestamente, no se inventa).
+     *  - compuesto (bimestral/trimestral/semestral/anual) → el ÚLTIMO mes
+     *    componente, mismo criterio ya usado por el resto de Reportería para
+     *    cartera/mora/préstamo activo.
+     */
+    private function resolveCarteraPeriod(Period $period): ?Period
+    {
+        if ($period->isMonthly()) {
+            return $period;
+        }
+
+        if ($period->isBase()) {
+            return null;
+        }
+
+        $allPeriods = Period::query()->get(['id', 'type', 'year', 'month', 'sequence', 'component_period_ids']);
+
+        return $period->resolveLastMonthlyComponent($allPeriods);
+    }
+
     private function carteraRow(Portfolio $row): array
     {
         return [
@@ -177,6 +248,10 @@ class EfectividadCobranzaAprobadaDataAdapter
             'cartera_rows_sin_contrato'               => 0,
             'cartera_rows_sin_estatus'                => 0,
             'cartera_rows_excluidas_cerrado_inactivo' => 0,
+            // Fase 8 — period_id REAL de donde se leyó CARTERA (puede ser distinto del
+            // periodo evaluado para compuestos: el último mes componente). null = no se
+            // encontró ningún mes componente del cual tomar CARTERA (p.ej. periodo weekly).
+            'cartera_period_id'                       => null,
             'ingresos_rows_total'                     => 0,
             'ingresos_rows_whitelist_pass'             => 0,
             'ingresos_rows_sin_fecha_transaccion'      => 0,
@@ -212,7 +287,9 @@ class EfectividadCobranzaAprobadaDataAdapter
     {
         return match ($c['status']) {
             'sin_datos' => 'No hay filas de Saldos por Cliente ni de Ingresos Cobranza importadas para este periodo/sucursal.',
-            'sin_cartera' => 'No hay filas de Saldos por Cliente (CARTERA) importadas para este periodo/sucursal. El por-cobrar (Sano/Atraso/Vencido) no puede calcularse sin CARTERA.',
+            'sin_cartera' => $c['cartera_period_id'] === null
+                ? 'No hay filas de Saldos por Cliente (CARTERA) importadas para este periodo/sucursal. El por-cobrar (Sano/Atraso/Vencido) no puede calcularse sin CARTERA. Si este es un periodo semanal, recuerda que Saldos por Cliente solo se carga a nivel mensual — genera el reporte sobre el mes que contiene esta semana.'
+                : "No hay filas de Saldos por Cliente (CARTERA) importadas en el periodo mensual #{$c['cartera_period_id']} (el mes de cierre de este periodo compuesto). El por-cobrar (Sano/Atraso/Vencido) no puede calcularse sin CARTERA.",
             'bloqueado_sin_fechas' => sprintf(
                 'Se encontraron %d filas de Ingresos Cobranza que pasan la whitelist (PAGO A CONTRATO/PAGO o REFINANCIAMIENTO/DESCUENTO), pero NINGUNA trae a la vez Fecha transacción y Fecha cuota (%d sin fecha transacción, %d sin fecha cuota). La macro aprobada requiere ambas fechas para clasificar Sano/Atraso/Vencido y NUNCA se reconstruyen a partir de otra columna (p.ej. Días vencidos pago). El Excel de Ingresos Cobranza importado para este periodo no trae esas columnas.',
                 $c['ingresos_rows_whitelist_pass'],

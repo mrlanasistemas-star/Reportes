@@ -6,6 +6,12 @@ quedaron conectados a datos reales en esta sesión. Recorrido real verificado po
 Subir archivos (ya existente) → Seleccionar periodo/sucursal → Generar → Ver resultados →
 Descargar Excel. Ver `tests/Feature/Efectividad/EfectividadCobranzaControllerTest.php`.
 
+> **Actualización 2026-10-12** — auditoría técnica integral (identidad de colaborador real,
+> API de solo lectura real sin recálculo en vivo, concurrencia atómica, estados
+> success/blocked/failed diferenciados, periodos compuestos, snapshots obsoletos,
+> almacenamiento portable). Ver `docs/auditoria-2026-10-12.md` para el detalle completo —
+> no se repite aquí para no duplicar fuentes.
+
 ## 1. Qué hizo esta sesión (Fase 1-14)
 
 1. **Fase 1** — se inspeccionaron archivos REALES (no solo el `.xlsm` en blanco de la sesión
