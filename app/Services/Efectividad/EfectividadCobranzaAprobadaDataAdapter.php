@@ -69,10 +69,17 @@ class EfectividadCobranzaAprobadaDataAdapter
         'installment_number', 'contract_due_date',
     ];
 
+    /** Cada cuántas filas se informa avance al callback (el tracker además limita las escrituras a BD). */
+    private const PROGRESS_EVERY = 500;
+
     /**
+     * `$onProgress` (opcional) recibe `(string $fase, int $procesadas, ?int $total)`
+     * con fase `cartera`/`ingresos`. Solo informa conteos — no altera qué filas
+     * se leen ni cómo se entregan al calculador.
+     *
      * @return array{cartera: array<int,array<string,mixed>>, ingresos: array<int,array<string,mixed>>, fecha_ini: DateTimeImmutable, fecha_fin: DateTimeImmutable, coverage: array<string,mixed>}
      */
-    public function build(Period $period, ?int $branchId = null): array
+    public function build(Period $period, ?int $branchId = null, ?callable $onProgress = null): array
     {
         if (!$period->start_date || !$period->end_date) {
             throw new \RuntimeException("El periodo #{$period->id} no tiene start_date/end_date definidos.");
@@ -101,8 +108,14 @@ class EfectividadCobranzaAprobadaDataAdapter
         $coverage = $this->emptyCoverage();
         $coverage['cartera_period_id'] = $carteraPeriod?->id;
 
+        $carteraTotal = $onProgress ? (clone $carteraQuery)->count() : null;
+        $onProgress && $onProgress('cartera', 0, $carteraTotal);
+
         foreach ($this->chunkCursor($carteraQuery) as $row) {
             $coverage['cartera_rows_total']++;
+            if ($onProgress && $coverage['cartera_rows_total'] % self::PROGRESS_EVERY === 0) {
+                $onProgress('cartera', $coverage['cartera_rows_total'], $carteraTotal);
+            }
 
             if ($row->contract === null || trim((string) $row->contract) === '') {
                 $coverage['cartera_rows_sin_contrato']++;
@@ -125,10 +138,17 @@ class EfectividadCobranzaAprobadaDataAdapter
 
             $cartera[] = $this->carteraRow($row);
         }
+        $onProgress && $onProgress('cartera', $coverage['cartera_rows_total'], $carteraTotal);
+
+        $ingresosTotal = $onProgress ? (clone $ingresosQuery)->count() : null;
+        $onProgress && $onProgress('ingresos', 0, $ingresosTotal);
 
         $ingresos = [];
         foreach ($this->chunkCursor($ingresosQuery) as $row) {
             $coverage['ingresos_rows_total']++;
+            if ($onProgress && $coverage['ingresos_rows_total'] % self::PROGRESS_EVERY === 0) {
+                $onProgress('ingresos', $coverage['ingresos_rows_total'], $ingresosTotal);
+            }
 
             $operacion = mb_strtoupper(trim((string) $row->operation));
             $transaccion = mb_strtoupper(trim((string) $row->transaction));
@@ -152,6 +172,7 @@ class EfectividadCobranzaAprobadaDataAdapter
 
             $ingresos[] = $this->ingresoRow($row);
         }
+        $onProgress && $onProgress('ingresos', $coverage['ingresos_rows_total'], $ingresosTotal);
 
         $coverage['status']  = $this->resolveCoverageStatus($coverage);
         $coverage['message'] = $this->resolveCoverageMessage($coverage);
@@ -181,7 +202,7 @@ class EfectividadCobranzaAprobadaDataAdapter
      *    componente, mismo criterio ya usado por el resto de Reportería para
      *    cartera/mora/préstamo activo.
      */
-    private function resolveCarteraPeriod(Period $period): ?Period
+    public function resolveCarteraPeriod(Period $period): ?Period
     {
         if ($period->isMonthly()) {
             return $period;

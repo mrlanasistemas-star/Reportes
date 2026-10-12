@@ -11,6 +11,7 @@ use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EfectividadCobranzaController;
+use App\Http\Controllers\NotificationController;
 use App\Http\Middleware\EnsureReporteriaAccess;
 
 Route::redirect('/', '/login');
@@ -25,7 +26,7 @@ Route::get('/robots.txt', function () {
         'dashboard', 'dashboard-data', 'dashboard-trend',
         'historico-general', 'periodos', 'asignaciones-empleado-sucursal',
         'empleados', 'validaciones', 'guia-sistema', 'reportes-mensuales',
-        'efectividad-cobranza', 'okr', 'settings',
+        'efectividad-cobranza', 'okr', 'settings', 'notificaciones',
     ])->map(fn (string $path) => "Disallow: /{$path}")->implode("\n");
 
     $body = "User-agent: *\nAllow: /login\n{$disallow}\n\nSitemap: " . url('/sitemap.xml') . "\n";
@@ -53,6 +54,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // (EnsureOkrAccessEnabled) y un colaborador SÍ debe poder entrar aquí
     // (seguimiento propio, check-in, evidencia).
     require __DIR__ . '/okr.php';
+
+    // Notificaciones internas persistentes (campana de la cabecera). Solo las del
+    // propio usuario; los trabajos activos de Reportería solo se incluyen para
+    // roles gerenciales (ver NotificationController).
+    Route::prefix('notificaciones')
+        ->name('notifications.')
+        ->group(function () {
+            Route::get('/', [NotificationController::class, 'index'])->name('index');
+            Route::post('/leidas', [NotificationController::class, 'markAllRead'])->name('read-all');
+            Route::post('/{notification}/leida', [NotificationController::class, 'markRead'])->name('read');
+        });
 
     Route::prefix('guia-sistema')
         ->name('guia-sistema.')
@@ -182,6 +194,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->group(function () {
             Route::get('/', [EfectividadCobranzaController::class, 'index'])->name('index');
             Route::post('/generar', [EfectividadCobranzaController::class, 'generate'])->name('generate');
+            Route::get('/actividad', [EfectividadCobranzaController::class, 'activity'])->name('activity');
+            // URL estable de una ejecución — la usan el correo y las notificaciones internas.
+            Route::get('/runs/{run}', [EfectividadCobranzaController::class, 'show'])->name('runs.show');
             Route::get('/runs/{run}/progreso', [EfectividadCobranzaController::class, 'progress'])->name('progress');
             Route::get('/runs/{run}/descargar', [EfectividadCobranzaController::class, 'download'])->name('download');
         });

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BackgroundActivityBell from '@/components/BackgroundActivityBell.vue';
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import InstallAppButton from '@/components/InstallAppButton.vue';
 import { SidebarTrigger } from '@/components/ui/sidebar';
@@ -28,6 +29,9 @@ withDefaults(
             </template>
         </div>
 
-        <InstallAppButton class="ml-auto" />
+        <div class="ml-auto flex items-center gap-1">
+            <InstallAppButton />
+            <BackgroundActivityBell />
+        </div>
     </header>
 </template>
