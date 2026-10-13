@@ -4,6 +4,7 @@ use App\Jobs\GenerateEfectividadCobranzaAprobadaJob;
 use App\Models\EfectividadCobranzaRun;
 use App\Models\Period;
 use App\Models\User;
+use App\Services\Efectividad\V4\EfectividadV4ExcelExporter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\EfectividadV4Fixtures as V4;
 
@@ -147,6 +148,40 @@ it('failed() closes the run as cancelled (not failed) when cancellation was alre
     expect($run->status)->toBe(EfectividadCobranzaRun::STATUS_CANCELLED)
         ->and($run->failure_kind)->toBeNull()
         ->and($run->error_message)->toBeNull();
+});
+
+it('a cancellation that arrives WHILE the Excel is being exported never publishes as success (atomic finish)', function () {
+    $period = cancellationTestPeriodo();
+    $branch = V4::branch();
+    V4::seedValid($period, $branch);
+    $run = activeRunFor($period, EfectividadCobranzaRun::STATUS_RUNNING);
+
+    // La cancelación llega DESPUÉS del checkpoint previo a "Excel" (ya pasó
+    // limpio) pero ANTES de la transición final a `success` — exactamente la
+    // ventana que describía el riesgo: mientras export() escribe el archivo.
+    app()->bind(EfectividadV4ExcelExporter::class, function () use ($run) {
+        return new class($run) extends EfectividadV4ExcelExporter
+        {
+            public function __construct(private EfectividadCobranzaRun $run)
+            {
+            }
+
+            public function export(array $filas, array $parametros, array $incidencias, string $outputPath, array $fuentes = [], string $engineVersion = \App\Services\Efectividad\V4\EfectividadV4Calculator::ENGINE_VERSION): string
+            {
+                EfectividadCobranzaRun::query()->whereKey($this->run->id)->update(['cancel_requested_at' => now(), 'cancelled_by' => 1]);
+
+                return (new EfectividadV4ExcelExporter())->export($filas, $parametros, $incidencias, $outputPath, $fuentes, $engineVersion);
+            }
+        };
+    });
+
+    app()->call([new GenerateEfectividadCobranzaAprobadaJob($run->id), 'handle']);
+
+    $run->refresh();
+    expect($run->status)->toBe(EfectividadCobranzaRun::STATUS_CANCELLED)
+        ->and($run->status)->not->toBe(EfectividadCobranzaRun::STATUS_SUCCESS)
+        ->and($run->output_excel_path)->toBeNull()
+        ->and($run->result_rows)->toBe([]);
 });
 
 it('a cancelled run shows up in the history filter and never as success/failed', function () {

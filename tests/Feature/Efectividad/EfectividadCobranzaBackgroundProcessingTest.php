@@ -6,15 +6,13 @@ use App\Models\Branch;
 use App\Models\DataSource;
 use App\Models\EfectividadCobranzaRun;
 use App\Models\Period;
-use App\Models\Portfolio;
-use App\Models\Recovery;
 use App\Models\ReportUpload;
 use App\Models\User;
 use App\Notifications\EfectividadCobranzaRunFinished;
-use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use App\Services\Efectividad\EfectividadCobranzaIssue;
 use App\Services\Efectividad\EfectividadCobranzaRunHealthService;
 use App\Services\Efectividad\EfectividadCobranzaRunNotifier;
+use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
@@ -282,17 +280,31 @@ it('14b: sin ninguna fotografía queda bloqueado con las 8 fotografías faltante
     expect(collect($run->issues)->where('code', 'EC-V4-FOTO-FALTANTE'))->toHaveCount(8);
 });
 
-it('14c: un periodo mensual no se calcula con la V4 (no se inventa una agregación) y queda bloqueado', function () {
+it('14c: un periodo mensual nunca se calcula agregando semanas con V4 — el controlador lo enruta al motor Aprobada/Periódica (sin fotos), que queda honestamente bloqueado sin datos', function () {
     Mail::fake();
     $admin = User::factory()->create(['role' => 'admin']);
     $month = Period::query()->create(['name' => 'Octubre', 'code' => 'M-V4-10', 'type' => 'monthly', 'year' => 2026, 'month' => 10, 'sequence' => 1, 'start_date' => '2026-09-28', 'end_date' => '2026-10-25']);
 
-    $this->actingAs($admin)->postJson('/efectividad-cobranza/generar', ['period_id' => $month->id])
-        ->assertStatus(422)->assertJson(['accepted' => false, 'code' => 'EC-V4-PERIODO']);
+    // Rediseño premium (oct-2026): un periodo mensual ya NO se rechaza — se enruta al
+    // motor Aprobada/Periódica (sin fotografías diarias), la operación real del
+    // usuario. Sin Saldos por Cliente/Ingresos importados para este mes, queda
+    // bloqueado honestamente (sin_datos), nunca con una agregación V4 inventada.
+    $response = $this->actingAs($admin)->postJson('/efectividad-cobranza/generar', ['period_id' => $month->id]);
+    $response->assertOk()->assertJson(['accepted' => true]);
+    $runId = $response->json('run_id');
 
-    $run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $month->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
-    bgRunJob($run->id);
-    expect($run->refresh()->status)->toBe('blocked')->and($run->issues[0]['code'])->toBe('EC-V4-PERIODO');
+    $run = EfectividadCobranzaRun::query()->findOrFail($runId);
+    expect($run->engine_version)->toBe(EfectividadCobranzaRun::ENGINE_APROBADA_2026_10)
+        ->and($run->status)->toBe('blocked')
+        ->and($run->failure_kind)->toBe('missing_data')
+        ->and($run->coverage['status'])->toBe('sin_datos');
+
+    // Si de todas formas una fila V4 llegara a crearse para un periodo mensual
+    // (p.ej. manipulación directa de BD), el propio Job V4 la rechaza igual —
+    // red de seguridad independiente del enrutamiento del controlador.
+    $v4Run = EfectividadCobranzaRun::query()->create(bgV4(['period_id' => $month->id, 'status' => 'queued', 'queued_at' => now(), 'created_by' => $admin->id]));
+    bgRunJob($v4Run->id);
+    expect($v4Run->refresh()->status)->toBe('blocked')->and($v4Run->issues[0]['code'])->toBe('EC-V4-PERIODO');
 });
 
 it('15 + 17 + 18: una falla técnica reintenta como "Reintentando" (sin correo), y solo el último intento termina en Error — nunca éxito falso ni detalles técnicos al usuario', function () {
@@ -494,6 +506,38 @@ it('6: detecta trabajos atascados usando la cola real — retrasado si el Job si
     expect($health->assess($legacy)['state'])->toBe('delayed');
 });
 
+it('6b: 15 horas reservado sin avance deja de decir "puede tardar" — es evidencia de worker muerto, no un cálculo lento', function () {
+    config(['queue.default' => 'database', 'queue.connections.database.driver' => 'database']);
+    $health = app(EfectividadCobranzaRunHealthService::class);
+    $period = bgPeriod();
+
+    $jobId = DB::table('jobs')->insertGetId(['queue' => 'default', 'payload' => '{"uuid":"viejo-123"}', 'attempts' => 1, 'reserved_at' => now()->subHours(15)->getTimestamp(), 'available_at' => now()->subHours(15)->getTimestamp(), 'created_at' => now()->subHours(15)->getTimestamp()]);
+
+    // Escenario real reportado: "todas las etapas pendientes" → nunca pasó de queued.
+    $neverStarted = EfectividadCobranzaRun::query()->create([
+        'period_id' => $period->id, 'status' => 'queued', 'queued_at' => now()->subHours(15), 'queue_job_id' => (string) $jobId,
+    ]);
+    $assessment = $health->assess($neverStarted);
+    expect($assessment['state'])->toBe('stalled')
+        ->and($assessment['label'])->toBe('Sin actividad del worker')
+        ->and($assessment['message'])->toContain('15 h')
+        ->and($assessment['message'])->toContain('queue:work / Supervisor')
+        ->and($assessment['message'])->toContain('efectividad:recover-stalled --apply');
+
+    // Mismo caso pero ya marcado "running" (reservado y nunca liberado por un worker muerto).
+    $reservedForever = EfectividadCobranzaRun::query()->create([
+        'period_id' => $period->id, 'status' => 'running', 'started_at' => now()->subHours(15), 'heartbeat_at' => now()->subHours(15), 'queue_job_id' => (string) $jobId,
+    ]);
+    $assessment2 = $health->assess($reservedForever);
+    expect($assessment2['state'])->toBe('stalled')
+        ->and($assessment2['message'])->toContain('murió sin liberarlo');
+
+    // Recuperable con el comando existente, sin duplicar la fila.
+    $this->artisan('efectividad:recover-stalled --apply')->assertSuccessful();
+    expect($reservedForever->refresh()->status)->toBe('failed')
+        ->and($reservedForever->failure_kind)->toBe(EfectividadCobranzaRun::FAILURE_WORKER_STALLED);
+});
+
 it('6: recuperación segura — diagnóstico por defecto, --apply cierra solo huérfanos y --requeue reutiliza la MISMA ejecución', function () {
     config(['queue.default' => 'database', 'queue.connections.database.driver' => 'database']);
     Mail::fake();
@@ -583,12 +627,14 @@ it('historial: filtros por periodo, sucursal, estado, fecha y solicitante (solo 
         ->where('history.data.0.is_current_engine', true)
     );
 
-    // Un resultado de la calculadora anterior nunca se presenta como vigente.
-    $legacy = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'engine_version' => 'aprobada-2026-10', 'status' => 'success', 'created_by' => $admin->id]);
+    // Un resultado de un motor REALMENTE retirado (ninguno de los que el sistema
+    // genera hoy — ni V4 ni Aprobada/Periódica, reconectada en el rediseño
+    // premium) nunca se presenta como vigente.
+    $legacy = EfectividadCobranzaRun::query()->create(['period_id' => $period->id, 'branch_id' => $branch->id, 'engine_version' => 'motor-retirado-2025-01', 'status' => 'success', 'created_by' => $admin->id]);
     $legacyJson = $this->actingAs($admin)->getJson("/efectividad-cobranza/runs/{$legacy->id}/progreso")->json();
     expect($legacyJson['display_state'])->toBe('obsolete')
         ->and($legacyJson['is_current_engine'])->toBeFalse()
-        ->and($legacyJson['health_message'])->toContain('calculadora anterior');
+        ->and($legacyJson['health_message'])->toContain('motor retirado');
     $legacy->delete();
     $this->actingAs($admin)->get('/efectividad-cobranza?f_branch=general&f_status=blocked')->assertInertia(fn ($page) => $page->has('history.data', 1)->where('history.data.0.id', $blocked->id));
     $this->actingAs($admin)->get("/efectividad-cobranza?f_user={$gerente->id}")->assertInertia(fn ($page) => $page->has('history.data', 2)->where('canFilterByUser', true));

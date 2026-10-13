@@ -126,22 +126,46 @@ class EfectividadCobranzaRun extends Model
         'incidents_count' => 'integer',
     ];
 
-    /** Motor anterior (CALCULADORA DE EFECTIVIDAD DE COBRANZA APROBADO.xlsm) — solo histórico. */
+    /**
+     * Motor aprobado anterior (CALCULADORA DE EFECTIVIDAD DE COBRANZA APROBADO.xlsm).
+     * Reconectado (rediseño premium, oct-2026) como el motor "Periódica": periodos
+     * SIN fotografías diarias (un corte de Saldos por Cliente + histórico de
+     * Ingresos Cobranza) — la operación real del usuario cada 4 semanas. Es una
+     * metodología DISTINTA de V4 (otra macro aprobada), nunca se presenta como V4.
+     */
     public const ENGINE_APROBADA_2026_10 = 'aprobada-2026-10';
 
     public const MODE_SEMANAL = 'SEMANAL';
 
     public const MODE_DIARIO = 'DIARIO';
 
-    /** Versión vigente del motor (MR_LANA_EFECTIVIDAD.xlsm V4). */
+    /** Versión vigente del motor V4 (MR_LANA_EFECTIVIDAD.xlsm, periodos semanales con fotografías). */
     public static function currentEngineVersion(): string
     {
         return EfectividadV4Calculator::ENGINE_VERSION;
     }
 
+    /** Motores que el sistema sigue generando activamente hoy (ninguno es "obsoleto" por sí mismo). */
+    public static function supportedEngines(): array
+    {
+        return [EfectividadV4Calculator::ENGINE_VERSION, self::ENGINE_APROBADA_2026_10];
+    }
+
+    /**
+     * "Vigente" ya no significa "es V4": significa que el motor con el que se
+     * generó esta ejecución sigue siendo uno de los que el sistema genera
+     * activamente (V4 para semanas con fotografías, Aprobada/Periódica para
+     * periodos de 4 semanas sin ellas). Solo un motor realmente RETIRADO
+     * (ninguno de los dos) cuenta como obsoleto por motor.
+     */
     public function isCurrentEngine(): bool
     {
-        return $this->engine_version === self::currentEngineVersion();
+        return in_array($this->engine_version, self::supportedEngines(), true);
+    }
+
+    public function isPeriodicaEngine(): bool
+    {
+        return $this->engine_version === self::ENGINE_APROBADA_2026_10;
     }
 
     public function incidents(): HasMany

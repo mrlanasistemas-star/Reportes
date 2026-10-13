@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\EfectividadAprobadaStage;
 use App\Enums\EfectividadCobranzaStage;
+use App\Jobs\GenerateEfectividadAprobadaPeriodicaJob;
 use App\Jobs\GenerateEfectividadCobranzaAprobadaJob;
 use App\Models\Branch;
 use App\Models\EfectividadCobranzaRun;
@@ -14,6 +16,7 @@ use App\Services\Efectividad\EfectividadCobranzaRunPresenter;
 use App\Services\Efectividad\V4\EfectividadV4DataAdapter;
 use App\Services\Efectividad\V4\EfectividadV4Exception;
 use App\Services\Efectividad\V4\EfectividadV4Incidents;
+use App\Services\Reporting\OperativeBranchService;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\JsonResponse;
@@ -79,6 +82,15 @@ class EfectividadCobranzaController extends Controller
         $period = Period::query()->findOrFail($data['period_id']);
         $branchId = $data['branch_id'] ?? null;
         $userId = $request->user()?->id;
+
+        // La operación real del usuario sube Saldos por Cliente + Ingresos Cobranza
+        // cada 4 semanas (periodo `monthly`/compuesto), nunca fotografías diarias
+        // manuales. Esos periodos usan el motor Aprobada/Periódica (sin fotos); solo
+        // una semana operativa real (`weekly`) usa el motor V4 (con fotografías).
+        if ($period->type !== 'weekly') {
+            return $this->generatePeriodica($dispatcher, $period, $branchId, $userId);
+        }
+
         $mode = $data['mode'] ?? EfectividadCobranzaRun::MODE_SEMANAL;
         $confirm = (bool) ($data['confirm_partial'] ?? false);
 
@@ -200,6 +212,117 @@ class EfectividadCobranzaController extends Controller
             'accepted' => true,
             'run' => $this->presenter->summary($run),
         ]);
+    }
+
+    /**
+     * Motor Aprobada/Periódica: periodos de 4 semanas sin fotografías diarias,
+     * usando lo que el usuario ya sube (Saldos por Cliente + Ingresos Cobranza
+     * por Histórico General). Misma protección de concurrencia que V4, con su
+     * propia clave de lock (identidad distinta: nunca compite con V4).
+     */
+    private function generatePeriodica(Dispatcher $dispatcher, Period $period, ?int $branchId, ?int $userId): JsonResponse
+    {
+        $lockKey = "efectividad-aprobada-periodica-generate-{$period->id}-".($branchId ?? 'general');
+
+        try {
+            [$run, $reused] = Cache::lock($lockKey, 15)->block(5, function () use ($period, $branchId, $userId) {
+                $existing = EfectividadCobranzaRun::query()
+                    ->where('period_id', $period->id)
+                    ->where('engine_version', EfectividadCobranzaRun::ENGINE_APROBADA_2026_10)
+                    ->where(fn ($q) => $branchId ? $q->where('branch_id', $branchId) : $q->whereNull('branch_id'))
+                    ->active()
+                    ->latest('id')
+                    ->first();
+
+                if ($existing) {
+                    $existing->addSubscriber($userId);
+
+                    return [$existing, true];
+                }
+
+                $run = EfectividadCobranzaRun::query()->create([
+                    'period_id' => $period->id,
+                    'branch_id' => $branchId,
+                    'engine_version' => EfectividadCobranzaRun::ENGINE_APROBADA_2026_10,
+                    'status' => EfectividadCobranzaRun::STATUS_QUEUED,
+                    'queued_at' => now(),
+                    'log' => 'En cola. Esperando a que el servidor tome el trabajo.',
+                    'created_by' => $userId,
+                ]);
+
+                return [$run, false];
+            });
+        } catch (LockTimeoutException) {
+            return response()->json([
+                'error' => 'Ya hay una solicitud de generación en curso para este periodo/sucursal. Intenta de nuevo en unos segundos.',
+            ], 409);
+        }
+
+        if (! $reused) {
+            $failure = $this->dispatchOrFail($run, new GenerateEfectividadAprobadaPeriodicaJob($run->id), $dispatcher);
+            if ($failure) {
+                return $failure;
+            }
+        }
+
+        $run->refresh()->load(['period', 'branch', 'createdBy']);
+
+        return response()->json([
+            'run_id' => $run->id,
+            'status' => $run->status,
+            'reused' => $reused,
+            'accepted' => true,
+            'run' => $this->presenter->summary($run),
+        ]);
+    }
+
+    /** @return JsonResponse|null null si la cola aceptó el trabajo (o ya corrió inline en sync); una 503 si no. */
+    private function dispatchOrFail(EfectividadCobranzaRun $run, object $job, Dispatcher $dispatcher): ?JsonResponse
+    {
+        try {
+            // Bus::dispatch devuelve el id del registro en `jobs` (driver database):
+            // se guarda para poder consultar el estado REAL del Job después.
+            $jobId = $dispatcher->dispatch($job);
+
+            if (is_scalar($jobId) && (string) $jobId !== '' && (string) $jobId !== '0') {
+                EfectividadCobranzaRun::query()->whereKey($run->id)->whereNull('queue_job_id')->update(['queue_job_id' => (string) $jobId]);
+            }
+
+            return null;
+        } catch (\Throwable $e) {
+            $run->refresh();
+
+            // Con QUEUE_CONNECTION=sync el Job corre aquí mismo: si ya cambió de estado,
+            // la cola SÍ lo aceptó y lo ejecutó (el error quedó registrado en la ejecución).
+            if ($run->status !== EfectividadCobranzaRun::STATUS_QUEUED) {
+                return null;
+            }
+
+            Log::error('Efectividad: no fue posible encolar el trabajo.', [
+                'run_id' => $run->id, 'exception' => get_class($e), 'message' => $e->getMessage(),
+            ]);
+
+            $run->forceFill([
+                'status' => EfectividadCobranzaRun::STATUS_FAILED,
+                'finished_at' => now(),
+                'failure_kind' => EfectividadCobranzaRun::FAILURE_TECHNICAL,
+                'error_message' => 'No fue posible enviar el trabajo a la cola de procesamiento.',
+                'log' => 'No fue posible enviar el trabajo a la cola de procesamiento.',
+                'issues' => [EfectividadCobranzaIssue::make(
+                    'EC-TEC-COLA-NO-DISPONIBLE',
+                    EfectividadCobranzaIssue::SEVERITY_CRITICAL,
+                    EfectividadCobranzaIssue::CATEGORY_TECHNICAL,
+                    'El servidor no aceptó el trabajo en la cola de procesamiento. El reporte no se está generando.',
+                    'Intenta de nuevo en unos minutos. Si persiste, avisa al equipo de sistemas.',
+                )],
+            ])->save();
+
+            return response()->json([
+                'error' => 'No fue posible enviar el reporte a la cola de procesamiento. El reporte NO se está generando; intenta de nuevo en unos minutos.',
+                'run_id' => $run->id,
+                'accepted' => false,
+            ], 503);
+        }
     }
 
     public function progress(Request $request, EfectividadCobranzaRun $run): JsonResponse
@@ -434,8 +557,11 @@ class EfectividadCobranzaController extends Controller
                 ->get(['id', 'code', 'name', 'type', 'year', 'month', 'start_date', 'end_date'])
                 ->map(fn (Period $p) => ['id' => $p->id, 'label' => $p->label, 'code' => $p->code, 'type' => $p->type,
                     'start_date' => $p->start_date?->format('Y-m-d'), 'end_date' => $p->end_date?->format('Y-m-d')]),
+            // Mismo criterio que Reportería (ReportUploadController) y OKR: las 13
+            // sucursales operativas, nunca rutas/oficinas crudas de Lendus que
+            // pudieran existir como filas de `branches` por datos heredados.
             'branches' => Branch::query()
-                ->where('is_active', true)
+                ->whereIn('name', OperativeBranchService::NAMES)
                 ->orderBy('name')
                 ->get(['id', 'name'])
                 ->map(fn (Branch $b) => ['id' => $b->id, 'name' => $b->name]),
@@ -469,6 +595,7 @@ class EfectividadCobranzaController extends Controller
                     ->map(fn (User $u) => ['id' => $u->id, 'name' => $u->name])
                 : [],
             'stageCatalog' => EfectividadCobranzaStage::catalog(),
+            'stageCatalogPeriodica' => EfectividadAprobadaStage::catalog(),
             'openDetail' => $openDetail,
         ]);
     }

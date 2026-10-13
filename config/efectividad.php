@@ -23,6 +23,13 @@ return [
     // antes de mostrarla como "Retrasado" / revisar si el worker sigue vivo.
     'heartbeat_stale_minutes' => (int) env('EFECTIVIDAD_HEARTBEAT_STALE_MINUTES', 15),
 
+    // Minutos en cola/sin actividad MUY por encima de lo plausible (un archivo
+    // grande sí puede tardar; 2+ horas sin que NINGÚN worker haya avanzado no
+    // es "lento", es evidencia de que el proceso de colas no está corriendo).
+    // A partir de este umbral el diagnóstico deja de sugerir "espera, puede
+    // tardar" y pasa a "Sin actividad del worker" con la causa más probable.
+    'critically_stalled_minutes' => (int) env('EFECTIVIDAD_CRITICALLY_STALLED_MINUTES', 120),
+
     // Cada cuántos registros (o segundos) se persiste el avance de una etapa
     // medible. Nunca se escribe en la BD por cada registro.
     'progress_every_rows' => (int) env('EFECTIVIDAD_PROGRESS_EVERY_ROWS', 5000),

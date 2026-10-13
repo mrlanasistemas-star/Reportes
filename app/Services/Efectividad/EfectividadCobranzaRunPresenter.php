@@ -2,9 +2,11 @@
 
 namespace App\Services\Efectividad;
 
+use App\Enums\EfectividadAprobadaStage;
 use App\Enums\EfectividadCobranzaStage;
 use App\Models\EfectividadCobranzaRun;
 use App\Models\User;
+use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use App\Services\Efectividad\V4\EfectividadV4FingerprintService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
@@ -42,11 +44,14 @@ class EfectividadCobranzaRunPresenter
 
         $identity = self::identityKey($run);
         $isCurrentEngine = $run->isCurrentEngine();
+        $isPeriodica = $run->isPeriodicaEngine();
         $supersededBy = $isSuccess && isset($latestSuccessByIdentity[$identity]) && $latestSuccessByIdentity[$identity] > $run->id
             ? $latestSuccessByIdentity[$identity]
             : null;
 
-        // Un resultado de la calculadora anterior nunca se presenta como vigente.
+        // Solo un motor REALMENTE retirado (ninguno de los que el sistema genera
+        // hoy) se presenta como obsoleto por motor — V4 y Aprobada/Periódica son
+        // ambos vigentes, cada uno para su propio tipo de periodo.
         $displayState = ($supersededBy || ($isSuccess && ! $isCurrentEngine)) ? 'obsolete' : $assessment['state'];
 
         // Cancelación solicitada pero el Job todavía no llegó a su punto de
@@ -55,17 +60,24 @@ class EfectividadCobranzaRunPresenter
             $displayState = 'cancelling';
         }
 
-        $stage = $run->current_stage ? EfectividadCobranzaStage::tryFrom($run->current_stage) : null;
+        $stage = $this->resolveStage($run, $isPeriodica);
 
         $start = $run->started_at;
         $end = $run->finished_at ?? ($run->isActive() ? now() : null);
 
+        [$reportLabel, $engineLabel] = match (true) {
+            $isPeriodica => ['Efectividad de Cobranza — Aprobada (periodo sin fotografías)', 'Calculadora Aprobada (periodos de 4 semanas)'],
+            $isCurrentEngine => ['Efectividad de Cobranza V4', 'Motor V4 (MR LANA, oct-2026)'],
+            default => ['Efectividad de Cobranza (motor retirado)', 'Motor retirado'],
+        };
+
         return [
             'id' => $run->id,
-            'report' => $isCurrentEngine ? 'Efectividad de Cobranza V4' : 'Efectividad Aprobada (versión anterior)',
+            'report' => $reportLabel,
             'engine_version' => $run->engine_version,
-            'engine_label' => $isCurrentEngine ? 'Motor V4 (MR LANA, oct-2026)' : 'Calculadora anterior (aprobada 2026-10)',
+            'engine_label' => $engineLabel,
             'is_current_engine' => $isCurrentEngine,
+            'is_periodica_engine' => $isPeriodica,
             'mode' => $run->mode,
             'base_date' => $run->base_date?->format('Y-m-d'),
             'cutoff_date' => $run->cutoff_date?->format('Y-m-d'),
@@ -77,7 +89,7 @@ class EfectividadCobranzaRunPresenter
             'status' => $run->status,
             'display_state' => $displayState,
             'display_label' => EfectividadCobranzaRunHealthService::label($displayState),
-            'health_message' => ($isSuccess && ! $isCurrentEngine) ? 'Generado con la calculadora anterior; no es comparable con el motor V4. Genera el reporte de nuevo para obtener un resultado vigente.' : $assessment['message'],
+            'health_message' => ($isSuccess && ! $isCurrentEngine) ? 'Generado con un motor retirado del sistema; no es comparable con los resultados vigentes. Genera el reporte de nuevo.' : $assessment['message'],
             'queue_state' => $assessment['queue_state'],
             'is_active' => $run->isActive(),
             'current_stage' => $stage ? [
@@ -87,7 +99,7 @@ class EfectividadCobranzaRunPresenter
                 'position' => $stage->position(),
                 'measurable' => $stage->measurable(),
             ] : null,
-            'stage_count' => count(EfectividadCobranzaStage::cases()),
+            'stage_count' => $isPeriodica ? count(EfectividadAprobadaStage::cases()) : count(EfectividadCobranzaStage::cases()),
             'progress' => $this->progress($run, $stage),
             'log' => $run->log,
             'queued_at' => ($run->queued_at ?? $run->created_at)?->toISOString(),
@@ -136,7 +148,7 @@ class EfectividadCobranzaRunPresenter
         // Vigencia: ¿cambiaron las fuentes desde que se generó? (solo en detalle — consulta agregada)
         $isStale = null;
         if ($isSuccess && $run->period && $run->source_fingerprint) {
-            $isStale = $run->isCurrentEngine()
+            $isStale = $run->engine_version === EfectividadV4Calculator::ENGINE_VERSION
                 ? $this->v4Fingerprints->isStale($run)
                 : $this->fingerprints->isStale($run->period, $run->branch_id, $run->source_fingerprint);
         }
@@ -209,8 +221,19 @@ class EfectividadCobranzaRunPresenter
         return Storage::disk('local')->exists($stored) ? Storage::disk('local')->path($stored) : null;
     }
 
+    private function resolveStage(EfectividadCobranzaRun $run, bool $isPeriodica): EfectividadCobranzaStage|EfectividadAprobadaStage|null
+    {
+        if (! $run->current_stage) {
+            return null;
+        }
+
+        return $isPeriodica
+            ? EfectividadAprobadaStage::tryFrom($run->current_stage)
+            : EfectividadCobranzaStage::tryFrom($run->current_stage);
+    }
+
     /** Porcentaje SOLO si la etapa actual es medible y tiene total conocido. */
-    private function progress(EfectividadCobranzaRun $run, ?EfectividadCobranzaStage $stage): array
+    private function progress(EfectividadCobranzaRun $run, EfectividadCobranzaStage|EfectividadAprobadaStage|null $stage): array
     {
         $total = $run->progress_total;
         $current = $run->progress_current;
@@ -228,6 +251,7 @@ class EfectividadCobranzaRunPresenter
     private function timeline(EfectividadCobranzaRun $run): array
     {
         $recorded = $run->stages ?? [];
+        $catalog = $run->isPeriodicaEngine() ? EfectividadAprobadaStage::catalog() : EfectividadCobranzaStage::catalog();
 
         return array_map(function (array $stage) use ($recorded, $run) {
             $entry = $recorded[$stage['key']] ?? null;
@@ -248,6 +272,6 @@ class EfectividadCobranzaRunPresenter
                 'summary' => $entry['summary'] ?? null,
                 'details' => $entry['details'] ?? null,
             ];
-        }, EfectividadCobranzaStage::catalog());
+        }, $catalog);
     }
 }

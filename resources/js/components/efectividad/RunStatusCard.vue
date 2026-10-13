@@ -96,7 +96,7 @@ const isCancelling = computed(() => props.run.display_state === 'cancelling');
                     <p
                         class="text-xs font-medium tracking-wide text-muted-foreground uppercase"
                     >
-                        Efectividad Aprobada · Ejecución #{{ run.id }}
+                        {{ run.engine_label }} · Ejecución #{{ run.id }}
                     </p>
                     <h2 class="truncate text-base font-semibold sm:text-lg">
                         {{ run.period_label ?? 'Periodo' }}

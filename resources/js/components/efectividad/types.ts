@@ -244,6 +244,7 @@ export type RunSummary = {
     engine_version: string | null;
     engine_label: string;
     is_current_engine: boolean;
+    is_periodica_engine: boolean;
     mode: 'SEMANAL' | 'DIARIO' | null;
     base_date: string | null;
     cutoff_date: string | null;

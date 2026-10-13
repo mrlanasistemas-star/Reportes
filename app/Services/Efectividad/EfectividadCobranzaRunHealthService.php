@@ -54,12 +54,27 @@ class EfectividadCobranzaRunHealthService
             return $this->result('stalled', 'La cola registró el trabajo como fallido, pero la ejecución no se cerró. Un administrador puede recuperarla.', $queueState, $minutesSince);
         }
 
+        $criticalAfter = (int) config('efectividad.critically_stalled_minutes', 120);
+
         if ($run->status === EfectividadCobranzaRun::STATUS_QUEUED) {
             $waited = ($run->queued_at ?? $run->created_at)?->diffInMinutes($now) ?? 0;
 
             if ($waited >= (int) config('efectividad.queued_delay_minutes', 5)) {
                 if ($queueState === self::QUEUE_ABSENT) {
                     return $this->result('stalled', 'El trabajo ya no está en la cola y nunca inició. Un administrador puede recuperarlo sin duplicar la ejecución.', $queueState, $minutesSince);
+                }
+
+                // Muy por encima de lo plausible: ya no es "el worker está ocupado", es
+                // evidencia de que ningún worker está sondeando la cola en absoluto.
+                // Solo con evidencia REAL de la cola (pendiente/reservado) — una
+                // ejecución sin queue_job_id (anterior a este seguimiento) nunca
+                // afirma más de lo que puede probar; se queda en "delayed".
+                if ($waited >= $criticalAfter && in_array($queueState, [self::QUEUE_PENDING, self::QUEUE_RESERVED], true)) {
+                    return $this->result('stalled', sprintf(
+                        'Lleva %s en cola (%s) sin que NINGÚN worker lo haya tomado. Esto ya no es una espera normal: indica que el proceso de colas (queue:work / Supervisor) no está corriendo en el servidor. Un administrador puede recuperarlo con `php artisan efectividad:recover-stalled --apply`.',
+                        $this->humanMinutes($waited),
+                        $queueState === self::QUEUE_RESERVED ? 'reservado por un worker que nunca reportó avance' : 'pendiente, nadie lo reservó',
+                    ), $queueState, $minutesSince);
                 }
 
                 return $this->result('delayed', sprintf(
@@ -79,6 +94,17 @@ class EfectividadCobranzaRunHealthService
                 return $this->result('stalled', sprintf(
                     'Sin actividad del worker desde hace %d min y el trabajo ya no está en la cola. Probablemente el proceso se detuvo; un administrador puede recuperarlo.',
                     $minutesSince,
+                ), $queueState, $minutesSince);
+            }
+
+            // Igual que arriba: horas sin un solo heartbeat ya no es "un archivo grande
+            // tardando" — ningún Excel ni cálculo real de esta operación tarda horas.
+            // Solo con evidencia REAL de la cola (pendiente/reservado).
+            if ($minutesSince >= $criticalAfter && in_array($queueState, [self::QUEUE_PENDING, self::QUEUE_RESERVED], true)) {
+                return $this->result('stalled', sprintf(
+                    'Sin actividad registrada desde hace %s. Ningún cálculo ni exportación real de este módulo tarda tanto: el worker que reservó el trabajo (%s) probablemente murió sin liberarlo (falta de memoria, reinicio del servidor). Un administrador puede recuperarlo con `php artisan efectividad:recover-stalled --apply`.',
+                    $this->humanMinutes($minutesSince),
+                    $queueState === self::QUEUE_RESERVED ? 'sigue marcado como reservado' : 'ya no está reservado',
                 ), $queueState, $minutesSince);
             }
 
@@ -149,6 +175,19 @@ class EfectividadCobranzaRunHealthService
             'cancelled' => 'Cancelado',
             default => $state,
         };
+    }
+
+    /** "915" → "15 h 15 min"; para que el mensaje hable en las mismas unidades que ve el usuario. */
+    private function humanMinutes(int $minutes): string
+    {
+        if ($minutes < 60) {
+            return "{$minutes} min";
+        }
+
+        $hours = intdiv($minutes, 60);
+        $rest = $minutes % 60;
+
+        return $rest > 0 ? "{$hours} h {$rest} min" : "{$hours} h";
     }
 
     private function result(string $state, ?string $message, string $queueState, ?int $minutesSince): array

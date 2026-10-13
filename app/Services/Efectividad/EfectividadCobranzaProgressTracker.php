@@ -2,6 +2,7 @@
 
 namespace App\Services\Efectividad;
 
+use App\Enums\EfectividadAprobadaStage;
 use App\Enums\EfectividadCobranzaStage;
 use App\Models\EfectividadCobranzaRun;
 
@@ -24,7 +25,7 @@ class EfectividadCobranzaProgressTracker
     /** @var array<string,array<string,mixed>> */
     private array $stages;
 
-    private ?EfectividadCobranzaStage $current = null;
+    private EfectividadCobranzaStage|EfectividadAprobadaStage|null $current = null;
 
     private int $lastWrittenCount = 0;
 
@@ -40,7 +41,7 @@ class EfectividadCobranzaProgressTracker
         return $this->run;
     }
 
-    public function start(EfectividadCobranzaStage $stage, ?int $total = null, ?string $detail = null): void
+    public function start(EfectividadCobranzaStage|EfectividadAprobadaStage $stage, ?int $total = null, ?string $detail = null): void
     {
         $this->current = $stage;
         $this->lastWrittenCount = 0;
@@ -107,7 +108,7 @@ class EfectividadCobranzaProgressTracker
     /**
      * @param  array<string,mixed>  $extra  conteos/resumen adicionales para el detalle
      */
-    public function complete(EfectividadCobranzaStage $stage, ?string $summary = null, array $extra = [], ?int $processed = null): void
+    public function complete(EfectividadCobranzaStage|EfectividadAprobadaStage $stage, ?string $summary = null, array $extra = [], ?int $processed = null): void
     {
         $entry = $this->stages[$stage->value] ?? ['started_at' => now()->toISOString()];
         $entry['status'] = 'done';
@@ -131,7 +132,7 @@ class EfectividadCobranzaProgressTracker
     }
 
     /** Reemplaza el resumen de una etapa ya registrada (p.ej. con conteos conocidos después). */
-    public function summarize(EfectividadCobranzaStage $stage, string $summary): void
+    public function summarize(EfectividadCobranzaStage|EfectividadAprobadaStage $stage, string $summary): void
     {
         if (! isset($this->stages[$stage->value])) {
             return;
@@ -159,7 +160,7 @@ class EfectividadCobranzaProgressTracker
         $this->run->forceFill(['stages' => $this->stages])->save();
     }
 
-    public function current(): ?EfectividadCobranzaStage
+    public function current(): EfectividadCobranzaStage|EfectividadAprobadaStage|null
     {
         return $this->current;
     }
