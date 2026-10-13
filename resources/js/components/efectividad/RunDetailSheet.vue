@@ -8,6 +8,7 @@ import {
     Download,
     ExternalLink,
     FileSpreadsheet,
+    FileText,
     Loader2,
     Mail,
     OctagonX,
@@ -30,7 +31,7 @@ import {
 } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useEfectividadRunPolling } from '@/composables/useEfectividadRunPolling';
-import { download as downloadRoute } from '@/routes/efectividad-cobranza';
+import { download as downloadRoute, downloadPdf as downloadPdfRoute } from '@/routes/efectividad-cobranza';
 import runs from '@/routes/efectividad-cobranza/runs';
 import {
     FAILURE_KIND_LABELS,
@@ -342,6 +343,11 @@ function openInModule() {
                         <Button v-if="detail.has_excel" as-child size="sm">
                             <a :href="downloadRoute(detail.id).url"
                                 ><Download /> Descargar Excel</a
+                            >
+                        </Button>
+                        <Button v-if="detail.has_excel" as-child variant="outline" size="sm">
+                            <a :href="downloadPdfRoute(detail.id).url" target="_blank" rel="noopener"
+                                ><FileText /> Descargar PDF</a
                             >
                         </Button>
                         <Button

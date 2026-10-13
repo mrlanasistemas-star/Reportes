@@ -201,6 +201,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/runs/{run}/progreso', [EfectividadCobranzaController::class, 'progress'])->name('progress');
             Route::post('/runs/{run}/cancelar', [EfectividadCobranzaController::class, 'cancel'])->name('runs.cancel');
             Route::get('/runs/{run}/descargar', [EfectividadCobranzaController::class, 'download'])->name('download');
+            Route::get('/runs/{run}/descargar-pdf', [EfectividadCobranzaController::class, 'downloadPdf'])->name('download-pdf');
             Route::get('/runs/{run}/incidencias', [EfectividadCobranzaController::class, 'incidents'])->name('incidents');
             Route::get('/runs/{run}/incidencias/exportar', [EfectividadCobranzaController::class, 'exportIncidents'])->name('incidents.export');
             // Motor V4 — disponibilidad de fuentes y fotografías diarias de cartera.
