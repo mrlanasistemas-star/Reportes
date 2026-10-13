@@ -4,7 +4,7 @@ import AutomaticPeriodInfo from './AutomaticPeriodInfo.vue'
 import SectionHeader from './SectionHeader.vue'
 import SourceUploadCard from './SourceUploadCard.vue'
 
-const props = defineProps<{ sources: any[]; uploadsBySource: Record<string, any>; selectedPeriodId: number | null; period: any }>()
+const props = defineProps<{ sources: any[]; uploadsBySource: Record<string, any>; selectedPeriodId: number | null; period: any; uploading?: boolean }>()
 const emit = defineEmits(['upload', 'delete'])
 
 // Rotación e IMSS ya no se cargan manualmente — se calculan automáticamente
@@ -29,7 +29,7 @@ const visibleSources = computed(() => props.sources.filter((s) => !AUTO_DERIVED_
                     :source="source"
                     :upload="uploadsBySource[source.code]"
                     :selected-period-id="selectedPeriodId"
-                    :disabled="!selectedPeriodId || period?.is_derived"
+                    :disabled="!selectedPeriodId || period?.is_derived || uploading"
                     @upload="emit('upload', $event)"
                     @delete="emit('delete', $event)"
                 />

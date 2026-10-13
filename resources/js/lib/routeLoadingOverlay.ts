@@ -1,10 +1,11 @@
 import { router } from '@inertiajs/vue3';
+import { toast } from '@/components/feedback/Toast';
 
 // Pantalla de carga global (cierre 17-sep-2026, ronda 6 — "tarda muchísimo entrar,
 // no sé si está haciendo algo"). Dos disparadores distintos comparten el mismo
 // overlay singleton (creado una sola vez en el DOM, fuera del árbol de Inertia):
 //   1) attachInertiaRouteLoading() — cualquier navegación Inertia (login → dashboard,
-//      <Link>, router.visit).
+//      <Link>, router.visit, useForm().post()).
 //   2) showRouteLoading()/hideRouteLoading() — llamado a mano donde el "cambio de
 //      pantalla" no es una navegación Inertia sino un fetch() propio (p. ej.
 //      Dashboard.vue al cambiar de periodo).
@@ -45,18 +46,76 @@ const BACKGROUND_ENQUEUE_PATH_PATTERNS: RegExp[] = [
     /\/reprocesar-fuentes-con-error$/,
 ];
 
-function isBackgroundEnqueueVisit(url: URL): boolean {
-    return BACKGROUND_ENQUEUE_PATH_PATTERNS.some((pattern) => pattern.test(url.pathname));
+// Corrección (oct-2026) — "sube un Excel en Histórico General, la pantalla morada
+// 'Espera un momento' se queda trabada y bloquea todo el sitio". POST /historico-general
+// (ReportUploadController::store) GUARDA el archivo y responde de inmediato — no es una
+// navegación pesada ni un proceso en segundo plano: es exactamente el mismo caso que la
+// lista de arriba (confirmación rápida, nunca debe tomar la pantalla completa). El
+// feedback real ya existe de forma local: el diálogo "Subiendo archivo" de
+// Historico-General/index.vue (con el progreso real de subida, ver onProgress) y el
+// estado de cada SourceUploadCard. Solo aplica al MÉTODO POST — la carga normal de la
+// página (`GET /historico-general`) sí debe mostrar el overlay si tarda, como cualquier
+// otra navegación.
+const UPLOAD_SAVE_PATH_PATTERNS: RegExp[] = [/^\/historico-general\/?$/];
+
+type OverlayVisit = { url: URL; method?: string };
+
+function isExcludedFromGlobalOverlay(visit: OverlayVisit): boolean {
+    if (BACKGROUND_ENQUEUE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
+        return true;
+    }
+
+    const method = (visit.method ?? 'get').toLowerCase();
+
+    return (
+        method === 'post' &&
+        UPLOAD_SAVE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))
+    );
 }
 
 let overlayEl: HTMLDivElement | null = null;
 let showTimer: ReturnType<typeof setTimeout> | undefined;
 let refCount = 0;
 
+// Corrección (oct-2026): un contador ciego puede desincronizarse si, por cualquier
+// motivo (una versión futura de Inertia, un evento duplicado, dos triggers
+// coincidiendo), 'start'/'finish' no llegan exactamente en pares para la MISMA
+// visita. En vez de confiar solo en el conteo, cada visita de Inertia se identifica
+// por el objeto `visit` que el propio router entrega (estable entre 'start' y
+// 'finish' — ver @inertiajs/core RequestParams.all()): nunca se incrementa dos
+// veces la misma visita, nunca se decrementa una que no se contó.
+const activeInertiaVisits = new WeakSet<object>();
+
+// Watchdog de seguridad: ninguna carga real de este sitio debería tardar más de
+// esto. Si el overlay lleva encendido más tiempo, es evidencia de un evento de
+// Inertia perdido (no de que la operación siga viva) — se libera la interfaz y SE
+// AVISA al usuario; nunca se finge que algo terminó bien.
+const WATCHDOG_MS = 45_000;
+let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+
+function armWatchdog(): void {
+    clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(() => {
+        if (refCount <= 0) {
+            return;
+        }
+
+        console.warn(
+            `[routeLoadingOverlay] La pantalla de carga llevaba más de ${WATCHDOG_MS / 1000}s activa sin confirmación de Inertia — se liberó por seguridad.`,
+        );
+        refCount = 0;
+        forceHideOverlay();
+        void toast.fire({
+            icon: 'warning',
+            title: 'Esto está tardando más de lo normal. Puedes seguir usando la aplicación; si la operación no se completó, inténtala de nuevo.',
+        });
+    }, WATCHDOG_MS);
+}
+
 function ensureOverlay(): HTMLDivElement {
     if (overlayEl) {
-return overlayEl;
-}
+        return overlayEl;
+    }
 
     const el = document.createElement('div');
     el.id = OVERLAY_ID;
@@ -81,8 +140,14 @@ return overlayEl;
     return el;
 }
 
+function forceHideOverlay(): void {
+    clearTimeout(showTimer);
+    ensureOverlay().classList.remove('is-visible');
+}
+
 export function showRouteLoading(delay = SHOW_DELAY_MS): void {
     refCount += 1;
+    armWatchdog();
     const el = ensureOverlay();
     clearTimeout(showTimer);
     showTimer = setTimeout(() => {
@@ -94,26 +159,41 @@ export function hideRouteLoading(): void {
     refCount = Math.max(0, refCount - 1);
 
     if (refCount > 0) {
-return;
-}
+        return;
+    }
 
-    clearTimeout(showTimer);
-    ensureOverlay().classList.remove('is-visible');
+    clearTimeout(watchdogTimer);
+    forceHideOverlay();
 }
 
 export function attachInertiaRouteLoading(): void {
     router.on('start', (event) => {
-        if (isBackgroundEnqueueVisit(event.detail.visit.url)) {
-return;
-}
+        const visit = event.detail.visit;
 
+        if (isExcludedFromGlobalOverlay(visit)) {
+            return;
+        }
+
+        // Nunca contar dos veces la MISMA visita (p. ej. si Inertia alguna vez
+        // disparara 'start' más de una vez para el mismo objeto de visita).
+        if (activeInertiaVisits.has(visit)) {
+            return;
+        }
+
+        activeInertiaVisits.add(visit);
         showRouteLoading();
     });
     router.on('finish', (event) => {
-        if (isBackgroundEnqueueVisit(event.detail.visit.url)) {
-return;
-}
+        const visit = event.detail.visit;
 
+        // Si esta visita nunca se contó (estaba excluida, o 'finish' llegó
+        // duplicado), nunca se decrementa: eso es lo que de verdad desincroniza
+        // el contador y deja el overlay sin forma de cerrarse.
+        if (!activeInertiaVisits.has(visit)) {
+            return;
+        }
+
+        activeInertiaVisits.delete(visit);
         hideRouteLoading();
     });
 }
