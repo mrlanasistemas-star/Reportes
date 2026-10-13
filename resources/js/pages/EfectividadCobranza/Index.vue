@@ -85,17 +85,57 @@ function dm(ymd: string | null): string {
     return ymd ? ymd.slice(5, 10).split('-').reverse().join('/') : '';
 }
 
-// Una semana operativa (lunes-domingo) usa el motor V4 (con fotografías); cualquier
-// otro periodo (p.ej. el ciclo real de 4 semanas) usa el motor Aprobada/Periódica —
-// el mismo Saldos por Cliente + Ingresos Cobranza que ya subes por Histórico General.
+// Dos motores, dos flujos — nunca mezclados en un solo selector plano.
+//   - 'periodica': tu operación real cada 4 semanas (Saldos por Cliente +
+//     Ingresos Cobranza, lo que ya subes por Histórico General). Sin fotos.
+//   - 'v4': una semana operativa (lunes-domingo) reconstruida con 8
+//     fotografías diarias de cartera ("cortes" exportados de Lendus).
+type EngineMode = 'periodica' | 'v4';
+
+const ENGINE_MODE_INFO: Record<
+    EngineMode,
+    { label: string; tagline: string; needs: string[] }
+> = {
+    periodica: {
+        label: 'Automático',
+        tagline: 'Con lo que ya subes cada 4 semanas',
+        needs: [
+            'Saldos por Cliente (un corte, al cierre del periodo)',
+            'Ingresos Cobranza (histórico completo)',
+            'Ambos ya cargados por Histórico General — nada nuevo que subir aquí',
+        ],
+    },
+    v4: {
+        label: 'Cortes según Excel',
+        tagline: 'Con 8 fotografías diarias de cartera',
+        needs: [
+            'Saldos por Cliente exportado cada día, domingo a domingo (8 archivos)',
+            'Ingresos Cobranza de la misma semana',
+            'Se cargan en «Disponibilidad de información», más abajo',
+        ],
+    },
+};
+
+const initialPeriodType = computed(
+    () =>
+        props.periods.find((p) => p.id === props.selected.period_id)?.type ??
+        null,
+);
+const engineMode = ref<EngineMode>(
+    initialPeriodType.value === 'weekly' ? 'v4' : 'periodica',
+);
+
 const periodOptions = computed(() =>
-    props.periods.map((p) => ({
-        value: p.id,
-        label:
-            p.type === 'weekly'
-                ? `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)}) · Motor V4`
-                : `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)}) · Aprobada`,
-    })),
+    props.periods
+        .filter((p) =>
+            engineMode.value === 'v4'
+                ? p.type === 'weekly'
+                : p.type !== 'weekly',
+        )
+        .map((p) => ({
+            value: p.id,
+            label: `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)})`,
+        })),
 );
 const branchOptions = computed(() => [
     { value: '', label: 'Todas las sucursales (general)' },
@@ -120,6 +160,20 @@ const selectedPeriod = computed(
 const isWeeklySelected = computed(
     () => selectedPeriod.value?.type === 'weekly',
 );
+
+function selectEngineMode(mode: EngineMode) {
+    if (engineMode.value === mode) {
+        return;
+    }
+
+    engineMode.value = mode;
+
+    // El periodo seleccionado solo sigue siendo válido si coincide con el
+    // nuevo modo — si no, se limpia en vez de dejar una combinación imposible.
+    if (selectedPeriod.value && isWeeklySelected.value !== (mode === 'v4')) {
+        selectedPeriodId.value = '';
+    }
+}
 
 /** Días lunes-domingo de la semana seleccionada (fecha de corte en modo DIARIO). */
 const cutoffOptions = computed(() => {
@@ -526,11 +580,51 @@ const sourcesBlocked = computed(
                     Efectividad de Cobranza
                 </h1>
                 <p class="text-sm text-muted-foreground">
-                    Calculadora V4 MR LANA: fotografías diarias de cartera +
-                    Ingresos Cobranza, por oficina y promotor.
+                    Analiza la recuperación de cartera por oficina y promotor,
+                    consulta resultados y genera tu reporte.
                 </p>
             </div>
         </header>
+
+        <!-- Selector de modo: dos flujos distintos, nunca mezclados -->
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+                v-for="mode in (['periodica', 'v4'] as const)"
+                :key="mode"
+                type="button"
+                class="rounded-xl border p-4 text-left transition"
+                :class="
+                    engineMode === mode
+                        ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                        : 'border-border bg-card hover:border-primary/40'
+                "
+                @click="selectEngineMode(mode)"
+            >
+                <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm font-semibold">
+                        {{ ENGINE_MODE_INFO[mode].label }}
+                    </p>
+                    <span
+                        v-if="engineMode === mode"
+                        class="rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground"
+                        >Seleccionado</span
+                    >
+                </div>
+                <p class="mt-0.5 text-xs text-muted-foreground">
+                    {{ ENGINE_MODE_INFO[mode].tagline }}
+                </p>
+                <ul class="mt-2.5 space-y-1 text-xs text-muted-foreground">
+                    <li
+                        v-for="need in ENGINE_MODE_INFO[mode].needs"
+                        :key="need"
+                        class="flex gap-1.5"
+                    >
+                        <span class="text-primary">·</span>
+                        <span>{{ need }}</span>
+                    </li>
+                </ul>
+            </button>
+        </div>
 
         <!-- Filtros + Generar: el botón nunca sale de la tarjeta -->
         <Card class="py-4">
@@ -539,9 +633,15 @@ const sourcesBlocked = computed(
             >
                 <SelectField
                     v-model="selectedPeriodId"
-                    label="Periodo"
+                    :label="
+                        engineMode === 'v4' ? 'Semana operativa' : 'Periodo'
+                    "
                     :options="periodOptions"
-                    placeholder="Selecciona un periodo"
+                    :placeholder="
+                        periodOptions.length
+                            ? 'Selecciona un periodo'
+                            : 'No hay periodos de este tipo todavía'
+                    "
                     @update:model-value="reloadForSelection"
                 />
                 <SelectField

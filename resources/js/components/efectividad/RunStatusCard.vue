@@ -3,6 +3,7 @@ import { useNow } from '@vueuse/core';
 import {
     Ban,
     Download,
+    FileText,
     Info,
     ListChecks,
     OctagonX,
@@ -15,7 +16,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { download as downloadRoute } from '@/routes/efectividad-cobranza';
+import { download as downloadRoute, downloadPdf as downloadPdfRoute } from '@/routes/efectividad-cobranza';
 import {
     FAILURE_KIND_LABELS,
     formatDateTime,
@@ -311,6 +312,12 @@ const isCancelling = computed(() => props.run.display_state === 'cancelling');
                     <a :href="downloadRoute(run.id).url">
                         <Download />
                         Descargar Excel
+                    </a>
+                </Button>
+                <Button v-if="run.has_excel" as-child variant="outline" size="sm">
+                    <a :href="downloadPdfRoute(run.id).url" target="_blank" rel="noopener">
+                        <FileText />
+                        Descargar PDF
                     </a>
                 </Button>
                 <Button

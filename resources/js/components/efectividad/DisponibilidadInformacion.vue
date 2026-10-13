@@ -234,12 +234,13 @@ const estadoMeta: Record<
         >
             <div class="min-w-0">
                 <CardTitle class="text-base"
-                    >Disponibilidad de información</CardTitle
+                    >Fotografías diarias (cortes según Excel)</CardTitle
                 >
                 <CardDescription>
-                    La calculadora V4 usa una fotografía de cartera por día
-                    (domingo base a fecha de corte) y los Ingresos Cobranza del
-                    periodo. Ninguna fotografía faltante se sustituye con otra.
+                    El modo «Cortes según Excel» necesita una fotografía de
+                    cartera por día (domingo base a fecha de corte) y los
+                    Ingresos Cobranza del periodo. Ninguna fotografía faltante
+                    se sustituye con otra.
                 </CardDescription>
             </div>
             <Button
@@ -268,7 +269,7 @@ const estadoMeta: Record<
             <Alert v-else-if="data && !data.supported">
                 <Info />
                 <AlertTitle
-                    >Periodo no compatible con la calculadora V4</AlertTitle
+                    >Periodo no compatible con «Cortes según Excel»</AlertTitle
                 >
                 <AlertDescription>{{ data.message }}</AlertDescription>
             </Alert>

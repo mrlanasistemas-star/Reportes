@@ -2,13 +2,11 @@
 import { router } from '@inertiajs/vue3';
 import { useNow } from '@vueuse/core';
 import { Eye, FileSpreadsheet, FilterX } from 'lucide-vue-next';
-import { computed, reactive } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import SelectField from '@/components/forms/SelectField.vue';
 import AppPagination from '@/components/navigation/AppPagination.vue';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import {
     download as downloadRoute,
     index as efectividadIndex,
@@ -71,6 +69,42 @@ const hasFilters = computed(() =>
     Object.values(form).some((v) => v !== '' && v !== null),
 );
 
+// Rango de fechas por chips rápidos — nunca un calendario nativo genérico.
+// "Desde"/"Hasta" se calculan aquí mismo, sin pedirle al usuario que navegue
+// un selector de fecha para algo que casi siempre es "la última semana/mes".
+type DateRangePreset = '' | '7d' | '30d' | 'month';
+const dateRangePreset = ref<DateRangePreset>('');
+const dateRangeOptions: Array<{ value: DateRangePreset; label: string }> = [
+    { value: '', label: 'Todo el historial' },
+    { value: '7d', label: 'Últimos 7 días' },
+    { value: '30d', label: 'Últimos 30 días' },
+    { value: 'month', label: 'Este mes' },
+];
+
+function ymd(date: Date): string {
+    return date.toISOString().slice(0, 10);
+}
+
+watch(dateRangePreset, (preset) => {
+    const today = new Date();
+
+    if (preset === '') {
+        form.f_from = '';
+        form.f_to = '';
+    } else if (preset === '7d') {
+        form.f_from = ymd(new Date(today.getTime() - 6 * 86400000));
+        form.f_to = ymd(today);
+    } else if (preset === '30d') {
+        form.f_from = ymd(new Date(today.getTime() - 29 * 86400000));
+        form.f_to = ymd(today);
+    } else if (preset === 'month') {
+        form.f_from = ymd(new Date(today.getFullYear(), today.getMonth(), 1));
+        form.f_to = ymd(today);
+    }
+
+    visit();
+});
+
 function visit(page?: number) {
     const query: Record<string, string | number> = {};
 
@@ -100,6 +134,7 @@ function visit(page?: number) {
 }
 
 function clearFilters() {
+    dateRangePreset.value = '';
     Object.assign(form, {
         f_period: '',
         f_branch: '',
@@ -157,7 +192,7 @@ function duration(run: RunSummary): string {
             <!-- Filtros -->
             <div
                 class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
-                :class="canFilterByUser ? 'xl:grid-cols-6' : 'xl:grid-cols-5'"
+                :class="canFilterByUser ? 'xl:grid-cols-5' : 'xl:grid-cols-4'"
             >
                 <SelectField
                     v-model="form.f_period"
@@ -177,24 +212,11 @@ function duration(run: RunSummary): string {
                     :options="STATUS_FILTER_OPTIONS"
                     @update:model-value="visit()"
                 />
-                <div class="space-y-2">
-                    <Label for="hist-from">Desde</Label>
-                    <Input
-                        id="hist-from"
-                        v-model="form.f_from"
-                        type="date"
-                        @change="visit()"
-                    />
-                </div>
-                <div class="space-y-2">
-                    <Label for="hist-to">Hasta</Label>
-                    <Input
-                        id="hist-to"
-                        v-model="form.f_to"
-                        type="date"
-                        @change="visit()"
-                    />
-                </div>
+                <SelectField
+                    v-model="dateRangePreset"
+                    label="Periodo de búsqueda"
+                    :options="dateRangeOptions"
+                />
                 <SelectField
                     v-if="canFilterByUser"
                     v-model="form.f_user"

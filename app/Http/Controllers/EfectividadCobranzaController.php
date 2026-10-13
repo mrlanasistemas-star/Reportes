@@ -12,6 +12,7 @@ use App\Models\EfectividadCobranzaRunIncident;
 use App\Models\Period;
 use App\Models\User;
 use App\Services\Efectividad\EfectividadCobranzaIssue;
+use App\Services\Efectividad\EfectividadCobranzaPdfExporter;
 use App\Services\Efectividad\EfectividadCobranzaRunPresenter;
 use App\Services\Efectividad\V4\EfectividadV4DataAdapter;
 use App\Services\Efectividad\V4\EfectividadV4Exception;
@@ -23,6 +24,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -54,6 +56,7 @@ class EfectividadCobranzaController extends Controller
     public function __construct(
         private readonly EfectividadCobranzaRunPresenter $presenter,
         private readonly EfectividadV4DataAdapter $adapter,
+        private readonly EfectividadCobranzaPdfExporter $pdfExporter,
     ) {}
 
     public function index(Request $request): Response
@@ -481,6 +484,29 @@ class EfectividadCobranzaController extends Controller
 
         return response()->download($absolutePath, basename($absolutePath), [
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma' => 'no-cache',
+        ]);
+    }
+
+    /**
+     * PDF resumen (bajo demanda, nunca dentro del Job): se genera la primera
+     * vez que se pide y se reutiliza después — nunca recalcula el resultado
+     * financiero, solo renderiza los mismos `result_rows` ya cerrados.
+     */
+    public function downloadPdf(Request $request, EfectividadCobranzaRun $run): BinaryFileResponse
+    {
+        $this->authorizeRun($request, $run);
+
+        if ($run->status !== EfectividadCobranzaRun::STATUS_SUCCESS) {
+            abort(404, 'El PDF de este reporte no está disponible.');
+        }
+
+        $relativePath = $this->pdfExporter->existingRelativePath($run) ?? $this->pdfExporter->export($run);
+        $absolutePath = Storage::disk('local')->path($relativePath);
+
+        return response()->download($absolutePath, "efectividad_cobranza_run{$run->id}.pdf", [
+            'Content-Type' => 'application/pdf',
             'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
             'Pragma' => 'no-cache',
         ]);
