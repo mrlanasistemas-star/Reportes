@@ -20,7 +20,9 @@ const segments = computed(() =>
             state = 'done';
         } else if (stage.position === pos) {
             state =
-                props.status === 'blocked' || props.status === 'failed'
+                props.status === 'blocked' ||
+                props.status === 'failed' ||
+                props.status === 'cancelled'
                     ? 'halted'
                     : 'current';
         }
@@ -58,6 +60,8 @@ const segments = computed(() =>
                         seg.state === 'halted' && status === 'failed',
                     'bg-amber-500':
                         seg.state === 'halted' && status === 'blocked',
+                    'bg-slate-400':
+                        seg.state === 'halted' && status === 'cancelled',
                     'bg-muted': seg.state === 'pending',
                 }"
                 aria-hidden="true"

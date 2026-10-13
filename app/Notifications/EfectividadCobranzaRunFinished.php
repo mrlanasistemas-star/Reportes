@@ -29,6 +29,7 @@ class EfectividadCobranzaRunFinished extends Notification
         [$kind, $title] = match ($run->status) {
             EfectividadCobranzaRun::STATUS_SUCCESS => ['success', 'Tu reporte de Efectividad de Cobranza está listo.'],
             EfectividadCobranzaRun::STATUS_BLOCKED => ['blocked', 'No se pudo generar el reporte porque faltan datos obligatorios.'],
+            EfectividadCobranzaRun::STATUS_CANCELLED => ['cancelled', 'La generación fue cancelada.'],
             default => ['failed', 'Se produjo un error durante la generación.'],
         };
 

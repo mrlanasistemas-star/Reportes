@@ -6,6 +6,7 @@ use App\Enums\EfectividadCobranzaStage;
 use App\Models\EfectividadCobranzaRun;
 use App\Models\Period;
 use App\Models\PortfolioSnapshot;
+use App\Services\Efectividad\EfectividadCobranzaCancelledException;
 use App\Services\Efectividad\EfectividadCobranzaIssue;
 use App\Services\Efectividad\EfectividadCobranzaProgressTracker;
 use App\Services\Efectividad\EfectividadCobranzaReconciler;
@@ -102,6 +103,14 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
             return;
         }
 
+        // Cancelación solicitada antes de que el worker tomara el trabajo (p.ej.
+        // seguía `queued`): se cierra de inmediato, sin ejecutar ningún paso.
+        if ($run->isCancelRequested()) {
+            $this->closeAsCancelled($run, new EfectividadCobranzaProgressTracker($run), $notifier);
+
+            return;
+        }
+
         $period = Period::query()->findOrFail($run->period_id);
         $mode = $run->mode ?: EfectividadCobranzaRun::MODE_SEMANAL;
         $cutoff = $run->cutoff_date?->format('Y-m-d');
@@ -176,6 +185,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
             ));
 
             // ── 2. Encabezados de fotografías e ingresos ───────────────────
+            $this->throwIfCancelRequested($run);
             $tracker->start(EfectividadCobranzaStage::VerifyColumns);
             $snapshotIds = collect($disp['fotos'])->flatMap(fn ($f) => collect($f['archivos'])->pluck('snapshot_id'))->all();
             $faltantes = [];
@@ -201,7 +211,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
             // ── 3-4. Fotografías diarias e ingresos (medibles) ─────────────
             $phase = null;
             $lastProcessed = 0;
-            $onProgress = function (string $newPhase, int $processed, ?int $total) use ($tracker, &$phase, &$lastProcessed): void {
+            $onProgress = function (string $newPhase, int $processed, ?int $total) use ($run, $tracker, &$phase, &$lastProcessed): void {
                 if ($newPhase !== $phase) {
                     if ($phase === 'cartera') {
                         $tracker->complete(EfectividadCobranzaStage::PreparePortfolio, null, [], $lastProcessed);
@@ -211,6 +221,9 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
                 }
                 $lastProcessed = $processed;
                 $tracker->advance($processed);
+                // Punto de cancelación cooperativa: misma cadencia que la escritura de
+                // avance (cada ~1000 registros) — nunca una consulta por fila.
+                $this->throwIfCancelRequested($run);
             };
 
             $input = $adapter->build($period, $run->branch_id, $mode, $cutoff, $onProgress);
@@ -232,6 +245,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
             }
 
             // ── 5. Cálculo V4 ───────────────────────────────────────────────
+            $this->throwIfCancelRequested($run);
             $tracker->start(EfectividadCobranzaStage::Calculate);
             try {
                 $result = $calculator->calculate($input['parametros'], $input['fotos'], $input['ingresos'], $input['historial']);
@@ -274,6 +288,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
             ]);
 
             // ── 7. Auditoría de incidencias ────────────────────────────────
+            $this->throwIfCancelRequested($run);
             $tracker->start(EfectividadCobranzaStage::Audit);
             $resumenIncidencias = EfectividadV4Incidents::persist($run, $result['incidencias']);
             $tracker->complete(EfectividadCobranzaStage::Audit, $result['incidencias']
@@ -281,6 +296,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
                 : 'Sin incidencias de cálculo.', ['por_codigo' => $resumenIncidencias]);
 
             // ── 8. Excel ────────────────────────────────────────────────────
+            $this->throwIfCancelRequested($run);
             $tracker->start(EfectividadCobranzaStage::BuildExcel);
             // Disco PRIVADO ('local'), ruta RELATIVA guardada en BD.
             $scopeLabel = $run->branch_id ? "sucursal_{$run->branch_id}" : 'general';
@@ -316,6 +332,11 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
                 'heartbeat_at' => now(),
                 'log' => EfectividadCobranzaStage::Finish->description(),
             ])->save();
+        } catch (EfectividadCobranzaCancelledException) {
+            // Cancelación cooperativa: no es una falla, no se reintenta, no se publica nada parcial.
+            $this->closeAsCancelled($run, $tracker, $notifier);
+
+            return;
         } catch (\Throwable $exception) {
             $this->handleException($run, $tracker, $notifier, $issues, $exception, $period);
 
@@ -325,6 +346,35 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
         $notifier->notify($run);
     }
 
+    /** @throws EfectividadCobranzaCancelledException si se solicitó detener la generación. */
+    private function throwIfCancelRequested(EfectividadCobranzaRun $run): void
+    {
+        $cancelled = EfectividadCobranzaRun::query()->whereKey($run->id)->whereNotNull('cancel_requested_at')->exists();
+
+        if ($cancelled) {
+            throw new EfectividadCobranzaCancelledException;
+        }
+    }
+
+    /**
+     * Cierra una ejecución cancelada por solicitud del usuario: nunca `failed`
+     * (no fue un error) ni `success` (no se publica un resultado parcial). No
+     * borra las incidencias/avance ya registrados — solo deja de avanzar.
+     */
+    private function closeAsCancelled(EfectividadCobranzaRun $run, EfectividadCobranzaProgressTracker $tracker, EfectividadCobranzaRunNotifier $notifier): void
+    {
+        $tracker->halt('cancelled', 'La generación fue cancelada por solicitud del usuario.');
+        $run->forceFill([
+            'status' => EfectividadCobranzaRun::STATUS_CANCELLED,
+            'finished_at' => now(),
+            'cancelled_at' => now(),
+            'heartbeat_at' => now(),
+            'result_rows' => [],
+            'log' => 'La generación fue cancelada por solicitud del usuario.',
+        ])->save();
+
+        $notifier->notify($run);
+    }
 
     /**
      * Llamado por el worker cuando el Job falla definitivamente (incluye
@@ -334,7 +384,7 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
     public function failed(?\Throwable $exception): void
     {
         $run = EfectividadCobranzaRun::query()->find($this->runId);
-        if (!$run) {
+        if (! $run) {
             return;
         }
 
@@ -346,13 +396,22 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
             return;
         }
 
+        // Se pidió cancelar mientras el Job estaba dentro de una llamada que no
+        // pudo revisar el punto de cancelación (p.ej. timeout en el cálculo) y
+        // terminó agotando sus reintentos: es una cancelación, no un error técnico.
+        if ($run->isCancelRequested()) {
+            $this->closeAsCancelled($run, new EfectividadCobranzaProgressTracker($run), $notifier);
+
+            return;
+        }
+
         $isTimeout = $exception instanceof TimeoutExceededException;
         $isMaxAttempts = $exception instanceof MaxAttemptsExceededException;
 
         Log::error('Efectividad: el Job terminó como fallido.', [
-            'run_id'    => $run->id,
+            'run_id' => $run->id,
             'exception' => $exception ? get_class($exception) : null,
-            'message'   => $exception?->getMessage(),
+            'message' => $exception?->getMessage(),
         ]);
 
         $issues = $run->issues ?? [];
@@ -381,15 +440,24 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
 
         // Detalle técnico SOLO en el log del servidor — nunca en la UI ni en el correo.
         Log::error('GenerateEfectividadCobranzaAprobadaJob falló.', [
-            'run_id'    => $run->id,
+            'run_id' => $run->id,
             'period_id' => $period->id,
             'branch_id' => $run->branch_id,
-            'stage'     => $stage?->value,
-            'attempt'   => $this->attempts(),
+            'stage' => $stage?->value,
+            'attempt' => $this->attempts(),
             'exception' => get_class($exception),
-            'message'   => $exception->getMessage(),
-            'trace'     => $exception->getTraceAsString(),
+            'message' => $exception->getMessage(),
+            'trace' => $exception->getTraceAsString(),
         ]);
+
+        // Se pidió cancelar y el error ocurrió antes de que el Job llegara a revisarlo
+        // (p.ej. dentro de la llamada al calculador): se cierra como cancelada, nunca
+        // se reintenta algo que el usuario ya pidió detener.
+        if ($run->refresh()->isCancelRequested()) {
+            $this->closeAsCancelled($run, $tracker, $notifier);
+
+            return;
+        }
 
         $tracker->halt('failed', 'Error técnico en esta etapa.');
 
@@ -398,10 +466,10 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
 
         if ($willRetry) {
             $run->forceFill([
-                'status'       => EfectividadCobranzaRun::STATUS_RETRYING,
+                'status' => EfectividadCobranzaRun::STATUS_RETRYING,
                 'heartbeat_at' => now(),
-                'log'          => "El intento {$this->attempts()} falló en la etapa «{$stageLabel}». Se reintentará automáticamente en {$this->backoff} segundos.",
-                'metadata'     => [...($run->metadata ?? []), 'last_error_reference' => class_basename($exception)],
+                'log' => "El intento {$this->attempts()} falló en la etapa «{$stageLabel}». Se reintentará automáticamente en {$this->backoff} segundos.",
+                'metadata' => [...($run->metadata ?? []), 'last_error_reference' => class_basename($exception)],
             ])->save();
 
             return;
@@ -429,14 +497,14 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
     private function closeAsFailed(EfectividadCobranzaRun $run, EfectividadCobranzaRunNotifier $notifier, array $issues, string $failureKind, string $message, ?string $reference = null): void
     {
         $run->forceFill([
-            'status'        => EfectividadCobranzaRun::STATUS_FAILED,
-            'finished_at'   => now(),
-            'heartbeat_at'  => now(),
-            'failure_kind'  => $failureKind,
+            'status' => EfectividadCobranzaRun::STATUS_FAILED,
+            'finished_at' => now(),
+            'heartbeat_at' => now(),
+            'failure_kind' => $failureKind,
             'error_message' => $message,
-            'log'           => $message,
-            'issues'        => EfectividadCobranzaIssue::normalize($issues),
-            'metadata'      => [...($run->metadata ?? []), 'last_error_reference' => $reference ?? ($run->metadata['last_error_reference'] ?? null)],
+            'log' => $message,
+            'issues' => EfectividadCobranzaIssue::normalize($issues),
+            'metadata' => [...($run->metadata ?? []), 'last_error_reference' => $reference ?? ($run->metadata['last_error_reference'] ?? null)],
         ])->save();
 
         $notifier->notify($run);

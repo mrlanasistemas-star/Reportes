@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { router } from '@inertiajs/vue3';
 import {
+    Ban,
     CheckCircle2,
     Circle,
     CircleDashed,
@@ -106,6 +107,7 @@ function stageIcon(stage: StageEntry) {
             running: Loader2,
             blocked: PauseCircle,
             failed: OctagonX,
+            cancelled: Ban,
             pending: Circle,
             unknown: CircleDashed,
         }[stage.status] ?? Circle
@@ -119,6 +121,7 @@ function stageTone(stage: StageEntry) {
             running: 'text-primary animate-spin',
             blocked: 'text-amber-600',
             failed: 'text-destructive',
+            cancelled: 'text-muted-foreground',
             pending: 'text-muted-foreground/50',
             unknown: 'text-muted-foreground/50',
         }[stage.status] ?? ''

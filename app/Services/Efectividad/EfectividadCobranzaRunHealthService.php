@@ -145,6 +145,8 @@ class EfectividadCobranzaRunHealthService
             'failed' => 'Error',
             'success' => 'Terminado',
             'obsolete' => 'Obsoleto',
+            'cancelling' => 'Cancelación solicitada',
+            'cancelled' => 'Cancelado',
             default => $state,
         };
     }

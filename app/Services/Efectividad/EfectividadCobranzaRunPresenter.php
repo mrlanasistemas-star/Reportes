@@ -48,6 +48,13 @@ class EfectividadCobranzaRunPresenter
 
         // Un resultado de la calculadora anterior nunca se presenta como vigente.
         $displayState = ($supersededBy || ($isSuccess && ! $isCurrentEngine)) ? 'obsolete' : $assessment['state'];
+
+        // Cancelación solicitada pero el Job todavía no llegó a su punto de
+        // cancelación cooperativa: se comunica la intención, no el estado de salud.
+        if ($run->isActive() && $run->isCancelRequested()) {
+            $displayState = 'cancelling';
+        }
+
         $stage = $run->current_stage ? EfectividadCobranzaStage::tryFrom($run->current_stage) : null;
 
         $start = $run->started_at;
@@ -93,6 +100,9 @@ class EfectividadCobranzaRunPresenter
             'has_excel' => $isSuccess && $this->resolveExcelAbsolutePath($run) !== null,
             'failure_kind' => $run->failure_kind,
             'error_message' => $run->error_message,
+            'can_cancel' => $run->canBeCancelled(),
+            'cancel_requested_at' => $run->cancel_requested_at?->toISOString(),
+            'cancelled_at' => $run->cancelled_at?->toISOString(),
             'superseded_by_id' => $supersededBy,
             'issue_counts' => [
                 'critical' => collect($run->issues ?? [])->where('severity', 'critical')->count(),

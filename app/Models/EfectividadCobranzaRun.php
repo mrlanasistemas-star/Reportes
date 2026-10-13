@@ -2,40 +2,57 @@
 
 namespace App\Models;
 
+use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class EfectividadCobranzaRun extends Model
 {
     /** Fase 5 (auditoría 2026-10-12) — estados reales, nunca mezclados. */
-    public const STATUS_QUEUED   = 'queued';
-    public const STATUS_RUNNING  = 'running';
+    public const STATUS_QUEUED = 'queued';
+
+    public const STATUS_RUNNING = 'running';
+
     public const STATUS_RETRYING = 'retrying';
-    public const STATUS_SUCCESS  = 'success';
-    public const STATUS_BLOCKED  = 'blocked';
-    public const STATUS_FAILED   = 'failed';
+
+    public const STATUS_SUCCESS = 'success';
+
+    public const STATUS_BLOCKED = 'blocked';
+
+    public const STATUS_FAILED = 'failed';
+
+    /** Fase 4 (cancelación real) — nunca se mezcla con `failed` (técnico) ni `blocked` (datos). */
+    public const STATUS_CANCELLED = 'cancelled';
 
     /** Estados en los que el worker todavía tiene (o tendrá) trabajo pendiente. */
     public const ACTIVE_STATUSES = [self::STATUS_QUEUED, self::STATUS_RUNNING, self::STATUS_RETRYING];
 
     /** Estados finales: el Job nunca vuelve a calcular una ejecución en estos estados. */
-    public const TERMINAL_STATUSES = [self::STATUS_SUCCESS, self::STATUS_BLOCKED, self::STATUS_FAILED];
+    public const TERMINAL_STATUSES = [self::STATUS_SUCCESS, self::STATUS_BLOCKED, self::STATUS_FAILED, self::STATUS_CANCELLED];
 
     /** Categorías de bloqueo/error (ver EfectividadCobranzaIssue). */
-    public const FAILURE_TECHNICAL        = 'technical';
-    public const FAILURE_MISSING_DATA     = 'missing_data';
-    public const FAILURE_MISSING_COLUMNS  = 'missing_columns';
+    public const FAILURE_TECHNICAL = 'technical';
+
+    public const FAILURE_MISSING_DATA = 'missing_data';
+
+    public const FAILURE_MISSING_COLUMNS = 'missing_columns';
+
     public const FAILURE_PARTIAL_COVERAGE = 'partial_coverage';
-    public const FAILURE_INCOMPATIBLE     = 'incompatible';
-    public const FAILURE_WORKER_STALLED   = 'worker_stalled';
-    public const FAILURE_TIMEOUT          = 'timeout';
+
+    public const FAILURE_INCOMPATIBLE = 'incompatible';
+
+    public const FAILURE_WORKER_STALLED = 'worker_stalled';
+
+    public const FAILURE_TIMEOUT = 'timeout';
 
     public const NOTIFICATION_SENDING = 'sending';
-    public const NOTIFICATION_SENT    = 'sent';
-    public const NOTIFICATION_FAILED  = 'failed';
+
+    public const NOTIFICATION_SENT = 'sent';
+
+    public const NOTIFICATION_FAILED = 'failed';
+
     public const NOTIFICATION_SKIPPED = 'skipped';
 
     protected $fillable = [
@@ -67,6 +84,9 @@ class EfectividadCobranzaRun extends Model
         'queue_job_uuid',
         'created_by',
         'subscriber_ids',
+        'cancel_requested_at',
+        'cancelled_by',
+        'cancelled_at',
         'queued_at',
         'started_at',
         'finished_at',
@@ -81,27 +101,29 @@ class EfectividadCobranzaRun extends Model
     ];
 
     protected $casts = [
-        'metadata'           => 'array',
-        'coverage'           => 'array',
-        'result_rows'        => 'array',
-        'stages'             => 'array',
-        'sources'            => 'array',
-        'issues'             => 'array',
-        'subscriber_ids'     => 'array',
-        'attempts'           => 'integer',
-        'progress_current'   => 'integer',
-        'progress_total'     => 'integer',
+        'metadata' => 'array',
+        'coverage' => 'array',
+        'result_rows' => 'array',
+        'stages' => 'array',
+        'sources' => 'array',
+        'issues' => 'array',
+        'subscriber_ids' => 'array',
+        'attempts' => 'integer',
+        'progress_current' => 'integer',
+        'progress_total' => 'integer',
         'notification_attempts' => 'integer',
-        'queued_at'          => 'datetime',
-        'started_at'         => 'datetime',
-        'finished_at'        => 'datetime',
-        'stage_started_at'   => 'datetime',
-        'heartbeat_at'       => 'datetime',
-        'notified_at'        => 'datetime',
+        'queued_at' => 'datetime',
+        'started_at' => 'datetime',
+        'finished_at' => 'datetime',
+        'cancel_requested_at' => 'datetime',
+        'cancelled_at' => 'datetime',
+        'stage_started_at' => 'datetime',
+        'heartbeat_at' => 'datetime',
+        'notified_at' => 'datetime',
         'in_app_notified_at' => 'datetime',
-        'base_date'          => 'date',
-        'cutoff_date'        => 'date',
-        'incidents_count'    => 'integer',
+        'base_date' => 'date',
+        'cutoff_date' => 'date',
+        'incidents_count' => 'integer',
     ];
 
     /** Motor anterior (CALCULADORA DE EFECTIVIDAD DE COBRANZA APROBADO.xlsm) — solo histórico. */
@@ -157,6 +179,17 @@ class EfectividadCobranzaRun extends Model
         return in_array($this->status, self::ACTIVE_STATUSES, true);
     }
 
+    /** Cancelación solicitada pero aún no confirmada por el Job (sigue activa). */
+    public function isCancelRequested(): bool
+    {
+        return $this->cancel_requested_at !== null;
+    }
+
+    public function canBeCancelled(): bool
+    {
+        return $this->isActive() && ! $this->isCancelRequested();
+    }
+
     public function isTerminal(): bool
     {
         return in_array($this->status, self::TERMINAL_STATUSES, true);
@@ -181,7 +214,7 @@ class EfectividadCobranzaRun extends Model
 
     public function addSubscriber(?int $userId): void
     {
-        if (!$userId || in_array($userId, $this->recipientUserIds(), true)) {
+        if (! $userId || in_array($userId, $this->recipientUserIds(), true)) {
             return;
         }
 
@@ -195,7 +228,7 @@ class EfectividadCobranzaRun extends Model
      */
     public function isVisibleTo(?User $user): bool
     {
-        if (!$user || !$user->hasManagerialAccess()) {
+        if (! $user || ! $user->hasManagerialAccess()) {
             return false;
         }
 
