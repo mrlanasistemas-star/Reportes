@@ -3,6 +3,7 @@ import { Head, router, useForm } from '@inertiajs/vue3'
 import { CalendarDays } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { toast } from '@/components/feedback/Toast'
 import AutomaticPeriodDetail from '@/components/historico-general/AutomaticPeriodDetail.vue'
 import DatabaseUpdateStep from '@/components/historico-general/DatabaseUpdateStep.vue'
 import GeneratedReportActions from '@/components/historico-general/GeneratedReportActions.vue'
@@ -277,6 +278,8 @@ const toastError = (title: string, text: string) =>
     Swal.fire({ title, text, icon: 'warning', confirmButtonText: 'Entendido' })
 
 // ── Acciones ──────────────────────────────────────────────────────────
+const isUploadingSource = ref(false)
+
 const uploadFile = async ({ sourceId, file }: { sourceId: number; file: File }) => {
     if (!period.value) {
 return toastError('Selecciona periodo', 'Elige un periodo antes de cargar archivos.')
@@ -294,14 +297,70 @@ return toastError('Periodo automático', 'Este periodo es automático (bimestral
 return toastError('Mes sin configurar', 'Este mes operativo no tiene semanas asociadas. Ve a Periodos para configurarlo primero.')
 }
 
+    // Nunca dos cargas a la vez con el mismo form compartido: evita que un doble
+    // clic (u otra tarjeta) dispare una segunda visita de Inertia mientras la
+    // primera sigue en curso, que es justo lo que puede desincronizar el overlay
+    // y duplicar la fuente guardada.
+    if (isUploadingSource.value || form.processing) {
+        void toast.fire({ icon: 'info', title: 'Ya hay una carga en curso. Espera a que termine.' })
+
+        return
+    }
+
     form.period_id         = String(selectedPeriodId.value)
     form.data_source_id    = String(sourceId)
     form.file              = file
     form.covered_period_ids = period.value?.component_period_ids?.length
         ? (period.value.component_period_ids as number[])
         : [selectedPeriodId.value as number]
-    Swal.fire({ title: 'Subiendo archivo', text: 'Validando formato y guardando fuente.', allowOutsideClick: false, showConfirmButton: false, didOpen: () => Swal.showLoading() })
-    form.post('/historico-general', { forceFormData: true, preserveScroll: true, onSuccess: () => Swal.fire('Archivo subido', 'La fuente quedó registrada para este periodo.', 'success'), onError: () => Swal.fire('Error de carga', 'Revisa formato, periodo y fuente seleccionada.', 'error') })
+
+    isUploadingSource.value = true
+    let settledByCallback = false
+
+    Swal.fire({
+        title: 'Subiendo archivo',
+        html: 'Validando formato y guardando fuente… <strong>0%</strong>',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        showConfirmButton: false,
+        didOpen: () => Swal.showLoading(),
+    })
+
+    form.post('/historico-general', {
+        forceFormData: true,
+        preserveScroll: true,
+        // Porcentaje REAL de transferencia (Inertia lo calcula del propio XHR de
+        // subida) — nunca un valor inventado; si el navegador no lo reporta, el
+        // texto simplemente no cambia de "0%" hasta que termine.
+        onProgress: (event) => {
+            if (typeof event?.percentage === 'number' && Swal.isVisible()) {
+                Swal.update({ html: `Subiendo archivo… <strong>${event.percentage}%</strong>` })
+            }
+        },
+        onSuccess: () => {
+            settledByCallback = true
+            Swal.fire('Archivo subido', 'La fuente quedó registrada para este periodo.', 'success')
+        },
+        onError: () => {
+            settledByCallback = true
+            Swal.fire('Error de carga', 'Revisa formato, periodo y fuente seleccionada.', 'error')
+        },
+        onCancel: () => {
+            settledByCallback = true
+            Swal.fire('Carga cancelada', 'La subida se interrumpió antes de terminar.', 'info')
+        },
+        onFinish: () => {
+            isUploadingSource.value = false
+
+            // Red de seguridad: si por una excepción de red u otra causa no prevista
+            // ninguno de los callbacks anteriores se ejecutó, el diálogo de "Subiendo…"
+            // nunca debe quedarse abierto para siempre — se cierra con un aviso real,
+            // nunca fingiendo que terminó bien.
+            if (!settledByCallback && Swal.isVisible()) {
+                Swal.fire('No se pudo confirmar la carga', 'La conexión se interrumpió. Verifica si el archivo quedó registrado antes de volver a intentarlo.', 'warning')
+            }
+        },
+    })
 }
 
 const deleteUpload = async (id: number) => {
@@ -897,6 +956,7 @@ return
                             :sources="sources"
                             :uploads-by-source="uploadsBySource"
                             :selected-period-id="selectedPeriodId"
+                            :uploading="isUploadingSource"
                             @upload="uploadFile"
                             @delete="deleteUpload"
                         />
