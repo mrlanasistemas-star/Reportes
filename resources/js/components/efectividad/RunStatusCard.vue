@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { useNow } from '@vueuse/core';
 import {
+    Ban,
     Download,
     Info,
     ListChecks,
+    OctagonX,
     RefreshCw,
     RotateCw,
     ServerCog,
@@ -37,6 +39,7 @@ const emit = defineEmits<{
     (e: 'details'): void;
     (e: 'refresh'): void;
     (e: 'retry'): void;
+    (e: 'cancel'): void;
 }>();
 
 const now = useNow({ interval: 1000 });
@@ -80,6 +83,8 @@ const showHealthAlert = computed(
         ['delayed', 'stalled'].includes(props.run.display_state) &&
         !!props.run.health_message,
 );
+
+const isCancelling = computed(() => props.run.display_state === 'cancelling');
 </script>
 
 <template>
@@ -160,6 +165,20 @@ const showHealthAlert = computed(
                     {{ run.log }}
                 </p>
             </div>
+
+            <!-- Cancelación solicitada: el Job sigue vivo hasta su siguiente punto seguro -->
+            <Alert
+                v-if="isCancelling"
+                class="border-slate-300 bg-slate-50 text-slate-900 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-100"
+            >
+                <OctagonX />
+                <AlertTitle>Cancelación solicitada</AlertTitle>
+                <AlertDescription class="text-slate-900/90 dark:text-slate-100/90">
+                    Se solicitó detener la generación. El sistema la
+                    finalizará en cuanto alcance un punto seguro — esto puede
+                    tardar unos momentos si está en medio de un cálculo.
+                </AlertDescription>
+            </Alert>
 
             <!-- Diagnóstico de salud del worker -->
             <Alert
@@ -264,6 +283,13 @@ const showHealthAlert = computed(
                 El reporte se generó correctamente y está disponible para
                 descarga.
             </p>
+            <p
+                v-else-if="run.status === 'cancelled'"
+                class="text-sm text-muted-foreground"
+            >
+                La generación fue cancelada por solicitud del usuario. Puedes
+                generarla de nuevo cuando lo necesites.
+            </p>
 
             <!-- Acciones -->
             <div class="flex flex-wrap gap-2">
@@ -288,13 +314,27 @@ const showHealthAlert = computed(
                     </a>
                 </Button>
                 <Button
-                    v-if="run.status === 'failed' || run.status === 'blocked'"
+                    v-if="
+                        run.status === 'failed' ||
+                        run.status === 'blocked' ||
+                        run.status === 'cancelled'
+                    "
                     variant="ghost"
                     size="sm"
                     @click="emit('retry')"
                 >
                     <RotateCw />
                     Generar de nuevo
+                </Button>
+                <Button
+                    v-if="run.can_cancel"
+                    variant="outline"
+                    size="sm"
+                    class="text-destructive hover:text-destructive"
+                    @click="emit('cancel')"
+                >
+                    <Ban />
+                    Cancelar generación
                 </Button>
             </div>
         </CardContent>

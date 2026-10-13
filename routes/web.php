@@ -199,6 +199,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             // URL estable de una ejecución — la usan el correo y las notificaciones internas.
             Route::get('/runs/{run}', [EfectividadCobranzaController::class, 'show'])->name('runs.show');
             Route::get('/runs/{run}/progreso', [EfectividadCobranzaController::class, 'progress'])->name('progress');
+            Route::post('/runs/{run}/cancelar', [EfectividadCobranzaController::class, 'cancel'])->name('runs.cancel');
             Route::get('/runs/{run}/descargar', [EfectividadCobranzaController::class, 'download'])->name('download');
             Route::get('/runs/{run}/incidencias', [EfectividadCobranzaController::class, 'incidents'])->name('incidents');
             Route::get('/runs/{run}/incidencias/exportar', [EfectividadCobranzaController::class, 'exportIncidents'])->name('incidents.export');

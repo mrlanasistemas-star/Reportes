@@ -4,9 +4,15 @@ export type RunStatus =
     | 'retrying'
     | 'success'
     | 'blocked'
-    | 'failed';
+    | 'failed'
+    | 'cancelled';
 
-export type DisplayState = RunStatus | 'delayed' | 'stalled' | 'obsolete';
+export type DisplayState =
+    | RunStatus
+    | 'delayed'
+    | 'stalled'
+    | 'obsolete'
+    | 'cancelling';
 
 export type ResultRow = {
     /** Motor V4: promotor | subtotal (TOTAL OFICINA) | gran_total. */
@@ -147,7 +153,14 @@ export type StageInfo = {
 };
 
 export type StageEntry = StageInfo & {
-    status: 'pending' | 'running' | 'done' | 'blocked' | 'failed' | 'unknown';
+    status:
+        | 'pending'
+        | 'running'
+        | 'done'
+        | 'blocked'
+        | 'failed'
+        | 'cancelled'
+        | 'unknown';
     started_at: string | null;
     finished_at: string | null;
     processed: number | null;
@@ -264,6 +277,9 @@ export type RunSummary = {
     has_excel: boolean;
     failure_kind: string | null;
     error_message: string | null;
+    can_cancel: boolean;
+    cancel_requested_at: string | null;
+    cancelled_at: string | null;
     superseded_by_id: number | null;
     issue_counts: { critical: number; warning: number };
     notification: {

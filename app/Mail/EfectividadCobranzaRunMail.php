@@ -25,6 +25,8 @@ class EfectividadCobranzaRunMail extends Mailable
 
     public const KIND_FAILED = 'failed';
 
+    public const KIND_CANCELLED = 'cancelled';
+
     public function __construct(
         public EfectividadCobranzaRun $run,
         public ?User $user,
@@ -37,6 +39,7 @@ class EfectividadCobranzaRunMail extends Mailable
         return match ($kind) {
             self::KIND_SUCCESS => 'Efectividad de Cobranza — Reporte disponible',
             self::KIND_BLOCKED => 'Efectividad de Cobranza — Se requiere corregir información',
+            self::KIND_CANCELLED => 'Efectividad de Cobranza — Generación cancelada',
             default => 'Efectividad de Cobranza — No fue posible completar el reporte',
         };
     }
@@ -77,6 +80,7 @@ class EfectividadCobranzaRunMail extends Mailable
                 'statusLabel' => match ($this->kind) {
                     self::KIND_SUCCESS => 'Terminado correctamente',
                     self::KIND_BLOCKED => 'Bloqueado por datos',
+                    self::KIND_CANCELLED => 'Cancelado',
                     default => 'Error',
                 },
                 'reason' => $this->kind === self::KIND_BLOCKED

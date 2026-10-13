@@ -33,6 +33,7 @@ import {
     generate as generateRoute,
     index as efectividadIndex,
 } from '@/routes/efectividad-cobranza';
+import { cancel as cancelRoute } from '@/routes/efectividad-cobranza/runs';
 
 type Mode = 'SEMANAL' | 'DIARIO';
 
@@ -201,6 +202,10 @@ const polling = useEfectividadRunPolling({
             failed: {
                 icon: 'error',
                 title: 'Se produjo un error durante la generación.',
+            },
+            cancelled: {
+                icon: 'info',
+                title: 'La generación fue cancelada.',
             },
         } as const;
         const msg = messages[detail.status as keyof typeof messages];
@@ -416,6 +421,73 @@ async function generar(confirmPartial = false) {
 const focusIsActive = computed(
     () => !!focus.value && isActiveStatus(focus.value.status),
 );
+
+const cancelling = ref(false);
+
+async function cancelarGeneracion() {
+    if (!focus.value || cancelling.value) {
+        return;
+    }
+
+    const runId = focus.value.id;
+
+    const answer = await Swal.fire({
+        icon: 'warning',
+        title: '¿Cancelar la generación?',
+        text: 'El sistema detendrá el proceso en cuanto alcance un punto seguro. Esto no se puede deshacer y tendrás que generar el reporte de nuevo si lo necesitas.',
+        showCancelButton: true,
+        confirmButtonText: 'Sí, cancelar generación',
+        cancelButtonText: 'Seguir esperando',
+        confirmButtonColor: '#dc2626',
+    });
+
+    if (!answer.isConfirmed) {
+        return;
+    }
+
+    cancelling.value = true;
+
+    let res: Response | null = null;
+
+    try {
+        res = await fetch(cancelRoute(runId).url, {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': csrfToken(),
+            },
+        });
+
+        if (!res.ok) {
+            void toast.fire({
+                icon: 'error',
+                title: await describeHttpFailure(res, null),
+            });
+
+            return;
+        }
+
+        const payload = (await res.json()) as {
+            run: RunSummary;
+            message: string;
+        };
+
+        if (focus.value?.id === runId) {
+            focus.value = { ...focus.value, ...payload.run };
+        }
+
+        void toast.fire({ icon: 'info', title: payload.message });
+        router.reload({ only: ['history', 'activeRuns', 'backgroundActivity'] });
+    } catch (error) {
+        void toast.fire({
+            icon: 'error',
+            title: await describeHttpFailure(res, error),
+        });
+    } finally {
+        cancelling.value = false;
+    }
+}
 const focusDetail = computed(() =>
     focus.value && 'rows' in focus.value ? focus.value : null,
 );
@@ -602,6 +674,7 @@ const sourcesBlocked = computed(
             @details="openDetails(focus.id)"
             @refresh="polling.refreshNow(focus.id)"
             @retry="generar()"
+            @cancel="cancelarGeneracion()"
         />
         <Card v-else-if="selectedPeriodId" class="border-dashed py-6">
             <CardContent class="px-4 text-center text-sm text-muted-foreground">

@@ -6,6 +6,7 @@ import {
     Clock,
     History,
     Loader2,
+    OctagonX,
     RotateCw,
     XCircle,
 } from 'lucide-vue-next';
@@ -34,6 +35,8 @@ const icon = computed(
             failed: XCircle,
             success: CheckCircle2,
             obsolete: History,
+            cancelling: OctagonX,
+            cancelled: Ban,
         })[props.state] ?? Clock,
 );
 </script>

@@ -97,6 +97,7 @@ class EfectividadCobranzaRunNotifier
         $kind = match ($run->status) {
             EfectividadCobranzaRun::STATUS_SUCCESS => EfectividadCobranzaRunMail::KIND_SUCCESS,
             EfectividadCobranzaRun::STATUS_BLOCKED => EfectividadCobranzaRunMail::KIND_BLOCKED,
+            EfectividadCobranzaRun::STATUS_CANCELLED => EfectividadCobranzaRunMail::KIND_CANCELLED,
             default => EfectividadCobranzaRunMail::KIND_FAILED,
         };
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Link, router, usePage } from '@inertiajs/vue3';
 import {
+    Ban,
     Bell,
     CheckCheck,
     CheckCircle2,
@@ -34,7 +35,7 @@ import {
 type NotificationItem = {
     id: string;
     data: {
-        kind: 'success' | 'blocked' | 'failed';
+        kind: 'success' | 'blocked' | 'failed' | 'cancelled';
         title: string;
         run_id: number;
         period_label: string | null;
@@ -166,11 +167,13 @@ const kindIcon = {
     success: CheckCircle2,
     blocked: PauseCircle,
     failed: OctagonX,
+    cancelled: Ban,
 } as const;
 const kindTone = {
     success: 'text-emerald-600',
     blocked: 'text-amber-600',
     failed: 'text-destructive',
+    cancelled: 'text-muted-foreground',
 } as const;
 const badgeCount = computed(() => unreadCount.value + activeCount.value);
 </script>

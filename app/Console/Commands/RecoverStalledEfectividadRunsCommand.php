@@ -58,7 +58,13 @@ class RecoverStalledEfectividadRunsCommand extends Command
             $assessment = $health->assess($run);
             $action = 'ninguna';
 
-            if ($assessment['state'] === 'stalled' && $apply) {
+            if ($assessment['state'] === 'stalled' && $run->isCancelRequested() && $apply) {
+                // El usuario ya había pedido cancelar: un worker huérfano nunca "revive"
+                // como fallido algo que se pidió detener — se cierra como cancelado.
+                $action = $this->closeAsCancelled($run, $notifier);
+            } elseif ($assessment['state'] === 'stalled' && $run->isCancelRequested()) {
+                $action = 'se cerraría como cancelado (usa --apply)';
+            } elseif ($assessment['state'] === 'stalled' && $apply) {
                 $action = $requeue && $assessment['queue_state'] === EfectividadCobranzaRunHealthService::QUEUE_ABSENT
                     ? $this->requeue($run, $dispatcher)
                     : $this->closeAsStalled($run, $notifier, $assessment['message']);
@@ -117,6 +123,21 @@ class RecoverStalledEfectividadRunsCommand extends Command
         $notifier->notify($run);
 
         return 'cerrada como fallida (worker sin actividad)';
+    }
+
+    private function closeAsCancelled(EfectividadCobranzaRun $run, EfectividadCobranzaRunNotifier $notifier): string
+    {
+        $run->forceFill([
+            'status' => EfectividadCobranzaRun::STATUS_CANCELLED,
+            'finished_at' => now(),
+            'cancelled_at' => now(),
+            'heartbeat_at' => now(),
+            'log' => 'La generación fue cancelada por solicitud del usuario (el proceso ya no estaba en la cola).',
+        ])->save();
+
+        $notifier->notify($run);
+
+        return 'cerrada como cancelada (solicitud del usuario, worker sin actividad)';
     }
 
     private function requeue(EfectividadCobranzaRun $run, Dispatcher $dispatcher): string

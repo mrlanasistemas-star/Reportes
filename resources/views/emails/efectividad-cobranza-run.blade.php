@@ -10,11 +10,13 @@
   $banner = match ($kind) {
       'success' => ['bg' => '#dcfce7', 'border' => '#bbf7d0', 'color' => '#15803d', 'text' => '✓  El reporte se generó correctamente'],
       'blocked' => ['bg' => '#fef3c7', 'border' => '#fde68a', 'color' => '#b45309', 'text' => '!  Faltan datos obligatorios para generar el reporte'],
+      'cancelled' => ['bg' => '#f1f5f9', 'border' => '#e2e8f0', 'color' => '#475569', 'text' => '◼  La generación fue cancelada'],
       default   => ['bg' => '#fee2e2', 'border' => '#fecaca', 'color' => '#b91c1c', 'text' => '×  Se produjo un error durante la generación'],
   };
   $cta = match ($kind) {
       'success' => 'Consultar y descargar',
       'blocked' => 'Revisar incidencias',
+      'cancelled' => 'Ver detalle',
       default   => 'Ver detalle',
   };
 @endphp
@@ -45,6 +47,8 @@
               Tu reporte de <strong style="color:#0f172a;">Efectividad de Cobranza Aprobada</strong> está listo. Puedes consultarlo y descargar el Excel desde el módulo de Reportes (requiere iniciar sesión).
             @elseif($kind === 'blocked')
               No se pudo generar el reporte de <strong style="color:#0f172a;">Efectividad de Cobranza Aprobada</strong> porque faltan datos obligatorios. Revisa las incidencias y corrige la información de origen.
+            @elseif($kind === 'cancelled')
+              La generación del reporte de <strong style="color:#0f172a;">Efectividad de Cobranza Aprobada</strong> fue cancelada por solicitud del usuario. Puedes generarla de nuevo cuando lo necesites.
             @else
               No fue posible completar el reporte de <strong style="color:#0f172a;">Efectividad de Cobranza Aprobada</strong> por un error técnico. El equipo de sistemas puede consultar el detalle en los registros del servidor.
             @endif

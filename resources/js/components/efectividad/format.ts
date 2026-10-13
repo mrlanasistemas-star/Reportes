@@ -52,6 +52,16 @@ export const STATE_META: Record<
         variant: 'outline',
         tone: 'text-muted-foreground bg-muted border-border',
     },
+    cancelling: {
+        label: 'Cancelación solicitada',
+        variant: 'outline',
+        tone: 'text-slate-700 bg-slate-50 border-slate-300 dark:text-slate-300 dark:bg-slate-950/40 dark:border-slate-800',
+    },
+    cancelled: {
+        label: 'Cancelado',
+        variant: 'outline',
+        tone: 'text-muted-foreground bg-muted border-border',
+    },
 };
 
 export const STATUS_FILTER_OPTIONS = [
@@ -62,6 +72,7 @@ export const STATUS_FILTER_OPTIONS = [
     { value: 'success', label: 'Terminado' },
     { value: 'blocked', label: 'Bloqueado por datos' },
     { value: 'failed', label: 'Error' },
+    { value: 'cancelled', label: 'Cancelado' },
 ];
 
 export const FAILURE_KIND_LABELS: Record<string, string> = {
