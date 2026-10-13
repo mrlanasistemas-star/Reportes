@@ -69,6 +69,7 @@ const props = defineProps<{
     canFilterByUser: boolean;
     requesters: Array<{ id: number; name: string }>;
     stageCatalog: StageInfo[];
+    stageCatalogPeriodica: StageInfo[];
     openDetail?: boolean;
 }>();
 
@@ -84,18 +85,17 @@ function dm(ymd: string | null): string {
     return ymd ? ymd.slice(5, 10).split('-').reverse().join('/') : '';
 }
 
-// La calculadora V4 es semanal (lunes-domingo): solo se generan semanas operativas.
-// Un periodo de otro tipo solo aparece si es el de una ejecución anterior enfocada.
+// Una semana operativa (lunes-domingo) usa el motor V4 (con fotografías); cualquier
+// otro periodo (p.ej. el ciclo real de 4 semanas) usa el motor Aprobada/Periódica —
+// el mismo Saldos por Cliente + Ingresos Cobranza que ya subes por Histórico General.
 const periodOptions = computed(() =>
-    props.periods
-        .filter((p) => p.type === 'weekly' || p.id === props.selected.period_id)
-        .map((p) => ({
-            value: p.id,
-            label:
-                p.type === 'weekly'
-                    ? `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)})`
-                    : `${p.label} (no semanal)`,
-        })),
+    props.periods.map((p) => ({
+        value: p.id,
+        label:
+            p.type === 'weekly'
+                ? `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)}) · Motor V4`
+                : `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)}) · Aprobada`,
+    })),
 );
 const branchOptions = computed(() => [
     { value: '', label: 'Todas las sucursales (general)' },
@@ -418,6 +418,12 @@ async function generar(confirmPartial = false) {
     }
 }
 
+const focusStageCatalog = computed(() =>
+    focus.value?.is_periodica_engine
+        ? props.stageCatalogPeriodica
+        : props.stageCatalog,
+);
+
 const focusIsActive = computed(
     () => !!focus.value && isActiveStatus(focus.value.status),
 );
@@ -533,9 +539,9 @@ const sourcesBlocked = computed(
             >
                 <SelectField
                     v-model="selectedPeriodId"
-                    label="Semana operativa"
+                    label="Periodo"
                     :options="periodOptions"
-                    placeholder="Selecciona una semana"
+                    placeholder="Selecciona un periodo"
                     @update:model-value="reloadForSelection"
                 />
                 <SelectField
@@ -545,36 +551,32 @@ const sourcesBlocked = computed(
                     placeholder="Todas (general)"
                     @update:model-value="reloadForSelection"
                 />
-                <SelectField
-                    v-model="selectedMode"
-                    label="Modo"
-                    :options="modeOptions"
-                    :disabled="!isWeeklySelected"
-                />
-                <SelectField
-                    v-model="selectedCutoff"
-                    label="Fecha de corte"
-                    :options="
-                        selectedMode === 'DIARIO'
-                            ? cutoffOptions
-                            : [
-                                  {
-                                      value: '',
-                                      label: 'Domingo de la semana',
-                                  },
-                              ]
-                    "
-                    placeholder="Selecciona el día"
-                    :disabled="selectedMode !== 'DIARIO'"
-                />
+                <template v-if="isWeeklySelected">
+                    <SelectField
+                        v-model="selectedMode"
+                        label="Modo"
+                        :options="modeOptions"
+                    />
+                    <SelectField
+                        v-model="selectedCutoff"
+                        label="Fecha de corte"
+                        :options="
+                            selectedMode === 'DIARIO'
+                                ? cutoffOptions
+                                : [
+                                      {
+                                          value: '',
+                                          label: 'Domingo de la semana',
+                                      },
+                                  ]
+                        "
+                        placeholder="Selecciona el día"
+                        :disabled="selectedMode !== 'DIARIO'"
+                    />
+                </template>
                 <Button
                     class="w-full sm:col-span-2 xl:col-span-1 xl:w-auto"
-                    :disabled="
-                        !selectedPeriodId ||
-                        !isWeeklySelected ||
-                        submitting ||
-                        focusIsActive
-                    "
+                    :disabled="!selectedPeriodId || submitting || focusIsActive"
                     @click="generar()"
                 >
                     <Loader2 v-if="submitting" class="animate-spin" />
@@ -586,13 +588,22 @@ const sourcesBlocked = computed(
                     }}
                 </Button>
                 <p
-                    v-if="sourcesBlocked"
+                    v-if="isWeeklySelected && sourcesBlocked"
                     class="text-xs text-amber-700 sm:col-span-2 xl:col-span-5 dark:text-amber-300"
                 >
                     Faltan fuentes indispensables (ver «Disponibilidad de
                     información»). Si generas ahora, el reporte quedará
                     bloqueado con el detalle de lo que falta; nunca se calcula
                     con fotografías incompletas.
+                </p>
+                <p
+                    v-else-if="selectedPeriodId && !isWeeklySelected"
+                    class="text-xs text-muted-foreground sm:col-span-2 xl:col-span-3"
+                >
+                    Periodo de 4 semanas: se calcula con la metodología
+                    Aprobada, usando el Saldos por Cliente y los Ingresos
+                    Cobranza que ya subiste por Histórico General — sin
+                    fotografías diarias.
                 </p>
             </CardContent>
         </Card>
@@ -612,6 +623,7 @@ const sourcesBlocked = computed(
         </Alert>
 
         <DisponibilidadInformacion
+            v-if="isWeeklySelected"
             :period-id="selectedPeriodId || null"
             :branch-id="selectedBranchId || null"
             :mode="selectedMode === 'DIARIO' ? 'DIARIO' : 'SEMANAL'"
@@ -669,7 +681,7 @@ const sourcesBlocked = computed(
         <RunStatusCard
             v-if="focus"
             :run="focus"
-            :catalog="stageCatalog"
+            :catalog="focusStageCatalog"
             :refreshing="polling.refreshing.value"
             @details="openDetails(focus.id)"
             @refresh="polling.refreshNow(focus.id)"

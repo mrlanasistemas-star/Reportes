@@ -315,23 +315,42 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
 
             // ── 9. Finalización ─────────────────────────────────────────────
             $tracker->start(EfectividadCobranzaStage::Finish);
-            $run->forceFill([
-                'coverage' => $cob + ['estadisticas' => $result['estadisticas'], 'sin_movimientos' => $result['sin_movimientos']],
-                'result_rows' => $result['filas'],
-                'output_excel_path' => $relativePath,
-                'incidents_count' => count($result['incidencias']),
-                'issues' => EfectividadCobranzaIssue::normalize($issues),
-                'metadata' => [...($run->metadata ?? []), 'is_available' => true, 'reconciliation' => $reconciliation,
-                    'parametros' => $result['parametros'], 'incidencias_resumen' => $resumenIncidencias],
-            ])->save();
-            $tracker->complete(EfectividadCobranzaStage::Finish, EfectividadCobranzaStage::Finish->description());
 
-            $run->forceFill([
-                'status' => EfectividadCobranzaRun::STATUS_SUCCESS,
-                'finished_at' => now(),
-                'heartbeat_at' => now(),
-                'log' => EfectividadCobranzaStage::Finish->description(),
-            ])->save();
+            // Transición atómica: publicar el resultado como `success` queda
+            // CONDICIONADO, en la misma sentencia, a que no exista una cancelación
+            // ya registrada. Un simple "revisar y luego guardar" deja una ventana
+            // real (justo lo que ocurre mientras export() escribe el XLSX, que
+            // puede tardar); esto cierra esa ventana sin depender de un segundo
+            // punto de revisión que también podría perder la carrera.
+            $published = EfectividadCobranzaRun::query()
+                ->whereKey($run->id)
+                ->whereNull('cancel_requested_at')
+                ->update([
+                    'status' => EfectividadCobranzaRun::STATUS_SUCCESS,
+                    'coverage' => json_encode($cob + ['estadisticas' => $result['estadisticas'], 'sin_movimientos' => $result['sin_movimientos']]),
+                    'result_rows' => json_encode($result['filas']),
+                    'output_excel_path' => $relativePath,
+                    'incidents_count' => count($result['incidencias']),
+                    'issues' => json_encode(EfectividadCobranzaIssue::normalize($issues)),
+                    'metadata' => json_encode([...($run->metadata ?? []), 'is_available' => true, 'reconciliation' => $reconciliation,
+                        'parametros' => $result['parametros'], 'incidencias_resumen' => $resumenIncidencias]),
+                    'finished_at' => now(),
+                    'heartbeat_at' => now(),
+                    'log' => EfectividadCobranzaStage::Finish->description(),
+                ]);
+
+            $run->refresh();
+
+            if ($published === 0) {
+                // Perdió la carrera contra una cancelación ya registrada: el XLSX ya
+                // escrito nunca se publica ni queda disponible para descarga.
+                Storage::disk('local')->delete($relativePath);
+                $this->closeAsCancelled($run, $tracker, $notifier);
+
+                return;
+            }
+
+            $tracker->complete(EfectividadCobranzaStage::Finish, EfectividadCobranzaStage::Finish->description());
         } catch (EfectividadCobranzaCancelledException) {
             // Cancelación cooperativa: no es una falla, no se reintenta, no se publica nada parcial.
             $this->closeAsCancelled($run, $tracker, $notifier);

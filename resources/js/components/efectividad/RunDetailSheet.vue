@@ -41,7 +41,7 @@ import {
 } from './format';
 import RunIssuesList from './RunIssuesList.vue';
 import RunStatusBadge from './RunStatusBadge.vue';
-import { isV4Sources } from './types';
+import { isV4Coverage, isV4Sources } from './types';
 import type { RunDetail, StageEntry } from './types';
 
 const props = defineProps<{ runId: number | null; seed?: RunDetail | null }>();
@@ -148,6 +148,15 @@ const v4Sources = computed(() =>
 const legacySources = computed(() =>
     detail.value?.sources && !isV4Sources(detail.value.sources)
         ? detail.value.sources
+        : null,
+);
+// Motor Aprobada/Periódica: sin `sources` (fotografías/uploads) — la única
+// trazabilidad real es la cobertura de cartera/ingresos que el adaptador YA deriva.
+const legacyCoverage = computed(() =>
+    !detail.value?.sources &&
+    detail.value?.coverage &&
+    !isV4Coverage(detail.value.coverage)
+        ? detail.value.coverage
         : null,
 );
 
@@ -585,6 +594,47 @@ function openInModule() {
                             Sin archivos registrados para este periodo.
                         </p>
                     </div>
+                </section>
+                <section
+                    v-else-if="legacyCoverage"
+                    class="space-y-2 rounded-lg border p-3"
+                >
+                    <h3 class="text-sm font-semibold">Fuentes utilizadas</h3>
+                    <p class="text-sm text-muted-foreground">
+                        {{ legacyCoverage.message }}
+                    </p>
+                    <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                        <div>
+                            <dt class="text-xs text-muted-foreground">
+                                Filas de cartera (Saldos por Cliente)
+                            </dt>
+                            <dd class="font-medium tabular-nums">
+                                {{
+                                    formatNumber(
+                                        legacyCoverage.cartera_rows_total,
+                                    )
+                                }}
+                            </dd>
+                        </div>
+                        <div>
+                            <dt class="text-xs text-muted-foreground">
+                                Filas de Ingresos Cobranza
+                            </dt>
+                            <dd class="font-medium tabular-nums">
+                                {{
+                                    formatNumber(
+                                        legacyCoverage.ingresos_rows_total,
+                                    )
+                                }}
+                                ({{
+                                    formatNumber(
+                                        legacyCoverage.ingresos_rows_usables,
+                                    )
+                                }}
+                                utilizables)
+                            </dd>
+                        </div>
+                    </dl>
                 </section>
 
                 <!-- Columnas verificadas -->

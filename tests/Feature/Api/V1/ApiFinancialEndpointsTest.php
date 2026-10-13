@@ -1,7 +1,13 @@
 <?php
 
 use App\Models\ApiConsumer;
+use App\Models\Branch;
+use App\Models\EfectividadCobranzaRun;
+use App\Models\Employee;
+use App\Models\EmployeeBranchAssignment;
 use App\Models\Period;
+use App\Models\Portfolio;
+use App\Services\Efectividad\V4\EfectividadV4FingerprintService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
@@ -18,7 +24,7 @@ function makeApiToken(string $systemCode, array $abilities): string
 function makeApiPeriod(): Period
 {
     return Period::query()->create([
-        'name' => 'Semana Financial Test', 'code' => 'W-FIN-' . uniqid(), 'type' => 'weekly',
+        'name' => 'Semana Financial Test', 'code' => 'W-FIN-'.uniqid(), 'type' => 'weekly',
         'year' => 2026, 'month' => 4, 'sequence' => 1,
         'start_date' => '2026-03-30', 'end_date' => '2026-04-05', 'is_closed' => false,
     ]);
@@ -28,14 +34,14 @@ function makeApiPeriod(): Period
 function v4RunAttrs(Period $period): array
 {
     return [
-        'engine_version' => \App\Models\EfectividadCobranzaRun::currentEngineVersion(), 'mode' => 'SEMANAL',
+        'engine_version' => EfectividadCobranzaRun::currentEngineVersion(), 'mode' => 'SEMANAL',
         'base_date' => $period->start_date->copy()->subDay()->format('Y-m-d'), 'cutoff_date' => $period->end_date->format('Y-m-d'),
     ];
 }
 
 function v4Fingerprint(Period $period, ?int $branchId): ?string
 {
-    return app(\App\Services\Efectividad\V4\EfectividadV4FingerprintService::class)->compute($period, $branchId, 'SEMANAL', null);
+    return app(EfectividadV4FingerprintService::class)->compute($period, $branchId, 'SEMANAL', null);
 }
 
 it('returns the metrics catalog with stable codes and definitions', function () {
@@ -95,7 +101,7 @@ it('marks the approved collections effectiveness as not_available (never recalcu
     // Auditoría 2026-10-12 (Fase 2) — aunque hubiera datos reales en fact_portfolios/
     // fact_recoveries, la API YA NO los recalcula en vivo: solo lee un
     // EfectividadCobranzaRun ya generado. Sin uno, siempre not_available.
-    \App\Models\Portfolio::query()->create([
+    Portfolio::query()->create([
         'period_id' => $period->id, 'contract' => '25COR1270278', 'promoter_name' => 'LUIS GOMEZ',
         'status' => 'VIGENTE', 'substatus' => 'VIGENTE', 'installment_amount' => 100,
         'periodicity' => 'SEMANAL', 'num_payments' => 10, 'first_payment_date' => '2026-04-01',
@@ -113,9 +119,9 @@ it('marks the approved collections effectiveness as not_available (never recalcu
 it('marks the approved collections effectiveness as available with real numbers when a successful EfectividadCobranzaRun already exists for this period/scope', function () {
     $token = makeApiToken('collections-consumer-real', ['collections.read']);
     $period = makeApiPeriod();
-    $branch = \App\Models\Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+    $branch = Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
 
-    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
+    EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [
@@ -141,9 +147,9 @@ it('marks the approved collections effectiveness as available with real numbers 
 it('marks the approved collections effectiveness as status=ok (not stale) when the stored fingerprint still matches the current state of the sources', function () {
     $token = makeApiToken('collections-consumer-fresh', ['collections.read']);
     $period = makeApiPeriod();
-    $branch = \App\Models\Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+    $branch = Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
 
-    \App\Models\Portfolio::query()->create([
+    Portfolio::query()->create([
         'period_id' => $period->id, 'branch_id' => $branch->id,
         'contract' => '25COR1270278', 'promoter_name' => 'LUIS GOMEZ', 'route_name' => 'CORDOBA',
         'status' => 'VIGENTE', 'substatus' => 'VIGENTE',
@@ -153,7 +159,7 @@ it('marks the approved collections effectiveness as status=ok (not stale) when t
 
     $fingerprint = v4Fingerprint($period, $branch->id);
 
-    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
+    EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [['promotor' => 'GRAN TOTAL', 'sano_cob' => 100, 'es_total' => true]],
@@ -170,25 +176,25 @@ it('marks the approved collections effectiveness as status=ok (not stale) when t
 
 it('Fase 1 (auditoría 2026-10-12): never attributes an employee-scoped result by name match alone — requires a verified branch assignment for that exact period', function () {
     $period = makeApiPeriod();
-    $branchA = \App\Models\Branch::query()->create(['code' => 'ATC', 'name' => 'ATLACOMULCO', 'normalized_name' => 'atlacomulco', 'is_active' => true]);
-    $branchB = \App\Models\Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+    $branchA = Branch::query()->create(['code' => 'ATC', 'name' => 'ATLACOMULCO', 'normalized_name' => 'atlacomulco', 'is_active' => true]);
+    $branchB = Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
 
     // DOS colaboradores con nombre EXACTAMENTE IGUAL, en sucursales distintas.
-    $employeeA = \App\Models\Employee::query()->create(['full_name' => 'JUAN PEREZ LOPEZ', 'normalized_name' => 'juan perez lopez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
-    $employeeB = \App\Models\Employee::query()->create(['full_name' => 'JUAN PEREZ LOPEZ', 'normalized_name' => 'juan perez lopez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
+    $employeeA = Employee::query()->create(['full_name' => 'JUAN PEREZ LOPEZ', 'normalized_name' => 'juan perez lopez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
+    $employeeB = Employee::query()->create(['full_name' => 'JUAN PEREZ LOPEZ', 'normalized_name' => 'juan perez lopez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
 
-    \App\Models\EmployeeBranchAssignment::query()->create([
+    EmployeeBranchAssignment::query()->create([
         'period_id' => $period->id, 'employee_id' => $employeeA->id, 'branch_id' => $branchA->id,
         'source_type' => 'lendus', 'match_type' => 'normalized', 'confidence' => '0.90', 'was_manual_reviewed' => false,
     ]);
-    \App\Models\EmployeeBranchAssignment::query()->create([
+    EmployeeBranchAssignment::query()->create([
         'period_id' => $period->id, 'employee_id' => $employeeB->id, 'branch_id' => $branchB->id,
         'source_type' => 'lendus', 'match_type' => 'normalized', 'confidence' => '0.90', 'was_manual_reviewed' => false,
     ]);
 
     // Solo existe un snapshot generado para la sucursal A (Atlacomulco), con la fila
     // del promotor homónimo.
-    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
+    EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branchA->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [['promotor' => 'JUAN PEREZ LOPEZ', 'sano_cob' => 555, 'es_total' => false]],
@@ -216,16 +222,16 @@ it('Fase 1 (auditoría 2026-10-12): never attributes an employee-scoped result b
 
 it('Fase 1 (auditoría 2026-10-12): an employee with no verified branch assignment for this exact period is not_attributable, never resolved by "most recent assignment"', function () {
     $period = makeApiPeriod();
-    $otherPeriod = \App\Models\Period::query()->create([
-        'name' => 'Periodo anterior', 'code' => 'W-FIN-OTHER-' . uniqid(), 'type' => 'weekly',
+    $otherPeriod = Period::query()->create([
+        'name' => 'Periodo anterior', 'code' => 'W-FIN-OTHER-'.uniqid(), 'type' => 'weekly',
         'year' => 2026, 'month' => 1, 'sequence' => 1, 'start_date' => '2026-01-01', 'end_date' => '2026-01-05', 'is_closed' => true,
     ]);
-    $branch = \App\Models\Branch::query()->create(['code' => 'TUL', 'name' => 'TULA', 'normalized_name' => 'tula', 'is_active' => true]);
-    $employee = \App\Models\Employee::query()->create(['full_name' => 'MARIA LOPEZ', 'normalized_name' => 'maria lopez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
+    $branch = Branch::query()->create(['code' => 'TUL', 'name' => 'TULA', 'normalized_name' => 'tula', 'is_active' => true]);
+    $employee = Employee::query()->create(['full_name' => 'MARIA LOPEZ', 'normalized_name' => 'maria lopez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
 
     // Asignación conocida SOLO para un periodo distinto (anterior) — nunca debe usarse
     // como sustituto de "la asignación más reciente" para el periodo consultado.
-    \App\Models\EmployeeBranchAssignment::query()->create([
+    EmployeeBranchAssignment::query()->create([
         'period_id' => $otherPeriod->id, 'employee_id' => $employee->id, 'branch_id' => $branch->id,
         'source_type' => 'lendus', 'match_type' => 'normalized', 'confidence' => '0.90', 'was_manual_reviewed' => false,
     ]);
@@ -242,11 +248,11 @@ it('Fase 1 (auditoría 2026-10-12): an employee with no verified branch assignme
 
 it('Fase 1 (auditoría 2026-10-12): a route takeover (gestor sustituido) never leaks the predecessor result to the new assignee just because the row text still says the old name', function () {
     $period = makeApiPeriod();
-    $branch = \App\Models\Branch::query()->create(['code' => 'TUL', 'name' => 'TULA', 'normalized_name' => 'tula', 'is_active' => true]);
+    $branch = Branch::query()->create(['code' => 'TUL', 'name' => 'TULA', 'normalized_name' => 'tula', 'is_active' => true]);
 
     // El gestor NUEVO (sustituto) ya tiene asignación verificada a esta sucursal/periodo...
-    $nuevoGestor = \App\Models\Employee::query()->create(['full_name' => 'PEDRO RAMIREZ', 'normalized_name' => 'pedro ramirez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
-    \App\Models\EmployeeBranchAssignment::query()->create([
+    $nuevoGestor = Employee::query()->create(['full_name' => 'PEDRO RAMIREZ', 'normalized_name' => 'pedro ramirez', 'is_active' => true, 'source_system' => 'lendus_cobranza']);
+    EmployeeBranchAssignment::query()->create([
         'period_id' => $period->id, 'employee_id' => $nuevoGestor->id, 'branch_id' => $branch->id,
         'source_type' => 'lendus', 'match_type' => 'normalized', 'confidence' => '0.90', 'was_manual_reviewed' => false,
     ]);
@@ -254,7 +260,7 @@ it('Fase 1 (auditoría 2026-10-12): a route takeover (gestor sustituido) never l
     // ...pero el snapshot ya generado (el calculador aprobado ya resuelve la reasignación
     // de ruta internamente) solo tiene la fila a nombre del gestor nuevo — el residual del
     // gestor anterior nunca debe aparecer como una fila separada atribuible a otra persona.
-    \App\Models\EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
+    EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
         'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success',
         'finished_at' => now(), 'coverage' => ['status' => 'ok'],
         'result_rows' => [['promotor' => 'PEDRO RAMIREZ', 'sano_cob' => 321, 'es_total' => false]],
@@ -293,10 +299,12 @@ it('exposes capabilities scoped to the authenticated consumer', function () {
 it('V4: la API nunca entrega como vigente un resultado de la calculadora anterior y declara la versión del motor', function () {
     $token = makeApiToken('collections-legacy-engine', ['collections.read']);
     $period = makeApiPeriod();
-    $branch = \App\Models\Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+    $branch = Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
 
-    $legacy = \App\Models\EfectividadCobranzaRun::query()->create([
-        'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success', 'engine_version' => 'aprobada-2026-10',
+    // Motor REALMENTE retirado — ni V4 ni Aprobada/Periódica (reconectada en el
+    // rediseño premium como motor vigente para periodos de 4 semanas).
+    $legacy = EfectividadCobranzaRun::query()->create([
+        'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success', 'engine_version' => 'motor-retirado-2025-01',
         'finished_at' => now(), 'result_rows' => [['promotor' => 'GRAN TOTAL', 'sano_cob' => 999, 'es_total' => true]],
     ]);
 

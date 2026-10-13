@@ -3,10 +3,10 @@
 use App\Models\Branch;
 use App\Models\EfectividadCobranzaRun;
 use App\Models\Period;
-use App\Models\Portfolio;
 use App\Models\Recovery;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Tests\Support\EfectividadV4Fixtures as V4;
@@ -77,6 +77,25 @@ it('a manager can open the module, generate a real report, and download the Exce
     expect($book->hasMacros())->toBeFalse();
 });
 
+it('the branch selector only offers the 13 operative branches, never a raw Lendus route name that leaked into the branches table', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = makeControllerTestPeriodo();
+    V4::branch(); // CORDOBA — real operative branch, must appear
+    Branch::query()->create(['name' => 'ATLIX-GTE', 'normalized_name' => 'atlix-gte', 'code' => 'ATLIX_GTE_LEGACY', 'is_active' => true]);
+
+    $response = $this->actingAs($admin)->get("/efectividad-cobranza?period_id={$period->id}");
+
+    $response->assertOk();
+    $response->assertInertia(function ($page) {
+        $names = collect($page->toArray()['props']['branches'])->pluck('name');
+        expect($names)->toContain('CORDOBA')
+            ->and($names)->not->toContain('ATLIX-GTE')
+            ->and($names->all())->toBe($names->sort()->values()->all());
+
+        return $page->component('EfectividadCobranza/Index');
+    });
+});
+
 it('a colaborador (non-managerial role) gets 403 on the Efectividad de Cobranza module, same as the rest of Reportería', function () {
     $colaborador = User::factory()->create(['role' => 'colaborador']);
     $period = makeControllerTestPeriodo();
@@ -109,7 +128,7 @@ it('Fase 4 (auditoría 2026-10-12): a genuinely concurrent request (lock already
 
     // Simula la ventana de carrera real: otra request YA tiene el lock de esta
     // identidad exacta (period_id+branch_id=general) cuando llega esta segunda.
-    $lock = \Illuminate\Support\Facades\Cache::lock('efectividad-cobranza-generate-' . $period->id . '-general-SEMANAL-2026-10-11', 15);
+    $lock = Cache::lock('efectividad-cobranza-generate-'.$period->id.'-general-SEMANAL-2026-10-11', 15);
     expect($lock->get())->toBeTrue();
 
     try {
