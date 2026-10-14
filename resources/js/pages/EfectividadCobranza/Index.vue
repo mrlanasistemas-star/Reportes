@@ -47,7 +47,7 @@ const BASE = '/efectividad-cobranza/calculadora';
 
 const MODOS: Array<{ valor: Modo; titulo: string; texto: string; icono: typeof Sun }> = [
     { valor: 'DIARIO', titulo: 'Diario', texto: 'Cobranza de un solo día. Usa las carteras desde el domingo anterior hasta ese día.', icono: Sun },
-    { valor: 'SEMANAL', titulo: 'Semanal', texto: 'Lunes a domingo, igual que la macro. Requiere las 8 carteras (domingo base a domingo de corte).', icono: CalendarDays },
+    { valor: 'SEMANAL', titulo: 'Semanal', texto: 'Lunes a domingo. Requiere las 8 carteras (domingo base a domingo de corte).', icono: CalendarDays },
     { valor: 'MENSUAL', titulo: 'Mensual', texto: 'Suma las semanas completas del mes. Los saldos de atraso/vencido son los del último corte.', icono: CalendarRange },
 ];
 

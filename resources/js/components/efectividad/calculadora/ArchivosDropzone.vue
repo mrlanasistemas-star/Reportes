@@ -88,8 +88,9 @@ function soltar(e: DragEvent) {
                 </p>
                 <p class="mt-1 text-sm text-muted-foreground">
                     Puedes elegir todos a la vez: las carteras «Saldos por
-                    Cliente» y el «Ingresos Cobranza» de Lendus. La fecha se
-                    lee del contenido, no del nombre.
+                    Cliente», el «Ingresos Cobranza» de la semana y, si lo
+                    tienes, el «Ingresos Cobranza» histórico (semanas
+                    anteriores). Las fechas se leen del contenido, no del nombre.
                 </p>
             </div>
             <p class="flex items-center gap-1.5 text-xs text-muted-foreground">
