@@ -31,7 +31,7 @@ class CommitmentLetterController extends Controller
         // sistema ya los conoce (lugar = config corporativa, puesto = dato
         // persistente del Employee). La vista previa usa las MISMAS fuentes
         // que la emisión oficial, nunca un formulario de captura.
-        $path = $service->renderPreviewPdf($objective, config('company.document_place'), $objective->employee?->position);
+        $path = $service->renderPreviewPdf($objective, config('company.document_place'), $objective->employee?->position, $this->authorizedOverrides($request));
 
         return response()->streamDownload(function () use ($path) {
             echo File::get($path);
@@ -47,7 +47,7 @@ class CommitmentLetterController extends Controller
         $this->authorize('assign', $objective);
 
         try {
-            $letter = $service->generate($objective, $request->user(), config('company.document_place'), $objective->employee?->position);
+            $letter = $service->generate($objective, $request->user(), config('company.document_place'), $objective->employee?->position, $this->authorizedOverrides($request));
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -60,6 +60,38 @@ class CommitmentLetterController extends Controller
                 'download_url' => route('okr.commitment-letters.download', $letter),
             ],
         ]);
+    }
+
+    /**
+     * Revisión previa (14-oct-2026): muestra los campos que llevará la carta,
+     * cuáles faltan y si ya puede emitirse — antes de generar el definitivo.
+     */
+    public function review(Request $request, OkrObjective $objective, OkrCommitmentLetterService $service): JsonResponse
+    {
+        $this->authorize('view', $objective);
+
+        $snapshot = $service->buildSnapshot($objective, config('company.document_place'), $objective->employee?->position, $this->authorizedOverrides($request));
+        $missing = $service->missingFields($snapshot);
+
+        return response()->json([
+            'snapshot' => $snapshot,
+            'missing' => $missing,
+            'can_generate' => $missing === [] && $objective->activated_at !== null && $objective->commitmentLetter === null,
+            'is_activated' => $objective->activated_at !== null,
+            'authorized_fields' => ['position', 'immediate_boss', 'observations'],
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /** Únicos campos capturables por el emisor; todo lo demás sale del Objective. */
+    private function authorizedOverrides(Request $request): array
+    {
+        $data = $request->validate([
+            'position' => ['nullable', 'string', 'max:120'],
+            'immediate_boss' => ['nullable', 'string', 'max:160'],
+            'observations' => ['nullable', 'string', 'max:600'],
+        ]);
+
+        return array_intersect_key($data, array_flip(['position', 'immediate_boss', 'observations']));
     }
 
     public function download(OkrCommitmentLetter $letter): StreamedResponse

@@ -96,3 +96,27 @@ descarga junto con el resto del front). No fue necesario agregarlo.
   existencia/tamaño del archivo, no su apariencia pixel a pixel) — se confía en que las
   plantillas ya fueron validadas visualmente en los commits previos (`672cdde`: "pixel-perfect
   sobre el machote original").
+
+## Actualización 14-oct-2026 — plantillas rehechas en HTML de flujo
+
+El overlay con `position:absolute` sobre el machote rasterizado se **retiró**: nombres u
+objetivos largos pisaban etiquetas, líneas y casillas. Ahora:
+
+- Layout común `resources/views/reports/layouts/okr-document.blade.php`: contenido como HTML
+  real (tablas, grid, saltos de página controlados). Del machote solo se conservan los
+  elementos corporativos decorativos recortados 1:1 del original
+  (`resources/templates/okr/branding/header.png`, `footer.png`, `watermark.png`), repetidos en
+  cada página con `position:fixed` y un `<thead>/<tfoot>` espaciador que reserva su alto.
+- Tipografía **Montserrat** (SIL OFL 1.1, `resources/fonts/montserrat/OFL.txt`) embebida en
+  base64 desde archivos locales — sin Google Fonts ni internet al imprimir. La señal
+  `window.__PDF_READY__` se activa cuando `document.fonts.ready` confirma la fuente.
+- Sigue usándose `BrowsershotPdfRenderer` con `full_bleed=true` (el pie corporativo lo dibuja
+  la plantilla, no Puppeteer).
+- Formato de valores: `App\Services\Okr\OkrDocumentFormatter` (moneda MXN `$1,234.56`,
+  porcentajes, pp, fechas en español).
+- Carta Compromiso: revisión previa (`GET /okr/{id}/commitment-letter/review`) que lista los
+  datos indispensables faltantes; campos autorizados capturables: puesto, jefe inmediato y
+  observaciones. La emisión definitiva se rechaza (422) mientras falte un dato.
+- Carta del gestor = SUS Key Results individuales; carta de sucursal = meta de sucursal.
+- Warning: imprime también las acciones correctivas y observaciones capturadas; usa los KR y
+  snapshots del Objective evaluado (un Warning individual nunca usa resultados de la sucursal).

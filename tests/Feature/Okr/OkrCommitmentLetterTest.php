@@ -112,14 +112,14 @@ it('generate() is idempotent — calling it twice returns the SAME letter, never
     ]);
     $kr = $objective->keyResults()->create(['kpi_id' => okrLetterKpi()->id, 'description' => 'KR', 'baseline_value' => 0, 'target_value' => 100_000, 'weight' => 100]);
 
-    $r1 = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $objective), ['place' => 'CDMX']);
+    $r1 = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $objective), ['place' => 'CDMX', 'position' => 'Gerente de sucursal', 'immediate_boss' => 'Director Regional']);
     $r1->assertOk();
     $folio1 = $r1->json('letter.folio');
 
     // La meta cambia DESPUÉS de emitida la carta — nunca debe modificarla retroactivamente.
     $kr->update(['target_value' => 999_999]);
 
-    $r2 = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $objective), ['place' => 'CDMX']);
+    $r2 = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $objective), ['place' => 'CDMX', 'position' => 'Gerente de sucursal', 'immediate_boss' => 'Director Regional']);
     $r2->assertOk();
     expect($r2->json('letter.folio'))->toBe($folio1);
     expect(OkrCommitmentLetter::query()->where('okr_objective_id', $objective->id)->count())->toBe(1);
@@ -139,7 +139,7 @@ it('uploading a signed copy never replaces the original snapshot/PDF', function 
     ]);
     $objective->keyResults()->create(['kpi_id' => okrLetterKpi()->id, 'description' => 'KR', 'baseline_value' => 0, 'target_value' => 100, 'weight' => 100]);
 
-    $letterId = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $objective), ['place' => 'CDMX'])->json('letter.id');
+    $letterId = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $objective), ['place' => 'CDMX', 'position' => 'Gerente de sucursal', 'immediate_boss' => 'Director Regional'])->json('letter.id');
     $letter = OkrCommitmentLetter::query()->findOrFail($letterId);
     $originalPath = $letter->stored_path;
 
@@ -154,4 +154,30 @@ it('uploading a signed copy never replaces the original snapshot/PDF', function 
 
 afterEach(function () {
     Storage::disk('local')->deleteDirectory('okr-commitment-letters');
+});
+
+it('never issues the definitive letter while an indispensable field is missing — the review endpoint lists it first (14-oct-2026)', function () {
+    $renderer = Mockery::mock(\App\Services\Pdf\BrowsershotPdfRenderer::class);
+    $renderer->shouldReceive('renderViewToFile')->never();
+    app()->instance(\App\Services\Pdf\BrowsershotPdfRenderer::class, $renderer);
+
+    $admin = User::factory()->create(['role' => 'admin']);
+    $branch = okrBranch('Atlixco');
+    $kpi = okrManualKpi('cc_missing_fields_kpi');
+    $objective = OkrObjective::query()->create([
+        'scope_type' => 'branch', 'branch_id' => $branch->id, 'title' => 'Objective de sucursal sin jefe inmediato capturado',
+        'responsible_user_id' => $admin->id, 'created_by' => $admin->id, 'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
+        'duration_weeks' => 4, 'lifecycle_status' => OkrObjective::STATUS_ACTIVE, 'activated_at' => now(),
+    ]);
+    $objective->keyResults()->create(['kpi_id' => $kpi->id, 'description' => 'KR', 'baseline_value' => 10, 'target_value' => 20, 'weight' => 100]);
+
+    $review = $this->actingAs($admin)->getJson(route('okr.commitment-letter.review', $objective))->assertOk();
+    expect($review->json('can_generate'))->toBeFalse();
+    expect(array_keys($review->json('missing')))->toContain('immediate_boss')->toContain('position');
+
+    $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $objective), [])->assertStatus(422);
+    expect($objective->fresh()->commitmentLetter)->toBeNull();
+
+    $ready = $this->actingAs($admin)->getJson(route('okr.commitment-letter.review', $objective) . '?position=Gerente&immediate_boss=Director%20Regional')->assertOk();
+    expect($ready->json('can_generate'))->toBeTrue();
 });

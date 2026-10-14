@@ -50,7 +50,7 @@ class OkrEmployeeBranchResolver
      */
     public function employeesForBranch(?int $branchId, ?string $search = null, int $limit = 30): Collection
     {
-        $query = Employee::query()->where('is_active', true);
+        $query = $this->eligibleEmployeesQuery();
 
         if ($branchId !== null) {
             $query->whereIn('id', $this->employeeIdsForBranch($branchId));
@@ -92,12 +92,106 @@ class OkrEmployeeBranchResolver
      */
     public function countForBranch(int $branchId): int
     {
-        $rows = Employee::query()
-            ->where('is_active', true)
+        $rows = $this->eligibleEmployeesQuery()
             ->whereIn('id', $this->employeeIdsForBranch($branchId))
             ->get(['id', 'full_name', 'normalized_name']);
 
         return $this->canonicalize($rows)->count();
+    }
+
+    /**
+     * Corrección 14-oct-2026 — "aparecen personas que ya no trabajan en la
+     * empresa". Causa real verificada en BD: ningún importador apaga
+     * `employees.is_active` (157/157 en true), así que ese campo SOLO refleja
+     * una baja manual (ResponsibleController::disableAccess). La fuente
+     * autorizada de estado laboral vigente es la nómina NOI ya procesada por
+     * Reportería: `period_employee_rosters` del ÚLTIMO periodo cargado
+     * (is_active_for_period=1 — PeriodEmployeeRosterService ya marca ahí las
+     * bajas). Elegible = is_active (sin baja manual) Y presente como activo en
+     * esa nómina vigente. Si todavía no hay ninguna nómina procesada (instalación
+     * nueva), no existe otra fuente: se cae a is_active, nunca a "todos".
+     */
+    private function eligibleEmployeesQuery(): \Illuminate\Database\Eloquent\Builder
+    {
+        $query = Employee::query()->where('is_active', true);
+        $rosterPeriodId = $this->currentRosterPeriodId();
+
+        if ($rosterPeriodId !== null) {
+            $query->whereIn('id', DB::table('period_employee_rosters')
+                ->where('period_id', $rosterPeriodId)
+                ->where('is_active_for_period', true)
+                ->select('employee_id'));
+        }
+
+        return $query;
+    }
+
+    /**
+     * Versión en LOTE de employeeIsActive() — "Seguimiento por gestor" con N
+     * hijos: número fijo de consultas, nunca 3 por gestor.
+     *
+     * @param  int[]  $employeeIds
+     * @return array<int, bool> employee_id => activo
+     */
+    public function activeMap(array $employeeIds): array
+    {
+        $employeeIds = array_values(array_unique(array_map('intval', $employeeIds)));
+        if ($employeeIds === []) {
+            return [];
+        }
+
+        $own = Employee::query()->whereIn('id', $employeeIds)->get(['id', 'normalized_name', 'is_active'])->keyBy('id');
+        $norms = $own->pluck('normalized_name')->filter(fn ($n) => $n !== null && trim($n) !== '')->unique()->values()->all();
+        $groupIds = Employee::query()->whereIn('normalized_name', $norms)->get(['id', 'normalized_name'])->groupBy('normalized_name');
+        $allIds = $groupIds->flatten()->pluck('id')->merge($employeeIds)->unique()->all();
+        $eligible = array_flip($this->eligibleEmployeesQuery()->whereIn('id', $allIds)->pluck('id')->map(fn ($v) => (int) $v)->all());
+
+        $map = [];
+        foreach ($employeeIds as $id) {
+            $row = $own->get($id);
+            if (!$row || !$row->is_active) {
+                $map[$id] = false;
+                continue;
+            }
+            $members = ($row->normalized_name && isset($groupIds[$row->normalized_name])) ? $groupIds[$row->normalized_name]->pluck('id')->all() : [$id];
+            $map[$id] = collect($members)->contains(fn ($m) => isset($eligible[(int) $m]));
+        }
+
+        return $map;
+    }
+
+    /** Último periodo con nómina (roster) procesada, o null si no hay ninguna. */
+    public function currentRosterPeriodId(): ?int
+    {
+        $id = DB::table('period_employee_rosters')->max('period_id');
+
+        return $id !== null ? (int) $id : null;
+    }
+
+    /** Etiqueta del periodo de nómina vigente — la UI la muestra para explicar por qué alguien no aparece. */
+    public function currentRosterPeriodLabel(): ?string
+    {
+        $periodId = $this->currentRosterPeriodId();
+
+        return $periodId !== null ? \App\Models\Period::query()->find($periodId)?->label : null;
+    }
+
+    /**
+     * IDs de Employee de la MISMA persona (mismo normalized_name — regla de
+     * CanonicalEmployeeResolver). La colocación importada puede haber quedado
+     * ligada a otro id histórico de la misma persona: el seguimiento individual
+     * suma por el grupo completo, nunca por coincidencia insegura de nombre libre.
+     *
+     * @return int[]
+     */
+    public function canonicalIdsFor(int $employeeId): array
+    {
+        $norm = Employee::query()->whereKey($employeeId)->value('normalized_name');
+        if ($norm === null || trim($norm) === '') {
+            return [$employeeId];
+        }
+
+        return Employee::query()->where('normalized_name', $norm)->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
     }
 
     /**
@@ -109,7 +203,7 @@ class OkrEmployeeBranchResolver
      */
     public function countAllActive(): int
     {
-        $rows = Employee::query()->where('is_active', true)->get(['id', 'full_name', 'normalized_name']);
+        $rows = $this->eligibleEmployeesQuery()->get(['id', 'full_name', 'normalized_name']);
 
         return $this->canonicalize($rows)->count();
     }
@@ -127,7 +221,7 @@ class OkrEmployeeBranchResolver
     public function currentBranchIdFor(int $employeeId): ?int
     {
         return EmployeeBranchAssignment::query()
-            ->where('employee_id', $employeeId)
+            ->whereIn('employee_id', $this->canonicalIdsFor($employeeId))
             ->orderByDesc('period_id')
             ->value('branch_id');
     }
@@ -146,7 +240,14 @@ class OkrEmployeeBranchResolver
      */
     public function employeeIsActive(int $employeeId): bool
     {
-        return Employee::query()->where('id', $employeeId)->where('is_active', true)->exists();
+        // Misma regla que el buscador (eligibleEmployeesQuery) — evaluada sobre
+        // el grupo canónico: el id enviado puede ser el histórico de la persona,
+        // pero una baja manual explícita de ESE id nunca se ignora.
+        if (!Employee::query()->whereKey($employeeId)->where('is_active', true)->exists()) {
+            return false;
+        }
+
+        return $this->eligibleEmployeesQuery()->whereIn('id', $this->canonicalIdsFor($employeeId))->exists();
     }
 
     /** IDs de la fila más reciente (mayor period_id) por employee_id. */

@@ -59,6 +59,18 @@ class StoreObjectiveRequest extends FormRequest
             'individual_objectives'               => ['nullable', 'array'],
             'individual_objectives.*.employee_id' => ['required_with:individual_objectives', 'integer', 'exists:employees,id'],
             'individual_objectives.*.title'       => ['required_with:individual_objectives', 'string', 'min:10', 'max:500'],
+            // Corrección 14-oct-2026 (defecto 1): cada OKR individual nace con
+            // SUS PROPIOS Key Results capturados en el asistente (KPI, línea
+            // base individual, meta individual, peso) — antes nacía vacío y el
+            // gestor quedaba sin meta. Nunca se copian los de la sucursal.
+            'individual_objectives.*.key_results'                         => ['required_with:individual_objectives', 'array', 'min:1'],
+            'individual_objectives.*.key_results.*.kpi_id'                => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
+            'individual_objectives.*.key_results.*.description'           => ['required', 'string', 'max:191'],
+            'individual_objectives.*.key_results.*.baseline_value'        => ['nullable', 'numeric'],
+            'individual_objectives.*.key_results.*.baseline_manual_reason' => ['nullable', 'string', 'max:500'],
+            'individual_objectives.*.key_results.*.target_value'          => ['required', 'numeric'],
+            'individual_objectives.*.key_results.*.weight'                => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'key_results.*.baseline_manual_reason' => ['nullable', 'string', 'max:500'],
         ];
     }
 
@@ -69,6 +81,7 @@ class StoreObjectiveRequest extends FormRequest
             $this->validateParent($validator);
             $this->validateAutomaticBaselines($validator);
             $this->validateIndividualObjectives($validator);
+            $this->validateIndividualWeights($validator);
             $this->validateResponsibleIsEnabled($validator);
         });
     }
@@ -139,8 +152,33 @@ class StoreObjectiveRequest extends FormRequest
 
             if ($branchId && !$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
                 $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador no pertenece a la sucursal seleccionada.');
+
+                continue;
+            }
+
+            if ($this->hasOverlappingIndividualObjective((int) $employeeId)) {
+                $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador ya tiene un OKR individual en borrador o activo que se traslapa con estas fechas.');
             }
         }
+    }
+
+    /**
+     * Prevención de asignaciones duplicadas (14-oct-2026): mismo colaborador
+     * (cualquier id de su identidad canónica) con un OKR individual vigente
+     * (borrador/activo) cuyo rango de fechas se traslapa con el nuevo.
+     */
+    private function hasOverlappingIndividualObjective(int $employeeId): bool
+    {
+        $start = \Illuminate\Support\Carbon::parse((string) $this->input('start_date'));
+        $end = app(\App\Services\Okr\OkrCalendarService::class)->endDate($start, max(1, $this->integer('duration_weeks')));
+
+        return OkrObjective::query()
+            ->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)
+            ->whereIn('employee_id', app(OkrEmployeeBranchResolver::class)->canonicalIdsFor($employeeId))
+            ->whereIn('lifecycle_status', [OkrObjective::STATUS_DRAFT, OkrObjective::STATUS_ACTIVE])
+            ->where('start_date', '<=', $end->toDateString())
+            ->where('end_date', '>=', $start->toDateString())
+            ->exists();
     }
 
     private function validateEmployeeBelongsToBranch(Validator $validator): void
@@ -166,6 +204,12 @@ class StoreObjectiveRequest extends FormRequest
 
         if (!$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
             $validator->errors()->add('employee_id', 'El colaborador seleccionado no pertenece a la sucursal indicada.');
+
+            return;
+        }
+
+        if ($this->hasOverlappingIndividualObjective($employeeId)) {
+            $validator->errors()->add('employee_id', 'Ese colaborador ya tiene un OKR individual en borrador o activo que se traslapa con estas fechas.');
         }
     }
 
@@ -217,14 +261,77 @@ class StoreObjectiveRequest extends FormRequest
      */
     private function validateAutomaticBaselines(Validator $validator): void
     {
-        foreach ($this->input('key_results', []) as $i => $kr) {
-            if (($kr['baseline_value'] ?? null) === null || !isset($kr['kpi_id'])) {
-                continue;
-            }
+        $branchId = $this->integer('branch_id') ?: null;
+        $scopeType = (string) $this->input('scope_type');
+        $employeeId = $scopeType === OkrObjective::SCOPE_EMPLOYEE ? ($this->integer('employee_id') ?: null) : null;
 
-            $kpi = OkrKpi::query()->find($kr['kpi_id']);
-            if ($kpi && $kpi->isAutomatic()) {
-                $validator->errors()->add("key_results.{$i}.baseline_value", 'Este KPI es automático — no se puede capturar una línea base manual, se obtiene sola al activar.');
+        foreach ($this->input('key_results', []) as $i => $kr) {
+            $this->validateBaselineRow($validator, "key_results.{$i}", $kr, $scopeType, $branchId, $employeeId);
+        }
+
+        if ($scopeType !== OkrObjective::SCOPE_BRANCH) {
+            return;
+        }
+
+        foreach ($this->input('individual_objectives', []) as $j => $row) {
+            foreach ($row['key_results'] ?? [] as $i => $kr) {
+                $this->validateBaselineRow($validator, "individual_objectives.{$j}.key_results.{$i}", $kr, OkrObjective::SCOPE_EMPLOYEE, $branchId, isset($row['employee_id']) ? (int) $row['employee_id'] : null);
+            }
+        }
+    }
+
+    /**
+     * Corrección 14-oct-2026 — línea base manual AUTORIZADA para KPI automático:
+     * solo se acepta cuando (a) trae motivo (trazabilidad, queda en bitácora) y
+     * (b) Reportería REALMENTE no tiene dato verificable para ESE alcance
+     * (gestor o sucursal) en el periodo de inicio. Si el dato existe, se rechaza:
+     * nunca se sustituye en silencio una línea base real por una capturada.
+     */
+    private function validateBaselineRow(Validator $validator, string $prefix, array $kr, string $scopeType, ?int $branchId, ?int $employeeId): void
+    {
+        if (($kr['baseline_value'] ?? null) === null || !isset($kr['kpi_id'])) {
+            return;
+        }
+
+        $kpi = OkrKpi::query()->find($kr['kpi_id']);
+        if (!$kpi || !$kpi->isAutomatic()) {
+            return;
+        }
+
+        $reason = trim((string) ($kr['baseline_manual_reason'] ?? ''));
+        if ($reason === '') {
+            $validator->errors()->add("{$prefix}.baseline_value", 'Este KPI es automático — no se puede capturar una línea base manual, se obtiene sola al activar.');
+
+            return;
+        }
+        if (mb_strlen($reason) < 10) {
+            $validator->errors()->add("{$prefix}.baseline_manual_reason", 'Explica el motivo de la línea base manual (mínimo 10 caracteres).');
+
+            return;
+        }
+
+        $period = app(\App\Services\Okr\OkrTrackingPeriodResolver::class)->getPeriodForDate((string) $this->input('start_date'));
+        $available = $period ? app(\App\Services\Okr\OkrKpiValueResolver::class)->getValue($kpi, $scopeType, $branchId, $employeeId, $period) : null;
+        if ($available !== null) {
+            $validator->errors()->add("{$prefix}.baseline_value", 'Reportería sí tiene una línea base verificable para este alcance — no se puede sustituir por una manual.');
+        }
+    }
+
+    /** Ponderación de CADA OKR individual = 100% (nunca sumando gestores entre sí). */
+    private function validateIndividualWeights(Validator $validator): void
+    {
+        if ($this->input('scope_type') !== OkrObjective::SCOPE_BRANCH) {
+            return;
+        }
+
+        foreach ($this->input('individual_objectives', []) as $j => $row) {
+            $krs = $row['key_results'] ?? [];
+            if (!is_array($krs) || $krs === []) {
+                continue; // ya reportado por required_with/min:1
+            }
+            $total = round(array_sum(array_map(fn ($kr) => (float) ($kr['weight'] ?? 0), $krs)), 2);
+            if (abs($total - 100.0) > 0.01) {
+                $validator->errors()->add("individual_objectives.{$j}.key_results", "La ponderación de los Key Results de este gestor debe sumar 100% (actual: {$total}%).");
             }
         }
     }

@@ -5,9 +5,9 @@
 // KPI | Evidencias + Check-in). Sin tabs, sin command-center, sin progress
 // ring gigante, sin Attention Center — esas ideas del rediseño anterior NO
 // están en la referencia.
-import { Link, router } from '@inertiajs/vue3'
+import { Link, router, usePage } from '@inertiajs/vue3'
 import {
-    ArrowDown, ArrowLeft, ArrowUp, Bell, CalendarClock, Flag, Gauge,
+    ArrowDown, ArrowLeft, ArrowUp, Bell, CalendarClock, FileSignature, Flag, Gauge,
     History, Target, TrendingDown, TrendingUp, Upload, X,
 } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
@@ -16,12 +16,15 @@ import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import SelectField from '@/components/forms/SelectField.vue'
 import OkrCheckInDialog from '@/components/okr/OkrCheckInDialog.vue'
+import OkrCommitmentLetterDialog from '@/components/okr/OkrCommitmentLetterDialog.vue'
 import OkrEditGoalDialog from '@/components/okr/OkrEditGoalDialog.vue'
 import OkrEvidenceUploadDialog from '@/components/okr/OkrEvidenceUploadDialog.vue'
+import OkrGestorTrackingSection from '@/components/okr/OkrGestorTrackingSection.vue'
+import OkrGoalHeadline from '@/components/okr/OkrGoalHeadline.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
 import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
 import OkrStatCard from '@/components/okr/OkrStatCard.vue'
-import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
+import OkrWeeklyHistory from '@/components/okr/OkrWeeklyHistory.vue'
 import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
 import { Button } from '@/components/ui/button'
 import AppLayout from '@/layouts/AppLayout.vue'
@@ -44,6 +47,7 @@ return `${FIELD_LABELS[log.field]} modificada`
     switch (log.action) {
         case 'created': return 'OKR creado'
         case 'activated': return 'OKR activado'
+        case 'baseline_manual_authorized': return 'Línea base manual autorizada'
         case 'key_result_removed': return 'Resultado clave eliminado'
         case 'field_changed': return `${log.field ?? 'Campo'} modificado`
         default: return log.field ? `${log.field} modificado` : 'Actualización del OKR'
@@ -96,8 +100,55 @@ function fmt(v: number | null, unit?: string) {
  return formatByUnit(v, unit) 
 }
 
-function activate() {
- router.post(`/okr/${props.objective.id}/activate`) 
+// Activación — si es un OKR de sucursal con individuales en borrador, ofrece
+// activarlos en la misma acción (cada uno congela SU propia línea base).
+async function activate() {
+    const draftChildren = (props.objective.children ?? []).filter((c: any) => c.lifecycle_status === 'draft')
+    let includeChildren = false
+
+    if (props.objective.scope_type === 'branch' && draftChildren.length) {
+        const r = await Swal.fire({
+            icon: 'question', title: 'Activar OKR de sucursal',
+            html: `También hay <strong>${draftChildren.length}</strong> OKR individual(es) en borrador. ¿Activarlos ahora? Cada uno congela su propia línea base; el que esté incompleto se queda en borrador y se te indica por qué.`,
+            showDenyButton: true, showCancelButton: true,
+            confirmButtonText: 'Activar sucursal + individuales', denyButtonText: 'Solo la sucursal', cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#059669', denyButtonColor: '#4f46e5',
+        })
+
+        if (r.isDismissed) {
+            return
+        }
+
+        includeChildren = r.isConfirmed
+    }
+
+    Swal.fire({ title: 'Activando…', text: 'Congelando líneas base con Reportería.', allowOutsideClick: false, didOpen: () => Swal.showLoading() })
+    router.post(`/okr/${props.objective.id}/activate`, { include_children: includeChildren }, {
+        onError: (errors) => Swal.fire({ icon: 'error', title: 'No se pudo activar', text: Object.values(errors)[0] as string }),
+        onFinish: () => {
+            if (Swal.isLoading()) {
+                Swal.close()
+            }
+        },
+    })
+}
+
+// Mensajes de sesión (resultado de la activación en cascada, etc.).
+const page = usePage()
+watch(() => (page.props as any).flash, (flash) => {
+    if (flash?.warning) {
+        Swal.fire({ icon: 'warning', title: flash.success ?? 'Atención', text: flash.warning })
+    } else if (flash?.success) {
+        Swal.fire({ toast: true, position: 'top-end', icon: 'success', title: flash.success, timer: 3000, showConfirmButton: false })
+    }
+}, { immediate: true })
+
+function auditValue(log: any, value: any): string {
+    if (value === null || value === undefined || value === '') {
+        return '—'
+    }
+
+    return log.field === 'target_value' || log.field === 'baseline_value' ? formatByUnit(value, log.unit) : (log.field === 'weight' ? `${value}%` : String(value))
 }
 function refresh() {
  router.post(`/okr/${props.objective.id}/refresh`) 
@@ -327,6 +378,9 @@ function csrfFetch(url: string, init: RequestInit = {}) {
 const placementWeekNumber = ref<number | null>(null)
 const placementFile = ref<File | null>(null)
 const placementUploading = ref(false)
+// El reporte de Lendus de la sucursal lista TODOS los créditos de la semana:
+// si un gestor no aparece, colocó $0 (no "dato faltante"). Se declara aquí.
+const placementCompleteReport = ref(true)
 function onPlacementFileChange(e: Event) {
     placementFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
 }
@@ -343,6 +397,10 @@ return
     if (confirmReplace) {
 formData.append('confirm_replace', '1')
 }
+
+    if (props.objective.scope_type === 'branch' && placementCompleteReport.value) {
+        formData.append('complete_report', '1')
+    }
 
     try {
         const res = await csrfFetch(`/okr/${props.objective.id}/placement-uploads`, { method: 'POST', body: formData })
@@ -369,7 +427,20 @@ submitPlacement(true)
             return
         }
 
-        Swal.fire({ icon: 'success', title: data.replaced ? 'Colocación reemplazada' : 'Colocación cargada', text: `Semana ${data.upload.week_number}: ${fmt(data.upload.total_amount, 'currency')}`, timer: 2500, showConfirmButton: false })
+        const u = data.upload
+        const notes = [
+            u.rows_duplicated ? `${u.rows_duplicated} movimiento(s) ya contados en otra semana (no se suman dos veces)` : null,
+            u.rows_other_branch ? `${u.rows_other_branch} fila(s) de otra sucursal excluidas` : null,
+            u.rows_cancelled ? `${u.rows_cancelled} movimiento(s) cancelados excluidos` : null,
+            u.rows_out_of_objective_range ? `${u.rows_out_of_objective_range} fila(s) fuera del plazo del OKR excluidas` : null,
+            u.unattributed_amount ? `${fmt(u.unattributed_amount, 'currency')} sin gestor identificado (cuenta solo para la sucursal)` : null,
+        ].filter(Boolean)
+        Swal.fire({
+            icon: 'success', title: data.replaced ? 'Colocación reemplazada' : 'Colocación cargada',
+            html: `<p class="text-sm">Semana ${u.week_number}: <strong>${fmt(u.total_amount, 'currency')}</strong> en ${u.rows_count} movimiento(s).</p>`
+                + (props.objective.scope_type === 'branch' && (props.objective.children ?? []).length ? '<p class="mt-1 text-xs">Los OKR individuales de la sucursal se actualizaron con este mismo archivo.</p>' : '')
+                + (notes.length ? `<ul class="mt-2 text-left text-xs">${notes.map((n) => `<li>• ${n}</li>`).join('')}</ul>` : ''),
+        })
         placementWeekNumber.value = null
         placementFile.value = null
         router.reload({ only: ['objective', 'keyResults'] })
@@ -379,29 +450,9 @@ submitPlacement(true)
 }
 
 // ── Carta Compromiso (Parte 2 del cierre, 04-oct-2026) ──────────────────
-const letterGenerating = ref(false)
-async function generateCommitmentLetter() {
-    letterGenerating.value = true
-
-    try {
-        // 5/9: lugar y puesto los resuelve el backend (config corporativa +
-        // Employee.position) — el colaborador nunca captura nada aquí.
-        const res = await csrfFetch(`/okr/${props.objective.id}/commitment-letter`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-        })
-        const data = await res.json()
-
-        if (!res.ok) {
-            Swal.fire({ icon: 'error', title: 'No se pudo generar la Carta Compromiso', text: data.message ?? 'Error desconocido.' })
-
-            return
-        }
-
-        router.reload({ only: ['objective'] })
-    } finally {
-        letterGenerating.value = false
-    }
-}
+// 14-oct-2026: la emisión pasa por una revisión previa (OkrCommitmentLetterDialog)
+// que muestra los datos que llevará el PDF y exige los indispensables.
+const letterDialogOpen = ref(false)
 async function uploadSignedLetter(e: Event) {
     const file = (e.target as HTMLInputElement).files?.[0]
 
@@ -518,6 +569,13 @@ return
             <Button v-if="canManage && objective.lifecycle_status !== 'cancelled'" size="sm" variant="outline" class="h-9 rounded-xl border-destructive/30 text-destructive hover:bg-destructive/10" @click="destroyObjective">Eliminar</Button>
         </div>
 
+        <Link v-if="objective.parent" :href="`/okr/${objective.parent.id}`" class="group flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-xs transition hover:border-primary/40 hover:shadow-md">
+            <Target class="size-4 text-primary" />
+            <span class="text-muted-foreground">OKR individual ligado al objetivo general de <strong class="text-foreground">{{ objective.parent.branch ?? 'la sucursal' }}</strong>:</span>
+            <span class="truncate font-semibold text-foreground">{{ objective.parent.title }}</span>
+            <ArrowLeft class="ml-auto size-3.5 rotate-180 text-primary transition-transform group-hover:translate-x-1" />
+        </Link>
+
         <p v-if="objective.lifecycle_status === 'draft'" class="rounded-xl border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs font-semibold text-primary">
             OKR en borrador — ponderación {{ objective.weight_summary.total }}% ({{ objective.weight_summary.is_valid ? 'lista para activar' : 'incompleta' }}). Al activar, la línea base queda congelada.
         </p>
@@ -556,6 +614,16 @@ return
             <OkrStatCard :icon="Target" label="Proyección de cierre" :value="objective.projected_compliance === null ? '—' : `${objective.projected_compliance}%`" hint="Al final del periodo" />
             <OkrStatCard :icon="Flag" label="Estado" :value="statusLabel[objective.lifecycle_status]" :hint="objective.health_status ?? undefined" tone="warning" />
         </div>
+
+        <!-- OBJETIVO GENERAL / INDIVIDUAL — base, meta, real, incrementos, cumplimiento -->
+        <OkrGoalHeadline
+            v-if="keyResults.length"
+            :heading="objective.scope_type === 'branch' ? `Objetivo general — ${objective.branch?.name ?? ''}` : `Objetivo individual — ${objective.employee?.full_name ?? ''}`"
+            :key-results="keyResults"
+        />
+
+        <!-- SEGUIMIENTO POR GESTOR -->
+        <OkrGestorTrackingSection v-if="(objective.gestor_tracking ?? []).length" :tracking="objective.gestor_tracking" :contributions="objective.contributions ?? []" />
 
         <!-- Grid 64/36 -->
         <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,16fr)_minmax(280px,9fr)]">
@@ -637,58 +705,7 @@ return
                     <Button size="sm" class="h-9 text-xs" :disabled="!newKr.kpi_id || !newKr.description.trim() || newKr.target_value === '' || newKrSubmitting" @click="submitNewKr">Agregar</Button>
                 </div>
 
-                <!-- Rendimiento por gestor (Parte 9/10 del cierre) — solo KPI distribuibles, solo si hay individuales -->
-                <div v-for="c in objective.contributions ?? []" :key="c.kpi.id" class="mt-4 border-t border-border pt-4">
-                    <p class="mb-2 flex items-center gap-1.5 text-sm font-bold text-foreground">
-                        Rendimiento por gestor — {{ c.kpi.name }}
-                        <OkrHelpTooltip text="La cabecera (Meta sucursal/Suma gestores/Cobertura) sigue mostrando el total de la sucursal — este desglose lo EXPLICA, no lo sustituye." />
-                    </p>
-                    <div class="mb-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                        <div><p class="text-muted-foreground">Meta sucursal</p><p class="font-semibold tabular-nums text-foreground">{{ fmt(c.branch_target, c.kpi.unit) }}</p></div>
-                        <div><p class="text-muted-foreground">Suma gestores (real)</p><p class="font-semibold tabular-nums text-foreground">{{ fmt(c.children_current_sum, c.kpi.unit) }}</p></div>
-                        <div><p class="text-muted-foreground">Cobertura</p><p class="font-semibold tabular-nums text-primary">{{ c.coverage_percentage === null ? '—' : c.coverage_percentage + '%' }}</p></div>
-                        <div><p class="text-muted-foreground">Faltante</p><p class="font-semibold tabular-nums" :class="c.gap > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'">{{ fmt(Math.abs(c.gap), c.kpi.unit) }}</p></div>
-                    </div>
-                    <OkrProgressBar :value="c.coverage_percentage ?? 0" />
-
-                    <!-- Parte 9.2 — distribución de la meta: Σ metas individuales vs meta de sucursal -->
-                    <div class="mt-2 flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2 text-[11px]">
-                        <span class="text-muted-foreground">Σ metas individuales: <span class="font-semibold text-foreground">{{ fmt(c.children_target_sum, c.kpi.unit) }}</span></span>
-                        <span v-if="c.distribution_mismatch" class="font-semibold text-amber-600 dark:text-amber-400">⚠ No coincide con la meta de sucursal — pendiente de distribuir</span>
-                        <span v-else class="font-semibold text-emerald-600 dark:text-emerald-400">✓ Metas individuales distribuidas al 100%</span>
-                    </div>
-
-                    <div class="mt-3 overflow-x-auto rounded-xl border border-border">
-                        <table class="w-full min-w-[640px] text-xs">
-                            <thead class="border-b border-border bg-muted/30 text-muted-foreground">
-                                <tr>
-                                    <th class="px-2 py-2 text-left font-semibold">Gestor</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Estado</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Meta individual</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Semana actual</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Acumulado</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Cumplimiento</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Semáforo</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="row in c.rows" :key="row.employee" class="border-t border-border">
-                                    <td class="px-2 py-2 font-medium text-foreground">{{ row.employee }}</td>
-                                    <td class="px-2 py-2">
-                                        <span class="rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="row.employee_active ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'">
-                                            {{ row.employee_active ? 'Activo' : 'Baja' }}
-                                        </span>
-                                    </td>
-                                    <td class="px-2 py-2 tabular-nums">{{ fmt(row.target_value, c.kpi.unit) }}</td>
-                                    <td class="px-2 py-2 tabular-nums">{{ row.weekly_value === null ? '—' : fmt(row.weekly_value, c.kpi.unit) }}</td>
-                                    <td class="px-2 py-2 font-semibold tabular-nums">{{ fmt(row.current_value, c.kpi.unit) }}</td>
-                                    <td class="px-2 py-2 font-semibold tabular-nums">{{ row.compliance === null ? '—' : row.compliance + '%' }}</td>
-                                    <td class="px-2 py-2"><OkrStatusBadge v-if="row.health_status" kind="health" :value="row.health_status" /><span v-else class="text-muted-foreground">—</span></td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                <!-- "Rendimiento por gestor" se movió a la sección SEGUIMIENTO POR GESTOR (OkrGestorTrackingSection, 14-oct-2026). -->
             </div>
 
             <!-- Evidencias + Check-in -->
@@ -700,11 +717,12 @@ return
                         <OkrHelpTooltip text="Cada semana se carga en su propio archivo — nunca se sobrescribe la anterior. Si una semana no tiene archivo, el seguimiento la muestra como 'sin datos', nunca como 0." />
                     </p>
                     <div class="mb-3 space-y-1.5">
-                        <div v-for="w in objective.placement_weeks" :key="w.week_number" class="flex items-center justify-between rounded-lg border border-border px-2.5 py-1.5 text-xs">
+                        <div v-for="w in objective.placement_weeks" :key="w.week_number" class="group flex items-center justify-between rounded-lg border border-border px-2.5 py-1.5 text-xs transition hover:border-primary/30 hover:bg-muted/30" :title="w.original_filename ?? ''">
                             <span class="font-semibold text-foreground">Semana {{ w.week_number }}</span>
                             <span v-if="w.uploaded" class="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
-                                {{ fmt(w.total_amount, 'currency') }}
-                                <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold">Cargada</span>
+                                <span class="font-semibold tabular-nums">{{ fmt(w.counted_amount ?? w.total_amount, 'currency') }}</span>
+                                <span v-if="w.rows_duplicated" class="rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-sky-700 dark:text-sky-300" :title="`${w.rows_duplicated} movimiento(s) repetidos de otra semana — contados una sola vez`">−{{ w.rows_duplicated }} dup.</span>
+                                <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold">{{ w.from_branch_file ? 'Archivo de sucursal' : 'Cargada' }}</span>
                             </span>
                             <span v-else class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">Sin archivo</span>
                         </div>
@@ -715,8 +733,12 @@ return
                             <option v-for="w in objective.placement_weeks" :key="w.week_number" :value="w.week_number">Semana {{ w.week_number }}</option>
                         </select>
                         <input type="file" accept=".xlsx,.xls,.csv" class="app-input h-9 flex-1 text-xs" @change="onPlacementFileChange">
-                        <Button size="sm" class="h-9 shrink-0 text-xs" :disabled="!placementWeekNumber || !placementFile || placementUploading" @click="submitPlacement()">Subir</Button>
+                        <Button size="sm" class="h-9 shrink-0 gap-1 text-xs transition hover:-translate-y-0.5" :disabled="!placementWeekNumber || !placementFile || placementUploading" @click="submitPlacement()"><Upload class="size-3.5" /> Subir</Button>
                     </div>
+                    <label v-if="!objective.is_read_only && canUploadEvidence && objective.scope_type === 'branch'" class="mt-2 flex cursor-pointer items-start gap-2 rounded-lg bg-muted/30 p-2 text-[11px] text-muted-foreground transition hover:bg-muted/50">
+                        <input v-model="placementCompleteReport" type="checkbox" class="mt-0.5 accent-primary">
+                        <span><strong class="text-foreground">Es el reporte completo de la sucursal en esa semana.</strong> Un solo archivo alimenta a la sucursal y a cada gestor; quien no aparezca colocó $0.00. Si es un archivo parcial, desmárcalo (los gestores sin filas quedan "sin dato").</span>
+                    </label>
                 </div>
 
                 <!-- Carta Compromiso + Warning Rojo (Parte 2/3/11 del cierre) -->
@@ -742,11 +764,12 @@ return
                                 </template>
                             </div>
                         </div>
-                        <div v-else-if="objective.activated_at" class="flex items-center gap-2">
-                            <Button size="sm" class="h-9 text-xs" :disabled="letterGenerating" @click="generateCommitmentLetter">Generar Carta Compromiso</Button>
-                            <a :href="`/okr/${objective.id}/commitment-letter/preview`" class="text-xs font-semibold text-muted-foreground hover:underline">Vista previa</a>
+                        <div v-else class="space-y-1.5">
+                            <Button size="sm" class="h-9 gap-1.5 rounded-xl text-xs transition hover:-translate-y-0.5 hover:shadow-md" @click="letterDialogOpen = true">
+                                <FileSignature class="size-3.5" /> {{ objective.activated_at && canAssign ? 'Revisar y emitir Carta Compromiso' : 'Revisar / vista previa' }}
+                            </Button>
+                            <p v-if="!objective.activated_at" class="text-[11px] text-muted-foreground">La carta definitiva se emite una vez que el OKR se active; la vista previa está disponible desde ya.</p>
                         </div>
-                        <p v-else class="text-xs text-muted-foreground">Disponible una vez que el OKR se active.</p>
                     </div>
 
                     <div class="border-t border-border pt-4">
@@ -830,12 +853,14 @@ return
             </div>
         </div>
 
+        <OkrWeeklyHistory :key-results="keyResults" />
+
         <!-- Historial del OKR (bitácora — requisito PDF sección 24, no visible en el recorte de las imágenes) -->
         <details v-if="auditLogs.length" class="app-card p-4">
             <summary class="cursor-pointer text-sm font-bold text-foreground">Historial del OKR ({{ auditLogs.length }})</summary>
             <div class="mt-3 space-y-2">
                 <div v-for="log in auditLogs" :key="log.id" class="border-l-2 border-border pl-3 text-xs">
-                    <p class="font-semibold text-foreground">{{ auditLogLabel(log) }} <span v-if="log.old_value !== null" class="font-normal text-muted-foreground">— {{ log.old_value }} → {{ log.new_value }}</span></p>
+                    <p class="font-semibold text-foreground">{{ auditLogLabel(log) }} <span v-if="log.old_value !== null || log.new_value !== null" class="font-normal text-muted-foreground">— {{ auditValue(log, log.old_value) }} → {{ auditValue(log, log.new_value) }}</span></p>
                     <p class="text-muted-foreground">{{ log.user ?? 'Sistema' }} · {{ formatFriendlyDateTime(log.created_at) }} <span v-if="log.reason">· "{{ log.reason }}"</span></p>
                 </div>
             </div>
@@ -845,5 +870,6 @@ return
         <OkrWeightsDialog v-model:open="weightsOpen" :objective-id="objective.id" :key-results="keyResults" />
         <OkrCheckInDialog v-model:open="checkInOpen" :objective-id="objective.id" :key-results="keyResults" :users="users" :already-checked-in-this-week="alreadyCheckedInThisWeek" />
         <OkrEvidenceUploadDialog v-model:open="evidenceOpen" :objective-id="objective.id" />
+        <OkrCommitmentLetterDialog v-model:open="letterDialogOpen" :objective-id="objective.id" :can-generate="canAssign && !!objective.activated_at" @generated="router.reload({ only: ['objective'] })" />
     </div>
 </template>

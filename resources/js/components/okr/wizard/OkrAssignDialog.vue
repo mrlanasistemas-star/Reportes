@@ -1,27 +1,31 @@
 <script setup lang="ts">
-// "Asignar OKR" — Dialog de 4 pasos. Reconstruido 10-sep-2026 para reproducir
-// docs/imagenesOKR/3-8.png (auditoría de esa fecha, secciones 6-21): antes
-// era una PÁGINA completa (Wizard.vue) con 4 pasos distintos (Contexto/
-// Objective/Key Results/Revisión) y un modelo scope_type=branch OR employee.
-// Ahora es un Dialog (nunca navega a otra página) con el flujo exacto de la
-// referencia: Asignación → Key Results y KPIs → Metas, pesos y trayectoria →
-// Resumen y confirmación — y el Objective de sucursal admite N "OKR
-// individuales" en la MISMA asignación (bug de diseño corregido, sección 8/9).
+// "Asignar OKR" — Dialog de 4 pasos (orquestador). Corrección integral
+// 14-oct-2026: antes los OKR individuales nacían SIN Key Results (el gestor
+// quedaba sin meta) y la línea base solo se consultaba a nivel sucursal. Ahora
+// cada gestor seleccionado configura SUS KR, SU línea base (consultada para
+// ESE gestor, nunca copiada de la sucursal), SU incremento y SU meta; los
+// pesos suman 100% dentro de cada OKR. Lógica de cada paso en:
+//   OkrGestorPicker · OkrKrEditor · OkrGoalsTable · OkrTrajectoryPanel · OkrWizardSummary
 import { useForm } from '@inertiajs/vue3'
-import type { ApexOptions } from 'apexcharts'
-import {
-    AlertTriangle, ArrowLeft, ArrowRight, Building2, CalendarDays, CheckCircle2, GripVertical, Hash, Info, ListChecks, Loader2, Percent, Plus,
-    Search, Sparkles, Trash2, UserCheck, Users, Users2, Wallet, X,
-} from 'lucide-vue-next'
+import { AlertTriangle, ArrowLeft, ArrowRight, Building2, CheckCircle2, Copy, Info, Loader2, Sparkles, Users, X } from 'lucide-vue-next'
+import Swal from 'sweetalert2'
 import { computed, reactive, ref, watch } from 'vue'
-import AsyncApexChart from '@/components/charts/AsyncApexChart.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { formatByUnit, formatFriendlyDate } from '@/lib/okrFormat'
+import { useOkrBaselinePreview } from '@/composables/useOkrBaselinePreview'
+import OkrGestorPicker from './OkrGestorPicker.vue'
+import OkrGoalsTable from './OkrGoalsTable.vue'
+import OkrKrEditor from './OkrKrEditor.vue'
+import OkrTrajectoryPanel from './OkrTrajectoryPanel.vue'
+import {
+    avatarTone, cloneKrStructure, initialsOf, isAutomatic, krGoalIsComplete, krStructureIsComplete, newKrRow, serializeKr, totalWeight,
+} from './okrWizard'
+import type { GestorPlan, KrRow } from './okrWizard'
+import OkrWizardStepper from './OkrWizardStepper.vue'
+import OkrWizardSummary from './OkrWizardSummary.vue'
 
 const props = defineProps<{
     branches: { id: number; name: string }[]
@@ -34,553 +38,315 @@ const open = defineModel<boolean>('open', { default: false })
 
 const STEPS = ['Asignación', 'Key Results y KPIs', 'Metas, pesos y trayectoria', 'Resumen y confirmación']
 const step = ref(1)
+const direction = ref<'forward' | 'back'>('forward')
 
-type IndividualRow = { client_key: string; employee_id: number | null; employee_name: string; title: string }
-// type_filter/direction_filter son SOLO estado de UI (nunca se envían al
-// backend — el submit() reconstruye cada key_result con únicamente
-// kpi_id/description/baseline_value/target_value/weight, sección 234-239):
-// sirven para acotar qué KPI del catálogo puede elegirse en "KPI relacionado"
-// sin inventar columnas nuevas en okr_key_results (Tipo y Dirección siguen
-// siendo, como siempre, atributos del KPI del catálogo — nunca del Key Result).
-type KrRow = {
-    kpi_id: number | null
-    description: string
-    baseline_value: string
-    target_value: string
-    weight: string
-    baseline_mode: 'auto' | 'manual'
-    type_filter: string | null
-    direction_filter: string | null
-}
-
-// Traducciones ES de los enums crudos de OkrKpi (app/Models/OkrKpi.php) — el
-// bug reportado era mostrar el valor crudo en inglés ("cumulative", etc.) sin
-// traducir en la tabla de Key Results.
-const KPI_TYPE_LABELS: Record<string, string> = { cumulative: 'Acumulativo', balance: 'Saldo', percentage: 'Porcentual' }
-const KPI_DIRECTION_LABELS: Record<string, string> = { increase: 'Incrementar', decrease: 'Disminuir' }
-const ALL_FILTER = '__all__'
-function kpiTypeLabel(type?: string | null) {
- return type ? (KPI_TYPE_LABELS[type] ?? type) : '—' 
-}
-function kpiDirectionLabel(direction?: string | null) {
- return direction ? (KPI_DIRECTION_LABELS[direction] ?? direction) : '—' 
-}
-
-// Ícono + color por KPI (docs/imagenesOKR/7.png y 8.png muestran un ícono
-// circular a la izquierda del nombre en "Definición de metas por KPI"). El
-// catálogo (okr_kpis) no tiene una columna de ícono/color propia — inventar
-// una hubiera sido otro cambio de esquema no pedido — así que se deriva de
-// `unit`, que sí es un dato real del KPI: currency → billetera, percentage →
-// porcentaje, integer/conteo → numeral.
-function kpiIconFor(kpi: any): { icon: any; class: string } {
-    if (!kpi) {
-return { icon: Hash, class: 'bg-muted text-muted-foreground' }
-}
-
-    if (kpi.unit === 'currency') {
-return { icon: Wallet, class: 'bg-blue-500/10 text-blue-600 dark:text-blue-300' }
-}
-
-    if (kpi.unit === 'percentage') {
-return { icon: Percent, class: 'bg-rose-500/10 text-rose-600 dark:text-rose-300' }
-}
-
-    return { icon: Hash, class: 'bg-violet-500/10 text-violet-600 dark:text-violet-300' }
-}
-
-// CORRECCIÓN 10-sep-2026 (punto 12 de la auditoría — bug real): antes
-// `responsibleOptions` mezclaba el usuario actual `{id, full_name}` con
-// `props.users` que traían `{id, name}` — cualquier responsable que NO fuera
-// el usuario actual salía sin nombre visible (SearchableSelect usa
-// `label-key="full_name"`, y esos registros no tenían esa clave). Ahora TODA
-// la lista se normaliza a UNA sola forma `{id, full_name}` antes de usarse.
 const responsibleOptions = computed(() => {
-    const normalizedUsers = props.users.map((u) => ({ id: u.id, full_name: u.full_name }))
-    const withoutCurrent = normalizedUsers.filter((u) => u.id !== props.currentUser.id)
+    const others = props.users.filter((u) => u.id !== props.currentUser.id).map((u) => ({ id: u.id, full_name: u.full_name }))
 
-    return [{ id: props.currentUser.id, full_name: `${props.currentUser.full_name} (Tú)` }, ...withoutCurrent]
+    return [{ id: props.currentUser.id, full_name: `${props.currentUser.full_name} (Tú)` }, ...others]
 })
 
 const form = useForm({
-    scope_type: 'branch' as const,
     branch_id: null as number | null,
     title: '',
     responsible_user_id: props.currentUser.id as number | null,
     start_date: new Date().toISOString().slice(0, 10),
     duration_weeks: 8,
-    key_results: [] as KrRow[],
-    individual_objectives: [] as { employee_id: number | null; title: string }[],
 })
 
+const branchRows = ref<KrRow[]>([])
 const individualsEnabled = ref(false)
-const individualRows = reactive<IndividualRow[]>([])
-
-watch(individualsEnabled, (enabled) => {
-    if (!enabled) {
-individualRows.splice(0, individualRows.length)
-}
-})
+const gestores = reactive<GestorPlan[]>([])
+// Pestaña activa del paso 2 / tarjeta abierta del paso 3: 'branch' o client_key de gestor.
+const activeScope = ref<string>('branch')
 
 function resetAll() {
     step.value = 1
     form.reset()
     form.clearErrors()
     form.responsible_user_id = props.currentUser.id
+    branchRows.value = []
     individualsEnabled.value = false
-    individualRows.splice(0, individualRows.length)
+    gestores.splice(0, gestores.length)
     employeeOptions.value = []
-    branchEmployeeCount.value = 0
+    activeScope.value = 'branch'
 }
+
 watch(open, (isOpen) => {
- if (isOpen) {
-resetAll()
-} 
+    if (isOpen) {
+        resetAll()
+    }
 })
 
-// ── Colaboradores de la sucursal — búsqueda remota (nunca precarga todos). ──
+watch(individualsEnabled, (enabled) => {
+    if (!enabled) {
+        gestores.splice(0, gestores.length)
+        activeScope.value = 'branch'
+    }
+})
+
+// ── Colaboradores vigentes de la sucursal (búsqueda remota, nunca precarga todos). ──
 const employeeOptions = ref<{ id: number; full_name: string }[]>([])
-// Total REAL de colaboradores de la sucursal (sin el límite de 30 del
-// buscador) — se usa en "Resumen de asignación" cuando NO se activan OKR
-// individuales: el Objective de sucursal aplica a todos todos, no solo a los
-// que alcanzó a mostrar el dropdown de búsqueda.
 const branchEmployeeCount = ref(0)
+const rosterPeriod = ref<string | null>(null)
+const loadingEmployees = ref(false)
 let employeeSearchTimer: ReturnType<typeof setTimeout> | null = null
-// Parte C del cierre (17-sep-2026): token de versión — evita que una respuesta
-// vieja (búsqueda o cambio de sucursal anterior) pise a la más nueva.
 let employeeSearchVersion = 0
+
 async function loadEmployees(search = '') {
     if (!form.branch_id) {
- employeeOptions.value = []; branchEmployeeCount.value = 0;
+        employeeOptions.value = []
+        branchEmployeeCount.value = 0
 
- return 
-}
+        return
+    }
 
     const params = new URLSearchParams({ branch_id: String(form.branch_id) })
 
     if (search) {
-params.set('search', search)
-}
+        params.set('search', search)
+    }
 
     const myVersion = ++employeeSearchVersion
-    const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-
-    if (myVersion !== employeeSearchVersion) {
-return
-}
-
-    const data = res.ok ? await res.json() : { employees: [], total_in_branch: 0 }
-
-    if (myVersion !== employeeSearchVersion) {
-return
-}
-
-    employeeOptions.value = data.employees ?? []
-    branchEmployeeCount.value = data.total_in_branch ?? 0
-}
-function onEmployeeSearch(term: string) {
-    if (employeeSearchTimer) {
-clearTimeout(employeeSearchTimer)
-}
-
-    employeeSearchTimer = setTimeout(() => loadEmployees(term), 300)
-}
-watch(() => form.branch_id, () => {
- individualRows.splice(0, individualRows.length); loadEmployees() 
-})
-
-const addEmployeeId = ref<number | null>(null)
-function addIndividual() {
-    if (!addEmployeeId.value) {
-return
-}
-
-    if (individualRows.some((r) => r.employee_id === addEmployeeId.value)) {
-return
-}
-
-    const employee = employeeOptions.value.find((e) => e.id === addEmployeeId.value)
-    individualRows.push({ client_key: crypto.randomUUID(), employee_id: addEmployeeId.value, employee_name: employee?.full_name ?? '', title: '' })
-    addEmployeeId.value = null
-}
-function removeIndividual(i: number) {
- individualRows.splice(i, 1) 
-}
-
-const selectedBranchName = computed(() => props.branches.find((b) => b.id === form.branch_id)?.name ?? null)
-const assignmentType = computed(() => individualsEnabled.value && individualRows.length ? 'Sucursal + Individual' : 'Sucursal')
-// Paso 4 — nombre del responsable elegido, para el resumen detallado final.
-const selectedResponsibleName = computed(() => responsibleOptions.value.find((u) => u.id === form.responsible_user_id)?.full_name ?? '—')
-// Si "Agregar OKR individuales por vendedor" está apagado, el Objective de
-// sucursal aplica a TODOS los colaboradores de esa sucursal — el contador
-// debe reflejar eso (branchEmployeeCount), no quedarse en 0. Si está
-// encendido, sigue contando solo a los colaboradores agregados uno por uno.
-const summaryCollaboratorsCount = computed(() => individualsEnabled.value ? individualRows.length : branchEmployeeCount.value)
-
-// ── Paso 2: Key Results y KPIs ──
-function addKr() {
-    // El peso del nuevo Key Result arranca en el % que aún falta para llegar
-    // a 100 (nunca vacío) — ayuda a que la suma final cierre en 100 sin que
-    // el usuario tenga que hacer la resta a mano.
-    const remaining = Math.max(0, round2(100 - totalWeight.value))
-    form.key_results.push({
-        kpi_id: null, description: '', baseline_value: '', target_value: '',
-        weight: remaining > 0 ? String(remaining) : '', baseline_mode: 'auto',
-        type_filter: null, direction_filter: null,
-    })
-}
-function removeKr(i: number) {
- form.key_results.splice(i, 1) 
-}
-watch(() => step.value, (s) => {
- if (s === 2 && form.key_results.length === 0) {
-addKr()
-} 
-})
-
-// Si queda UN SOLO Key Result, matemáticamente su peso SIEMPRE debe ser 100%
-// — nunca queda a criterio del usuario ni puede quedar en otro valor. Se
-// bloquea el input en el template (:disabled) y aquí se fuerza el valor.
-watch(() => form.key_results.length, (len) => {
-    if (len === 1) {
-form.key_results[0].weight = '100'
-}
-}, { immediate: true })
-
-function kpiOf(id: number | null) {
- return props.kpis.find((k) => k.id === id) ?? null 
-}
-const totalWeight = computed(() => form.key_results.reduce((sum, kr) => sum + (Number(kr.weight) || 0), 0))
-const weightValid = computed(() => Math.abs(totalWeight.value - 100) < 0.01)
-
-// Tope dinámico por fila: nunca se puede meter un peso que, sumado al resto
-// de las filas, pase de 100% — si ya asignaste 90% en las demás, esta fila
-// solo admite hasta 10%, jamás 101% aunque el usuario lo intente escribir.
-function maxWeightForRow(i: number): number {
-    const others = form.key_results.reduce((sum, kr, idx) => (idx === i ? sum : sum + (Number(kr.weight) || 0)), 0)
-
-    return Math.max(0, round2(100 - others))
-}
-function onWeightInput(kr: KrRow, i: number, value: string) {
-    if (value === '') {
- kr.weight = '';
-
- return 
-}
-
-    const max = maxWeightForRow(i)
-    const clamped = Math.min(Math.max(Number(value) || 0, 0), max)
-    // No reformatear mientras el usuario sigue tecleando un decimal (ej. "10.")
-    kr.weight = value.endsWith('.') && clamped === Number(value.slice(0, -1)) ? value : String(clamped)
-}
-
-// ── Filtro Tipo/Dirección → acota qué KPI puede elegirse en "KPI relacionado" ──
-// Tipo y Dirección siguen siendo atributos del KPI del catálogo (no se
-// inventan columnas nuevas en key_results) — pero aquí se vuelven selects
-// reales y funcionales: cambiarlos filtra el catálogo a los KPI compatibles,
-// y si el KPI ya elegido deja de calzar, se limpia para que el usuario
-// escoja uno nuevo que sí cumpla lo que pidió.
-//
-// BUG corregido: `kr.type_filter`/`direction_filter` en null significaba DOS
-// cosas a la vez — "todavía no tocaste el filtro" (usa el valor del KPI ya
-// elegido) Y "elegiste 'Cualquiera' a propósito" — con `??` ambas caían al
-// mismo `null` y el fallback al KPI se comía la elección de "Cualquiera": no
-// había forma de volver a "sin filtro" una vez que ya había un KPI elegido.
-// Ahora "Cualquiera" se guarda como el sentinel ALL_FILTER (NO como null),
-// así se distingue de "sin tocar todavía" y sí se respeta al reabrir el select.
-function typeFilterOf(kr: KrRow): string | null {
-    if (kr.type_filter === ALL_FILTER) {
-return null
-}
-
-    return kr.type_filter ?? kpiOf(kr.kpi_id)?.type ?? null
-}
-function directionFilterOf(kr: KrRow): string | null {
-    if (kr.direction_filter === ALL_FILTER) {
-return null
-}
-
-    return kr.direction_filter ?? kpiOf(kr.kpi_id)?.direction ?? null
-}
-function kpisMatchingFilters(kr: KrRow) {
-    const type = typeFilterOf(kr)
-    const direction = directionFilterOf(kr)
-
-    return props.kpis.filter((k) => (!type || k.type === type) && (!direction || k.direction === direction))
-}
-function onTypeFilterChange(kr: KrRow, value: string) {
-    kr.type_filter = value
-
-    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) {
-kr.kpi_id = null
-}
-}
-function onDirectionFilterChange(kr: KrRow, value: string) {
-    kr.direction_filter = value
-
-    if (kr.kpi_id && !kpisMatchingFilters(kr).some((k) => k.id === kr.kpi_id)) {
-kr.kpi_id = null
-}
-}
-function onKpiPick(kr: KrRow, id: number | null) {
-    kr.kpi_id = id
-    kr.type_filter = null
-    kr.direction_filter = null
-}
-
-// ── Reordenar Key Results arrastrando el "⠿" (docs/imagenesOKR/5.png) ──
-const dragIndex = ref<number | null>(null)
-function onDragStart(i: number) {
- dragIndex.value = i 
-}
-function onDropRow(i: number) {
-    if (dragIndex.value === null || dragIndex.value === i) {
-return
-}
-
-    const [moved] = form.key_results.splice(dragIndex.value, 1)
-    form.key_results.splice(i, 0, moved)
-    dragIndex.value = null
-}
-
-// FIX: ApexCharts, si no se le apaga explícitamente el dataLabel "name" de
-// radialBar, muestra el nombre de la serie ("series-1" por defecto al no
-// pasar `series` con nombre) encima del valor — por eso se veía "series-1"
-// en vez de solo el porcentaje grande y centrado que pide la referencia
-// (docs/imagenesOKR/5.png y 6.png).
-const donutOptions = computed<ApexOptions>(() => ({
-    chart: { sparkline: { enabled: true } },
-    colors: [weightValid.value ? '#10b981' : '#f59e0b'],
-    plotOptions: {
-        radialBar: {
-            hollow: { size: '66%' },
-            track: { background: 'rgba(148,163,184,0.18)' },
-            dataLabels: {
-                name: { show: false },
-                value: { offsetY: 8, fontSize: '26px', fontWeight: 700, formatter: () => `${Math.round(totalWeight.value)}%` },
-            },
-        },
-    },
-    stroke: { lineCap: 'round' },
-}))
-
-// ── Paso 3: Metas, pesos y trayectoria ──
-function onIncrementInput(kr: KrRow, value: string) {
-    kr.target_value = value === '' || kr.baseline_value === '' ? kr.target_value : String(round2(Number(kr.baseline_value) + Number(value)))
-}
-function onTargetInput(kr: KrRow, value: string) {
-    kr.target_value = value
-}
-function incrementOf(kr: KrRow): string {
-    if (kr.baseline_value === '' || kr.target_value === '') {
-return ''
-}
-
-    return String(round2(Number(kr.target_value) - Number(kr.baseline_value)))
-}
-function round2(n: number): number {
- return Math.round(n * 100) / 100 
-}
-
-// Baseline preview (KPI automático) — GET /okr/baseline-preview, nunca guarda nada.
-const baselinePreviews = reactive<Record<number, { available: boolean; value: number | null; period: { label: string } | null } | null>>({})
-const loadingPreview = reactive<Record<number, boolean>>({})
-async function fetchBaselinePreview(index: number) {
-    const kr = form.key_results[index]
-    const kpi = kpiOf(kr.kpi_id)
-
-    if (!kpi || !form.branch_id) {
-return
-}
-
-    loadingPreview[index] = true
+    loadingEmployees.value = true
 
     try {
-        const params = new URLSearchParams({ kpi_id: String(kpi.id), scope_type: 'branch', branch_id: String(form.branch_id), start_date: form.start_date })
-        const res = await fetch(`/okr/baseline-preview?${params.toString()}`, { headers: { Accept: 'application/json' } })
-        const data = res.ok ? await res.json() : null
-        baselinePreviews[index] = data
+        const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+        const data = res.ok ? await res.json() : { employees: [], total_in_branch: 0, roster_period: null }
 
-        if (data?.available) {
-kr.baseline_value = String(data.value)
-}
+        if (myVersion !== employeeSearchVersion) {
+            return
+        }
+
+        employeeOptions.value = data.employees ?? []
+        branchEmployeeCount.value = data.total_in_branch ?? 0
+        rosterPeriod.value = data.roster_period ?? null
     } finally {
-        loadingPreview[index] = false
+        if (myVersion === employeeSearchVersion) {
+            loadingEmployees.value = false
+        }
     }
 }
 
-// Trayectoria esperada — PREVISUALIZACIÓN cliente, misma fórmula lineal que
-// OkrTrajectoryService::expectedValue() (interpolación base→meta por semana)
-// — nunca una fórmula distinta, nunca escribe nada en el servidor.
-const primaryKr = computed(() => form.key_results[0] ?? null)
-const trajectoryPoints = computed(() => {
-    const kr = primaryKr.value
+function onEmployeeSearch(term: string) {
+    if (employeeSearchTimer) {
+        clearTimeout(employeeSearchTimer)
+    }
 
-    if (!kr || kr.baseline_value === '' || kr.target_value === '') {
-return []
+    employeeSearchTimer = setTimeout(() => loadEmployees(term), 300)
 }
 
-    const base = Number(kr.baseline_value)
-    const target = Number(kr.target_value)
-    const weeks = Math.max(1, form.duration_weeks)
+watch(() => form.branch_id, () => {
+    gestores.splice(0, gestores.length)
+    activeScope.value = 'branch'
+    // La línea base consultada pertenece a la sucursal anterior — se invalida.
+    branchRows.value.forEach((kr) => {
+        kr.preview = null
 
-    return Array.from({ length: weeks }, (_, i) => {
-        const week = i + 1
-
-        return Math.round((base + ((target - base) * week) / weeks) * 100) / 100
+        if (isAutomatic(kpiOf(kr.kpi_id))) {
+            kr.baseline_value = ''
+        }
     })
+    loadEmployees()
 })
-// Serie que SÍ se grafica — % de avance esperado (0-100), igual que el eje Y
-// de la referencia (docs/imagenesOKR/7.png y 8.png: 10%, 20%... hasta 100%).
-// Como la trayectoria es una interpolación lineal base→meta, el % esperado en
-// la semana N es simplemente N/total — la misma matemática que ya usa
-// OkrTrajectoryService, solo expresada en porcentaje en vez de valor crudo
-// del KPI (que puede estar en pesos, cientos, etc. y no cabría en un eje 0-100).
-const trajectoryPercents = computed(() => {
-    if (trajectoryPoints.value.length === 0) {
-return []
+
+function toggleGestor(employee: { id: number; full_name: string }) {
+    const idx = gestores.findIndex((g) => g.employee_id === employee.id)
+
+    if (idx >= 0) {
+        gestores.splice(idx, 1)
+
+        return
+    }
+
+    gestores.push({
+        client_key: crypto.randomUUID(), employee_id: employee.id, employee_name: employee.full_name,
+        title: form.title.trim() ? `${form.title.trim()} — ${employee.full_name}`.slice(0, 500) : '',
+        key_results: [],
+    })
 }
 
-    const weeks = Math.max(1, form.duration_weeks)
+function removeGestor(i: number) {
+    if (activeScope.value === gestores[i]?.client_key) {
+        activeScope.value = 'branch'
+    }
 
-    return Array.from({ length: weeks }, (_, i) => Math.round(((i + 1) / weeks) * 100))
-})
-const expectedAtWeek1Pct = computed(() => (form.duration_weeks > 0 ? Math.round((1 / form.duration_weeks) * 100) : 0))
+    gestores.splice(i, 1)
+}
 
+const selectedBranchName = computed(() => props.branches.find((b) => b.id === form.branch_id)?.name ?? null)
+const selectedResponsibleName = computed(() => responsibleOptions.value.find((u) => u.id === form.responsible_user_id)?.full_name ?? '—')
 const endDatePreview = computed(() => {
     const start = new Date(`${form.start_date}T00:00:00`)
 
     if (Number.isNaN(start.getTime())) {
-return null
-}
+        return null
+    }
 
     start.setDate(start.getDate() + form.duration_weeks * 7 - 1)
 
     return start.toISOString().slice(0, 10)
 })
 
-// Opciones fijas de plazo (semanas) para el select "Plazo de evaluación" —
-// siempre incluye el valor actual aunque no esté en la lista común, para no
-// perder un valor ya capturado (ej. si venía de un objective ya editado).
-const weekOptionsList = computed(() => {
-    const base = [4, 6, 8, 10, 12, 16, 20, 24, 36, 48, 52]
-
-    if (!base.includes(form.duration_weeks)) {
-base.push(form.duration_weeks)
+function kpiOf(id: number | null) {
+    return props.kpis.find((k) => k.id === id) ?? null
 }
 
-    return base.sort((a, b) => a - b)
-})
+// ── Paso 2 ──
+const activeGestor = computed(() => gestores.find((g) => g.client_key === activeScope.value) ?? null)
 
-const trajectoryChartOptions = computed<ApexOptions>(() => {
-    const showDataLabels = trajectoryPercents.value.length > 0 && trajectoryPercents.value.length <= 14
+function copyBranchStructureTo(target: GestorPlan | 'all') {
+    const targets = target === 'all' ? gestores : [target]
+    targets.forEach((g) => {
+        g.key_results = cloneKrStructure(branchRows.value)
+    })
+    Swal.fire({
+        toast: true, position: 'top-end', icon: 'success', timer: 2200, showConfirmButton: false,
+        title: target === 'all' ? 'KPI copiados a todos los gestores' : 'KPI copiados',
+        text: 'Solo KPI, descripción y peso. Cada gestor captura su propia base y meta.',
+    })
+}
 
-    return {
-        chart: { toolbar: { show: false }, sparkline: { enabled: false } },
-        xaxis: {
-            categories: trajectoryPercents.value.map((_, i) => `S${i + 1}`),
-            labels: { style: { fontSize: '10px' } },
-            axisTicks: { show: false },
-        },
-        // El eje Y muestra el % de avance en pasos de 10 — 0%, 10%, 20%... 100%
-        // (antes venía oculto: `labels: { show: false }`, ese era el bug). Con
-        // 11 etiquetas (0 a 100) se ven apretadas si la gráfica es baja — por
-        // eso subimos su alto (ver :height más abajo) y agrandamos la fuente.
-        yaxis: {
-            min: 0, max: 100, tickAmount: 10,
-            labels: { formatter: (v: number) => `${Math.round(v)}%`, style: { fontSize: '11px', colors: ['#94a3b8'] }, offsetX: -4 },
-        },
-        colors: ['#4f46e5'],
-        stroke: { curve: 'straight', width: 2.5 },
-        grid: { borderColor: 'rgba(148,163,184,0.25)', strokeDashArray: 4, padding: { left: 8, right: 8, top: 4 } },
-        // Punto visible donde cada semana (eje X) se cruza con su % (eje Y),
-        // con un hover más grande para resaltar el punto bajo el cursor.
-        markers: { size: 4, colors: ['#ffffff'], strokeColors: '#4f46e5', strokeWidth: 2, hover: { size: 6 } },
-        dataLabels: {
-            enabled: showDataLabels,
-            formatter: (v: number) => `${v}%`,
-            offsetY: -10,
-            style: { fontSize: '9px', fontWeight: 700, colors: ['#4f46e5'] },
-        },
-        tooltip: {
-            y: {
-                // Además del %, se muestra el valor crudo esperado del KPI en
-                // esa semana (ej. "40% · $130,000.00") — mismo dato que ya
-                // calcula trajectoryPoints, solo presentado junto al %.
-                formatter: (val: number, opts: any) => {
-                    const raw = trajectoryPoints.value[opts?.dataPointIndex]
-                    const unit = kpiOf(primaryKr.value?.kpi_id ?? null)?.unit
+watch(step, (s) => {
+    if (s === 2 && branchRows.value.length === 0) {
+        branchRows.value.push(newKrRow({ weight: '100' }))
+    }
 
-                    return raw !== undefined ? `${val}% · ${formatByUnit(raw, unit)}` : `${val}%`
-                },
-            },
-        },
+    if (s === 2) {
+        gestores.filter((g) => g.key_results.length === 0).forEach((g) => {
+            g.key_results = branchRows.value.some((kr) => kr.kpi_id) ? cloneKrStructure(branchRows.value) : [newKrRow({ weight: '100' })]
+        })
+    }
+
+    if (s === 3) {
+        autoConsultBaselines()
     }
 })
 
-// ── Navegación ──
-function canAdvance(): boolean {
-    if (step.value === 1) {
-        if (!form.branch_id || form.title.trim().length < 10) {
-return false
+// ── Paso 3: consulta automática (en paralelo) de las bases de sucursal y de CADA gestor ──
+const { consult } = useOkrBaselinePreview()
+
+function autoConsultBaselines() {
+    const scopeBase = { branch_id: form.branch_id, start_date: form.start_date }
+    branchRows.value
+        .filter((kr) => isAutomatic(kpiOf(kr.kpi_id)) && !kr.preview && !kr.loading && kr.baseline_mode !== 'manual_authorized')
+        .forEach((kr) => consult(kr, { ...scopeBase, scope_type: 'branch' }))
+    gestores.forEach((g) => g.key_results
+        .filter((kr) => isAutomatic(kpiOf(kr.kpi_id)) && !kr.preview && !kr.loading && kr.baseline_mode !== 'manual_authorized')
+        .forEach((kr) => consult(kr, { ...scopeBase, scope_type: 'employee', employee_id: g.employee_id })))
 }
 
-        if (individualsEnabled.value) {
-            // D11 del cierre (17-sep-2026): bug real — Array.every() en un array
-            // vacío es vacuamente true, así que "Agregar OKR individuales" ON con
-            // CERO colaboradores agregados dejaba avanzar igual al paso 2. Ahora
-            // exige al menos 1 fila además de que cada una esté completa.
-            return individualRows.length >= 1 && individualRows.every((r) => r.employee_id && r.title.trim().length >= 10)
+function gestorGoalsComplete(g: GestorPlan): boolean {
+    return g.key_results.length > 0 && g.key_results.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id)))
+}
+
+const branchGoalsComplete = computed(() => branchRows.value.length > 0 && branchRows.value.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id))))
+
+// ── Navegación con motivo visible de bloqueo (nunca un "Siguiente" muerto sin explicación) ──
+const blocker = computed<string | null>(() => {
+    if (step.value === 1) {
+        if (!form.branch_id) {
+            return 'Elige la sucursal.'
         }
 
-        return true
+        if (form.title.trim().length < 10) {
+            return 'Escribe el objetivo general (mínimo 10 caracteres).'
+        }
+
+        if (individualsEnabled.value) {
+            if (gestores.length === 0) {
+                return 'Selecciona al menos un gestor o apaga los OKR individuales.'
+            }
+
+            const noTitle = gestores.find((g) => g.title.trim().length < 10)
+
+            if (noTitle) {
+                return `Escribe el objective individual de ${noTitle.employee_name}.`
+            }
+        }
+
+        return null
     }
 
     if (step.value === 2) {
-        return form.key_results.length > 0 && form.key_results.every((kr) => kr.kpi_id && kr.description && kr.weight !== '') && weightValid.value
+        if (!krStructureIsComplete(branchRows.value)) {
+            return `Completa los KR de la sucursal (KPI, descripción y pesos al 100% — hoy ${totalWeight(branchRows.value)}%).`
+        }
+
+        const bad = gestores.find((g) => !krStructureIsComplete(g.key_results))
+
+        return bad ? `Completa los KR de ${bad.employee_name} (pesos al 100% — hoy ${totalWeight(bad.key_results)}%).` : null
     }
 
     if (step.value === 3) {
-        return form.key_results.every((kr) => kr.target_value !== '' && (kr.baseline_mode === 'auto' || kr.baseline_value !== ''))
+        if (!branchGoalsComplete.value) {
+            return 'Completa la línea base y la meta de la sucursal.'
+        }
+
+        const bad = gestores.find((g) => !gestorGoalsComplete(g))
+
+        return bad ? `Falta la línea base o la meta de ${bad.employee_name}.` : null
     }
 
-    return true
-}
+    return null
+})
+
 function next() {
- if (canAdvance() && step.value < 4) {
-step.value++
-} 
+    if (!blocker.value && step.value < 4) {
+        direction.value = 'forward'
+        step.value++
+    }
 }
+
 function back() {
- if (step.value > 1) {
-step.value--
-} 
+    if (step.value > 1) {
+        direction.value = 'back'
+        step.value--
+    }
+}
+
+function goTo(target: number) {
+    if (target < step.value) {
+        direction.value = 'back'
+        step.value = target
+    }
 }
 
 function submit() {
     form.transform((data) => ({
-        ...data,
+        scope_type: 'branch',
+        branch_id: data.branch_id,
+        title: data.title,
+        responsible_user_id: data.responsible_user_id,
+        start_date: data.start_date,
+        duration_weeks: data.duration_weeks,
+        key_results: branchRows.value.map((kr) => serializeKr(kr, kpiOf(kr.kpi_id))),
         individual_objectives: individualsEnabled.value
-            ? individualRows.map((r) => ({ employee_id: r.employee_id, title: r.title }))
+            ? gestores.map((g) => ({ employee_id: g.employee_id, title: g.title, key_results: g.key_results.map((kr) => serializeKr(kr, kpiOf(kr.kpi_id))) }))
             : [],
-        key_results: data.key_results.map((kr) => ({
-            kpi_id: kr.kpi_id,
-            description: kr.description,
-            baseline_value: kr.baseline_mode === 'manual' && kr.baseline_value !== '' ? Number(kr.baseline_value) : null,
-            target_value: Number(kr.target_value),
-            weight: Number(kr.weight),
-        })),
     })).post('/okr', {
         onSuccess: () => {
- open.value = false 
-},
+            open.value = false
+            Swal.fire({
+                icon: 'success', title: 'OKR guardado en borrador',
+                text: gestores.length ? `Sucursal + ${gestores.length} OKR individual(es), cada uno con su propia meta.` : 'Revisa la línea base y actívalo desde el detalle.',
+                timer: 2600, showConfirmButton: false,
+            })
+        },
+        onError: (errors) => {
+            Swal.fire({ icon: 'error', title: 'No se pudo guardar el OKR', html: Object.values(errors).slice(0, 6).map((e) => `• ${e}`).join('<br>'), confirmButtonText: 'Revisar' })
+        },
     })
 }
+
+const primaryBranchKr = computed(() => branchRows.value[0] ?? null)
+const goalScope = computed(() => ({ branch_id: form.branch_id, start_date: form.start_date }))
 </script>
 
 <template>
     <Dialog v-model:open="open">
         <DialogContent
-            class="flex max-h-[90vh] w-[95vw] max-w-[95vw] sm:max-w-[1400px] flex-col gap-0 overflow-hidden p-0"
+            class="flex max-h-[92vh] w-[96vw] max-w-[96vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1400px]"
             :show-close-button="false"
             @pointer-down-outside="(e) => e.preventDefault()"
             @interact-outside="(e) => e.preventDefault()"
@@ -588,473 +354,215 @@ function submit() {
             <DialogTitle class="sr-only">Asignar OKR</DialogTitle>
 
             <!-- Header -->
-            <div class="flex items-center justify-between border-b border-border px-6 py-4">
-                <div>
-                    <p class="text-base font-bold text-foreground">Asignar OKR</p>
-                    <p class="text-xs text-muted-foreground">Paso {{ step }} de 4 · {{ STEPS[step - 1] }}</p>
-                </div>
-                <button type="button" class="rounded-full p-1.5 text-muted-foreground transition hover:bg-muted hover:text-foreground" aria-label="Cerrar" @click="open = false">
-                    <X class="size-4" />
-                </button>
-            </div>
-
-            <!-- Stepper -->
-            <div class="flex items-center gap-1 border-b border-border px-6 py-3">
-                <template v-for="(label, i) in STEPS" :key="label">
-                    <div class="flex items-center gap-1.5">
-                        <span
-                            class="flex size-6 items-center justify-center rounded-full text-[11px] font-bold"
-                            :class="i + 1 < step ? 'bg-primary text-primary-foreground' : i + 1 === step ? 'bg-primary text-primary-foreground ring-2 ring-primary/25' : 'bg-muted text-muted-foreground'"
-                        >
-                            <CheckCircle2 v-if="i + 1 < step" class="size-3.5" />
-                            <span v-else>{{ i + 1 }}</span>
-                        </span>
-                        <span class="hidden text-xs font-semibold sm:inline" :class="i + 1 <= step ? 'text-foreground' : 'text-muted-foreground'">{{ label }}</span>
+            <div class="relative overflow-hidden border-b border-border bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 px-6 py-4 text-white">
+                <div class="pointer-events-none absolute -right-16 -top-16 size-48 rounded-full bg-indigo-500/20 blur-3xl" />
+                <div class="pointer-events-none absolute -bottom-20 left-1/3 size-40 rounded-full bg-emerald-500/10 blur-3xl" />
+                <div class="relative flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <span class="flex size-10 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur"><Sparkles class="size-5 text-indigo-200" /></span>
+                        <div>
+                            <p class="text-base font-bold">Asignar OKR</p>
+                            <p class="text-xs text-indigo-200/80">Paso {{ step }} de 4 · {{ STEPS[step - 1] }}</p>
+                        </div>
                     </div>
-                    <div v-if="i < STEPS.length - 1" class="mx-1.5 h-px flex-1" :class="i + 1 < step ? 'bg-primary' : 'bg-border'" />
-                </template>
+                    <button type="button" class="rounded-full p-1.5 text-white/70 transition hover:rotate-90 hover:bg-white/10 hover:text-white" aria-label="Cerrar" @click="open = false"><X class="size-4" /></button>
+                </div>
             </div>
 
-            <div v-if="Object.keys(form.errors).length" class="mx-6 mt-3 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs font-semibold text-destructive">
+            <OkrWizardStepper class="border-b border-border" :steps="STEPS" :current="step" @go="goTo" />
+
+            <div v-if="Object.keys(form.errors).length" class="mx-6 mt-3 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs font-semibold text-destructive animate-in fade-in slide-in-from-top-1">
                 <p v-for="(err, key) in form.errors" :key="key">{{ err }}</p>
             </div>
 
             <!-- Body -->
             <div class="flex-1 overflow-y-auto px-6 py-5">
-                <!-- PASO 1: Asignación -->
-                <div v-if="step === 1" class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
-                    <div class="space-y-4">
-                        <div class="space-y-1.5">
-                            <label class="text-sm font-semibold text-foreground">Sucursal a asignar</label>
-                            <SearchableSelect v-model="form.branch_id as any" placeholder="Selecciona una sucursal" search-placeholder="Buscar sucursal..." :options="branches" label-key="name" secondary-key="__none" :error="form.errors.branch_id" />
-                        </div>
-
-                        <div class="space-y-1.5">
-                            <label class="text-sm font-semibold text-foreground">Objective</label>
-                            <textarea v-model="form.title" rows="3" maxlength="500" placeholder="Aumentar la colocación de préstamos activos impulsando el crecimiento sostenible de la cartera..." class="app-textarea" />
-                            <div class="flex items-center justify-between">
-                                <p v-if="form.errors.title" class="text-xs font-semibold text-destructive">{{ form.errors.title }}</p>
-                                <p class="ml-auto text-[11px] text-muted-foreground">{{ form.title.length }}/500</p>
+                <Transition mode="out-in" :enter-from-class="direction === 'forward' ? 'opacity-0 translate-x-6' : 'opacity-0 -translate-x-6'" enter-active-class="transition duration-300 ease-out" leave-active-class="transition duration-150 ease-in" leave-to-class="opacity-0">
+                    <!-- PASO 1 -->
+                    <div v-if="step === 1" key="s1" class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+                        <div class="space-y-4">
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-semibold text-foreground">Sucursal a asignar</label>
+                                <SearchableSelect v-model="form.branch_id as any" placeholder="Selecciona una sucursal" search-placeholder="Buscar sucursal..." :options="branches" label-key="name" secondary-key="__none" :error="form.errors.branch_id" />
                             </div>
-                        </div>
 
-                        <div class="space-y-1.5">
-                            <div class="flex items-center gap-1.5">
-                                <label class="text-sm font-semibold text-foreground">Responsable</label>
-                                <OkrHelpTooltip text="Quién da seguimiento a este OKR (check-ins, evidencias). Por defecto eres tú." />
-                            </div>
-                            <SearchableSelect v-model="form.responsible_user_id as any" placeholder="Selecciona un responsable" :options="responsibleOptions" label-key="full_name" secondary-key="__none" />
-                        </div>
-
-                        <div class="flex items-start gap-3 rounded-xl border border-border bg-muted/20 p-3">
-                            <Switch v-model="individualsEnabled" class="mt-0.5" />
-                            <div>
-                                <p class="text-sm font-semibold text-foreground">Agregar OKR individuales por vendedor</p>
-                                <p class="text-xs text-muted-foreground">Crea objetivos individuales para cada colaborador de la sucursal seleccionada.</p>
-                            </div>
-                        </div>
-
-                        <div v-if="individualsEnabled" class="space-y-3 animate-in fade-in duration-200">
-                            <p class="text-sm font-semibold text-foreground">Asignación individual</p>
-                            <div class="flex gap-2">
-                                <div class="flex-1">
-                                    <SearchableSelect
-                                        v-model="addEmployeeId as any"
-                                        placeholder="Agregar colaborador"
-                                        search-placeholder="Buscar colaborador..."
-                                        :options="employeeOptions.filter((e) => !individualRows.some((r) => r.employee_id === e.id))"
-                                        label-key="full_name" secondary-key="__none"
-                                        :disabled="!form.branch_id"
-                                        @update:search="onEmployeeSearch"
-                                        @change="addIndividual"
-                                    />
+                            <div class="space-y-1.5">
+                                <label class="text-sm font-semibold text-foreground">Objetivo general</label>
+                                <textarea v-model="form.title" rows="3" maxlength="500" placeholder="Incrementar colocación de cartera impulsando el crecimiento sostenible de la sucursal..." class="app-textarea" />
+                                <div class="flex items-center justify-between">
+                                    <p v-if="form.title.length > 0 && form.title.trim().length < 10" class="text-xs font-semibold text-amber-600">Mínimo 10 caracteres.</p>
+                                    <p class="ml-auto text-[11px] tabular-nums text-muted-foreground">{{ form.title.length }}/500</p>
                                 </div>
                             </div>
 
-                            <div v-if="individualRows.length" class="space-y-2">
-                                <div v-for="(row, i) in individualRows" :key="row.client_key" class="flex items-start gap-2 rounded-xl border border-border p-2.5">
-                                    <span class="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">{{ row.employee_name.slice(0, 2).toUpperCase() }}</span>
-                                    <div class="min-w-0 flex-1">
-                                        <p class="mb-1 truncate text-xs font-semibold text-foreground">{{ row.employee_name }}</p>
-                                        <input v-model="row.title" maxlength="500" placeholder="Objective individual (mín. 10 caracteres)" class="app-input h-9 text-xs">
+                            <div class="space-y-1.5">
+                                <div class="flex items-center gap-1.5">
+                                    <label class="text-sm font-semibold text-foreground">Responsable</label>
+                                    <OkrHelpTooltip text="Quién da seguimiento a este OKR (check-ins, evidencias). Por defecto eres tú." />
+                                </div>
+                                <SearchableSelect v-model="form.responsible_user_id as any" placeholder="Selecciona un responsable" :options="responsibleOptions" label-key="full_name" secondary-key="__none" />
+                            </div>
+
+                            <label class="flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition hover:border-primary/40 hover:bg-primary/5" :class="individualsEnabled ? 'border-primary/40 bg-primary/5' : 'border-border bg-muted/20'">
+                                <Switch v-model="individualsEnabled" class="mt-0.5" />
+                                <div>
+                                    <p class="text-sm font-semibold text-foreground">Agregar OKR individuales por gestor</p>
+                                    <p class="text-xs text-muted-foreground">Cada gestor elegido tendrá su propia línea base, incremento y meta. La meta de sucursal se conserva.</p>
+                                </div>
+                            </label>
+
+                            <OkrGestorPicker
+                                v-if="individualsEnabled"
+                                :employees="employeeOptions" :selected="gestores" :loading="loadingEmployees" :roster-period="rosterPeriod" :branch-selected="!!form.branch_id"
+                                @toggle="toggleGestor" @remove="removeGestor" @search="onEmployeeSearch"
+                            />
+                        </div>
+
+                        <aside class="h-fit space-y-3 rounded-2xl border border-border bg-gradient-to-b from-muted/40 to-background p-4 lg:sticky lg:top-0">
+                            <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Resumen de asignación</p>
+                            <div class="flex items-center gap-2.5 rounded-xl bg-background p-2.5 shadow-sm">
+                                <span class="flex size-8 items-center justify-center rounded-full bg-blue-500/10 text-blue-600"><Building2 class="size-4" /></span>
+                                <div><p class="text-[10px] text-muted-foreground">Sucursal</p><p class="text-sm font-semibold text-foreground">{{ selectedBranchName ?? '—' }}</p></div>
+                            </div>
+                            <div class="flex items-center gap-2.5 rounded-xl bg-background p-2.5 shadow-sm">
+                                <span class="flex size-8 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600"><Users class="size-4" /></span>
+                                <div><p class="text-[10px] text-muted-foreground">Colaboradores vigentes</p><p class="text-sm font-semibold tabular-nums text-foreground">{{ branchEmployeeCount }}</p></div>
+                            </div>
+                            <div class="flex items-center gap-2.5 rounded-xl bg-background p-2.5 shadow-sm">
+                                <span class="flex size-8 items-center justify-center rounded-full bg-violet-500/10 text-violet-600"><Sparkles class="size-4" /></span>
+                                <div><p class="text-[10px] text-muted-foreground">Tipo</p><p class="text-sm font-semibold text-foreground">{{ gestores.length ? `Sucursal + ${gestores.length} individual(es)` : 'Sucursal' }}</p></div>
+                            </div>
+                            <div v-if="gestores.length" class="flex -space-x-2 pt-1">
+                                <span v-for="g in gestores.slice(0, 7)" :key="g.client_key" class="flex size-8 items-center justify-center rounded-full bg-gradient-to-br text-[10px] font-bold text-white ring-2 ring-background transition hover:z-10 hover:-translate-y-1" :class="avatarTone(g.employee_id)" :title="g.employee_name">{{ initialsOf(g.employee_name) }}</span>
+                                <span v-if="gestores.length > 7" class="flex size-8 items-center justify-center rounded-full bg-muted text-[10px] font-bold ring-2 ring-background">+{{ gestores.length - 7 }}</span>
+                            </div>
+                        </aside>
+                    </div>
+
+                    <!-- PASO 2 -->
+                    <div v-else-if="step === 2" key="s2" class="space-y-4">
+                        <div v-if="gestores.length" class="flex flex-wrap items-center gap-2">
+                            <button
+                                type="button" class="flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition hover:-translate-y-0.5 hover:shadow-sm"
+                                :class="activeScope === 'branch' ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20' : 'border-border bg-card text-foreground hover:border-primary/40'"
+                                @click="activeScope = 'branch'"
+                            >
+                                <Building2 class="size-3.5" /> Sucursal
+                                <CheckCircle2 v-if="krStructureIsComplete(branchRows)" class="size-3.5" :class="activeScope === 'branch' ? '' : 'text-emerald-500'" />
+                            </button>
+                            <button
+                                v-for="g in gestores" :key="g.client_key" type="button"
+                                class="flex items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-xs font-semibold transition hover:-translate-y-0.5 hover:shadow-sm"
+                                :class="activeScope === g.client_key ? 'border-primary bg-primary text-primary-foreground shadow-md shadow-primary/20' : 'border-border bg-card text-foreground hover:border-primary/40'"
+                                @click="activeScope = g.client_key"
+                            >
+                                <span class="flex size-6 items-center justify-center rounded-full bg-gradient-to-br text-[9px] font-bold text-white" :class="avatarTone(g.employee_id)">{{ initialsOf(g.employee_name) }}</span>
+                                <span class="max-w-[140px] truncate">{{ g.employee_name }}</span>
+                                <CheckCircle2 v-if="krStructureIsComplete(g.key_results)" class="size-3.5" :class="activeScope === g.client_key ? '' : 'text-emerald-500'" />
+                                <AlertTriangle v-else class="size-3.5" :class="activeScope === g.client_key ? '' : 'text-amber-500'" />
+                            </button>
+                        </div>
+
+                        <Transition mode="out-in" enter-active-class="transition duration-200" enter-from-class="opacity-0 translate-y-1" leave-active-class="transition duration-100" leave-to-class="opacity-0">
+                            <div v-if="activeScope === 'branch' || !activeGestor" key="branch" class="space-y-3">
+                                <div>
+                                    <p class="text-sm font-semibold text-foreground">Key Results de la sucursal {{ selectedBranchName }}</p>
+                                    <p class="text-xs text-muted-foreground">Miden el objetivo general con TODA la colocación válida de la sucursal (incluye gestores sin meta individual).</p>
+                                </div>
+                                <OkrKrEditor v-model:rows="branchRows" :kpis="kpis" />
+                                <Button v-if="gestores.length" type="button" variant="outline" size="sm" class="gap-1.5 rounded-xl" :disabled="!krStructureIsComplete(branchRows)" @click="copyBranchStructureTo('all')">
+                                    <Copy class="size-3.5" /> Usar estos KPI para todos los gestores
+                                </Button>
+                            </div>
+                            <div v-else :key="activeGestor.client_key" class="space-y-3">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <div class="flex items-center gap-2.5">
+                                        <span class="flex size-9 items-center justify-center rounded-full bg-gradient-to-br text-[11px] font-bold text-white shadow" :class="avatarTone(activeGestor.employee_id)">{{ initialsOf(activeGestor.employee_name) }}</span>
+                                        <div>
+                                            <p class="text-sm font-semibold text-foreground">Key Results de {{ activeGestor.employee_name }}</p>
+                                            <p class="text-xs text-muted-foreground">Sus pesos suman 100% dentro de SU OKR (independiente de los demás gestores).</p>
+                                        </div>
                                     </div>
-                                    <button type="button" class="mt-1 shrink-0 text-muted-foreground transition hover:text-destructive" @click="removeIndividual(i)"><X class="size-4" /></button>
+                                    <Button type="button" variant="outline" size="sm" class="gap-1.5 rounded-xl" :disabled="!krStructureIsComplete(branchRows)" @click="copyBranchStructureTo(activeGestor)">
+                                        <Copy class="size-3.5" /> Copiar KPI de la sucursal
+                                    </Button>
                                 </div>
+                                <OkrKrEditor v-model:rows="activeGestor.key_results" :kpis="kpis" placeholder="Incrementar mi colocación de cartera" />
                             </div>
-                        </div>
-                    </div>
+                        </Transition>
 
-                    <aside class="app-card h-fit space-y-3 p-4">
-                        <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Resumen de asignación</p>
-                        <div class="flex items-center gap-2 text-sm">
-                            <Building2 class="size-4 text-primary" />
-                            <div><p class="text-xs text-muted-foreground">Sucursal</p><p class="font-semibold text-foreground">{{ selectedBranchName ?? '—' }}</p></div>
-                        </div>
-                        <div class="flex items-center gap-2 text-sm">
-                            <Users class="size-4 text-primary" />
-                            <div><p class="text-xs text-muted-foreground">Colaboradores</p><p class="font-semibold text-foreground">{{ summaryCollaboratorsCount }}</p></div>
-                        </div>
-                        <div class="flex items-center gap-2 text-sm">
-                            <Sparkles class="size-4 text-primary" />
-                            <div><p class="text-xs text-muted-foreground">Tipo</p><p class="font-semibold text-foreground">{{ assignmentType }}</p></div>
-                        </div>
-                    </aside>
-                </div>
-
-                <!-- PASO 2: Key Results y KPIs -->
-                <div v-else-if="step === 2" class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_240px]">
-                    <div class="space-y-4">
-                        <div class="flex items-center gap-3 rounded-xl border border-border bg-muted/20 p-3">
-                            <span class="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Sparkles class="size-4" /></span>
-                            <div class="min-w-0">
-                                <p class="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Objetivo seleccionado</p>
-                                <p class="truncate text-sm font-semibold text-foreground">{{ form.title || 'Objective sin título' }}</p>
-                                <p class="truncate text-xs text-muted-foreground">{{ selectedBranchName }}</p>
-                            </div>
-                        </div>
-
-                        <div>
-                            <p class="text-sm font-semibold text-foreground">Resultados clave a medir</p>
-                            <p class="text-xs text-muted-foreground">Define los resultados clave que impulsarán el cumplimiento del objetivo y los KPI asociados.</p>
-                        </div>
-
-                        <div class="overflow-x-auto rounded-xl border border-border">
-                            <table class="w-full min-w-[760px] text-xs">
-                                <thead class="border-b border-border bg-muted/30 text-muted-foreground">
-                                    <tr>
-                                        <th class="w-10 px-2 py-2"></th>
-                                        <th class="px-2 py-2 text-left font-semibold">Resultado clave</th>
-                                        <th class="min-w-[150px] px-2 py-2 text-left font-semibold">KPI relacionado</th>
-                                        <th class="min-w-[130px] px-2 py-2 text-left font-semibold">Tipo de KPI</th>
-                                        <th class="min-w-[130px] px-2 py-2 text-left font-semibold">Dirección</th>
-                                        <th class="w-24 px-2 py-2 text-left font-semibold">Peso</th>
-                                        <th class="w-8 px-2 py-2"></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr
-                                        v-for="(kr, i) in form.key_results" :key="i"
-                                        class="border-t border-border transition"
-                                        :class="dragIndex === i ? 'opacity-40' : ''"
-                                        draggable="true"
-                                        @dragstart="onDragStart(i)"
-                                        @dragover.prevent
-                                        @drop="onDropRow(i)"
-                                    >
-                                        <td class="px-2 py-2.5 text-center text-muted-foreground">
-                                            <span class="inline-flex items-center gap-1">
-                                                <GripVertical class="size-3.5 cursor-grab text-muted-foreground/70 hover:text-foreground" />
-                                                {{ i + 1 }}
-                                            </span>
-                                        </td>
-                                        <td class="min-w-[180px] px-2 py-2.5">
-                                            <input v-model="kr.description" placeholder="Incrementar colocación de cartera" class="app-input h-9 text-xs">
-                                        </td>
-
-                                        <!-- KPI relacionado — pill azul, filtrado por Tipo/Dirección si el usuario los usó -->
-                                        <td class="px-2 py-2.5">
-                                            <Select :model-value="kr.kpi_id !== null ? String(kr.kpi_id) : undefined" @update:model-value="(v) => onKpiPick(kr, v ? Number(v) : null)">
-                                                <SelectTrigger size="sm" class="w-full justify-between gap-1 rounded-full border-0 bg-blue-500/10 px-3 text-[11px] font-semibold text-blue-700 hover:bg-blue-500/15 dark:text-blue-300">
-                                                    <SelectValue placeholder="Selecciona un KPI" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem v-for="k in kpisMatchingFilters(kr)" :key="k.id" :value="String(k.id)">{{ k.name }}</SelectItem>
-                                                    <p v-if="kpisMatchingFilters(kr).length === 0" class="px-2 py-3 text-center text-[11px] text-muted-foreground">Ningún KPI coincide con Tipo/Dirección.</p>
-                                                </SelectContent>
-                                            </Select>
-                                        </td>
-
-                                        <!-- Tipo de KPI — pill violeta, editable: filtra el catálogo -->
-                                        <td class="px-2 py-2.5">
-                                            <Select :model-value="typeFilterOf(kr) ?? ALL_FILTER" @update:model-value="(v) => onTypeFilterChange(kr, v as string)">
-                                                <SelectTrigger size="sm" class="w-full justify-between gap-1 rounded-full border-0 bg-violet-500/10 px-3 text-[11px] font-semibold text-violet-700 hover:bg-violet-500/15 dark:text-violet-300">
-                                                    <SelectValue placeholder="Tipo" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem :value="ALL_FILTER">Cualquiera</SelectItem>
-                                                    <SelectItem value="cumulative">Acumulativo</SelectItem>
-                                                    <SelectItem value="balance">Saldo</SelectItem>
-                                                    <SelectItem value="percentage">Porcentual</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                        </td>
-
-                                        <!-- Dirección — pill verde/ámbar según incrementar/disminuir, editable: filtra el catálogo -->
-                                        <td class="px-2 py-2.5">
-                                            <Select :model-value="directionFilterOf(kr) ?? ALL_FILTER" @update:model-value="(v) => onDirectionFilterChange(kr, v as string)">
-                                                <SelectTrigger
-                                                    size="sm" class="w-full justify-between gap-1 rounded-full border-0 px-3 text-[11px] font-semibold hover:opacity-80"
-                                                    :class="directionFilterOf(kr) === 'decrease' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'"
-                                                >
-                                                    <SelectValue placeholder="Dirección" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem :value="ALL_FILTER">Cualquiera</SelectItem>
-                                                    <SelectItem value="increase">Incrementar ↗</SelectItem>
-                                                    <SelectItem value="decrease">Disminuir ↘</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                        </td>
-
-                                        <td class="px-2 py-2.5">
-                                            <input
-                                                :value="kr.weight" type="number" step="0.01" min="0"
-                                                :max="maxWeightForRow(i)"
-                                                :disabled="form.key_results.length === 1"
-                                                placeholder="0" class="app-input h-9 text-xs disabled:cursor-not-allowed disabled:opacity-70"
-                                                @input="(e) => onWeightInput(kr, i, (e.target as HTMLInputElement).value)"
-                                            >
-                                        </td>
-                                        <td class="px-2 py-2.5 text-center">
-                                            <button v-if="form.key_results.length > 1" type="button" class="text-muted-foreground transition hover:text-destructive" @click="removeKr(i)"><Trash2 class="size-3.5" /></button>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-
-                        <p class="text-[11px] text-muted-foreground">
-                            Arrastra <GripVertical class="-mt-0.5 inline size-3 align-middle" /> para reordenar. Un solo Key Result siempre pesa 100%; con varios, la suma nunca puede pasar de 100%.
-                        </p>
-
-                        <Button type="button" variant="outline" size="sm" class="gap-1.5 rounded-xl border-dashed" @click="addKr">
-                            <Plus class="size-3.5" /> Agregar Key Result
-                        </Button>
-                    </div>
-
-                    <aside class="app-card h-fit space-y-4 p-4 text-center">
-                        <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Resumen del OKR</p>
-                        <div class="mx-auto w-32"><AsyncApexChart type="radialBar" :height="128" :options="donutOptions" :series="[Math.min(100, totalWeight)]" /></div>
-                        <p class="-mt-2 text-xs text-muted-foreground">Pesos asignados</p>
-
-                        <div class="flex items-center gap-2.5 rounded-xl border border-border bg-muted/20 p-3 text-left">
-                            <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><ListChecks class="size-4" /></span>
-                            <p class="text-sm font-semibold text-foreground">{{ form.key_results.length }} KPI seleccionados</p>
-                        </div>
-
-                        <div class="flex items-start gap-2 rounded-xl bg-muted/30 p-3 text-left text-[11px] text-muted-foreground">
+                        <p class="flex items-start gap-2 rounded-xl bg-muted/30 px-3 py-2.5 text-[11px] text-muted-foreground">
                             <Info class="mt-0.5 size-3.5 shrink-0" />
-                            <span>El cumplimiento del OKR se calcula por ponderación.</span>
-                        </div>
-                    </aside>
-                </div>
-
-                <!-- PASO 3: Metas, pesos y trayectoria -->
-                <div v-else-if="step === 3" class="space-y-5">
-                    <p class="text-sm font-semibold text-foreground">Definición de metas por KPI</p>
-
-                    <div class="overflow-x-auto rounded-xl border border-border">
-                        <table class="w-full min-w-[760px] text-xs">
-                            <thead class="border-b border-border bg-muted/30 text-muted-foreground">
-                                <tr>
-                                    <th class="px-2 py-2 text-left font-semibold">KPI</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Tipo</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Dirección</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Base congelada</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Incremento esperado</th>
-                                    <th class="px-2 py-2 text-left font-semibold">Meta objetivo</th>
-                                    <th class="w-16 px-2 py-2 text-left font-semibold">Peso</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="(kr, i) in form.key_results" :key="i" class="border-t border-border align-top">
-                                    <td class="px-2 py-2.5 font-medium text-foreground">
-                                        <span class="flex items-center gap-2">
-                                            <span class="flex size-6 shrink-0 items-center justify-center rounded-full" :class="kpiIconFor(kpiOf(kr.kpi_id)).class">
-                                                <component :is="kpiIconFor(kpiOf(kr.kpi_id)).icon" class="size-3.5" />
-                                            </span>
-                                            {{ kpiOf(kr.kpi_id)?.name ?? '—' }}
-                                        </span>
-                                    </td>
-                                    <td class="px-2 py-2.5">
-                                        <span class="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">{{ kpiTypeLabel(kpiOf(kr.kpi_id)?.type) }}</span>
-                                    </td>
-                                    <td class="px-2 py-2.5">
-                                        <span
-                                            class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                                            :class="kpiOf(kr.kpi_id)?.direction === 'decrease' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'"
-                                        >
-                                            {{ kpiOf(kr.kpi_id) ? `${kpiDirectionLabel(kpiOf(kr.kpi_id)?.direction)} ${kpiOf(kr.kpi_id)?.direction === 'decrease' ? '↘' : '↗'}` : '—' }}
-                                        </span>
-                                    </td>
-                                    <td class="min-w-[140px] px-2 py-2.5">
-                                        <template v-if="kpiOf(kr.kpi_id)?.automation === 'automatic'">
-                                            <div class="rounded-lg border border-border bg-muted/20 px-2 py-1.5">
-                                                <p class="font-semibold tabular-nums text-foreground">{{ kr.baseline_value !== '' ? formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) : 'Sin consultar' }}</p>
-                                                <button type="button" class="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-primary" @click="fetchBaselinePreview(i)">
-                                                    <Loader2 v-if="loadingPreview[i]" class="size-3 animate-spin" /><Search v-else class="size-3" /> Consultar
-                                                </button>
-                                                <p v-if="baselinePreviews[i]?.available" class="mt-0.5 text-[10px] text-muted-foreground">Fuente: Reportería · {{ baselinePreviews[i]?.period?.label }}</p>
-                                                <p v-else-if="baselinePreviews[i] && !baselinePreviews[i]?.available" class="mt-0.5 text-[10px] text-destructive">No disponible todavía</p>
-                                            </div>
-                                        </template>
-                                        <input v-else v-model="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="app-input h-9 text-xs" @change="kr.baseline_mode = 'manual'">
-                                    </td>
-                                    <td class="min-w-[110px] px-2 py-2.5">
-                                        <input :value="incrementOf(kr)" type="number" step="0.01" placeholder="+0.00" class="app-input h-9 text-xs" @input="(e) => onIncrementInput(kr, (e.target as HTMLInputElement).value)">
-                                    </td>
-                                    <td class="min-w-[110px] px-2 py-2.5">
-                                        <input v-model="kr.target_value" type="number" step="0.01" placeholder="0.00" class="app-input h-9 text-xs" @input="(e) => onTargetInput(kr, (e.target as HTMLInputElement).value)">
-                                    </td>
-                                    <td class="px-2 py-2.5 font-semibold tabular-nums text-foreground">{{ kr.weight }}%</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <p class="flex items-start gap-2 rounded-xl bg-muted/30 px-3 py-2.5 text-[11px] text-muted-foreground">
-                        <Info class="mt-0.5 size-3.5 shrink-0" />
-                        <span>Fórmula de cálculo de la meta: <strong class="text-foreground">Meta = Base congelada + Incremento esperado</strong>. Para KPI porcentuales, el incremento se expresa en puntos porcentuales (pp).</span>
-                    </p>
-
-                    <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                        <div class="app-card space-y-2 p-4">
-                            <p class="text-xs font-semibold text-foreground">Plazo de evaluación</p>
-                            <p class="text-[11px] text-muted-foreground">Define el horizonte temporal para medir el avance del OKR.</p>
-
-                            <div class="flex items-center gap-2 pt-1">
-                                <CalendarDays class="size-4 shrink-0 text-primary" />
-                                <Select :model-value="String(form.duration_weeks)" @update:model-value="(v) => (form.duration_weeks = Number(v))">
-                                    <SelectTrigger size="sm" class="h-9 w-full justify-between gap-1 rounded-lg border-0 bg-muted/60 px-3 text-sm font-bold text-foreground">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem v-for="w in weekOptionsList" :key="w" :value="String(w)">{{ w }} semanas</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-
-                            <div class="flex flex-col gap-1 pt-2 text-[11px]">
-                                <p><span class="font-semibold text-foreground">Inicio:</span> <span class="text-muted-foreground">{{ formatFriendlyDate(form.start_date) }}</span></p>
-                                <p><span class="font-semibold text-foreground">Término:</span> <span class="text-muted-foreground">{{ endDatePreview ? formatFriendlyDate(endDatePreview) : '—' }}</span></p>
-                            </div>
-                        </div>
-                        <div class="app-card space-y-2 p-4">
-                            <p class="text-xs font-semibold text-foreground">Trayectoria esperada</p>
-                            <p class="text-[11px] text-muted-foreground">Proyección del avance acumulado durante el periodo.</p>
-                            <AsyncApexChart v-if="trajectoryPercents.length > 1" type="line" :height="190" :options="trajectoryChartOptions" :series="[{ name: 'Avance esperado', data: trajectoryPercents }]" />
-                            <p v-else class="py-6 text-center text-[11px] text-muted-foreground">Captura base y meta para ver la trayectoria.</p>
-                        </div>
-                        <div class="app-card space-y-2 p-4">
-                            <p class="text-xs font-semibold text-foreground">Avance esperado vs. meta final</p>
-                            <p class="text-[11px] text-muted-foreground">Comparación del avance esperado al cierre frente a la meta.</p>
-                            <div class="mt-2 grid grid-cols-2 gap-2 text-center">
-                                <div class="rounded-lg bg-muted/30 p-2"><p class="text-lg font-bold text-foreground">{{ expectedAtWeek1Pct }}%</p><p class="text-[10px] text-muted-foreground">Avance esperado a la fecha</p></div>
-                                <div class="rounded-lg bg-primary/10 p-2"><p class="text-lg font-bold text-primary">100%</p><p class="text-[10px] text-muted-foreground">Meta final</p></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- PASO 4: Resumen y confirmación -->
-                <div v-else-if="step === 4" class="space-y-5">
-                    <!-- Objective: encabezado + 4 datos clave con ícono, cada uno en su propia tarjeta -->
-                    <div class="app-card space-y-3 p-4">
-                        <div class="flex items-start gap-3">
-                            <span class="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Sparkles class="size-5" /></span>
-                            <div class="min-w-0">
-                                <p class="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Objective a crear</p>
-                                <p class="text-sm font-semibold text-foreground">{{ form.title }}</p>
-                            </div>
-                        </div>
-
-                        <div class="grid grid-cols-2 gap-2.5 pt-1 sm:grid-cols-4">
-                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
-                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-300"><Building2 class="size-4" /></span>
-                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Sucursal</p><p class="truncate text-xs font-semibold text-foreground">{{ selectedBranchName }}</p></div>
-                            </div>
-                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
-                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-300"><UserCheck class="size-4" /></span>
-                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Responsable</p><p class="truncate text-xs font-semibold text-foreground">{{ selectedResponsibleName }}</p></div>
-                            </div>
-                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
-                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-300"><CalendarDays class="size-4" /></span>
-                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Plazo</p><p class="truncate text-xs font-semibold text-foreground">{{ form.duration_weeks }} semanas</p></div>
-                            </div>
-                            <div class="flex items-center gap-2 rounded-xl border border-border bg-muted/20 p-2.5 transition hover:border-primary/40 hover:bg-primary/5">
-                                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"><Users2 class="size-4" /></span>
-                                <div class="min-w-0"><p class="text-[10px] text-muted-foreground">Tipo</p><p class="truncate text-xs font-semibold text-foreground">{{ assignmentType }}</p></div>
-                            </div>
-                        </div>
-
-                        <div class="flex items-center gap-2 rounded-xl bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                            <CalendarDays class="size-3.5 shrink-0" />
-                            <span><strong class="font-semibold text-foreground">{{ formatFriendlyDate(form.start_date) }}</strong> → <strong class="font-semibold text-foreground">{{ endDatePreview ? formatFriendlyDate(endDatePreview) : '—' }}</strong></span>
-                        </div>
-                    </div>
-
-                    <!-- OKR individuales — solo si se activó el switch y hay colaboradores agregados -->
-                    <div v-if="individualsEnabled && individualRows.length" class="app-card space-y-2.5 p-4">
-                        <p class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                            <Users2 class="size-3.5 text-primary" /> OKR individuales ({{ individualRows.length }})
+                            <span>Copiar KPI solo duplica KPI, descripción y peso. La línea base, el incremento y la meta de cada gestor se capturan en el siguiente paso.</span>
                         </p>
-                        <div
-                            v-for="row in individualRows" :key="row.client_key"
-                            class="flex items-start gap-2.5 rounded-xl border border-border bg-muted/20 p-2.5 text-xs transition hover:border-primary/40 hover:bg-primary/5"
-                        >
-                            <span class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">{{ row.employee_name.slice(0, 2).toUpperCase() }}</span>
-                            <div class="min-w-0">
-                                <p class="font-semibold text-foreground">{{ row.employee_name }}</p>
-                                <p class="text-muted-foreground">{{ row.title }}</p>
-                            </div>
-                        </div>
                     </div>
 
-                    <!-- Key Results — mismo ícono/color por KPI que en el Paso 3, con barra de peso -->
-                    <div class="app-card space-y-2.5 p-4">
-                        <div class="flex items-center justify-between">
-                            <p class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                                <ListChecks class="size-3.5 text-primary" /> Key Results ({{ totalWeight.toFixed(2) }}% ponderado)
-                            </p>
-                            <span class="flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="weightValid ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-destructive/10 text-destructive'">
-                                <CheckCircle2 v-if="weightValid" class="size-3" /><AlertTriangle v-else class="size-3" />
-                                {{ weightValid ? 'Listo para guardar' : 'Los pesos deben sumar 100%' }}
-                            </span>
-                        </div>
-
-                        <div
-                            v-for="(kr, i) in form.key_results" :key="i"
-                            class="space-y-2 rounded-xl border border-border bg-muted/20 p-3 text-xs transition hover:border-primary/40 hover:bg-primary/5"
-                        >
-                            <div class="flex items-start gap-2.5">
-                                <span class="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full" :class="kpiIconFor(kpiOf(kr.kpi_id)).class">
-                                    <component :is="kpiIconFor(kpiOf(kr.kpi_id)).icon" class="size-4" />
-                                </span>
-                                <div class="min-w-0 flex-1">
-                                    <p class="font-semibold text-foreground">{{ kr.description }} <span class="text-muted-foreground">— {{ kpiOf(kr.kpi_id)?.name }}</span></p>
-                                    <p class="mt-0.5 text-muted-foreground">Base {{ kr.baseline_value || '(auto)' }} → Meta {{ kr.target_value }}</p>
-                                    <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
-                                        <span class="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">{{ kpiTypeLabel(kpiOf(kr.kpi_id)?.type) }}</span>
-                                        <span
-                                            class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                                            :class="kpiOf(kr.kpi_id)?.direction === 'decrease' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'"
-                                        >
-                                            {{ kpiDirectionLabel(kpiOf(kr.kpi_id)?.direction) }} {{ kpiOf(kr.kpi_id)?.direction === 'decrease' ? '↘' : '↗' }}
-                                        </span>
-                                    </div>
+                    <!-- PASO 3 -->
+                    <div v-else-if="step === 3" key="s3" class="space-y-6">
+                        <section class="space-y-3">
+                            <div class="flex items-center gap-2">
+                                <span class="flex size-8 items-center justify-center rounded-lg bg-blue-500/10 text-blue-600"><Building2 class="size-4" /></span>
+                                <div>
+                                    <p class="text-sm font-bold text-foreground">Meta de sucursal — {{ selectedBranchName }}</p>
+                                    <p class="text-[11px] text-muted-foreground">Meta final = Línea base congelada + Incremento esperado (pp para KPI porcentuales).</p>
                                 </div>
-                                <span class="shrink-0 text-sm font-bold tabular-nums text-foreground">{{ kr.weight }}%</span>
+                                <CheckCircle2 v-if="branchGoalsComplete" class="ml-auto size-5 text-emerald-500" />
                             </div>
-                            <div class="h-1.5 overflow-hidden rounded-full bg-muted">
-                                <div class="h-1.5 rounded-full bg-primary transition-all" :style="{ width: `${Math.min(100, Number(kr.weight) || 0)}%` }" />
+                            <OkrGoalsTable v-model:rows="branchRows" :kpis="kpis" :scope="{ ...goalScope, scope_type: 'branch' }" scope-label="de la sucursal" />
+                            <OkrTrajectoryPanel
+                                v-model:weeks="form.duration_weeks" :start-date="form.start_date" :end-date="endDatePreview"
+                                :baseline="primaryBranchKr?.baseline_value ?? ''" :target="primaryBranchKr?.target_value ?? ''" :unit="kpiOf(primaryBranchKr?.kpi_id ?? null)?.unit"
+                            />
+                        </section>
+
+                        <section v-if="gestores.length" class="space-y-3">
+                            <div class="flex items-center gap-2">
+                                <span class="flex size-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><Users class="size-4" /></span>
+                                <div>
+                                    <p class="text-sm font-bold text-foreground">Metas por gestor</p>
+                                    <p class="text-[11px] text-muted-foreground">La línea base se consulta para CADA gestor con su propia colocación — nunca se copia la de la sucursal.</p>
+                                </div>
+                                <span class="ml-auto rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold tabular-nums">{{ gestores.filter(gestorGoalsComplete).length }}/{{ gestores.length }} completos</span>
                             </div>
-                        </div>
+                            <details v-for="(g, gi) in gestores" :key="g.client_key" class="group overflow-hidden rounded-2xl border border-border bg-card transition hover:shadow-md open:shadow-md" :open="gi === 0 || !gestorGoalsComplete(g)">
+                                <summary class="flex cursor-pointer list-none items-center gap-3 px-4 py-3 transition hover:bg-muted/30">
+                                    <span class="flex size-9 items-center justify-center rounded-full bg-gradient-to-br text-[11px] font-bold text-white shadow transition group-open:scale-105" :class="avatarTone(g.employee_id)">{{ initialsOf(g.employee_name) }}</span>
+                                    <div class="min-w-0 flex-1">
+                                        <p class="truncate text-sm font-semibold text-foreground">{{ g.employee_name }}</p>
+                                        <p class="truncate text-[11px] text-muted-foreground">{{ g.title }}</p>
+                                    </div>
+                                    <Loader2 v-if="g.key_results.some((kr) => kr.loading)" class="size-4 animate-spin text-primary" />
+                                    <span v-else-if="gestorGoalsComplete(g)" class="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300"><CheckCircle2 class="size-3" /> Completo</span>
+                                    <span v-else class="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-300"><AlertTriangle class="size-3" /> Faltan datos</span>
+                                    <ArrowRight class="size-4 text-muted-foreground transition group-open:rotate-90" />
+                                </summary>
+                                <div class="border-t border-border p-3">
+                                    <OkrGoalsTable v-model:rows="g.key_results" :kpis="kpis" :scope="{ ...goalScope, scope_type: 'employee', employee_id: g.employee_id }" scope-label="del gestor" />
+                                </div>
+                            </details>
+                        </section>
                     </div>
 
-                    <p class="flex items-center gap-2 rounded-xl bg-primary/5 px-3 py-2.5 text-xs font-medium text-primary">
-                        <Info class="size-4 shrink-0" /> El OKR se guardará en BORRADOR. Podrás revisar la línea base y activarlo desde el detalle.
-                    </p>
-                </div>
+                    <!-- PASO 4 -->
+                    <OkrWizardSummary
+                        v-else key="s4"
+                        :kpis="kpis" :title="form.title" :branch-name="selectedBranchName" :responsible-name="selectedResponsibleName"
+                        :duration-weeks="form.duration_weeks" :start-date="form.start_date" :end-date="endDatePreview"
+                        :branch-rows="branchRows" :gestores="gestores"
+                    />
+                </Transition>
             </div>
 
-            <!-- Footer sticky -->
-            <div class="flex items-center justify-between border-t border-border px-6 py-3">
-                <Button v-if="step > 1" type="button" variant="outline" class="h-10 gap-1.5 rounded-xl" @click="back"><ArrowLeft class="size-4" /> Anterior</Button>
+            <!-- Footer -->
+            <div class="flex items-center justify-between gap-3 border-t border-border bg-muted/20 px-6 py-3">
+                <Button v-if="step > 1" type="button" variant="outline" class="h-10 gap-1.5 rounded-xl transition hover:-translate-x-0.5" @click="back"><ArrowLeft class="size-4" /> Anterior</Button>
                 <Button v-else type="button" variant="ghost" class="h-10 rounded-xl text-muted-foreground" @click="open = false">Cancelar</Button>
 
-                <Button v-if="step < 4" type="button" class="h-10 gap-1.5 rounded-xl" :disabled="!canAdvance()" @click="next">Siguiente <ArrowRight class="size-4" /></Button>
-                <Button v-else type="button" class="h-10 gap-1.5 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500" :disabled="!weightValid || form.processing" @click="submit">
-                    <CheckCircle2 class="size-4" /> Guardar OKR
+                <p v-if="blocker" class="hidden flex-1 items-center justify-center gap-1.5 text-center text-[11px] font-semibold text-amber-600 sm:flex dark:text-amber-400 animate-in fade-in"><AlertTriangle class="size-3.5 shrink-0" /> {{ blocker }}</p>
+
+                <Button v-if="step < 4" type="button" class="h-10 gap-1.5 rounded-xl shadow-md shadow-primary/20 transition hover:translate-x-0.5 hover:shadow-lg" :disabled="!!blocker" @click="next">Siguiente <ArrowRight class="size-4" /></Button>
+                <Button v-else type="button" class="h-10 gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/30 transition hover:-translate-y-0.5 hover:from-emerald-500 hover:to-teal-500" :disabled="form.processing" @click="submit">
+                    <Loader2 v-if="form.processing" class="size-4 animate-spin" /><CheckCircle2 v-else class="size-4" /> Guardar OKR
                 </Button>
             </div>
         </DialogContent>

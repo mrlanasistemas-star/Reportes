@@ -40,6 +40,7 @@ class PlacementUploadController extends Controller
                 $request->file('file'),
                 $request->user(),
                 $request->boolean('confirm_replace'),
+                $request->boolean('complete_report'),
             );
         } catch (OkrPlacementUploadConflictException $e) {
             return response()->json([
@@ -60,6 +61,19 @@ class PlacementUploadController extends Controller
         // cargada sin esperar al scheduler (okr:refresh).
         $snapshotService->evaluateObjective($objective->fresh());
 
+        // Corrección 14-oct-2026: el MISMO archivo alimenta a la sucursal y a
+        // cada gestor con OKR individual — antes solo se recalculaba la
+        // sucursal y los individuales quedaban desactualizados. Se reprocesan
+        // las semanas >= la cargada (sucursal + hijos ACTIVOS); un OKR cerrado
+        // nunca se toca.
+        $weekNumber = $request->integer('week_number');
+        $snapshotService->evaluatePlacementHistory($objective->fresh(), $weekNumber);
+        if ($objective->scope_type === OkrObjective::SCOPE_BRANCH) {
+            foreach ($objective->children()->where('lifecycle_status', OkrObjective::STATUS_ACTIVE)->get() as $child) {
+                $snapshotService->evaluatePlacementHistory($child, $weekNumber);
+            }
+        }
+
         return response()->json([
             'success' => true,
             'replaced' => $upload->replaced_upload_id !== null,
@@ -70,6 +84,11 @@ class PlacementUploadController extends Controller
                 'rows_count' => $upload->rows_count,
                 'unattributed_amount' => $upload->unattributed_amount,
                 'rows_outside_week_range' => $upload->rows_outside_week_range,
+                'rows_duplicated' => $upload->rows_duplicated,
+                'rows_other_branch' => $upload->rows_other_branch,
+                'rows_cancelled' => $upload->rows_cancelled,
+                'rows_out_of_objective_range' => $upload->rows_out_of_objective_range,
+                'coverage_status' => $upload->coverage_status,
             ],
         ]);
     }

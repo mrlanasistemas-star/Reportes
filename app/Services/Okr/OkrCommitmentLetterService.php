@@ -33,23 +33,48 @@ class OkrCommitmentLetterService
     ) {
     }
 
-    public function buildSnapshot(OkrObjective $objective, string $place, ?string $position): array
+    /**
+     * Campos AUTORIZADOS que el emisor puede capturar/corregir antes de emitir
+     * (14-oct-2026): puesto, jefe inmediato y observaciones. Todo lo demás
+     * (colaborador, sucursal, fechas, objetivo, KPI, metas) sale SIEMPRE del
+     * Objective — nunca se captura a mano.
+     *
+     * @param  array{position?: ?string, immediate_boss?: ?string, observations?: ?string}  $overrides
+     */
+    public function buildSnapshot(OkrObjective $objective, string $place, ?string $position, array $overrides = []): array
     {
-        $objective->loadMissing(['branch', 'employee', 'responsibleUser', 'keyResults.kpi']);
+        $objective->loadMissing(['branch', 'employee', 'responsibleUser.employee', 'keyResults.kpi']);
+        $isEmployee = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE;
+
+        // Colaborador: el gestor del OKR individual; en un OKR de sucursal, el
+        // responsable titular de ese OKR (nunca un nombre inventado).
+        $collaborator = $isEmployee ? $objective->employee?->full_name : $objective->responsibleUser?->name;
+        $defaultPosition = $isEmployee ? ($position ?? $objective->employee?->position) : $objective->responsibleUser?->employee?->position;
+        // Jefe inmediato por defecto: el responsable de seguimiento del OKR
+        // individual. Para el de sucursal no hay un dato confiable — se exige
+        // capturarlo (campo autorizado) antes de emitir.
+        $defaultBoss = $isEmployee ? $objective->responsibleUser?->name : null;
+        $clean = fn ($v) => is_string($v) && trim($v) !== '' ? trim($v) : null;
 
         return [
             'place' => $place,
-            'position' => $position,
+            'position' => $clean($overrides['position'] ?? null) ?? $defaultPosition,
             'objective_title' => $objective->title,
             'scope_type' => $objective->scope_type,
             'branch_name' => $objective->branch?->name,
+            'collaborator_name' => $collaborator,
             'employee_name' => $objective->employee?->full_name,
+            'immediate_boss' => $clean($overrides['immediate_boss'] ?? null) ?? $defaultBoss,
             'responsible_name' => $objective->responsibleUser?->name,
+            'observations' => $clean($overrides['observations'] ?? null),
             'start_date' => $objective->start_date->toDateString(),
             'end_date' => $objective->end_date->toDateString(),
             'duration_weeks' => $objective->duration_weeks,
+            // KR de ESTE Objective: la carta del gestor A trae SU meta, la del
+            // gestor B la suya y la de sucursal la de sucursal.
             'key_results' => $objective->keyResults->map(fn ($kr) => [
                 'kpi_name' => $kr->kpi->name,
+                'description' => $kr->description,
                 'unit' => $kr->kpi->unit,
                 'baseline_value' => $kr->baseline_value,
                 'target_value' => $kr->target_value,
@@ -58,10 +83,41 @@ class OkrCommitmentLetterService
         ];
     }
 
-    /** DRAFT — previsualización READ-ONLY con los datos de HOY, nunca se persiste nada (2.1). */
-    public function renderPreviewPdf(OkrObjective $objective, string $place, ?string $position): string
+    /**
+     * Datos indispensables que faltan para emitir la carta definitiva — se
+     * muestran ANTES de generar (revisión); nunca se emite con huecos.
+     *
+     * @return array<string, string> campo => etiqueta
+     */
+    public function missingFields(array $snapshot): array
     {
-        $snapshot = $this->buildSnapshot($objective, $place, $position);
+        $required = [
+            'collaborator_name' => 'Nombre del colaborador',
+            'position' => 'Puesto',
+            'branch_name' => 'Sucursal / Área',
+            'immediate_boss' => 'Jefe inmediato',
+            'start_date' => 'Fecha de inicio',
+            'end_date' => 'Fecha de término',
+            'objective_title' => 'Objetivo principal',
+        ];
+
+        $missing = [];
+        foreach ($required as $key => $label) {
+            if (!is_string($snapshot[$key] ?? null) || trim($snapshot[$key]) === '') {
+                $missing[$key] = $label;
+            }
+        }
+        if (empty($snapshot['key_results'])) {
+            $missing['key_results'] = 'KPI y meta comprometida';
+        }
+
+        return $missing;
+    }
+
+    /** DRAFT — previsualización READ-ONLY con los datos de HOY, nunca se persiste nada (2.1). */
+    public function renderPreviewPdf(OkrObjective $objective, string $place, ?string $position, array $overrides = []): string
+    {
+        $snapshot = $this->buildSnapshot($objective, $place, $position, $overrides);
         $path = storage_path('app/tmp/okr-carta-preview-' . $objective->id . '-' . uniqid() . '.pdf');
 
         $this->renderer->renderViewToFile('reports.okr-commitment-letter-pdf', [
@@ -75,7 +131,7 @@ class OkrCommitmentLetterService
     /**
      * @throws RuntimeException si el Objective nunca se ha activado.
      */
-    public function generate(OkrObjective $objective, User $user, string $place, ?string $position): OkrCommitmentLetter
+    public function generate(OkrObjective $objective, User $user, string $place, ?string $position, array $overrides = []): OkrCommitmentLetter
     {
         $existing = $objective->commitmentLetter;
         if ($existing) {
@@ -86,7 +142,11 @@ class OkrCommitmentLetterService
             throw new RuntimeException('Este Objective todavía no se ha activado — la Carta Compromiso definitiva representa el Objective ACTIVADO.');
         }
 
-        $snapshot = $this->buildSnapshot($objective, $place, $position);
+        $snapshot = $this->buildSnapshot($objective, $place, $position, $overrides);
+        $missing = $this->missingFields($snapshot);
+        if ($missing !== []) {
+            throw new RuntimeException('Faltan datos indispensables para emitir la Carta Compromiso: ' . implode(', ', $missing) . '. Captúralos en la revisión antes de generar.');
+        }
 
         return DB::transaction(function () use ($objective, $user, $place, $snapshot) {
             $letter = OkrCommitmentLetter::query()->create([
