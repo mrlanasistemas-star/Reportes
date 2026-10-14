@@ -1,76 +1,38 @@
 <script setup lang="ts">
-import { Head, router } from '@inertiajs/vue3';
-import { Loader2, RotateCw, TrendingUp, XCircle } from 'lucide-vue-next';
+import { Head } from '@inertiajs/vue3';
+import {
+    Calculator,
+    CalendarDays,
+    CalendarRange,
+    Download,
+    FileImage,
+    FileText,
+    Loader2,
+    RotateCcw,
+    Sun,
+} from 'lucide-vue-next';
 import Swal from 'sweetalert2';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
-import DisponibilidadInformacion from '@/components/efectividad/DisponibilidadInformacion.vue';
-import EfectividadResults from '@/components/efectividad/EfectividadResults.vue';
-import {
-    csrfToken,
-    describeHttpFailure,
-    formatTime,
-    isActiveStatus,
-} from '@/components/efectividad/format';
-import RunDetailSheet from '@/components/efectividad/RunDetailSheet.vue';
-import RunHistoryTable from '@/components/efectividad/RunHistoryTable.vue';
-import RunStatusBadge from '@/components/efectividad/RunStatusBadge.vue';
-import RunStatusCard from '@/components/efectividad/RunStatusCard.vue';
+import ArchivosDropzone from '@/components/efectividad/calculadora/ArchivosDropzone.vue';
+import ResultadoEfectividad from '@/components/efectividad/calculadora/ResultadoEfectividad.vue';
+import ResumenFuentes from '@/components/efectividad/calculadora/ResumenFuentes.vue';
 import type {
-    Availability,
-    HistoryFilters,
-    RunDetail,
-    RunSummary,
-    StageInfo,
-} from '@/components/efectividad/types';
+    FilaEfectividad,
+    Modo,
+    Rechazado,
+    Resultado,
+    ResumenFuentes as Resumen,
+} from '@/components/efectividad/calculadora/types';
+import { mensajeError, xsrfHeaders } from '@/components/efectividad/calculadora/types';
 import { toast } from '@/components/feedback/Toast';
 import SelectField from '@/components/forms/SelectField.vue';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { useEfectividadRunPolling } from '@/composables/useEfectividadRunPolling';
-import {
-    generate as generateRoute,
-    index as efectividadIndex,
-} from '@/routes/efectividad-cobranza';
-import { cancel as cancelRoute } from '@/routes/efectividad-cobranza/runs';
-
-type Mode = 'SEMANAL' | 'DIARIO';
+import { index as efectividadIndex } from '@/routes/efectividad-cobranza';
 
 const props = defineProps<{
-    periods: Array<{
-        id: number;
-        label: string;
-        code: string;
-        type: string;
-        start_date: string | null;
-        end_date: string | null;
-    }>;
-    branches: Array<{ id: number; name: string }>;
-    selected: {
-        period_id: number | null;
-        branch_id: number | null;
-        mode: Mode;
-        cutoff_date: string | null;
-    };
-    engineVersion: string;
-    focusRun: RunDetail | null;
-    activeRuns: RunSummary[];
-    history: {
-        data: RunSummary[];
-        meta: {
-            current_page: number;
-            last_page: number;
-            total: number;
-            per_page: number;
-        };
-    };
-    filters: HistoryFilters;
-    canFilterByUser: boolean;
-    requesters: Array<{ id: number; name: string }>;
-    stageCatalog: StageInfo[];
-    stageCatalogPeriodica: StageInfo[];
-    openDetail?: boolean;
+    limites: { max_archivos: number; max_mb: number };
 }>();
 
 defineOptions({
@@ -81,740 +43,377 @@ defineOptions({
     },
 });
 
-function dm(ymd: string | null): string {
-    return ymd ? ymd.slice(5, 10).split('-').reverse().join('/') : '';
-}
+const BASE = '/efectividad-cobranza/calculadora';
 
-// Dos motores, dos flujos — nunca mezclados en un solo selector plano.
-//   - 'periodica': tu operación real cada 4 semanas (Saldos por Cliente +
-//     Ingresos Cobranza, lo que ya subes por Histórico General). Sin fotos.
-//   - 'v4': una semana operativa (lunes-domingo) reconstruida con 8
-//     fotografías diarias de cartera ("cortes" exportados de Lendus).
-type EngineMode = 'periodica' | 'v4';
-
-const ENGINE_MODE_INFO: Record<
-    EngineMode,
-    { label: string; tagline: string; needs: string[] }
-> = {
-    periodica: {
-        label: 'Automático',
-        tagline: 'Con lo que ya subes cada 4 semanas',
-        needs: [
-            'Saldos por Cliente (un corte, al cierre del periodo)',
-            'Ingresos Cobranza (histórico completo)',
-            'Ambos ya cargados por Histórico General — nada nuevo que subir aquí',
-        ],
-    },
-    v4: {
-        label: 'Cortes según Excel',
-        tagline: 'Con 8 fotografías diarias de cartera',
-        needs: [
-            'Saldos por Cliente exportado cada día, domingo a domingo (8 archivos)',
-            'Ingresos Cobranza de la misma semana',
-            'Se cargan en «Disponibilidad de información», más abajo',
-        ],
-    },
-};
-
-const initialPeriodType = computed(
-    () =>
-        props.periods.find((p) => p.id === props.selected.period_id)?.type ??
-        null,
-);
-const engineMode = ref<EngineMode>(
-    initialPeriodType.value === 'weekly' ? 'v4' : 'periodica',
-);
-
-const periodOptions = computed(() =>
-    props.periods
-        .filter((p) =>
-            engineMode.value === 'v4'
-                ? p.type === 'weekly'
-                : p.type !== 'weekly',
-        )
-        .map((p) => ({
-            value: p.id,
-            label: `${p.label} (${dm(p.start_date)} – ${dm(p.end_date)})`,
-        })),
-);
-const branchOptions = computed(() => [
-    { value: '', label: 'Todas las sucursales (general)' },
-    ...props.branches.map((b) => ({ value: b.id, label: b.name })),
-]);
-const modeOptions = [
-    { value: 'SEMANAL', label: 'Semanal (lunes a domingo)' },
-    { value: 'DIARIO', label: 'Diario (un día de la semana)' },
+const MODOS: Array<{ valor: Modo; titulo: string; texto: string; icono: typeof Sun }> = [
+    { valor: 'DIARIO', titulo: 'Diario', texto: 'Cobranza de un solo día. Usa las carteras desde el domingo anterior hasta ese día.', icono: Sun },
+    { valor: 'SEMANAL', titulo: 'Semanal', texto: 'Lunes a domingo, igual que la macro. Requiere las 8 carteras (domingo base a domingo de corte).', icono: CalendarDays },
+    { valor: 'MENSUAL', titulo: 'Mensual', texto: 'Suma las semanas completas del mes. Los saldos de atraso/vencido son los del último corte.', icono: CalendarRange },
 ];
 
-const selectedPeriodId = ref<number | string>(props.selected.period_id ?? '');
-const selectedBranchId = ref<number | string>(props.selected.branch_id ?? '');
-const selectedMode = ref<string | number>(props.selected.mode ?? 'SEMANAL');
-const selectedCutoff = ref<string | number>(props.selected.cutoff_date ?? '');
-const availability = ref<Availability | null>(null);
+const modo = ref<Modo>('SEMANAL');
+const token = ref<string | null>(null);
+const resumen = ref<Resumen | null>(null);
+const rechazados = ref<Rechazado[]>([]);
+const subiendo = ref(false);
+const progreso = ref<{ actual: number; total: number; nombre: string } | null>(null);
+const corte = ref<string | null>(null);
+const calculando = ref(false);
+const resultado = ref<Resultado | null>(null);
+const filas = ref<FilaEfectividad[]>([]);
+const oficina = ref<string>('');
+const promotor = ref<string>('');
+const exportando = ref<'pdf' | 'png' | null>(null);
 
-const selectedPeriod = computed(
-    () =>
-        props.periods.find((p) => p.id === Number(selectedPeriodId.value)) ??
-        null,
-);
-const isWeeklySelected = computed(
-    () => selectedPeriod.value?.type === 'weekly',
-);
+const ocupado = computed(() => subiendo.value || calculando.value || exportando.value !== null);
+const hayArchivos = computed(() => !!resumen.value && resumen.value.carteras.length + resumen.value.ingresos.length > 0);
+const opcionesCorte = computed(() => resumen.value?.cortes[modo.value] ?? []);
+const opcionesOficina = computed(() => [
+    { value: '', label: 'Todas las oficinas' },
+    ...(resultado.value?.catalogo ?? []).map((o) => ({ value: o.oficina, label: o.oficina })),
+]);
+const opcionesPromotor = computed(() => {
+    const catalogo = resultado.value?.catalogo ?? [];
+    const lista = oficina.value ? catalogo.filter((o) => o.oficina === oficina.value) : catalogo;
 
-function selectEngineMode(mode: EngineMode) {
-    if (engineMode.value === mode) {
-        return;
-    }
-
-    engineMode.value = mode;
-
-    // El periodo seleccionado solo sigue siendo válido si coincide con el
-    // nuevo modo — si no, se limpia en vez de dejar una combinación imposible.
-    if (selectedPeriod.value && isWeeklySelected.value !== (mode === 'v4')) {
-        selectedPeriodId.value = '';
-    }
-}
-
-/** Días lunes-domingo de la semana seleccionada (fecha de corte en modo DIARIO). */
-const cutoffOptions = computed(() => {
-    const p = selectedPeriod.value;
-
-    if (!p || p.type !== 'weekly' || !p.start_date) {
-        return [];
-    }
-
-    const dias = [
-        'Lunes',
-        'Martes',
-        'Miércoles',
-        'Jueves',
-        'Viernes',
-        'Sábado',
-        'Domingo',
+    return [
+        { value: '', label: 'Todos los promotores' },
+        ...lista.flatMap((o) => o.promotores.map((p) => ({ value: p, label: oficina.value ? p : `${p} · ${o.oficina}` }))),
     ];
-    const base = new Date(`${p.start_date.slice(0, 10)}T00:00:00Z`).getTime();
+});
+const faltante = computed(() => {
+    if (!resumen.value) {
+        return 'Carga tus archivos de cartera e ingresos.';
+    }
 
-    return dias.map((dia, i) => {
-        const ymd = new Date(base + i * 86400000).toISOString().slice(0, 10);
+    if (!resumen.value.ingresos.length) {
+        return 'Falta el archivo de Ingresos Cobranza.';
+    }
 
-        return {
-            value: ymd,
-            label: `${dia} ${ymd.split('-').reverse().join('/')}`,
-        };
-    });
+    if (!opcionesCorte.value.length) {
+        return modo.value === 'DIARIO'
+            ? 'Para un corte diario necesitas las carteras desde el domingo anterior hasta el día elegido.'
+            : modo.value === 'SEMANAL'
+              ? 'Para un corte semanal necesitas las 8 carteras: domingo base, lunes a sábado y domingo de corte.'
+              : 'Para el mensual necesitas al menos una semana completa (8 carteras) dentro del mes.';
+    }
+
+    return null;
 });
 
-const cutoffForAvailability = computed(() =>
-    selectedMode.value === 'DIARIO' && selectedCutoff.value
-        ? String(selectedCutoff.value)
-        : null,
-);
-
-// La ejecución enfocada SIEMPRE llega del servidor (BD): al volver al módulo,
-// recargar o abrir el enlace del correo, se restaura sin depender del navegador.
-const focus = ref<RunDetail | RunSummary | null>(props.focusRun);
-const submitting = ref(false);
-const errorMessage = ref<string | null>(null);
-
-const detailOpen = ref(false);
-const detailRunId = ref<number | null>(null);
-
-watch(
-    () => props.focusRun,
-    (value) => {
-        focus.value = value;
-        trackFocus();
-    },
-);
-
-watch(
-    () => props.selected,
-    (value) => {
-        selectedPeriodId.value = value.period_id ?? '';
-        selectedBranchId.value = value.branch_id ?? '';
-        selectedMode.value = value.mode ?? 'SEMANAL';
-        selectedCutoff.value = value.cutoff_date ?? '';
-    },
-);
-
-const polling = useEfectividadRunPolling({
-    onUpdate: (detail) => {
-        if (focus.value?.id === detail.id) {
-            focus.value = detail;
-        }
-    },
-    onFinished: (detail) => {
-        const messages = {
-            success: {
-                icon: 'success',
-                title: 'Tu reporte de Efectividad de Cobranza está listo.',
-            },
-            blocked: {
-                icon: 'warning',
-                title: 'No se pudo generar el reporte porque faltan datos obligatorios.',
-            },
-            failed: {
-                icon: 'error',
-                title: 'Se produjo un error durante la generación.',
-            },
-            cancelled: {
-                icon: 'info',
-                title: 'La generación fue cancelada.',
-            },
-        } as const;
-        const msg = messages[detail.status as keyof typeof messages];
-
-        if (msg) {
-            void toast.fire({ icon: msg.icon, title: msg.title });
-        }
-
-        router.reload({
-            only: ['history', 'activeRuns', 'backgroundActivity'],
-        });
-    },
-});
-
-function trackFocus() {
-    if (focus.value && isActiveStatus(focus.value.status)) {
-        polling.start(focus.value.id);
-    } else {
-        polling.stop();
-    }
-}
-
-// Otras ejecuciones activas del usuario (distintas a la enfocada) se refrescan
-// desde la BD con una recarga parcial ligera mientras existan.
-const otherActiveRuns = computed(() =>
-    props.activeRuns.filter((r) => r.id !== focus.value?.id),
-);
-let othersTimer: ReturnType<typeof setInterval> | null = null;
-watch(
-    () => otherActiveRuns.value.length,
-    (count) => {
-        if (count > 0 && !othersTimer) {
-            othersTimer = setInterval(() => {
-                if (document.visibilityState === 'visible') {
-                    router.reload({
-                        only: ['activeRuns', 'history', 'backgroundActivity'],
-                    });
-                }
-            }, 10000);
-        } else if (count === 0 && othersTimer) {
-            clearInterval(othersTimer);
-            othersTimer = null;
-        }
-    },
-    { immediate: true },
-);
-
-onMounted(() => {
-    trackFocus();
-
-    if (props.openDetail && props.focusRun) {
-        openDetails(props.focusRun.id);
+watch(opcionesCorte, (ops) => {
+    if (!ops.some((o) => o.valor === corte.value)) {
+        corte.value = ops[0]?.valor ?? null;
     }
 });
-
-onBeforeUnmount(() => {
-    if (othersTimer) {
-        clearInterval(othersTimer);
-    }
+watch(oficina, () => {
+    promotor.value = '';
 });
+watch([oficina, promotor], () => void cargarVista());
 
-function reloadForSelection() {
-    errorMessage.value = null;
-
-    if (!isWeeklySelected.value) {
-        selectedMode.value = 'SEMANAL';
-    }
-
-    if (
-        selectedCutoff.value &&
-        !cutoffOptions.value.some((o) => o.value === selectedCutoff.value)
-    ) {
-        selectedCutoff.value = '';
-    }
-
-    router.get(
-        efectividadIndex().url,
-        {
-            period_id: selectedPeriodId.value || undefined,
-            branch_id: selectedBranchId.value || undefined,
-        },
-        { preserveState: true, preserveScroll: true },
-    );
-}
-
-function openDetails(runId: number) {
-    detailRunId.value = runId;
-    detailOpen.value = true;
-}
-
-function followRun(run: RunSummary) {
-    router.get(
-        efectividadIndex().url,
-        { period_id: run.period_id, branch_id: run.branch_id ?? undefined },
-        { preserveScroll: true },
-    );
-}
-
-async function generar(confirmPartial = false) {
-    if (!selectedPeriodId.value || submitting.value) {
-        return;
-    }
-
-    if (selectedMode.value === 'DIARIO' && !selectedCutoff.value) {
-        errorMessage.value = 'En modo diario selecciona la fecha de corte.';
-
-        return;
-    }
-
-    submitting.value = true;
-    errorMessage.value = null;
-    let res: Response | null = null;
+async function subir(archivos: File[]) {
+    const excel = archivos.filter((f) => /\.xls[xm]$/i.test(f.name));
+    const ignorados: Rechazado[] = archivos
+        .filter((f) => !excel.includes(f))
+        .map((f) => ({ nombre: f.name, error: 'No es un archivo de Excel (.xlsx).' }));
+    rechazados.value = ignorados;
+    subiendo.value = true;
+    resultado.value = null;
 
     try {
-        res = await fetch(generateRoute().url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': csrfToken(),
-            },
-            body: JSON.stringify({
-                period_id: selectedPeriodId.value,
-                branch_id: selectedBranchId.value || null,
-                mode: selectedMode.value,
-                cutoff_date:
-                    selectedMode.value === 'DIARIO'
-                        ? selectedCutoff.value
-                        : null,
-                confirm_partial: confirmPartial,
-            }),
-        });
+        // Un archivo por petición: progreso real y sin chocar con el límite de tamaño del servidor.
+        for (const [i, archivo] of excel.entries()) {
+            progreso.value = { actual: i + 1, total: excel.length, nombre: archivo.name };
+            const fd = new FormData();
+            fd.append('archivos[]', archivo);
 
-        if (res.status === 409) {
-            const body = await res
-                .clone()
-                .json()
-                .catch(() => null);
-
-            if (body?.requires_confirmation) {
-                // Mismo control que la macro: confirmar que Ingresos trae la semana completa.
-                const answer = await Swal.fire({
-                    icon: 'warning',
-                    title: 'Confirma la semana de Ingresos',
-                    text: `${body.message} ¿Confirmas que el archivo cargado incluye la semana completa (o que no hubo movimientos)?`,
-                    showCancelButton: true,
-                    confirmButtonText: 'Sí, generar',
-                    cancelButtonText: 'No, revisar archivos',
-                });
-                submitting.value = false;
-
-                if (answer.isConfirmed) {
-                    await generar(true);
-                }
-
-                return;
+            if (token.value) {
+                fd.append('token', token.value);
             }
+
+            const res = await fetch(`${BASE}/archivos`, { method: 'POST', headers: xsrfHeaders(), body: fd });
+
+            if (!res.ok) {
+                const msg = await mensajeError(res);
+
+                if (res.status === 422 && msg.includes('expiró')) {
+                    token.value = null;
+                    resumen.value = null;
+                }
+
+                rechazados.value.push({ nombre: archivo.name, error: msg });
+                continue;
+            }
+
+            const body = (await res.json()) as { token: string; rechazados: Rechazado[]; resumen: Resumen };
+            token.value = body.token;
+            resumen.value = body.resumen;
+            rechazados.value.push(...body.rechazados);
         }
-
-        if (res.status === 422) {
-            const body = await res.json().catch(() => null);
-            errorMessage.value =
-                body?.error ??
-                body?.message ??
-                'Los parámetros de generación no son válidos.';
-
-            return;
-        }
-
-        if (!res.ok) {
-            // Incluye 503 (la cola no aceptó el trabajo): NUNCA se muestra la confirmación.
-            errorMessage.value = await describeHttpFailure(res, null);
-            router.reload({ only: ['history'] });
-
-            return;
-        }
-
-        const payload = (await res.json()) as {
-            run_id: number;
-            reused: boolean;
-            accepted: boolean;
-            run: RunSummary;
-        };
-
-        if (!payload.accepted) {
-            errorMessage.value =
-                'El servidor no confirmó la recepción del trabajo. Intenta de nuevo.';
-
-            return;
-        }
-
-        focus.value = payload.run;
-        trackFocus();
-
-        if (payload.reused) {
-            void toast.fire({
-                icon: 'info',
-                title: `Ya había una generación en curso para este periodo y sucursal. Te mostramos su avance (#${payload.run_id}).`,
-            });
-        }
-
-        router.reload({
-            only: ['history', 'activeRuns', 'backgroundActivity'],
-        });
-    } catch (error) {
-        errorMessage.value = await describeHttpFailure(res, error);
+    } catch {
+        rechazados.value.push({ nombre: '—', error: 'Se perdió la conexión con el servidor mientras se subían los archivos.' });
     } finally {
-        submitting.value = false;
+        subiendo.value = false;
+        progreso.value = null;
     }
 }
 
-const focusStageCatalog = computed(() =>
-    focus.value?.is_periodica_engine
-        ? props.stageCatalogPeriodica
-        : props.stageCatalog,
-);
-
-const focusIsActive = computed(
-    () => !!focus.value && isActiveStatus(focus.value.status),
-);
-
-const cancelling = ref(false);
-
-async function cancelarGeneracion() {
-    if (!focus.value || cancelling.value) {
+async function quitar(id: string) {
+    if (!token.value) {
         return;
     }
 
-    const runId = focus.value.id;
+    const res = await fetch(`${BASE}/${token.value}/archivos/${id}`, { method: 'DELETE', headers: xsrfHeaders() });
 
-    const answer = await Swal.fire({
-        icon: 'warning',
-        title: '¿Cancelar la generación?',
-        text: 'El sistema detendrá el proceso en cuanto alcance un punto seguro. Esto no se puede deshacer y tendrás que generar el reporte de nuevo si lo necesitas.',
-        showCancelButton: true,
-        confirmButtonText: 'Sí, cancelar generación',
-        cancelButtonText: 'Seguir esperando',
-        confirmButtonColor: '#dc2626',
-    });
+    if (!res.ok) {
+        void Swal.fire({ icon: 'error', title: 'No se pudo quitar', text: await mensajeError(res) });
 
-    if (!answer.isConfirmed) {
         return;
     }
 
-    cancelling.value = true;
+    resumen.value = ((await res.json()) as { resumen: Resumen }).resumen;
+    resultado.value = null;
+}
 
-    let res: Response | null = null;
+async function limpiar(confirmar = true) {
+    if (confirmar) {
+        const r = await Swal.fire({
+            icon: 'question',
+            title: '¿Limpiar archivos?',
+            text: 'Se eliminarán del servidor los archivos cargados y el resultado. Para otro cálculo vuelve a subirlos.',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, limpiar',
+            cancelButtonText: 'Cancelar',
+        });
+
+        if (!r.isConfirmed) {
+            return;
+        }
+    }
+
+    if (token.value) {
+        await fetch(`${BASE}/${token.value}/limpiar`, { method: 'POST', headers: xsrfHeaders(), keepalive: true }).catch(() => undefined);
+    }
+
+    token.value = null;
+    resumen.value = null;
+    resultado.value = null;
+    rechazados.value = [];
+}
+
+async function calcular() {
+    if (!token.value || !corte.value) {
+        return;
+    }
+
+    calculando.value = true;
 
     try {
-        res = await fetch(cancelRoute(runId).url, {
+        const res = await fetch(`${BASE}/${token.value}/calcular`, {
             method: 'POST',
-            headers: {
-                Accept: 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': csrfToken(),
-            },
+            headers: { ...xsrfHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modo: modo.value, valor: corte.value }),
         });
 
         if (!res.ok) {
-            void toast.fire({
-                icon: 'error',
-                title: await describeHttpFailure(res, null),
-            });
+            void Swal.fire({ icon: 'warning', title: 'No se pudo calcular', text: await mensajeError(res) });
 
             return;
         }
 
-        const payload = (await res.json()) as {
-            run: RunSummary;
-            message: string;
-        };
-
-        if (focus.value?.id === runId) {
-            focus.value = { ...focus.value, ...payload.run };
-        }
-
-        void toast.fire({ icon: 'info', title: payload.message });
-        router.reload({ only: ['history', 'activeRuns', 'backgroundActivity'] });
-    } catch (error) {
-        void toast.fire({
-            icon: 'error',
-            title: await describeHttpFailure(res, error),
-        });
+        resultado.value = ((await res.json()) as { resultado: Resultado }).resultado;
+        filas.value = resultado.value.filas;
+        oficina.value = '';
+        promotor.value = '';
+        toast.fire({ icon: 'success', title: 'Efectividad calculada' });
+    } catch {
+        void Swal.fire({ icon: 'error', title: 'Sin conexión', text: 'No se pudo contactar al servidor.' });
     } finally {
-        cancelling.value = false;
+        calculando.value = false;
     }
 }
-const focusDetail = computed(() =>
-    focus.value && 'rows' in focus.value ? focus.value : null,
-);
-const showResults = computed(
-    () =>
-        focusDetail.value?.status === 'success' &&
-        focusDetail.value.rows.length > 0,
-);
-const sourcesBlocked = computed(
-    () =>
-        !!availability.value &&
-        availability.value.supported &&
-        availability.value.bloqueante,
-);
+
+function filtrosQuery(): string {
+    const q = new URLSearchParams();
+
+    if (oficina.value) {
+        q.set('oficina', oficina.value);
+    }
+
+    if (promotor.value) {
+        q.set('promotor', promotor.value);
+    }
+
+    return q.toString();
+}
+
+async function cargarVista() {
+    if (!token.value || !resultado.value) {
+        return;
+    }
+
+    if (!oficina.value && !promotor.value) {
+        filas.value = resultado.value.filas;
+
+        return;
+    }
+
+    const res = await fetch(`${BASE}/${token.value}/vista?${filtrosQuery()}`, { headers: xsrfHeaders() });
+
+    if (res.ok) {
+        filas.value = ((await res.json()) as { filas: FilaEfectividad[] }).filas;
+    }
+}
+
+async function exportar(formato: 'pdf' | 'png') {
+    if (!token.value) {
+        return;
+    }
+
+    exportando.value = formato;
+
+    try {
+        const res = await fetch(`${BASE}/${token.value}/exportar/${formato}?${filtrosQuery()}`, { headers: xsrfHeaders() });
+
+        if (!res.ok) {
+            void Swal.fire({ icon: 'error', title: 'No se pudo generar el archivo', text: await mensajeError(res) });
+
+            return;
+        }
+
+        const nombre = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? `Efectividad.${formato}`;
+        const url = URL.createObjectURL(await res.blob());
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nombre;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } finally {
+        exportando.value = null;
+    }
+}
+
+// Abandono de la página: se borran los temporales del servidor (el TTL cubre cierres bruscos).
+function alSalir() {
+    if (token.value) {
+        void fetch(`${BASE}/${token.value}/limpiar`, { method: 'POST', headers: xsrfHeaders(), keepalive: true }).catch(() => undefined);
+    }
+}
+
+onMounted(() => window.addEventListener('pagehide', alSalir));
+onBeforeUnmount(() => {
+    window.removeEventListener('pagehide', alSalir);
+    alSalir();
+});
 </script>
 
 <template>
     <Head title="Efectividad de Cobranza" />
 
-    <div class="flex flex-col gap-5 p-4 md:p-6">
-        <!-- Encabezado -->
-        <header class="flex items-start gap-3">
-            <div
-                class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"
-            >
-                <TrendingUp class="size-5" aria-hidden="true" />
-            </div>
-            <div class="min-w-0">
-                <h1 class="text-2xl font-bold tracking-tight">
-                    Efectividad de Cobranza
-                </h1>
-                <p class="text-sm text-muted-foreground">
-                    Analiza la recuperación de cartera por oficina y promotor,
-                    consulta resultados y genera tu reporte.
-                </p>
-            </div>
+    <div class="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6">
+        <header>
+            <h1 class="text-2xl font-semibold tracking-tight">Efectividad de Cobranza</h1>
+            <p class="mt-1 text-sm text-muted-foreground">
+                Calcula la efectividad diaria, semanal o mensual utilizando tus archivos de cartera e ingresos de Lendus.
+                Los archivos no se guardan: se usan para este cálculo y se eliminan.
+            </p>
         </header>
 
-        <!-- Selector de modo: dos flujos distintos, nunca mezclados -->
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <button
-                v-for="mode in (['periodica', 'v4'] as const)"
-                :key="mode"
-                type="button"
-                class="rounded-xl border p-4 text-left transition"
-                :class="
-                    engineMode === mode
-                        ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
-                        : 'border-border bg-card hover:border-primary/40'
-                "
-                @click="selectEngineMode(mode)"
-            >
-                <div class="flex items-center justify-between gap-2">
-                    <p class="text-sm font-semibold">
-                        {{ ENGINE_MODE_INFO[mode].label }}
-                    </p>
-                    <span
-                        v-if="engineMode === mode"
-                        class="rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground"
-                        >Seleccionado</span
+        <!-- 1. Modalidad -->
+        <Card>
+            <CardContent class="space-y-3 p-5">
+                <h2 class="font-semibold"><span class="text-primary">1.</span> Modalidad</h2>
+                <div class="grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Modalidad">
+                    <button
+                        v-for="m in MODOS"
+                        :key="m.valor"
+                        type="button"
+                        role="radio"
+                        :aria-checked="modo === m.valor"
+                        class="flex gap-3 rounded-xl border p-4 text-left transition-colors focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
+                        :class="modo === m.valor ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-muted/40'"
+                        @click="modo = m.valor"
                     >
+                        <component :is="m.icono" class="mt-0.5 size-5 shrink-0" :class="modo === m.valor ? 'text-primary' : 'text-muted-foreground'" />
+                        <span>
+                            <span class="block font-medium">{{ m.titulo }}</span>
+                            <span class="mt-0.5 block text-xs text-muted-foreground">{{ m.texto }}</span>
+                        </span>
+                    </button>
                 </div>
-                <p class="mt-0.5 text-xs text-muted-foreground">
-                    {{ ENGINE_MODE_INFO[mode].tagline }}
-                </p>
-                <ul class="mt-2.5 space-y-1 text-xs text-muted-foreground">
-                    <li
-                        v-for="need in ENGINE_MODE_INFO[mode].needs"
-                        :key="need"
-                        class="flex gap-1.5"
-                    >
-                        <span class="text-primary">·</span>
-                        <span>{{ need }}</span>
-                    </li>
-                </ul>
-            </button>
-        </div>
+            </CardContent>
+        </Card>
 
-        <!-- Filtros + Generar: el botón nunca sale de la tarjeta -->
-        <Card class="py-4">
-            <CardContent
-                class="grid grid-cols-1 items-end gap-3 px-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
-            >
-                <SelectField
-                    v-model="selectedPeriodId"
-                    :label="
-                        engineMode === 'v4' ? 'Semana operativa' : 'Periodo'
-                    "
-                    :options="periodOptions"
-                    :placeholder="
-                        periodOptions.length
-                            ? 'Selecciona un periodo'
-                            : 'No hay periodos de este tipo todavía'
-                    "
-                    @update:model-value="reloadForSelection"
+        <!-- 2-3. Archivos y resumen -->
+        <Card>
+            <CardContent class="space-y-4 p-5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <h2 class="font-semibold"><span class="text-primary">2.</span> Cargar archivos</h2>
+                    <Button v-if="hayArchivos" variant="outline" size="sm" :disabled="ocupado" @click="limpiar()">
+                        <RotateCcw class="size-4" /> Limpiar archivos
+                    </Button>
+                </div>
+                <ArchivosDropzone :subiendo="subiendo" :progreso="progreso" :max-mb="props.limites.max_mb" @archivos="subir" />
+                <ResumenFuentes v-if="resumen && hayArchivos" :resumen="resumen" :rechazados="rechazados" :ocupado="ocupado" @quitar="quitar" />
+                <ResumenFuentes
+                    v-else-if="rechazados.length"
+                    :resumen="{ carteras: [], ingresos: [], semana: null, cortes: { DIARIO: [], SEMANAL: [], MENSUAL: [] }, expira_minutos: 0 }"
+                    :rechazados="rechazados"
+                    :ocupado="ocupado"
                 />
-                <SelectField
-                    v-model="selectedBranchId"
-                    label="Sucursal"
-                    :options="branchOptions"
-                    placeholder="Todas (general)"
-                    @update:model-value="reloadForSelection"
-                />
-                <template v-if="isWeeklySelected">
-                    <SelectField
-                        v-model="selectedMode"
-                        label="Modo"
-                        :options="modeOptions"
-                    />
-                    <SelectField
-                        v-model="selectedCutoff"
-                        label="Fecha de corte"
-                        :options="
-                            selectedMode === 'DIARIO'
-                                ? cutoffOptions
-                                : [
-                                      {
-                                          value: '',
-                                          label: 'Domingo de la semana',
-                                      },
-                                  ]
-                        "
-                        placeholder="Selecciona el día"
-                        :disabled="selectedMode !== 'DIARIO'"
-                    />
-                </template>
-                <Button
-                    class="w-full sm:col-span-2 xl:col-span-1 xl:w-auto"
-                    :disabled="!selectedPeriodId || submitting || focusIsActive"
-                    @click="generar()"
-                >
-                    <Loader2 v-if="submitting" class="animate-spin" />
-                    <TrendingUp v-else />
-                    {{
-                        focusIsActive
-                            ? 'Generación en curso'
-                            : 'Generar reporte'
-                    }}
-                </Button>
-                <p
-                    v-if="isWeeklySelected && sourcesBlocked"
-                    class="text-xs text-amber-700 sm:col-span-2 xl:col-span-5 dark:text-amber-300"
-                >
-                    Faltan fuentes indispensables (ver «Disponibilidad de
-                    información»). Si generas ahora, el reporte quedará
-                    bloqueado con el detalle de lo que falta; nunca se calcula
-                    con fotografías incompletas.
-                </p>
-                <p
-                    v-else-if="selectedPeriodId && !isWeeklySelected"
-                    class="text-xs text-muted-foreground sm:col-span-2 xl:col-span-3"
-                >
-                    Periodo de 4 semanas: se calcula con la metodología
-                    Aprobada, usando el Saldos por Cliente y los Ingresos
-                    Cobranza que ya subiste por Histórico General — sin
-                    fotografías diarias.
-                </p>
             </CardContent>
         </Card>
 
-        <Alert v-if="errorMessage" variant="destructive">
-            <XCircle />
-            <AlertTitle>No se pudo iniciar la generación</AlertTitle>
-            <AlertDescription
-                class="flex flex-wrap items-center justify-between gap-3"
-            >
-                <span>{{ errorMessage }}</span>
-                <Button variant="outline" size="sm" @click="generar()">
-                    <RotateCw />
-                    Reintentar
-                </Button>
-            </AlertDescription>
-        </Alert>
+        <!-- 4-5. Corte y cálculo -->
+        <Card>
+            <CardContent class="space-y-4 p-5">
+                <h2 class="font-semibold"><span class="text-primary">3.</span> Calcular</h2>
+                <div class="flex flex-col gap-3 md:flex-row md:items-end">
+                    <div class="md:w-80">
+                        <SelectField
+                            v-model="corte"
+                            :label="modo === 'MENSUAL' ? 'Mes' : modo === 'SEMANAL' ? 'Semana' : 'Día de corte'"
+                            :options="opcionesCorte.map((o) => ({ value: o.valor, label: o.ingresos_ok ? o.etiqueta : `${o.etiqueta} (ingresos incompletos)` }))"
+                            :placeholder="opcionesCorte.length ? 'Selecciona…' : 'Sin cortes disponibles'"
+                            :disabled="!opcionesCorte.length || ocupado"
+                        />
+                    </div>
+                    <Button size="lg" :disabled="!!faltante || !corte || ocupado" @click="calcular">
+                        <Loader2 v-if="calculando" class="size-4 animate-spin" />
+                        <Calculator v-else class="size-4" />
+                        {{ calculando ? 'Calculando…' : 'Calcular efectividad' }}
+                    </Button>
+                </div>
+                <p v-if="faltante" class="text-sm text-muted-foreground">{{ faltante }}</p>
+            </CardContent>
+        </Card>
 
-        <DisponibilidadInformacion
-            v-if="isWeeklySelected"
-            :period-id="selectedPeriodId || null"
-            :branch-id="selectedBranchId || null"
-            :mode="selectedMode === 'DIARIO' ? 'DIARIO' : 'SEMANAL'"
-            :cutoff-date="cutoffForAvailability"
-            @update="availability = $event"
-        />
-
-        <!-- Otras ejecuciones activas del usuario (restauradas desde la BD) -->
-        <Card v-if="otherActiveRuns.length" class="gap-2 py-3">
-            <CardContent class="space-y-2 px-4">
-                <p
-                    class="text-xs font-medium tracking-wide text-muted-foreground uppercase"
-                >
-                    Otras generaciones en segundo plano
+        <!-- 6-7. Resultados y exportación -->
+        <Card v-if="resultado">
+            <CardContent class="space-y-5 p-5">
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div class="grid gap-3 sm:grid-cols-2 lg:w-[36rem]">
+                        <SelectField v-model="oficina" label="Oficina" :options="opcionesOficina" :disabled="ocupado" />
+                        <SelectField v-model="promotor" label="Promotor" :options="opcionesPromotor" :disabled="ocupado" />
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <Button variant="outline" :disabled="ocupado" @click="exportar('png')">
+                            <Loader2 v-if="exportando === 'png'" class="size-4 animate-spin" />
+                            <FileImage v-else class="size-4" />
+                            Descargar imagen PNG
+                        </Button>
+                        <Button :disabled="ocupado" @click="exportar('pdf')">
+                            <Loader2 v-if="exportando === 'pdf'" class="size-4 animate-spin" />
+                            <FileText v-else class="size-4" />
+                            Descargar PDF
+                        </Button>
+                    </div>
+                </div>
+                <ResultadoEfectividad :resultado="resultado" :filas="filas" />
+                <p class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Download class="size-3.5" /> PNG y PDF usan exactamente este mismo resultado. Generado {{ resultado.generado }}.
                 </p>
-                <ul class="divide-y">
-                    <li
-                        v-for="run in otherActiveRuns"
-                        :key="run.id"
-                        class="flex flex-wrap items-center justify-between gap-2 py-2 text-sm"
-                    >
-                        <div class="min-w-0">
-                            <p class="truncate font-medium">
-                                #{{ run.id }} · {{ run.period_label }} ·
-                                {{ run.branch_label }}
-                            </p>
-                            <p class="text-xs text-muted-foreground">
-                                Solicitado {{ formatTime(run.queued_at) }}
-                                <template v-if="run.current_stage">
-                                    · Paso {{ run.current_stage.position }}/{{
-                                        run.stage_count
-                                    }}
-                                    {{ run.current_stage.label }}</template
-                                >
-                            </p>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <RunStatusBadge
-                                :state="run.display_state"
-                                :label="run.display_label"
-                            />
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                @click="followRun(run)"
-                                >Seguir</Button
-                            >
-                        </div>
-                    </li>
-                </ul>
             </CardContent>
         </Card>
-
-        <!-- Estado de la generación enfocada -->
-        <RunStatusCard
-            v-if="focus"
-            :run="focus"
-            :catalog="focusStageCatalog"
-            :refreshing="polling.refreshing.value"
-            @details="openDetails(focus.id)"
-            @refresh="polling.refreshNow(focus.id)"
-            @retry="generar()"
-            @cancel="cancelarGeneracion()"
-        />
-        <Card v-else-if="selectedPeriodId" class="border-dashed py-6">
-            <CardContent class="px-4 text-center text-sm text-muted-foreground">
-                No hay reportes generados para este periodo y sucursal. Presiona
-                <strong>Generar reporte</strong> para crear uno.
-            </CardContent>
-        </Card>
-
-        <EfectividadResults
-            v-if="showResults && focusDetail"
-            :run="focusDetail"
-        />
-
-        <RunHistoryTable
-            :history="history"
-            :filters="filters"
-            :periods="periods"
-            :branches="branches"
-            :requesters="requesters"
-            :can-filter-by-user="canFilterByUser"
-            :selected="selected"
-            @view="openDetails"
-        />
-
-        <RunDetailSheet
-            v-model:open="detailOpen"
-            :run-id="detailRunId"
-            :seed="focusDetail"
-        />
     </div>
 </template>

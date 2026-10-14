@@ -2,7 +2,6 @@
 
 namespace App\Http\Middleware;
 
-use App\Models\EfectividadCobranzaRun;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 use Symfony\Component\HttpFoundation\Response;
@@ -66,9 +65,8 @@ class HandleInertiaRequests extends Middleware
 
         try {
             return [
-                'active_count' => $user->hasManagerialAccess()
-                    ? EfectividadCobranzaRun::query()->requestedBy($user->id)->active()->count()
-                    : 0,
+                // La calculadora de Efectividad ya no deja trabajos persistentes en segundo plano.
+                'active_count' => 0,
                 'unread_count' => $user->unreadNotifications()->count(),
             ];
         } catch (\Throwable) {
