@@ -141,7 +141,7 @@ class EfectividadExcelReader
             return [
                 'tipo' => $tipo, 'fecha' => $fecha, 'desde' => $fecha, 'hasta' => $fecha,
                 'columnas' => $columnas, 'filas' => $filas,
-                'resumen' => ['registros' => count($filas), 'contratos' => count($contratos), 'oficinas' => count($oficinas), 'columnas_archivo' => $totalColumnas],
+                'resumen' => ['registros' => count($filas), 'contratos' => count($contratos), 'oficinas' => count($oficinas), 'rutas' => array_keys($oficinas), 'columnas_archivo' => $totalColumnas],
             ];
         }
 
@@ -175,7 +175,7 @@ class EfectividadExcelReader
         return [
             'tipo' => $tipo, 'fecha' => null, 'desde' => $desde, 'hasta' => $hasta,
             'columnas' => $columnas, 'filas' => $filas,
-            'resumen' => ['registros' => count($filas), 'contratos' => count($contratos), 'oficinas' => count($oficinas), 'columnas_archivo' => $totalColumnas],
+            'resumen' => ['registros' => count($filas), 'contratos' => count($contratos), 'oficinas' => count($oficinas), 'rutas' => array_keys($oficinas), 'columnas_archivo' => $totalColumnas],
         ];
     }
 

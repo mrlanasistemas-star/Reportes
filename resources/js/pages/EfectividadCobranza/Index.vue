@@ -93,7 +93,8 @@ const corte = ref<string | null>(null);
 const calculando = ref(false);
 const resultado = ref<Resultado | null>(null);
 const filas = ref<FilaEfectividad[]>([]);
-const oficina = ref<string>('');
+const sucursal = ref<string>('');
+const oficina = ref<string>(''); // RUTA de Lendus
 const promotor = ref<string>('');
 const exportando = ref<'pdf' | 'png' | null>(null);
 
@@ -106,25 +107,34 @@ const hayArchivos = computed(
         resumen.value.carteras.length + resumen.value.ingresos.length > 0,
 );
 const opcionesCorte = computed(() => resumen.value?.cortes[modo.value] ?? []);
-const opcionesOficina = computed(() => [
-    { value: '', label: 'Todas las oficinas' },
-    ...(resultado.value?.catalogo ?? []).map((o) => ({
-        value: o.oficina,
-        label: o.oficina,
+// Filtros en cascada: Sucursal → Ruta → Promotor (una ruta pertenece a una sucursal).
+const opcionesSucursal = computed(() => [
+    { value: '', label: 'Todas las sucursales' },
+    ...(resultado.value?.catalogo ?? []).map((s) => ({
+        value: s.sucursal,
+        label: s.sucursal,
     })),
 ]);
+const rutasVisibles = computed(() =>
+    (resultado.value?.catalogo ?? [])
+        .filter((s) => !sucursal.value || s.sucursal === sucursal.value)
+        .flatMap((s) => s.rutas),
+);
+const opcionesOficina = computed(() => [
+    { value: '', label: 'Todas las rutas' },
+    ...rutasVisibles.value.map((r) => ({ value: r.ruta, label: r.ruta })),
+]);
 const opcionesPromotor = computed(() => {
-    const catalogo = resultado.value?.catalogo ?? [];
     const lista = oficina.value
-        ? catalogo.filter((o) => o.oficina === oficina.value)
-        : catalogo;
+        ? rutasVisibles.value.filter((r) => r.ruta === oficina.value)
+        : rutasVisibles.value;
 
     return [
         { value: '', label: 'Todos los promotores' },
-        ...lista.flatMap((o) =>
-            o.promotores.map((p) => ({
+        ...lista.flatMap((r) =>
+            r.promotores.map((p) => ({
                 value: p,
-                label: oficina.value ? p : `${p} · ${o.oficina}`,
+                label: oficina.value ? p : `${p} · ${r.ruta}`,
             })),
         ),
     ];
@@ -154,10 +164,14 @@ watch(opcionesCorte, (ops) => {
         corte.value = ops[0]?.valor ?? null;
     }
 });
+watch(sucursal, () => {
+    oficina.value = '';
+    promotor.value = '';
+});
 watch(oficina, () => {
     promotor.value = '';
 });
-watch([oficina, promotor], () => void cargarVista());
+watch([sucursal, oficina, promotor], () => void cargarVista());
 
 async function subir(archivos: File[]) {
     const excel = archivos.filter((f) => /\.xls[xm]$/i.test(f.name));
@@ -306,6 +320,7 @@ async function calcular() {
             (await res.json()) as { resultado: Resultado }
         ).resultado;
         filas.value = resultado.value.filas;
+        sucursal.value = '';
         oficina.value = '';
         promotor.value = '';
         toast.fire({ icon: 'success', title: 'Efectividad calculada' });
@@ -323,6 +338,10 @@ async function calcular() {
 function filtrosQuery(): string {
     const q = new URLSearchParams();
 
+    if (sucursal.value) {
+        q.set('sucursal', sucursal.value);
+    }
+
     if (oficina.value) {
         q.set('oficina', oficina.value);
     }
@@ -339,7 +358,7 @@ async function cargarVista() {
         return;
     }
 
-    if (!oficina.value && !promotor.value) {
+    if (!sucursal.value && !oficina.value && !promotor.value) {
         filas.value = resultado.value.filas;
 
         return;
@@ -587,10 +606,16 @@ onBeforeUnmount(() => {
                 <div
                     class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between"
                 >
-                    <div class="grid gap-3 sm:grid-cols-2 lg:w-[36rem]">
+                    <div class="grid gap-3 sm:grid-cols-3 lg:w-[48rem]">
+                        <SelectField
+                            v-model="sucursal"
+                            label="Sucursal"
+                            :options="opcionesSucursal"
+                            :disabled="ocupado"
+                        />
                         <SelectField
                             v-model="oficina"
-                            label="Oficina"
+                            label="Ruta"
                             :options="opcionesOficina"
                             :disabled="ocupado"
                         />

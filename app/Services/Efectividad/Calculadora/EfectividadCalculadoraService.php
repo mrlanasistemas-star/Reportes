@@ -170,8 +170,23 @@ class EfectividadCalculadoraService
             'ingresos' => array_map($publico, $ingresos),
             'semana' => $semanaVista,
             'cortes' => ['DIARIO' => array_reverse($diario), 'ACUMULADO' => array_reverse($acumulado), 'SEMANAL' => array_reverse($semanal), 'MENSUAL' => array_reverse(array_values($mensual))],
+            'sucursales' => $this->sucursalesDetectadas($carteras),
             'expira_minutos' => EfectividadWorkspace::TTL_MINUTOS,
         ];
+    }
+
+    /** Sucursales y rutas presentes en las carteras cargadas (según el catálogo). */
+    private function sucursalesDetectadas(array $carteras): array
+    {
+        $out = [];
+        foreach ($carteras as $c) {
+            foreach ($c['resumen']['rutas'] ?? [] as $ruta) {
+                $out[$this->sucursalDe($ruta)][$ruta] = true;
+            }
+        }
+        ksort($out);
+
+        return array_map(fn ($s, $r) => ['sucursal' => $s, 'rutas' => array_keys($r), 'en_catalogo' => $s !== $this->sinSucursal()], array_keys($out), $out);
     }
 
     /**
@@ -224,6 +239,10 @@ class EfectividadCalculadoraService
             ],
         ];
         $resultado['catalogo'] = $this->catalogo($resultado['filas']);
+        $sinSucursal = collect($resultado['filas'])->where('tipo', 'promotor')->where('sucursal', $this->sinSucursal())->pluck('oficina')->unique()->values()->all();
+        if ($sinSucursal) {
+            $resultado['avisos'][] = 'Estas rutas no están en el catálogo de sucursales y se muestran en "'.$this->sinSucursal().'": '.implode(', ', $sinSucursal).'. Sus importes sí se calculan.';
+        }
         $this->workspace->escribir($token, 'resultado', $resultado);
 
         return $resultado;
@@ -240,16 +259,19 @@ class EfectividadCalculadoraService
         return $r;
     }
 
-    /** Aplica filtros de oficina/promotor recalculando subtotales y gran total desde importes. */
-    public function filtrar(array $resultado, ?string $oficina, ?string $promotor): array
+    /** Filtros Sucursal → Ruta → Promotor; subtotales y gran total se recalculan desde importes. */
+    public function filtrar(array $resultado, ?string $sucursal, ?string $oficina, ?string $promotor): array
     {
-        if (! $oficina && ! $promotor) {
+        if (! $sucursal && ! $oficina && ! $promotor) {
             return $resultado;
         }
         $n = fn ($v) => $this->calc->normalizar($v);
         $promotores = [];
         foreach ($resultado['filas'] as $f) {
             if ($f['tipo'] !== 'promotor') {
+                continue;
+            }
+            if ($sucursal && $n($f['sucursal'] ?? '') !== $n($sucursal)) {
                 continue;
             }
             if ($oficina && $n($f['oficina']) !== $n($oficina)) {
@@ -260,8 +282,8 @@ class EfectividadCalculadoraService
             }
             $promotores[] = $this->base($f);
         }
-        $resultado['filas'] = $this->calc->construirFilas($promotores);
-        $resultado['filtro'] = array_filter(['oficina' => $oficina, 'promotor' => $promotor]);
+        $resultado['filas'] = $this->calc->construirFilas($promotores, $this->sinSucursal());
+        $resultado['filtro'] = array_filter(['sucursal' => $sucursal, 'oficina' => $oficina, 'promotor' => $promotor]);
 
         return $resultado;
     }
@@ -297,7 +319,7 @@ class EfectividadCalculadoraService
                 default => 'CORTE SEMANAL: '.$this->dmy($p['semana_inicio']).' AL '.$this->dmy($p['semana_fin']),
             },
             'parametros' => $p,
-            'filas' => $r['filas'],
+            'filas' => $this->conSucursal($r['filas']),
             'incidencias' => $r['incidencias'],
             'estadisticas' => $r['estadisticas'],
             'sin_movimientos' => $r['sin_movimientos'],
@@ -334,7 +356,7 @@ class EfectividadCalculadoraService
                     continue;
                 }
                 $clave = $this->calc->normalizar($f['oficina']).'|'.$this->calc->normalizar($f['promotor']);
-                $acum[$clave] ??= ['oficina' => $f['oficina'], 'promotor' => $f['promotor'], 'sano_pc' => 0.0, 'sano_cob' => 0.0, 'atraso_pc' => 0.0, 'atraso_cob' => 0.0, 'vencido_pc' => 0.0, 'vencido_cob' => 0.0];
+                $acum[$clave] ??= ['oficina' => $f['oficina'], 'promotor' => $f['promotor'], 'sucursal' => $f['sucursal'] ?? $this->sucursalDe($f['oficina']), 'sano_pc' => 0.0, 'sano_cob' => 0.0, 'atraso_pc' => 0.0, 'atraso_cob' => 0.0, 'vencido_pc' => 0.0, 'vencido_cob' => 0.0];
                 foreach (['sano_pc', 'sano_cob', 'atraso_cob', 'vencido_cob'] as $c) {
                     $acum[$clave][$c] += $f[$c];
                 }
@@ -357,7 +379,7 @@ class EfectividadCalculadoraService
                 'inicio_ingresos' => $semanas[0]['desde'],
                 'fin_ingresos' => $semanas[$ultima]['corte'],
             ],
-            'filas' => $this->calc->construirFilas(array_values($acum)),
+            'filas' => $this->calc->construirFilas(array_values($acum), $this->sinSucursal()),
             'incidencias' => array_values($incidencias),
             'estadisticas' => [],
             'sin_movimientos' => ! $acum,
@@ -439,21 +461,71 @@ class EfectividadCalculadoraService
         throw new EfectividadArchivoException('Falta la cartera del '.$this->dmy($fecha).'.');
     }
 
+    /** Sucursal → rutas → promotores presentes en el resultado (para los selectores). */
     private function catalogo(array $filas): array
     {
         $out = [];
         foreach ($filas as $f) {
             if ($f['tipo'] === 'promotor') {
-                $out[$f['oficina']][] = $f['promotor'];
+                $out[$f['sucursal'] ?? $this->sinSucursal()][$f['oficina']][] = $f['promotor'];
             }
         }
 
-        return array_map(fn ($o, $p) => ['oficina' => $o, 'promotores' => $p], array_keys($out), $out);
+        return array_map(fn ($s, $rutas) => [
+            'sucursal' => $s,
+            'rutas' => array_map(fn ($r, $p) => ['ruta' => $r, 'promotores' => $p], array_keys($rutas), $rutas),
+        ], array_keys($out), $out);
+    }
+
+    /**
+     * Sucursal de una RUTA (columna "Oficina" de Lendus) según config/efectividad_rutas.php.
+     * Rutas fuera del catálogo → "SIN SUCURSAL ASIGNADA" (se calculan igual).
+     */
+    public function sucursalDe(?string $ruta): string
+    {
+        static $mapa = null;
+        if ($mapa === null) {
+            $mapa = [];
+            foreach (config('efectividad_rutas.sucursales', []) as $sucursal => $rutas) {
+                foreach ($rutas as $r) {
+                    $mapa[$this->calc->normalizar($r)] = $sucursal;
+                }
+            }
+        }
+
+        return $mapa[$this->calc->normalizar($ruta)] ?? $this->sinSucursal();
+    }
+
+    private function sinSucursal(): string
+    {
+        return (string) config('efectividad_rutas.sin_sucursal', 'SIN SUCURSAL ASIGNADA');
+    }
+
+    /**
+     * Agrega la sucursal a cada fila. Con una sola sucursal las filas quedan EXACTAMENTE
+     * como las produjo el motor (mismo orden y sumas que la hoja); con varias se
+     * reagrupan Sucursal → Ruta → Promotor con "TOTAL SUCURSAL …".
+     */
+    private function conSucursal(array $filas): array
+    {
+        $promotores = array_values(array_filter($filas, fn ($f) => $f['tipo'] === 'promotor'));
+        foreach ($promotores as &$p) {
+            $p['sucursal'] = $this->sucursalDe($p['oficina']);
+        }
+        unset($p);
+        $sucursales = array_values(array_unique(array_column($promotores, 'sucursal')));
+        if (count($sucursales) <= 1) {
+            $s = $sucursales[0] ?? null;
+
+            return array_map(fn ($f) => $f + ['sucursal' => $f['tipo'] === 'gran_total' ? null : $s], $filas);
+        }
+
+        return $this->calc->construirFilas(array_map(fn ($p) => $this->base($p), $promotores), $this->sinSucursal());
     }
 
     private function base(array $f): array
     {
-        return array_intersect_key($f, array_flip(['oficina', 'promotor', 'sano_pc', 'sano_cob', 'atraso_pc', 'atraso_cob', 'vencido_pc', 'vencido_cob']));
+        return array_intersect_key($f, array_flip(['oficina', 'promotor', 'sucursal', 'sano_pc', 'sano_cob', 'atraso_pc', 'atraso_cob', 'vencido_pc', 'vencido_cob']));
     }
 
     private function fotosCompletas(array $fechas, CarbonImmutable $desde, CarbonImmutable $hasta): bool

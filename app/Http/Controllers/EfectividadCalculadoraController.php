@@ -77,13 +77,14 @@ class EfectividadCalculadoraController extends Controller
     public function view(Request $request, string $token): JsonResponse
     {
         $filtros = $request->validate([
+            'sucursal' => ['nullable', 'string', 'max:150'],
             'oficina' => ['nullable', 'string', 'max:150'],
             'promotor' => ['nullable', 'string', 'max:150'],
         ]);
 
         return $this->responder(fn () => ['filas' => $this->service->filtrar(
             $this->service->resultado($token, $request->user()->id),
-            $filtros['oficina'] ?? null,
+            $filtros['sucursal'] ?? null, $filtros['oficina'] ?? null,
             $filtros['promotor'] ?? null,
         )['filas']]);
     }
@@ -91,6 +92,7 @@ class EfectividadCalculadoraController extends Controller
     public function export(Request $request, string $token, string $formato): BinaryFileResponse|JsonResponse
     {
         $filtros = $request->validate([
+            'sucursal' => ['nullable', 'string', 'max:150'],
             'oficina' => ['nullable', 'string', 'max:150'],
             'promotor' => ['nullable', 'string', 'max:150'],
         ]);
@@ -98,7 +100,7 @@ class EfectividadCalculadoraController extends Controller
         try {
             $r = $this->service->filtrar(
                 $this->service->resultado($token, $request->user()->id),
-                $filtros['oficina'] ?? null,
+                $filtros['sucursal'] ?? null, $filtros['oficina'] ?? null,
                 $filtros['promotor'] ?? null,
             );
             $base = 'Efectividad_'.Str::slug(($r['modo'] ?? '').'_'.($r['parametros']['fecha_corte'] ?? ''), '_');

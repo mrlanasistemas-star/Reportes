@@ -38,13 +38,21 @@ export type ResumenFuentes = {
         }>;
     } | null;
     cortes: Record<Modo, OpcionCorte[]>;
+    sucursales?: Array<{
+        sucursal: string;
+        rutas: string[];
+        en_catalogo: boolean;
+    }>;
     expira_minutos: number;
 };
 
 export type Rechazado = { nombre: string; error: string };
 
 export type FilaEfectividad = {
-    tipo: 'promotor' | 'subtotal' | 'gran_total';
+    tipo: 'promotor' | 'subtotal' | 'subtotal_sucursal' | 'gran_total';
+    /** Sucursal (catálogo de rutas); null en el GRAN TOTAL. */
+    sucursal?: string | null;
+    /** RUTA de Lendus (columna "Oficina" del Excel). */
     oficina: string | null;
     oficina_titulo: string | null;
     promotor: string;
@@ -94,7 +102,10 @@ export type Resultado = {
         corte: string;
         gran_total: FilaEfectividad | null;
     }>;
-    catalogo: Array<{ oficina: string; promotores: string[] }>;
+    catalogo: Array<{
+        sucursal: string;
+        rutas: Array<{ ruta: string; promotores: string[] }>;
+    }>;
 };
 
 export function xsrfHeaders(): Record<string, string> {
