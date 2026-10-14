@@ -142,10 +142,32 @@ it('Stocks de VIGENTE CON ATRASO y VENCIDO salen SOLO de la foto del corte (no s
     expect(v4Total(v4Calc([], [], [], $porFoto))['atraso_pc'])->toEqual(120.0);
 
     // Vencido: Total atrasado manda; si es 0, suma de saldos (con negativos); si no, Total pendiente.
-    $v1 = [v4Fila(['substatus' => 'VENCIDO', 'total_atrasado' => 0.0, 'saldo_capital' => 300.0, 'saldo_interes' => -20.0, 'total_pendiente' => 0.0])];
+    // (Se acompaña de un contrato sano en la misma ruta: V6 descarta rutas sin Sano por cobrar.)
+    $sano = v4Fila(['contrato' => 'C9']);
+    $v1 = [v4Fila(['substatus' => 'VENCIDO', 'total_atrasado' => 0.0, 'saldo_capital' => 300.0, 'saldo_interes' => -20.0, 'total_pendiente' => 0.0]), $sano];
     expect(v4Total(v4Calc($v1, []))['vencido_pc'])->toEqual(280.0);
-    $v2 = [v4Fila(['substatus' => 'VENCIDO', 'total_atrasado' => 0.0, 'saldo_capital' => 0.0, 'total_pendiente' => 75.5])];
+    $v2 = [v4Fila(['substatus' => 'VENCIDO', 'total_atrasado' => 0.0, 'saldo_capital' => 0.0, 'total_pendiente' => 75.5]), $sano];
     expect(v4Total(v4Calc($v2, []))['vencido_pc'])->toEqual(75.5);
+});
+
+it('V6: una ruta sin Sano por cobrar no figura ni suma su vencido/atraso al GRAN TOTAL', function () {
+    $filas = [
+        v4Fila(['contrato' => 'C1', 'oficina' => 'RUTA A']),
+        v4Fila(['contrato' => 'C2', 'oficina' => 'RUTA B', 'nombre_promotor' => 'VACANTE', 'substatus' => 'VENCIDO', 'total_atrasado' => 4000.0]),
+    ];
+    $r = v4Calc($filas, []);
+    expect(collect($r['filas'])->pluck('oficina')->filter()->unique()->values()->all())->toBe(['RUTA A'])
+        ->and(v4Total($r)['vencido_pc'])->toEqual(0.0)
+        ->and(v4Total($r)['sano_pc'])->toEqual(100.0);
+});
+
+it('V6 ACUMULADO: Sano por cobrar del lunes a la fecha de corte; DIARIO solo ese día', function () {
+    $diaria = [v4Fila(['periodicidad' => 'DIARIA', 'pagos' => 30.0])];
+    $acu = v4Calc($diaria, [], ['modo' => 'ACUMULADO', 'fecha_corte' => '2026-10-07']);
+    expect($acu['parametros']['inicio_ingresos'])->toBe('2026-10-05')
+        ->and($acu['parametros']['fin_ingresos'])->toBe('2026-10-07')
+        ->and(v4Total($acu)['sano_pc'])->toEqual(300.0)
+        ->and(v4Total(v4Calc($diaria, [], ['modo' => 'DIARIO', 'fecha_corte' => '2026-10-07']))['sano_pc'])->toEqual(100.0);
 });
 
 it('Contratos VENCIDOS, cerrados o inactivos no generan cuotas sanas', function () {

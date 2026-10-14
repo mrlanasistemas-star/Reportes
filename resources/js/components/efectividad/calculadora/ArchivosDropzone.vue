@@ -68,7 +68,9 @@ function soltar(e: DragEvent) {
                     {{ progreso.nombre }}
                 </p>
             </div>
-            <div class="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-muted">
+            <div
+                class="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-muted"
+            >
                 <div
                     class="h-full rounded-full bg-primary transition-all"
                     :style="{
@@ -78,19 +80,24 @@ function soltar(e: DragEvent) {
             </div>
         </template>
         <template v-else>
-            <div class="flex size-14 items-center justify-center rounded-full bg-primary/10">
+            <div
+                class="flex size-14 items-center justify-center rounded-full bg-primary/10"
+            >
                 <UploadCloud class="size-7 text-primary" />
             </div>
             <div>
                 <p class="font-medium">
                     Arrastra aquí tus archivos o
-                    <span class="text-primary underline underline-offset-4">selecciónalos</span>
+                    <span class="text-primary underline underline-offset-4"
+                        >selecciónalos</span
+                    >
                 </p>
                 <p class="mt-1 text-sm text-muted-foreground">
                     Puedes elegir todos a la vez: las carteras «Saldos por
                     Cliente», el «Ingresos Cobranza» de la semana y, si lo
                     tienes, el «Ingresos Cobranza» histórico (semanas
-                    anteriores). Las fechas se leen del contenido, no del nombre.
+                    anteriores). Las fechas se leen del contenido, no del
+                    nombre.
                 </p>
             </div>
             <p class="flex items-center gap-1.5 text-xs text-muted-foreground">
