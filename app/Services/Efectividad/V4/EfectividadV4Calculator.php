@@ -780,36 +780,53 @@ class EfectividadV4Calculator
      * calculadora para filtrar por oficina/promotor y para la agregación mensual: los
      * porcentajes se recalculan desde importes, nunca se suman.
      *
-     * @param  list<array{oficina:string, promotor:string, sano_pc:float, sano_cob:float, atraso_pc:float, atraso_cob:float, vencido_pc:float, vencido_cob:float}>  $promotores
+     * @param  list<array{oficina:string, promotor:string, sucursal?:string, sano_pc:float, sano_cob:float, atraso_pc:float, atraso_cob:float, vencido_pc:float, vencido_cob:float}>  $promotores
      * @return list<array<string,mixed>>
      */
-    public function construirFilas(array $promotores): array
+    public function construirFilas(array $promotores, ?string $ultimaSucursal = null): array
     {
-        usort($promotores, fn ($a, $b) => strcmp(
-            $this->normalizar($a['oficina']).'|'.$this->normalizar($a['promotor']),
-            $this->normalizar($b['oficina']).'|'.$this->normalizar($b['promotor']),
-        ));
+        // Sucursal (opcional): agrupa Sucursal → Ruta → Promotor con "TOTAL SUCURSAL …"
+        // solo cuando hay más de una; con una sola el orden y las sumas son las de la hoja.
+        $sucursales = array_unique(array_map(fn ($p) => $p['sucursal'] ?? '', $promotores));
+        $conSucursal = count($sucursales) > 1;
+        $orden = fn ($p) => ($conSucursal ? (($p['sucursal'] ?? '') === $ultimaSucursal ? '~' : '').$this->normalizar($p['sucursal'] ?? '').'#' : '')
+            .$this->normalizar($p['oficina']).'|'.$this->normalizar($p['promotor']);
+        usort($promotores, fn ($a, $b) => strcmp($orden($a), $orden($b)));
 
         $filas = [];
         $oficinaAnterior = '';
+        $sucursalAnterior = null;
         $t = $this->totalesVacios();
+        $ts = $this->totalesVacios();
         $gt = $this->totalesVacios();
+        $con = fn (array $fila, ?string $suc) => $fila + ['sucursal' => $suc];
         foreach ($promotores as $p) {
-            if ($oficinaAnterior !== '' && $this->normalizar($p['oficina']) !== $this->normalizar($oficinaAnterior)) {
-                $filas[] = $this->fila('subtotal', $oficinaAnterior, 'TOTAL '.mb_strtoupper($oficinaAnterior), $t);
+            $suc = $p['sucursal'] ?? null;
+            $cambiaSucursal = $conSucursal && $sucursalAnterior !== null && $suc !== $sucursalAnterior;
+            if ($oficinaAnterior !== '' && ($cambiaSucursal || $this->normalizar($p['oficina']) !== $this->normalizar($oficinaAnterior))) {
+                $filas[] = $con($this->fila('subtotal', $oficinaAnterior, 'TOTAL '.mb_strtoupper($oficinaAnterior), $t), $sucursalAnterior);
                 $t = $this->totalesVacios();
             }
+            if ($cambiaSucursal) {
+                $filas[] = $con($this->fila('subtotal_sucursal', null, 'TOTAL SUCURSAL '.mb_strtoupper((string) $sucursalAnterior), $ts), $sucursalAnterior);
+                $ts = $this->totalesVacios();
+            }
             $valores = array_intersect_key($p, $t);
-            $filas[] = $this->fila('promotor', $p['oficina'], $p['promotor'], $valores);
+            $filas[] = $con($this->fila('promotor', $p['oficina'], $p['promotor'], $valores), $suc);
             foreach ($valores as $c => $v) {
                 $t[$c] += $v;
+                $ts[$c] += $v;
                 $gt[$c] += $v;
             }
             $oficinaAnterior = $p['oficina'];
+            $sucursalAnterior = $suc;
         }
         if ($oficinaAnterior !== '') {
-            $filas[] = $this->fila('subtotal', $oficinaAnterior, 'TOTAL '.mb_strtoupper($oficinaAnterior), $t);
-            $filas[] = $this->fila('gran_total', null, 'GRAN TOTAL', $gt);
+            $filas[] = $con($this->fila('subtotal', $oficinaAnterior, 'TOTAL '.mb_strtoupper($oficinaAnterior), $t), $sucursalAnterior);
+            if ($conSucursal) {
+                $filas[] = $con($this->fila('subtotal_sucursal', null, 'TOTAL SUCURSAL '.mb_strtoupper((string) $sucursalAnterior), $ts), $sucursalAnterior);
+            }
+            $filas[] = $con($this->fila('gran_total', null, 'GRAN TOTAL', $gt), null);
         }
 
         return $filas;

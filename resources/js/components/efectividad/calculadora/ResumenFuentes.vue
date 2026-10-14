@@ -174,6 +174,35 @@ const n = (v: number | null | undefined) =>
             </div>
         </div>
 
+        <div
+            v-if="resumen.sucursales?.length"
+            class="flex flex-wrap gap-2 text-sm"
+            aria-label="Sucursales y rutas detectadas"
+        >
+            <div
+                v-for="s in resumen.sucursales"
+                :key="s.sucursal"
+                class="rounded-lg border px-3 py-2"
+                :class="
+                    s.en_catalogo
+                        ? ''
+                        : 'border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40'
+                "
+            >
+                <p class="font-medium">
+                    {{ s.en_catalogo ? `Sucursal ${s.sucursal}` : s.sucursal }}
+                    <span class="font-normal text-muted-foreground"
+                        >· {{ s.rutas.length }} ruta{{
+                            s.rutas.length === 1 ? '' : 's'
+                        }}</span
+                    >
+                </p>
+                <p class="text-xs text-muted-foreground">
+                    {{ s.rutas.join(', ') }}
+                </p>
+            </div>
+        </div>
+
         <div class="overflow-hidden rounded-lg border">
             <table class="w-full text-sm">
                 <thead

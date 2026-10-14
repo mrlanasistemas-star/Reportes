@@ -38,12 +38,27 @@ const kpis = computed(() => {
     ];
 });
 
-/** Filas con encabezado de oficina intercalado (como la hoja EFECTIVIDAD). */
+/** Filas con encabezados intercalados: Sucursal → Ruta → promotores. */
 const renglones = computed(() => {
-    const out: Array<{ k: string; oficina?: string; fila?: FilaEfectividad }> =
-        [];
+    const out: Array<{
+        k: string;
+        sucursal?: string;
+        oficina?: string;
+        fila?: FilaEfectividad;
+    }> = [];
+    let sucursalActual: string | null | undefined;
     let actual: string | null = null;
     props.filas.forEach((f, i) => {
+        if (
+            f.tipo === 'promotor' &&
+            f.sucursal &&
+            f.sucursal !== sucursalActual
+        ) {
+            sucursalActual = f.sucursal;
+            actual = null;
+            out.push({ k: `s${i}`, sucursal: f.sucursal });
+        }
+
         if (f.tipo === 'promotor' && f.oficina !== actual) {
             actual = f.oficina;
             out.push({ k: `o${i}`, oficina: f.oficina_titulo ?? '' });
@@ -137,7 +152,7 @@ const p = computed(() => props.resultado.parametros);
                             rowspan="2"
                             class="sticky left-0 bg-slate-900 px-3 py-2 text-left font-semibold dark:bg-slate-800"
                         >
-                            Oficina / Promotor
+                            Ruta / Promotor
                         </th>
                         <th
                             colspan="3"
@@ -185,11 +200,28 @@ const p = computed(() => props.resultado.parametros);
                 </thead>
                 <tbody>
                     <template v-for="r in renglones" :key="r.k">
-                        <tr v-if="r.oficina !== undefined" class="bg-muted/60">
+                        <tr
+                            v-if="r.sucursal !== undefined"
+                            class="bg-slate-800 text-white dark:bg-slate-700"
+                        >
+                            <td
+                                colspan="13"
+                                class="sticky left-0 px-3 py-2 text-xs font-bold tracking-widest uppercase"
+                            >
+                                Sucursal {{ r.sucursal }}
+                            </td>
+                        </tr>
+                        <tr
+                            v-else-if="r.oficina !== undefined"
+                            class="bg-muted/60"
+                        >
                             <td
                                 colspan="13"
                                 class="sticky left-0 px-3 py-1.5 text-xs font-bold tracking-wide text-primary uppercase"
                             >
+                                <span class="font-medium text-muted-foreground"
+                                    >Ruta ·
+                                </span>
                                 {{ r.oficina }}
                             </td>
                         </tr>
@@ -199,6 +231,8 @@ const p = computed(() => props.resultado.parametros);
                             :class="{
                                 'bg-slate-100 font-semibold dark:bg-slate-900':
                                     r.fila.tipo === 'subtotal',
+                                'bg-slate-300 font-bold dark:bg-slate-700':
+                                    r.fila.tipo === 'subtotal_sucursal',
                                 'bg-primary font-bold text-primary-foreground':
                                     r.fila.tipo === 'gran_total',
                             }"
@@ -210,7 +244,9 @@ const p = computed(() => props.resultado.parametros);
                                         ? 'bg-primary'
                                         : r.fila.tipo === 'subtotal'
                                           ? 'bg-slate-100 dark:bg-slate-900'
-                                          : 'bg-card'
+                                          : r.fila.tipo === 'subtotal_sucursal'
+                                            ? 'bg-slate-300 dark:bg-slate-700'
+                                            : 'bg-card'
                                 "
                                 :title="r.fila.promotor"
                             >

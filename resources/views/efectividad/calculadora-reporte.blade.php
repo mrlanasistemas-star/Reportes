@@ -23,7 +23,13 @@ $sem = function ($row) {
 $modos = ['DIARIO' => 'Diario', 'ACUMULADO' => 'Acumulado', 'SEMANAL' => 'Semanal', 'MENSUAL' => 'Mensual'];
 $p = $r['parametros'];
 $d = fn ($ymd) => \Carbon\Carbon::parse($ymd)->format('d/m/Y');
-$alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor'] : (isset($r['filtro']['oficina']) ? 'Oficina: '.$r['filtro']['oficina'] : 'Todas las oficinas');
+$f = $r['filtro'] ?? [];
+$sucursales = collect($r['filas'])->where('tipo', 'promotor')->pluck('sucursal')->filter()->unique()->values();
+$alcance = collect([
+    'Sucursal' => $f['sucursal'] ?? ($sucursales->count() === 1 ? $sucursales->first() : null),
+    'Ruta' => $f['oficina'] ?? null,
+    'Promotor' => $f['promotor'] ?? null,
+])->filter()->map(fn ($v, $k) => "$k: $v")->implode(' · ') ?: 'Todas las sucursales';
 @endphp
 <!DOCTYPE html>
 <html lang="es">
@@ -61,7 +67,9 @@ $alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor
     td.b { border-left: 1px solid #e2e8f0; }
     /* El cierre (último subtotal + GRAN TOTAL) nunca se separa de página. */
     tbody.cierre { break-inside: avoid; page-break-inside: avoid; break-before: avoid; }
-    tr.office { break-after: avoid; page-break-after: avoid; }
+    tr.office, tr.branch { break-after: avoid; page-break-after: avoid; }
+    tr.branch td { text-align: left !important; background: #1e293b; color: #fff; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    tr.branch-total td { background: #cbd5e1; border-bottom: 2px solid #64748b; }
     tr.office td { text-align: left !important; background: #f1f5f9; font-weight: 700; color: #0f766e; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #cbd5e1; }
     tr.subtotal td { background: #e2e8f0; font-weight: 700; border-bottom: 1px solid #94a3b8; }
     tr.total td { background: #0f766e; color: #fff; font-weight: 700; font-size: {{ $imagen ? '8.8pt' : '7.9pt' }}; padding-top: 5px; padding-bottom: 5px; }
@@ -107,7 +115,7 @@ $alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor
     <table>
         <thead>
             <tr>
-                <th rowspan="2">Oficina / Promotor</th>
+                <th rowspan="2">Ruta / Promotor</th>
                 <th class="grp" colspan="3">Sano</th>
                 <th class="grp" colspan="3">Vigente con atraso</th>
                 <th class="grp" colspan="3">Vencido con atraso</th>
@@ -122,19 +130,28 @@ $alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor
         </thead>
         @php
             $oficinaActual = null;
+            $sucursalActual = null;
             $nCierre = (end($filas) ?: [])['tipo'] ?? null;
-            $corte = $nCierre === 'gran_total' ? max(0, count($filas) - 2) : count($filas);
+            // Cierre = filas de total finales (subtotal de ruta, de sucursal y GRAN TOTAL).
+            $corte = count($filas);
+            while ($nCierre === 'gran_total' && $corte > 0 && $filas[$corte - 1]['tipo'] !== 'promotor') {
+                $corte--;
+            }
             $bloques = ['' => array_slice($filas, 0, $corte), 'cierre' => array_slice($filas, $corte)];
         @endphp
         @foreach($bloques as $claseBloque => $filasBloque)
         @if($filasBloque)
         <tbody class="{{ $claseBloque }}">
         @foreach($filasBloque as $row)
+            @if($row['tipo'] === 'promotor' && ($row['sucursal'] ?? null) && $row['sucursal'] !== $sucursalActual)
+                @php $sucursalActual = $row['sucursal']; $oficinaActual = null; @endphp
+                <tr class="branch"><td colspan="13">Sucursal {{ $row['sucursal'] }}</td></tr>
+            @endif
             @if($row['tipo'] === 'promotor' && $row['oficina'] !== $oficinaActual)
                 @php $oficinaActual = $row['oficina']; @endphp
-                <tr class="office"><td colspan="13">{{ $row['oficina_titulo'] }}</td></tr>
+                <tr class="office"><td colspan="13"><span style="color:#64748b;font-weight:600;">Ruta · </span>{{ $row['oficina_titulo'] }}</td></tr>
             @endif
-            <tr class="{{ $row['tipo'] === 'gran_total' ? 'total' : ($row['tipo'] === 'subtotal' ? 'subtotal' : '') }}">
+            <tr class="{{ ['gran_total' => 'total', 'subtotal' => 'subtotal', 'subtotal_sucursal' => 'subtotal branch-total'][$row['tipo']] ?? '' }}">
                 <td class="name">{{ $row['promotor'] }}</td>
                 @foreach(['sano_pc', 'sano_cob'] as $c)<td class="{{ $row[$c] < 0 ? 'neg' : '' }}">{{ $money($row[$c]) }}</td>@endforeach
                 <td>{{ $pct($row['sano_pct']) }}</td>

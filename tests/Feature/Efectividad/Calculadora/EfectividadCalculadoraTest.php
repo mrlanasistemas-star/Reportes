@@ -36,10 +36,10 @@ function calcXlsx(string $path, array $rows): string
 function calcCartera(string $dir, string $fecha, string $nombre, array $extra = []): string
 {
     $filas = [
-        ['RUTA NORTE', 'P1', 'ANA LOPEZ', 'C1', 'A1', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-05', '2026-12-28', 100, 'SEMANAL', 12, 0, 0, 1000, 900],
-        ['RUTA SUR', 'P2', 'BETO RUIZ', 'C2', 'A2', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-06', '2026-12-29', 200, 'SEMANAL', 12, 0, 0, 2000, 1800],
+        ['TEPEJI', 'P1', 'ANA LOPEZ', 'C1', 'A1', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-05', '2026-12-28', 100, 'SEMANAL', 12, 0, 0, 1000, 900],
+        ['ACAMBAY', 'P2', 'BETO RUIZ', 'C2', 'A2', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-06', '2026-12-29', 200, 'SEMANAL', 12, 0, 0, 2000, 1800],
         // Ruta sin Sano por cobrar (solo vencido): no figura ni suma al gran total.
-        ['RUTA VACANTE', 'P3', 'VACANTE', 'C3', 'A3', 'ACTIVO', 'VENCIDO', 'SEMANAL 12', '2026-01-05', '2026-03-30', 150, 'SEMANAL', 12, 4000, 10, 4000, 3500],
+        ['ATITALAQUIA', 'P3', 'VACANTE', 'C3', 'A3', 'ACTIVO', 'VENCIDO', 'SEMANAL 12', '2026-01-05', '2026-03-30', 150, 'SEMANAL', 12, 4000, 10, 4000, 3500],
         ...$extra,
     ];
 
@@ -56,7 +56,7 @@ function calcIngresos(string $dir, string $nombre, array $filas, string $rango =
     return calcXlsx("$dir/$nombre", [['MR LANA'], ["INGRESOS COBRANZA $rango"], [''], CALC_ING_HEAD, ...$filas]);
 }
 
-function calcPago(string $contrato, string $fTrans, string $fCuota, float $capital, string $oficina = 'RUTA NORTE', string $prom = 'ANA LOPEZ'): array
+function calcPago(string $contrato, string $fTrans, string $fCuota, float $capital, string $oficina = 'TEPEJI', string $prom = 'ANA LOPEZ'): array
 {
     return [$oficina, $prom, $contrato, 'A'.substr($contrato, 1), 'SEMANAL 12', 'PAGO A CONTRATO', 'PRINCIPAL', 'PAGO', $fTrans, $fCuota, 1, $capital, 0, 0, 0, 50];
 }
@@ -70,7 +70,7 @@ function calcArchivosSemana(string $dir): array
     }
     $out[] = calcIngresos($dir, 'Ingresos cobranza (3).xlsx', [
         calcPago('C1', '2026-10-05', '2026-10-05', 100),
-        calcPago('C2', '2026-10-06', '2026-10-06', 150, 'RUTA SUR', 'BETO RUIZ'),
+        calcPago('C2', '2026-10-06', '2026-10-06', 150, 'ACAMBAY', 'BETO RUIZ'),
         calcPago('C9', '2026-10-07', '2026-10-07', 80), // contrato sin cartera
     ]);
 
@@ -117,7 +117,7 @@ it('rechaza archivos que no son de Lendus, Excel corruptos, duplicados y fechas 
     $otro = calcXlsx($this->dir.'/otro.xlsx', [['Nombre', 'Edad'], ['X', 1]]);
     file_put_contents($this->dir.'/roto.xlsx', 'esto no es un zip');
     $c1 = calcCartera($this->dir, '2026-10-04', 'a.xlsx');
-    $c2 = calcCartera($this->dir, '2026-10-04', 'b.xlsx', [['RUTA SUR', 'P2', 'BETO RUIZ', 'C7', 'A7', 'ACTIVO', 'VIGENTE', 'S', '2026-10-06', '2026-12-29', 1, 'SEMANAL', 1, 0, 0, 1, 1]]);
+    $c2 = calcCartera($this->dir, '2026-10-04', 'b.xlsx', [['ACAMBAY', 'P2', 'BETO RUIZ', 'C7', 'A7', 'ACTIVO', 'VIGENTE', 'S', '2026-10-06', '2026-12-29', 1, 'SEMANAL', 1, 0, 0, 1, 1]]);
 
     $r = $svc->agregarArchivos(null, $this->admin->id, [calcUpload($otro), calcUpload($this->dir.'/roto.xlsx'), calcUpload($c1), calcUpload($c1), calcUpload($c2)]);
     $errores = array_column($r['rechazados'], 'error', 'nombre');
@@ -161,7 +161,15 @@ it('flujo web completo: carga múltiple, resumen ordenado, cálculo semanal, fil
     $gt = collect($res['filas'])->firstWhere('tipo', 'gran_total');
 
     expect($res['titulo'])->toBe('CORTE SEMANAL: 05/10/2026 AL 11/10/2026')
-        ->and(collect($res['filas'])->pluck('oficina')->filter()->unique()->values()->all())->toBe(['RUTA NORTE', 'RUTA SUR'])
+        // Sucursal → Ruta → Promotor: ACAMBAY es de ATLACOMULCO y TEPEJI de TULA (ATITALAQUIA, sin Sano, no figura).
+        ->and(collect($res['filas'])->pluck('oficina')->filter()->unique()->values()->all())->toBe(['ACAMBAY', 'TEPEJI'])
+        ->and(collect($res['filas'])->where('tipo', 'subtotal_sucursal')->pluck('promotor')->all())->toBe(['TOTAL SUCURSAL ATLACOMULCO', 'TOTAL SUCURSAL TULA'])
+        ->and(collect($res['filas'])->firstWhere('promotor', 'ANA LOPEZ')['sucursal'])->toBe('TULA')
+        ->and($res['catalogo'])->toBe([
+            ['sucursal' => 'ATLACOMULCO', 'rutas' => [['ruta' => 'ACAMBAY', 'promotores' => ['BETO RUIZ']]]],
+            ['sucursal' => 'TULA', 'rutas' => [['ruta' => 'TEPEJI', 'promotores' => ['ANA LOPEZ']]]],
+        ])
+        ->and(array_column($resumen['sucursales'], 'sucursal'))->toBe(['ATLACOMULCO', 'TULA'])
         ->and($gt['sano_pc'])->toEqual(300.0)
         ->and($gt['vencido_pc'])->toEqual(0.0) // la ruta sin Sano por cobrar no suma su vencido
         ->and($gt['cobranza_total'])->toEqual(250.0)
@@ -171,9 +179,14 @@ it('flujo web completo: carga múltiple, resumen ordenado, cálculo semanal, fil
         ->and($res['avisos'])->not->toBeEmpty(); // sin ingresos previos: se explica que faltan anticipos
 
     // Filtro por oficina: subtotal y gran total recalculados en el servidor.
-    $filas = $this->actingAs($this->admin)->getJson("/efectividad-cobranza/calculadora/$token/vista?oficina=RUTA%20SUR")->assertOk()->json('filas');
+    $filas = $this->actingAs($this->admin)->getJson("/efectividad-cobranza/calculadora/$token/vista?oficina=ACAMBAY")->assertOk()->json('filas');
     expect($filas)->toHaveCount(3)
         ->and(collect($filas)->firstWhere('tipo', 'gran_total')['sano_pc'])->toEqual(200.0);
+
+    // Filtro por sucursal: solo sus rutas; el gran total es el de la sucursal.
+    $filas = $this->actingAs($this->admin)->getJson("/efectividad-cobranza/calculadora/$token/vista?sucursal=TULA")->assertOk()->json('filas');
+    expect(collect($filas)->pluck('oficina')->filter()->unique()->values()->all())->toBe(['TEPEJI'])
+        ->and(collect($filas)->firstWhere('tipo', 'gran_total')['sano_pc'])->toEqual(100.0);
 
     // Diario, acumulado y mensual con los mismos archivos.
     foreach (['DIARIO' => '2026-10-06', 'ACUMULADO' => '2026-10-06', 'MENSUAL' => '2026-10'] as $modo => $valor) {
@@ -259,4 +272,24 @@ it('el TTL elimina espacios temporales abandonados', function () {
 
     $this->artisan('efectividad:limpiar-temporales')->assertSuccessful();
     expect(is_dir(EfectividadWorkspace::raiz().'/'.$token))->toBeFalse();
+});
+
+it('una ruta fuera del catálogo se calcula igual y se muestra en SIN SUCURSAL ASIGNADA con aviso', function () {
+    $svc = app(EfectividadCalculadoraService::class);
+    $nueva = [['RUTA NUEVA', 'P4', 'CARLA DIAZ', 'C4', 'A4', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-05', '2026-12-28', 50, 'SEMANAL', 12, 0, 0, 500, 450]];
+    $archivos = [];
+    foreach (range(4, 11) as $d) {
+        $archivos[] = calcCartera($this->dir, sprintf('2026-10-%02d', $d), "c$d.xlsx", $nueva);
+    }
+    $archivos[] = calcIngresos($this->dir, 'ing.xlsx', [calcPago('C4', '2026-10-05', '2026-10-05', 50, 'RUTA NUEVA', 'CARLA DIAZ')]);
+
+    $r = $svc->agregarArchivos(null, $this->admin->id, array_map('calcUpload', $archivos));
+    $res = $svc->calcular($r['token'], $this->admin->id, 'SEMANAL', '2026-10-11');
+
+    expect(collect($r['resumen']['sucursales'])->firstWhere('sucursal', 'SIN SUCURSAL ASIGNADA')['rutas'])->toBe(['RUTA NUEVA'])
+        ->and(collect($res['filas'])->firstWhere('promotor', 'CARLA DIAZ')['sucursal'])->toBe('SIN SUCURSAL ASIGNADA')
+        ->and(collect($res['filas'])->firstWhere('tipo', 'gran_total')['sano_pc'])->toEqual(350.0)
+        ->and(collect($res['avisos'])->contains(fn ($a) => str_contains($a, 'RUTA NUEVA')))->toBeTrue()
+        // Sin sucursal asignada va al final de la tabla.
+        ->and(collect($res['filas'])->where('tipo', 'subtotal_sucursal')->last()['promotor'])->toBe('TOTAL SUCURSAL SIN SUCURSAL ASIGNADA');
 });
