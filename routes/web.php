@@ -10,8 +10,7 @@ use App\Http\Controllers\ValidationController;
 use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\EfectividadCobranzaController;
-use App\Http\Controllers\EfectividadCobranzaFuentesController;
+use App\Http\Controllers\EfectividadCalculadoraController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Middleware\EnsureReporteriaAccess;
 
@@ -190,25 +189,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/runs/{run}/ver', [MonthlyReportController::class, 'viewRun'])->name('run-ver');
         });
 
+    // Calculadora de Efectividad de Cobranza — flujo único y efímero (sin BD):
+    // subir → validar → calcular → exportar → eliminar temporales.
     Route::prefix('efectividad-cobranza')
         ->name('efectividad-cobranza.')
+        ->controller(EfectividadCalculadoraController::class)
         ->group(function () {
-            Route::get('/', [EfectividadCobranzaController::class, 'index'])->name('index');
-            Route::post('/generar', [EfectividadCobranzaController::class, 'generate'])->name('generate');
-            Route::get('/actividad', [EfectividadCobranzaController::class, 'activity'])->name('activity');
-            // URL estable de una ejecución — la usan el correo y las notificaciones internas.
-            Route::get('/runs/{run}', [EfectividadCobranzaController::class, 'show'])->name('runs.show');
-            Route::get('/runs/{run}/progreso', [EfectividadCobranzaController::class, 'progress'])->name('progress');
-            Route::post('/runs/{run}/cancelar', [EfectividadCobranzaController::class, 'cancel'])->name('runs.cancel');
-            Route::get('/runs/{run}/descargar', [EfectividadCobranzaController::class, 'download'])->name('download');
-            Route::get('/runs/{run}/descargar-pdf', [EfectividadCobranzaController::class, 'downloadPdf'])->name('download-pdf');
-            Route::get('/runs/{run}/incidencias', [EfectividadCobranzaController::class, 'incidents'])->name('incidents');
-            Route::get('/runs/{run}/incidencias/exportar', [EfectividadCobranzaController::class, 'exportIncidents'])->name('incidents.export');
-            // Motor V4 — disponibilidad de fuentes y fotografías diarias de cartera.
-            Route::get('/disponibilidad', [EfectividadCobranzaFuentesController::class, 'availability'])->name('availability');
-            Route::get('/fotos', [EfectividadCobranzaFuentesController::class, 'index'])->name('snapshots.index');
-            Route::post('/fotos', [EfectividadCobranzaFuentesController::class, 'store'])->name('snapshots.store');
-            Route::post('/fotos/{upload}/reprocesar', [EfectividadCobranzaFuentesController::class, 'reprocess'])->whereNumber('upload')->name('snapshots.reprocess');
+            Route::get('/', 'index')->name('index');
+            Route::post('/calculadora/archivos', 'upload')->middleware('throttle:120,1')->name('upload');
+            Route::delete('/calculadora/{token}/archivos/{archivo}', 'removeFile')->name('remove-file');
+            Route::post('/calculadora/{token}/limpiar', 'clear')->name('clear');
+            Route::post('/calculadora/{token}/calcular', 'calculate')->middleware('throttle:30,1')->name('calculate');
+            Route::get('/calculadora/{token}/vista', 'view')->name('view');
+            Route::get('/calculadora/{token}/exportar/{formato}', 'export')->whereIn('formato', ['pdf', 'png'])->middleware('throttle:20,1')->name('export');
         });
     }); // fin EnsureReporteriaAccess
 });

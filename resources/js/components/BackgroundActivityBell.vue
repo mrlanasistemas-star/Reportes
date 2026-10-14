@@ -1,25 +1,21 @@
 <script setup lang="ts">
-import { Link, router, usePage } from '@inertiajs/vue3';
+import { router, usePage } from '@inertiajs/vue3';
 import {
     Ban,
     Bell,
     CheckCheck,
     CheckCircle2,
-    Loader2,
     OctagonX,
     PauseCircle,
 } from 'lucide-vue-next';
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { csrfToken, formatDateTime } from '@/components/efectividad/format';
-import RunStatusBadge from '@/components/efectividad/RunStatusBadge.vue';
-import type { RunSummary } from '@/components/efectividad/types';
 import { Button } from '@/components/ui/button';
 import {
     Popover,
     PopoverContent,
     PopoverTrigger,
 } from '@/components/ui/popover';
-import runs from '@/routes/efectividad-cobranza/runs';
 import {
     index as notificationsIndex,
     read as readRoute,
@@ -55,15 +51,12 @@ const shared = computed(
         } | null) ?? { active_count: 0, unread_count: 0 },
 );
 
-const activeCount = ref(shared.value.active_count);
 const unreadCount = ref(shared.value.unread_count);
 const items = ref<NotificationItem[]>([]);
-const active = ref<RunSummary[]>([]);
 const open = ref(false);
 const loading = ref(false);
 
 watch(shared, (value) => {
-    activeCount.value = value.active_count;
     unreadCount.value = value.unread_count;
 });
 
@@ -89,44 +82,16 @@ async function load() {
         const body = (await res.json()) as {
             unread_count: number;
             items: NotificationItem[];
-            active: RunSummary[];
         };
-        const finishedSomething = body.active.length < activeCount.value;
         items.value = body.items;
-        active.value = body.active;
         unreadCount.value = body.unread_count;
-        activeCount.value = body.active.length;
 
-        if (finishedSomething && !open.value) {
-            // Un trabajo terminó mientras el usuario estaba en otra página: refresca
-            // los conteos compartidos (y la página actual si muestra ese módulo).
-            router.reload({ only: ['backgroundActivity'] });
-        }
     } catch {
         // Silencioso: el indicador es secundario; el estado real vive en BD.
     } finally {
         loading.value = false;
     }
 }
-
-let timer: ReturnType<typeof setInterval> | null = null;
-watch(
-    activeCount,
-    (count) => {
-        if (count > 0 && !timer) {
-            timer = setInterval(() => {
-                if (document.visibilityState === 'visible') {
-                    void load();
-                }
-            }, 15000);
-        } else if (count === 0 && timer) {
-            clearInterval(timer);
-            timer = null;
-        }
-    },
-    { immediate: true },
-);
-onBeforeUnmount(() => timer && clearInterval(timer));
 
 watch(open, (isOpen) => {
     if (isOpen) {
@@ -175,7 +140,7 @@ const kindTone = {
     failed: 'text-destructive',
     cancelled: 'text-muted-foreground',
 } as const;
-const badgeCount = computed(() => unreadCount.value + activeCount.value);
+const badgeCount = computed(() => unreadCount.value);
 </script>
 
 <template>
@@ -185,10 +150,9 @@ const badgeCount = computed(() => unreadCount.value + activeCount.value);
                 variant="ghost"
                 size="icon"
                 class="relative"
-                :aria-label="`Notificaciones (${unreadCount} sin leer, ${activeCount} trabajos en proceso)`"
+                :aria-label="`Notificaciones (${unreadCount} sin leer)`"
             >
-                <Loader2 v-if="activeCount > 0" class="animate-spin" />
-                <Bell v-else />
+                <Bell />
                 <span
                     v-if="badgeCount > 0"
                     class="absolute -top-0.5 -right-0.5 flex min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] leading-4 font-semibold text-primary-foreground"
@@ -198,44 +162,6 @@ const badgeCount = computed(() => unreadCount.value + activeCount.value);
             </Button>
         </PopoverTrigger>
         <PopoverContent align="end" class="w-[min(22rem,calc(100vw-2rem))] p-0">
-            <div v-if="active.length" class="border-b p-3">
-                <p
-                    class="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
-                >
-                    En segundo plano
-                </p>
-                <ul class="space-y-2">
-                    <li v-for="run in active" :key="run.id">
-                        <Link
-                            :href="runs.show(run.id).url"
-                            class="block rounded-md p-1.5 hover:bg-muted"
-                            @click="open = false"
-                        >
-                            <div
-                                class="flex items-center justify-between gap-2"
-                            >
-                                <p class="truncate text-sm font-medium">
-                                    Efectividad · {{ run.period_label }}
-                                </p>
-                                <RunStatusBadge
-                                    :state="run.display_state"
-                                    :label="run.display_label"
-                                />
-                            </div>
-                            <p class="truncate text-xs text-muted-foreground">
-                                #{{ run.id }} · {{ run.branch_label }}
-                                <template v-if="run.current_stage">
-                                    · Paso {{ run.current_stage.position }}/{{
-                                        run.stage_count
-                                    }}
-                                    {{ run.current_stage.label }}</template
-                                >
-                            </p>
-                        </Link>
-                    </li>
-                </ul>
-            </div>
-
             <div class="flex items-center justify-between px-3 pt-3 pb-1">
                 <p
                     class="text-xs font-medium tracking-wide text-muted-foreground uppercase"

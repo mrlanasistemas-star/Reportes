@@ -36,6 +36,7 @@ class BrowsershotPdfRenderer
      *     wait_for_ready?: bool,
      *     ready_timeout?: int,
      *     full_bleed?: bool,
+     *     landscape?: bool,
      * } $options
      */
     public function renderHtmlToFile(string $html, string $outputPath, array $options = []): void
@@ -62,25 +63,15 @@ class BrowsershotPdfRenderer
             ->waitUntilNetworkIdle()
             ->timeout((int) config('pdf.browsershot.timeout', 180));
 
+        if ($options['landscape'] ?? false) {
+            $shot->landscape();
+        }
+
         if (config('pdf.defaults.print_background', true)) {
             $shot->showBackground();
         }
 
-        $nodeBinary = config('pdf.browsershot.node_binary');
-        $chromePath = config('pdf.browsershot.chrome_path');
-        $npmBinary  = config('pdf.browsershot.npm_binary');
-        if ($nodeBinary) {
-            $shot->setNodeBinary($nodeBinary);
-        }
-        if ($npmBinary) {
-            $shot->setNpmBinary($npmBinary);
-        }
-        if ($chromePath) {
-            $shot->setChromePath($chromePath);
-        }
-        if (config('pdf.browsershot.no_sandbox')) {
-            $shot->noSandbox();
-        }
+        $this->configureBinaries($shot);
 
         if ($waitForReady) {
             $shot->waitForFunction('window.__PDF_READY__ === true', timeout: (int) $readyTimeout);
@@ -103,6 +94,56 @@ class BrowsershotPdfRenderer
 
         if (!file_exists($outputPath) || filesize($outputPath) === 0) {
             throw PdfRenderException::htmlFailed(new \RuntimeException('Browsershot no produjo un archivo PDF válido.'));
+        }
+    }
+
+    /**
+     * PNG de alta resolución (mismo HTML/CSS que el PDF). `width` en px CSS; el alto
+     * es el de la página completa; `scale` = deviceScaleFactor (2 = nitidez retina).
+     *
+     * @param  array{width?: int, scale?: int, ready_timeout?: int}  $options
+     */
+    public function renderHtmlToImage(string $html, string $outputPath, array $options = []): void
+    {
+        $this->assertBinariesConfigured();
+        File::ensureDirectoryExists(dirname($outputPath));
+
+        $shot = Browsershot::html($html)
+            ->windowSize($options['width'] ?? 1400, 900)
+            ->deviceScaleFactor($options['scale'] ?? 2)
+            ->fullPage()
+            ->waitUntilNetworkIdle()
+            ->timeout((int) config('pdf.browsershot.timeout', 180))
+            ->waitForFunction('window.__PDF_READY__ === true', timeout: (int) ($options['ready_timeout'] ?? config('pdf.defaults.pdf_ready_timeout', 20000)));
+        $this->configureBinaries($shot);
+
+        try {
+            $shot->save($outputPath);
+        } catch (Throwable $exception) {
+            throw $this->translate($exception, true);
+        }
+
+        if (!file_exists($outputPath) || filesize($outputPath) === 0) {
+            throw PdfRenderException::htmlFailed(new \RuntimeException('Browsershot no produjo una imagen válida.'));
+        }
+    }
+
+    private function configureBinaries(Browsershot $shot): void
+    {
+        $nodeBinary = config('pdf.browsershot.node_binary');
+        $chromePath = config('pdf.browsershot.chrome_path');
+        $npmBinary  = config('pdf.browsershot.npm_binary');
+        if ($nodeBinary) {
+            $shot->setNodeBinary($nodeBinary);
+        }
+        if ($npmBinary) {
+            $shot->setNpmBinary($npmBinary);
+        }
+        if ($chromePath) {
+            $shot->setChromePath($chromePath);
+        }
+        if (config('pdf.browsershot.no_sandbox')) {
+            $shot->noSandbox();
         }
     }
 

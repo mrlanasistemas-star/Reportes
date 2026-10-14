@@ -765,6 +765,47 @@ class EfectividadV4Calculator
         ];
     }
 
+    /**
+     * Reconstruye filas A-M (promotores, subtotales por oficina y GRAN TOTAL) a partir de
+     * importes base por promotor — misma lógica que `generarReporte()`. Lo usa la
+     * calculadora para filtrar por oficina/promotor y para la agregación mensual: los
+     * porcentajes se recalculan desde importes, nunca se suman.
+     *
+     * @param  list<array{oficina:string, promotor:string, sano_pc:float, sano_cob:float, atraso_pc:float, atraso_cob:float, vencido_pc:float, vencido_cob:float}>  $promotores
+     * @return list<array<string,mixed>>
+     */
+    public function construirFilas(array $promotores): array
+    {
+        usort($promotores, fn ($a, $b) => strcmp(
+            $this->normalizar($a['oficina']).'|'.$this->normalizar($a['promotor']),
+            $this->normalizar($b['oficina']).'|'.$this->normalizar($b['promotor']),
+        ));
+
+        $filas = [];
+        $oficinaAnterior = '';
+        $t = $this->totalesVacios();
+        $gt = $this->totalesVacios();
+        foreach ($promotores as $p) {
+            if ($oficinaAnterior !== '' && $this->normalizar($p['oficina']) !== $this->normalizar($oficinaAnterior)) {
+                $filas[] = $this->fila('subtotal', $oficinaAnterior, 'TOTAL '.mb_strtoupper($oficinaAnterior), $t);
+                $t = $this->totalesVacios();
+            }
+            $valores = array_intersect_key($p, $t);
+            $filas[] = $this->fila('promotor', $p['oficina'], $p['promotor'], $valores);
+            foreach ($valores as $c => $v) {
+                $t[$c] += $v;
+                $gt[$c] += $v;
+            }
+            $oficinaAnterior = $p['oficina'];
+        }
+        if ($oficinaAnterior !== '') {
+            $filas[] = $this->fila('subtotal', $oficinaAnterior, 'TOTAL '.mb_strtoupper($oficinaAnterior), $t);
+            $filas[] = $this->fila('gran_total', null, 'GRAN TOTAL', $gt);
+        }
+
+        return $filas;
+    }
+
     private function totalesVacios(): array
     {
         return ['sano_pc' => 0.0, 'sano_cob' => 0.0, 'atraso_pc' => 0.0, 'atraso_cob' => 0.0, 'vencido_pc' => 0.0, 'vencido_cob' => 0.0];

@@ -32,3 +32,6 @@ yarn-error.log
 # datos personales. Se conservan solo en local; nunca deben versionarse.
 /docs/efectividad/MR_LANA_EFECTIVIDAD.xlsm
 /docs/efectividad/CALCULADORA DE EFECTIVIDAD DE COBRANZA APROBADO.xlsm
+
+# Ejemplos reales de Efectividad (información financiera y personal) — solo locales
+/docs/ejemplosCorte/

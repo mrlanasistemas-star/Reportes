@@ -16,12 +16,9 @@ Schedule::command('okr:close-due')->dailyAt('06:15');
 // api_query_logs, nunca crecimiento ilimitado.
 Schedule::command('api:query-logs:prune')->dailyAt('03:00');
 
-// Efectividad de Cobranza — trabajos en segundo plano. `recover-stalled --apply`
-// solo cierra ejecuciones con evidencia real de que el Job ya no está en la cola
-// (nunca re-encola automáticamente). `retry-notifications` reintenta correos que
-// fallaron por SMTP sin duplicar los ya entregados.
-Schedule::command('efectividad:recover-stalled --apply')->everyTenMinutes()->withoutOverlapping();
-Schedule::command('efectividad:retry-notifications')->everyFifteenMinutes()->withoutOverlapping();
+// Calculadora de Efectividad — borra espacios temporales vencidos (Excel leídos y
+// cifrados, PDF/PNG no descargados). Ya no hay ejecuciones persistentes que recuperar.
+Schedule::command('efectividad:limpiar-temporales')->everyTenMinutes()->withoutOverlapping();
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
