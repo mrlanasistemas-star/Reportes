@@ -11,6 +11,7 @@ use App\Http\Controllers\Okr\KpiController;
 use App\Http\Controllers\Okr\ObjectiveController;
 use App\Http\Controllers\Okr\PlacementUploadController;
 use App\Http\Controllers\Okr\ResponsibleController;
+use App\Http\Controllers\Okr\RoleModuleAccessController;
 use App\Http\Controllers\Okr\WarningController;
 use App\Http\Middleware\EnsureOkrAccessEnabled;
 use Illuminate\Support\Facades\Route;
@@ -23,7 +24,7 @@ use Illuminate\Support\Facades\Route;
  * EnsureOkrAccessEnabled (D5, cierre 17-sep-2026): SOLO este módulo exige
  * `access_enabled_at` — nunca se aplica al resto de Reportería.
  */
-Route::prefix('okr')->name('okr.')->middleware(EnsureOkrAccessEnabled::class)->group(function () {
+Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEnabled::class])->group(function () {
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
     // "/create" retirado 10-sep-2026 (auditoría, sección 6) — Asignar OKR ya
     // NO navega a una página aparte, es un Dialog embebido en el Dashboard
@@ -43,7 +44,8 @@ Route::prefix('okr')->name('okr.')->middleware(EnsureOkrAccessEnabled::class)->g
     Route::post('/responsibles/{user}/disable-access', [ResponsibleController::class, 'disableAccess'])->name('responsibles.disable-access');
     Route::post('/responsibles/{user}/reset-password', [ResponsibleController::class, 'resetPassword'])->middleware('throttle:10,1')->name('responsibles.reset-password');
     Route::post('/responsibles/{user}/toggle-disabled', [ResponsibleController::class, 'toggleDisabled'])->name('responsibles.toggle-disabled');
-    Route::put('/responsibles/{user}/role', [ResponsibleController::class, 'updateRole'])->name('responsibles.update-role');
+    Route::put('/responsibles/module-access', [RoleModuleAccessController::class, 'update'])->name('responsibles.module-access');
+    Route::put('/responsibles/{user}/role',[ResponsibleController::class, 'updateRole'])->name('responsibles.update-role');
     Route::put('/responsibles/{user}/employee', [ResponsibleController::class, 'linkEmployee'])->name('responsibles.link-employee');
     Route::get('/alerts', [AlertController::class, 'index'])->name('alerts.index');
     Route::post('/alerts/{alert}/read', [AlertController::class, 'markRead'])->name('alerts.read');

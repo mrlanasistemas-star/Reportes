@@ -18,7 +18,7 @@ const page = usePage()
 // con lo que SÍ le queda visible (OKR, Guía, Configuración) en vez de dejar
 // huecos o enlaces a algo que el backend le rechazaría.
 const quickItems = computed(() => {
-    const visible = visibleMainNavItems(page.props.auth.user?.role)
+    const visible = visibleMainNavItems(page.props.auth)
     const preferredTitles = ['Dashboard', 'Carga de archivos', 'Reportes mensuales', 'OKR']
     const preferred = preferredTitles.map((t) => visible.find((i) => i.title === t)).filter((i) => !!i)
     const rest = visible.filter((i) => !preferred.includes(i))

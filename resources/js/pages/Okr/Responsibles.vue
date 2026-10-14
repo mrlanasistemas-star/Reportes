@@ -7,6 +7,7 @@ import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import TextField from '@/components/forms/TextField.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
+import RoleModuleAccessCard from '@/components/okr/RoleModuleAccessCard.vue'
 import { Button } from '@/components/ui/button'
 import AppLayout from '@/layouts/AppLayout.vue'
 
@@ -25,6 +26,8 @@ const props = defineProps<{
     reset_password?: { name: string; email: string; password: string } | null
     current_user_id: number
     admin_count: number
+    module_catalog: { key: string; label: string; description: string }[]
+    module_access: Record<string, string[]>
 }>()
 
 // Contraseña temporal — se muestra UNA SOLA VEZ (ver ResponsibleController::index()).
@@ -339,5 +342,7 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                 <AppEmptyState v-if="responsibles.length === 0" title="Sin usuarios" message="Agrega el primero para poder asignarle un rol y un OKR." />
             </div>
         </div>
+
+        <RoleModuleAccessCard :modules="module_catalog" :access="module_access" />
     </div>
 </template>

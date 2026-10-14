@@ -11,57 +11,58 @@ import {
     Users,
 } from 'lucide-vue-next';
 import { dashboard } from '@/routes';
-import type { NavItem } from '@/types';
+import type { Auth, NavItem } from '@/types';
 
 // Fuente única de los módulos del sistema — la usan AppSidebar.vue (menú de
 // escritorio) y MobileBottomNav.vue (barra inferior en móvil) para que no se
 // desincronicen entre sí.
 //
-// `roles` (cierre 04-oct-2026, Parte 1) es solo UX — oculta lo que el backend
-// ya rechazaría (EnsureReporteriaAccess: Reportería financiero global es
-// admin/gerencial únicamente; "Usuarios y accesos" es admin únicamente, ver
-// Gate 'okr.admin'). Nunca es la autorización real.
+// `module` (14-oct-2026) oculta lo que el backend ya rechazaría
+// (EnsureModuleAccess): qué módulos ve cada rol se configura en "Usuarios y
+// accesos" y llega como auth.modules. `roles` queda solo para "Usuarios y accesos"
+// (admin, Gate 'okr.admin'). Nunca es la autorización real.
 export const mainNavItems: NavItem[] = [
     {
         title: 'Dashboard',
         href: dashboard(),
         icon: LayoutGrid,
-        roles: ['admin', 'gerencial'],
+        module: 'dashboard',
     },
     {
         title: 'Carga de archivos',
         href: '/historico-general',
         icon: FolderOpen,
-        roles: ['admin', 'gerencial'],
+        module: 'carga',
     },
     {
         title: 'Periodos',
         href: '/periodos',
         icon: CalendarRange,
-        roles: ['admin', 'gerencial'],
+        module: 'periodos',
     },
     {
         title: 'Colaboradores',
         href: '/asignaciones-empleado-sucursal',
         icon: Users,
-        roles: ['admin', 'gerencial'],
+        module: 'colaboradores',
     },
     {
         title: 'Reportes mensuales',
         href: '/reportes-mensuales',
         icon: FileSpreadsheet,
-        roles: ['admin', 'gerencial'],
+        module: 'reportes',
     },
     {
         title: 'Efectividad de Cobranza',
         href: '/efectividad-cobranza',
         icon: TrendingUp,
-        roles: ['admin', 'gerencial'],
+        module: 'efectividad',
     },
     {
         title: 'OKR',
         href: '/okr',
         icon: Target,
+        module: 'okr',
     },
     {
         title: 'Guía del sistema',
@@ -81,7 +82,12 @@ export const mainNavItems: NavItem[] = [
     },
 ];
 
-/** Filtra por rol — ver docstring de `roles` arriba. */
-export function visibleMainNavItems(role: string | null | undefined): NavItem[] {
-    return mainNavItems.filter((item) => !item.roles || item.roles.includes(role as never));
+/** Filtra por módulos permitidos y rol — ver docstring arriba. */
+export function visibleMainNavItems(auth: Pick<Auth, 'user' | 'modules'> | null | undefined): NavItem[] {
+    const role = auth?.user?.role;
+    const modules = auth?.modules ?? [];
+
+    return mainNavItems.filter(
+        (item) => (!item.roles || item.roles.includes(role as never)) && (!item.module || modules.includes(item.module)),
+    );
 }

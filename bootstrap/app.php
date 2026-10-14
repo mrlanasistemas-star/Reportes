@@ -29,6 +29,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'ensure.ability' => EnsureApiAbility::class,
             'log.api-query'  => LogApiQuery::class,
+            'module'         => \App\Http\Middleware\EnsureModuleAccess::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

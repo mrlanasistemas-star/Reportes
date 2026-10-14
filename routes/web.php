@@ -12,7 +12,6 @@ use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EfectividadCalculadoraController;
 use App\Http\Controllers\NotificationController;
-use App\Http\Middleware\EnsureReporteriaAccess;
 
 Route::redirect('/', '/login');
 
@@ -49,10 +48,8 @@ Route::get('/sitemap.xml', function () {
 
 Route::middleware(['auth', 'verified'])->group(function () {
     // Módulo OKR (08-sep-2026) — dentro del MISMO grupo auth+verified que el
-    // resto de Reportería, nunca autenticación aparte. Fuera del bloque
-    // EnsureReporteriaAccess de abajo: OKR tiene su propia regla de acceso
-    // (EnsureOkrAccessEnabled) y un colaborador SÍ debe poder entrar aquí
-    // (seguimiento propio, check-in, evidencia).
+    // resto de Reportería, nunca autenticación aparte. Además de su regla propia
+    // (EnsureOkrAccessEnabled) exige el módulo 'okr' (ver routes/okr.php).
     require __DIR__ . '/okr.php';
 
     // Notificaciones internas persistentes (campana de la cabecera). Solo las del
@@ -73,10 +70,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/pdf', [SystemGuideController::class, 'pdf'])->name('pdf');
         });
 
-    // Parte 1 del cierre (04-oct-2026): Reportería (financiero global) — solo
-    // admin/gerencial. Ver EnsureReporteriaAccess; un colaborador recibe 403
-    // aquí y vive únicamente en /okr.
-    Route::middleware(EnsureReporteriaAccess::class)->group(function () {
+    // Acceso por módulo (14-oct-2026): cada bloque exige su módulo — qué módulos
+    // ve cada rol se configura en "Usuarios y accesos" (ModuleAccessService). El
+    // admin ve todo siempre. Reemplaza al antiguo EnsureReporteriaAccess fijo.
+    Route::middleware('module:dashboard')->group(function () {
     // Cierre 17-sep-2026 ronda 4 — el Dashboard ahora resume el periodo más reciente
     // con radiografía generada (antes era una página estática sin datos). Ver
     // DashboardController — misma fuente (RadiografiaExportService) que Web/Excel/PDF.
@@ -92,8 +89,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // 'home') hace que Laravel pierda la resolución por nombre de la primera —
     // confirmado con `php artisan route:list --name=dashboard` (vacío) tras probarlo.
     Route::get('/home', [DashboardController::class, 'index'])->name('home');
+    });
 
     Route::prefix('historico-general')
+        ->middleware('module:carga')
         ->name('historico-general.')
         ->group(function () {
             Route::get('/', [ReportUploadController::class, 'index'])->name('index');
@@ -125,6 +124,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
 
     Route::prefix('periodos')
+        ->middleware('module:periodos')
         ->name('periodos.')
         ->group(function () {
             Route::get('/', [PeriodController::class, 'index'])->name('index');
@@ -135,6 +135,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
 
     Route::prefix('asignaciones-empleado-sucursal')
+        ->middleware('module:colaboradores')
         ->name('asignaciones-empleado-sucursal.')
         ->group(function () {
             Route::get('/', [EmployeeBranchAssignmentController::class, 'index'])->name('index');
@@ -145,6 +146,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
 
     Route::prefix('empleados')
+        ->middleware('module:colaboradores')
         ->name('empleados.')
         ->group(function () {
             Route::post('/batch-asignar-sucursal', [EmployeeController::class, 'batchAssignBranch'])->name('batch-assign-branch');
@@ -153,12 +155,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         });
 
     Route::prefix('validaciones')
+        ->middleware('module:reportes')
         ->name('validaciones.')
         ->group(function () {
             Route::get('/', [ValidationController::class, 'index'])->name('index');
         });
 
     Route::prefix('reportes-mensuales')
+        ->middleware('module:reportes')
         ->name('reportes-mensuales.')
         ->group(function () {
             Route::get('/', [MonthlyReportController::class, 'index'])->name('index');
@@ -192,6 +196,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Calculadora de Efectividad de Cobranza — flujo único y efímero (sin BD):
     // subir → validar → calcular → exportar → eliminar temporales.
     Route::prefix('efectividad-cobranza')
+        ->middleware('module:efectividad')
         ->name('efectividad-cobranza.')
         ->controller(EfectividadCalculadoraController::class)
         ->group(function () {
@@ -203,7 +208,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/calculadora/{token}/vista', 'view')->name('view');
             Route::get('/calculadora/{token}/exportar/{formato}', 'export')->whereIn('formato', ['pdf', 'png'])->middleware('throttle:20,1')->name('export');
         });
-    }); // fin EnsureReporteriaAccess
 });
 
 if (Features::enabled(Features::updatePasswords())) {
