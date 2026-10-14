@@ -207,7 +207,7 @@ class EfectividadCalculadoraService
             $avisos[] = 'Los archivos de ingresos no cubren todos los días del periodo; los cobros de los días sin ingresos no se reflejan.';
         }
         if (! $opcion['historial_previo']) {
-            $avisos[] = 'No se cargaron ingresos anteriores al periodo. La macro reconoce los anticipos (pagos hechos antes con fecha de cuota dentro del periodo) desde su historial _HIST_INGRESOS; para incluirlos, agrega también el Excel de Ingresos Cobranza de las semanas previas.';
+            $avisos[] = 'No se cargaron ingresos anteriores al periodo. Los anticipos (pagos hechos antes con fecha de cuota dentro del periodo) y los pagos de contratos sin cartera de semanas previas solo se reflejan si agregas también el Excel de Ingresos Cobranza de esas semanas.';
         }
 
         $resultado += [
@@ -373,7 +373,7 @@ class EfectividadCalculadoraService
 
         return match ($modo) {
             'DIARIO' => [...$notas, 'Corte diario: Sano por cobrar = cuotas programadas del día; Vigente con atraso y Vencido = saldos de la cartera de ese día.'],
-            'MENSUAL' => [...$notas, 'Mensual: suma de semanas completas calculadas igual que la macro. Sano por cobrar y cobrados se suman; Vigente con atraso y Vencido por cobrar son saldos del último corte del mes (no se suman). La macro no define un corte mensual, por lo que este total no tiene paridad contra ella.'],
+            'MENSUAL' => [...$notas, 'Mensual: suma de las semanas completas del mes, cada una calculada con las reglas semanales. Sano por cobrar y cobrados se suman; Vigente con atraso y Vencido por cobrar son saldos del último corte del mes (no se suman). Porcentajes y mora se recalculan desde los importes.'],
             default => $notas,
         };
     }
@@ -387,7 +387,6 @@ class EfectividadCalculadoraService
     {
         $ingresos = array_values(array_filter($meta['archivos'], fn ($a) => $a['tipo'] === EfectividadExcelReader::TIPO_INGRESOS));
         usort($ingresos, fn ($a, $b) => [$b['hasta'], $b['orden']] <=> [$a['hasta'], $a['orden']]);
-        $multi = count($ingresos) > 1;
         $dueno = [];
         $columnas = null;
         $filas = [];
@@ -402,7 +401,7 @@ class EfectividadCalculadoraService
                         continue;
                     }
                 }
-                if ($multi) {
+                if ($n > 0) {
                     $f['ref'] = ($n + 1).':'.$f['ref'];
                 }
                 $filas[] = $f;

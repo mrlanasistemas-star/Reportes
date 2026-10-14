@@ -47,17 +47,24 @@ $alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor
     .kpi .l { font-size: 7pt; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
     .kpi .v { font-size: 12pt; font-weight: 700; margin-top: 2px; white-space: nowrap; }
     .kpi.ok .v { color: #047857; } .kpi.warn .v { color: #b45309; } .kpi.bad .v { color: #b91c1c; }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    /* Columnas con ancho automático: los importes nunca se recortan; el nombre del
+       promotor es la única columna que puede partirse en dos líneas. */
+    table { width: 100%; border-collapse: collapse; table-layout: auto; }
     thead { display: table-header-group; }
+    tfoot { display: table-row-group; }
     tr { page-break-inside: avoid; break-inside: avoid; }
-    th { background: #0f172a; color: #fff; font-weight: 600; font-size: 7.2pt; padding: 5px 4px; text-align: right; line-height: 1.2; }
+    th { background: #0f172a; color: #fff; font-weight: 600; font-size: 6.9pt; padding: 4px 3px; text-align: right; line-height: 1.2; white-space: nowrap; }
     th.grp { text-align: center; background: #1e293b; border-left: 1px solid #334155; }
-    th:first-child { text-align: left; width: 17%; }
-    td { padding: 4px 4px; border-bottom: 1px solid #eef2f7; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
-    td:first-child { text-align: left; }
+    th:first-child { text-align: left; }
+    td { padding: 3px 3px; border-bottom: 1px solid #eef2f7; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: {{ $imagen ? '8.2pt' : '7.4pt' }}; }
+    td.name { text-align: left; white-space: normal; word-break: break-word; min-width: 120px; max-width: 210px; line-height: 1.25; }
+    td.b { border-left: 1px solid #e2e8f0; }
+    /* El cierre (último subtotal + GRAN TOTAL) nunca se separa de página. */
+    tbody.cierre { break-inside: avoid; page-break-inside: avoid; break-before: avoid; }
+    tr.office { break-after: avoid; page-break-after: avoid; }
     tr.office td { background: #f1f5f9; font-weight: 700; color: #0f766e; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #cbd5e1; }
     tr.subtotal td { background: #e2e8f0; font-weight: 700; border-bottom: 1px solid #94a3b8; }
-    tr.total td { background: #0f766e; color: #fff; font-weight: 700; font-size: 8.8pt; }
+    tr.total td { background: #0f766e; color: #fff; font-weight: 700; font-size: {{ $imagen ? '8.8pt' : '7.9pt' }}; padding-top: 5px; padding-bottom: 5px; }
     td.neg { color: #b91c1c; } tr.total td.neg { color: #fecaca; }
     td.pos-mora { color: #047857; }
     td.ok { color: #047857; font-weight: 700; } td.warn { color: #b45309; font-weight: 700; } td.bad { color: #b91c1c; font-weight: 700; }
@@ -113,27 +120,36 @@ $alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor
                 <th>Cobranza</th><th>%</th><th>Mora</th>
             </tr>
         </thead>
-        <tbody>
-        @php $oficinaActual = null; @endphp
-        @foreach($filas as $row)
+        @php
+            $oficinaActual = null;
+            $nCierre = (end($filas) ?: [])['tipo'] ?? null;
+            $corte = $nCierre === 'gran_total' ? max(0, count($filas) - 2) : count($filas);
+            $bloques = ['' => array_slice($filas, 0, $corte), 'cierre' => array_slice($filas, $corte)];
+        @endphp
+        @foreach($bloques as $claseBloque => $filasBloque)
+        @if($filasBloque)
+        <tbody class="{{ $claseBloque }}">
+        @foreach($filasBloque as $row)
             @if($row['tipo'] === 'promotor' && $row['oficina'] !== $oficinaActual)
                 @php $oficinaActual = $row['oficina']; @endphp
                 <tr class="office"><td colspan="13">{{ $row['oficina_titulo'] }}</td></tr>
             @endif
             <tr class="{{ $row['tipo'] === 'gran_total' ? 'total' : ($row['tipo'] === 'subtotal' ? 'subtotal' : '') }}">
-                <td title="{{ $row['promotor'] }}">{{ $row['promotor'] }}</td>
+                <td class="name">{{ $row['promotor'] }}</td>
                 @foreach(['sano_pc', 'sano_cob'] as $c)<td class="{{ $row[$c] < 0 ? 'neg' : '' }}">{{ $money($row[$c]) }}</td>@endforeach
                 <td>{{ $pct($row['sano_pct']) }}</td>
-                @foreach(['atraso_pc', 'atraso_cob'] as $c)<td class="{{ $row[$c] < 0 ? 'neg' : '' }}">{{ $money($row[$c]) }}</td>@endforeach
+                @foreach(['atraso_pc', 'atraso_cob'] as $c)<td class="{{ $c === 'atraso_pc' ? 'b' : '' }} {{ $row[$c] < 0 ? 'neg' : '' }}">{{ $money($row[$c]) }}</td>@endforeach
                 <td>{{ $pct($row['atraso_pct']) }}</td>
-                @foreach(['vencido_pc', 'vencido_cob'] as $c)<td class="{{ $row[$c] < 0 ? 'neg' : '' }}">{{ $money($row[$c]) }}</td>@endforeach
+                @foreach(['vencido_pc', 'vencido_cob'] as $c)<td class="{{ $c === 'vencido_pc' ? 'b' : '' }} {{ $row[$c] < 0 ? 'neg' : '' }}">{{ $money($row[$c]) }}</td>@endforeach
                 <td>{{ $pct($row['vencido_pct']) }}</td>
-                <td class="{{ $row['cobranza_total'] < 0 ? 'neg' : '' }}">{{ $money($row['cobranza_total']) }}</td>
+                <td class="b {{ $row['cobranza_total'] < 0 ? 'neg' : '' }}">{{ $money($row['cobranza_total']) }}</td>
                 <td class="{{ $sem($row) }}">{{ $pct($row['pct_total']) }}</td>
                 <td class="{{ $row['mora'] > 0 ? 'neg' : ($row['mora'] < 0 ? 'pos-mora' : '') }}">{{ $money($row['mora']) }}</td>
             </tr>
         @endforeach
         </tbody>
+        @endif
+        @endforeach
     </table>
 
     @if($conCierre)

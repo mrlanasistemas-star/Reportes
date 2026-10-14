@@ -1,16 +1,36 @@
 <script setup lang="ts">
-import { CheckCircle2, CircleDashed, Receipt, Trash2, XCircle } from 'lucide-vue-next';
+import { CheckCircle2, CircleDashed, History, Receipt, Trash2, XCircle } from 'lucide-vue-next';
+import { computed } from 'vue';
 import { Button } from '@/components/ui/button';
 import type { Rechazado, ResumenFuentes } from './types';
 import { fmtFecha } from './types';
 
-defineProps<{
+const props = defineProps<{
     resumen: ResumenFuentes;
     rechazados: Rechazado[];
     ocupado: boolean;
 }>();
 
 defineEmits<{ quitar: [string] }>();
+
+/**
+ * Cobertura de ingresos. La macro reconoce anticipos y registra NO-CARTERA desde su
+ * historial acumulado (_HIST_INGRESOS); aquí ese historial es la suma de los Excel de
+ * Ingresos Cobranza cargados (una fecha la aporta un solo archivo: el más reciente).
+ */
+const historial = computed(() => {
+    const ing = props.resumen.ingresos;
+
+    if (!ing.length) {
+        return null;
+    }
+
+    const desde = ing.map((i) => i.desde ?? '').sort()[0];
+    const hasta = ing.map((i) => i.hasta ?? '').sort().reverse()[0];
+    const inicioSemana = props.resumen.semana?.dias[1]?.fecha ?? null;
+
+    return { desde, hasta, previo: inicioSemana ? desde < inicioSemana : false, archivos: ing.length };
+});
 
 const n = (v: number | null | undefined) =>
     v === null || v === undefined ? '—' : v.toLocaleString('es-MX');
@@ -64,6 +84,30 @@ const n = (v: number | null | undefined) =>
                 <CircleDashed v-else class="size-4 text-amber-500" />
                 Ingresos de la semana:
                 <b class="font-medium">{{ resumen.semana.ingresos_ok ? 'Disponibles' : 'Faltan o no cubren todos los días' }}</b>
+            </div>
+        </div>
+
+        <div
+            v-if="historial"
+            class="flex gap-3 rounded-lg border p-3 text-sm"
+            :class="historial.previo ? 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/30' : 'border-amber-200 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30'"
+        >
+            <History class="mt-0.5 size-4 shrink-0" :class="historial.previo ? 'text-emerald-600' : 'text-amber-600'" />
+            <div>
+                <p class="font-medium">
+                    Ingresos cargados: del {{ fmtFecha(historial.desde) }} al {{ fmtFecha(historial.hasta) }}
+                    ({{ historial.archivos }} archivo{{ historial.archivos === 1 ? '' : 's' }})
+                </p>
+                <p class="mt-0.5 text-muted-foreground">
+                    <template v-if="historial.previo">
+                        Incluye ingresos anteriores a la semana: se reconocen anticipos y se auditan los pagos de contratos sin cartera.
+                    </template>
+                    <template v-else>
+                        Solo hay ingresos de la semana. Para reconocer anticipos y auditar los pagos de contratos sin cartera
+                        (NO-CARTERA), agrega también el Excel de Ingresos Cobranza de las semanas anteriores. Si un día aparece en dos
+                        archivos, se usa el más reciente: no se duplican movimientos.
+                    </template>
+                </p>
             </div>
         </div>
 
