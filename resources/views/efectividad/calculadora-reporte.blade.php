@@ -61,6 +61,9 @@ $alcance = collect([
     tr { page-break-inside: avoid; break-inside: avoid; }
     th { background: #0f172a; color: #fff; font-weight: 600; font-size: 6.9pt; padding: 4px 3px; text-align: right; line-height: 1.2; white-space: nowrap; }
     th.grp { text-align: center; background: #1e293b; border-left: 1px solid #334155; }
+    th.grp.sano { background: #059669; color: #fff; }
+    th.grp.atraso { background: #fbbf24; color: #0f172a; }
+    th.grp.vencido { background: #dc2626; color: #fff; }
     th:first-child { text-align: left; }
     td { padding: 3px 3px; border-bottom: 1px solid #eef2f7; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: {{ $imagen ? '8.2pt' : '7.4pt' }}; }
     td.name { text-align: left; white-space: normal; word-break: break-word; min-width: 120px; max-width: 210px; line-height: 1.25; }
@@ -116,9 +119,9 @@ $alcance = collect([
         <thead>
             <tr>
                 <th rowspan="2">Ruta / Promotor</th>
-                <th class="grp" colspan="3">Sano</th>
-                <th class="grp" colspan="3">Vigente con atraso</th>
-                <th class="grp" colspan="3">Vencido con atraso</th>
+                <th class="grp sano" colspan="3">Sano</th>
+                <th class="grp atraso" colspan="3">Vigente con atraso</th>
+                <th class="grp vencido" colspan="3">Vencido con atraso</th>
                 <th class="grp" colspan="3">Total</th>
             </tr>
             <tr>

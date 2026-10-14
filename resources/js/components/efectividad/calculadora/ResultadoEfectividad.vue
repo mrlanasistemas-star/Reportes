@@ -156,19 +156,19 @@ const p = computed(() => props.resultado.parametros);
                         </th>
                         <th
                             colspan="3"
-                            class="border-l border-slate-700 px-2 py-1.5 text-center font-semibold"
+                            class="border-l border-slate-700 bg-emerald-600 px-2 py-1.5 text-center font-semibold text-white"
                         >
                             Sano
                         </th>
                         <th
                             colspan="3"
-                            class="border-l border-slate-700 px-2 py-1.5 text-center font-semibold"
+                            class="border-l border-slate-700 bg-amber-400 px-2 py-1.5 text-center font-semibold text-slate-900"
                         >
                             Vigente con atraso
                         </th>
                         <th
                             colspan="3"
-                            class="border-l border-slate-700 px-2 py-1.5 text-center font-semibold"
+                            class="border-l border-slate-700 bg-red-600 px-2 py-1.5 text-center font-semibold text-white"
                         >
                             Vencido con atraso
                         </th>
