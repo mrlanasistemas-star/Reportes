@@ -136,8 +136,8 @@ class EfectividadV4Calculator
             throw new EfectividadV4Exception('EC-V4-903', 'Falta la FECHA CORTE.');
         }
         $modo = $this->normalizar($parametros['modo'] ?? '');
-        if ($modo !== 'DIARIO' && $modo !== 'SEMANAL') {
-            throw new EfectividadV4Exception('EC-V4-904', 'El modo debe ser DIARIO o SEMANAL.');
+        if ($modo !== 'DIARIO' && $modo !== 'ACUMULADO' && $modo !== 'SEMANAL') {
+            throw new EfectividadV4Exception('EC-V4-904', 'Modo invalido: DIARIO, ACUMULADO o SEMANAL.');
         }
         $fIni = $fBase + 1;
         $fFin = $fBase + 7;
@@ -147,7 +147,11 @@ class EfectividadV4Calculator
         if ($modo === 'SEMANAL' && $fCorte !== $fFin) {
             throw new EfectividadV4Exception('EC-V4-906', 'El corte SEMANAL debe ser el domingo siguiente al domingo base.');
         }
-        [$fRepIni, $fRepFin] = $modo === 'DIARIO' ? [$fCorte, $fCorte] : [$fIni, $fFin];
+        [$fRepIni, $fRepFin] = match ($modo) {
+            'DIARIO' => [$fCorte, $fCorte],
+            'ACUMULADO' => [$fIni, $fCorte], // V6: del lunes a la fecha de corte
+            default => [$fIni, $fFin],
+        };
 
         $pasos = $fCorte - $fBase;
         for ($i = 0; $i <= $pasos; $i++) {
@@ -699,6 +703,11 @@ class EfectividadV4Calculator
         $mostrados = 0;
 
         foreach ($claves as $grupo) {
+            // V6: rutas sin meta sana exigible del periodo (Sano por cobrar <= 0.01) no
+            // figuran ni suman al GRAN TOTAL; sus saldos de atraso/vencido se descartan.
+            if (($this->sanoPC[$grupo] ?? 0.0) <= self::TOL) {
+                continue;
+            }
             if (! $this->grupoTieneDatos($grupo)) {
                 continue;
             }

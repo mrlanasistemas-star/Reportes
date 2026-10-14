@@ -111,12 +111,15 @@ class EfectividadCalculadoraService
 
         $semanal = [];
         $diario = [];
+        $acumulado = [];
         foreach ($carteras as $c) {
             $d = CarbonImmutable::parse($c['fecha']);
             // Diario: fotos desde el domingo base de esa semana hasta el día.
             $base = $d->dayOfWeek === 0 ? $d->subDays(7) : $d->subDays($d->dayOfWeek);
             if ($this->fotosCompletas($fechas, $base, $d)) {
                 $diario[] = $this->opcionCorte($base, $d, $d, $d, $cobertura);
+                // Acumulado: del lunes de esa semana al día elegido (mismas fotografías).
+                $acumulado[] = $this->opcionCorte($base, $d, $base->addDay(), $d, $cobertura);
             }
             if ($d->dayOfWeek === 0 && $this->fotosCompletas($fechas, $d->subDays(7), $d)) {
                 $semanal[] = $this->opcionCorte($d->subDays(7), $d, $d->subDays(6), $d, $cobertura);
@@ -125,7 +128,7 @@ class EfectividadCalculadoraService
         $mensual = [];
         foreach ($semanal as $s) {
             $mes = substr($s['corte'], 0, 7);
-            $mensual[$mes] ??= ['valor' => $mes, 'etiqueta' => mb_convert_case(CarbonImmutable::parse($mes.'-01')->locale('es')->translatedFormat('F Y'), MB_CASE_TITLE), 'semanas' => 0, 'ingresos_ok' => true];
+            $mensual[$mes] ??= ['valor' => $mes, 'etiqueta' => mb_convert_case(CarbonImmutable::parse($mes.'-01')->locale('es')->translatedFormat('F Y'), MB_CASE_TITLE), 'semanas' => 0, 'ingresos_ok' => true, 'historial_previo' => $s['historial_previo']];
             $mensual[$mes]['semanas']++;
             $mensual[$mes]['ingresos_ok'] = $mensual[$mes]['ingresos_ok'] && $s['ingresos_ok'];
         }
@@ -166,13 +169,13 @@ class EfectividadCalculadoraService
             'carteras' => array_map($publico, $carteras),
             'ingresos' => array_map($publico, $ingresos),
             'semana' => $semanaVista,
-            'cortes' => ['DIARIO' => array_reverse($diario), 'SEMANAL' => array_reverse($semanal), 'MENSUAL' => array_reverse(array_values($mensual))],
+            'cortes' => ['DIARIO' => array_reverse($diario), 'ACUMULADO' => array_reverse($acumulado), 'SEMANAL' => array_reverse($semanal), 'MENSUAL' => array_reverse(array_values($mensual))],
             'expira_minutos' => EfectividadWorkspace::TTL_MINUTOS,
         ];
     }
 
     /**
-     * @param  string  $modo  DIARIO | SEMANAL | MENSUAL
+     * @param  string  $modo  DIARIO | ACUMULADO | SEMANAL | MENSUAL
      * @param  string  $valor  fecha de corte (AAAA-MM-DD) o mes (AAAA-MM)
      */
     public function calcular(string $token, int $userId, string $modo, string $valor): array
@@ -288,9 +291,11 @@ class EfectividadCalculadoraService
         $p = $r['parametros'];
 
         return [
-            'titulo' => $modo === 'DIARIO'
-                ? 'CORTE DIARIO: '.$this->dmy($p['fecha_corte'])
-                : 'CORTE SEMANAL: '.$this->dmy($p['semana_inicio']).' AL '.$this->dmy($p['semana_fin']),
+            'titulo' => match ($modo) {
+                'DIARIO' => 'CORTE DIARIO: '.$this->dmy($p['fecha_corte']),
+                'ACUMULADO' => 'ACUMULADO: '.$this->dmy($p['semana_inicio']).' AL '.$this->dmy($p['fecha_corte']),
+                default => 'CORTE SEMANAL: '.$this->dmy($p['semana_inicio']).' AL '.$this->dmy($p['semana_fin']),
+            },
             'parametros' => $p,
             'filas' => $r['filas'],
             'incidencias' => $r['incidencias'],
@@ -369,9 +374,11 @@ class EfectividadCalculadoraService
             'Vencido/atraso según la fotografía diaria de cartera del día en que se reconoce el pago.',
             'Sin moratorios: importe = capital + interés + impuesto + cargos calendario.',
             'Porcentajes calculados sobre el Sano por cobrar; Mora = Sano por cobrar − Cobranza total.',
+            'Rutas sin Sano por cobrar en el periodo no se muestran ni suman al gran total (tampoco sus saldos de atraso o vencido).',
         ];
 
         return match ($modo) {
+            'ACUMULADO' => [...$notas, 'Acumulado: Sano por cobrar = cuotas programadas del lunes a la fecha de corte; Vigente con atraso y Vencido = saldos de la cartera del día de corte.'],
             'DIARIO' => [...$notas, 'Corte diario: Sano por cobrar = cuotas programadas del día; Vigente con atraso y Vencido = saldos de la cartera de ese día.'],
             'MENSUAL' => [...$notas, 'Mensual: suma de las semanas completas del mes, cada una calculada con las reglas semanales. Sano por cobrar y cobrados se suman; Vigente con atraso y Vencido por cobrar son saldos del último corte del mes (no se suman). Porcentajes y mora se recalculan desde los importes.'],
             default => $notas,
@@ -379,34 +386,45 @@ class EfectividadCalculadoraService
     }
 
     /**
-     * _HIST_INGRESOS de la solicitud: todos los Excel de ingresos cargados. Igual que
-     * `ActualizarHistorialIngresos`, cada fecha de transacción sale de UNA sola carga:
-     * la que termina más tarde (a igualdad, la cargada después).
+     * Historial de ingresos de la solicitud, armado como `ActualizarHistorialIngresos`
+     * (V6): los archivos se aplican del más antiguo al más reciente; cada uno quita del
+     * historial SOLO las fechas de transacción que trae y agrega sus movimientos al
+     * final. Así una fecha nunca se duplica y gana la carga más reciente. La referencia
+     * de cada movimiento es su fila en ese historial (fila 1 = encabezados).
      */
     private function historial(string $token, array $meta): array
     {
         $ingresos = array_values(array_filter($meta['archivos'], fn ($a) => $a['tipo'] === EfectividadExcelReader::TIPO_INGRESOS));
-        usort($ingresos, fn ($a, $b) => [$b['hasta'], $b['orden']] <=> [$a['hasta'], $a['orden']]);
-        $dueno = [];
+        usort($ingresos, fn ($a, $b) => [$a['hasta'], $a['orden']] <=> [$b['hasta'], $b['orden']]);
         $columnas = null;
         $filas = [];
-        foreach ($ingresos as $n => $a) {
+        foreach ($ingresos as $a) {
             $datos = $this->workspace->leer($token, 'f_'.$a['id']) ?? ['columnas' => [], 'filas' => []];
             $columnas = $columnas === null ? $datos['columnas'] : array_values(array_intersect($columnas, $datos['columnas']));
+            $fechas = [];
             foreach ($datos['filas'] as $f) {
                 $d = $this->calc->leerFecha($f['fecha_transaccion'] ?? null);
-                if ($d !== null) {
-                    $dueno[$d] ??= $n;
-                    if ($dueno[$d] !== $n) {
-                        continue;
-                    }
+                if ($d !== null && trim((string) ($f['contrato'] ?? '')) !== '') {
+                    $fechas[$d] = true;
                 }
-                if ($n > 0) {
-                    $f['ref'] = ($n + 1).':'.$f['ref'];
+            }
+            if ($fechas && $filas) {
+                $filas = array_values(array_filter($filas, function ($f) use ($fechas) {
+                    $d = $this->calc->leerFecha($f['fecha_transaccion'] ?? null);
+
+                    return $d === null || ! isset($fechas[$d]);
+                }));
+            }
+            foreach ($datos['filas'] as $f) {
+                if (trim((string) ($f['contrato'] ?? '')) !== '') {
+                    $filas[] = $f;
                 }
-                $filas[] = $f;
             }
         }
+        foreach ($filas as $i => &$f) {
+            $f['ref'] = (string) ($i + 2);
+        }
+        unset($f);
 
         return ['columnas' => $columnas ?? [], 'filas' => $filas];
     }

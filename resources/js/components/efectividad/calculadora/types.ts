@@ -1,4 +1,4 @@
-export type Modo = 'DIARIO' | 'SEMANAL' | 'MENSUAL';
+export type Modo = 'DIARIO' | 'ACUMULADO' | 'SEMANAL' | 'MENSUAL';
 
 export type ArchivoCargado = {
     id: string;
@@ -89,7 +89,11 @@ export type Resultado = {
     notas: string[];
     avisos: string[];
     sin_movimientos: boolean;
-    semanas: Array<{ titulo: string; corte: string; gran_total: FilaEfectividad | null }>;
+    semanas: Array<{
+        titulo: string;
+        corte: string;
+        gran_total: FilaEfectividad | null;
+    }>;
     catalogo: Array<{ oficina: string; promotores: string[] }>;
 };
 

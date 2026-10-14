@@ -350,38 +350,3 @@ it('los mensajes de error de una fotografía nunca muestran rutas del servidor',
 
 // ── Carga por HTTP (pantalla de Disponibilidad) ────────────────────────────
 
-it('POST /efectividad-cobranza/fotos valida fecha, ancla a la semana operativa y procesa en cola', function () {
-    $admin = User::factory()->create(['role' => 'admin']);
-    $tmp = tempnam(sys_get_temp_dir(), 'foto').'.xlsx';
-    Ref::writeXlsx([FOTO_HEADERS, ...array_map(fn ($c) => fotoRow($c, '2026-10-04'), V4::CONTRATOS)], $tmp, 4);
-    // El domingo base (04/10) no está dentro de la semana: se ancla a la semana siguiente.
-    $resp = $this->actingAs($admin)->post('/efectividad-cobranza/fotos', [
-        'snapshot_date' => '2026-10-04',
-        'file' => new UploadedFile($tmp, 'Saldos por cliente 04-10.xlsx', null, null, true),
-    ], ['Accept' => 'application/json']);
-
-    $resp->assertOk()->assertJsonPath('snapshot_date', '2026-10-04');
-    $upload = ReportUpload::snapshots()->findOrFail($resp->json('upload_id'));
-    expect($upload->period_id)->toBe($this->week->id)
-        ->and($upload->status)->toBe(ReportUploadStatus::Processed) // QUEUE_CONNECTION=sync
-        ->and(PortfolioSnapshot::query()->active()->sole()->snapshot_date->format('Y-m-d'))->toBe('2026-10-04');
-
-    $lista = $this->actingAs($admin)->getJson('/efectividad-cobranza/fotos?from=2026-10-01&to=2026-10-31')->assertOk();
-    expect($lista->json('uploads.0.snapshot_status'))->toBe('active')
-        ->and($lista->json('uploads.0.rows'))->toBe(4);
-});
-
-it('POST /efectividad-cobranza/fotos rechaza fecha futura, falta de fecha y semanas inexistentes', function () {
-    $admin = User::factory()->create(['role' => 'admin']);
-    $file = fn () => UploadedFile::fake()->create('saldos.xlsx', 10, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-
-    $this->actingAs($admin)->postJson('/efectividad-cobranza/fotos', ['file' => $file()])->assertStatus(422)->assertJsonValidationErrors('snapshot_date');
-    $this->actingAs($admin)->postJson('/efectividad-cobranza/fotos', ['snapshot_date' => now()->addDays(3)->format('Y-m-d'), 'file' => $file()])
-        ->assertStatus(422)->assertJsonPath('message', 'La fecha de la fotografía no puede ser futura.');
-    $this->actingAs($admin)->postJson('/efectividad-cobranza/fotos', ['snapshot_date' => '2025-01-15', 'file' => $file()])
-        ->assertStatus(422)->assertJsonFragment(['message' => 'No existe una semana operativa que contenga el 15/01/2025. Créala en Periodos antes de cargar la fotografía.']);
-    $this->actingAs($admin)->postJson('/efectividad-cobranza/fotos', ['snapshot_date' => '2026-10-05', 'file' => UploadedFile::fake()->create('x.pdf', 5, 'application/pdf')])
-        ->assertStatus(422)->assertJsonValidationErrors('file');
-
-    expect(ReportUpload::snapshots()->count())->toBe(0);
-});

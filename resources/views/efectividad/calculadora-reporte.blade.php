@@ -20,7 +20,7 @@ $sem = function ($row) {
 
     return $p >= 0.95 ? 'ok' : ($p >= 0.90 ? 'warn' : 'bad');
 };
-$modos = ['DIARIO' => 'Diario', 'SEMANAL' => 'Semanal', 'MENSUAL' => 'Mensual'];
+$modos = ['DIARIO' => 'Diario', 'ACUMULADO' => 'Acumulado', 'SEMANAL' => 'Semanal', 'MENSUAL' => 'Mensual'];
 $p = $r['parametros'];
 $d = fn ($ymd) => \Carbon\Carbon::parse($ymd)->format('d/m/Y');
 $alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor'] : (isset($r['filtro']['oficina']) ? 'Oficina: '.$r['filtro']['oficina'] : 'Todas las oficinas');
@@ -62,7 +62,7 @@ $alcance = isset($r['filtro']['promotor']) ? 'Promotor: '.$r['filtro']['promotor
     /* El cierre (último subtotal + GRAN TOTAL) nunca se separa de página. */
     tbody.cierre { break-inside: avoid; page-break-inside: avoid; break-before: avoid; }
     tr.office { break-after: avoid; page-break-after: avoid; }
-    tr.office td { background: #f1f5f9; font-weight: 700; color: #0f766e; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #cbd5e1; }
+    tr.office td { text-align: left !important; background: #f1f5f9; font-weight: 700; color: #0f766e; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #cbd5e1; }
     tr.subtotal td { background: #e2e8f0; font-weight: 700; border-bottom: 1px solid #94a3b8; }
     tr.total td { background: #0f766e; color: #fff; font-weight: 700; font-size: {{ $imagen ? '8.8pt' : '7.9pt' }}; padding-top: 5px; padding-bottom: 5px; }
     td.neg { color: #b91c1c; } tr.total td.neg { color: #fecaca; }

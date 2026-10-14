@@ -66,7 +66,7 @@ class EfectividadCalculadoraController extends Controller
     public function calculate(Request $request, string $token): JsonResponse
     {
         $data = $request->validate([
-            'modo' => ['required', 'in:DIARIO,SEMANAL,MENSUAL'],
+            'modo' => ['required', 'in:DIARIO,ACUMULADO,SEMANAL,MENSUAL'],
             'valor' => ['required', 'string', 'regex:/^\d{4}-\d{2}(-\d{2})?$/'],
         ]);
 
