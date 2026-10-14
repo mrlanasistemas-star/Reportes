@@ -5,11 +5,14 @@ namespace App\Providers;
 use App\Actions\Fortify\CreateNewUser;
 use App\Actions\Fortify\ResetUserPassword;
 use App\Http\Responses\LoginResponse;
+use App\Models\User;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Laravel\Fortify\Contracts\LoginResponse as LoginResponseContract;
 use Laravel\Fortify\Features;
@@ -42,6 +45,21 @@ class FortifyServiceProvider extends ServiceProvider
     {
         Fortify::resetUserPasswordsUsing(ResetUserPassword::class);
         Fortify::createUsersUsing(CreateNewUser::class);
+
+        // Mismo login de Fortify, más el candado de cuenta deshabilitada por un administrador.
+        Fortify::authenticateUsing(function (Request $request) {
+            $user = User::query()->where(Fortify::username(), $request->input(Fortify::username()))->first();
+            if (! $user || ! Hash::check((string) $request->input('password'), $user->password)) {
+                return null;
+            }
+            if ($user->disabled_at !== null) {
+                throw ValidationException::withMessages([
+                    Fortify::username() => 'Tu cuenta está deshabilitada. Contacta a un administrador.',
+                ]);
+            }
+
+            return $user;
+        });
     }
 
     /**

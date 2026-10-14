@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { Link, useForm, router } from '@inertiajs/vue3'
-import { ArrowLeft, Plus, UserPlus, Users } from 'lucide-vue-next'
+import { ArrowLeft, Ban, KeyRound, Plus, UserCheck, UserPlus, Users } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import TextField from '@/components/forms/TextField.vue'
@@ -13,7 +13,7 @@ import AppLayout from '@/layouts/AppLayout.vue'
 defineOptions({ layout: AppLayout })
 
 type Responsible = {
-    id: number; name: string; email: string; role: string; status: 'active' | 'pending'; objectives_count: number
+    id: number; name: string; email: string; role: string; status: 'active' | 'pending'; disabled: boolean; objectives_count: number
     employee_id: number | null; employee_name: string | null; employee_is_active: boolean | null; current_branch: string | null
 }
 type LinkableEmployee = { id: number; full_name: string; is_active: boolean; linked_user_id: number | null }
@@ -22,6 +22,7 @@ const props = defineProps<{
     responsibles: Responsible[]
     employees: LinkableEmployee[]
     temp_password?: string | null
+    reset_password?: { name: string; email: string; password: string } | null
     current_user_id: number
     admin_count: number
 }>()
@@ -38,6 +39,83 @@ return
         confirmButtonColor: '#4f46e5',
     })
 }, { immediate: true })
+
+// Contraseña restablecida por un admin — también UNA SOLA VEZ (session()->pull()).
+watch(() => props.reset_password, (data) => {
+    if (!data) {
+        return
+    }
+
+    Swal.fire({
+        icon: 'success',
+        title: 'Contraseña restablecida',
+        html: `<p style="margin-bottom:.5rem">Nueva contraseña de <b>${escapeHtml(data.name)}</b> (${escapeHtml(data.email)}).</p>
+<p style="margin-bottom:.75rem;color:#b45309">Cópiala ahora: no se volverá a mostrar.</p>
+<code style="display:block;font-size:1.25em;letter-spacing:.05em;padding:.6rem;border-radius:.5rem;background:#f1f5f9;user-select:all">${escapeHtml(data.password)}</code>
+<p style="margin-top:.75rem;font-size:.85em;color:#64748b">Sus sesiones abiertas se cerraron. Puede cambiarla después en Configuración › Seguridad.</p>`,
+        showCancelButton: true,
+        confirmButtonText: 'Copiar contraseña',
+        cancelButtonText: 'Cerrar',
+        confirmButtonColor: '#4f46e5',
+        allowOutsideClick: false,
+        preConfirm: async () => {
+            try {
+                await navigator.clipboard.writeText(data.password)
+            } catch {
+                Swal.showValidationMessage('No se pudo copiar automáticamente; selecciónala y cópiala a mano.')
+
+                return false
+            }
+
+            return true
+        },
+    }).then((r) => {
+        if (r.isConfirmed) {
+            Swal.fire({ icon: 'success', title: 'Copiada al portapapeles', timer: 1600, showConfirmButton: false })
+        }
+    })
+}, { immediate: true })
+
+function escapeHtml(v: string): string {
+    return v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
+}
+
+// Candado espejo del backend (toggleDisabled()): nunca el último admin habilitado.
+const enabledAdmins = computed(() => props.responsibles.filter((u) => u.role === 'admin' && !u.disabled).length)
+
+function canToggleDisabled(u: Responsible): boolean {
+    return u.id !== props.current_user_id && (u.disabled || u.role !== 'admin' || enabledAdmins.value > 1)
+}
+
+function resetPassword(u: Responsible) {
+    Swal.fire({
+        icon: 'warning', title: `¿Restablecer la contraseña de ${u.name}?`,
+        text: 'Se generará una contraseña nueva que verás una sola vez para copiarla. La actual dejará de funcionar y se cerrarán sus sesiones abiertas.',
+        showCancelButton: true, confirmButtonText: 'Generar contraseña', cancelButtonText: 'Cancelar', confirmButtonColor: '#4f46e5',
+    }).then((r) => {
+        if (r.isConfirmed) {
+            router.post(`/okr/responsibles/${u.id}/reset-password`, {}, { preserveScroll: true })
+        }
+    })
+}
+
+function toggleDisabled(u: Responsible) {
+    Swal.fire({
+        icon: u.disabled ? 'question' : 'warning',
+        title: u.disabled ? `¿Habilitar la cuenta de ${u.name}?` : `¿Deshabilitar la cuenta de ${u.name}?`,
+        text: u.disabled
+            ? 'Podrá volver a iniciar sesión con su contraseña.'
+            : 'No podrá iniciar sesión en ningún módulo y se cerrarán sus sesiones abiertas. Puedes revertirlo cuando quieras.',
+        showCancelButton: true,
+        confirmButtonText: u.disabled ? 'Habilitar cuenta' : 'Deshabilitar cuenta',
+        cancelButtonText: 'Cancelar',
+        confirmButtonColor: u.disabled ? '#4f46e5' : '#dc2626',
+    }).then((r) => {
+        if (r.isConfirmed) {
+            router.post(`/okr/responsibles/${u.id}/toggle-disabled`, {}, { preserveScroll: true })
+        }
+    })
+}
 
 const showForm = ref(false)
 // D7 del cierre (17-sep-2026): esta pantalla NUNCA puede crear un admin — el rol
@@ -220,7 +298,8 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                                 </select>
                             </td>
                             <td class="px-4 py-3">
-                                <span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold" :class="r.status === 'active' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'">
+                                <span v-if="r.disabled" class="inline-flex items-center rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-700 dark:text-rose-300">Deshabilitado</span>
+                                <span v-else class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold" :class="r.status === 'active' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'">
                                     {{ r.status === 'active' ? 'Activo' : 'Pendiente' }}
                                 </span>
                             </td>
@@ -232,9 +311,26 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                             </td>
                             <td class="px-4 py-3 text-muted-foreground">{{ r.current_branch ?? '—' }}</td>
                             <td class="px-4 py-3 font-semibold tabular-nums text-foreground">{{ r.objectives_count }}</td>
-                            <td class="px-4 py-3">
+                            <td class="space-y-1 px-4 py-3">
                                 <button v-if="r.status === 'pending'" type="button" class="text-xs font-bold text-primary hover:underline" @click="enableAccess(r)">Habilitar acceso</button>
                                 <button v-else-if="r.id !== current_user_id" type="button" class="text-xs font-bold text-rose-600 hover:underline" @click="disableAccess(r)">Quitar acceso</button>
+                                <div v-if="r.id !== current_user_id" class="flex items-center gap-1">
+                                    <button type="button" class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground" title="Restablecer contraseña" :aria-label="`Restablecer contraseña de ${r.name}`" @click="resetPassword(r)">
+                                        <KeyRound class="size-4" />
+                                    </button>
+                                    <button
+                                        v-if="canToggleDisabled(r)"
+                                        type="button"
+                                        class="inline-flex size-7 items-center justify-center rounded-md transition hover:bg-muted"
+                                        :class="r.disabled ? 'text-emerald-600' : 'text-rose-600'"
+                                        :title="r.disabled ? 'Habilitar cuenta' : 'Deshabilitar cuenta'"
+                                        :aria-label="`${r.disabled ? 'Habilitar' : 'Deshabilitar'} cuenta de ${r.name}`"
+                                        @click="toggleDisabled(r)"
+                                    >
+                                        <UserCheck v-if="r.disabled" class="size-4" />
+                                        <Ban v-else class="size-4" />
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                     </tbody>
