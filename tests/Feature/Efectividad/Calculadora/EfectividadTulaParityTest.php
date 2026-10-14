@@ -131,3 +131,59 @@ it('Excel originales de Lendus + ingresos previos: paridad exacta de importes, a
 
     expect($escrituras)->toBe(0);
 });
+
+it('Tula paso a paso: domingo+lunes sin ingresos → solo faltan ingresos; luego diario, acumulado y semanal en la misma sesión', function () {
+    $escrituras = 0;
+    DB::listen(function ($q) use (&$escrituras) {
+        $escrituras += preg_match('/^\s*(insert|update|delete|replace)/i', $q->sql);
+    });
+    $svc = app(EfectividadCalculadoraService::class);
+    $up = function (array $nombres) {
+        return array_map(function ($n) {
+            $c = $this->dir.'/up_'.uniqid().'.xlsx';
+            copy(base_path(TULA_DIR.'/'.$n), $c);
+
+            return new UploadedFile($c, $n, null, null, true);
+        }, $nombres);
+    };
+    $cartera = fn (int $n) => "Saldos Por Cliente ($n).xlsx";
+    $corte = fn ($r, $modo, $f) => collect($r['resumen']['cortes'][$modo])->firstWhere('valor', $f);
+
+    // 1. Domingo 04 + lunes 05, sin ingresos.
+    $r = $svc->agregarArchivos(null, 1, $up([$cartera(12), $cartera(13)]));
+    $t = $r['token'];
+    $lunes = $corte($r, 'DIARIO', '2026-10-05');
+    expect($lunes['titulo'])->toBe('Corte diario: lunes 05/10/2026')
+        ->and(collect($lunes['requisitos'])->map(fn ($q) => [$q['etiqueta'], $q['disponible']])->all())->toBe([
+            ['Cartera base (domingo) 04/10', true], ['Cartera del lunes 05/10', true], ['Ingresos Cobranza del lunes 05/10', false],
+        ])
+        ->and($lunes['falta'])->toBe('Solo falta cargar Ingresos Cobranza del lunes 05/10 para calcular.');
+
+    // 2. + Ingresos de la semana → calcula el lunes con solo sus movimientos del día.
+    $r = $svc->agregarArchivos($t, 1, $up(['Ingresos cobranza 2026-10-05 A 2026-10-11 (3).xlsx']));
+    expect($corte($r, 'DIARIO', '2026-10-05')['listo'])->toBeTrue();
+    $d05 = $svc->calcular($t, 1, 'DIARIO', '2026-10-05');
+    expect($d05['parametros']['inicio_ingresos'])->toBe('2026-10-05')->and($d05['parametros']['fin_ingresos'])->toBe('2026-10-05')
+        ->and(collect($d05['filas'])->firstWhere('tipo', 'gran_total')['sano_pc'])->toBeGreaterThan(0);
+
+    // 3. + martes → diario del martes.  4. + miércoles → acumulado al miércoles (lunes a miércoles).
+    $svc->agregarArchivos($t, 1, $up([$cartera(14)]));
+    expect($svc->calcular($t, 1, 'DIARIO', '2026-10-06')['titulo'])->toBe('CORTE DIARIO: 06/10/2026');
+    $r = $svc->agregarArchivos($t, 1, $up([$cartera(15)]));
+    expect(collect($corte($r, 'ACUMULADO', '2026-10-07')['requisitos'])->where('tipo', 'cartera')->count())->toBe(4)
+        ->and($corte($r, 'SEMANAL', '2026-10-11')['estado'])->toBe('faltan_carteras');
+    $acu = $svc->calcular($t, 1, 'ACUMULADO', '2026-10-07');
+    expect($acu['titulo'])->toBe('ACUMULADO: 05/10/2026 AL 07/10/2026')
+        ->and([$acu['parametros']['inicio_ingresos'], $acu['parametros']['fin_ingresos']])->toBe(['2026-10-05', '2026-10-07']);
+
+    // 5. Resto de la semana → SEMANAL idéntico a las cifras aprobadas (importes; sin ingresos previos).
+    $svc->agregarArchivos($t, 1, $up([$cartera(16), $cartera(17), $cartera(18), $cartera(19)]));
+    $sem = $svc->calcular($t, 1, 'SEMANAL', '2026-10-11');
+    $cmp = (new EfectividadV4ParityComparator)->compare($this->ref['esperado'], $sem['filas'], [], []);
+    expect($cmp['resumen']['valores_exactos'])->toBe(180)->and($cmp['resumen']['mismo_orden'])->toBeTrue();
+
+    // 6-7. Cambiar de modalidad reutiliza los mismos archivos (diario del lunes sigue igual).
+    expect($svc->calcular($t, 1, 'DIARIO', '2026-10-05')['filas'])->toEqual($d05['filas']);
+
+    expect($escrituras)->toBe(0);
+});

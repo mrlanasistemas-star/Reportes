@@ -16,6 +16,7 @@ import Swal from 'sweetalert2';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import ArchivosDropzone from '@/components/efectividad/calculadora/ArchivosDropzone.vue';
+import RequisitosCorte from '@/components/efectividad/calculadora/RequisitosCorte.vue';
 import ResultadoEfectividad from '@/components/efectividad/calculadora/ResultadoEfectividad.vue';
 import ResumenFuentes from '@/components/efectividad/calculadora/ResumenFuentes.vue';
 import type {
@@ -139,31 +140,43 @@ const opcionesPromotor = computed(() => {
         ),
     ];
 });
+const opcionCorte = computed(
+    () => opcionesCorte.value.find((o) => o.valor === corte.value) ?? null,
+);
+// El botón solo se habilita con TODAS las fuentes del corte elegido (carteras e ingresos).
 const faltante = computed(() => {
-    if (!resumen.value) {
+    if (!resumen.value || !hayArchivos.value) {
         return 'Carga tus archivos de cartera e ingresos.';
     }
 
-    if (!resumen.value.ingresos.length) {
-        return 'Falta el archivo de Ingresos Cobranza.';
+    if (!opcionCorte.value) {
+        return modo.value === 'MENSUAL'
+            ? 'Para el mensual necesitas al menos una semana completa (8 carteras) dentro del mes.'
+            : 'Carga las carteras del periodo que quieres calcular.';
     }
 
-    if (!opcionesCorte.value.length) {
-        return modo.value === 'DIARIO' || modo.value === 'ACUMULADO'
-            ? 'Necesitas las carteras desde el domingo anterior hasta el día elegido.'
-            : modo.value === 'SEMANAL'
-              ? 'Para un corte semanal necesitas las 8 carteras: domingo base, lunes a sábado y domingo de corte.'
-              : 'Para el mensual necesitas al menos una semana completa (8 carteras) dentro del mes.';
-    }
-
-    return null;
+    return opcionCorte.value.listo ? null : opcionCorte.value.falta;
 });
 
-watch(opcionesCorte, (ops) => {
-    if (!ops.some((o) => o.valor === corte.value)) {
-        corte.value = ops[0]?.valor ?? null;
-    }
-});
+// Al cambiar de modalidad o de archivos se conserva lo cargado y se elige el corte
+// listo más reciente (o el más reciente si ninguno está listo).
+watch(
+    opcionesCorte,
+    (ops) => {
+        const actual = ops.find((o) => o.valor === corte.value);
+
+        if (!actual || (!actual.listo && ops.some((o) => o.listo))) {
+            corte.value = (ops.find((o) => o.listo) ?? ops[0])?.valor ?? null;
+        }
+    },
+    { immediate: true },
+);
+
+const ESTADO_CORTE: Record<string, string> = {
+    listo: 'listo para calcular',
+    faltan_ingresos: 'carteras completas · faltan ingresos',
+    faltan_carteras: 'faltan carteras',
+};
 watch(sucursal, () => {
     oficina.value = '';
     promotor.value = '';
@@ -517,11 +530,36 @@ onBeforeUnmount(() => {
                     :max-mb="props.limites.max_mb"
                     @archivos="subir"
                 />
+                <div class="space-y-3">
+                    <div v-if="opcionesCorte.length" class="md:w-[28rem]">
+                        <SelectField
+                            v-model="corte"
+                            :label="
+                                modo === 'MENSUAL'
+                                    ? 'Mes'
+                                    : modo === 'SEMANAL'
+                                      ? 'Semana'
+                                      : modo === 'ACUMULADO'
+                                        ? 'Acumulado hasta'
+                                        : 'Día de corte'
+                            "
+                            :options="
+                                opcionesCorte.map((o) => ({
+                                    value: o.valor,
+                                    label: `${o.etiqueta} — ${ESTADO_CORTE[o.estado]}`,
+                                }))
+                            "
+                            :disabled="ocupado"
+                        />
+                    </div>
+                    <RequisitosCorte :modo="modo" :opcion="opcionCorte" />
+                </div>
                 <ResumenFuentes
                     v-if="resumen && hayArchivos"
                     :resumen="resumen"
                     :rechazados="rechazados"
                     :ocupado="ocupado"
+                    :inicio-periodo="opcionCorte?.desde ?? null"
                     @quitar="quitar"
                 />
                 <ResumenFuentes
@@ -529,7 +567,6 @@ onBeforeUnmount(() => {
                     :resumen="{
                         carteras: [],
                         ingresos: [],
-                        semana: null,
                         cortes: {
                             DIARIO: [],
                             ACUMULADO: [],
@@ -550,38 +587,10 @@ onBeforeUnmount(() => {
                 <h2 class="font-semibold">
                     <span class="text-primary">3.</span> Calcular
                 </h2>
-                <div class="flex flex-col gap-3 md:flex-row md:items-end">
-                    <div class="md:w-80">
-                        <SelectField
-                            v-model="corte"
-                            :label="
-                                modo === 'MENSUAL'
-                                    ? 'Mes'
-                                    : modo === 'SEMANAL'
-                                      ? 'Semana'
-                                      : modo === 'ACUMULADO'
-                                        ? 'Acumulado hasta'
-                                        : 'Día de corte'
-                            "
-                            :options="
-                                opcionesCorte.map((o) => ({
-                                    value: o.valor,
-                                    label: o.ingresos_ok
-                                        ? o.etiqueta
-                                        : `${o.etiqueta} (ingresos incompletos)`,
-                                }))
-                            "
-                            :placeholder="
-                                opcionesCorte.length
-                                    ? 'Selecciona…'
-                                    : 'Sin cortes disponibles'
-                            "
-                            :disabled="!opcionesCorte.length || ocupado"
-                        />
-                    </div>
+                <div class="flex flex-col gap-3 md:flex-row md:items-center">
                     <Button
                         size="lg"
-                        :disabled="!!faltante || !corte || ocupado"
+                        :disabled="!!faltante || !opcionCorte?.listo || ocupado"
                         @click="calcular"
                     >
                         <Loader2
@@ -593,10 +602,17 @@ onBeforeUnmount(() => {
                             calculando ? 'Calculando…' : 'Calcular efectividad'
                         }}
                     </Button>
+                    <p
+                        class="text-sm"
+                        :class="
+                            faltante
+                                ? 'text-muted-foreground'
+                                : 'text-emerald-700 dark:text-emerald-400'
+                        "
+                    >
+                        {{ faltante ?? opcionCorte?.titulo }}
+                    </p>
                 </div>
-                <p v-if="faltante" class="text-sm text-muted-foreground">
-                    {{ faltante }}
-                </p>
             </CardContent>
         </Card>
 

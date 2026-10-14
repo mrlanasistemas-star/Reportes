@@ -102,20 +102,20 @@ class EfectividadWorkspace
             if (basename($dir) === 'exports') {
                 // PDF/PNG ya enviados se borran al enviarse; aquí solo restos de envíos interrumpidos.
                 foreach (File::allFiles($dir) as $f) {
-                    if (time() - $f->getMTime() > min($minutos, 10) * 60) {
+                    if ($minutos === 0 || time() - $f->getMTime() > min($minutos, 10) * 60) {
                         @unlink($f->getPathname());
                     }
                 }
 
                 continue;
             }
-            if (time() - (int) @filemtime($dir) > $minutos * 60) {
+            if ($minutos === 0 || time() - (int) @filemtime($dir) > $minutos * 60) {
                 File::deleteDirectory($dir);
                 $n++;
             }
         }
         foreach (File::files(self::raiz()) as $f) {
-            if (time() - $f->getMTime() > $minutos * 60) {
+            if ($minutos === 0 || time() - $f->getMTime() > $minutos * 60) {
                 @unlink($f->getPathname());
             }
         }
