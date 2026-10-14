@@ -19,7 +19,7 @@ import { visibleMainNavItems } from '@/config/mainNav';
 import { dashboard } from '@/routes';
 
 const page = usePage();
-const navItems = computed(() => visibleMainNavItems(page.props.auth.user?.role));
+const navItems = computed(() => visibleMainNavItems(page.props.auth));
 </script>
 
 <template>

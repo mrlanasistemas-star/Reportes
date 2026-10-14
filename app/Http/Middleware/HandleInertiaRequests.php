@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Services\Access\ModuleAccessService;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 use Symfony\Component\HttpFoundation\Response;
@@ -47,6 +48,9 @@ class HandleInertiaRequests extends Middleware
             'name' => config('app.name'),
             'auth' => [
                 'user' => $request->user(),
+                // Módulos que el menú debe mostrar (14-oct-2026) — misma fuente que
+                // EnsureModuleAccess; ocultar en el menú es solo UX.
+                'modules' => app(ModuleAccessService::class)->modulesFor($request->user()),
             ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
             // Indicador de trabajos en segundo plano + notificaciones internas (campana

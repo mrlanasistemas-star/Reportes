@@ -12,6 +12,8 @@ export type User = {
 
 export type Auth = {
     user: User;
+    /** Módulos que el rol del usuario puede ver (ver ModuleAccessService). */
+    modules: string[];
 };
 
 export type TwoFactorConfigContent = {

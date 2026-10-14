@@ -7,6 +7,7 @@ use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\OkrObjective;
 use App\Models\User;
+use App\Services\Access\ModuleAccessService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\RedirectResponse;
@@ -54,7 +55,7 @@ class ResponsibleController extends Controller
 {
     use AuthorizesRequests;
 
-    public function index(Request $request, OkrEmployeeBranchResolver $branchResolver): Response
+    public function index(Request $request, OkrEmployeeBranchResolver $branchResolver, ModuleAccessService $moduleAccess): Response
     {
         $this->authorize('okr.admin');
 
@@ -118,6 +119,9 @@ class ResponsibleController extends Controller
             // repo no comparte flash de sesión a Inertia globalmente).
             'current_user_id' => $request->user()->id,
             'admin_count' => $responsibles->where('role', 'admin')->count(),
+            // Módulos por rol (14-oct-2026) — ver RoleModuleAccessController.
+            'module_catalog' => $moduleAccess->catalog(),
+            'module_access' => $moduleAccess->matrix(),
         ]);
     }
 

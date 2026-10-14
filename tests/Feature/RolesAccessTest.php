@@ -9,7 +9,7 @@ uses(RefreshDatabase::class);
  * Parte 1 del cierre (04-oct-2026): tres roles — ADMIN (acceso total),
  * GERENCIAL (Reportería + OKR operativo, sin usuarios/catálogo KPI) y
  * COLABORADOR (solo seguimiento propio de OKR, NUNCA Reportería financiero
- * global). Autorización BACKEND real (EnsureReporteriaAccess), no solo UI.
+ * global). Autorización BACKEND real (EnsureModuleAccess, defaults sembrados), no solo UI.
  */
 it('admin can access Reportería (financiero global)', function () {
     $admin = User::factory()->create(['role' => 'admin']);
@@ -28,7 +28,7 @@ it('gerencial can access Reportería (financiero global), same as admin', functi
 it('colaborador is forbidden from Reportería (financiero global) — backend enforced, not just hidden menu', function () {
     $colaborador = User::factory()->create(['role' => 'colaborador']);
 
-    $this->actingAs($colaborador)->get(route('dashboard'))->assertForbidden();
+    $this->actingAs($colaborador)->get(route('dashboard'))->assertRedirect('/okr');
     $this->actingAs($colaborador)->get(route('periodos.index'))->assertForbidden();
     $this->actingAs($colaborador)->get(route('historico-general.index'))->assertForbidden();
     $this->actingAs($colaborador)->get(route('asignaciones-empleado-sucursal.index'))->assertForbidden();
