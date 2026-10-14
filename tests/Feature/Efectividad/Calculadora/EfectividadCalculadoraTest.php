@@ -149,8 +149,8 @@ it('flujo web completo: carga múltiple, resumen ordenado, cálculo semanal, fil
     $resumen = $resp->json('resumen');
 
     expect(array_column($resumen['carteras'], 'fecha'))->toBe(['2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-10', '2026-10-11'])
-        ->and(collect($resumen['semana']['dias'])->every(fn ($d) => $d['disponible']))->toBeTrue()
-        ->and($resumen['semana']['ingresos_ok'])->toBeTrue()
+        ->and(collect($resumen['cortes']['SEMANAL'][0]['requisitos'])->where('tipo', 'cartera')->count())->toBe(8)
+        ->and(collect($resumen['cortes'])->flatten(1)->every(fn ($o) => $o['listo']))->toBeTrue()
         ->and(array_column($resumen['cortes']['SEMANAL'], 'valor'))->toBe(['2026-10-11'])
         ->and($resumen['cortes']['DIARIO'])->toHaveCount(7)
         ->and($resumen['cortes']['ACUMULADO'])->toHaveCount(7)
@@ -292,4 +292,41 @@ it('una ruta fuera del catálogo se calcula igual y se muestra en SIN SUCURSAL A
         ->and(collect($res['avisos'])->contains(fn ($a) => str_contains($a, 'RUTA NUEVA')))->toBeTrue()
         // Sin sucursal asignada va al final de la tabla.
         ->and(collect($res['filas'])->where('tipo', 'subtotal_sucursal')->last()['promotor'])->toBe('TOTAL SUCURSAL SIN SUCURSAL ASIGNADA');
+});
+
+it('cada modalidad pide solo sus archivos: diario con domingo + día + ingresos de ese día; sin ingresos no calcula', function () {
+    $svc = app(EfectividadCalculadoraService::class);
+    $up = fn (array $p) => array_map('calcUpload', $p);
+    $r = $svc->agregarArchivos(null, $this->admin->id, $up([
+        calcCartera($this->dir, '2026-10-04', 'x.xlsx'), calcCartera($this->dir, '2026-10-05', 'y.xlsx'),
+    ]));
+    $t = $r['token'];
+    $lunes = collect($r['resumen']['cortes']['DIARIO'])->firstWhere('valor', '2026-10-05');
+
+    // Solo 2 carteras + ingresos del lunes; ningún otro día de la semana es requisito.
+    expect(collect($lunes['requisitos'])->pluck('etiqueta')->all())->toBe([
+        'Cartera base (domingo) 04/10', 'Cartera del lunes 05/10', 'Ingresos Cobranza del lunes 05/10',
+    ])
+        ->and($lunes['estado'])->toBe('faltan_ingresos')
+        ->and($lunes['falta'])->toBe('Solo falta cargar Ingresos Cobranza del lunes 05/10 para calcular.')
+        ->and(collect($r['resumen']['cortes']['SEMANAL'])->firstWhere('valor', '2026-10-11')['estado'])->toBe('faltan_carteras');
+    expect(fn () => $svc->calcular($t, $this->admin->id, 'DIARIO', '2026-10-05'))
+        ->toThrow(App\Services\Efectividad\Calculadora\EfectividadArchivoException::class, 'Solo falta cargar Ingresos Cobranza');
+
+    // Un único Excel de ingresos de toda la semana habilita el lunes (solo usa sus movimientos del día).
+    $r = $svc->agregarArchivos($t, $this->admin->id, $up([calcIngresos($this->dir, 'ing.xlsx', [
+        calcPago('C1', '2026-10-05', '2026-10-05', 100), calcPago('C2', '2026-10-06', '2026-10-06', 150, 'ACAMBAY', 'BETO RUIZ'),
+    ])]));
+    expect(collect($r['resumen']['cortes']['DIARIO'])->firstWhere('valor', '2026-10-05')['listo'])->toBeTrue();
+    $gt = collect($svc->calcular($t, $this->admin->id, 'DIARIO', '2026-10-05')['filas'])->firstWhere('tipo', 'gran_total');
+    expect($gt['sano_pc'])->toEqual(100.0)->and($gt['cobranza_total'])->toEqual(100.0);
+
+    // Acumulado al martes: pide domingo, lunes y martes; con la cartera del martes ya calcula.
+    $r = $svc->agregarArchivos($t, $this->admin->id, $up([calcCartera($this->dir, '2026-10-06', 'z.xlsx')]));
+    $acu = collect($r['resumen']['cortes']['ACUMULADO'])->firstWhere('valor', '2026-10-06');
+    expect(collect($acu['requisitos'])->where('tipo', 'cartera')->count())->toBe(3)->and($acu['listo'])->toBeTrue();
+    $gt = collect($svc->calcular($t, $this->admin->id, 'ACUMULADO', '2026-10-06')['filas'])->firstWhere('tipo', 'gran_total');
+    expect($gt['sano_pc'])->toEqual(300.0)->and($gt['cobranza_total'])->toEqual(250.0);
+    // Los archivos se conservan entre modalidades: el diario del lunes sigue disponible.
+    expect($svc->calcular($t, $this->admin->id, 'DIARIO', '2026-10-05')['titulo'])->toBe('CORTE DIARIO: 05/10/2026');
 });

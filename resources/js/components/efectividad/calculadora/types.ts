@@ -15,10 +15,26 @@ export type ArchivoCargado = {
     };
 };
 
+export type RequisitoCorte = {
+    tipo: 'cartera' | 'ingresos' | 'semana';
+    etiqueta: string;
+    fecha?: string;
+    disponible: boolean;
+    detalle?: string | null;
+};
+
+/** Un corte calculable con sus requisitos exactos (solo los que usa esa modalidad). */
 export type OpcionCorte = {
     valor: string;
     etiqueta: string;
+    titulo: string;
+    desde?: string;
+    requisitos: RequisitoCorte[];
+    carteras_ok: boolean;
     ingresos_ok: boolean;
+    listo: boolean;
+    estado: 'listo' | 'faltan_ingresos' | 'faltan_carteras';
+    falta: string | null;
     historial_previo?: boolean;
     semanas?: number;
 };
@@ -26,17 +42,6 @@ export type OpcionCorte = {
 export type ResumenFuentes = {
     carteras: ArchivoCargado[];
     ingresos: ArchivoCargado[];
-    semana: {
-        titulo: string;
-        ingresos_ok: boolean;
-        dias: Array<{
-            dia: string;
-            fecha: string;
-            disponible: boolean;
-            archivo: string | null;
-            contratos: number | null;
-        }>;
-    } | null;
     cortes: Record<Modo, OpcionCorte[]>;
     sucursales?: Array<{
         sucursal: string;

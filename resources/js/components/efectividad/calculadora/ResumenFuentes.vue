@@ -1,12 +1,5 @@
 <script setup lang="ts">
-import {
-    CheckCircle2,
-    CircleDashed,
-    History,
-    Receipt,
-    Trash2,
-    XCircle,
-} from 'lucide-vue-next';
+import { History, Receipt, Trash2, XCircle } from 'lucide-vue-next';
 import { computed } from 'vue';
 import { Button } from '@/components/ui/button';
 import type { Rechazado, ResumenFuentes } from './types';
@@ -16,6 +9,8 @@ const props = defineProps<{
     resumen: ResumenFuentes;
     rechazados: Rechazado[];
     ocupado: boolean;
+    /** Primer día del periodo del corte elegido (para saber si hay ingresos previos). */
+    inicioPeriodo?: string | null;
 }>();
 
 defineEmits<{ quitar: [string] }>();
@@ -37,7 +32,7 @@ const historial = computed(() => {
         .map((i) => i.hasta ?? '')
         .sort()
         .reverse()[0];
-    const inicioSemana = props.resumen.semana?.dias[1]?.fecha ?? null;
+    const inicioSemana = props.inicioPeriodo ?? null;
 
     return {
         desde,
@@ -74,63 +69,6 @@ const n = (v: number | null | undefined) =>
                     >
                 </li>
             </ul>
-        </div>
-
-        <div v-if="resumen.semana" class="rounded-lg border">
-            <div
-                class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5"
-            >
-                <p class="font-medium">{{ resumen.semana.titulo }}</p>
-                <span class="text-xs text-muted-foreground">
-                    {{
-                        resumen.semana.dias.filter((d) => d.disponible).length
-                    }}/8 carteras
-                </span>
-            </div>
-            <ul class="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-4">
-                <li
-                    v-for="d in resumen.semana.dias"
-                    :key="d.fecha"
-                    class="flex items-start gap-2 bg-card px-4 py-2.5"
-                >
-                    <CheckCircle2
-                        v-if="d.disponible"
-                        class="mt-0.5 size-4 shrink-0 text-emerald-600"
-                    />
-                    <CircleDashed
-                        v-else
-                        class="mt-0.5 size-4 shrink-0 text-amber-500"
-                    />
-                    <div class="min-w-0">
-                        <p class="text-sm font-medium">
-                            {{ d.dia }} · {{ fmtFecha(d.fecha) }}
-                        </p>
-                        <p
-                            class="truncate text-xs text-muted-foreground"
-                            :title="d.archivo ?? ''"
-                        >
-                            {{
-                                d.disponible
-                                    ? `${n(d.contratos)} contratos`
-                                    : 'Falta este archivo'
-                            }}
-                        </p>
-                    </div>
-                </li>
-            </ul>
-            <div class="flex items-center gap-2 border-t px-4 py-2.5 text-sm">
-                <CheckCircle2
-                    v-if="resumen.semana.ingresos_ok"
-                    class="size-4 text-emerald-600"
-                />
-                <CircleDashed v-else class="size-4 text-amber-500" />
-                Ingresos de la semana:
-                <b class="font-medium">{{
-                    resumen.semana.ingresos_ok
-                        ? 'Disponibles'
-                        : 'Faltan o no cubren todos los días'
-                }}</b>
-            </div>
         </div>
 
         <div

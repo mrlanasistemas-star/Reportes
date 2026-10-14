@@ -22,8 +22,6 @@ class EfectividadCalculadoraService
 {
     public const MAX_ARCHIVOS = 45;
 
-    private const DIAS = ['Domingo base', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo corte'];
-
     public function __construct(
         private readonly EfectividadWorkspace $workspace,
         private readonly EfectividadExcelReader $reader,
@@ -109,66 +107,77 @@ class EfectividadCalculadoraService
         $fechas = array_flip(array_column($carteras, 'fecha'));
         $cobertura = $this->coberturaIngresos($ingresos);
 
-        $semanal = [];
-        $diario = [];
-        $acumulado = [];
+        // Cortes candidatos por modalidad, cada uno con SUS requisitos (carteras e ingresos)
+        // y su estado; nunca se exige una fotografía o un día de ingresos que el corte no usa.
+        $dias = [];     // DIARIO / ACUMULADO: cualquier día con cartera (de lunes a domingo de corte)
+        $domingos = []; // SEMANAL: domingo de corte de cada semana tocada por las carteras
         foreach ($carteras as $c) {
             $d = CarbonImmutable::parse($c['fecha']);
-            // Diario: fotos desde el domingo base de esa semana hasta el día.
-            $base = $d->dayOfWeek === 0 ? $d->subDays(7) : $d->subDays($d->dayOfWeek);
-            if ($this->fotosCompletas($fechas, $base, $d)) {
-                $diario[] = $this->opcionCorte($base, $d, $d, $d, $cobertura);
-                // Acumulado: del lunes de esa semana al día elegido (mismas fotografías).
-                $acumulado[] = $this->opcionCorte($base, $d, $base->addDay(), $d, $cobertura);
-            }
-            if ($d->dayOfWeek === 0 && $this->fotosCompletas($fechas, $d->subDays(7), $d)) {
-                $semanal[] = $this->opcionCorte($d->subDays(7), $d, $d->subDays(6), $d, $cobertura);
+            if ($d->dayOfWeek !== 0) {
+                $dias[$d->toDateString()] = $d;
+                $domingos[$d->next(CarbonImmutable::SUNDAY)->toDateString()] = true;
+            } else {
+                // Un domingo es base de la semana siguiente; es corte de la suya si hay días previos cargados.
+                $previos = false;
+                for ($i = 1; $i <= 6; $i++) {
+                    $previos = $previos || isset($fechas[$d->subDays($i)->toDateString()]);
+                }
+                if ($previos) {
+                    $dias[$d->toDateString()] = $d;
+                    $domingos[$d->toDateString()] = true;
+                }
+                $domingos[$d->addDays(7)->toDateString()] ??= ! $previos || isset($fechas[$d->addDay()->toDateString()]);
             }
         }
-        $mensual = [];
-        foreach ($semanal as $s) {
-            $mes = substr($s['corte'], 0, 7);
-            $mensual[$mes] ??= ['valor' => $mes, 'etiqueta' => mb_convert_case(CarbonImmutable::parse($mes.'-01')->locale('es')->translatedFormat('F Y'), MB_CASE_TITLE), 'semanas' => 0, 'ingresos_ok' => true, 'historial_previo' => $s['historial_previo']];
-            $mensual[$mes]['semanas']++;
-            $mensual[$mes]['ingresos_ok'] = $mensual[$mes]['ingresos_ok'] && $s['ingresos_ok'];
+        ksort($dias);
+        ksort($domingos);
+
+        $diario = [];
+        $acumulado = [];
+        foreach ($dias as $d) {
+            $base = $d->dayOfWeek === 0 ? $d->subDays(7) : $d->subDays($d->dayOfWeek);
+            $diario[] = $this->opcionCorte('DIARIO', $base, $d, $d, $d, $fechas, $cobertura);
+            $acumulado[] = $this->opcionCorte('ACUMULADO', $base, $d, $base->addDay(), $d, $fechas, $cobertura);
+        }
+        $semanal = [];
+        foreach (array_keys(array_filter($domingos)) as $domingo) {
+            $d = CarbonImmutable::parse($domingo);
+            $semanal[] = $this->opcionCorte('SEMANAL', $d->subDays(7), $d, $d->subDays(6), $d, $fechas, $cobertura);
         }
 
-        // Semana sugerida para el panel: la última semana con domingo de corte cargado.
-        $semanaVista = null;
-        $ultimoDomingo = null;
-        foreach (array_reverse($carteras) as $c) {
-            if (CarbonImmutable::parse($c['fecha'])->dayOfWeek === 0 && isset($fechas[CarbonImmutable::parse($c['fecha'])->subDays(7)->toDateString()])) {
-                $ultimoDomingo = CarbonImmutable::parse($c['fecha']);
-                break;
+        // Mensual: consolida SOLO semanas completas (8 carteras); listo si sus ingresos también lo están.
+        $mensual = [];
+        foreach ($semanal as $sem) {
+            if (! $sem['carteras_ok']) {
+                continue;
             }
-        }
-        $ultimoDomingo ??= $carteras ? CarbonImmutable::parse(end($carteras)['fecha'])->next(CarbonImmutable::SUNDAY) : null;
-        if ($ultimoDomingo) {
-            $base = $ultimoDomingo->subDays(7);
-            $dias = [];
-            for ($i = 0; $i <= 7; $i++) {
-                $f = $base->addDays($i)->toDateString();
-                $archivo = null;
-                foreach ($carteras as $c) {
-                    if ($c['fecha'] === $f) {
-                        $archivo = $c;
-                    }
-                }
-                $dias[] = ['dia' => self::DIAS[$i], 'fecha' => $f, 'disponible' => $archivo !== null, 'archivo' => $archivo['nombre'] ?? null, 'contratos' => $archivo['resumen']['contratos'] ?? null];
-            }
-            $semanaVista = [
-                'titulo' => 'Semana del '.$this->fechaLarga($base->addDay()).' al '.$this->fechaLarga($ultimoDomingo),
-                'dias' => $dias,
-                'ingresos_ok' => $this->cubre($cobertura, $base->addDay()->toDateString(), $ultimoDomingo->toDateString()),
+            $mes = substr($sem['corte'], 0, 7);
+            $mensual[$mes] ??= [
+                'valor' => $mes,
+                'etiqueta' => mb_convert_case(CarbonImmutable::parse($mes.'-01')->locale('es')->translatedFormat('F Y'), MB_CASE_TITLE),
+                'titulo' => 'Corte mensual: '.mb_convert_case(CarbonImmutable::parse($mes.'-01')->locale('es')->translatedFormat('F Y'), MB_CASE_LOWER),
+                'semanas' => 0, 'carteras_ok' => true, 'ingresos_ok' => true, 'historial_previo' => $sem['historial_previo'], 'requisitos' => [],
+            ];
+            $mensual[$mes]['semanas']++;
+            $mensual[$mes]['ingresos_ok'] = $mensual[$mes]['ingresos_ok'] && $sem['ingresos_ok'];
+            $mensual[$mes]['requisitos'][] = [
+                'tipo' => 'semana', 'etiqueta' => 'Semana '.CarbonImmutable::parse($sem['desde'])->format('d/m').' al '.CarbonImmutable::parse($sem['corte'])->format('d/m'),
+                'detalle' => $sem['ingresos_ok'] ? '8 carteras e ingresos completos' : 'Faltan ingresos: '.$sem['ingresos_faltantes_texto'],
+                'disponible' => $sem['ingresos_ok'],
             ];
         }
+        foreach ($mensual as &$m) {
+            $m['listo'] = $m['ingresos_ok'];
+            $m['estado'] = $m['listo'] ? 'listo' : 'faltan_ingresos';
+            $m['falta'] = $m['listo'] ? null : 'Faltan ingresos en alguna semana del mes.';
+        }
+        unset($m);
 
         $publico = fn ($a) => array_intersect_key($a, array_flip(['id', 'nombre', 'tipo', 'fecha', 'desde', 'hasta', 'resumen']));
 
         return [
             'carteras' => array_map($publico, $carteras),
             'ingresos' => array_map($publico, $ingresos),
-            'semana' => $semanaVista,
             'cortes' => ['DIARIO' => array_reverse($diario), 'ACUMULADO' => array_reverse($acumulado), 'SEMANAL' => array_reverse($semanal), 'MENSUAL' => array_reverse(array_values($mensual))],
             'sucursales' => $this->sucursalesDetectadas($carteras),
             'expira_minutos' => EfectividadWorkspace::TTL_MINUTOS,
@@ -203,10 +212,11 @@ class EfectividadCalculadoraService
         }
         $opcion = collect($opciones)->firstWhere('valor', $valor);
         if (! $opcion) {
-            throw new EfectividadArchivoException('Con los archivos cargados no es posible calcular ese corte. Revisa las carteras faltantes.');
+            throw new EfectividadArchivoException('Con los archivos cargados no es posible calcular ese corte.');
         }
-        if (! $resumen['ingresos']) {
-            throw new EfectividadArchivoException('Falta el archivo de Ingresos Cobranza.');
+        // Nunca se calcula con fotografías inexistentes ni con días sin ingresos.
+        if (! $opcion['listo']) {
+            throw new EfectividadArchivoException($opcion['falta'] ?? 'Faltan archivos para calcular este corte.');
         }
 
         $historial = $this->historial($token, $meta);
@@ -221,9 +231,6 @@ class EfectividadCalculadoraService
         }
 
         $avisos = [];
-        if (! $opcion['ingresos_ok']) {
-            $avisos[] = 'Los archivos de ingresos no cubren todos los días del periodo; los cobros de los días sin ingresos no se reflejan.';
-        }
         if (! $opcion['historial_previo']) {
             $avisos[] = 'No se cargaron ingresos anteriores al periodo. Los anticipos (pagos hechos antes con fecha de cuota dentro del periodo) y los pagos de contratos sin cartera de semanas previas solo se reflejan si agregas también el Excel de Ingresos Cobranza de esas semanas.';
         }
@@ -342,7 +349,7 @@ class EfectividadCalculadoraService
     {
         $semanas = array_values(array_filter(
             array_reverse($this->resumen($meta)['cortes']['SEMANAL']),
-            fn ($s) => str_starts_with($s['corte'], $mes),
+            fn ($s) => $s['carteras_ok'] && str_starts_with($s['corte'], $mes),
         ));
         $acum = [];
         $incidencias = [];
@@ -528,32 +535,78 @@ class EfectividadCalculadoraService
         return array_intersect_key($f, array_flip(['oficina', 'promotor', 'sucursal', 'sano_pc', 'sano_cob', 'atraso_pc', 'atraso_cob', 'vencido_pc', 'vencido_cob']));
     }
 
-    private function fotosCompletas(array $fechas, CarbonImmutable $desde, CarbonImmutable $hasta): bool
+    /**
+     * Un corte con sus requisitos exactos:
+     *  - carteras del domingo base a la fecha de corte (lo que lee el motor);
+     *  - ingresos que cubran el rango reportado (DIARIO = el día; ACUMULADO = lunes→día;
+     *    SEMANAL = lunes→domingo). Un mismo Excel semanal cubre cualquier día de su semana.
+     */
+    private function opcionCorte(string $modo, CarbonImmutable $base, CarbonImmutable $corte, CarbonImmutable $desde, CarbonImmutable $hasta, array $fechas, array $cobertura): array
     {
-        for ($d = $desde; $d->lte($hasta); $d = $d->addDay()) {
-            if (! isset($fechas[$d->toDateString()])) {
-                return false;
+        $requisitos = [];
+        $faltanCarteras = [];
+        for ($d = $base, $i = 0; $d->lte($corte); $d = $d->addDay(), $i++) {
+            $ok = isset($fechas[$d->toDateString()]);
+            $nombre = $i === 0 ? 'Cartera base (domingo)' : ($d->equalTo($corte) && $modo !== 'SEMANAL'
+                ? 'Cartera del '.$this->diaNombre($d)
+                : ($i === 7 ? 'Cartera domingo de cierre' : 'Cartera del '.$this->diaNombre($d)));
+            $requisitos[] = ['tipo' => 'cartera', 'etiqueta' => $nombre.' '.$d->format('d/m'), 'fecha' => $d->toDateString(), 'disponible' => $ok];
+            if (! $ok) {
+                $faltanCarteras[] = $d->format('d/m');
             }
         }
+        $faltanIngresos = [];
+        for ($d = $desde; $d->lte($hasta); $d = $d->addDay()) {
+            if (! isset($cobertura[$d->toDateString()])) {
+                $faltanIngresos[] = $d->format('d/m');
+            }
+        }
+        $rango = $desde->equalTo($hasta) ? 'del '.$this->diaNombre($desde).' '.$desde->format('d/m') : 'del '.$desde->format('d/m').' al '.$hasta->format('d/m');
+        $requisitos[] = [
+            'tipo' => 'ingresos', 'etiqueta' => 'Ingresos Cobranza '.$rango, 'fecha' => $desde->toDateString(),
+            'disponible' => ! $faltanIngresos,
+            'detalle' => $faltanIngresos && count($faltanIngresos) < (int) $desde->diffInDays($hasta) + 1 ? 'Faltan: '.implode(', ', $faltanIngresos) : null,
+        ];
 
-        return true;
-    }
-
-    private function opcionCorte(CarbonImmutable $base, CarbonImmutable $corte, CarbonImmutable $desde, CarbonImmutable $hasta, array $cobertura): array
-    {
-        $esDiario = $desde->equalTo($hasta);
+        $carterasOk = ! $faltanCarteras;
+        $ingresosOk = ! $faltanIngresos;
+        $falta = match (true) {
+            ! $carterasOk && ! $ingresosOk => 'Faltan carteras ('.implode(', ', $faltanCarteras).') e Ingresos Cobranza '.$rango.'.',
+            ! $carterasOk => 'Falta cargar '.(count($faltanCarteras) === 1 ? 'la cartera del '.$faltanCarteras[0] : 'las carteras: '.implode(', ', $faltanCarteras)).'.',
+            ! $ingresosOk => 'Solo falta cargar Ingresos Cobranza '.$rango.' para calcular.',
+            default => null,
+        };
+        $titulo = match ($modo) {
+            'DIARIO' => 'Corte diario: '.$this->diaNombre($corte).' '.$corte->format('d/m/Y'),
+            'ACUMULADO' => 'Acumulado: del lunes '.$desde->format('d/m/Y').' al '.$this->diaNombre($corte).' '.$corte->format('d/m/Y'),
+            default => 'Semana del '.$this->fechaLarga($desde).' al '.$this->fechaLarga($hasta),
+        };
 
         return [
             'valor' => $corte->toDateString(),
-            'etiqueta' => $esDiario
-                ? mb_convert_case($corte->locale('es')->translatedFormat('l'), MB_CASE_TITLE).' '.$corte->format('d/m/Y')
-                : 'Del '.$desde->format('d/m/Y').' al '.$hasta->format('d/m/Y'),
+            'etiqueta' => match ($modo) {
+                'DIARIO' => mb_convert_case($this->diaNombre($corte), MB_CASE_TITLE).' '.$corte->format('d/m/Y'),
+                'ACUMULADO' => 'Lunes '.$desde->format('d/m').' al '.$this->diaNombre($corte).' '.$corte->format('d/m/Y'),
+                default => 'Del '.$desde->format('d/m/Y').' al '.$hasta->format('d/m/Y'),
+            },
+            'titulo' => $titulo,
             'base' => $base->toDateString(),
             'corte' => $corte->toDateString(),
             'desde' => $desde->toDateString(),
-            'ingresos_ok' => $this->cubre($cobertura, $desde->toDateString(), $hasta->toDateString()),
+            'requisitos' => $requisitos,
+            'carteras_ok' => $carterasOk,
+            'ingresos_ok' => $ingresosOk,
+            'ingresos_faltantes_texto' => implode(', ', $faltanIngresos),
+            'listo' => $carterasOk && $ingresosOk,
+            'estado' => $carterasOk ? ($ingresosOk ? 'listo' : 'faltan_ingresos') : 'faltan_carteras',
+            'falta' => $falta,
             'historial_previo' => $cobertura !== [] && min(array_keys($cobertura)) < $base->addDay()->toDateString(),
         ];
+    }
+
+    private function diaNombre(CarbonImmutable $d): string
+    {
+        return $d->locale('es')->translatedFormat('l');
     }
 
     /** @return array<string,true> días (AAAA-MM-DD) cubiertos por algún archivo de ingresos */
@@ -567,17 +620,6 @@ class EfectividadCalculadoraService
         }
 
         return $dias;
-    }
-
-    private function cubre(array $cobertura, string $desde, string $hasta): bool
-    {
-        for ($d = CarbonImmutable::parse($desde); $d->lte(CarbonImmutable::parse($hasta)); $d = $d->addDay()) {
-            if (! isset($cobertura[$d->toDateString()])) {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private function dmy(string $ymd): string
