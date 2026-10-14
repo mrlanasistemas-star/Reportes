@@ -279,9 +279,9 @@ class OkrSnapshotService
 
         $weekEndDate = $this->calendar->weekEnd($objective->start_date, $weekNumber);
 
-        OkrProgressSnapshot::query()->create(array_merge([
-            'okr_key_result_id'                 => $kr->id,
-            'week_number'                       => $weekNumber,
+        OkrProgressSnapshot::query()->updateOrCreate(
+            ['okr_key_result_id' => $kr->id, 'week_number' => $weekNumber],
+            array_merge([
             'snapshot_date'                      => $weekEndDate->toDateString(),
             'actual_value'                       => $currentValue,
             'expected_value'                     => $expectedValue,
@@ -293,6 +293,33 @@ class OkrSnapshotService
             'health_status'                      => $healthStatus,
             'calculated_at'                      => now(),
         ], $sourceMeta));
+    }
+
+    /**
+     * Corrección 14-oct-2026 — al procesar el archivo de colocación de la semana
+     * N, el acumulado de las semanas N..actual cambia (sucursal Y cada gestor
+     * individual que deriva de ese mismo archivo). Se re-escriben SOLO los
+     * snapshots de colocación de esas semanas de un OKR ACTIVO; las semanas
+     * anteriores a N no dependen de este archivo y nunca se tocan, y un OKR
+     * cerrado/cancelado jamás se reprocesa (histórico congelado).
+     */
+    public function evaluatePlacementHistory(OkrObjective $objective, int $fromWeek): void
+    {
+        if ($objective->lifecycle_status !== OkrObjective::STATUS_ACTIVE) {
+            return;
+        }
+
+        $currentWeek = $objective->currentWeekNumber();
+        foreach ($objective->keyResults()->with('kpi')->get() as $kr) {
+            if ($kr->kpi->provider_key !== 'reporteria.placement') {
+                continue;
+            }
+            for ($week = max(1, $fromWeek); $week < $currentWeek; $week++) {
+                $this->writeBackfilledSnapshot($kr, $objective, $week);
+            }
+        }
+
+        $this->evaluateObjective($objective);
     }
 
     public function evaluateObjective(OkrObjective $objective): OkrObjective

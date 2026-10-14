@@ -72,6 +72,8 @@ class OkrWarningService
 
             $rows[] = [
                 'kpi_name' => $kr->kpi->name,
+                'description' => $kr->description,
+                'baseline_value' => $kr->baseline_value,
                 'unit' => $kr->kpi->unit,
                 'target_value' => (float) $kr->target_value,
                 'expected_value' => $hasData ? $snapshot->expected_value : null,
@@ -110,12 +112,20 @@ class OkrWarningService
         $weekStart = $this->calendar->weekStart($objective->start_date, $weekNumber);
         $weekEnd   = $this->calendar->weekEnd($objective->start_date, $weekNumber);
 
+        // 14-oct-2026: el Warning se evalúa SIEMPRE con los KR de ESTE Objective
+        // (un OKR individual usa sus propios KR/snapshots, nunca los de la
+        // sucursal). Puesto/jefe inmediato se toman de la Carta Compromiso ya
+        // emitida (datos revisados), con respaldo en el Objective.
+        $letterSnapshot = $objective->commitmentLetter?->snapshot ?? [];
+        $isEmployee = $objective->scope_type === \App\Models\OkrObjective::SCOPE_EMPLOYEE;
         $snapshot = [
             'objective_title' => $objective->title,
             'scope_type' => $objective->scope_type,
             'branch_name' => $objective->branch?->name,
             'employee_name' => $objective->employee?->full_name,
-            'position' => $objective->employee?->position,
+            'collaborator_name' => $letterSnapshot['collaborator_name'] ?? ($isEmployee ? $objective->employee?->full_name : $objective->responsibleUser?->name),
+            'position' => $letterSnapshot['position'] ?? $objective->employee?->position,
+            'immediate_boss' => $letterSnapshot['immediate_boss'] ?? ($isEmployee ? $objective->responsibleUser?->name : null),
             'responsible_name' => $objective->responsibleUser?->name,
             // 11: referencia a la Carta Compromiso original — solo si ya existe
             // (nunca se finge una fecha/folio de una carta que no se ha emitido).

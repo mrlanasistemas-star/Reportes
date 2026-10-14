@@ -41,7 +41,9 @@ it('creates the branch principal plus 4 individual children in a single transact
         'title' => 'Objective de sucursal con cuatro individuales',
         'start_date' => now()->toDateString(), 'duration_weeks' => 8,
         'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR de sucursal', 'baseline_value' => 10, 'target_value' => 20, 'weight' => 100]],
-        'individual_objectives' => $employees->map(fn ($e) => ['employee_id' => $e->id, 'title' => "Objective individual de {$e->full_name}"])->all(),
+        'individual_objectives' => $employees->values()->map(fn ($e, $i) => ['employee_id' => $e->id, 'title' => "Objective individual de {$e->full_name}", 'key_results' => [
+            ['kpi_id' => $kpi->id, 'description' => "KR de {$e->full_name}", 'baseline_value' => 100 * ($i + 1), 'target_value' => 100 * ($i + 1) + 50, 'weight' => 100],
+        ]])->all(),
     ]);
 
     $response->assertSessionHasNoErrors();
@@ -53,8 +55,10 @@ it('creates the branch principal plus 4 individual children in a single transact
         expect($child->scope_type)->toBe(OkrObjective::SCOPE_EMPLOYEE);
         expect($child->branch_id)->toBe($principal->branch_id);
         expect($child->lifecycle_status)->toBe(OkrObjective::STATUS_DRAFT);
-        // Punto 10 de la auditoría — nunca se inventan KR financieros en los children.
-        expect($child->keyResults()->count())->toBe(0);
+        // Corrección 14-oct-2026: cada individual nace con SUS PROPIOS KR
+        // capturados (nunca vacío, nunca copia de la sucursal).
+        expect($child->keyResults()->count())->toBe(1);
+        expect((float) $child->keyResults()->first()->target_value)->not->toBe(20.0);
     }
 });
 
@@ -132,7 +136,7 @@ it('rolls back the WHOLE transaction (principal + all children) if any child ins
             'title' => 'Objective de sucursal con fallo forzado en child',
             'start_date' => now()->toDateString(), 'duration_weeks' => 8,
             'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR de sucursal', 'baseline_value' => 10, 'target_value' => 20, 'weight' => 100]],
-            'individual_objectives' => [['employee_id' => $employeeOk->id, 'title' => 'Objective individual que fallará']],
+            'individual_objectives' => [['employee_id' => $employeeOk->id, 'title' => 'Objective individual que fallará', 'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR individual', 'baseline_value' => 5, 'target_value' => 9, 'weight' => 100]]]],
         ]);
     } catch (\Throwable) {
         // Se espera una excepción de integridad referencial — lo relevante es

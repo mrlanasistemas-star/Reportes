@@ -70,6 +70,7 @@ Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEna
     Route::post('/{objective}/evidences', [EvidenceController::class, 'store'])->name('evidences.store');
     Route::post('/{objective}/placement-uploads', [PlacementUploadController::class, 'store'])->name('placement-uploads.store');
     Route::get('/{objective}/commitment-letter/preview', [CommitmentLetterController::class, 'preview'])->name('commitment-letter.preview');
+    Route::get('/{objective}/commitment-letter/review', [CommitmentLetterController::class, 'review'])->name('commitment-letter.review');
     Route::post('/{objective}/commitment-letter', [CommitmentLetterController::class, 'generate'])->name('commitment-letter.generate');
     Route::post('/{objective}/warnings', [WarningController::class, 'store'])->name('warnings.store');
 });

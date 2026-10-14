@@ -168,8 +168,8 @@ it('PARTE 20 — real end-to-end scenario: branch with 3 individualized gestores
         });
 
     // ── Carta Compromiso — Juan y la sucursal, cada uno con SU propia meta ──
-    $letterJuan = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $children['JUAN REAL GESTOR']), ['place' => 'Cuernavaca'])->json('letter');
-    $letterBranch = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $branchObjective), ['place' => 'Cuernavaca'])->json('letter');
+    $letterJuan = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $children['JUAN REAL GESTOR']), ['place' => 'Cuernavaca', 'position' => 'Gestor', 'immediate_boss' => 'Director Regional'])->json('letter');
+    $letterBranch = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $branchObjective), ['place' => 'Cuernavaca', 'position' => 'Gestor', 'immediate_boss' => 'Director Regional'])->json('letter');
     expect($letterJuan['id'])->not->toBe($letterBranch['id']); // cartas DISTINTAS, nunca mezcladas
 
     $juanLetter = OkrCommitmentLetter::query()->findOrFail($letterJuan['id']);

@@ -26,6 +26,7 @@ class StorePlacementUploadRequest extends FormRequest
             'file'         => ['required', 'file', 'max:10240', 'mimes:xlsx,xls,csv'],
             'week_number'  => ['required', 'integer', 'min:1', 'max:' . ($objective?->duration_weeks ?? 104)],
             'confirm_replace' => ['nullable', 'boolean'],
+            'complete_report' => ['nullable', 'boolean'],
         ];
     }
 }

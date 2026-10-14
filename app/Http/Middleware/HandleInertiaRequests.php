@@ -52,6 +52,11 @@ class HandleInertiaRequests extends Middleware
                 // EnsureModuleAccess; ocultar en el menú es solo UX.
                 'modules' => app(ModuleAccessService::class)->modulesFor($request->user()),
             ],
+            // Mensajes de sesión (14-oct-2026, módulo OKR): resultado de acciones
+            // como la activación en cascada de OKR individuales.
+            'flash' => fn () => $request->hasSession()
+                ? ['success' => $request->session()->get('success'), 'warning' => $request->session()->get('warning')]
+                : ['success' => null, 'warning' => null],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
             // Indicador de trabajos en segundo plano + notificaciones internas (campana
             // de la cabecera). Dos COUNT por página; el detalle se pide bajo demanda a

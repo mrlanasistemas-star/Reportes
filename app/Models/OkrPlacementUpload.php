@@ -23,6 +23,7 @@ class OkrPlacementUpload extends Model
         'original_filename', 'stored_path', 'disk', 'uploaded_by', 'status',
         'replaced_upload_id', 'total_amount', 'rows_count', 'unattributed_amount',
         'rows_outside_week_range', 'coverage_status',
+        'rows_duplicated', 'rows_other_branch', 'rows_cancelled', 'rows_out_of_objective_range',
     ];
 
     protected $casts = [
