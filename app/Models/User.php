@@ -81,6 +81,8 @@ class User extends Authenticatable
             // distinta de la verificación real del correo (email_verified_at
             // nunca se debe fingir para representar esto — ver auditoría punto 32).
             'access_enabled_at' => 'datetime',
+            // Cuenta deshabilitada (14-oct-2026): bloquea el login en todo el sistema.
+            'disabled_at' => 'datetime',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
         ];

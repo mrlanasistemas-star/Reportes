@@ -11,6 +11,7 @@ use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -64,7 +65,7 @@ class ResponsibleController extends Controller
             ->pluck('total', 'responsible_user_id');
 
         $responsibles = User::query()->with('employee:id,full_name,is_active')->orderBy('name')
-            ->get(['id', 'name', 'email', 'role', 'access_enabled_at', 'employee_id'])
+            ->get(['id', 'name', 'email', 'role', 'access_enabled_at', 'disabled_at', 'employee_id'])
             ->map(function ($u) use ($usageCounts, $branchResolver) {
                 $currentBranchId = $u->employee_id ? $branchResolver->currentBranchIdFor($u->employee_id) : null;
 
@@ -74,6 +75,8 @@ class ResponsibleController extends Controller
                     // creado pero sin habilitar todavía. Campo propio — NUNCA
                     // email_verified_at (ver docblock de la clase).
                     'status' => $u->access_enabled_at !== null ? 'active' : 'pending',
+                    // Cuenta bloqueada para iniciar sesión (14-oct-2026) — distinto de "acceso OKR".
+                    'disabled' => $u->disabled_at !== null,
                     'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
                     // 1/2 del cierre (05-oct-2026) — identidad persistente User↔Employee.
                     'employee_id' => $u->employee_id,
@@ -107,6 +110,7 @@ class ResponsibleController extends Controller
             // (Este repo no comparte `flash` de sesión a Inertia globalmente
             // — ver HandleInertiaRequests — por eso viaja como prop normal.)
             'temp_password' => session()->pull('temp_password'),
+                    'reset_password' => session()->pull('reset_password'),
             // current_user_id/admin_count (cierre 17-sep-2026, ronda 4) — para que la UI
             // oculte por sí sola "cambiar rol" en tu propia fila y "quitar admin" cuando
             // eres el único admin, en vez de dejar que el usuario intente algo que el
@@ -188,6 +192,66 @@ class ResponsibleController extends Controller
         $user->employee?->update(['is_active' => false]);
 
         return back()->with('success', "Acceso deshabilitado para {$user->name}.");
+    }
+
+    /**
+     * Restablece la contraseña de otro usuario (14-oct-2026). Se genera una
+     * contraseña aleatoria que el admin ve UNA SOLA VEZ para copiarla y
+     * entregarla; se cierran todas las sesiones abiertas de esa persona. La
+     * propia contraseña se cambia en Configuración › Seguridad.
+     */
+    public function resetPassword(User $user, Request $request): RedirectResponse
+    {
+        $this->authorize('okr.admin');
+
+        if ($user->id === $request->user()->id) {
+            return back()->with('error', 'Tu propia contraseña se cambia en Configuración › Seguridad.');
+        }
+
+        $password = Str::password(14, symbols: false);
+        $user->forceFill([
+            'password' => Hash::make($password),
+            'remember_token' => Str::random(60),
+        ])->save();
+        $this->closeSessions($user);
+
+        return back()->with('reset_password', ['name' => $user->name, 'email' => $user->email, 'password' => $password]);
+    }
+
+    /**
+     * Deshabilita / rehabilita la CUENTA (14-oct-2026) — bloquea el login en todo
+     * el sistema (`disabled_at`, ver EnsureUserNotDisabled). Distinto de "Quitar
+     * acceso", que solo aplica al módulo OKR. Candados: no a ti mismo y nunca al
+     * último administrador habilitado.
+     */
+    public function toggleDisabled(User $user, Request $request): RedirectResponse
+    {
+        $this->authorize('okr.admin');
+
+        if ($user->id === $request->user()->id) {
+            return back()->with('error', 'No puedes deshabilitar tu propia cuenta.');
+        }
+
+        if ($user->disabled_at === null) {
+            if ($user->role === 'admin' && User::query()->where('role', 'admin')->whereNull('disabled_at')->count() <= 1) {
+                return back()->with('error', 'No puedes deshabilitar al único administrador habilitado.');
+            }
+            $user->forceFill(['disabled_at' => now(), 'remember_token' => Str::random(60)])->save();
+            $this->closeSessions($user);
+
+            return back()->with('success', "Cuenta de {$user->name} deshabilitada.");
+        }
+
+        $user->forceFill(['disabled_at' => null])->save();
+
+        return back()->with('success', "Cuenta de {$user->name} habilitada de nuevo.");
+    }
+
+    private function closeSessions(User $user): void
+    {
+        if (config('session.driver') === 'database') {
+            DB::table(config('session.table', 'sessions'))->where('user_id', $user->id)->delete();
+        }
     }
 
     /**
