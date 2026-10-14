@@ -117,7 +117,7 @@ respuesta ni valores financieros — solo metadata de QUIÉN pidió QUÉ.
 | GET | `/api/v1/branches` | `branches.read` |
 | GET | `/api/v1/employees` | `employees.read` |
 | GET | `/api/v1/employees/{id}` | `employees.read` |
-| GET | `/api/v1/employees/{id}/financial-summary?period_id=` | `employees.read` |
+| GET | `/api/v1/employees/{id}/financial-summary?period_id=` | `employees.read` + `financial.read` |
 | GET | `/api/v1/periods` | `periods.read` |
 | GET | `/api/v1/periods/{id}` | `periods.read` |
 | GET | `/api/v1/financial/summary?period_id=&scope=` | `financial.read` |

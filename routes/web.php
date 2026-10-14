@@ -12,6 +12,7 @@ use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EfectividadCalculadoraController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\ApiDocumentationController;
 
 Route::redirect('/', '/login');
 
@@ -25,7 +26,7 @@ Route::get('/robots.txt', function () {
         'dashboard', 'dashboard-data', 'dashboard-trend',
         'historico-general', 'periodos', 'asignaciones-empleado-sucursal',
         'empleados', 'validaciones', 'guia-sistema', 'reportes-mensuales',
-        'efectividad-cobranza', 'okr', 'settings', 'notificaciones',
+        'efectividad-cobranza', 'okr', 'settings', 'notificaciones', 'documentacion-api',
     ])->map(fn (string $path) => "Disallow: /{$path}")->implode("\n");
 
     $body = "User-agent: *\nAllow: /login\n{$disallow}\n\nSitemap: " . url('/sitemap.xml') . "\n";
@@ -62,6 +63,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('/leidas', [NotificationController::class, 'markAllRead'])->name('read-all');
             Route::post('/{notification}/leida', [NotificationController::class, 'markRead'])->name('read');
         });
+
+    // Documentación de la API (14-oct-2026): solo admin, por enlace directo —
+    // deliberadamente fuera del sidebar (ver ApiDocumentationController).
+    Route::get('/documentacion-api', [ApiDocumentationController::class, 'index'])->name('api-docs.index');
 
     Route::prefix('guia-sistema')
         ->name('guia-sistema.')
