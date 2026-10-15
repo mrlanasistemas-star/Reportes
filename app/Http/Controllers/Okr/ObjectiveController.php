@@ -65,6 +65,10 @@ class ObjectiveController extends Controller
         }
 
         $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
+        // Fase 6.4 — un gerencial con alcance restringido nunca recibe el directorio
+        // de TODAS las sucursales: sin sucursal elegida se usa la primera de las suyas
+        // (una sucursal ajena ya la rechaza EnsureBranchScope con 403).
+        $branchId = app(\App\Services\Access\DataScopeService::class)->resolveBranch($request->user(), $branchId);
         $personnel = app(\App\Services\Okr\OkrPersonnelResolver::class);
 
         // 15-oct-2026 — dos listas distintas: 'assign' (default) solo
@@ -193,6 +197,12 @@ class ObjectiveController extends Controller
             'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
             'start_date'  => ['required', 'date'],
         ]);
+
+        // Fase 6.4 — el valor general (todas las sucursales) solo para alcance general;
+        // un branch_id ajeno ya lo rechaza EnsureBranchScope.
+        if ($data['scope_type'] === 'general') {
+            app(\App\Services\Access\DataScopeService::class)->requireGeneral($request->user(), 'La línea base general');
+        }
 
         $kpi = OkrKpi::query()->findOrFail($data['kpi_id']);
 
@@ -493,6 +503,8 @@ class ObjectiveController extends Controller
                     'rows_cancelled' => $source?->rows_cancelled,
                     'unattributed_amount' => $source?->unattributed_amount,
                     'coverage_status' => $source?->coverage_status,
+                    // 4.6: lo que declaró quien cargó el archivo (completo/parcial).
+                    'declared_complete' => $source?->declared_complete,
                 ];
             }
         }
@@ -525,6 +537,11 @@ class ObjectiveController extends Controller
                     'is_signed' => $objective->commitmentLetter->isSigned(),
                     'download_url' => route('okr.commitment-letters.download', $objective->commitmentLetter),
                     'view_url' => route('okr.commitment-letters.download', $objective->commitmentLetter) . '?view=1',
+                    // Fase 5 (19-oct-2026): visor integrado + copia firmada + archivo presente.
+                    'file_available' => $objective->commitmentLetter->hasStoredFile(),
+                    'signed_uploaded_at' => $objective->commitmentLetter->signed_uploaded_at?->toDateTimeString(),
+                    'signed_view_url' => $objective->commitmentLetter->isSigned() ? route('okr.commitment-letters.download', $objective->commitmentLetter) . '?view=1&signed=1' : null,
+                    'immediate_boss' => $objective->commitmentLetter->snapshot['immediate_boss'] ?? null,
                 ] : null,
                 // 15-oct-2026: historial de cartas (vigente y anuladas) y persona evaluada.
                 'commitment_letters' => $objective->commitmentLetters->sortByDesc('id')->values()->map(fn ($l) => [
@@ -545,6 +562,8 @@ class ObjectiveController extends Controller
                 'voided_at' => $w->voided_at?->toDateTimeString(), 'void_reason' => $w->void_reason,
                 'download_url' => route('okr.warnings.download', $w),
                 'view_url' => route('okr.warnings.download', $w) . '?view=1',
+                'file_available' => $w->hasStoredFile(),
+                'signed_view_url' => $w->isSigned() ? route('okr.warnings.download', $w) . '?view=1&signed=1' : null,
             ]),
             // Parte 5/7 del cierre (04-oct-2026) — catálogo de KPI para el
             // editor de Key Results en DRAFT (ver Show.vue): un Objective
@@ -666,9 +685,23 @@ class ObjectiveController extends Controller
             return null;
         }
 
+        $profile = app(\App\Services\Okr\OkrPersonnelResolver::class)->profileFor($employee->id);
+        // 4.5 (19-oct-2026): ficha de la PERSONA EVALUADA — número de empleado,
+        // sucursal y jefe inmediato. El jefe sale de la carta vigente (confirmado);
+        // si aún no hay carta, se muestra la sugerencia del directorio marcada
+        // "por confirmar" — nunca el creador del OKR.
+        $letterBoss = $objective->commitmentLetter?->snapshot['immediate_boss'] ?? null;
+        $suggested = $letterBoss === null && $objective->branch_id
+            ? app(\App\Services\Okr\OkrPersonnelResolver::class)->suggestImmediateBoss($employee->id, (int) $objective->branch_id)
+            : null;
+
         return [
             'id' => $employee->id, 'full_name' => $employee->full_name,
-            'position' => app(\App\Services\Okr\OkrPersonnelResolver::class)->profileFor($employee->id)['position'],
+            'position' => $profile['position'] ?? null,
+            'employee_code' => ($profile['code'] ?? null) ?: $employee->employee_code,
+            'branch' => $objective->branch?->name,
+            'immediate_boss' => $letterBoss ?? ($suggested['name'] ?? null),
+            'immediate_boss_confirmed' => $letterBoss !== null,
             'is_active' => app(OkrEmployeeBranchResolver::class)->employeeIsActive($employee->id),
         ];
     }

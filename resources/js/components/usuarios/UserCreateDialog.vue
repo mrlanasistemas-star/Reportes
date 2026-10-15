@@ -8,8 +8,9 @@ import { computed, watch } from 'vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import BranchScopePicker from './BranchScopePicker.vue'
 import PasswordFields from './PasswordFields.vue'
-import type { LinkableEmployee, UserRoleOption } from './users'
+import type { BranchOption, BranchScopeMode, LinkableEmployee, UserRoleOption } from './users'
 
 const props = defineProps<{
     storeUrl: string
@@ -19,6 +20,9 @@ const props = defineProps<{
     canManageAccess: boolean
     invitationExpiresMinutes: number
     rolesUrl: string | null
+    /** Fase 6.4 — sucursales que el actor puede conceder y si puede conceder «Todas». */
+    scopeBranches: BranchOption[]
+    canGrantAllBranches: boolean
 }>()
 const open = defineModel<boolean>('open', { default: false })
 
@@ -27,6 +31,7 @@ const form = useForm({
     name: '', email: '', role: 'colaborador', employee_id: null as number | null,
     password_mode: 'invite' as Mode, password: '', password_confirmation: '',
     send_invitation: true, enable_access: false,
+    branch_scope: 'all' as BranchScopeMode, branch_ids: [] as number[],
 })
 
 const assignable = computed(() => props.roles.filter((r) => r.assignable))
@@ -46,11 +51,15 @@ watch(open, (v) => {
         form.clearErrors()
         form.password_mode = props.canInvite ? 'invite' : 'auto'
         form.role = assignable.value.find((r) => r.key === 'colaborador')?.key ?? assignable.value[0]?.key ?? 'colaborador'
+        // Restringido: por defecto sus propias sucursales (nunca «todas»).
+        form.branch_scope = props.canGrantAllBranches ? 'all' : 'branches'
+        form.branch_ids = props.canGrantAllBranches ? [] : props.scopeBranches.map((b) => b.id)
     }
 })
 
 const canSubmit = computed(() => form.name.trim() !== '' && form.email.trim() !== ''
-    && (form.password_mode !== 'manual' || (form.password.length >= 8 && form.password === form.password_confirmation)))
+    && (form.password_mode !== 'manual' || (form.password.length >= 8 && form.password === form.password_confirmation))
+    && (form.branch_scope === 'all' || form.branch_ids.length > 0))
 
 function submit() {
     form.transform((d) => ({ ...d, send_invitation: d.password_mode === 'invite' ? true : d.send_invitation && props.canInvite }))
@@ -113,9 +122,16 @@ function submit() {
                     />
                     <p class="rounded-xl bg-muted/50 px-3 py-2 text-[11px] leading-4 text-muted-foreground">
                         <strong class="text-foreground">Alcance:</strong>
-                        {{ selectedRole?.base_level === 'gerencial' ? 'nivel gerencial — ve la información de todas las sucursales en los módulos de su rol.' : 'nivel colaborador — solo ve lo propio (sus OKR y documentos).' }}
-                        La sucursal se toma del colaborador vinculado; el sistema todavía no restringe usuarios a sucursales específicas.
+                        {{ selectedRole?.base_level === 'gerencial' ? 'nivel gerencial — ve la información de las sucursales que elijas abajo en los módulos de su rol.' : 'nivel colaborador — en OKR solo ve lo propio (sus OKR y documentos); en otros módulos, las sucursales que elijas abajo.' }}
                     </p>
+                </div>
+
+                <div class="space-y-2">
+                    <p class="text-xs font-bold text-foreground">Alcance por sucursal</p>
+                    <BranchScopePicker
+                        v-model:mode="form.branch_scope" v-model:branch-ids="form.branch_ids" :branches="scopeBranches" :can-grant-all="canGrantAllBranches"
+                        :error="form.errors.branch_ids || form.errors.branch_scope"
+                    />
                 </div>
 
                 <div class="space-y-2">

@@ -34,16 +34,19 @@ it('shows real KPIs for the latest generated monthly period, matching buildSnaps
     $response->assertOk();
     $props = $response->viewData('page')['props'];
 
-    expect($props['hasData'])->toBeTrue();
-    // Solo compara contra el periodo esperado si el controlador escogió el mismo
-    // (puede diferir si esta BD tiene un periodo mensual real más nuevo que 21).
-    if ($props['kpis']['period_label'] === $period->label) {
-        expect($props['kpis']['ebitda'])->toBe(round((float) $expectedSnapshot['summary']['ebitda_final'], 2));
-        expect($props['kpis']['opex'])->toBe(round((float) $expectedSnapshot['summary']['opex_total'], 2));
-        expect($props['kpis']['mora_pct'])->toBe(round((float) $expectedSnapshot['summary']['mora_index'], 2));
-    }
+    expect($props['hasData'])->toBeTrue()
+        // 15-oct-2026: la página abre al instante (sin calcular el snapshot) y pide las
+        // cifras a dashboard-data al montarse — nunca se espera frente al login.
+        ->and($props['deferred'])->toBeTrue()
+        ->and($props['kpis'])->toBeNull();
 
-    expect($props['charts'])->not->toBeNull();
+    $data = $this->actingAs($this->user)->getJson(route('dashboard.data', ['period_id' => $props['initialPeriodId']]))->assertOk()->json();
+    if ($data['kpis']['period_label'] === $period->label) {
+        expect($data['kpis']['ebitda'])->toBe(round((float) $expectedSnapshot['summary']['ebitda_final'], 2));
+        expect($data['kpis']['opex'])->toBe(round((float) $expectedSnapshot['summary']['opex_total'], 2));
+        expect($data['kpis']['mora_pct'])->toBe(round((float) $expectedSnapshot['summary']['mora_index'], 2));
+    }
+    expect($data['charts'])->not->toBeNull();
     // Rendimiento (ronda 5) — la tendencia ya NO viaja en la carga inicial (antes
     // obligaba a construir hasta 7 snapshots en la misma request, "tardaba
     // muchísimo en entrar"). Ahora se pide aparte — ver el test de trend() abajo.

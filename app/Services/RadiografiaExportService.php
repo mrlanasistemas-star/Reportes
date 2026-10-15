@@ -47,6 +47,32 @@ class RadiografiaExportService
      */
     private function buildSnapshotCached(Period $period, PeriodSummary $summary, array $config = []): array
     {
+        // Fase 7.4 (15-oct-2026) — ['scope' => 'general'] es EXACTAMENTE la misma
+        // corrida que [] (build() trata la ausencia de scope como general). Antes eran
+        // dos claves distintas: el Dashboard/tendencia pedían ['scope'=>'general'] (TTL
+        // 3 min) mientras WarmDashboardTrendCacheJob y el comparativo calentaban []
+        // (12 h) — el precalentamiento nunca le servía al Dashboard.
+        if (($config['scope'] ?? null) === 'general') {
+            unset($config['scope']);
+        }
+
+        // Alcances que build() resuelve PROYECTANDO la corrida general (applyScope()/
+        // applyGeneralManualAdjustment()): se sirven desde UNA corrida general cacheada
+        // por periodo + versión del resumen, en vez de repetir la agregación completa
+        // de fact_* (~25 s en frío) por cada sucursal o ajuste. Cualquier otra clave de
+        // config (p. ej. included_branch_ids, que sí altera la corrida) sigue el camino
+        // original.
+        if ($this->isProjectableConfig($config)) {
+            $state = $this->generalStateCached($period, $summary);
+            if ($config === []) {
+                return $state['snapshot'];
+            }
+
+            $key = $this->snapshotCacheKey($period, $summary, $config);
+
+            return Cache::remember($key, 180, fn () => $this->snapshotBuilder->projectScopeFromState($state, $period, $config));
+        }
+
         $key = sprintf(
             'radiography_snapshot:%d:%d:%d:%s',
             $period->id,
@@ -62,6 +88,53 @@ class RadiografiaExportService
         $ttl = $config === [] ? 43_200 : 180;
 
         return Cache::remember($key, $ttl, fn () => $this->snapshotBuilder->build($period, $summary, $config));
+    }
+
+    /** Memo por instancia del estado general (evita deserializarlo N veces en la misma request). */
+    private array $generalStateMemo = [];
+
+    private const PROJECTABLE_CONFIG_KEYS = ['scope', 'branch_id', 'employee_id', 'manual_adjustment'];
+
+    private function isProjectableConfig(array $config): bool
+    {
+        if (array_diff(array_keys($config), self::PROJECTABLE_CONFIG_KEYS) !== []) {
+            return false;
+        }
+
+        return in_array($config['scope'] ?? 'general', ['general', 'branch', 'employee'], true);
+    }
+
+    /**
+     * Corrida general + estado de proyección (ver RadiographySnapshotBuilder::
+     * buildGeneralState()), cacheada 12 h: la clave cambia sola si el resumen se
+     * regenera o invalida (summary.id/updated_at), igual que el snapshot general.
+     *
+     * @return array{snapshot: array, empGestores: array, gm: array}
+     */
+    private function generalStateCached(Period $period, PeriodSummary $summary): array
+    {
+        $key = sprintf('radiography_general_state:%d:%d:%d', $period->id, $summary->id, $summary->updated_at?->timestamp ?? 0);
+
+        if (!isset($this->generalStateMemo[$key])) {
+            // Tope pequeño: en un worker de cola de larga vida el memo nunca debe crecer sin límite.
+            if (count($this->generalStateMemo) >= 3) {
+                array_shift($this->generalStateMemo);
+            }
+            $this->generalStateMemo[$key] = Cache::remember($key, 43_200, fn () => $this->snapshotBuilder->buildGeneralState($period, $summary));
+        }
+
+        return $this->generalStateMemo[$key];
+    }
+
+    private function snapshotCacheKey(Period $period, PeriodSummary $summary, array $config): string
+    {
+        return sprintf(
+            'radiography_snapshot:%d:%d:%d:%s',
+            $period->id,
+            $summary->id,
+            $summary->updated_at?->timestamp ?? 0,
+            md5(json_encode($config))
+        );
     }
 
     public function export(Period $period, array $config = []): string

@@ -10,10 +10,13 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { useTour } from '@/composables/useTour'
 import { okrRequest } from '@/lib/okrHttp'
+import { welcomeTourFor } from '@/tour/modules'
 
 const LEGACY_KEY = 'reportes_tour_welcome_seen_v1'
 const open = ref(false)
-const page = usePage<{ auth: { user: { tour_welcome_seen_at?: string | null } | null } }>()
+const page = usePage<{ auth: { user: { tour_welcome_seen_at?: string | null } | null; modules?: string[] } }>()
+// Fase 8.13: el recorrido empieza en el primer módulo que el rol SÍ puede abrir.
+const welcomeTour = computed(() => welcomeTourFor(page.props.auth?.modules))
 const seenOnServer = computed(() => !!page.props.auth?.user?.tour_welcome_seen_at)
 const { startTour } = useTour()
 let persisted = false
@@ -69,24 +72,26 @@ function dismiss(): void {
 
 function beginTour(): void {
     open.value = false
-    startTour('dashboard')
+
+    if (welcomeTour.value) {
+        startTour(welcomeTour.value)
+    }
 }
 </script>
 
 <template>
     <Dialog v-model:open="open">
         <DialogContent class="max-w-md overflow-hidden p-0">
-            <div class="relative bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 pb-6 pt-7 text-white">
-                <div class="pointer-events-none absolute -right-10 -top-10 size-40 rounded-full bg-white/10 blur-2xl" />
-                <span class="flex size-12 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/30 backdrop-blur"><Rocket class="size-6" /></span>
-                <DialogTitle class="mt-4 text-xl font-black tracking-tight">Bienvenido a Reportes MR LANA</DialogTitle>
-                <p class="mt-1 text-sm text-white/85">Un recorrido corto sobre la pantalla real: información financiera, colaboradores, OKR y reportes.</p>
+            <div class="relative border-b bg-accent/60 px-6 pb-6 pt-7">
+                <span class="flex size-12 items-center justify-center rounded-xl border bg-card text-primary shadow-soft-xs"><Rocket class="size-6" /></span>
+                <DialogTitle class="mt-4 text-xl font-bold tracking-tight text-foreground">Bienvenido a Reportes MR LANA</DialogTitle>
+                <p class="mt-1 text-sm text-muted-foreground">Un recorrido corto sobre la pantalla real de los módulos que tienes habilitados. Puedes salir en cualquier momento.</p>
             </div>
             <div class="space-y-2 p-6">
-                <Button class="h-11 w-full gap-2 rounded-xl" @click="beginTour"><Compass class="size-4" /> Iniciar recorrido</Button>
+                <Button v-if="welcomeTour" class="h-11 w-full gap-2 rounded-xl" @click="beginTour"><Compass class="size-4" /> Iniciar recorrido</Button>
                 <Button variant="outline" class="h-11 w-full rounded-xl" @click="dismiss">Explorar por mi cuenta</Button>
                 <p class="flex items-center justify-center gap-1.5 pt-1 text-[11px] text-muted-foreground">
-                    <BookOpen class="size-3.5" /> Solo se muestra una vez. La guía siempre está en el botón flotante de la derecha.
+                    <BookOpen class="size-3.5 shrink-0" /> Solo se muestra una vez. Puedes repetirlo desde «Guía del sistema» o el botón de ayuda.
                 </p>
             </div>
         </DialogContent>

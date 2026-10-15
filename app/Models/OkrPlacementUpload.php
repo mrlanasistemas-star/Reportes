@@ -24,14 +24,27 @@ class OkrPlacementUpload extends Model
         'replaced_upload_id', 'total_amount', 'rows_count', 'unattributed_amount',
         'rows_outside_week_range', 'coverage_status',
         'rows_duplicated', 'rows_other_branch', 'rows_cancelled', 'rows_out_of_objective_range',
-        'rows_pending_attribution',
+        'rows_pending_attribution', 'declared_complete',
     ];
+
+    /**
+     * 4.9 (19-oct-2026): `current_guard` = 1 solo en la carga ACTIVA; el índice
+     * único (objetivo, semana, current_guard) impide dos cargas activas de la
+     * misma semana aunque lleguen dos solicitudes simultáneas.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (self $upload) {
+            $upload->current_guard = $upload->status === self::STATUS_ACTIVE ? 1 : null;
+        });
+    }
 
     protected $casts = [
         'week_start' => 'date',
         'week_end' => 'date',
         'total_amount' => 'float',
         'unattributed_amount' => 'float',
+        'declared_complete' => 'boolean',
     ];
 
     public function objective(): BelongsTo

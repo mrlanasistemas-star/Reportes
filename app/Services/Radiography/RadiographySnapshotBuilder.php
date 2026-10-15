@@ -469,6 +469,39 @@ class RadiographySnapshotBuilder
     }
 
     /**
+     * Fase 7.4 (rendimiento, 15-oct-2026) — corrida GENERAL (sin ajuste ni alcance)
+     * más el estado interno que projectScope() necesita, en un arreglo plano
+     * serializable: así RadiografiaExportService puede cachear UNA sola corrida
+     * pesada por periodo y servir cualquier sucursal proyectándola después (ver
+     * projectScopeFromState()), incluso desde otra request/proceso. No cambia
+     * ningún cálculo: es exactamente build($period, $summary, []).
+     *
+     * @return array{snapshot: array, empGestores: array, gm: array}
+     */
+    public function buildGeneralState(Period $period, PeriodSummary $summary): array
+    {
+        $snapshot = $this->build($period, $summary, []);
+
+        return ['snapshot' => $snapshot, 'empGestores' => $this->lastEmpGestores, 'gm' => $this->lastGm];
+    }
+
+    /**
+     * Proyección de alcance sobre un estado capturado por buildGeneralState() —
+     * MISMO camino que projectScope() (applyScope()/applyGeneralManualAdjustment()),
+     * restaurando antes los ids de datos del periodo (lo único de instancia que esas
+     * proyecciones leen además de empGestores/gm).
+     */
+    public function projectScopeFromState(array $state, Period $period, array $config): array
+    {
+        $this->warmDataIds($period);
+        $this->lastEmpGestores = $state['empGestores'];
+        $this->lastGm          = $state['gm'];
+        $this->lastPeriodId    = $period->id;
+
+        return $this->projectScope($state['snapshot'], $period, $config);
+    }
+
+    /**
      * Fila fusionada de employees_gestores (CON _employee_ids, sin Arr::except) para un
      * colaborador y periodo — expone la MISMA identidad robusta que usa Web
      * (applyEmployeeScope()) a consumidores que solo tienen el snapshot GENERAL ya construido
@@ -976,7 +1009,7 @@ class RadiographySnapshotBuilder
             }
             if ($row) {
                 Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — fila resuelta por nombre, no por employee_id (vinculación de identidad incompleta este periodo).', [
-                    'employee_id' => $employeeId, 'employee_name' => $employee->full_name,
+                    'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                     'period_id' => $period->id, 'resolution' => $identityResolution, 'matched_row_name' => $row['name'] ?? null,
                 ]);
             }
@@ -1032,7 +1065,7 @@ class RadiographySnapshotBuilder
 
         if (!empty($productRows) && abs($productSum - $colocacionRow) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — colocación por producto no reconcilia contra el total del colaborador.', [
-                'employee_id' => $employeeId, 'employee_name' => $employee->full_name,
+                'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                 'product_sum' => $productSum, 'colocacion_total' => $colocacionRow,
             ]);
             $s['products'] = $this->notAttributable("Desglose por producto no disponible: no reconcilia contra el total de colocación (\${$productSum} vs \${$colocacionRow}). Ver logs.");
@@ -1055,7 +1088,7 @@ class RadiographySnapshotBuilder
             $rcSum = round(array_sum($rc), 2);
             if (abs($rcSum - $recuperacionRow) > 0.01) {
                 Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — componentes de recuperación no reconcilian.', [
-                    'employee_id' => $employeeId, 'employee_name' => $employee->full_name,
+                    'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                     'components_sum' => $rcSum, 'recuperacion_total' => $recuperacionRow,
                 ]);
                 $s['recovery_components'] = $this->notAttributable("Desglose por componente no disponible: no reconcilia contra recuperación total (\${$rcSum} vs \${$recuperacionRow}). Ver logs.");
@@ -1074,7 +1107,7 @@ class RadiographySnapshotBuilder
         $rbpSum = round(array_sum(array_column($rbp, 'recuperacion')), 2);
         if (!empty($rbp) && abs($rbpSum - $recuperacionRow) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — recuperación por producto no reconcilia.', [
-                'employee_id' => $employeeId, 'employee_name' => $employee->full_name,
+                'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                 'product_sum' => $rbpSum, 'recuperacion_total' => $recuperacionRow,
             ]);
             $s['recovery_by_product_scope'] = $this->notAttributable("Desglose por producto no disponible: no reconcilia contra recuperación total (\${$rbpSum} vs \${$recuperacionRow}). Ver logs.");
@@ -1095,7 +1128,7 @@ class RadiographySnapshotBuilder
 
         if (!empty($moraBuckets) && abs($vencidaSum - $vencidaRow) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — buckets de mora no reconcilian.', [
-                'employee_id' => $employeeId, 'employee_name' => $employee->full_name,
+                'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                 'buckets_sum' => $vencidaSum, 'vencida_total' => $vencidaRow,
             ]);
             $s['mora_buckets']      = $this->notAttributable("Desglose por bucket no disponible: no reconcilia contra vencida total (\${$vencidaSum} vs \${$vencidaRow}). Ver logs.");
@@ -2122,12 +2155,19 @@ class RadiographySnapshotBuilder
         // pero que no es substring literal del canónico—). Causa raíz real, confirmada en
         // código, de "funciona un mes, falla otro" (auditoría 2026-08-24).
         $employeeIdsByNorm = [];
-        $linkEmployeeId = function (?string $rawName, $id) use (&$employeeIdsByNorm) {
+
+        // Cierre 2026-10 — homónimos con rechazo de fusión explícito
+        // (employee_match_rejections: clave NOI distinta en la misma nómina, o decisión de
+        // un usuario) NUNCA se suman en una sola fila: cada persona extra recibe su propia
+        // llave "nombre#id" para todo lo que trae employee_id (nómina, gastos, identidad).
+        // Sin rechazos (caso actual de los datos) el mapa está vacío y nada cambia.
+        $homonymKeyById = $this->homonymSplitKeys();
+        $linkEmployeeId = function (?string $rawName, $id) use (&$employeeIdsByNorm, $homonymKeyById) {
             $id = (int) $id;
             if ($id <= 0) return;
             $norm = $this->canonicalizer->normalize($rawName ?? '');
             if ($norm === '') return;
-            $employeeIdsByNorm[$norm][] = $id;
+            $employeeIdsByNorm[$homonymKeyById[$id] ?? $norm][] = $id;
         };
 
         $payroll = [];
@@ -2143,6 +2183,7 @@ class RadiographySnapshotBuilder
             foreach ($mesRows as $mes) {
                 $norm = $this->canonicalizer->normalize($mes->employee?->full_name ?? '');
                 if (!$norm) continue;
+                $norm = $homonymKeyById[(int) $mes->employee_id] ?? $norm;
                 $rawNameByNorm[$norm] = $mes->employee?->full_name ?? '';
                 $linkEmployeeId($mes->employee?->full_name, $mes->employee_id);
                 if (isset($payroll[$norm])) {
@@ -2184,11 +2225,15 @@ class RadiographySnapshotBuilder
                     SUM(CASE WHEN LOWER(COALESCE(n.concept_type,'')) IN ('deduccion','descuento') THEN n.amount ELSE 0 END) as descuentos
                 ")
                 ->groupBy('e.normalized_name', 'e.full_name', 'b.name')
+                // Solo si hay homónimos separados se agrupa también por persona (sin ellos
+                // la consulta queda idéntica a la histórica).
+                ->when($homonymKeyById !== [], fn ($q) => $q->addSelect('e.id as employee_id')->groupBy('e.id'))
                 ->get();
 
             foreach ($noiRows as $row) {
                 $norm = $this->canonicalizer->normalize($row->name ?? '');
                 if (!$norm) continue;
+                $norm = $homonymKeyById[(int) ($row->employee_id ?? 0)] ?? $norm;
                 $rawNameByNorm[$norm] ??= $row->name ?? '';
                 $neto = (float)$row->pagos + (float)$row->bonos - (float)$row->descuentos;
                 if (isset($payroll[$norm])) {
@@ -2361,12 +2406,35 @@ class RadiographySnapshotBuilder
         // desglose.
         $recoveryByNorm = [];
         ['recovery' => $exclRecoveryNorm] = \App\Services\Radiography\BranchRadiographyCalculator::recoveryExclusionSql();
-        DB::table('fact_recoveries')
+        ['components' => $exclComponents] = \App\Services\Radiography\BranchRadiographyCalculator::recoveryExclusionSql();
+        // Fase 7.4 (rendimiento, 15-oct-2026) — las TRES agregaciones por promotor de
+        // abajo (recuperación total, ingreso base EBITDA y componentes) tenían el MISMO
+        // WHERE y el MISMO GROUP BY: eran tres barridos completos de fact_recoveries
+        // (~1.1 s cada uno en datos reales). Ahora es UNA consulta con las mismas
+        // expresiones SUM(...) textuales; cada bloque recorre las mismas filas en el
+        // mismo orden que antes, así que los acumulados son idénticos.
+        $promoterRecoveryRows = DB::table('fact_recoveries')
             ->whereIn('period_id', $this->dataIds)
             ->whereNotNull('promoter_name')
-            ->selectRaw("promoter_name, SUM(CASE {$exclRecoveryNorm} ELSE total_amount END) as recuperacion")
+            ->selectRaw("
+                promoter_name,
+                SUM(CASE {$exclRecoveryNorm} ELSE total_amount END) as recuperacion,
+                SUM(CASE {$exclComponents} ELSE capital END) as capital_recuperado,
+                SUM(CASE {$exclComponents} ELSE interest END) as interes_recuperado,
+                SUM(CASE {$exclComponents} ELSE tax END) as impuesto_recuperado,
+                SUM(CASE {$exclComponents} ELSE charges_due END) as charges,
+                SUM(CASE {$exclComponents} ELSE charges END) as cargos_adicionales,
+                SUM(CASE {$exclComponents} ELSE excedente END) as excedente_recuperado,
+                SUM(CASE WHEN operation = 'COMISIÓN POR APERTURA' THEN total_amount ELSE 0 END) as comision_apertura,
+                SUM(CASE WHEN operation = 'ACUERDO CON CLIENTE' AND charges_due > 0
+                    AND `transaction` IN ('PAGO', 'DESCUENTO') AND is_savehearts != 1
+                    THEN charges_due ELSE 0 END) as cargos_inicio,
+                SUM(CASE WHEN `transaction` IN ('PAGO', 'DESCUENTO') THEN COALESCE(savehearts_crece_share, 0) ELSE 0 END) as seguro_crece_reconocido
+            ")
             ->groupBy('promoter_name')
-            ->get()
+            ->get();
+
+        $promoterRecoveryRows
             ->each(function ($r) use (&$recoveryByNorm, &$rawNameByNorm) {
                 $norm = $this->canonicalizer->normalize($r->promoter_name);
                 if ($norm) {
@@ -2381,28 +2449,22 @@ class RadiographySnapshotBuilder
         // BranchRadiographyCalculator.php:94-113) — la utilidad por empleado debe salir de
         // aquí, no de "recuperación − colocación".
         $ingresoBaseByNorm = [];
-        ['components' => $exclComponents] = \App\Services\Radiography\BranchRadiographyCalculator::recoveryExclusionSql();
-        DB::table('fact_recoveries')
-            ->whereIn('period_id', $this->dataIds)
-            ->whereNotNull('promoter_name')
-            ->selectRaw("
-                promoter_name,
-                SUM(CASE {$exclComponents} ELSE interest END) as interes_recuperado,
-                SUM(CASE {$exclComponents} ELSE tax END) as impuesto_recuperado,
-                SUM(CASE {$exclComponents} ELSE charges_due END) as charges,
-                SUM(CASE {$exclComponents} ELSE charges END) as cargos_adicionales,
-                SUM(CASE {$exclComponents} ELSE excedente END) as excedente_recuperado,
-                SUM(CASE WHEN operation = 'COMISIÓN POR APERTURA' THEN total_amount ELSE 0 END) as comision_apertura,
-                SUM(CASE WHEN `transaction` IN ('PAGO', 'DESCUENTO') THEN COALESCE(savehearts_crece_share, 0) ELSE 0 END) as seguro_crece_reconocido
-            ")
-            ->groupBy('promoter_name')
-            ->get()
+        $promoterRecoveryRows
             ->each(function ($r) use (&$ingresoBaseByNorm, &$rawNameByNorm) {
                 $norm = $this->canonicalizer->normalize($r->promoter_name);
                 if (!$norm) return;
                 $rawNameByNorm[$norm] ??= mb_strtoupper(trim($r->promoter_name));
+                // Solo las 7 columnas que esta consulta traía antes (ingresoEbitdaBaseFor() no lee otras).
                 $ingresoBaseByNorm[$norm] = ($ingresoBaseByNorm[$norm] ?? 0.0)
-                    + \App\Services\Radiography\BranchRadiographyCalculator::ingresoEbitdaBaseFor((array) $r);
+                    + \App\Services\Radiography\BranchRadiographyCalculator::ingresoEbitdaBaseFor([
+                        'interes_recuperado'      => $r->interes_recuperado,
+                        'impuesto_recuperado'     => $r->impuesto_recuperado,
+                        'charges'                 => $r->charges,
+                        'cargos_adicionales'      => $r->cargos_adicionales,
+                        'excedente_recuperado'    => $r->excedente_recuperado,
+                        'comision_apertura'       => $r->comision_apertura,
+                        'seguro_crece_reconocido' => $r->seguro_crece_reconocido,
+                    ]);
             });
 
         // Desglose de Recuperación por componente, por promotor canónico — MISMAS pasadas que
@@ -2412,25 +2474,7 @@ class RadiographySnapshotBuilder
         // sucursal vía prefijo de contrato) no aplican aquí: agrupamos por promoter_name, que ya
         // viene resuelto en la fila — no hay ambigüedad de sucursal que resolver.
         $recoveryComponentsByNorm = [];
-        DB::table('fact_recoveries')
-            ->whereIn('period_id', $this->dataIds)
-            ->whereNotNull('promoter_name')
-            ->selectRaw("
-                promoter_name,
-                SUM(CASE {$exclComponents} ELSE capital END) as capital_recuperado,
-                SUM(CASE {$exclComponents} ELSE interest END) as interes_recuperado,
-                SUM(CASE {$exclComponents} ELSE tax END) as impuesto_recuperado,
-                SUM(CASE {$exclComponents} ELSE charges_due END) as charges,
-                SUM(CASE {$exclComponents} ELSE charges END) as cargos_adicionales,
-                SUM(CASE {$exclComponents} ELSE excedente END) as excedente_recuperado,
-                SUM(CASE WHEN operation = 'COMISIÓN POR APERTURA' THEN total_amount ELSE 0 END) as comision_apertura,
-                SUM(CASE WHEN operation = 'ACUERDO CON CLIENTE' AND charges_due > 0
-                    AND `transaction` IN ('PAGO', 'DESCUENTO') AND is_savehearts != 1
-                    THEN charges_due ELSE 0 END) as cargos_inicio,
-                SUM(CASE WHEN `transaction` IN ('PAGO', 'DESCUENTO') THEN COALESCE(savehearts_crece_share, 0) ELSE 0 END) as seguro_crece_reconocido
-            ")
-            ->groupBy('promoter_name')
-            ->get()
+        $promoterRecoveryRows
             ->each(function ($r) use (&$recoveryComponentsByNorm, &$rawNameByNorm) {
                 $norm = $this->canonicalizer->normalize($r->promoter_name);
                 if (!$norm) return;
@@ -2480,9 +2524,10 @@ class RadiographySnapshotBuilder
             ->selectRaw('emp.id as employee_id, emp.full_name as full_name, SUM(COALESCE(NULLIF(e.paid_amount,0),e.amount)) as gastos')
             ->groupBy('emp.id', 'emp.full_name')
             ->get()
-            ->each(function ($ex) use (&$expensesByNorm, &$rawNameByNorm, $linkEmployeeId) {
+            ->each(function ($ex) use (&$expensesByNorm, &$rawNameByNorm, $linkEmployeeId, $homonymKeyById) {
                 $norm = $this->canonicalizer->normalize($ex->full_name ?? '');
                 if ($norm) {
+                    $norm = $homonymKeyById[(int) $ex->employee_id] ?? $norm;
                     $rawNameByNorm[$norm] ??= mb_strtoupper(trim($ex->full_name ?? ''));
                     $expensesByNorm[$norm] = ($expensesByNorm[$norm] ?? 0.0) + (float)$ex->gastos;
                     $linkEmployeeId($ex->full_name, $ex->employee_id);
@@ -2514,8 +2559,21 @@ class RadiographySnapshotBuilder
             array_keys($recoveryByProductNorm),
         )));
 
-        $mergeMap        = $this->canonicalizer->buildCanonicalMap($allUniqueKeys, array_keys($payroll));
+        // Las llaves de homónimos separados ("nombre#id") nunca entran a la fusión por
+        // variante de escritura: son personas distintas por decisión explícita.
+        $isSplitKey = fn (string $k) => str_contains($k, '#');
+        $mergeMap        = $this->canonicalizer->buildCanonicalMap(
+            array_values(array_filter($allUniqueKeys, fn ($k) => !$isSplitKey($k))),
+            array_values(array_filter(array_keys($payroll), fn ($k) => !$isSplitKey($k))),
+        );
         $mergedIncidents = [];
+        foreach (array_unique(array_map(fn ($k) => strstr($k, '#', true), array_filter($allUniqueKeys, $isSplitKey))) as $baseName) {
+            $mergedIncidents[] = [
+                'type'     => 'homonimo_separado',
+                'severity' => 'warning',
+                'message'  => 'Homónimos separados: "' . mb_strtoupper($baseName) . '" corresponde a más de una persona (rechazo de fusión registrado). Nómina y gastos se muestran por persona; colocación, cartera y recuperación vienen solo por nombre de gestor y se quedan en la primera persona hasta conciliarlas.',
+            ];
+        }
 
         foreach ($mergeMap as $key => $canonical) {
             if ($key === $canonical) continue;
@@ -2718,6 +2776,53 @@ class RadiographySnapshotBuilder
         })->sortByDesc(fn ($r) => $r['colocacion'] + $r['pagos'])->values()->all();
 
         return ['rows' => $rows, 'merged_incidents' => $mergedIncidents];
+    }
+
+    /**
+     * employee_id → llave propia ("nombre#id") para cada homónimo EXTRA con rechazo de
+     * fusión explícito — misma regla que CanonicalEmployeeResolver. La primera persona
+     * (la que contiene el id más antiguo) conserva la llave del nombre. Vacío si no hay
+     * rechazos: entonces la agrupación por nombre queda exactamente como siempre.
+     *
+     * @return array<int, string>
+     */
+    private function homonymSplitKeys(): array
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('employee_match_rejections')
+            || !DB::table('employee_match_rejections')->exists()) {
+            return [];
+        }
+
+        $rejectedIds = DB::table('employee_match_rejections')->get(['employee_id_a', 'employee_id_b'])
+            ->flatMap(fn ($r) => [(int) $r->employee_id_a, (int) $r->employee_id_b])->unique()->values()->all();
+        $names = Employee::query()->whereIn('id', $rejectedIds)->pluck('full_name')
+            ->map(fn ($n) => $this->canonicalizer->normalize((string) $n))->filter()->unique()->all();
+        if ($names === []) {
+            return [];
+        }
+
+        $byName = [];
+        foreach (Employee::query()->get(['id', 'full_name', 'normalized_name']) as $e) {
+            $norm = $this->canonicalizer->normalize((string) $e->full_name);
+            if (in_array($norm, $names, true)) {
+                $byName[$norm][] = $e;
+            }
+        }
+
+        $map = [];
+        $resolver = app(\App\Services\CanonicalEmployeeResolver::class);
+        foreach ($byName as $norm => $rows) {
+            // Agrupar por el nombre del canonicalizador (mismo criterio que este builder).
+            $groups = $resolver->canonicalize(collect($rows)->map(fn ($e) => (object) ['id' => $e->id, 'full_name' => $e->full_name, 'normalized_name' => $norm]))
+                ->sortBy(fn ($g) => min($g->employee_ids))->values();
+            foreach ($groups->slice(1) as $g) {
+                foreach ($g->employee_ids as $id) {
+                    $map[(int) $id] = $norm . '#' . min($g->employee_ids);
+                }
+            }
+        }
+
+        return $map;
     }
 
     // ── INCIDENTS ────────────────────────────────────────────────────────────
@@ -4213,6 +4318,9 @@ class RadiographySnapshotBuilder
             ->where('per.period_id', $period->id)
             ->where('per.is_active_for_period', false)
             ->where('per.movement_type', 'baja')
+            // Cierre 2026-10: una fila antigua 'baja' SIN categoría (roster anterior a la
+            // conciliación) no es una baja confirmada: va a pendientes, no aquí.
+            ->where('per.reconciliation_status', \App\Services\Roster\RosterMovementStatus::BAJA_CONFIRMADA)
             ->orderBy('per.branch_name')
             ->orderBy('per.nombre_original')
             ->get(['per.branch_id', 'per.branch_name', 'per.nombre_original', 'per.source', 'per.reconciliation_note', 'e.employee_code']);
@@ -4224,7 +4332,10 @@ class RadiographySnapshotBuilder
             ->leftJoin('employees as e', 'per.employee_id', '=', 'e.id')
             ->where('per.period_id', $period->id)
             ->where('per.is_active_for_period', false)
-            ->where('per.movement_type', 'ausencia')
+            ->where(fn ($q) => $q->where('per.movement_type', 'ausencia')
+                ->orWhere(fn ($qq) => $qq->where('per.movement_type', 'baja')
+                    ->where(fn ($s) => $s->whereNull('per.reconciliation_status')
+                        ->orWhere('per.reconciliation_status', '!=', \App\Services\Roster\RosterMovementStatus::BAJA_CONFIRMADA))))
             ->orderBy('per.branch_name')
             ->orderBy('per.nombre_original')
             ->get(['per.branch_name', 'per.nombre_original', 'per.reconciliation_status', 'per.reconciliation_note', 'e.employee_code']);

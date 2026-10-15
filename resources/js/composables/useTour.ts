@@ -1,5 +1,7 @@
-import { router } from '@inertiajs/vue3'
+import { router, usePage } from '@inertiajs/vue3'
 import { computed, ref } from 'vue'
+import { visibleMainNavItems } from '@/config/mainNav'
+import { toUrl } from '@/lib/utils'
 import { TOURS } from '@/tour/registry'
 import type { TourStep } from '@/tour/types'
 
@@ -27,7 +29,24 @@ function writeCompleted(ids: string[]): void {
 
 const completedTours = ref<string[]>(readCompleted())
 
+const firstSegment = (path: string): string => path.split('?')[0].split('/').filter(Boolean)[0] ?? ''
+
 export function useTour() {
+    const page = usePage()
+
+    // Fase 8.13: un paso que vive en otra pantalla solo se muestra si el rol
+    // puede abrir esa pantalla (mismo filtro que el menú). Si no, se salta:
+    // la guía nunca lleva a un 403 ni explica un botón que el usuario no tiene.
+    function stepAllowed(step: TourStep): boolean {
+        if (!step.href) {
+            return true
+        }
+
+        const allowed = visibleMainNavItems(page.props.auth).map((item) => firstSegment(toUrl(item.href)))
+
+        return allowed.includes(firstSegment(step.href))
+    }
+
     const activeTour = computed(() => (activeTourId.value ? TOURS[activeTourId.value] : null))
     const currentStep = computed<TourStep | null>(() => activeTour.value?.steps[stepIndex.value] ?? null)
     const totalSteps = computed(() => activeTour.value?.steps.length ?? 0)
@@ -53,7 +72,24 @@ export function useTour() {
             return
         }
 
-        const clamped = Math.max(0, Math.min(index, tour.steps.length - 1))
+        let clamped = Math.max(0, Math.min(index, tour.steps.length - 1))
+        const direction = index < stepIndex.value ? -1 : 1
+
+        // Saltar pasos de pantallas no permitidas en la dirección del avance.
+        while (!stepAllowed(tour.steps[clamped])) {
+            const nextIndex = clamped + direction
+
+            if (nextIndex < 0 || nextIndex >= tour.steps.length) {
+                if (direction > 0) {
+                    finish()
+                }
+
+                return
+            }
+
+            clamped = nextIndex
+        }
+
         const step = tour.steps[clamped]
         stepIndex.value = clamped
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head, Link } from '@inertiajs/vue3'
+import { Head, Link, usePage } from '@inertiajs/vue3'
 import {
     ArrowDownRight,
     ArrowUpRight,
@@ -7,20 +7,21 @@ import {
     Building2,
     CalendarRange,
     FileSpreadsheet,
-    FileText,
     FolderOpen,
     Landmark,
+    LoaderCircle,
     PiggyBank,
+    RefreshCw,
     Target,
     TrendingUp,
     Users,
     Wallet,
 } from 'lucide-vue-next'
-import Swal from 'sweetalert2'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import DashboardExportActions from '@/components/dashboard/DashboardExportActions.vue'
+import DashboardKpiCard from '@/components/dashboard/DashboardKpiCard.vue'
 import SelectField from '@/components/forms/SelectField.vue'
 import ChartCard from '@/components/radiography/ChartCard.vue'
-import { hideRouteLoading, showRouteLoading } from '@/lib/routeLoadingOverlay'
 import { dashboard } from '@/routes'
 
 defineOptions({
@@ -51,7 +52,7 @@ type ChartsData = {
     sucursalRows: { sucursal: string; colocacion: number; recuperacion: number }[]
 }
 
-type TrendPoint = { label: string; ebitda: number | null; opex: number | null }
+type TrendPoint = { label: string; period_id?: number; ebitda: number | null; opex: number | null; available?: boolean }
 
 type ScopeInfo = { type: 'general' | 'branch'; branch_id: number | null; branch_name: string | null; available: boolean }
 
@@ -63,75 +64,64 @@ const props = defineProps<{
     charts?: ChartsData | null
     scope?: ScopeInfo
     scopeUnavailable?: boolean
+    // Carga diferida: la página abre sin cifras y las pide a /dashboard-data al montarse.
+    initialPeriodId?: number
+    deferred?: boolean
 }>()
+
+// Alcance del usuario (Fase 6.4, otro módulo) y permisos de acción — solo UX: la
+// autorización real vive en el backend (DataScopeService / permission:*).
+const page = usePage()
+const auth = computed(() => (page.props as { auth?: { permissions?: string[]; dataScope?: { general?: boolean } | null } }).auth)
+const canExport = computed(() => {
+    const perms = auth.value?.permissions
+
+    return !Array.isArray(perms) || perms.includes('reportes.exportar')
+})
+const isGeneralUser = computed(() => auth.value?.dataScope?.general !== false)
 
 const kpis = ref<Kpis | null | undefined>(props.kpis)
 const charts = ref<ChartsData | null | undefined>(props.charts)
 const scope = ref<ScopeInfo | undefined>(props.scope)
 const scopeUnavailable = ref(props.scopeUnavailable ?? false)
+const selectedPeriodId = ref<string | number>(props.kpis?.period_id ?? props.initialPeriodId ?? props.periods?.[0]?.id ?? '')
+// '' = Todas las sucursales. Un usuario restringido llega con su sucursal ya resuelta por el backend.
+const selectedBranchId = ref<string | number>(props.scope?.branch_id ?? '')
+
+const loading = ref(!!props.deferred && props.hasData)
+const loadError = ref<string | null>(null)
+
 const trend = ref<TrendPoint[]>([])
+const trendScopeLabel = ref<string>('')
 const trendLoading = ref(true)
 const trendError = ref(false)
-const selectedPeriodId = ref<string | number>(props.kpis?.period_id ?? '')
-// Fase 10 de la auditoría (15-oct-2026) — filtro por sucursal. '' = Todas las sucursales.
-const selectedBranchId = ref<string | number>(props.scope?.branch_id ?? '')
-const loading = ref(false)
 
-// Rendimiento (cierre 17-sep-2026, ronda 5 — "el dashboard tarda muchísimo en
-// entrar"): la tendencia YA NO viaja con la carga inicial ni con cada cambio de
-// filtro — es la MISMA para cualquier periodo (siempre "los últimos N del
-// sistema"), así que se pide UNA sola vez aparte, cacheada 15 min en el backend,
-// sin bloquear que KPIs/gráficas del periodo se vean de inmediato.
-//
-// Ronda 6 — bug real reportado: con caché fría (recién generado un periodo nuevo)
-// el backend puede tardar/fallar (ver DashboardController::trend()); antes esto NO
-// se atrapaba, así que `trend` se quedaba en [] PARA SIEMPRE y ChartCard mostraba
-// "Sin datos disponibles" como si de verdad no hubiera nada — indistinguible de un
-// error real. Ahora se distingue "cargando" (spinner) de "sin datos" (loading prop
-// en ChartCard) y un fallo real ofrece reintentar en vez de fallar en silencio.
-async function loadTrend() {
-    trendLoading.value = true
-    trendError.value = false
+const branchIdOrNull = () => (selectedBranchId.value ? Number(selectedBranchId.value) : null)
+const scopeLabel = computed(() => {
+    const id = branchIdOrNull()
 
-    try {
-        const resp = await fetch('/dashboard-trend', { cache: 'no-store', headers: { Accept: 'application/json' } })
-
-        if (!resp.ok) {
-throw new Error(`HTTP ${resp.status}`)
-}
-
-        const json = await resp.json()
-        trend.value = json.trend ?? []
-    } catch {
-        trendError.value = true
-    } finally {
-        trendLoading.value = false
+    if (!id) {
+        return 'Todas las sucursales'
     }
-}
 
-onMounted(() => {
-    if (!props.hasData) {
- trendLoading.value = false;
-
- return 
-}
-
-    loadTrend()
+    return props.branches?.find((b) => b.id === id)?.name ?? scope.value?.branch_name ?? 'Sucursal'
 })
 
-// Selector de periodo EN VIVO — mismo patrón que Preview.vue::fetchScopedDataset()
-// (AbortController, nunca deja que una respuesta vieja pinte encima de una nueva).
-// Ronda 6: además del atenuado local (opacity-50 en KPIs/gráficas), dispara la
-// misma pantalla de carga de página completa que usa cualquier navegación Inertia
-// — el usuario pidió experiencia consistente entre "entrar al sistema" y "cambiar
-// de periodo", ninguna de las dos corre en segundo plano como generar un reporte.
-let controller: AbortController | null = null
+// ── Datos del periodo/sucursal ─────────────────────────────────────────────────
+// Fase 7.4/8.5: ya NO se bloquea la pantalla completa al cambiar un filtro — solo
+// las tarjetas/gráficas muestran su estado de carga. Cambiar rápido entre periodos o
+// sucursales nunca pinta una respuesta vieja: cada petición aborta la anterior y,
+// además, su número de secuencia debe seguir siendo el vigente al llegar.
+let dataController: AbortController | null = null
+let dataSeq = 0
+
 async function loadPeriod(periodId: number, branchId: number | null) {
-    controller?.abort()
-    const myController = new AbortController()
-    controller = myController
+    dataController?.abort()
+    const ctrl = new AbortController()
+    dataController = ctrl
+    const seq = ++dataSeq
     loading.value = true
-    showRouteLoading()
+    loadError.value = null
 
     try {
         const params = new URLSearchParams({ period_id: String(periodId) })
@@ -141,15 +131,23 @@ async function loadPeriod(periodId: number, branchId: number | null) {
         }
 
         const resp = await fetch(`/dashboard-data?${params.toString()}`, {
-            signal: myController.signal,
+            signal: ctrl.signal,
             cache: 'no-store',
+            credentials: 'same-origin',
             headers: { Accept: 'application/json' },
         })
+
+        if (!resp.ok) {
+            const body = await resp.json().catch(() => null)
+
+            throw new Error(body?.message || `El servidor respondió ${resp.status}.`)
+        }
+
         const json = await resp.json()
 
-        if (myController.signal.aborted) {
-return
-}
+        if (seq !== dataSeq) {
+            return
+        }
 
         if (json.hasData) {
             kpis.value = json.kpis ?? null
@@ -158,37 +156,138 @@ return
             scopeUnavailable.value = !!json.scopeUnavailable
         }
     } catch (e: unknown) {
-        if ((e as { name?: string })?.name !== 'AbortError') {
-throw e
-}
-    } finally {
-        if (controller === myController) {
-loading.value = false
-}
+        if ((e as { name?: string })?.name === 'AbortError' || seq !== dataSeq) {
+            return
+        }
 
-        hideRouteLoading()
+        // fetch() sin respuesta (red caída/servidor inaccesible) lanza TypeError con un
+        // texto del navegador en inglés: se reemplaza por un mensaje que diga qué hacer.
+        loadError.value = e instanceof TypeError
+            ? 'Sin conexión con el servidor. Revisa tu red e intenta de nuevo.'
+            : (e as Error)?.message || 'No se pudo actualizar el Dashboard.'
+    } finally {
+        if (seq === dataSeq) {
+            loading.value = false
+        }
     }
 }
 
-const periodOptions = computed(() => (props.periods ?? []).map((p) => ({ value: p.id, label: p.label })))
-const branchOptions = computed(() => [{ value: '', label: 'Todas las sucursales' }, ...(props.branches ?? []).map((b) => ({ value: b.id, label: b.name }))])
+// ── Tendencia (Fase 7.1: sigue el alcance elegido) ────────────────────────────
+// Se pide aparte (nunca bloquea KPI/gráficas) y SOLO cuando cambia la sucursal: es
+// la misma para cualquier periodo. Memo local por alcance para que volver a una
+// sucursal ya vista sea instantáneo; la frescura la garantiza la caché del backend
+// (por versión del resumen de cada periodo).
+const trendMemo = new Map<string, { trend: TrendPoint[]; label: string }>()
+let trendController: AbortController | null = null
+let trendSeq = 0
+
+async function loadTrend(force = false) {
+    const branchId = branchIdOrNull()
+    const key = branchId ? `b${branchId}` : 'general'
+    const memo = trendMemo.get(key)
+
+    trendController?.abort()
+
+    if (memo && !force) {
+        trend.value = memo.trend
+        trendScopeLabel.value = memo.label
+        trendLoading.value = false
+        trendError.value = false
+
+        return
+    }
+
+    const ctrl = new AbortController()
+    trendController = ctrl
+    const seq = ++trendSeq
+    trendLoading.value = true
+    trendError.value = false
+
+    try {
+        const params = new URLSearchParams()
+
+        if (branchId) {
+            params.set('branch_id', String(branchId))
+        }
+
+        const qs = params.toString()
+        const resp = await fetch(`/dashboard-trend${qs ? `?${qs}` : ''}`, {
+            signal: ctrl.signal,
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' },
+        })
+
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`)
+        }
+
+        const json = await resp.json()
+
+        if (seq !== trendSeq) {
+            return
+        }
+
+        const entry = { trend: (json.trend ?? []) as TrendPoint[], label: json.scope?.label ?? scopeLabel.value }
+        trendMemo.set(key, entry)
+        trend.value = entry.trend
+        trendScopeLabel.value = entry.label
+    } catch (e: unknown) {
+        if ((e as { name?: string })?.name === 'AbortError' || seq !== trendSeq) {
+            return
+        }
+
+        trendError.value = true
+    } finally {
+        if (seq === trendSeq) {
+            trendLoading.value = false
+        }
+    }
+}
+
+onMounted(() => {
+    if (!props.hasData) {
+        trendLoading.value = false
+
+        return
+    }
+
+    if (props.deferred && selectedPeriodId.value) {
+        loadPeriod(Number(selectedPeriodId.value), branchIdOrNull())
+    }
+
+    loadTrend()
+})
+
+onBeforeUnmount(() => {
+    dataController?.abort()
+    trendController?.abort()
+})
 
 function reload() {
     if (!selectedPeriodId.value) {
         return
     }
 
-    loadPeriod(Number(selectedPeriodId.value), selectedBranchId.value ? Number(selectedBranchId.value) : null)
+    loadPeriod(Number(selectedPeriodId.value), branchIdOrNull())
 }
 
 watch(selectedPeriodId, reload)
-watch(selectedBranchId, reload)
+watch(selectedBranchId, () => {
+    reload()
+    loadTrend()
+})
 
-// Exportar Excel/PDF (Fase 10 de la auditoría, 15-oct-2026). Excel: MISMOS
-// endpoints de Reportes mensuales (scope general o branch). PDF (corregido
-// 15-oct-2026): antes descargaba la Radiografía completa — otro reporte de
-// muchas páginas —; ahora /dashboard/exportar.pdf genera los MISMOS KPI y
-// gráficas que se ven aquí, para el periodo y la sucursal seleccionados.
+const periodOptions = computed(() => (props.periods ?? []).map((p) => ({ value: p.id, label: p.label })))
+const branchOptions = computed(() => {
+    const list = (props.branches ?? []).map((b) => ({ value: b.id, label: b.name }))
+
+    // "Todas las sucursales" solo para alcance general (un restringido no puede ver el consolidado).
+    return isGeneralUser.value ? [{ value: '', label: 'Todas las sucursales' }, ...list] : list
+})
+const selectedPeriodLabel = computed(() => props.periods?.find((p) => p.id === Number(selectedPeriodId.value))?.label ?? kpis.value?.period_label ?? '')
+
+// Exportar (Fase 7.2/7.3): PDF y Excel del MISMO periodo y alcance que se ven aquí.
 const exportUrls = computed(() => {
     const periodId = kpis.value?.period_id
 
@@ -196,81 +295,73 @@ const exportUrls = computed(() => {
         return null
     }
 
-    const branchId = selectedBranchId.value ? Number(selectedBranchId.value) : null
-    const pdfParams = new URLSearchParams({ period_id: String(periodId) })
+    const params = new URLSearchParams({ period_id: String(periodId) })
+    const branchId = branchIdOrNull()
 
     if (branchId) {
-        pdfParams.set('branch_id', String(branchId))
+        params.set('branch_id', String(branchId))
     }
 
-    const pdf = `/dashboard/exportar.pdf?${pdfParams.toString()}`
-
-    if (!branchId) {
-        return {
-            excel: `/reportes-mensuales/${periodId}/radiografia.xlsx`,
-            pdf,
-        }
-    }
-
-    const qs = `scope=branch&branch_id=${branchId}`
-
-    return {
-        excel: `/reportes-mensuales/${periodId}/export-filtrado.xlsx?${qs}`,
-        pdf,
-    }
+    return { pdf: `/dashboard/exportar.pdf?${params}`, excel: `/dashboard/exportar.xlsx?${params}` }
 })
 
-// El PDF tarda (arma el mismo snapshot que el Dashboard): aviso para no repetir el clic.
-function notifyPdf() {
-    Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: 'Generando el PDF del Dashboard…', text: 'La descarga inicia sola en unos segundos.', timer: 6000, showConfirmButton: false })
-}
+// Signo antes del símbolo (-$21,249), igual que el PDF y Excel — nunca "$-21,249".
+const money = (v: number) => (Number(v) < 0 ? '-' : '') + '$' + Math.abs(Number(v || 0)).toLocaleString('es-MX', { maximumFractionDigits: 0 })
+const pct = (v: number) => `${Number(v || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
 
-const money = (v: number) => '$' + Number(v || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })
-
-const kpiCards = computed(() => {
-    if (!kpis.value) {
-return []
-}
-
+const heroCards = computed(() => {
     const k = kpis.value
 
+    if (!k) {
+        return []
+    }
+
     return [
-        { label: 'EBITDA', value: money(k.ebitda), icon: TrendingUp, accent: 'text-emerald-600 dark:text-emerald-300', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
-        { label: 'Margen EBITDA', value: `${k.margen_ebitda}%`, icon: Target, accent: 'text-indigo-600 dark:text-indigo-300', bg: 'bg-indigo-50 dark:bg-indigo-500/10' },
-        { label: 'OPEX', value: money(k.opex), icon: Wallet, accent: 'text-rose-600 dark:text-rose-300', bg: 'bg-rose-50 dark:bg-rose-500/10' },
-        { label: 'Colocación', value: money(k.colocacion), icon: Banknote, accent: 'text-sky-600 dark:text-sky-300', bg: 'bg-sky-50 dark:bg-sky-500/10' },
-        { label: 'Recuperación', value: money(k.recuperacion), icon: PiggyBank, accent: 'text-teal-600 dark:text-teal-300', bg: 'bg-teal-50 dark:bg-teal-500/10' },
-        { label: 'Cartera', value: money(k.cartera), icon: Landmark, accent: 'text-violet-600 dark:text-violet-300', bg: 'bg-violet-50 dark:bg-violet-500/10' },
-        {
-            label: 'Mora',
-            value: `${k.mora_pct}%`,
-            icon: k.mora_pct > 15 ? ArrowUpRight : ArrowDownRight,
-            accent: k.mora_pct > 15 ? 'text-rose-600 dark:text-rose-300' : 'text-emerald-600 dark:text-emerald-300',
-            bg: k.mora_pct > 15 ? 'bg-rose-50 dark:bg-rose-500/10' : 'bg-emerald-50 dark:bg-emerald-500/10',
-        },
-        { label: 'Colaboradores', value: String(k.colaboradores), icon: Users, accent: 'text-amber-600 dark:text-amber-300', bg: 'bg-amber-50 dark:bg-amber-500/10' },
-    ]
+        { label: 'EBITDA', value: money(k.ebitda), icon: TrendingUp, tone: k.ebitda < 0 ? 'danger' : 'success', hint: 'Ingreso base EBITDA − gastos totales' },
+        { label: 'Margen EBITDA', value: pct(k.margen_ebitda), icon: Target, tone: k.margen_ebitda < 0 ? 'danger' : 'info', hint: 'EBITDA sobre ingreso base' },
+    ] as const
 })
 
+const kpiCards = computed(() => {
+    const k = kpis.value
+
+    if (!k) {
+        return []
+    }
+
+    return [
+        { label: 'OPEX', value: money(k.opex), icon: Wallet, tone: 'danger' },
+        { label: 'Colocación', value: money(k.colocacion), icon: Banknote, tone: 'info' },
+        { label: 'Recuperación', value: money(k.recuperacion), icon: PiggyBank, tone: 'success' },
+        { label: 'Cartera', value: money(k.cartera), icon: Landmark, tone: 'neutral' },
+        { label: 'Mora', value: pct(k.mora_pct), icon: k.mora_pct > 15 ? ArrowUpRight : ArrowDownRight, tone: k.mora_pct > 15 ? 'danger' : 'success' },
+        { label: 'Colaboradores', value: Number(k.colaboradores || 0).toLocaleString('es-MX'), icon: Users, tone: 'warning' },
+    ] as const
+})
+
+const isBranchScope = computed(() => (charts.value?.sucursalRows?.length ?? 0) === 1 && !!branchIdOrNull())
+const missingTrendPoints = computed(() => trend.value.filter((t) => t.available === false).map((t) => t.label))
+
 const trendOptions = computed(() => ({
-    chart: { toolbar: { show: false }, zoom: { enabled: false }, animations: { speed: 400 } },
+    chart: { toolbar: { show: false }, zoom: { enabled: false }, animations: { speed: 400 }, background: 'transparent' },
     colors: ['#106A59', '#EF4444'],
     stroke: { curve: 'smooth', width: 3 },
     fill: { type: 'gradient', gradient: { opacityFrom: 0.35, opacityTo: 0.02 } },
     dataLabels: { enabled: false },
+    markers: { size: 4, strokeWidth: 2, hover: { size: 6 } },
     xaxis: { categories: trend.value.map((t) => t.label), labels: { style: { fontSize: '11px' } } },
     yaxis: { labels: { formatter: (v: number) => money(v) } },
-    tooltip: { y: { formatter: (v: number) => money(v) } },
+    tooltip: { y: { formatter: (v: number | null) => (v === null || v === undefined ? 'Sin radiografía' : money(v)) } },
     legend: { position: 'top', horizontalAlign: 'right', fontSize: '12px' },
-    grid: { borderColor: '#f1f5f9' },
 }))
+// null (sucursal sin radiografía ese mes) se deja como hueco en la línea — nunca un 0 inventado.
 const trendSeries = computed(() => [
-    { name: 'EBITDA', data: trend.value.map((t) => t.ebitda ?? 0) },
-    { name: 'OPEX', data: trend.value.map((t) => t.opex ?? 0) },
+    { name: 'EBITDA', data: trend.value.map((t) => t.ebitda) },
+    { name: 'OPEX', data: trend.value.map((t) => t.opex) },
 ])
 
 const categoriaOptions = computed(() => ({
-    chart: { toolbar: { show: false } },
+    chart: { toolbar: { show: false }, background: 'transparent' },
     labels: charts.value?.categoriaLabels ?? [],
     colors: charts.value?.categoriaColors ?? [],
     legend: { position: 'bottom', fontSize: '12px' },
@@ -280,29 +371,28 @@ const categoriaOptions = computed(() => ({
     tooltip: { y: { formatter: (v: number) => `${v} sucursal(es)` } },
 }))
 const categoriaSeries = computed(() => charts.value?.categoriaCounts ?? [])
+const branchCategory = computed(() => (isBranchScope.value ? charts.value?.categorias?.[0] ?? null : null))
 
 const moraOptions = computed(() => ({
-    chart: { toolbar: { show: false } },
+    chart: { toolbar: { show: false }, background: 'transparent' },
     colors: ['#EF4444'],
     plotOptions: { bar: { borderRadius: 6, columnWidth: '55%' } },
     dataLabels: { enabled: false },
     xaxis: { categories: (charts.value?.moraBuckets ?? []).map((b) => b.label), labels: { style: { fontSize: '11px' } } },
     yaxis: { labels: { formatter: (v: number) => money(v) } },
     tooltip: { y: { formatter: (v: number) => money(v) } },
-    grid: { borderColor: '#f1f5f9' },
 }))
 const moraSeries = computed(() => [{ name: 'Cartera vencida', data: (charts.value?.moraBuckets ?? []).map((b) => b.valor) }])
 
 const sucursalOptions = computed(() => ({
-    chart: { toolbar: { show: false } },
+    chart: { toolbar: { show: false }, background: 'transparent' },
     colors: ['#106A59', '#1DC1A2'],
-    plotOptions: { bar: { borderRadius: 5, columnWidth: '60%' } },
+    plotOptions: { bar: { borderRadius: 5, columnWidth: isBranchScope.value ? '30%' : '60%' } },
     dataLabels: { enabled: false },
     xaxis: { categories: (charts.value?.sucursalRows ?? []).map((r) => r.sucursal), labels: { style: { fontSize: '10px' }, rotate: -45 } },
     yaxis: { labels: { formatter: (v: number) => money(v) } },
     tooltip: { y: { formatter: (v: number) => money(v) } },
     legend: { position: 'top', horizontalAlign: 'right', fontSize: '12px' },
-    grid: { borderColor: '#f1f5f9' },
 }))
 const sucursalSeries = computed(() => [
     { name: 'Colocación', data: (charts.value?.sucursalRows ?? []).map((r) => r.colocacion) },
@@ -310,112 +400,120 @@ const sucursalSeries = computed(() => [
 ])
 
 const quickLinks = [
-    { label: 'Carga de archivos', href: '/historico-general', icon: FolderOpen, color: 'bg-indigo-500' },
-    { label: 'Periodos', href: '/periodos', icon: CalendarRange, color: 'bg-violet-500' },
-    { label: 'Colaboradores', href: '/asignaciones-empleado-sucursal', icon: Users, color: 'bg-sky-500' },
-    { label: 'Reportes mensuales', href: '/reportes-mensuales', icon: FileSpreadsheet, color: 'bg-emerald-500' },
+    { label: 'Carga de archivos', href: '/historico-general', icon: FolderOpen, color: 'bg-accent text-primary' },
+    { label: 'Periodos', href: '/periodos', icon: CalendarRange, color: 'bg-accent text-primary' },
+    { label: 'Colaboradores', href: '/asignaciones-empleado-sucursal', icon: Users, color: 'bg-accent text-primary' },
+    { label: 'Reportes mensuales', href: '/reportes-mensuales', icon: FileSpreadsheet, color: 'bg-accent text-primary' },
 ]
+
+// Clave de remontaje de gráficas: VueApexCharts no siempre reaplica funciones
+// (formatter) al actualizar en sitio; remontar al cambiar periodo/alcance es lo fiable.
+const chartKey = computed(() => `${kpis.value?.period_id ?? 'x'}-${scope.value?.branch_id ?? 'g'}`)
 </script>
 
 <template>
     <Head title="Dashboard" />
     <div class="space-y-6 p-4 sm:p-6 lg:p-8">
-        <!-- Encabezado compacto + selector de periodo en vivo -->
-        <section class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <!-- Encabezado + filtros + exportación -->
+        <section class="flex flex-col gap-4 rounded-2xl border border-border bg-card p-4 shadow-soft-xs sm:p-5 xl:flex-row xl:items-center xl:justify-between">
             <div class="flex items-center gap-3">
-                <div class="flex size-10 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 shadow-lg shadow-indigo-900/20">
-                    <Building2 class="size-5 text-white" />
+                <div class="flex size-11 items-center justify-center rounded-xl border bg-accent text-primary">
+                    <Building2 class="size-5" aria-hidden="true" />
                 </div>
                 <div>
-                    <h1 class="text-xl font-black tracking-tight text-slate-950 dark:text-slate-50">Resumen ejecutivo</h1>
-                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ kpis?.period_label ?? 'Sin datos' }}</p>
+                    <h1 class="text-xl font-bold tracking-tight text-foreground">Resumen ejecutivo</h1>
+                    <p class="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                        <span>{{ selectedPeriodLabel || 'Sin datos' }}</span>
+                        <span v-if="hasData" aria-hidden="true">·</span>
+                        <span v-if="hasData" class="font-semibold text-foreground/80">{{ scopeLabel }}</span>
+                        <span v-if="loading" class="inline-flex items-center gap-1 font-semibold text-info" role="status">
+                            <LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" /> Actualizando…
+                        </span>
+                    </p>
                 </div>
             </div>
 
-            <div v-if="hasData" class="flex flex-wrap items-center gap-2">
-                <div v-if="periods?.length" data-tour="dashboard-period" class="w-52">
-                    <SelectField v-model="selectedPeriodId" :options="periodOptions" :disabled="loading" placeholder="Selecciona un periodo" />
+            <div v-if="hasData" class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+                <div v-if="periods?.length" data-tour="dashboard-period" class="w-full sm:w-52">
+                    <SelectField v-model="selectedPeriodId" label="Periodo" :options="periodOptions" placeholder="Selecciona un periodo" />
                 </div>
-                <div v-if="branches?.length" data-tour="dashboard-branch" class="w-56">
-                    <SelectField v-model="selectedBranchId" :options="branchOptions" :disabled="loading" placeholder="Todas las sucursales" />
+                <div v-if="branches?.length" data-tour="dashboard-branch" class="w-full sm:w-56">
+                    <SelectField v-model="selectedBranchId" label="Sucursal" :options="branchOptions" placeholder="Todas las sucursales" />
                 </div>
-                <div v-if="exportUrls" data-tour="dashboard-export" class="flex items-center gap-2">
-                    <a :href="exportUrls.excel" class="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-800 dark:bg-card dark:text-slate-300">
-                        <FileSpreadsheet class="size-4" /> Exportar Excel
-                    </a>
-                    <a :href="exportUrls.pdf" title="KPI y gráficas del periodo y la sucursal seleccionados" @click="notifyPdf" class="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-rose-300 hover:text-rose-700 dark:border-slate-800 dark:bg-card dark:text-slate-300">
-                        <FileText class="size-4" /> Exportar PDF
-                    </a>
+                <div v-if="exportUrls && canExport" data-tour="dashboard-export">
+                    <DashboardExportActions :pdf-url="exportUrls.pdf" :excel-url="exportUrls.excel" :scope-label="`${selectedPeriodLabel} · ${scopeLabel}`" :disabled="loading" />
                 </div>
             </div>
         </section>
 
-        <div v-if="!hasData" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center dark:border-slate-700 dark:bg-card">
-            <p class="text-sm font-semibold text-slate-500 dark:text-slate-400">Todavía no hay ninguna radiografía generada.</p>
-            <Link href="/historico-general" class="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-300 dark:hover:bg-indigo-500/20">
+        <div v-if="loadError" class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">
+            <span><strong>No se pudo actualizar el Dashboard.</strong> {{ loadError }}</span>
+            <button type="button" class="inline-flex items-center gap-1.5 rounded-xl bg-card px-3 py-1.5 text-xs font-bold shadow-soft-xs hover:bg-muted" @click="reload">
+                <RefreshCw class="size-3.5" aria-hidden="true" /> Reintentar
+            </button>
+        </div>
+
+        <div v-if="!hasData" class="rounded-2xl border border-dashed border-border bg-card p-10 text-center">
+            <p class="text-sm font-semibold text-muted-foreground">Todavía no hay ninguna radiografía generada.</p>
+            <Link href="/historico-general" class="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground transition hover:bg-primary/90">
                 Ir a Carga de archivos →
             </Link>
         </div>
 
-        <!-- Sección 5 de la auditoría (15-oct-2026): sucursal sin radiografía en este
-             periodo — nunca una pantalla vacía sin explicar por qué. -->
-        <div v-else-if="scopeUnavailable" class="rounded-[1.75rem] border border-dashed border-amber-300 bg-amber-50/60 p-10 text-center dark:border-amber-500/30 dark:bg-amber-500/5">
-            <p class="text-sm font-semibold text-amber-700 dark:text-amber-300">
-                Sin datos de radiografía para {{ scope?.branch_name ?? 'esta sucursal' }} en {{ periods?.find((p) => p.id === Number(selectedPeriodId))?.label ?? 'este periodo' }}.
+        <!-- Sucursal sin radiografía en este periodo — nunca una pantalla vacía sin explicar por qué. -->
+        <div v-else-if="scopeUnavailable && !loading" class="rounded-[1.75rem] border border-dashed border-warning-border bg-warning-soft p-10 text-center">
+            <p class="text-sm font-semibold text-warning">
+                Sin datos de radiografía para {{ scope?.branch_name ?? 'esta sucursal' }} en {{ selectedPeriodLabel || 'este periodo' }}.
             </p>
-            <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">Elige otra sucursal o revisa que la radiografía de este periodo ya haya sido generada.</p>
-            <button type="button" class="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-amber-100 px-3 py-2 text-xs font-bold text-amber-800 transition hover:bg-amber-200 dark:bg-amber-500/10 dark:text-amber-300" @click="selectedBranchId = ''">
+            <p class="mt-1 text-xs text-warning/80">Elige otra sucursal o revisa que la radiografía de este periodo ya haya sido generada.</p>
+            <button v-if="isGeneralUser" type="button" class="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-card px-3 py-2 text-xs font-bold text-warning shadow-soft-xs transition hover:bg-muted" @click="selectedBranchId = ''">
                 Ver todas las sucursales
             </button>
         </div>
 
         <template v-else>
-            <!-- KPIs -->
-            <section :class="['grid grid-cols-2 gap-3 transition-opacity duration-200 sm:grid-cols-4 xl:grid-cols-8', loading && 'opacity-50']">
-                <div
-                    v-for="card in kpiCards"
-                    :key="card.label"
-                    class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-card dark:hover:shadow-black/20"
-                >
-                    <div :class="['flex size-8 items-center justify-center rounded-xl', card.bg]">
-                        <component :is="card.icon" :class="['size-4', card.accent]" />
-                    </div>
-                    <p class="mt-2 text-[11px] font-bold tracking-wide text-slate-500 uppercase dark:text-slate-400">{{ card.label }}</p>
-                    <p class="mt-0.5 text-lg font-black tabular-nums text-slate-950 dark:text-slate-50">{{ card.value }}</p>
+            <!-- KPIs: EBITDA y margen destacados; el resto en tarjetas compactas -->
+            <section aria-label="Indicadores clave" class="space-y-3">
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <DashboardKpiCard v-for="card in heroCards" :key="card.label" v-bind="card" hero :loading="loading" />
+                </div>
+                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                    <DashboardKpiCard v-for="card in kpiCards" :key="card.label" v-bind="card" :loading="loading" />
                 </div>
             </section>
 
-            <!-- Gráficas -->
-            <section :class="['grid gap-4 transition-opacity duration-200 lg:grid-cols-2', loading && 'opacity-50']">
-                <!-- :key fuerza a VueApexCharts a remontar (no solo "actualizar en sitio")
-                     cada vez que cambia el periodo — updateOptions() de apexcharts no
-                     siempre reaplica funciones (formatter) al mezclar opciones nuevas
-                     sobre una instancia existente; remontar es la forma confiable de que
-                     el formato de moneda del eje Y nunca se pierda tras el filtro en vivo. -->
+            <!-- Gráficas: todas siguen el alcance elegido (sucursal o consolidado) -->
+            <section :class="['grid gap-4 transition-opacity duration-200 lg:grid-cols-2', loading && 'pointer-events-none opacity-60']" :aria-busy="loading">
                 <div class="relative lg:col-span-2">
                     <ChartCard
-                        :key="`trend-${kpis?.period_id}`"
+                        :key="`trend-${trendScopeLabel}-${trend.length}`"
                         title="EBITDA vs OPEX"
-                        subtitle="Tendencia mensual"
+                        :subtitle="`Tendencia mensual · ${trendScopeLabel || scopeLabel}${missingTrendPoints.length ? ` · sin radiografía en ${missingTrendPoints.join(', ')}` : ''}`"
                         type="area"
                         :series="trendSeries"
                         :options="trendOptions"
                         :loading="trendLoading"
                     />
-                    <div v-if="trendError && !trendLoading" class="absolute top-4 right-5 flex items-center gap-2 text-[11px] font-semibold text-rose-500">
+                    <div v-if="trendError && !trendLoading" class="absolute top-4 right-5 flex items-center gap-2 text-[11px] font-semibold text-danger" role="alert">
                         No se pudo cargar la tendencia.
-                        <button type="button" class="rounded-full bg-rose-50 px-2.5 py-1 text-rose-600 transition duration-200 hover:bg-rose-100" @click="loadTrend">
+                        <button type="button" class="rounded-full bg-danger-soft px-2.5 py-1 transition duration-200 hover:opacity-80" @click="loadTrend(true)">
                             Reintentar
                         </button>
                     </div>
                 </div>
                 <template v-if="charts">
-                    <ChartCard :key="`categoria-${kpis?.period_id}`" title="Categoría EBITDA por sucursal" subtitle="Sucursales según su desempeño" type="donut" :series="categoriaSeries" :options="categoriaOptions" />
-                    <ChartCard :key="`mora-${kpis?.period_id}`" title="Cartera vencida por antigüedad" subtitle="Mora por bucket" type="bar" :series="moraSeries" :options="moraOptions" />
+                    <div v-if="branchCategory" class="flex flex-col rounded-2xl border bg-card p-5 text-card-foreground shadow-sm">
+                        <h3 class="text-xs font-black tracking-wider text-muted-foreground uppercase">Categoría EBITDA de la sucursal</h3>
+                        <p class="mt-0.5 text-[11px] text-muted-foreground/80">{{ branchCategory.nombre }} · según su EBITDA del periodo</p>
+                        <p class="mt-6 text-3xl font-black tracking-tight" :style="{ color: charts.categoriaColors?.[0] }">{{ branchCategory.categoria }}</p>
+                        <p class="mt-1 text-sm font-semibold tabular-nums text-muted-foreground">EBITDA {{ money(branchCategory.ebitda) }}</p>
+                    </div>
+                    <ChartCard v-else :key="`categoria-${chartKey}`" title="Categoría EBITDA por sucursal" subtitle="Sucursales según su desempeño" type="donut" :series="categoriaSeries" :options="categoriaOptions" />
+                    <ChartCard :key="`mora-${chartKey}`" title="Cartera vencida por antigüedad" :subtitle="`Mora por bucket · ${scopeLabel}`" type="bar" :series="moraSeries" :options="moraOptions" />
                     <ChartCard
-                        :key="`sucursal-${kpis?.period_id}`"
+                        :key="`sucursal-${chartKey}`"
                         title="Colocación vs. recuperación"
-                        subtitle="Por sucursal"
+                        :subtitle="isBranchScope ? scopeLabel : 'Por sucursal'"
                         type="bar"
                         :series="sucursalSeries"
                         :options="sucursalOptions"
@@ -423,25 +521,25 @@ const quickLinks = [
                         :height="320"
                     />
                 </template>
-                <div v-else-if="scope?.type === 'branch'" class="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-xs text-slate-500 lg:col-span-2 dark:border-slate-700 dark:bg-card dark:text-slate-400">
-                    Las gráficas comparativas entre sucursales no aplican con una sola sucursal seleccionada. Elige "Todas las sucursales" para verlas.
+                <div v-else-if="!loading" class="rounded-2xl border border-dashed border-border bg-card p-6 text-center text-xs text-muted-foreground lg:col-span-2">
+                    Este alcance no tiene desglose por sucursal en la radiografía del periodo.
                 </div>
             </section>
         </template>
 
         <!-- Accesos rápidos -->
-        <section class="flex flex-wrap gap-3">
+        <nav aria-label="Accesos rápidos" class="flex flex-wrap gap-3">
             <Link
                 v-for="link in quickLinks"
                 :key="link.href"
                 :href="link.href"
-                class="group flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md dark:border-slate-800 dark:bg-card dark:hover:border-slate-700 dark:hover:shadow-black/20"
+                class="group flex items-center gap-2.5 rounded-2xl border border-border bg-card px-4 py-2.5 shadow-soft-xs transition duration-200 hover:-translate-y-0.5 hover:shadow-soft-sm"
             >
                 <div :class="['flex size-7 shrink-0 items-center justify-center rounded-lg', link.color]">
-                    <component :is="link.icon" class="size-3.5 text-white" />
+                    <component :is="link.icon" class="size-3.5" aria-hidden="true" />
                 </div>
-                <span class="text-xs font-bold text-slate-700 transition-colors group-hover:text-slate-950 dark:text-slate-300 dark:group-hover:text-slate-50">{{ link.label }}</span>
+                <span class="text-xs font-bold text-foreground/80 transition-colors group-hover:text-foreground">{{ link.label }}</span>
             </Link>
-        </section>
+        </nav>
     </div>
 </template>

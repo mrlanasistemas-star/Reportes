@@ -51,6 +51,14 @@ class EmployeeBranchAssignmentController extends Controller
             ->orderBy('name')
             ->get(['id', 'name']);
 
+        // Fase 6.4 — alcance por sucursal: un usuario restringido solo ve (y asigna a)
+        // sus sucursales; nunca personas de otras sucursales ni sin sucursal.
+        $dataScope = app(\App\Services\Access\DataScopeService::class);
+        $allowedBranchIds = $dataScope->allowedBranchIds($request->user());
+        if ($allowedBranchIds !== null) {
+            $branches = $branches->whereIn('id', $allowedBranchIds)->values();
+        }
+
         $summary = [
             'total' => 0,
             'matched' => 0,
@@ -86,6 +94,7 @@ class EmployeeBranchAssignmentController extends Controller
                     'period:id,name,code,type,year,month,sequence,start_date,end_date',
                 ])
                 ->where('period_id', $selectedPeriod->id)
+                ->when($allowedBranchIds !== null, fn ($q) => $q->whereIn('branch_id', $allowedBranchIds))
                 ->orderByDesc('updated_at')
                 ->get();
 
@@ -153,8 +162,10 @@ class EmployeeBranchAssignmentController extends Controller
             // "Pendientes de conciliación" (ver Roster\RosterMovementsPresenter).
             if ($selectedPeriod->isMonthly()) {
                 $presenter = app(RosterMovementsPresenter::class);
-                $labor = $presenter->forPeriod($selectedPeriod, $periods);
-                $laborHistory = $presenter->history($periods);
+                // Fase 6.4 — alcance restringido: personas, conteos, plantilla e historial
+                // solo de SUS sucursales (null = todas, sin cambios para alcance general).
+                $labor = $presenter->forPeriod($selectedPeriod, $periods, $allowedBranchIds);
+                $laborHistory = $presenter->history($periods, $allowedBranchIds);
             }
 
             $hires = collect($labor['movements']['altas'] ?? [])->merge($labor['movements']['reingresos'] ?? [])->values();
@@ -220,6 +231,8 @@ class EmployeeBranchAssignmentController extends Controller
     public function reviewMovement(Request $request, Period $period, RosterMovementReviewService $service): RedirectResponse
     {
         $validated = $request->validate([
+            // Llave de identidad del roster (employee_key): igual al nombre normalizado
+            // salvo homónimos separados ("nombre#id").
             'nombre_normalizado' => ['required', 'string', 'max:191'],
             'decision' => ['required', 'in:' . RosterMovementStatus::DECISION_CONFIRMAR . ',' . RosterMovementStatus::DECISION_DESCARTAR],
             'note' => ['required', 'string', 'min:5', 'max:1000'],
@@ -231,6 +244,21 @@ class EmployeeBranchAssignmentController extends Controller
 
         if (!$period->isMonthly()) {
             return back()->with('error', 'Solo se concilian movimientos de periodos mensuales.');
+        }
+
+        // Fase 6.4 — solo movimientos de personas de sus sucursales.
+        $dataScope = app(\App\Services\Access\DataScopeService::class);
+        if ($dataScope->isRestricted($request->user())) {
+            $rosterBranch = DB::table('period_employee_rosters')->where('period_id', $period->id)
+                ->where('employee_key', $validated['nombre_normalizado'])->value('branch_id');
+            if (!$rosterBranch) {
+                $rosterBranch = DB::table('period_employee_rosters')->where('employee_key', $validated['nombre_normalizado'])
+                    ->whereNotNull('branch_id')->orderByDesc('period_id')->value('branch_id');
+            }
+            if (!$rosterBranch) {
+                abort(403, 'No podemos confirmar la sucursal de esta persona, así que solo un usuario con alcance general puede conciliarla.');
+            }
+            $dataScope->authorizeBranch($request->user(), (int) $rosterBranch);
         }
 
         $result = $service->review($period, $validated['nombre_normalizado'], $validated['decision'], $validated['note'], $request->user());
@@ -251,6 +279,9 @@ class EmployeeBranchAssignmentController extends Controller
 
     public function autoMatch(Request $request, EmployeeBranchAutoMatchService $service): RedirectResponse
     {
+        // Fase 6.4 — el cruce automático reasigna personas de TODAS las sucursales.
+        app(\App\Services\Access\DataScopeService::class)->requireGeneral($request->user(), 'El cruce automático de sucursales');
+
         $validated = $request->validate([
             'period_id' => ['nullable', 'integer', 'exists:periods,id'],
         ]);
@@ -265,6 +296,9 @@ class EmployeeBranchAssignmentController extends Controller
 
     public function manualMatch(Request $request, EmployeeBranchAssignment $assignment): RedirectResponse
     {
+        // Fase 6.4 — solo asignaciones sin sucursal o de sus sucursales (el destino lo valida EnsureBranchScope).
+        app(\App\Services\Access\DataScopeService::class)->authorizeBranch($request->user(), $assignment->branch_id ? (int) $assignment->branch_id : null);
+
         $validated = $request->validate([
             'branch_id' => ['required', 'exists:branches,id'],
             'notes' => ['nullable', 'string', 'max:1000'],
@@ -320,6 +354,8 @@ class EmployeeBranchAssignmentController extends Controller
 
     public function update(Request $request, EmployeeBranchAssignment $assignment): RedirectResponse
     {
+        app(\App\Services\Access\DataScopeService::class)->authorizeBranch($request->user(), $assignment->branch_id ? (int) $assignment->branch_id : null);
+
         $validated = $request->validate([
             'branch_id' => ['nullable', 'exists:branches,id'],
             'match_type' => ['nullable', 'in:exact,normalized,manual,unmatched,canonical_same_name,historical,majority,fuzzy'],

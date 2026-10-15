@@ -384,6 +384,10 @@ class ReportUploadController extends Controller {
      */
     public function download(ReportUpload $reportUpload): \Symfony\Component\HttpFoundation\StreamedResponse
     {
+        // Fase 6.4/10 — el original (NOI, Lendus, cartera...) contiene TODAS las
+        // sucursales: además del permiso carga.descargar exige alcance general.
+        app(\App\Services\Access\DataScopeService::class)->requireGeneral(request()->user(), 'El archivo original cargado');
+
         $disk = Storage::disk('public');
 
         if (!$reportUpload->stored_path || !$disk->exists($reportUpload->stored_path)) {
@@ -784,7 +788,8 @@ class ReportUploadController extends Controller {
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::error('confirmarCoincidencia error', [
                 'period_id'   => $period->id,
-                'payload'     => $request->all(),
+                // Fase 10: solo IDs — sin nombres de personas (canonical_name) en el log.
+                'payload'     => $request->only(['employee_id', 'target_employee_id', 'branch_id']),
                 'error'       => $e->getMessage(),
                 'file'        => $e->getFile() . ':' . $e->getLine(),
             ]);

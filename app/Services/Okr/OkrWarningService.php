@@ -40,6 +40,7 @@ class OkrWarningService
         private readonly OkrDocumentFolioGenerator $folioGenerator,
         private readonly BrowsershotPdfRenderer $renderer,
         private readonly OkrAuditLogger $logger,
+        private readonly OkrDocumentIssuer $issuer,
     ) {
     }
 
@@ -134,12 +135,14 @@ class OkrWarningService
             $reasons[] = 'not_active';
         }
         if (!$weekClosed) {
-            // Texto acordado con el usuario (15-oct-2026) + la fecha concreta de cierre.
-            $blockers[] = 'La semana todavía no termina. Podrás evaluar su cumplimiento después del cierre. (La semana ' . $weekNumber . ' cierra el ' . $weekEnd->format('d/m/Y') . ').';
+            // Texto acordado (19-oct-2026, 4.7) + la fecha concreta de cierre.
+            $blockers[] = 'Todavía no termina la semana evaluada. Podrás evaluar su cumplimiento después del cierre (la semana ' . $weekNumber . ' cierra el ' . $weekEnd->format('d/m/Y') . ').';
             $reasons[] = 'week_open';
         }
         if ($objective->commitmentLetter === null) {
-            $blockers[] = 'No existe una Carta Compromiso vigente para este OKR — el Warning se emite con base en ella.';
+            $blockers[] = $subject !== null
+                ? "No existe una Carta Compromiso vigente para {$this->displayName($subject->full_name)}. El Warning se emite con base en ella: emítela primero."
+                : 'No existe una Carta Compromiso vigente para este OKR. El Warning se emite con base en ella.';
             $reasons[] = 'no_letter';
         }
         $existingFolio = OkrWarning::query()->where('okr_objective_id', $objective->id)->where('week_number', $weekNumber)->where('status', OkrWarning::STATUS_ISSUED)->value('folio');
@@ -159,14 +162,14 @@ class OkrWarningService
             $missingPlacement = collect($week['rows'])->contains(fn ($r) => !$r['has_data']
                 && str_contains(\Illuminate\Support\Str::of($r['kpi_name'] ?? '')->ascii()->upper()->value(), 'COLOCAC'));
             if ($missingPlacement) {
-                $blockers[] = 'Falta colocación: todavía no hay colocación registrada para esta semana. Sin ese dato no se puede evaluar — no se interpreta como incumplimiento.';
+                $blockers[] = 'Falta cargar el reporte semanal de colocación de la semana ' . $weekNumber . '. Sin ese dato no se puede evaluar; la falta de datos no se interpreta como incumplimiento.';
                 $reasons[] = 'no_placement';
             } else {
                 $blockers[] = 'Sin evidencia suficiente: la semana no tiene información real suficiente — no se convierte la falta de datos en incumplimiento.';
                 $reasons[] = 'no_evidence';
             }
         } elseif (!$week['has_breach']) {
-            $blockers[] = 'No existe incumplimiento comprobado en la semana seleccionada: el resultado está en o por encima de lo esperado a esa semana.';
+            $blockers[] = 'Este colaborador cumplió su meta y no corresponde emitir un Warning: en la semana ' . $weekNumber . ' su resultado está en o por encima de lo esperado.';
             $reasons[] = 'no_breach';
         }
 
@@ -218,37 +221,80 @@ class OkrWarningService
             'rows' => $check['rows'],
         ];
 
-        return DB::transaction(function () use ($objective, $weekNumber, $snapshot, $correctiveActions, $observations, $user) {
-            $warning = OkrWarning::query()->create([
-                'folio' => 'PENDIENTE-' . uniqid(),
-                'okr_objective_id' => $objective->id,
-                'subject_employee_id' => $snapshot['subject_employee_id'],
-                'status' => OkrWarning::STATUS_ISSUED,
-                'week_number' => $weekNumber,
-                'week_start' => $snapshot['week_start'], 'week_end' => $snapshot['week_end'],
-                'snapshot' => $snapshot,
-                'corrective_actions' => $correctiveActions,
-                'observations' => $observations,
-                'generated_by' => $user->id,
-                'generated_at' => now(),
-                'stored_path' => '', 'disk' => 'local',
-            ]);
+        // 4.9 (19-oct-2026) — concurrencia: candado de aplicación por OKR
+        // (atómico entre procesos aunque las tablas sean MyISAM) + bloqueo de la
+        // fila del OKR y nueva comprobación DENTRO de la transacción de que la
+        // semana no tenga ya un Warning vigente; el índice único
+        // okr_warnings_one_current es la red final. El PDF se escribe de forma
+        // atómica; si la emisión no se confirma se borran el PDF y la fila
+        // provisional (compensación explícita) — nunca dos vigentes de la misma
+        // semana, ni "emitido" sin PDF, ni archivos huérfanos.
+        $state = new \ArrayObject(['path' => null, 'id' => null]); // objeto: se comparte entre closures (fn() copia los arrays)
+        try {
+            return $this->issuer->exclusively('okr-documents:' . $objective->id, fn () => DB::transaction(function () use ($objective, $weekNumber, $snapshot, $correctiveActions, $observations, $user, $state) {
+                OkrObjective::query()->whereKey($objective->id)->lockForUpdate()->first();
+                $this->assertNoCurrentWarning($objective->id, $weekNumber);
 
-            $folio = $this->folioGenerator->forId('WR', $warning->id);
-            $disk = 'local';
-            $path = 'okr-warnings/' . $objective->id . "/{$folio}.pdf";
+                return $this->issueWarning($objective, $weekNumber, $snapshot, $correctiveActions, $observations, $user, $state);
+            }));
+        } catch (\Throwable $e) {
+            $this->issuer->discard('local', $state['path']);
+            $this->issuer->forgetUnconfirmed(OkrWarning::class, $state['id']);
+            if (OkrDocumentIssuer::isCurrentGuardViolation($e)) {
+                $this->assertNoCurrentWarning($objective->id, $weekNumber);
+            }
+            throw $e;
+        }
+    }
 
-            $this->renderer->renderViewToFile('reports.okr-warning-pdf', [
-                'folio' => $folio, 'snapshot' => $snapshot,
-                'correctiveActions' => $correctiveActions, 'observations' => $observations,
-                'generatedAt' => $warning->generated_at, 'generatedByName' => $user->name,
-            ], Storage::disk($disk)->path($path), ['full_bleed' => true]);
+    /** Nombre legible para mensajes ("RAFAEL PEREZ CHAO" → "Rafael Perez Chao"). */
+    private function displayName(?string $name): string
+    {
+        return $name === null ? '' : mb_convert_case(mb_strtolower(trim($name)), MB_CASE_TITLE, 'UTF-8');
+    }
 
-            $warning->update(['folio' => $folio, 'stored_path' => $path, 'disk' => $disk]);
-            $this->logger->log('objective', $objective->id, $user->id, 'warning_issued', null, null, $folio, "Semana {$weekNumber} — {$snapshot['collaborator_name']}");
+    private function assertNoCurrentWarning(int $objectiveId, int $weekNumber): void
+    {
+        $folio = OkrWarning::query()->where('okr_objective_id', $objectiveId)->where('week_number', $weekNumber)
+            ->where('status', OkrWarning::STATUS_ISSUED)->value('folio');
+        if ($folio !== null) {
+            throw new RuntimeException("Documento ya emitido: la semana {$weekNumber} ya tiene un Warning vigente (folio {$folio}). No se emitió otro.");
+        }
+    }
 
-            return $warning->fresh();
-        });
+    private function issueWarning(OkrObjective $objective, int $weekNumber, array $snapshot, string $correctiveActions, ?string $observations, User $user, \ArrayObject $state): OkrWarning
+    {
+        $warning = OkrWarning::query()->create([
+            'folio' => 'PENDIENTE-' . uniqid(),
+            'okr_objective_id' => $objective->id,
+            'subject_employee_id' => $snapshot['subject_employee_id'],
+            'status' => OkrWarning::STATUS_ISSUED,
+            'week_number' => $weekNumber,
+            'week_start' => $snapshot['week_start'], 'week_end' => $snapshot['week_end'],
+            'snapshot' => $snapshot,
+            'corrective_actions' => $correctiveActions,
+            'observations' => $observations,
+            'generated_by' => $user->id,
+            'generated_at' => now(),
+            'stored_path' => '', 'disk' => 'local',
+        ]);
+        $state['id'] = $warning->id;
+
+        $folio = $this->folioGenerator->forId('WR', $warning->id);
+        $disk = 'local';
+        $path = 'okr-warnings/' . $objective->id . "/{$folio}.pdf";
+
+        $this->issuer->writePdf($disk, $path, fn (string $tmp) => $this->renderer->renderViewToFile('reports.okr-warning-pdf', [
+            'folio' => $folio, 'snapshot' => $snapshot,
+            'correctiveActions' => $correctiveActions, 'observations' => $observations,
+            'generatedAt' => $warning->generated_at, 'generatedByName' => $user->name,
+        ], $tmp, ['full_bleed' => true]));
+        $state['path'] = $path;
+
+        $warning->update(['folio' => $folio, 'stored_path' => $path, 'disk' => $disk]);
+        $this->logger->log('objective', $objective->id, $user->id, 'warning_issued', null, null, $folio, "Semana {$weekNumber} — {$snapshot['collaborator_name']}");
+
+        return $warning->fresh();
     }
 
     /** Anulación auditada — PDF y folio se conservan, nunca se modifica en silencio. */

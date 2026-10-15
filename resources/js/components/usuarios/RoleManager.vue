@@ -37,24 +37,25 @@ function remove(role: RoleInfo) {
     <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <article
             v-for="role in roles" :key="role.key"
-            class="relative flex flex-col overflow-hidden rounded-3xl border bg-card p-5 transition hover:shadow-lg"
-            :class="selectedKey === role.key ? 'border-violet-400 ring-2 ring-violet-400/30' : 'border-border'"
+            class="relative flex flex-col overflow-hidden rounded-2xl border bg-card p-5 shadow-soft-xs transition hover:shadow-soft-md"
+            :class="selectedKey === role.key ? 'border-primary ring-2 ring-primary/20' : 'border-border'"
+            :aria-current="selectedKey === role.key ? 'true' : undefined"
         >
             <div class="flex items-start gap-3">
-                <span class="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br text-white shadow-md" :class="roleTone(role)">
+                <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-sm" :class="roleTone(role)">
                     <Crown v-if="role.key === 'admin'" class="size-5" /><ShieldCheck v-else class="size-5" />
                 </span>
                 <div class="min-w-0 flex-1">
-                    <p class="flex flex-wrap items-center gap-1.5 text-base font-black text-foreground">
+                    <h3 class="flex flex-wrap items-center gap-1.5 text-base font-bold text-foreground">
                         {{ role.name }}
-                        <span v-if="role.is_system" class="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-bold uppercase text-muted-foreground"><Lock class="size-2.5" /> Sistema</span>
-                        <span v-else class="rounded-full bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-violet-700 dark:text-violet-300">Personalizado</span>
-                    </p>
-                    <p class="text-[11px] text-muted-foreground">{{ role.description || 'Sin descripción' }}</p>
+                        <span v-if="role.is_system" class="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-bold uppercase text-muted-foreground"><Lock class="size-2.5" /> Sistema</span>
+                        <span v-else class="rounded-full bg-info-soft px-1.5 py-0.5 text-[10px] font-bold uppercase text-info">Personalizado</span>
+                    </h3>
+                    <p class="mt-0.5 text-xs text-muted-foreground">{{ role.description || 'Sin descripción' }}</p>
                 </div>
             </div>
 
-            <p class="mt-3 text-xs font-semibold text-foreground">{{ role.key === 'admin' ? 'Acceso total: todos los módulos y acciones. No se configura.' : role.summary }}</p>
+            <p class="mt-3 text-sm text-foreground">{{ role.key === 'admin' ? 'Acceso total: todos los módulos y acciones. No se configura.' : role.summary }}</p>
 
             <details class="mt-3 rounded-xl bg-muted/40 px-3 py-2 text-xs">
                 <summary class="flex cursor-pointer items-center gap-1.5 font-semibold text-foreground"><Users class="size-3.5" /> {{ role.users.length }} usuario(s) asignado(s)</summary>
@@ -68,7 +69,7 @@ function remove(role: RoleInfo) {
             </details>
 
             <div class="mt-auto flex flex-wrap gap-2 pt-4">
-                <Button type="button" variant="outline" size="sm" class="h-8 gap-1.5 rounded-lg" @click="emit('select', role)"><Grid3x3 class="size-3.5" /> Ver matriz</Button>
+                <Button type="button" variant="outline" size="sm" class="h-8 gap-1.5 rounded-lg" @click="emit('select', role)"><Grid3x3 class="size-3.5" /> {{ selectedKey === role.key ? 'Viendo permisos' : 'Ver permisos' }}</Button>
                 <Button v-if="role.can_edit" type="button" variant="outline" size="sm" class="h-8 gap-1.5 rounded-lg" @click="emit('edit', role)"><Pencil class="size-3.5" /> Editar</Button>
                 <Button v-if="role.can_delete" type="button" variant="outline" size="sm" class="h-8 gap-1.5 rounded-lg text-rose-600 hover:bg-rose-500/10 hover:text-rose-700" @click="remove(role)"><Trash2 class="size-3.5" /> Eliminar</Button>
             </div>

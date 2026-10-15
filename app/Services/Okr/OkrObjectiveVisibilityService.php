@@ -4,6 +4,7 @@ namespace App\Services\Okr;
 
 use App\Models\OkrObjective;
 use App\Models\User;
+use App\Services\Access\DataScopeService;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
@@ -37,8 +38,17 @@ class OkrObjectiveVisibilityService
             return $query;
         }
 
-        return $query->where(function (Builder $q) use ($user) {
+        // Fase 6.4 — gerencial con alcance RESTRINGIDO por sucursal: además de lo
+        // propio, los OKR de SUS sucursales (directos o hijos de un OKR de sucursal).
+        $branchIds = $this->managerialBranchIds($user);
+
+        return $query->where(function (Builder $q) use ($user, $branchIds) {
             $q->where('responsible_user_id', $user->id);
+
+            if ($branchIds !== null && $branchIds !== []) {
+                $q->orWhereIn('branch_id', $branchIds)
+                    ->orWhereHas('parent', fn (Builder $p) => $p->whereIn('branch_id', $branchIds));
+            }
 
             if ($user->employee_id !== null) {
                 $q->orWhere(function (Builder $q2) use ($user) {
@@ -58,6 +68,14 @@ class OkrObjectiveVisibilityService
 
         if ($this->isResponsible($user, $objective)) {
             return true;
+        }
+
+        $branchIds = $this->managerialBranchIds($user);
+        if ($branchIds !== null && $branchIds !== []) {
+            $branchId = $objective->branch_id ?? $objective->parent?->branch_id;
+            if ($branchId !== null && in_array((int) $branchId, $branchIds, true)) {
+                return true;
+            }
         }
 
         return $this->isOwner($user, $objective);
@@ -84,8 +102,24 @@ class OkrObjectiveVisibilityService
             && (int) $objective->responsible_user_id === (int) $user->id;
     }
 
+    /**
+     * Fase 6.4 — admin, o gerencial con alcance GENERAL por sucursal
+     * (DataScopeService). Un gerencial restringido (p. ej. solo ATLIXCO) ya no
+     * "ve todo": ve lo propio + los OKR de sus sucursales.
+     */
     public function seesEverything(User $user): bool
     {
-        return $user->isAdmin() || $user->hasManagerialAccess();
+        return $user->isAdmin()
+            || ($user->hasManagerialAccess() && app(DataScopeService::class)->isGeneral($user));
+    }
+
+    /** Sucursales de un gerencial restringido; null si no aplica (admin/general o colaborador). @return list<int>|null */
+    private function managerialBranchIds(User $user): ?array
+    {
+        if (! $user->hasManagerialAccess()) {
+            return null;
+        }
+
+        return app(DataScopeService::class)->allowedBranchIds($user);
     }
 }

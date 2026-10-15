@@ -35,7 +35,8 @@ defineProps<{
                     <Label for="email">Correo electrónico</Label>
                     <div class="group relative">
                         <Mail
-                            class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground transition-colors duration-200 group-focus-within:text-indigo-500"
+                            class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground transition-colors duration-200 group-focus-within:text-primary"
+                            aria-hidden="true"
                         />
                         <Input
                             id="email"
@@ -44,7 +45,8 @@ defineProps<{
                             autocomplete="off"
                             autofocus
                             placeholder="correo@ejemplo.com"
-                            class="h-11 rounded-xl pl-10 transition duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/40"
+                            class="h-11 rounded-xl pl-10"
+                            :aria-invalid="!!errors.email"
                         />
                     </div>
                     <InputError :message="errors.email" />
@@ -54,22 +56,18 @@ defineProps<{
                     type="submit"
                     :disabled="processing"
                     data-test="email-password-reset-link-button"
-                    class="group relative h-11 w-full overflow-hidden rounded-xl bg-indigo-600 font-bold shadow-lg shadow-indigo-600/20 transition duration-200 hover:-translate-y-0.5 hover:bg-indigo-500 hover:shadow-xl hover:shadow-indigo-600/30 active:translate-y-0"
+                    size="lg"
+                    class="h-11 w-full rounded-xl text-[0.95rem] font-semibold"
                 >
-                    <span
-                        class="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 group-hover:translate-x-full"
-                    ></span>
-                    <span class="relative flex items-center justify-center gap-2">
-                        <Spinner v-if="processing" class="size-4" />
-                        <span>{{ processing ? 'Enviando enlace…' : 'Enviar enlace de recuperación' }}</span>
-                    </span>
+                    <Spinner v-if="processing" class="size-4" />
+                    <span>{{ processing ? 'Enviando enlace…' : 'Enviar enlace de recuperación' }}</span>
                 </Button>
             </Form>
 
             <template #footer>
                 <p class="mt-6 text-center text-sm text-muted-foreground">
                     ¿Recordaste tu contraseña?
-                    <TextLink :href="login()" class="font-semibold text-indigo-600 transition duration-200 hover:text-indigo-500 hover:underline dark:text-indigo-400">
+                    <TextLink :href="login()" class="font-semibold text-primary underline-offset-4 hover:underline">
                         Volver a iniciar sesión
                     </TextLink>
                 </p>

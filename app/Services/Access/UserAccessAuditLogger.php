@@ -29,6 +29,7 @@ class UserAccessAuditLogger
         'invitation_failed' => 'Intentó enviar la invitación (falló)',
         'role_changed' => 'Cambió el rol',
         'employee_linked' => 'Cambió el colaborador vinculado',
+        'branch_scope_changed' => 'Cambió el alcance por sucursal',
         'role_created' => 'Creó el rol',
         'role_updated' => 'Editó el rol',
         'role_deleted' => 'Eliminó el rol',

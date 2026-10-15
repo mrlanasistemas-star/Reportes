@@ -18,16 +18,23 @@ class RosterMovementsPresenter
 {
     private ?bool $hasEvidence = null;
 
-    /** @param Collection<int, Period> $monthlyPeriods */
-    public function forPeriod(Period $period, Collection $monthlyPeriods): array
+    public function __construct(private readonly RosterMovementEvidenceCollector $evidence) {}
+
+    /**
+     * @param Collection<int, Period> $monthlyPeriods
+     * @param list<int>|null $branchIds Fase 6.4 — alcance por sucursal (null = todas).
+     */
+    public function forPeriod(Period $period, Collection $monthlyPeriods, ?array $branchIds = null): array
     {
         $prevPeriod = $period->previousMonthly($monthlyPeriods);
-        $columns = ['employee_id', 'nombre_normalizado', 'nombre_original', 'branch_name', 'source', 'is_active_for_period', 'movement_type', 'reconciliation_status', 'reconciliation_note'];
+        $columns = ['employee_id', 'employee_key', 'nombre_normalizado', 'branch_id', 'nombre_original', 'branch_name', 'source', 'is_active_for_period', 'movement_type', 'reconciliation_status', 'reconciliation_note'];
         if ($this->hasEvidence()) {
             $columns[] = 'movement_evidence';
         }
 
-        $rows = DB::table('period_employee_rosters')->where('period_id', $period->id)->orderBy('nombre_original')->get($columns);
+        $rows = DB::table('period_employee_rosters')->where('period_id', $period->id)
+            ->when($branchIds !== null, fn ($q) => $q->whereIn('branch_id', $branchIds))
+            ->orderBy('nombre_original')->get($columns);
         $items = $rows->map(fn ($r) => $this->item($r, $period, $prevPeriod))->values();
 
         $active = $items->where('is_active', true)->values();
@@ -35,7 +42,8 @@ class RosterMovementsPresenter
         $byStatus = fn (Collection $c, array $statuses) => $c->filter(fn ($i) => in_array($i['status'], $statuses, true))->values();
 
         $prevPlantilla = $prevPeriod
-            ? DB::table('period_employee_rosters')->where('period_id', $prevPeriod->id)->where('is_active_for_period', true)->count()
+            ? DB::table('period_employee_rosters')->where('period_id', $prevPeriod->id)->where('is_active_for_period', true)
+                ->when($branchIds !== null, fn ($q) => $q->whereIn('branch_id', $branchIds))->count()
             : 0;
         $plantilla = $active->count();
         $dropRatio = $prevPlantilla > 0 ? max(0.0, ($prevPlantilla - $plantilla) / $prevPlantilla) : 0.0;
@@ -43,10 +51,23 @@ class RosterMovementsPresenter
         $confirmedBajas = $absent->filter(fn ($i) => S::isConfirmedBaja($i['status'], $i['movement_type']))->values();
         $pending = $items->filter(fn ($i) => $i['requires_review'])->values();
 
+        $directory = $this->evidence->directoryEvidenceFor($period);
+
         return [
             'roster' => [
                 'calculado' => $rows->isNotEmpty(),
+                'periodo' => $period->label,
+                'periodo_rango' => $period->start_date && $period->end_date
+                    ? $period->start_date->format('d/m/Y').' – '.$period->end_date->format('d/m/Y') : null,
                 'plantilla' => $plantilla,
+                // Plantilla laboral (personas), nunca registros de asignación.
+                'con_sucursal' => $active->filter(fn ($i) => $i['branch_id'] !== null)->count(),
+                'sin_sucursal' => $active->filter(fn ($i) => $i['branch_id'] === null)->count(),
+                'directorio' => [
+                    'vigente' => $directory['valid']['label'] ?? null,
+                    'tipo' => $directory['valid']['kind'] ?? null,
+                    'posterior' => $directory['later']['label'] ?? null,
+                ],
                 'periodo_anterior' => $prevPeriod?->label,
                 'plantilla_anterior' => $prevPlantilla,
                 'drop_ratio' => round($dropRatio, 4),
@@ -68,7 +89,15 @@ class RosterMovementsPresenter
             ],
             'pending' => $pending,
             'counts' => [
+                // Cada cifra cuenta exactamente lo que dice su etiqueta.
                 'altas' => $items->where('movement_type', S::MOVEMENT_ALTA)->count(),
+                'altas_confirmadas' => $items->where('status', S::ALTA_CONFIRMADA)->count(),
+                'reingresos' => $items->where('status', S::REINGRESO)->count(),
+                'cambios_sucursal' => $items->where('status', S::CAMBIO_SUCURSAL)->count(),
+                'posibles_bajas' => $absent->where('status', S::POSIBLE_BAJA)->count(),
+                'ausencias_temporales' => $absent->whereIn('status', [S::NO_LOCALIZADO, S::AUSENCIA_JUSTIFICADA])->count(),
+                'contradicciones' => $items->where('status', S::CONTRADICCION_FUENTES)->count(),
+                'duplicados' => $items->where('status', S::REGISTRO_DUPLICADO)->count(),
                 'bajas_confirmadas' => $confirmedBajas->count(),
                 'pendientes' => $pending->count(),
                 'ausencias_pendientes' => $pending->where('is_active', false)->count(),
@@ -82,8 +111,9 @@ class RosterMovementsPresenter
      * periodos anteriores siguen visibles tal como se calcularon).
      *
      * @param  Collection<int, Period>  $monthlyPeriods
+     * @param  list<int>|null  $branchIds  Fase 6.4 — alcance por sucursal (null = todas).
      */
-    public function history(Collection $monthlyPeriods): array
+    public function history(Collection $monthlyPeriods, ?array $branchIds = null): array
     {
         $ids = $monthlyPeriods->pluck('id')->all();
         if ($ids === []) {
@@ -92,6 +122,7 @@ class RosterMovementsPresenter
 
         $rows = DB::table('period_employee_rosters')
             ->whereIn('period_id', $ids)
+            ->when($branchIds !== null, fn ($q) => $q->whereIn('branch_id', $branchIds))
             ->get(['period_id', 'is_active_for_period', 'movement_type', 'reconciliation_status'])
             ->groupBy('period_id');
 
@@ -130,6 +161,9 @@ class RosterMovementsPresenter
             'employee_id' => (int) $r->employee_id,
             'employee_name' => $r->nombre_original,
             'nombre_normalizado' => $r->nombre_normalizado,
+            // Llave de identidad para conciliar (= nombre salvo homónimos separados).
+            'identity_key' => (string) (($r->employee_key ?? null) ?: $r->nombre_normalizado),
+            'branch_id' => $r->branch_id !== null ? (int) $r->branch_id : null,
             'branch_name' => $r->branch_name,
             'source' => $r->source,
             'period_label' => $active ? $period->label : ($prevPeriod?->label ?? $period->label),

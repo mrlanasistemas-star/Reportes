@@ -116,11 +116,21 @@ class GenerateRadiographyJob implements ShouldQueue
 
         // Mark as running and record start time — also (re)persist identity in case
         // this run was created earlier (by the controller) without these columns.
-        $run->update(array_merge($identity, [
+        // Fase 10 — transición ATÓMICA a running (compare-and-set): un run que el
+        // usuario canceló mientras estaba en cola NUNCA se "resucita" (antes este
+        // update lo pasaba a running y terminaba como success). Reintentos de un run
+        // fallido siguen funcionando igual que antes.
+        $claimed = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', '!=', 'cancelled')->update(array_merge($identity, [
             'status'      => 'running',
             'started_at'  => $run->started_at ?: now(),
             'finished_at' => null,
         ]));
+        if ($claimed === 0) {
+            Log::info('GenerateRadiographyJob: el run fue cancelado antes de iniciar; no se genera nada.', ['run_id' => $run->id, 'period_id' => $period->id]);
+
+            return;
+        }
+        $run->refresh();
         $this->updateProgress($run, 3, 'Iniciando generación', 'Preparando configuración del reporte.');
 
         try {
@@ -218,6 +228,10 @@ class GenerateRadiographyJob implements ShouldQueue
                 ? $exportService->exportPdfWithConfig($period, $this->config)
                 : $exportService->exportPdf($period, $this->config);
             $tPdfEnd = microtime(true);
+        } catch (RadiographyGenerationCancelled) {
+            Log::info('GenerateRadiographyJob: generación cancelada por el usuario durante el proceso.', ['run_id' => $run->id, 'period_id' => $period->id]);
+
+            return;
         } catch (\Throwable $exception) {
             // Fallo REAL: no se generaron archivos válidos. Marca el run como
             // fallido y notifica por correo — este es el único caso que debe
@@ -243,13 +257,21 @@ class GenerateRadiographyJob implements ShouldQueue
                 'error_code'   => $errorCode,
             ]);
 
-            $run->update([
+            // Fase 10 — compare-and-set: si el usuario canceló mientras tanto, el run
+            // se queda cancelado (sin correo de error ni reintento).
+            $markedFailed = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', 'running')->update([
                 'status'        => 'failed',
                 'finished_at'   => now(),
                 'log'           => $publicError,
                 'error_message' => $publicError,
-                'metadata'      => $errMeta,
+                'metadata'      => json_encode($errMeta),
             ]);
+            if ($markedFailed === 0) {
+                Log::info('GenerateRadiographyJob: el run fue cancelado; se omite la marca de error.', ['run_id' => $run->id]);
+
+                return;
+            }
+            $run->refresh();
 
             $this->notifyUser(
                 subject: 'Error al generar Radiografía',
@@ -303,17 +325,30 @@ class GenerateRadiographyJob implements ShouldQueue
                 'current_step'     => 'Completado',
             ]);
 
-            $run->update([
+            // Fase 10 — compare-and-set: success SOLO si el run sigue en running en el
+            // mismo UPDATE. Si el usuario canceló durante el Excel/PDF, se queda
+            // cancelado y NO se borra la versión exitosa anterior de esta identidad.
+            $markedSuccess = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', 'running')->update([
                 'status'            => 'success',
                 'period_summary_id' => $summary?->id,
                 'finished_at'       => now(),
                 'log'               => 'Radiografía generada. Excel y PDF listos para descargar.',
-                'metadata'          => $finalMeta,
+                'metadata'          => json_encode($finalMeta),
                 'output_excel_path' => $path,
                 'output_pdf_path'   => $pdfPath,
             ]);
+            if ($markedSuccess === 0) {
+                throw new RadiographyGenerationCancelled('Cancelada al terminar.');
+            }
+            $run->refresh();
 
             $this->cleanupPreviousIdentityVersion($cleaner, $period, $identity, $run->id);
+        } catch (RadiographyGenerationCancelled) {
+            // Las exportaciones registradas de ESTE run cancelado no deben quedar como descargables.
+            PeriodRadiographyExport::query()->where('run_id', $run->id)->delete();
+            Log::info('GenerateRadiographyJob: cancelada mientras se registraban las exportaciones; el run queda cancelado.', ['run_id' => $run->id]);
+
+            return;
         } catch (\Throwable $bookkeepingException) {
             Log::error('GenerateRadiographyJob: el Excel/PDF se generaron correctamente pero falló el registro posterior (esto NO debe disparar un correo de error).', [
                 'period_id' => $period->id,
@@ -324,13 +359,19 @@ class GenerateRadiographyJob implements ShouldQueue
 
             // Los archivos son reales — el run se marca success igual, aunque el
             // registro de exportaciones haya fallado parcialmente.
-            $run->update([
+            $markedSuccess = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', 'running')->update([
                 'status'            => 'success',
                 'finished_at'       => now(),
                 'log'               => 'Radiografía generada. Excel y PDF listos para descargar.',
                 'output_excel_path' => $path,
                 'output_pdf_path'   => $pdfPath,
             ]);
+            if ($markedSuccess === 0) {
+                PeriodRadiographyExport::query()->where('run_id', $run->id)->delete();
+
+                return;
+            }
+            $run->refresh();
 
             $this->cleanupPreviousIdentityVersion($cleaner, $period, $identity, $run->id);
         }
@@ -403,9 +444,18 @@ class GenerateRadiographyJob implements ShouldQueue
         if ($this->config) {
             $newMeta['config'] = $this->config;
         }
-        $run->update(['log' => $log, 'metadata' => $newMeta]);
+        // Fase 10 — punto de cancelación cooperativa: el progreso solo se escribe si
+        // el run SIGUE en running (compare-and-set); si el usuario lo canceló, se
+        // detiene aquí sin pisar su estado.
+        $updated = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', 'running')
+            ->update(['log' => $log, 'metadata' => json_encode($newMeta)]);
+        if ($updated === 0 && PeriodRadiographyRun::query()->whereKey($run->id)->value('status') === 'cancelled') {
+            throw new RadiographyGenerationCancelled('Generación cancelada por el usuario.');
+        }
         // keep the in-memory attribute in sync for the next merge
+        $run->setAttribute('log', $log);
         $run->setAttribute('metadata', $newMeta);
+        $run->syncOriginalAttributes(['log', 'metadata']);
     }
 
     private function notifyUser(string $subject, string $message, Period $period, bool $success, ?PeriodRadiographyRun $run = null): void

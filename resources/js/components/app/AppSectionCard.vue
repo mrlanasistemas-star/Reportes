@@ -13,21 +13,29 @@ withDefaults(defineProps<{
 <template>
   <section class="app-section">
     <div
-      v-if="title || subtitle"
-      class="border-b border-border px-5 py-4"
+      v-if="title || subtitle || $slots.actions"
+      class="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
     >
-      <h2
-        v-if="title"
-        class="text-base font-semibold text-foreground"
+      <div class="min-w-0">
+        <h2
+          v-if="title"
+          class="app-section-title"
+        >
+          {{ title }}
+        </h2>
+        <p
+          v-if="subtitle"
+          class="mt-1 text-sm text-muted-foreground"
+        >
+          {{ subtitle }}
+        </p>
+      </div>
+      <div
+        v-if="$slots.actions"
+        class="flex flex-wrap items-center gap-2"
       >
-        {{ title }}
-      </h2>
-      <p
-        v-if="subtitle"
-        class="mt-1 text-sm text-muted-foreground"
-      >
-        {{ subtitle }}
-      </p>
+        <slot name="actions" />
+      </div>
     </div>
 
     <div :class="padded ? 'p-5' : ''">

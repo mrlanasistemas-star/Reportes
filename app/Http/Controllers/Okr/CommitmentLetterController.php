@@ -30,6 +30,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class CommitmentLetterController extends Controller
 {
     use AuthorizesRequests;
+    use Concerns\ServesOkrDocuments;
 
     public function review(Request $request, OkrObjective $objective, OkrCommitmentLetterService $service): JsonResponse
     {
@@ -146,36 +147,25 @@ class CommitmentLetterController extends Controller
         return response()->json(['success' => true]);
     }
 
-    public function download(Request $request, OkrCommitmentLetter $letter): StreamedResponse
+    /**
+     * ?view=1 → inline (visor integrado / pestaña); ?signed=1 → copia firmada.
+     * Archivo faltante → mensaje específico (ver ServesOkrDocuments).
+     */
+    public function download(Request $request, OkrCommitmentLetter $letter): \Symfony\Component\HttpFoundation\Response
     {
         $this->authorize('view', $letter->objective);
-        abort_unless(Storage::disk($letter->disk)->exists($letter->stored_path), 404, 'El documento ya no está disponible.');
 
-        $filename = "{$letter->folio}.pdf";
-
-        // ?view=1 (15-oct-2026): mismo archivo ya emitido, pero con disposición
-        // "inline" para previsualizarlo en el sistema o en otra pestaña sin
-        // forzar la descarga — la descarga normal no cambia.
-        return $request->boolean('view')
-            ? Storage::disk($letter->disk)->response($letter->stored_path, $filename)
-            : Storage::disk($letter->disk)->download($letter->stored_path, $filename);
+        return $this->serveDocument($request, $letter, 'Carta Compromiso');
     }
 
     public function uploadSigned(Request $request, OkrCommitmentLetter $letter): JsonResponse
     {
         $this->authorize('update', $letter->objective);
-        abort_if($letter->isVoided(), 422, 'Esta carta está anulada — no admite copia firmada.');
-        $request->validate(['file' => ['required', 'file', 'max:10240', 'mimes:pdf']]);
+        if ($letter->isVoided()) {
+            return response()->json(['message' => "La carta {$letter->folio} está anulada: no admite copia firmada. Sube la firma a la carta vigente."], 422);
+        }
 
-        $disk = 'local';
-        $path = $request->file('file')->store('okr-commitment-letters/' . $letter->okr_objective_id . '/firmadas', $disk);
-
-        $letter->update([
-            'signed_stored_path' => $path, 'signed_disk' => $disk,
-            'signed_uploaded_by' => $request->user()->id, 'signed_uploaded_at' => now(),
-        ]);
-
-        return response()->json(['success' => true]);
+        return $this->storeSignedCopy($request, $letter, 'okr-commitment-letters/' . $letter->okr_objective_id . '/firmadas', 'Carta Compromiso');
     }
 
     /** Únicos campos capturables por el emisor; todo lo demás sale del OKR y del directorio laboral. */
@@ -198,9 +188,12 @@ class CommitmentLetterController extends Controller
             'generated_at' => $letter->generated_at->toDateTimeString(),
             'generated_by' => $letter->generatedByUser?->name,
             'is_signed' => $letter->isSigned(),
+            'file_available' => $letter->hasStoredFile(),
+            'signed_uploaded_at' => $letter->signed_uploaded_at?->toDateTimeString(),
             'voided_at' => $letter->voided_at?->toDateTimeString(), 'void_reason' => $letter->void_reason, 'voided_by' => $letter->voidedByUser?->name,
             'download_url' => route('okr.commitment-letters.download', $letter),
             'view_url' => route('okr.commitment-letters.download', $letter) . '?view=1',
+            'signed_view_url' => $letter->isSigned() ? route('okr.commitment-letters.download', $letter) . '?view=1&signed=1' : null,
         ];
     }
 }

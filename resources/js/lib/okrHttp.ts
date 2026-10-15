@@ -35,8 +35,19 @@ export async function okrRequest<T = any>(url: string, init: RequestInit & { jso
             405: 'Esta acción no está disponible desde aquí. Si el problema continúa, informa a Sistemas.',
             419: 'Tu sesión expiró por inactividad. Inicia sesión de nuevo para continuar.',
         }
+        const raw = typeof data?.message === 'string' ? data.message : ''
+        // 4.4 (19-oct-2026): ruta NO registrada en el servidor (p. ej. caché de rutas
+        // desactualizada tras un despliegue) ≠ "el registro ya no existe". Se dice
+        // exactamente qué falta para que Sistemas lo corrija.
+        const routeMissing = res.status === 404 && /could not be found/i.test(raw)
+            ? `Esta función no está disponible en el servidor: la ruta ${(init.method ?? 'GET').toUpperCase()} ${url.split('?')[0]} no está registrada (posible actualización incompleta). Informa a Sistemas para que actualice el servidor.`
+            : undefined
+        // 404 con mensaje propio del backend (p. ej. "No encontramos el PDF de CC-…") se respeta.
+        const ownNotFound = res.status === 404 && raw !== '' && !/could not be found|No query results|^Not Found$/i.test(raw) ? raw : undefined
         // 403 con mensaje propio del backend (abort(403, '...') escrito para el usuario) se respeta.
         const message = firstError
+            ?? routeMissing
+            ?? ownNotFound
             ?? (res.status === 403 && typeof data?.message === 'string' && data.message !== 'This action is unauthorized.' ? data.message : undefined)
             ?? (res.status in friendlyByStatus ? friendlyByStatus[res.status] : data?.message)
             ?? (res.status >= 500 ? 'No pudimos completar la operación por un error técnico. Intenta nuevamente; si continúa, informa a Sistemas.' : `No se pudo completar la acción (código ${res.status}).`)

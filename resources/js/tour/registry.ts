@@ -111,7 +111,22 @@ export const TOURS: Record<string, TourDefinition> = {
             {
                 href: '/periodos',
                 title: 'Periodos',
-                body: 'Un periodo representa un mes operativo. Aquí creas, abres y cierras los periodos que usará el resto del sistema.',
+                body: 'Un mes operativo agrupa semanas base y es el periodo con el que se cargan archivos y se generan reportes. Bimestres, trimestres, semestres y anual se arman solos a partir de ellos.',
+            },
+            {
+                target: 'periodos-generate',
+                title: 'Paso 1 · Generar semanas',
+                body: 'Elige año y mes base para crear sus semanas. Solo las semanas se generan a mano; los periodos agrupados se recalculan automáticamente.',
+            },
+            {
+                target: 'periodos-monthly',
+                title: 'Paso 2 · Mes operativo',
+                body: 'Selecciona las semanas consecutivas (3, 4 o 5) que forman el mes operativo real. Las que no elijas quedan libres para el mes siguiente.',
+            },
+            {
+                target: 'periodos-list',
+                title: 'Listado',
+                body: 'Revisa cada mes operativo con su rango, semanas y archivos cargados. Eliminar un mes o reabrir un periodo agrupado siempre pide confirmación; eliminar un mes no borra sus semanas.',
             },
         ],
     },
@@ -170,7 +185,7 @@ export const TOURS: Record<string, TourDefinition> = {
             {
                 href: '/roles',
                 title: 'Roles y permisos',
-                body: 'Es un módulo aparte. Crea roles personalizados en 3 pasos (nombre, módulos y acciones), revisa la matriz Ver/Crear/Editar/Eliminar/Exportar/Autorizar de cada rol y quién lo tiene asignado.',
+                body: 'Es un módulo aparte. Crea roles personalizados en 3 pasos (nombre, módulos y acciones) y, con «Ver permisos», revisa por módulo qué puede hacer cada rol (Ver, Crear, Editar, Eliminar, Exportar, Autorizar) y quién lo tiene asignado.',
             },
         ],
     },

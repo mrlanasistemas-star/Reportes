@@ -98,7 +98,7 @@ $alcance = collect([
         <div>
             <div class="co">MR LANA</div>
             <h1>Efectividad de Cobranza</h1>
-            <div class="sub">{{ $r['titulo'] }} · {{ $r['leyenda'] }}</div>
+            <div class="sub">{{ $r['titulo'] }} · {{ $r['leyenda'] }}@if(!empty($r['metodologia'])) · Metodología {{ $r['metodologia'] }}@endif</div>
         </div>
         <div class="meta">
             <div>Modalidad: <b>{{ $modos[$r['modo']] ?? $r['modo'] }}</b></div>

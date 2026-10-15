@@ -37,6 +37,7 @@ class OkrCommitmentLetterService
         private readonly BrowsershotPdfRenderer $renderer,
         private readonly OkrPersonnelResolver $personnel,
         private readonly OkrAuditLogger $logger,
+        private readonly OkrDocumentIssuer $issuer,
     ) {
     }
 
@@ -256,35 +257,72 @@ class OkrCommitmentLetterService
 
         $replaces = $objective->commitmentLetters()->where('status', OkrCommitmentLetter::STATUS_VOIDED)->latest('id')->value('id');
 
-        return DB::transaction(function () use ($objective, $user, $place, $snapshot, $replaces) {
-            $letter = OkrCommitmentLetter::query()->create([
-                'folio' => 'PENDIENTE-' . uniqid(), // se fija abajo, ya con id real
-                'okr_objective_id' => $objective->id,
-                'subject_employee_id' => $snapshot['subject_employee_id'],
-                'status' => OkrCommitmentLetter::STATUS_ISSUED,
-                'replaces_letter_id' => $replaces,
-                'snapshot' => $snapshot,
-                'place' => $place,
-                'generated_by' => $user->id,
-                'generated_at' => now(),
-                'stored_path' => '', 'disk' => 'local',
-            ]);
+        // 4.9 (19-oct-2026) — concurrencia: doble clic o dos administradores
+        // emitiendo a la vez. (1) Candado de aplicación por OKR (Cache::lock,
+        // atómico entre procesos aunque las tablas sean MyISAM sin bloqueos de
+        // fila) + bloqueo de la fila del OKR y nueva búsqueda de la carta
+        // vigente DENTRO de la transacción; (2) el índice único
+        // okr_letters_one_current es la red final; (3) el PDF se escribe de
+        // forma atómica y, si la emisión no se confirma, se borran el PDF y la
+        // fila provisional (compensación explícita: MyISAM no revierte
+        // transacciones) — nunca dos vigentes, ni "emitida" sin PDF, ni huérfanos.
+        $state = new \ArrayObject(['path' => null, 'id' => null]); // objeto: se comparte entre closures (fn() copia los arrays)
+        try {
+            return $this->issuer->exclusively('okr-documents:' . $objective->id, fn () => DB::transaction(function () use ($objective, $user, $place, $snapshot, $replaces, $state) {
+                OkrObjective::query()->whereKey($objective->id)->lockForUpdate()->first();
+                $current = OkrCommitmentLetter::query()->where('okr_objective_id', $objective->id)
+                    ->where('status', OkrCommitmentLetter::STATUS_ISSUED)->latest('id')->first();
+                if ($current) {
+                    return $current; // otra solicitud ya la emitió — se devuelve la MISMA carta
+                }
 
-            $folio = $this->folioGenerator->forId('CC', $letter->id);
-            $disk = 'local';
-            $path = 'okr-commitment-letters/' . $objective->id . "/{$folio}.pdf";
+                return $this->issueLetter($objective, $user, $place, $snapshot, $replaces, $state);
+            }));
+        } catch (\Throwable $e) {
+            $this->issuer->discard('local', $state['path']);
+            $this->issuer->forgetUnconfirmed(OkrCommitmentLetter::class, $state['id']);
+            if (OkrDocumentIssuer::isCurrentGuardViolation($e)) {
+                $current = OkrCommitmentLetter::query()->where('okr_objective_id', $objective->id)
+                    ->where('status', OkrCommitmentLetter::STATUS_ISSUED)->latest('id')->first();
+                if ($current) {
+                    return $current;
+                }
+            }
+            throw $e;
+        }
+    }
 
-            $this->renderer->renderViewToFile('reports.okr-commitment-letter-pdf', [
-                'folio' => $folio, 'snapshot' => $snapshot,
-                'generatedAt' => $letter->generated_at, 'generatedByName' => $user->name, 'isPreview' => false,
-            ], Storage::disk($disk)->path($path), ['full_bleed' => true]);
+    private function issueLetter(OkrObjective $objective, User $user, string $place, array $snapshot, ?int $replaces, \ArrayObject $state): OkrCommitmentLetter
+    {
+        $letter = OkrCommitmentLetter::query()->create([
+            'folio' => 'PENDIENTE-' . uniqid(), // se fija abajo, ya con id real
+            'okr_objective_id' => $objective->id,
+            'subject_employee_id' => $snapshot['subject_employee_id'],
+            'status' => OkrCommitmentLetter::STATUS_ISSUED,
+            'replaces_letter_id' => $replaces,
+            'snapshot' => $snapshot,
+            'place' => $place,
+            'generated_by' => $user->id,
+            'generated_at' => now(),
+            'stored_path' => '', 'disk' => 'local',
+        ]);
+        $state['id'] = $letter->id;
 
-            $letter->update(['folio' => $folio, 'stored_path' => $path, 'disk' => $disk]);
-            $this->logger->log('objective', $objective->id, $user->id, 'commitment_letter_issued', null, null, $folio,
-                $replaces ? "Sustituye a la carta anulada #{$replaces}." : null);
+        $folio = $this->folioGenerator->forId('CC', $letter->id);
+        $disk = 'local';
+        $path = 'okr-commitment-letters/' . $objective->id . "/{$folio}.pdf";
 
-            return $letter->fresh();
-        });
+        $this->issuer->writePdf($disk, $path, fn (string $tmp) => $this->renderer->renderViewToFile('reports.okr-commitment-letter-pdf', [
+            'folio' => $folio, 'snapshot' => $snapshot,
+            'generatedAt' => $letter->generated_at, 'generatedByName' => $user->name, 'isPreview' => false,
+        ], $tmp, ['full_bleed' => true]));
+        $state['path'] = $path;
+
+        $letter->update(['folio' => $folio, 'stored_path' => $path, 'disk' => $disk]);
+        $this->logger->log('objective', $objective->id, $user->id, 'commitment_letter_issued', null, null, $folio,
+            $replaces ? "Sustituye a la carta anulada #{$replaces}." : null);
+
+        return $letter->fresh();
     }
 
     /**

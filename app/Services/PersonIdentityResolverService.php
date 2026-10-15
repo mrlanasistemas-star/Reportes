@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Employee;
 use App\Models\EmployeeAlias;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use App\Services\BranchResolverService;
 
@@ -68,10 +69,16 @@ class PersonIdentityResolverService
         $normalized = $this->normalizePersonName($name);
         if ($normalized === '') return null;
 
+        // Homónimos con rechazo de fusión explícito (employee_match_rejections) nunca
+        // son "la misma persona" del registro excluido — misma regla que
+        // CanonicalEmployeeResolver / Roster\RosterIdentityResolver.
+        $rejected = $excludeId ? $this->rejectedEmployeeIds($excludeId) : [];
+
         // 1. Exact normalized match
         $exact = Employee::query()
             ->where('normalized_name', $normalized)
             ->when($excludeId, fn ($q) => $q->where('id', '!=', $excludeId))
+            ->when($rejected !== [], fn ($q) => $q->whereNotIn('id', $rejected))
             ->first();
 
         if ($exact) {
@@ -81,6 +88,7 @@ class PersonIdentityResolverService
         $candidates = Employee::query()
             ->whereNotNull('normalized_name')
             ->when($excludeId, fn ($q) => $q->where('id', '!=', $excludeId))
+            ->when($rejected !== [], fn ($q) => $q->whereNotIn('id', $rejected))
             ->get(['id', 'full_name', 'normalized_name']);
 
         // 2. Same words, different order (ej. apellidos invertidos: "PEREA REYES" vs
@@ -228,6 +236,9 @@ class PersonIdentityResolverService
             ->pluck('id')
             ->toArray();
 
+        // Un homónimo con rechazo de fusión explícito no es un duplicado: no hereda su sucursal.
+        $canonicalIds = array_values(array_diff($canonicalIds, $this->rejectedEmployeeIds((int) $employee->id)));
+
         if (empty($canonicalIds)) return null;
 
         $operativeIds = $this->operativeBranchIds();
@@ -256,6 +267,7 @@ class PersonIdentityResolverService
             ->value('employee_id');
 
         if (!$canonicalEmployeeId || $canonicalEmployeeId === $employee->id) return null;
+        if (in_array((int) $canonicalEmployeeId, $this->rejectedEmployeeIds((int) $employee->id), true)) return null;
 
         $operativeIds = $this->operativeBranchIds();
         if (empty($operativeIds)) return null;
@@ -696,9 +708,11 @@ class PersonIdentityResolverService
     public function suggestPossibleMatches(string $name, float $minScore = 75.0, ?int $excludeId = null): array
     {
         $matches    = [];
+        $rejected   = $excludeId ? $this->rejectedEmployeeIds($excludeId) : [];
         $candidates = Employee::query()
             ->whereNotNull('normalized_name')
             ->when($excludeId, fn ($q) => $q->where('id', '!=', $excludeId))
+            ->when($rejected !== [], fn ($q) => $q->whereNotIn('id', $rejected))
             ->get(['id', 'full_name', 'normalized_name']);
 
         foreach ($candidates as $c) {
@@ -715,5 +729,24 @@ class PersonIdentityResolverService
 
         usort($matches, fn ($a, $b) => $b['score'] <=> $a['score']);
         return $matches;
+    }
+
+    /**
+     * employee_id con rechazo de fusión explícito contra $employeeId (homónimos
+     * con clave NOI distinta o decisión de un usuario) — nunca son la misma persona.
+     *
+     * @return int[]
+     */
+    public function rejectedEmployeeIds(int $employeeId): array
+    {
+        if (!Schema::hasTable('employee_match_rejections')) {
+            return [];
+        }
+
+        return DB::table('employee_match_rejections')
+            ->where('employee_id_a', $employeeId)->orWhere('employee_id_b', $employeeId)
+            ->get(['employee_id_a', 'employee_id_b'])
+            ->map(fn ($r) => (int) ($r->employee_id_a === $employeeId ? $r->employee_id_b : $r->employee_id_a))
+            ->unique()->values()->all();
     }
 }

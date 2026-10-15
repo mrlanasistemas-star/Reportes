@@ -9,7 +9,7 @@ withDefaults(defineProps<{
 </script>
 
 <template>
-  <div class="rounded-3xl border border-border bg-card p-5 shadow-sm">
+  <div class="rounded-2xl border border-border bg-card p-5 shadow-soft-xs">
     <p class="text-sm font-medium text-muted-foreground">
       {{ title }}
     </p>

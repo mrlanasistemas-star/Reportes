@@ -126,12 +126,15 @@ class EmployeeBranchAutoMatchService
         $lendusIndex     = $this->buildLendusIndex();
         $historicalIndex = $this->buildHistoricalIndex($period->id, $employeeIds, $operativeNames);
         $aliasIndex      = $this->buildAliasIndex($employees, $operativeNames);
-        $canonicalIndex  = $this->buildCanonicalIndex($employees, $operativeNames);
+        // Cierre 2026-10: homónimos con rechazo de fusión explícito son personas distintas —
+        // cada uno es su propio grupo y no hereda la sucursal del otro por nombre.
+        $homonymKeys     = $this->homonymGroupKeys($employees);
+        $canonicalIndex  = $this->buildCanonicalIndex($employees, $operativeNames, array_values(array_unique(array_map(fn ($k) => strstr($k, '#', true), $homonymKeys))));
 
         $progress && $progress(65, 'Coincidencias exactas', 'Resolviendo por historial confirmado y nombre exacto.');
 
         // ── Unify NOI + NOI Fiscal duplicates: resolve branch ONCE per real person ──
-        $groups = $employees->groupBy(fn (Employee $e) => $e->normalized_name ?: ('id:' . $e->id));
+        $groups = $employees->groupBy(fn (Employee $e) => $homonymKeys[$e->id] ?? ($e->normalized_name ?: ('id:' . $e->id)));
 
         $upserts     = [];
         $groupsDone  = 0;
@@ -172,7 +175,7 @@ class EmployeeBranchAutoMatchService
             }
 
             $candidate = $this->resolveCandidateForGroup(
-                $normName,
+                str_contains((string) $normName, '#') ? strstr((string) $normName, '#', true) : $normName,
                 $groupEmployees,
                 $cobranzaIndex,
                 $placementsIndex,
@@ -764,9 +767,10 @@ class EmployeeBranchAutoMatchService
      * Other Employee rows sharing the same normalized_name (duplicate records from
      * NOI vs NOI Fiscal that were never unified) that already carry a branch.
      */
-    private function buildCanonicalIndex(Collection $employees, array $operativeNames): array
+    private function buildCanonicalIndex(Collection $employees, array $operativeNames, array $homonymNames = []): array
     {
-        $normNames = $employees->pluck('normalized_name')->filter()->unique()->values()->all();
+        // Un nombre compartido por homónimos separados no se usa para heredar sucursal.
+        $normNames = $employees->pluck('normalized_name')->filter()->unique()->reject(fn ($n) => in_array($n, $homonymNames, true))->values()->all();
         if (empty($normNames)) {
             return [];
         }
@@ -798,6 +802,34 @@ class EmployeeBranchAutoMatchService
         }
 
         return $byNormName;
+    }
+
+    /**
+     * employee_id → llave de grupo para homónimos con rechazo de fusión explícito
+     * ("nombre#idMenor" por persona). Vacío si no hay rechazos: agrupación sin cambios.
+     *
+     * @return array<int, string>
+     */
+    private function homonymGroupKeys(Collection $employees): array
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('employee_match_rejections') || !DB::table('employee_match_rejections')->exists()) {
+            return [];
+        }
+
+        $keys = [];
+        $groups = app(\App\Services\CanonicalEmployeeResolver::class)->canonicalize($employees);
+        foreach ($groups->groupBy(fn ($g) => (string) $employees->firstWhere('id', $g->id)?->normalized_name) as $name => $sameName) {
+            if ($name === '' || $sameName->count() < 2) {
+                continue;
+            }
+            foreach ($sameName as $g) {
+                foreach ($g->employee_ids as $id) {
+                    $keys[(int) $id] = $name . '#' . min($g->employee_ids);
+                }
+            }
+        }
+
+        return $keys;
     }
 
     public static function normalizeHumanName(?string $value): string

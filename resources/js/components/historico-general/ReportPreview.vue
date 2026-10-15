@@ -244,7 +244,7 @@ return `${base}?scope=employee&employee_id=${props.config.employee_id}`
             <div v-if="previewUrl" class="flex justify-end">
                 <a
                     :href="previewUrl"
-                    class="inline-flex h-11 items-center gap-2 rounded-2xl bg-indigo-600 px-5 text-sm font-black text-white shadow transition hover:bg-indigo-500"
+                    class="inline-flex h-11 items-center gap-2 rounded-2xl bg-indigo-600 px-5 text-sm font-black text-white shadow transition hover:bg-primary/90"
                 >
                     <ExternalLink class="size-4" />
                     Ver reporte completo

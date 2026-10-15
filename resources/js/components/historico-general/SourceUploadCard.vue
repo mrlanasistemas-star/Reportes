@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Download, FileCheck2, FileSpreadsheet, FileText, Trash2, UploadCloud, X } from 'lucide-vue-next'
+import { CircleAlert, Download, FileCheck2, FileSpreadsheet, FileText, Trash2, UploadCloud, X } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, ref } from 'vue'
 import StatusBadge from './StatusBadge.vue'
@@ -58,7 +58,8 @@ return null
 const isRequiredForDb      = computed(() => Boolean(props.source.is_required_for_bd))
 const isRequiredForReport  = computed(() => Boolean(props.source.is_required_for_report))
 const status = computed(() => props.upload?.status ?? 'pending')
-const statusLabel = computed(() => ({ pending: props.upload ? 'Sin procesar' : 'Sin cargar', processing: 'Procesando', processed: 'Procesado', failed: 'Con error' } as Record<string, string>)[status.value] ?? 'Sin cargar')
+// Fase 8.6: "cargado" y "procesado" son estados distintos y así se rotulan.
+const statusLabel = computed(() => ({ pending: props.upload ? 'Cargado · sin procesar' : 'Sin cargar', processing: 'Procesando', processed: 'Procesado', failed: 'Con error' } as Record<string, string>)[status.value] ?? 'Sin cargar')
 
 const assignFile = async (selected: File | null) => {
     if (!selected) {
@@ -82,8 +83,8 @@ return
         return
     }
 
+    // Fase 8.6: sin ventana emergente — el nombre aparece en la tarjeta junto al botón para subirlo.
     file.value = selected
-    await Swal.fire({ title: 'Archivo seleccionado', text: selected.name, icon: 'info', timer: 1500, showConfirmButton: false })
 }
 
 const onDrop = (event: DragEvent) => {
@@ -111,60 +112,92 @@ inputRef.value.value = ''
 </script>
 
 <template>
-    <article class="group rounded-[1.75rem] border bg-white p-5 shadow-lg shadow-slate-200/60 transition duration-300 hover:-translate-y-1 hover:shadow-xl dark:bg-card dark:shadow-black/20" :class="upload?.status === 'failed' ? 'border-rose-200 dark:border-rose-500/30' : 'border-slate-200 dark:border-slate-800'">
-        <div class="flex items-start justify-between gap-4">
-            <div class="flex gap-3">
-                <div class="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-slate-100 text-slate-700 group-hover:bg-indigo-100 group-hover:text-indigo-700 dark:bg-slate-800 dark:text-slate-300 dark:group-hover:bg-indigo-500/15 dark:group-hover:text-indigo-300">
-                    <FileText v-if="isPdf" class="size-5" />
-                    <FileSpreadsheet v-else class="size-5" />
+    <article
+        class="flex flex-col rounded-2xl border bg-card p-5 shadow-soft-xs"
+        :class="upload?.status === 'failed' ? 'border-danger-border' : 'border-border'"
+    >
+        <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 gap-3">
+                <div class="flex size-10 shrink-0 items-center justify-center rounded-xl border bg-muted text-muted-foreground">
+                    <FileText v-if="isPdf" class="size-5" aria-hidden="true" />
+                    <FileSpreadsheet v-else class="size-5" aria-hidden="true" />
                 </div>
-                <div>
-                    <div class="flex flex-wrap items-center gap-2">
-                        <h3 class="font-black text-slate-950 dark:text-slate-50">{{ source.name }}</h3>
-                        <span v-if="isRequiredForDb" class="rounded-full bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300">Necesaria</span>
-                        <span v-if="isRequiredForReport" class="rounded-full bg-violet-50 px-2 py-1 text-[11px] font-black text-violet-700 dark:bg-violet-500/15 dark:text-violet-300">Para el reporte</span>
-                        <span v-if="!isRequiredForDb && !isRequiredForReport" class="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500 dark:bg-slate-800 dark:text-slate-400">Complementaria</span>
+                <div class="min-w-0">
+                    <h3 class="text-sm leading-snug font-semibold text-foreground">{{ source.name }}</h3>
+                    <div class="mt-1 flex flex-wrap gap-1">
+                        <span v-if="isRequiredForDb" class="app-pill app-pill-info" title="Obligatoria para pasar a «Cargar registros».">Necesaria</span>
+                        <span v-if="isRequiredForReport" class="app-pill border-brand-accent/25 bg-brand-accent/10 text-brand-accent" title="Se usa para generar la radiografía financiera.">Para el reporte</span>
+                        <span v-if="!isRequiredForDb && !isRequiredForReport" class="app-pill app-pill-muted">Complementaria</span>
                     </div>
-                    <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{{ source.description }}</p>
                 </div>
             </div>
-            <StatusBadge :status="upload?.status === 'failed' ? 'failed' : upload?.status === 'processed' ? 'processed' : upload ? 'queued' : 'pending'" :label="statusLabel" />
+            <StatusBadge class="shrink-0" :status="upload?.status === 'failed' ? 'failed' : upload?.status === 'processed' ? 'processed' : upload ? 'queued' : 'pending'" :label="statusLabel" />
         </div>
 
-        <div class="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/40">
-            <div v-if="upload" class="flex items-start gap-3">
-                <FileCheck2 class="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        <p v-if="source.description" class="mt-2 text-xs leading-relaxed text-muted-foreground">{{ source.description }}</p>
+
+        <!-- Archivo actual -->
+        <div v-if="upload" class="mt-3 rounded-xl border bg-muted/40 p-3">
+            <div class="flex items-start gap-2.5">
+                <FileCheck2 class="mt-0.5 size-4 shrink-0" :class="upload.status === 'failed' ? 'text-danger' : 'text-success'" aria-hidden="true" />
                 <div class="min-w-0 text-xs">
-                    <p class="truncate font-bold text-slate-800 dark:text-slate-200">{{ upload.original_name }}</p>
-                    <p class="mt-1 text-slate-500 dark:text-slate-400">Cargado: {{ upload.uploaded_at ?? '—' }}<span v-if="formatFileSize(upload.file_size)"> · {{ formatFileSize(upload.file_size) }}</span></p>
-                    <p v-if="upload.covered_period_labels?.length" class="mt-1 text-slate-500 dark:text-slate-400">Cobertura: {{ upload.covered_period_labels.join(', ') }}</p>
-                    <p v-if="upload.notes" class="mt-2 rounded-xl bg-rose-50 p-2 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{{ upload.notes }}</p>
+                    <p class="truncate font-semibold text-foreground" :title="upload.original_name">{{ upload.original_name }}</p>
+                    <p class="mt-0.5 text-muted-foreground">Cargado: {{ upload.uploaded_at ?? '—' }}<span v-if="formatFileSize(upload.file_size)"> · {{ formatFileSize(upload.file_size) }}</span></p>
+                    <p v-if="upload.covered_period_labels?.length" class="mt-0.5 line-clamp-2 text-muted-foreground" :title="upload.covered_period_labels.join(', ')">Cobertura: {{ upload.covered_period_labels.join(', ') }}</p>
                 </div>
             </div>
-            <p v-else class="text-xs text-slate-500 dark:text-slate-400">Aún no se ha cargado archivo para esta fuente.</p>
+            <div v-if="upload.notes" class="mt-2.5 rounded-lg border px-2.5 py-2 text-xs" :class="upload.status === 'failed' ? 'border-danger-border bg-danger-soft text-foreground' : 'border-border bg-card text-muted-foreground'">
+                <p v-if="upload.status === 'failed'" class="mb-0.5 flex items-center gap-1 font-semibold text-danger"><CircleAlert class="size-3.5" aria-hidden="true" /> Por qué falló</p>
+                <p class="leading-relaxed">{{ upload.notes }}</p>
+                <p v-if="upload.status === 'failed'" class="mt-1 text-muted-foreground">Corrige el archivo (o elige el correcto) y vuelve a subirlo.</p>
+            </div>
         </div>
 
+        <!-- Zona para elegir archivo -->
         <div
-            class="mt-4 rounded-2xl border-2 border-dashed p-4 text-center transition"
-            :class="dragActive ? 'border-indigo-400 bg-indigo-50 dark:border-indigo-500/40 dark:bg-indigo-500/10' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-transparent'"
+            class="mt-3 rounded-xl border-2 border-dashed text-center transition-colors"
+            :class="[
+                dragActive ? 'border-primary bg-accent' : 'border-border',
+                upload ? 'p-3' : 'p-4',
+                disabled ? 'opacity-60' : '',
+            ]"
             @dragenter.prevent="dragActive = true"
             @dragover.prevent="dragActive = true"
             @dragleave.prevent="dragActive = false"
             @drop.prevent="onDrop"
         >
-            <UploadCloud class="mx-auto size-7 text-indigo-500" />
-            <p class="mt-2 text-sm font-bold text-slate-800 dark:text-slate-200">{{ isPdf ? 'Arrastra el PDF aquí' : isMultiFormat ? 'Arrastra el PDF o Excel aquí' : 'Arrastra el Excel aquí' }}</p>
-            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ acceptText }}</p>
-            <button type="button" class="mt-3 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10" :disabled="disabled" @click="inputRef?.click()">Seleccionar archivo</button>
-            <input ref="inputRef" type="file" class="hidden" :accept="acceptAttr" @change="assignFile(($event.target as HTMLInputElement).files?.[0] ?? null)" />
-            <div v-if="file" class="mt-3 flex items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                <span class="truncate">{{ file.name }}</span>
-                <button type="button" @click="file = null"><X class="size-3" /></button>
-            </div>
+            <UploadCloud v-if="!upload" class="mx-auto size-6 text-muted-foreground" aria-hidden="true" />
+            <p class="text-sm font-medium text-foreground" :class="upload ? '' : 'mt-1.5'">
+                {{ upload ? 'Para reemplazarlo, arrastra aquí otro archivo' : isPdf ? 'Arrastra el PDF aquí' : isMultiFormat ? 'Arrastra el PDF o Excel aquí' : 'Arrastra el Excel aquí' }}
+            </p>
+            <p class="mt-0.5 text-xs text-muted-foreground">Formatos: {{ acceptText }}</p>
+            <button
+                type="button"
+                class="mt-2.5 inline-flex h-8 items-center rounded-lg border border-border bg-card px-3 text-xs font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed"
+                :disabled="disabled"
+                @click="inputRef?.click()"
+            >
+                Seleccionar archivo
+            </button>
+            <input ref="inputRef" type="file" class="hidden" :accept="acceptAttr" :aria-label="`Seleccionar archivo para ${source.name}`" @change="assignFile(($event.target as HTMLInputElement).files?.[0] ?? null)" />
+            <p v-if="disabled && !file" class="app-help mt-2">No disponible: hay una carga en curso o el periodo no recibe archivos.</p>
         </div>
 
-        <div class="mt-4 flex flex-wrap gap-2">
-            <button type="button" class="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white shadow-lg shadow-indigo-100 transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 dark:shadow-indigo-950/40" :disabled="disabled || !file" @click="doUpload">
+        <!-- Archivo elegido, listo para subir -->
+        <div v-if="file" class="mt-3 flex items-center gap-2 rounded-xl border border-primary/30 bg-accent/60 p-2.5">
+            <FileCheck2 class="size-4 shrink-0 text-primary" aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate text-xs font-semibold text-foreground" :title="file.name">{{ file.name }}</span>
+            <button type="button" class="rounded-md p-1 text-muted-foreground hover:bg-card hover:text-foreground" aria-label="Quitar archivo elegido" @click="file = null"><X class="size-3.5" /></button>
+        </div>
+
+        <div class="mt-auto flex flex-wrap items-center gap-2 pt-4">
+            <button
+                v-if="file"
+                type="button"
+                class="inline-flex h-9 items-center rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="disabled"
+                @click="doUpload"
+            >
                 {{ upload ? 'Reemplazar archivo' : 'Subir archivo' }}
             </button>
             <a
@@ -172,9 +205,15 @@ inputRef.value.value = ''
                 :href="`/historico-general/${upload.id}/descargar`"
                 target="_blank"
                 rel="noopener"
-                class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10"
-            ><Download class="mr-1 inline size-4" /> Descargar original</a>
-            <button v-if="upload" type="button" class="rounded-xl border border-rose-200 px-4 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('delete', upload.id)"><Trash2 class="mr-1 inline size-4" /> Eliminar</button>
+                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+            ><Download class="size-4" aria-hidden="true" /> Descargar original</a>
+            <button
+                v-if="upload"
+                type="button"
+                class="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium text-danger transition hover:bg-danger-soft"
+                :aria-label="`Eliminar el archivo de ${source.name}`"
+                @click="emit('delete', upload.id)"
+            ><Trash2 class="size-4" aria-hidden="true" /> Eliminar</button>
         </div>
     </article>
 </template>

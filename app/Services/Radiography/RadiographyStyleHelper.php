@@ -501,6 +501,65 @@ final class RadiographyStyleHelper
         $sheet->addChart($chart);
     }
 
+    /**
+     * Gráfica de varias series (barras agrupadas o líneas) con valores cacheados
+     * reales en cada serie — mismo motivo que $categoryValues/$dataValues de
+     * addBarChart(): sin caché algunos visores muestran la gráfica vacía. Usada por el
+     * Excel del Dashboard (tendencia EBITDA vs OPEX, colocación vs recuperación).
+     *
+     * @param array<int, array{label: string, range: string, color: string, values: array<int, float>}> $series
+     * @param array<int, string> $categoryValues
+     */
+    public static function addMultiSeriesChart(
+        Worksheet $sheet,
+        string $chartTitle,
+        string $type,
+        string $categoryRange,
+        array $categoryValues,
+        array $series,
+        string $topLeftCell,
+        string $bottomRightCell,
+        string $axisNumberFormat = '"$"#,##0'
+    ): void {
+        $count = count($categoryValues);
+        $categoriesRef = self::sheetQualifiedRange($sheet, $categoryRange);
+        $labels = [];
+        $categories = [];
+        $values = [];
+        foreach (array_values($series) as $s) {
+            $labels[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, null, null, 1, [$s['label']]);
+            $categories[] = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_STRING, $categoriesRef, null, $count, $categoryValues);
+            $v = new DataSeriesValues(DataSeriesValues::DATASERIES_TYPE_NUMBER, self::sheetQualifiedRange($sheet, $s['range']), null, $count, array_map('floatval', $s['values']));
+            if ($type === 'line') {
+                $v->setLineColorProperties(self::stripAlpha($s['color']));
+                $v->setLineWidth(28575); // 2.25 pt
+            } else {
+                $v->setFillColor(self::stripAlpha($s['color']));
+            }
+            $values[] = $v;
+        }
+
+        $dataSeries = new DataSeries(
+            $type === 'line' ? DataSeries::TYPE_LINECHART : DataSeries::TYPE_BARCHART,
+            $type === 'line' ? DataSeries::GROUPING_STANDARD : DataSeries::GROUPING_CLUSTERED,
+            range(0, count($values) - 1),
+            $labels,
+            $categories,
+            $values
+        );
+        if ($type !== 'line') {
+            $dataSeries->setPlotDirection(DataSeries::DIRECTION_COL);
+        }
+
+        $legend = new \PhpOffice\PhpSpreadsheet\Chart\Legend(\PhpOffice\PhpSpreadsheet\Chart\Legend::POSITION_BOTTOM, null, false);
+        $chart = new Chart(uniqid('chart_', true), new Title($chartTitle), $legend, new PlotArea(null, [$dataSeries]));
+        $chart->setTopLeftPosition($topLeftCell);
+        $chart->setBottomRightPosition($bottomRightCell);
+        $chart->getChartAxisY()->setAxisNumberProperties($axisNumberFormat, true, false);
+
+        $sheet->addChart($chart);
+    }
+
     private static function stripAlpha(string $argb): string
     {
         return mb_strlen($argb) === 8 ? mb_substr($argb, 2) : $argb;

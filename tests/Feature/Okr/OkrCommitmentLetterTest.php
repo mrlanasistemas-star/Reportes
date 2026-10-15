@@ -153,7 +153,8 @@ it('uploading a signed copy never replaces the original snapshot/PDF', function 
     $letter = OkrCommitmentLetter::query()->findOrFail($letterId);
     $originalPath = $letter->stored_path;
 
-    $file = \Illuminate\Http\UploadedFile::fake()->create('firmada.pdf', 10, 'application/pdf');
+    // 19-oct-2026: la copia firmada debe ser un PDF real (cabecera %PDF), no solo la extensión.
+    $file = \Illuminate\Http\UploadedFile::fake()->createWithContent('firmada.pdf', "%PDF-1.4\n% copia firmada escaneada\n");
     $this->actingAs($admin)->postJson(route('okr.commitment-letters.signed', $letter), ['file' => $file])->assertOk();
 
     $letter->refresh();

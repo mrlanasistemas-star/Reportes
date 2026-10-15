@@ -11,7 +11,7 @@ withDefaults(defineProps<{
 </script>
 
 <template>
-  <div class="flex flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-card px-6 py-12 text-center">
+  <div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card px-6 py-12 text-center">
     <div class="mb-4 rounded-full bg-muted p-4">
       <Inbox class="h-6 w-6 text-muted-foreground" />
     </div>

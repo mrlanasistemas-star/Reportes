@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { Head, useForm, usePage } from '@inertiajs/vue3';
+import { Mail, UserRound } from 'lucide-vue-next';
 import Swal from 'sweetalert2';
 import { computed } from 'vue';
-import Heading from '@/components/Heading.vue';
 import InputError from '@/components/InputError.vue';
+import SettingsCard from '@/components/settings/SettingsCard.vue';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -58,49 +59,50 @@ const submit = () => {
 <template>
     <Head title="Perfil" />
 
-    <section class="space-y-6 rounded-3xl border border-sidebar-border/70 bg-background p-6 shadow-sm sm:p-8">
-        <h1 class="sr-only">Configuración de perfil</h1>
+    <h2 class="sr-only">Configuración de perfil</h2>
 
-        <Heading
-            variant="small"
-            title="Información de perfil"
-            description="Actualiza tu nombre y consulta el correo asociado a tu cuenta."
-        />
+    <form @submit.prevent="submit">
+        <SettingsCard :icon="UserRound" title="Información de perfil" description="Así aparece tu nombre en el menú del sistema.">
+            <div class="grid gap-5 md:grid-cols-2">
+                <div class="grid content-start gap-2">
+                    <Label for="name">Nombre completo</Label>
+                    <Input
+                        id="name"
+                        v-model="form.name"
+                        name="name"
+                        required
+                        autocomplete="name"
+                        placeholder="Nombre completo"
+                        :aria-invalid="!!form.errors.name"
+                    />
+                    <InputError :message="form.errors.name" />
+                </div>
 
-        <form class="space-y-6" @submit.prevent="submit">
-            <div class="grid gap-2">
-                <Label for="name">Nombre</Label>
-                <Input
-                    id="name"
-                    v-model="form.name"
-                    name="name"
-                    required
-                    autocomplete="name"
-                    placeholder="Nombre completo"
-                />
-                <InputError :message="form.errors.name" />
+                <div class="grid content-start gap-2">
+                    <Label for="email">Correo electrónico</Label>
+                    <div class="relative">
+                        <Mail class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                        <Input
+                            id="email"
+                            type="email"
+                            :model-value="user.email"
+                            readonly
+                            disabled
+                            aria-describedby="email-help"
+                            class="cursor-not-allowed pl-9"
+                        />
+                    </div>
+                    <p id="email-help" class="app-help">
+                        Es tu usuario de acceso; solo un administrador puede cambiarlo.
+                    </p>
+                </div>
             </div>
 
-            <div class="grid gap-2">
-                <Label for="email">Correo electrónico</Label>
-                <Input
-                    id="email"
-                    type="email"
-                    :model-value="user.email"
-                    readonly
-                    disabled
-                    class="cursor-not-allowed opacity-80"
-                />
-                <p class="text-sm text-muted-foreground">
-                    Este correo es solo informativo y no se puede modificar.
-                </p>
-            </div>
-
-            <div class="flex items-center gap-4">
-                <Button type="submit" :disabled="form.processing" data-test="update-profile-button">
-                    {{ form.processing ? 'Guardando...' : 'Guardar cambios' }}
+            <template #footer>
+                <Button type="submit" :disabled="form.processing || !form.isDirty" data-test="update-profile-button">
+                    {{ form.processing ? 'Guardando…' : 'Guardar cambios' }}
                 </Button>
-            </div>
-        </form>
-    </section>
+            </template>
+        </SettingsCard>
+    </form>
 </template>

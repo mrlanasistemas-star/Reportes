@@ -1,5 +1,6 @@
 :root {
-    --radius: 1.25rem;
+    /* Fase 8.1 (15-oct-2026): radio base 1rem (antes 1.25rem). Ver docs/ui-sistema-visual.md */
+    --radius: 1rem;
 
     --background: #f8fafc;
     --foreground: #0f172a;
@@ -10,8 +11,11 @@
     --popover: #ffffff;
     --popover-foreground: #0f172a;
 
-    --primary: #10b981;
-    --primary-foreground: #ecfdf5;
+    /* Fase 8.1: verde institucional un tono más profundo (emerald-700). Con
+       #10b981 + texto claro el contraste de los botones primarios era ~2.5:1
+       (falla WCAG AA); ahora es ~5.5:1. */
+    --primary: #047857;
+    --primary-foreground: #ffffff;
 
     --secondary: #f1f5f9;
     --secondary-foreground: #1e293b;
@@ -38,12 +42,35 @@
     /* compatibilidad con starter kit */
     --sidebar-background: #f8fafc;
     --sidebar-foreground: #0f172a;
-    --sidebar-primary: #10b981;
-    --sidebar-primary-foreground: #ecfdf5;
+    --sidebar-primary: #047857;
+    --sidebar-primary-foreground: #ffffff;
     --sidebar-accent: #ecfdf5;
     --sidebar-accent-foreground: #065f46;
     --sidebar-border: #dbe4ee;
     --sidebar-ring: #10b981;
+
+    /* Estados semánticos (Fase 8.1) — banners, ayudas, errores y éxito. */
+    --success: #047857;
+    --success-soft: #ecfdf5;
+    --success-border: #a7f3d0;
+    --warning: #b45309;
+    --warning-soft: #fffbeb;
+    --warning-border: #fde68a;
+    --danger: #be123c;
+    --danger-soft: #fff1f2;
+    --danger-border: #fecdd3;
+    --info: #1d4ed8;
+    --info-soft: #eff6ff;
+    --info-border: #bfdbfe;
+
+    /* Acento secundario de marca (índigo que ya usa el sistema). */
+    --brand-accent: #4f46e5;
+
+    /* Sombras suaves */
+    --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.05);
+    --shadow-sm: 0 1px 3px rgb(15 23 42 / 0.06), 0 1px 2px rgb(15 23 42 / 0.04);
+    --shadow-md: 0 8px 24px -12px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.05);
+    --shadow-lg: 0 24px 48px -20px rgb(15 23 42 / 0.25), 0 6px 16px rgb(15 23 42 / 0.06);
 }
 
 .dark {
@@ -93,4 +120,24 @@
     --sidebar-accent-foreground: #f4f4f5;
     --sidebar-border: rgba(255, 255, 255, 0.06);
     --sidebar-ring: #34d399;
+
+    --success: #34d399;
+    --success-soft: rgb(16 185 129 / 0.12);
+    --success-border: rgb(52 211 153 / 0.3);
+    --warning: #fbbf24;
+    --warning-soft: rgb(245 158 11 / 0.12);
+    --warning-border: rgb(251 191 36 / 0.3);
+    --danger: #fb7185;
+    --danger-soft: rgb(244 63 94 / 0.12);
+    --danger-border: rgb(251 113 133 / 0.3);
+    --info: #60a5fa;
+    --info-soft: rgb(59 130 246 / 0.12);
+    --info-border: rgb(96 165 250 / 0.3);
+
+    --brand-accent: #818cf8;
+
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.35);
+    --shadow-md: 0 8px 24px -12px rgb(0 0 0 / 0.5);
+    --shadow-lg: 0 24px 48px -20px rgb(0 0 0 / 0.6);
 }

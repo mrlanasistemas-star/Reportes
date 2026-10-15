@@ -153,10 +153,20 @@ class OkrEmployeeBranchResolver
 
         // Segunda señal de baja (15-oct-2026): en el directorio Lendus vigente
         // la persona solo aparece como INACTIVO.
+        // Cierre 2026-10 (política única de vigencia, Roster\EmploymentEligibilityPolicy):
+        // si ese directorio es ANTERIOR a la nómina vigente y la persona cobra en
+        // ella, no se excluye en silencio — es una contradicción visible y
+        // conciliable (statusFlags → 'labor_contradiction').
         $inactiveOnly = $this->personnelResolver->inactiveOnlyNames();
         if ($inactiveOnly !== []) {
-            $query->where(fn ($q) => $q->whereNull('normalized_name')->orWhereNotIn('normalized_name', $inactiveOnly));
+            $paidDespiteOldDirectory = $this->paidDespiteOlderDirectory($rosterPeriodId);
+            $query->where(fn ($q) => $q->whereNull('normalized_name')->orWhereNotIn('normalized_name', $inactiveOnly)
+                ->when($paidDespiteOldDirectory !== [], fn ($qq) => $qq->orWhereIn('id', $paidDespiteOldDirectory)));
         }
+
+        // Registros que no son personas (vacantes/plazas/pruebas) por su propio nombre,
+        // aunque no aparezcan en el directorio vigente.
+        $this->eligibilityPolicy()->excludePlaceholders($query, 'full_name');
 
         // Plazas/vacantes (15-oct-2026, cierre de errores OKR): "VACANTE
         // SUBGERENTE MIACATLAN", "TEMIXCO VACANTE", etc. aparecen ACTIVO en el
@@ -168,6 +178,33 @@ class OkrEmployeeBranchResolver
         }
 
         return $query;
+    }
+
+    private ?\App\Services\Roster\EmploymentEligibilityPolicy $eligibilityPolicy = null;
+
+    private function eligibilityPolicy(): \App\Services\Roster\EmploymentEligibilityPolicy
+    {
+        return $this->eligibilityPolicy ??= app(\App\Services\Roster\EmploymentEligibilityPolicy::class);
+    }
+
+    /** @var array<int, int[]> */
+    private array $paidDespiteCache = [];
+
+    /**
+     * employee_id que cobran en la nómina vigente cuando el directorio vigente
+     * es ANTERIOR a esa nómina (su INACTIVO no puede excluirlos).
+     *
+     * @return int[]
+     */
+    private function paidDespiteOlderDirectory(?int $rosterPeriodId): array
+    {
+        if ($rosterPeriodId === null) {
+            return [];
+        }
+
+        return $this->paidDespiteCache[$rosterPeriodId] ??= $this->eligibilityPolicy()->directoryPredatesPayroll(
+            $this->personnelResolver->currentDirectory()['upload_id'] ?? null, $rosterPeriodId,
+        ) ? $this->eligibilityPolicy()->paidInRoster($rosterPeriodId) : [];
     }
 
     /** Filas de baja CONFIRMADA (con evidencia) del periodo de nómina vigente. */
@@ -208,6 +245,10 @@ class OkrEmployeeBranchResolver
                 continue;
             }
             $members = ($row->normalized_name && isset($groupIds[$row->normalized_name])) ? $groupIds[$row->normalized_name]->pluck('id')->all() : [$id];
+            if (count($members) > 1) {
+                // Cierre 2026-10: un homónimo rechazado no presta su vigencia al otro.
+                $members = $this->canonicalIdsFor($id);
+            }
             $map[$id] = collect($members)->contains(fn ($m) => isset($eligible[(int) $m]));
         }
 
@@ -272,7 +313,17 @@ class OkrEmployeeBranchResolver
             return [$employeeId];
         }
 
-        return Employee::query()->where('normalized_name', $norm)->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $ids = Employee::query()->where('normalized_name', $norm)->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        // Cierre 2026-10: un homónimo con rechazo de fusión explícito (clave NOI
+        // distinta) NO es la misma persona — misma regla que CanonicalEmployeeResolver.
+        if (count($ids) < 2) {
+            return $ids;
+        }
+        $group = $this->canonicalResolver->canonicalize(Employee::query()->whereIn('id', $ids)->get(['id', 'full_name', 'normalized_name']))
+            ->first(fn ($g) => in_array($employeeId, $g->employee_ids, true));
+
+        return $group ? array_values($group->employee_ids) : $ids;
     }
 
     /**
@@ -685,10 +736,16 @@ class OkrEmployeeBranchResolver
             ->where('period_id', $latestPortfolio->period_id)->whereNotNull('promoter_code')->distinct()
             ->pluck('promoter_code')->map(fn ($c) => mb_strtoupper(trim((string) $c)))->all());
         $memberships = $this->membershipMap($employeeIds);
+        $paidDespite = array_flip($this->paidDespiteOlderDirectory($rosterPeriodId));
+        $inactiveOnly = $paidDespite === [] ? [] : array_flip($this->personnelResolver->inactiveOnlyNames());
 
         $flags = [];
         foreach ($employeeIds as $id) {
             $list = [];
+            $norm = $employees->get($id)?->normalized_name;
+            if ($norm !== null && isset($inactiveOnly[$norm]) && collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($paidDespite[$g]))) {
+                $list[] = ['code' => 'labor_contradiction', 'label' => 'Cobra en la nómina ' . ($rosterLabel ?? 'vigente') . ' pero un directorio anterior lo marca INACTIVO · concilia en Colaboradores'];
+            }
             if ($rosterPeriodId !== null && !collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($inRoster[$g]))) {
                 $list[] = ['code' => 'no_noi', 'label' => 'Sin registro NOI ' . ($rosterLabel ?? 'del periodo') . ' · vigencia por verificar'];
             }

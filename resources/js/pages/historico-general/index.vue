@@ -81,6 +81,13 @@ map[u.source_code] = u
     return map
 })
 
+// Fase 8.6 (presentación): qué fuentes obligatorias faltan, para explicar por qué
+// "Siguiente etapa" está deshabilitado. No cambia ninguna regla: la habilitación
+// sigue siendo period.can_update_database del backend.
+const missingRequiredSources = computed(() => props.sources
+    .filter((s: any) => s.is_required_for_bd && !['rotacion', 'imss'].includes(s.code) && !uploadsBySource.value[s.code])
+    .map((s: any) => s.name as string))
+
 // True when the report config in Step 4 is complete enough to proceed to Step 5.
 const configValid = computed(() => {
     const cfg = reportConfig.value
@@ -339,11 +346,29 @@ return toastError('Mes sin configurar', 'Este mes operativo no tiene semanas aso
         },
         onSuccess: () => {
             settledByCallback = true
-            Swal.fire('Archivo subido', 'La fuente quedó registrada para este periodo.', 'success')
+            // Fase 8.6: cargado ≠ procesado — el mensaje lo dice explícitamente.
+            Swal.fire({
+                icon: 'success',
+                title: 'Archivo cargado',
+                html: 'Quedó guardado para este periodo. Su tarjeta indica si ya está <strong>Procesado</strong> o si sigue <strong>Sin procesar</strong>; en ese caso usa «Procesar fuentes pendientes».',
+                confirmButtonText: 'Entendido',
+            })
         },
-        onError: () => {
+        onError: (errors) => {
             settledByCallback = true
-            Swal.fire('Error de carga', 'Revisa formato, periodo y fuente seleccionada.', 'error')
+            // Fase 8.6: el motivo REAL que devolvió el servidor (columna faltante,
+            // periodo que no coincide, archivo de otra fuente…), no uno genérico.
+            const reasons = Object.values(errors ?? {}).filter((m): m is string => typeof m === 'string' && m.trim() !== '')
+            const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
+            const list = reasons.map((m) => `<li>${escapeHtml(m)}</li>`).join('')
+            Swal.fire({
+                icon: 'error',
+                title: 'No se pudo cargar el archivo',
+                html: reasons.length
+                    ? `<ul style="text-align:left;margin:0;padding-left:1.1rem">${list}</ul><p style="margin-top:.75rem">Corrige el archivo y vuelve a subirlo.</p>`
+                    : 'Revisa que sea el archivo correcto de esta fuente, del periodo seleccionado y en el formato indicado.',
+                confirmButtonText: 'Entendido',
+            })
         },
         onCancel: () => {
             settledByCallback = true
@@ -898,38 +923,40 @@ return
 
 <template>
     <Head title="Histórico general" />
-    <main class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 lg:p-8 dark:bg-none dark:bg-background">
+    <main class="p-4 sm:p-6 lg:p-8">
         <div class="mx-auto max-w-screen-2xl space-y-6">
 
-            <!-- Hero header compacto -->
-            <section class="overflow-hidden rounded-[2rem] bg-slate-950 px-6 py-5 text-white shadow-2xl shadow-slate-300 sm:px-8 sm:py-6">
-                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                        <p class="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Histórico general</p>
-                        <h1 class="mt-1 text-2xl font-black tracking-tight sm:text-3xl">
-                            Flujo guiado · Carga, normalización y Radiografía Financiera
-                        </h1>
-                    </div>
-                    <p class="max-w-sm text-xs leading-5 text-slate-400 sm:text-right">
-                        Selecciona el periodo, carga las {{ sources.length }} fuentes requeridas,<br class="hidden sm:block" />
-                        resuelve incidencias y genera tu reporte Excel y PDF.
+            <!-- Fase 8.6: encabezado de página (antes un bloque oscuro gigante). -->
+            <header class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                    <p class="app-kicker">Operación · Histórico general</p>
+                    <h1 class="app-title mt-1">Carga de archivos</h1>
+                    <p class="app-subtitle mt-1 max-w-3xl">
+                        Flujo del cierre mensual: elige el periodo, sube las fuentes, carga los registros, resuelve incidencias y genera la radiografía financiera en Excel y PDF.
                     </p>
                 </div>
-            </section>
+                <ol class="flex flex-wrap gap-1.5 text-xs text-muted-foreground" aria-label="Pasos del flujo">
+                    <li class="app-pill app-pill-muted">1 · Periodo</li>
+                    <li class="app-pill app-pill-muted">2 · Archivos</li>
+                    <li class="app-pill app-pill-muted">3 · Registros</li>
+                    <li class="app-pill app-pill-muted">4 · Incidencias</li>
+                    <li class="app-pill app-pill-muted">5 · Reporte</li>
+                </ol>
+            </header>
 
             <!-- ① Selección de periodo — siempre visible y primero -->
-            <PeriodSelector v-model="selectedPeriodId" :periods="periods" />
+            <PeriodSelector v-model="selectedPeriodId" :periods="periods" data-tour="carga-period" />
 
             <!-- Sin periodo: empty state guiado -->
             <div
                 v-if="!selectedPeriodId"
-                class="flex flex-col items-center justify-center rounded-[2rem] border border-dashed border-slate-300 bg-white/60 py-20 text-center shadow-sm dark:border-slate-700 dark:bg-card/60"
+                class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card py-16 text-center"
             >
-                <div class="flex size-16 items-center justify-center rounded-3xl bg-indigo-100 shadow-lg shadow-indigo-100 dark:bg-indigo-500/15 dark:shadow-indigo-950/30">
-                    <CalendarDays class="size-8 text-indigo-500" />
+                <div class="flex size-14 items-center justify-center rounded-xl border bg-accent text-primary">
+                    <CalendarDays class="size-7" />
                 </div>
-                <h2 class="mt-5 text-xl font-black text-slate-800 dark:text-slate-100">Selecciona un periodo para iniciar</h2>
-                <p class="mt-2 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
+                <h2 class="mt-5 text-lg font-semibold text-foreground">Selecciona un periodo para iniciar</h2>
+                <p class="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
                     Elige un mes operativo para cargar archivos y generar reportes, o un periodo compuesto (bimestre, etc.) para reportes agregados.<br />
                     El flujo guiado se desplegará aquí.
                 </p>
@@ -962,18 +989,26 @@ return
                         />
 
                         <!-- Avance a Etapa 2 -->
-                        <div class="flex items-center justify-between rounded-[2rem] border border-white/70 bg-white px-6 py-4 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
-                            <div class="flex flex-col gap-1.5">
-                                <p v-if="!period?.can_update_database" class="text-sm text-slate-500 dark:text-slate-400">
-                                    Carga las fuentes requeridas para continuar a la siguiente etapa.
-                                </p>
-                                <p v-else class="text-sm text-slate-600 dark:text-slate-300">
+                        <div class="sticky bottom-20 z-10 flex flex-col gap-4 rounded-2xl border bg-card/95 px-5 py-4 shadow-soft-md backdrop-blur sm:flex-row sm:items-center sm:justify-between md:bottom-4">
+                            <div class="flex min-w-0 flex-col gap-1.5">
+                                <template v-if="!period?.can_update_database">
+                                    <p class="text-sm font-semibold text-foreground">Aún no puedes pasar a «Cargar registros».</p>
+                                    <p v-if="missingRequiredSources.length" class="text-sm text-muted-foreground">
+                                        Falta subir: <span class="font-medium text-foreground">{{ missingRequiredSources.join(', ') }}</span>.
+                                    </p>
+                                    <p v-else class="text-sm text-muted-foreground">
+                                        Revisa que las fuentes «Necesaria» estén procesadas y sin error.
+                                    </p>
+                                </template>
+                                <p v-else class="flex items-center gap-1.5 text-sm font-semibold text-success">
+                                    <span class="size-2 rounded-full bg-current" aria-hidden="true" />
                                     Todas las fuentes requeridas están cargadas.
                                 </p>
+                                <div class="flex flex-wrap gap-2">
                                 <button
                                     v-if="(grouped?.pending_count ?? 0) > 0"
                                     type="button"
-                                    class="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100"
+                                    class="inline-flex items-center gap-1.5 rounded-lg border border-info-border bg-info-soft px-3 py-1.5 text-xs font-semibold text-info transition hover:opacity-90"
                                     @click="processPendingSources"
                                 >
                                     <svg class="size-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" /></svg>
@@ -982,19 +1017,20 @@ return
                                 <button
                                     v-if="(grouped?.failed_count ?? 0) > 0"
                                     type="button"
-                                    class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 transition hover:bg-rose-100"
+                                    class="inline-flex items-center gap-1.5 rounded-lg border border-danger-border bg-danger-soft px-3 py-1.5 text-xs font-semibold text-danger transition hover:opacity-90"
                                     @click="reprocessFailedSources"
                                 >
                                     <svg class="size-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
                                     Reprocesar fuentes con error ({{ grouped?.failed_count }})
                                 </button>
+                                </div>
                             </div>
                             <button
                                 type="button"
-                                class="ml-4 inline-flex h-10 shrink-0 items-center gap-2 rounded-2xl px-5 text-sm font-black transition focus:outline-none focus:ring-4 disabled:cursor-not-allowed disabled:opacity-40"
+                                class="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-5 text-sm font-semibold transition focus:outline-none focus-visible:ring-4 focus-visible:ring-primary/25 disabled:cursor-not-allowed"
                                 :class="period?.can_update_database
-                                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 focus:ring-indigo-100'
-                                    : 'bg-slate-200 text-slate-400'"
+                                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                    : 'bg-muted text-muted-foreground'"
                                 :disabled="!period?.can_update_database"
                                 @click="selectStep('load')"
                             >
@@ -1033,7 +1069,7 @@ return
                     />
                     <div v-else-if="currentStep === 'config'" class="space-y-5">
                         <!-- Bloqueo por incidencias críticas -->
-                        <div v-if="hasCriticalIncidents" class="flex flex-col items-center justify-center gap-4 rounded-[2rem] border-2 border-dashed border-red-300 bg-red-50 p-10 text-center shadow-sm dark:border-red-500/30 dark:bg-red-500/10">
+                        <div v-if="hasCriticalIncidents" class="flex flex-col items-center justify-center gap-4 rounded-2xl border border-dashed border-danger-border bg-danger-soft p-10 text-center">
                             <div class="flex size-14 items-center justify-center rounded-2xl bg-red-100 shadow dark:bg-red-500/15">
                                 <svg class="size-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
                             </div>

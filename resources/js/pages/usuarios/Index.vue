@@ -8,12 +8,13 @@ import Swal from 'sweetalert2'
 import { computed, ref, watch } from 'vue'
 import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import { Button } from '@/components/ui/button'
+import BranchScopeDialog from '@/components/usuarios/BranchScopeDialog.vue'
 import ResetPasswordDialog from '@/components/usuarios/ResetPasswordDialog.vue'
 import { useAdminFlash } from '@/components/usuarios/useAdminFlash'
 import UserAuditLog from '@/components/usuarios/UserAuditLog.vue'
 import UserCreateDialog from '@/components/usuarios/UserCreateDialog.vue'
 import UserFilters from '@/components/usuarios/UserFilters.vue'
-import type { AccessState, AuditEntry, LinkableEmployee, UserRoleOption, UserRow } from '@/components/usuarios/users'
+import type { AccessState, AuditEntry, BranchOption, LinkableEmployee, UserDataScope, UserRoleOption, UserRow } from '@/components/usuarios/users'
 import UsersTable from '@/components/usuarios/UsersTable.vue'
 import UserSummaryCards from '@/components/usuarios/UserSummaryCards.vue'
 import { useUserActions } from '@/components/usuarios/useUserActions'
@@ -31,6 +32,8 @@ const props = defineProps<{
     invitation_expires_minutes: number
     store_url: string
     roles_url: string | null
+    scope_branches: BranchOption[]
+    actor_scope: UserDataScope
     can: { create: boolean; invite: boolean; manage_access: boolean }
     temp_password?: { name: string; email: string; password: string } | null
     reset_password?: { name: string; email: string; password: string } | null
@@ -97,6 +100,13 @@ const actions = useUserActions()
 const createOpen = ref(false)
 const resetOpen = ref(false)
 const resetTarget = ref<UserRow | null>(null)
+const scopeOpen = ref(false)
+const scopeTarget = ref<UserRow | null>(null)
+
+function openScope(u: UserRow) {
+    scopeTarget.value = u
+    scopeOpen.value = true
+}
 
 function openReset(u: UserRow) {
     resetTarget.value = u
@@ -141,25 +151,26 @@ watch(() => props.reset_password, (data) => {
 <template>
     <Head title="Usuarios" />
     <div class="w-full space-y-5 px-4 py-6 sm:px-6 lg:px-8">
-        <AppPageHeader title="Usuarios" subtitle="Quién puede entrar al sistema, con qué rol y en qué estado está su acceso. Administrar el acceso nunca cambia la situación laboral del colaborador.">
+        <AppPageHeader kicker="Administración" title="Usuarios" subtitle="Quién puede entrar al sistema, con qué rol y en qué estado está su acceso. Administrar el acceso nunca cambia la situación laboral del colaborador.">
             <template #actions>
-                <a v-if="roles_url" :href="roles_url" class="inline-flex h-11 items-center gap-2 rounded-xl border border-border px-4 text-sm font-semibold text-foreground transition hover:bg-muted">
+                <a v-if="roles_url" :href="roles_url" class="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground shadow-soft-xs transition hover:bg-muted">
                     <ShieldCheck class="size-4" /> Roles y permisos
                 </a>
-                <Button v-if="can.create" type="button" data-tour="usuarios-add" class="app-btn app-btn-primary h-11 gap-2" @click="createOpen = true">
+                <Button v-if="can.create" type="button" data-tour="usuarios-add" class="h-10 gap-2 px-4" @click="createOpen = true">
                     <Plus class="size-4" /> Nuevo usuario
                 </Button>
             </template>
         </AppPageHeader>
 
-        <nav class="flex gap-1 overflow-x-auto rounded-2xl border border-border bg-muted/40 p-1" aria-label="Secciones de usuarios">
+        <nav class="scrollbar-none flex gap-1 overflow-x-auto border-b border-border" aria-label="Secciones de usuarios" role="tablist">
             <button
                 v-for="s in SECTIONS" :key="s.key" type="button"
-                class="inline-flex shrink-0 items-center gap-2 rounded-xl px-3.5 py-2 text-sm font-bold transition"
-                :class="section === s.key ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
+                role="tab" :aria-selected="section === s.key"
+                class="-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-semibold transition-colors"
+                :class="section === s.key ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'"
                 @click="setSection(s.key)"
             >
-                {{ s.label }} <span class="rounded-full bg-muted px-1.5 text-[10px] tabular-nums">{{ sectionCount(s.key) }}</span>
+                {{ s.label }} <span class="rounded-full px-1.5 py-0.5 text-[11px] tabular-nums" :class="section === s.key ? 'bg-primary/10 text-primary' : 'bg-muted'">{{ sectionCount(s.key) }}</span>
             </button>
         </nav>
 
@@ -171,10 +182,10 @@ watch(() => props.reset_password, (data) => {
             <UsersTable
                 :users="visibleUsers" :resending-id="actions.resendingId.value"
                 @enable="actions.enableAccess" @revoke="actions.revokeAccess" @toggle-blocked="actions.toggleBlocked"
-                @reset="openReset" @resend="resend"
+                @reset="openReset" @resend="resend" @edit-scope="openScope"
                 @change-role="(u) => actions.changeRole(u, roles)" @link-employee="(u) => actions.linkEmployee(u, employees)"
             />
-            <p class="text-[11px] text-muted-foreground">
+            <p class="app-help">
                 «Aceptada por el servidor de correo» significa que el servidor tomó el mensaje para enviarlo; no confirma que la persona lo haya recibido.
                 El enlace de la invitación vence en {{ invitation_expires_minutes }} minutos; si venció, reenvíala.
             </p>
@@ -183,7 +194,9 @@ watch(() => props.reset_password, (data) => {
         <UserCreateDialog
             v-model:open="createOpen" :store-url="store_url" :roles="roles" :employees="employees" :can-invite="can.invite"
             :can-manage-access="can.manage_access" :invitation-expires-minutes="invitation_expires_minutes" :roles-url="roles_url"
+            :scope-branches="scope_branches" :can-grant-all-branches="actor_scope.general"
         />
+        <BranchScopeDialog v-model:open="scopeOpen" :user="scopeTarget" :branches="scope_branches" :can-grant-all="actor_scope.general" />
         <ResetPasswordDialog v-model:open="resetOpen" :user="resetTarget" />
     </div>
 </template>

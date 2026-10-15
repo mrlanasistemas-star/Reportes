@@ -54,6 +54,9 @@ class HandleInertiaRequests extends Middleware
                 // Acciones permitidas "modulo.accion" (prioridad 9) — solo para ocultar
                 // botones; la autorización real es el middleware permission:* en cada ruta.
                 'permissions' => fn () => app(\App\Services\Access\ActionPermissionService::class)->flatFor($request->user()),
+                // Fase 6.4 — alcance por sucursal (general o lista). Solo UX; el control
+                // real está en EnsureBranchScope y DataScopeService en cada controlador.
+                'dataScope' => fn () => $request->user() ? app(\App\Services\Access\DataScopeService::class)->describe($request->user()) : null,
             ],
             // Mensajes de sesión (14-oct-2026, módulo OKR): resultado de acciones
             // como la activación en cascada de OKR individuales.

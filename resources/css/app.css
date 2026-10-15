@@ -60,6 +60,26 @@
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-ring: var(--sidebar-ring);
+
+    /* Fase 8.1 — estados semánticos (bg-success-soft, text-warning, border-danger-border…) */
+    --color-success: var(--success);
+    --color-success-soft: var(--success-soft);
+    --color-success-border: var(--success-border);
+    --color-warning: var(--warning);
+    --color-warning-soft: var(--warning-soft);
+    --color-warning-border: var(--warning-border);
+    --color-danger: var(--danger);
+    --color-danger-soft: var(--danger-soft);
+    --color-danger-border: var(--danger-border);
+    --color-info: var(--info);
+    --color-info-soft: var(--info-soft);
+    --color-info-border: var(--info-border);
+    --color-brand-accent: var(--brand-accent);
+
+    --shadow-soft-xs: var(--shadow-xs);
+    --shadow-soft-sm: var(--shadow-sm);
+    --shadow-soft-md: var(--shadow-md);
+    --shadow-soft-lg: var(--shadow-lg);
 }
 
 @layer base {
@@ -92,6 +112,27 @@
         display: flex;
         flex-direction: column;
     }
+
+    /* Fase 8.15 — foco visible y consistente para teclado (no aparece con clic). */
+    :where(a, button, [role='button'], [role='tab'], [role='menuitem'], summary, input[type='checkbox'], input[type='radio']):focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 2px;
+    }
+
+    /* Fase 8.15 — quien pide menos movimiento no recibe animaciones ni scroll suave. */
+    @media (prefers-reduced-motion: reduce) {
+        html {
+            scroll-behavior: auto;
+        }
+
+        *,
+        ::before,
+        ::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
 }
 
 @layer components {
@@ -116,7 +157,7 @@
     }
 
     .app-section {
-        @apply rounded-[calc(var(--radius)+6px)] border bg-card text-card-foreground shadow-sm;
+        @apply rounded-[calc(var(--radius)+2px)] border bg-card text-card-foreground shadow-soft-xs;
     }
 
     .app-input {
@@ -148,7 +189,7 @@
     }
 
     .app-table-wrap {
-        @apply overflow-hidden rounded-[calc(var(--radius)+6px)] border bg-card shadow-sm;
+        @apply overflow-hidden rounded-[calc(var(--radius)+2px)] border bg-card shadow-soft-xs;
     }
 
     .app-table-toolbar {
@@ -157,6 +198,110 @@
 
     .app-table-content {
         @apply overflow-x-auto;
+    }
+
+    /* ── Fase 8.1 — sistema visual (ver docs/ui-sistema-visual.md) ───────── */
+
+    /* Tipografía */
+    .app-kicker {
+        @apply text-[11px] font-semibold tracking-[0.14em] text-muted-foreground uppercase;
+    }
+
+    .app-title {
+        @apply text-2xl font-bold tracking-tight text-foreground sm:text-[1.75rem];
+    }
+
+    .app-subtitle {
+        @apply text-sm leading-relaxed text-muted-foreground;
+    }
+
+    .app-section-title {
+        @apply text-base font-semibold tracking-tight text-foreground;
+    }
+
+    /* Tablas */
+    .app-table {
+        @apply w-full text-left text-sm;
+    }
+
+    .app-table thead th {
+        @apply border-b bg-muted/60 px-4 py-3 text-[11px] font-semibold tracking-wide whitespace-nowrap text-muted-foreground uppercase;
+    }
+
+    .app-table tbody td {
+        @apply border-b px-4 py-3 align-middle;
+    }
+
+    .app-table tbody tr:last-child td {
+        @apply border-b-0;
+    }
+
+    .app-table tbody tr {
+        @apply transition-colors hover:bg-muted/40;
+    }
+
+    /* Banners de estado: info / éxito / aviso / error */
+    .app-banner {
+        @apply flex items-start gap-3 rounded-xl border px-4 py-3 text-sm leading-relaxed;
+    }
+
+    .app-banner > svg {
+        @apply mt-0.5 size-4 shrink-0;
+    }
+
+    .app-banner-info {
+        @apply border-info-border bg-info-soft text-foreground [&>svg]:text-info;
+    }
+
+    .app-banner-success {
+        @apply border-success-border bg-success-soft text-foreground [&>svg]:text-success;
+    }
+
+    .app-banner-warning {
+        @apply border-warning-border bg-warning-soft text-foreground [&>svg]:text-warning;
+    }
+
+    .app-banner-danger {
+        @apply border-danger-border bg-danger-soft text-foreground [&>svg]:text-danger;
+    }
+
+    /* Texto de ayuda bajo un campo / explicación de un control deshabilitado */
+    .app-help {
+        @apply text-xs leading-relaxed text-muted-foreground;
+    }
+
+    .app-field-error {
+        @apply text-xs font-medium text-danger;
+    }
+
+    /* Zona de acciones peligrosas (eliminar, reabrir): separada y marcada */
+    .app-danger-zone {
+        @apply rounded-xl border border-danger-border bg-danger-soft/60 p-4;
+    }
+
+    /* Píldoras de estado neutras/semánticas */
+    .app-pill {
+        @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap;
+    }
+
+    .app-pill-success {
+        @apply border-success-border bg-success-soft text-success;
+    }
+
+    .app-pill-warning {
+        @apply border-warning-border bg-warning-soft text-warning;
+    }
+
+    .app-pill-danger {
+        @apply border-danger-border bg-danger-soft text-danger;
+    }
+
+    .app-pill-info {
+        @apply border-info-border bg-info-soft text-info;
+    }
+
+    .app-pill-muted {
+        @apply border-border bg-muted text-muted-foreground;
     }
 
     /* Scrollbar utilities */
@@ -413,8 +558,8 @@
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(30, 27, 75, 0.45);
-    backdrop-filter: blur(8px);
+    background: rgb(15 23 42 / 0.28);
+    backdrop-filter: blur(4px);
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.2s ease;
@@ -432,12 +577,12 @@
     align-items: center;
     gap: 8px;
     padding: 40px 34px 34px;
-    border-radius: 30px;
-    background: linear-gradient(160deg, #6366f1 0%, #4f46e5 55%, #3730a3 100%);
-    box-shadow:
-        0 60px 140px -40px rgba(67, 56, 202, 0.7),
-        0 20px 50px -20px rgba(0, 0, 0, 0.4),
-        inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    /* Fase 8.14: tarjeta neutra con los tokens del tema (antes degradado índigo). */
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--card-foreground);
+    box-shadow: var(--shadow-lg);
     text-align: center;
     transform: scale(0.96);
     transition: transform 0.25s ease;
@@ -450,37 +595,35 @@
 .fv-route-loading-logo {
     width: 60px;
     height: 60px;
-    border-radius: 18px;
+    border-radius: 14px;
     margin-bottom: 6px;
-    box-shadow:
-        0 18px 40px -14px rgba(0, 0, 0, 0.55),
-        0 0 0 1px rgba(255, 255, 255, 0.18);
-    animation: fv-logo-pulse 1.8s ease-in-out infinite;
+    background: #ffffff;
+    padding: 6px;
+    box-shadow: 0 0 0 1px var(--border);
 }
 
 .fv-route-loading-title {
     font-size: 19px;
-    font-weight: 900;
-    letter-spacing: -0.02em;
-    color: #ffffff;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--card-foreground);
 }
 
 .fv-route-loading-text {
     font-size: 13px;
     line-height: 1.55;
-    color: rgba(255, 255, 255, 0.82);
+    color: var(--muted-foreground);
     max-width: 27rem;
 }
 
 .fv-route-loading-bar {
     position: relative;
     width: 100%;
-    height: 9px;
+    height: 4px;
     margin-top: 14px;
     overflow: hidden;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.2);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    background: var(--muted);
 }
 
 .fv-route-loading-bar-fill {
@@ -488,12 +631,12 @@
     inset: 0;
     width: 38%;
     border-radius: 999px;
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.25), #ffffff, rgba(255, 255, 255, 0.25));
+    background: var(--primary);
     animation: fv-bar-indeterminate 1.3s ease-in-out infinite;
 }
 
 .fv-route-loading-dots {
-    display: flex;
+    display: none;
     gap: 6px;
     margin-top: 6px;
 }
@@ -518,8 +661,8 @@
 .fv-route-loading-action {
     margin-top: 1rem;
     border-radius: 9999px;
-    border: 1px solid rgb(255 255 255 / 0.35);
-    background: rgb(255 255 255 / 0.12);
+    border: 1px solid var(--border);
+    background: var(--background);
     padding: 0.5rem 1.1rem;
     font-size: 0.8rem;
     font-weight: 700;
@@ -529,7 +672,7 @@
 }
 
 .fv-route-loading-action:hover {
-    background: rgb(255 255 255 / 0.22);
+    background: var(--muted);
     transform: translateY(-1px);
 }
 

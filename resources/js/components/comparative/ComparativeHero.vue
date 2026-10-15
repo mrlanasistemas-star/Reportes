@@ -67,30 +67,30 @@ async function downloadFile(url: string | null, kind: 'excel' | 'pdf') {
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-white p-6 shadow-sm dark:bg-card">
-        <div class="flex flex-wrap items-start justify-between gap-4">
+    <div class="rounded-2xl border bg-card p-5 shadow-soft-xs sm:p-6">
+        <div class="flex flex-wrap items-end justify-between gap-4">
             <div>
-                <Link :href="backUrl" class="mb-2 inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400">
+                <Link :href="backUrl" class="mb-2 inline-flex items-center gap-1.5 text-xs font-bold text-muted-foreground hover:text-primary">
                     <ArrowLeft class="size-3.5" /> Volver a Reportes mensuales
                 </Link>
-                <p class="text-xs font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">Comparativo financiero</p>
-                <h1 class="mt-1 text-2xl font-black text-slate-950 dark:text-slate-50">
-                    {{ labelA }} <span class="font-medium text-slate-400 dark:text-slate-500">vs</span> {{ labelB }}
+                <p class="app-kicker">Comparativo financiero</p>
+                <h1 class="app-title mt-1">
+                    {{ labelA }} <span class="font-medium text-muted-foreground">vs</span> {{ labelB }}
                 </h1>
-                <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Analiza variaciones financieras entre periodos. Alcance: <span class="font-semibold text-slate-700 dark:text-slate-200">{{ scopeLabel }}</span></p>
+                <p class="mt-1 text-sm text-muted-foreground">Analiza variaciones financieras entre periodos. Alcance: <span class="font-semibold text-foreground/80">{{ scopeLabel }}</span></p>
             </div>
-            <div class="flex shrink-0 gap-2">
+            <div class="flex shrink-0 flex-wrap gap-2">
                 <button type="button" :disabled="!canExport || downloadingExcel" @click="downloadFile(excelUrl, 'excel')"
-                   :class="canExport && !downloadingExcel ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700 opacity-60 cursor-not-allowed'"
-                   class="inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-bold text-white transition">
+                   :class="canExport && !downloadingExcel ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'bg-muted text-muted-foreground cursor-not-allowed'"
+                   class="inline-flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-semibold transition">
                     <Loader2 v-if="downloadingExcel" class="size-4 animate-spin" />
-                    <FileSpreadsheet v-else class="size-4" /> Excel
+                    <FileSpreadsheet v-else class="size-4" /> {{ downloadingExcel ? 'Descargando…' : 'Descargar Excel' }}
                 </button>
                 <button type="button" :disabled="!canExport || downloadingPdf" @click="downloadFile(pdfUrl, 'pdf')"
-                   :class="canExport && !downloadingPdf ? 'bg-rose-600 hover:bg-rose-500' : 'bg-slate-300 dark:bg-slate-700 opacity-60 cursor-not-allowed'"
-                   class="inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-bold text-white transition">
+                   :class="canExport && !downloadingPdf ? 'bg-card text-foreground hover:bg-muted' : 'bg-muted text-muted-foreground cursor-not-allowed'"
+                   class="inline-flex h-10 items-center gap-2 rounded-lg border border-border px-4 text-sm font-semibold transition">
                     <Loader2 v-if="downloadingPdf" class="size-4 animate-spin" />
-                    <FileText v-else class="size-4" /> PDF
+                    <FileText v-else class="size-4 text-danger" /> {{ downloadingPdf ? 'Descargando…' : 'Descargar PDF' }}
                 </button>
             </div>
         </div>

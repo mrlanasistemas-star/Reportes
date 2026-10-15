@@ -45,12 +45,19 @@ class UpdatePeriodDatabaseJob implements ShouldQueue
             return;
         }
 
-        $run->update([
+        // Fase 10 — transición ATÓMICA queued→running (compare-and-set): si entre la
+        // lectura y esta escritura alguien canceló el run, no se "resucita".
+        $claimed = PeriodDatabaseUpdateRun::query()->whereKey($run->id)->whereIn('status', ['queued', 'running'])->update([
             'status'     => 'running',
             'started_at' => now(),
             'log'        => 'Procesando NOI Nómina y Cobranza…',
-            'metadata'   => ['current_step' => 'Iniciando proceso…', 'progress_percent' => 0],
+            'metadata'   => json_encode(['current_step' => 'Iniciando proceso…', 'progress_percent' => 0]),
         ]);
+        if ($claimed === 0) {
+            Log::info('UpdatePeriodDatabaseJob: run cancelado antes de iniciar.', ['run_id' => $this->runId]);
+            return;
+        }
+        $run->refresh();
 
         try {
             $service->updateForPeriod($period, $run);
@@ -83,13 +90,20 @@ class UpdatePeriodDatabaseJob implements ShouldQueue
 
             $failedSources = $run->fresh()->metadata['stats']['import_error_sources'] ?? [];
 
-            $run->update([
+            // Fase 10 — éxito solo si el run SIGUE en running en el mismo UPDATE
+            // (compare-and-set): una cancelación concurrente nunca termina como éxito.
+            $marked = PeriodDatabaseUpdateRun::query()->whereKey($run->id)->where('status', 'running')->update([
                 'status'      => 'success',
                 'finished_at' => now(),
                 'log'         => empty($failedSources)
                     ? 'Base de datos actualizada correctamente. Todos los archivos importados y uploads procesados.'
                     : 'Base de datos actualizada con errores en: ' . implode(', ', $failedSources) . '.',
             ]);
+            if ($marked === 0) {
+                Log::info('UpdatePeriodDatabaseJob: run cancelado al terminar; se conserva como cancelado.', ['run_id' => $this->runId]);
+                return;
+            }
+            $run->refresh();
 
             $emailNote = $this->notifyUser('success', $period, $run, $warnings, '', $failedSources);
             $run->update(['log' => $run->fresh()->log . ' ' . $emailNote]);
@@ -103,12 +117,17 @@ class UpdatePeriodDatabaseJob implements ShouldQueue
 
             $errorMsg = mb_strimwidth($exception->getMessage(), 0, 2000);
 
-            $run->update([
+            $marked = PeriodDatabaseUpdateRun::query()->whereKey($run->id)->where('status', 'running')->update([
                 'status'        => 'failed',
                 'finished_at'   => now(),
                 'log'           => 'El proceso terminó con error.',
                 'error_message' => $errorMsg,
             ]);
+            if ($marked === 0) {
+                Log::info('UpdatePeriodDatabaseJob: run cancelado, omitiendo marca de error.', ['run_id' => $this->runId]);
+                return;
+            }
+            $run->refresh();
 
             $emailNote = $this->notifyUser('failed', $period, $run, [], $errorMsg);
             $run->update(['log' => 'El proceso terminó con error. ' . $emailNote]);
@@ -151,7 +170,7 @@ class UpdatePeriodDatabaseJob implements ShouldQueue
             }
 
             Log::info('UpdatePeriodDatabaseJob: correo enviado.', [
-                'email'     => $user->email,
+                'user_id'   => $user->id, // Fase 10: sin correo electrónico en el log
                 'result'    => $result,
                 'period_id' => $this->periodId,
             ]);
@@ -160,7 +179,6 @@ class UpdatePeriodDatabaseJob implements ShouldQueue
         } catch (\Throwable $mailException) {
             Log::warning('UpdatePeriodDatabaseJob: no se pudo enviar correo.', [
                 'user_id'   => $this->userId,
-                'email'     => $user->email,
                 'period_id' => $this->periodId,
                 'result'    => $result,
                 'error'     => $mailException->getMessage(),

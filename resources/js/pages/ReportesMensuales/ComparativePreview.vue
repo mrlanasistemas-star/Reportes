@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { usePage } from '@inertiajs/vue3'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ComparativeHero from '@/components/comparative/ComparativeHero.vue'
 import ComparativeKpiCard from '@/components/comparative/ComparativeKpiCard.vue'
@@ -30,7 +31,9 @@ const props = defineProps<{
 
 const periodA = ref<number | null>(props.initialPeriodAId)
 const periodB = ref<number | null>(props.initialPeriodBId)
-const scope = ref<'general' | 'branch' | 'employee'>(props.initialScope)
+// Fase 6.4 — sin alcance general no se ofrece el comparativo general (el backend da 403).
+const isGeneralUser = computed(() => (usePage().props.auth as { dataScope?: { general?: boolean } | null } | undefined)?.dataScope?.general !== false)
+const scope = ref<'general' | 'branch' | 'employee'>(props.initialScope === 'general' && !isGeneralUser.value ? 'branch' : props.initialScope)
 const branchId = ref<number | null>(props.initialBranchId)
 const employeeId = ref<number | null>(props.initialEmployeeId)
 
@@ -291,7 +294,7 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
             v-model:period-a="periodA" v-model:period-b="periodB" v-model:scope="scope"
             v-model:branch-id="branchId" v-model:employee-id="employeeId"
             :periods="periods" :branches="branches" :employees="employees" :employees-loading="employeesLoading"
-            @swap="swapPeriods"
+            :allow-general="isGeneralUser" @swap="swapPeriods"
         />
 
         <div v-if="error" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
@@ -301,7 +304,7 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
         <ComparativeLoadingPanel v-if="loading && !data" :label-a="labelA" :label-b="labelB" />
 
         <template v-else-if="data">
-            <p v-if="loading" class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300"><span class="size-2 animate-ping rounded-full bg-indigo-500" /> Actualizando comparativo… la primera consulta de un periodo puede tardar unos segundos.</p>
+            <p v-if="loading" class="inline-flex items-center gap-2 rounded-full bg-accent px-3 py-1 text-xs font-bold text-primary"><span class="size-2 animate-ping rounded-full bg-primary" /> Actualizando comparativo… la primera consulta de un periodo puede tardar unos segundos.</p>
 
             <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <ComparativeKpiCard v-for="row in headlineRows" :key="row.label"
@@ -320,21 +323,21 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
                 <ChartCard title="Mora %" subtitle="Comparativo en el mismo anillo" type="radialBar" :height="260" :series="moraRadialSeries" :options="moraRadialOptions" class="sm:col-span-2 xl:col-span-2" />
             </div>
 
-            <div class="rounded-2xl border bg-white p-5 shadow-sm dark:bg-card">
-                <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Mayores variaciones</h3>
-                <p class="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">Ordenadas por magnitud relativa — sin interpretación automática, solo orden determinista.</p>
-                <ul class="mt-3 divide-y divide-slate-100 dark:divide-slate-800">
+            <div class="rounded-2xl border bg-card p-5 shadow-sm">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Mayores variaciones</h3>
+                <p class="mt-0.5 text-[11px] text-muted-foreground">Ordenadas por magnitud relativa — sin interpretación automática, solo orden determinista.</p>
+                <ul class="mt-3 divide-y divide-border">
                     <li v-for="row in topVariations" :key="row.label" class="flex items-center justify-between gap-3 py-2.5 text-sm">
-                        <span class="font-semibold text-slate-700 dark:text-slate-200">{{ row.label }}</span>
+                        <span class="font-semibold text-foreground/80">{{ row.label }}</span>
                         <span class="font-bold" :class="{
                             'text-emerald-700 dark:text-emerald-400': toneFor(row.label, row.var_pct) === 'good',
                             'text-rose-700 dark:text-rose-400': toneFor(row.label, row.var_pct) === 'bad',
-                            'text-slate-500 dark:text-slate-400': toneFor(row.label, row.var_pct) === 'neutral',
+                            'text-muted-foreground ': toneFor(row.label, row.var_pct) === 'neutral',
                         }">
                             {{ row.var_pct > 0 ? '↑' : '↓' }} {{ row.var_pct >= 0 ? '+' : '' }}{{ row.var_pct.toFixed(2) }}%
                         </span>
                     </li>
-                    <li v-if="topVariations.length === 0" class="py-4 text-center text-sm text-slate-400 dark:text-slate-500">Sin variaciones para este alcance.</li>
+                    <li v-if="topVariations.length === 0" class="py-4 text-center text-sm text-muted-foreground">Sin variaciones para este alcance.</li>
                 </ul>
             </div>
 

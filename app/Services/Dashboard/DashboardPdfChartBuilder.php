@@ -33,13 +33,17 @@ class DashboardPdfChartBuilder
             ['name' => 'EBITDA', 'color' => '#106A59', 'key' => 'ebitda'],
             ['name' => 'OPEX', 'color' => '#EF4444', 'key' => 'opex'],
         ];
-        $values = [];
+        // Fase 7.2 — un punto null (sucursal sin radiografía ese mes) es un HUECO en la
+        // línea, nunca un 0 inventado: no entra a la escala ni se dibuja.
+        $values = [0.0];
         foreach ($trend as $p) {
             foreach ($series as $s) {
-                $values[] = (float) ($p[$s['key']] ?? 0);
+                if (($p[$s['key']] ?? null) !== null) {
+                    $values[] = (float) $p[$s['key']];
+                }
             }
         }
-        [$min, $max, $step] = $this->niceRange(min(0, ...$values), max(0, ...$values));
+        [$min, $max, $step] = $this->niceRange(min(...$values), max(...$values));
 
         $left = 74; $right = 16; $top = 30; $bottom = 30;
         $plotW = $width - $left - $right;
@@ -53,18 +57,35 @@ class DashboardPdfChartBuilder
         foreach ($trend as $i => $p) {
             $svg .= $this->text($x($i), $height - 10, $p['label'], 9, 'middle', self::AXIS);
         }
+        $base = round($y(max($min, 0)), 1);
         foreach ($series as $s) {
-            $pts = [];
+            // Tramos continuos de puntos con dato (un null corta la línea).
+            $segments = [[]];
             foreach ($trend as $i => $p) {
-                $pts[] = round($x($i), 1) . ',' . round($y((float) ($p[$s['key']] ?? 0)), 1);
+                if (($p[$s['key']] ?? null) === null) {
+                    $segments[] = [];
+                    continue;
+                }
+                $segments[count($segments) - 1][] = [round($x($i), 1), round($y((float) $p[$s['key']]), 1)];
             }
-            $base = round($y(max($min, 0)), 1);
-            $area = 'M' . round($x(0), 1) . ',' . $base . ' L' . implode(' L', $pts) . ' L' . round($x($n - 1), 1) . ',' . $base . ' Z';
-            $svg .= '<path d="' . $area . '" fill="' . $s['color'] . '" fill-opacity="0.10"/>';
-            $svg .= '<polyline points="' . implode(' ', $pts) . '" fill="none" stroke="' . $s['color'] . '" stroke-width="2.4" stroke-linejoin="round"/>';
-            foreach ($pts as $pt) {
-                [$px, $py] = explode(',', $pt);
-                $svg .= '<circle cx="' . $px . '" cy="' . $py . '" r="3" fill="#fff" stroke="' . $s['color'] . '" stroke-width="1.8"/>';
+            foreach (array_filter($segments) as $seg) {
+                $pts = array_map(fn ($pt) => $pt[0] . ',' . $pt[1], $seg);
+                $area = 'M' . $seg[0][0] . ',' . $base . ' L' . implode(' L', $pts) . ' L' . $seg[count($seg) - 1][0] . ',' . $base . ' Z';
+                $svg .= '<path d="' . $area . '" fill="' . $s['color'] . '" fill-opacity="0.10"/>';
+                $svg .= '<polyline points="' . implode(' ', $pts) . '" fill="none" stroke="' . $s['color'] . '" stroke-width="2.4" stroke-linejoin="round"/>';
+                foreach ($seg as [$px, $py]) {
+                    $svg .= '<circle cx="' . $px . '" cy="' . $py . '" r="3" fill="#fff" stroke="' . $s['color'] . '" stroke-width="1.8"/>';
+                }
+            }
+        }
+        // Valor del último punto con dato de cada serie (lectura rápida sin buscar en el eje).
+        foreach ($series as $s) {
+            for ($i = $n - 1; $i >= 0; $i--) {
+                if (($trend[$i][$s['key']] ?? null) !== null) {
+                    $v = (float) $trend[$i][$s['key']];
+                    $svg .= $this->text($x($i), $y($v) - 8, $this->compactMoney($v), 8.5, 'middle', $s['color'], 700);
+                    break;
+                }
             }
         }
         $svg .= $this->legend($series, $width - $right, 14);

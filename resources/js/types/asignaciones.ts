@@ -66,6 +66,9 @@ export type RosterMovementItem = {
     employee_id: number
     employee_name: string
     nombre_normalizado?: string
+    /** Llave de identidad del roster (= nombre normalizado salvo homónimos separados). Se envía al conciliar. */
+    identity_key?: string
+    branch_id?: number | null
     branch_name?: string | null
     source?: string | null
     period_label?: string | null
@@ -80,9 +83,22 @@ export type RosterMovementItem = {
     can_review?: boolean
 }
 
+export type LaborDirectoryEvidence = {
+    /** Directorio laboral con corte válido para el periodo (o el anterior más reciente). */
+    vigente: string | null
+    tipo: 'periodo' | 'anterior' | null
+    /** Primer directorio con corte posterior: solo informativo, nunca confirma bajas. */
+    posterior: string | null
+}
+
 export type LaborRosterSummary = {
     calculado: boolean
+    periodo?: string
+    periodo_rango?: string | null
     plantilla: number
+    con_sucursal?: number
+    sin_sucursal?: number
+    directorio?: LaborDirectoryEvidence
     periodo_anterior: string | null
     plantilla_anterior: number
     drop_ratio: number
@@ -104,6 +120,13 @@ export type LaborData = {
     pending: RosterMovementItem[]
     counts: {
         altas: number
+        altas_confirmadas?: number
+        reingresos?: number
+        cambios_sucursal?: number
+        posibles_bajas?: number
+        ausencias_temporales?: number
+        contradicciones?: number
+        duplicados?: number
         bajas_confirmadas: number
         pendientes: number
         ausencias_pendientes: number

@@ -25,5 +25,11 @@ class ResetUserPassword implements ResetsUserPasswords
         $user->forceFill([
             'password' => $input['password'],
         ])->save();
+
+        // Fase 6.5 — restablecer por correo cierra TODAS las sesiones abiertas con
+        // la contraseña anterior (Fortify ya rota el remember_token).
+        if (config('session.driver') === 'database') {
+            \Illuminate\Support\Facades\DB::table(config('session.table', 'sessions'))->where('user_id', $user->id)->delete();
+        }
     }
 }

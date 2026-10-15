@@ -198,6 +198,13 @@ class EmployeesNormalizeCommand extends Command
                 }
             });
 
+        // 4b) Identidades explícitas (clave NOI por sistema, IDs externos): se mueven al
+        //     canónico — cada clave es única, así que nunca colisiona; sin esto el
+        //     borrado en cascada perdería el vínculo por clave del duplicado.
+        if (\Illuminate\Support\Facades\Schema::hasTable('employee_external_identities')) {
+            DB::table('employee_external_identities')->where('employee_id', $dup->id)->update(['employee_id' => $canonical->id, 'updated_at' => now()]);
+        }
+
         // 5) period_employee_rosters es derivada/reconstruible — simplemente se borran las
         //    filas del duplicado; el próximo "Actualizar BD" la reconstruye ya unificada.
         DB::table('period_employee_rosters')->where('employee_id', $dup->id)->delete();
