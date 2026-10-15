@@ -62,6 +62,22 @@ const toneClasses: Record<string, { active: string; badge: string }> = {
     },
 }
 
+// Mismas 3 categorías que PeriodEmployeeRosterService::classifyBaja() — "sin
+// contradicción" es la más cercana a una baja real (nadie confirmado por RH,
+// pero sin evidencia en contra); las otras dos son explícitamente dudosas.
+function reconciliationBadge(status?: string | null) {
+    switch (status) {
+        case 'sin_contradiccion':
+            return { label: 'Sin contradicción', classes: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300' }
+        case 'posible_coincidencia_nombre':
+            return { label: 'Posible mismo nombre', classes: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' }
+        case 'pendiente_conciliacion':
+            return { label: 'Archivo incompleto', classes: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' }
+        default:
+            return { label: 'Sin clasificar', classes: 'bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-300' }
+    }
+}
+
 const emptyMessage = computed(() => {
     if (activeTab.value === 'incidencias') {
 return 'Sin incidencias — todo el periodo tiene sucursal asignada.'
@@ -147,14 +163,31 @@ return 'Sin incidencias — todo el periodo tiene sucursal asignada.'
 
         <!-- Bajas -->
         <div v-else class="max-h-[26rem] space-y-3 overflow-y-auto p-4 sm:p-6">
+            <p class="mb-1 text-xs text-muted-foreground">
+                Ninguna de estas ausencias está confirmada por una fuente de RH — son personas que dejaron de aparecer en la nómina NOI.
+                El color indica qué tan confiable es cada caso.
+            </p>
             <article
                 v-for="item in leavers"
                 :key="`leave-${item.id}`"
                 class="rounded-2xl border border-border/70 bg-background px-4 py-4"
             >
-                <p class="font-semibold">{{ item.employee_name }}</p>
-                <p class="mt-1 text-sm text-muted-foreground">Última sucursal conocida: {{ item.branch_name || 'Sin sucursal asignada' }}</p>
-                <p class="mt-2 text-xs text-muted-foreground">Último periodo: {{ item.period_label || '—' }}</p>
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <p class="font-semibold">{{ item.employee_name }}</p>
+                        <p class="mt-1 text-sm text-muted-foreground">Última sucursal conocida: {{ item.branch_name || 'Sin sucursal asignada' }}</p>
+                        <p class="mt-2 text-xs text-muted-foreground">Último periodo: {{ item.period_label || '—' }}</p>
+                    </div>
+                    <span
+                        class="shrink-0 rounded-full px-2 py-1 text-[10px] font-bold"
+                        :class="reconciliationBadge(item.reconciliation_status).classes"
+                    >
+                        {{ reconciliationBadge(item.reconciliation_status).label }}
+                    </span>
+                </div>
+                <p v-if="item.reconciliation_note" class="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                    {{ item.reconciliation_note }}
+                </p>
             </article>
             <p v-if="!leavers.length" class="py-10 text-center text-sm text-muted-foreground">{{ emptyMessage }}</p>
         </div>

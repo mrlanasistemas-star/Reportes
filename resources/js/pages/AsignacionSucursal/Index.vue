@@ -38,8 +38,13 @@ const props = withDefaults(
             needs_review: number
             hires: number
             leavers: number
+            leavers_confirmadas: number
+            leavers_posible_coincidencia: number
+            leavers_pendientes: number
             plantilla: number
             roster_calculado: boolean
+            mass_drop_detected: boolean
+            drop_ratio: number
         }
         incidences?: Assignment[]
         hires?: RosterMovementItem[]
@@ -63,8 +68,13 @@ const props = withDefaults(
             needs_review: 0,
             hires: 0,
             leavers: 0,
+            leavers_confirmadas: 0,
+            leavers_posible_coincidencia: 0,
+            leavers_pendientes: 0,
             plantilla: 0,
             roster_calculado: false,
+            mass_drop_detected: false,
+            drop_ratio: 0,
         }),
         incidences: () => [],
         hires: () => [],
@@ -294,10 +304,12 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                             { icon: CheckCircle2, label: 'Con sucursal', value: summary.with_branch, fg: 'text-emerald-500 dark:text-emerald-400' },
                             { icon: AlertTriangle, label: 'Incidencias', value: summary.needs_review, fg: 'text-amber-500 dark:text-amber-400' },
                             { icon: Sparkles, label: 'Manuales', value: summary.manual, fg: 'text-sky-500 dark:text-sky-400' },
-                            { icon: UserPlus, label: 'Altas', value: summary.hires, fg: 'text-emerald-500 dark:text-emerald-400' },
-                            { icon: UserMinus, label: 'Bajas', value: summary.leavers, fg: 'text-rose-500 dark:text-rose-400' },
+                            { icon: UserPlus, label: 'Altas', value: summary.hires, fg: 'text-emerald-500 dark:text-emerald-400', title: 'Colaboradores que aparecen en la nómina NOI de este periodo y no estaban en el anterior.' },
+                            { icon: UserMinus, label: 'Bajas (sin contradicción)', value: summary.leavers_confirmadas, fg: 'text-rose-500 dark:text-rose-400', title: 'Dejaron de aparecer en la nómina y no hay un alta con nombre similar ni una caída masiva de archivo que lo explique. Es la mejor estimación disponible, no una confirmación de RH.' },
+                            { icon: AlertTriangle, label: 'Ausencias pendientes de revisión', value: summary.leavers_posible_coincidencia + summary.leavers_pendientes, fg: 'text-amber-500 dark:text-amber-400', title: 'Ausencias de nómina que podrían ser un cambio de nombre entre archivos o un archivo NOI incompleto ese mes — no se cuentan como bajas confirmadas.' },
                         ]"
                         :key="stat.label"
+                        :title="stat.title"
                         class="flex h-11 items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-card dark:text-slate-300 dark:hover:shadow-black/20"
                     >
                         <component :is="stat.icon" :class="['size-3.5 shrink-0', stat.fg]" />
@@ -308,7 +320,14 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
             </section>
 
             <!-- Colaboradores por sucursal — exacto, antes de la lista -->
-            <BranchHeadcountPanel :distribution="branchDistribution" :hires="summary.hires" :leavers="summary.leavers" />
+            <BranchHeadcountPanel
+                :distribution="branchDistribution"
+                :hires="summary.hires"
+                :leavers="summary.leavers_confirmadas"
+                :pending-leavers="summary.leavers_posible_coincidencia + summary.leavers_pendientes"
+                :mass-drop-detected="summary.mass_drop_detected"
+                :drop-ratio="summary.drop_ratio"
+            />
 
             <!-- Movimientos del periodo — incidencias / altas / bajas -->
             <PeriodMovementsPanel
