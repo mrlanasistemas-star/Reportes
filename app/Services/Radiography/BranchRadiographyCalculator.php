@@ -711,10 +711,19 @@ class BranchRadiographyCalculator
         SUM(CASE WHEN `transaction` = 'CONDONACION' THEN total_amount ELSE 0 END) as condonacion_excluida";
 
         // Pass 1: branches already mapped to an operative sucursal via branch_id
+        // Fase 7.4 (rendimiento, 15-oct-2026) — las sumas de Pass 3 (COMISIÓN POR
+        // APERTURA) y Pass 5 (ACUERDO CON CLIENTE) viajan en ESTA misma consulta como
+        // SUM(CASE ...) con exactamente sus filtros: antes eran dos barridos extra de
+        // fact_recoveries con el mismo WHERE base. Una sucursal sin filas de ese tipo
+        // aporta 0 (antes no aparecía), lo que deja el acumulado idéntico.
         $rows = DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->whereIn('branch_id', $branchIds)
-            ->selectRaw("branch_id, {$recoverySql}")
+            ->selectRaw("branch_id, {$recoverySql},
+                SUM(CASE WHEN operation = 'COMISIÓN POR APERTURA' THEN total_amount ELSE 0 END) as pass3_comision,
+                SUM(CASE WHEN operation = 'ACUERDO CON CLIENTE' AND charges_due > 0
+                    AND `transaction` IN ('PAGO', 'DESCUENTO') AND is_savehearts != 1
+                    THEN charges_due ELSE 0 END) as pass5_cargos")
             ->groupBy('branch_id')
             ->get();
 
@@ -783,19 +792,11 @@ class BranchRadiographyCalculator
             $summaries[$suc]['condonacion_excluida']    += (float) ($row->condonacion_excluida ?? 0);
         }
 
-        // Pass 3: COMISIÓN POR APERTURA (mapped branches)
-        $comAp = DB::table('fact_recoveries')
-            ->whereIn('period_id', $dataIds)
-            ->whereIn('branch_id', $branchIds)
-            ->where('operation', 'COMISIÓN POR APERTURA')
-            ->selectRaw('branch_id, SUM(total_amount) as comision')
-            ->groupBy('branch_id')
-            ->get();
-
-        foreach ($comAp as $row) {
+        // Pass 3: COMISIÓN POR APERTURA (mapped branches) — suma ya traída por Pass 1.
+        foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
             if (!$suc || !isset($summaries[$suc])) continue;
-            $summaries[$suc]['comision_apertura'] += (float) $row->comision;
+            $summaries[$suc]['comision_apertura'] += (float) $row->pass3_comision;
         }
 
         // Pass 4: COMISIÓN POR APERTURA (fallback route branches)
@@ -817,21 +818,11 @@ class BranchRadiographyCalculator
 
         // Pass 5: ACUERDO CON CLIENTE — charges_due maps to cargos_inicio (mapped branches)
         // Only include rows also counted in recuperacion_total (same exclusion filter as Pass 1+2).
-        $acuerdos = DB::table('fact_recoveries')
-            ->whereIn('period_id', $dataIds)
-            ->whereIn('branch_id', $branchIds)
-            ->where('operation', 'ACUERDO CON CLIENTE')
-            ->where('charges_due', '>', 0)
-            ->whereIn('transaction', ['PAGO', 'DESCUENTO'])
-            ->where('is_savehearts', '!=', 1)
-            ->selectRaw('branch_id, SUM(charges_due) as cargos')
-            ->groupBy('branch_id')
-            ->get();
-
-        foreach ($acuerdos as $row) {
+        // (suma ya traída por Pass 1 — mismos filtros, ver arriba)
+        foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
             if (!$suc || !isset($summaries[$suc])) continue;
-            $summaries[$suc]['cargos_inicio'] += (float) $row->cargos;
+            $summaries[$suc]['cargos_inicio'] += (float) $row->pass5_cargos;
         }
 
         // Pass 6: ACUERDO CON CLIENTE (fallback route branches) — same exclusion filter

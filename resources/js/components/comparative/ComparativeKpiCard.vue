@@ -18,16 +18,16 @@ const fmtValue = computed(() => (v: number) => props.fmt === 'percent' ? percent
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-white p-5 shadow-sm transition hover:shadow-md dark:bg-card dark:hover:shadow-black/20">
-        <p class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">{{ label }}</p>
-        <div class="mt-3 flex items-end justify-between gap-3">
+    <div class="rounded-2xl border bg-card p-5 shadow-sm transition hover:shadow-md">
+        <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{{ label }}</p>
+        <div class="mt-3 flex flex-wrap items-end justify-between gap-x-3 gap-y-1">
             <div>
-                <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{{ labelA }}</p>
-                <p class="text-2xl font-black text-slate-950 dark:text-slate-50">{{ fmtValue(curr) }}</p>
+                <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{{ labelA }}</p>
+                <p class="text-xl font-semibold text-foreground tabular-nums xl:text-2xl">{{ fmtValue(curr) }}</p>
             </div>
-            <div class="text-right">
-                <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{{ labelB }}</p>
-                <p class="text-sm font-bold text-slate-500 dark:text-slate-400">{{ fmtValue(prev) }}</p>
+            <div class="ml-auto text-right">
+                <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{{ labelB }}</p>
+                <p class="text-sm font-bold text-muted-foreground tabular-nums">{{ fmtValue(prev) }}</p>
             </div>
         </div>
         <div class="mt-3">

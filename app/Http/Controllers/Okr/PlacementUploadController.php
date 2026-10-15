@@ -93,7 +93,7 @@ class PlacementUploadController extends Controller
             'upload' => [
                 'id' => $upload->id, 'original_filename' => $upload->original_filename, 'uploaded_at' => $upload->created_at?->toDateTimeString(),
                 'uploaded_by' => $upload->uploader?->name, 'from_branch_file' => $sourceObjectiveId !== $objective->id,
-                'total_amount' => $upload->total_amount, 'rows_count' => $upload->rows_count, 'coverage_status' => $upload->coverage_status,
+                'total_amount' => $upload->total_amount, 'rows_count' => $upload->rows_count, 'coverage_status' => $upload->coverage_status, 'declared_complete' => $upload->declared_complete,
                 'unattributed_amount' => $upload->unattributed_amount, 'rows_pending_attribution' => $upload->rows_pending_attribution ?? 0, 'rows_duplicated' => $upload->rows_duplicated,
                 'rows_other_branch' => $upload->rows_other_branch, 'rows_cancelled' => $upload->rows_cancelled,
                 'rows_out_of_objective_range' => $upload->rows_out_of_objective_range, 'rows_outside_week_range' => $upload->rows_outside_week_range,
@@ -165,6 +165,7 @@ class PlacementUploadController extends Controller
                 'rows_cancelled' => $upload->rows_cancelled,
                 'rows_out_of_objective_range' => $upload->rows_out_of_objective_range,
                 'coverage_status' => $upload->coverage_status,
+                'declared_complete' => $upload->declared_complete,
             ],
         ]);
     }

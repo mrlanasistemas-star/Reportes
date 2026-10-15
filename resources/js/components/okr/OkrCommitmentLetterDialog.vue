@@ -79,6 +79,7 @@ watch(open, (v) => {
         fields.observations = ''
         accountableId.value = null
         showInlinePreview.value = false
+        viewingLetter.value = null
         issueBlock.value = null
         loadError.value = null
         loadReview()
@@ -143,6 +144,8 @@ function completeInformation() {
     bossInput.value?.focus()
 }
 const voidingId = ref<number | null>(null)
+// Visor integrado (Fase 5): la carta EMITIDA o su copia firmada se ve aquí mismo.
+const viewingLetter = ref<{ id: number; url: string; signed: boolean } | null>(null)
 const voidReason = ref('')
 const voiding = ref(false)
 
@@ -172,6 +175,9 @@ async function generate() {
     issueBlock.value = null
     Swal.fire({ toast: true, position: 'top-end', icon: 'success', title: `Carta emitida · ${res.data.letter.folio}`, timer: 2600, showConfirmButton: false })
     await loadReview()
+    // Se muestra de inmediato el documento EMITIDO (no la vista previa).
+    showInlinePreview.value = false
+    viewingLetter.value = { id: res.data.letter.id, url: res.data.letter.view_url, signed: false }
     router.reload({ only: ['objective'] })
 }
 
@@ -316,11 +322,19 @@ async function voidLetter(letter: any) {
                         <span class="text-muted-foreground">{{ l.collaborator }} · {{ formatFriendlyDateTime(l.generated_at) }}</span>
                         <span v-if="l.status === 'voided'" class="rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-bold text-destructive" :title="l.void_reason">Anulada · {{ l.void_reason }}</span>
                         <span v-else class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">Vigente{{ l.is_signed ? ' · firmada' : '' }}</span>
-                        <span class="ml-auto flex gap-2">
-                            <a :href="l.view_url" target="_blank" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Eye class="size-3.5" /> Ver</a>
-                            <a :href="l.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> Descargar</a>
+                        <span class="ml-auto flex flex-wrap gap-2">
+                            <template v-if="l.file_available !== false">
+                                <button type="button" class="inline-flex items-center gap-1 font-bold text-primary hover:underline" @click="viewingLetter = viewingLetter?.id === l.id && !viewingLetter?.signed ? null : { id: l.id, url: l.view_url, signed: false }"><Eye class="size-3.5" /> {{ viewingLetter?.id === l.id && !viewingLetter?.signed ? 'Ocultar' : 'Ver aquí' }}</button>
+                                <a :href="l.view_url" target="_blank" rel="noopener" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><ExternalLink class="size-3.5" /> Pestaña nueva</a>
+                                <a :href="l.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> Descargar</a>
+                            </template>
+                            <span v-else class="font-semibold text-destructive">PDF no disponible en el almacenamiento — informa a Sistemas el folio {{ l.folio }}</span>
+                            <button v-if="l.signed_view_url" type="button" class="inline-flex items-center gap-1 font-bold text-emerald-700 hover:underline dark:text-emerald-300" @click="viewingLetter = viewingLetter?.id === l.id && viewingLetter?.signed ? null : { id: l.id, url: l.signed_view_url, signed: true }"><FileSignature class="size-3.5" /> Ver firmada</button>
                             <button v-if="canIssue && l.status !== 'voided'" type="button" class="inline-flex items-center gap-1 font-bold text-destructive hover:underline" @click="voidingId = voidingId === l.id ? null : l.id"><Ban class="size-3.5" /> Anular</button>
                         </span>
+                        <div v-if="viewingLetter?.id === l.id" class="w-full overflow-hidden rounded-xl border border-border bg-white animate-in fade-in" style="height: 68vh">
+                            <iframe :src="viewingLetter?.url" class="h-full w-full" :title="`${l.folio}${viewingLetter?.signed ? ' firmada' : ''}`" />
+                        </div>
                         <div v-if="voidingId === l.id" class="w-full space-y-2 pt-2 animate-in fade-in">
                             <p class="text-[11px] text-muted-foreground">El PDF y el folio se conservan; la carta deja de ser vigente y podrás emitir otra con folio nuevo.<strong v-if="l.is_signed"> Esta carta tiene copia firmada.</strong></p>
                             <textarea v-model="voidReason" rows="2" maxlength="500" class="app-textarea text-xs" placeholder="Motivo de la anulación (obligatorio, mínimo 10 caracteres)" />

@@ -59,7 +59,7 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
             <div class="mt-5 flex flex-wrap items-center gap-3">
                 <button
                     type="button"
-                    class="inline-flex h-10 items-center gap-2 rounded-2xl bg-indigo-600 px-5 text-sm font-black text-white shadow transition hover:bg-indigo-500"
+                    class="inline-flex h-10 items-center gap-2 rounded-2xl bg-indigo-600 px-5 text-sm font-black text-white shadow transition hover:bg-primary/90"
                     @click="emit('retry')"
                 >
                     <RefreshCw class="size-4" />

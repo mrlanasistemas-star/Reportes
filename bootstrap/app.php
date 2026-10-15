@@ -21,6 +21,8 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->web(append: [
             \App\Http\Middleware\EnsureUserNotDisabled::class,
+            // Fase 6.4 — alcance por sucursal: un branch_id fuera del alcance del usuario → 403.
+            \App\Http\Middleware\EnsureBranchScope::class,
             HandleAppearance::class,
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,

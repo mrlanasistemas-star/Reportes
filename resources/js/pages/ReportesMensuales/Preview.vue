@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { usePage } from '@inertiajs/vue3'
 import {
     ArrowLeft, AlertTriangle, FileSpreadsheet, FileText, Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Download,
     HandCoins, TrendingUp, Landmark, Percent, Receipt, Wallet, Gauge, Building2, Banknote, CheckCircle2,
@@ -119,7 +120,10 @@ const hasFondeoTab = computed(() => activeScope.value.type === 'general')
 
 // ── Filtered export config (genera Excel/PDF por sucursal, gestor o comparativo) ──
 const showFilteredPanel = ref(false)
-const filteredScope      = ref<'general' | 'branch' | 'employee'>('general')
+// Fase 6.4 — sin alcance general (auth.dataScope) no se ofrece el reporte general ni
+// el comparativo general: el backend responde 403 de todos modos.
+const isGeneralUser = computed(() => (usePage().props.auth as { dataScope?: { general?: boolean } | null } | undefined)?.dataScope?.general !== false)
+const filteredScope      = ref<'general' | 'branch' | 'employee'>(isGeneralUser.value ? 'general' : 'branch')
 const filteredType       = ref<'simple' | 'month_vs_month' | 'bimester_vs_bimester' | 'quarter_vs_quarter'>('simple')
 const filteredBranchId   = ref<number | null>(null)
 const filteredEmployeeId = ref<number | null>(null)
@@ -1298,6 +1302,18 @@ async function fetchScopedDataset(opts: { silent?: boolean } = {}) {
 
     const clearingFilters = !gestor && !branch
 
+    // Fase 6.4 — un usuario restringido no tiene vista general: «Limpiar filtros»
+    // lo regresa a su (primera) sucursal en vez de pedir el consolidado.
+    if (clearingFilters && !isGeneralUser.value) {
+        const own = props.branches[0]?.name
+
+        if (own) {
+            vfBranch.value = own
+        }
+
+        return
+    }
+
     // Ajuste temporal activo para alcance general (mode=all_each_employee) — si
     // hay un monto > 0, el snapshot general cacheado (generalSnapshotOverride, o
     // el general que vino en props.snapshot) YA NO sirve tal cual: hay que
@@ -1866,22 +1882,23 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 </script>
 
 <template>
-    <div class="min-h-screen bg-slate-50 dark:bg-background">
+    <div class="min-h-screen">
 
-        <!-- HERO HEADER -->
-        <div class="bg-slate-950 px-6 py-7 text-white">
+        <!-- Encabezado de página (Fase 8.9: mismo patrón que el resto del sistema;
+             antes un bloque oscuro). Mismos datos y mismas URLs de descarga. -->
+        <div class="border-b bg-card px-4 py-5 sm:px-6">
             <div class="mx-auto max-w-screen-2xl">
-                <div class="flex flex-wrap items-center justify-between gap-4">
-                    <div>
-                        <p class="text-xs font-bold uppercase tracking-widest text-indigo-400">Radiografía Financiera</p>
-                        <h1 class="mt-1 text-2xl font-black">{{ period.label }}</h1>
-                        <div v-if="periodComposite" class="mt-1.5 space-y-0.5">
-                            <p class="text-sm font-semibold text-indigo-300">{{ periodComposite.component_range }}</p>
-                            <p class="text-xs text-slate-400 dark:text-slate-500">
+                <div class="flex flex-wrap items-end justify-between gap-4">
+                    <div class="min-w-0">
+                        <p class="app-kicker">Radiografía financiera</p>
+                        <h1 class="app-title mt-1">{{ period.label }}</h1>
+                        <div v-if="periodComposite" class="mt-1 space-y-0.5">
+                            <p class="text-sm font-semibold text-foreground/80">{{ periodComposite.component_range }}</p>
+                            <p class="text-xs text-muted-foreground">
                                 Periodo: {{ periodComposite.week_range }} · Rango: {{ periodComposite.date_start }} → {{ periodComposite.date_end }}
                             </p>
                         </div>
-                        <p class="mt-1 text-sm text-slate-400 dark:text-slate-500">
+                        <p class="mt-1 text-sm text-muted-foreground">
                             <span v-if="snap">Radiografía generada: {{ snap.generated_at }}</span>
                             <span v-else>Sin radiografía generada</span>
                         </p>
@@ -1889,19 +1906,21 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <div class="flex flex-wrap gap-2">
                         <a :href="canDownloadActiveExcel ? activeExcelUrl : '#'"
                            :title="scopedLoading ? 'Actualizando información…' : undefined"
-                           :class="canDownloadActiveExcel ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-700 opacity-40 pointer-events-none'"
-                           class="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-sm font-bold text-white transition">
-                            <FileSpreadsheet class="size-4" /> Excel
+                           :aria-disabled="!canDownloadActiveExcel"
+                           :class="canDownloadActiveExcel ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'bg-muted text-muted-foreground pointer-events-none'"
+                           class="inline-flex h-9 items-center gap-2 rounded-lg px-4 text-sm font-semibold transition">
+                            <FileSpreadsheet class="size-4" /> Descargar Excel
                         </a>
                         <a :href="canDownloadActivePdf ? activePdfUrl : '#'"
                            :title="scopedLoading ? 'Actualizando información…' : undefined"
-                           :class="canDownloadActivePdf ? 'bg-rose-600 hover:bg-rose-500' : 'bg-slate-700 opacity-40 pointer-events-none'"
-                           class="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-sm font-bold text-white transition">
-                            <FileText class="size-4" /> PDF
+                           :aria-disabled="!canDownloadActivePdf"
+                           :class="canDownloadActivePdf ? 'bg-card text-foreground hover:bg-muted' : 'bg-muted text-muted-foreground pointer-events-none'"
+                           class="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-4 text-sm font-semibold transition">
+                            <FileText class="size-4 text-danger" /> Descargar PDF
                         </a>
                         <a href="/historico-general"
-                           class="inline-flex h-9 items-center gap-2 rounded-xl bg-slate-700 px-4 text-sm font-bold text-slate-200 transition hover:bg-slate-600">
-                            <ArrowLeft class="size-4" /> Histórico
+                           class="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted">
+                            <ArrowLeft class="size-4" /> Carga de archivos
                         </a>
                     </div>
                 </div>
@@ -1910,7 +1929,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
         <!-- Sin snapshot -->
         <div v-if="!snap" class="mx-auto max-w-screen-2xl px-6 py-20">
-            <EmptyState title="Sin radiografía generada" description="Genera la radiografía en Histórico General para ver el dashboard completo." />
+            <EmptyState title="Sin radiografía generada" description="Genérala en «Carga de archivos», etapa «Generar reporte», para ver el tablero completo." />
         </div>
 
         <template v-else>
@@ -1920,16 +1939,16 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      transforma las tarjetas KPI y las pestañas directamente (mismo dataset que
                      Excel/PDF filtrados); ya NO se agrega una tarjeta redundante aparte. -->
                 <div v-if="scopeChips.length" class="flex flex-wrap items-center gap-2">
-                    <span class="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Alcance:</span>
+                    <span class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Alcance:</span>
                     <span v-for="chip in scopeChips.filter(c => !c.removable)" :key="'ro-' + chip.label"
-                          class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 dark:bg-slate-800 px-3 py-1 text-xs font-black text-slate-600 dark:text-slate-300">
+                          class="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground">
                         {{ chip.label }}
                     </span>
                     <button v-for="chip in scopeChips.filter(c => c.removable)" :key="chip.label" type="button" @click="chip.clear()"
-                            class="inline-flex items-center gap-1.5 rounded-full bg-indigo-600 px-3 py-1 text-xs font-black text-white transition hover:bg-indigo-500">
-                        {{ chip.label }} <span class="text-indigo-200">×</span>
+                            class="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-white transition hover:bg-primary/90">
+                        {{ chip.label }} <span class="text-primary">×</span>
                     </button>
-                    <button type="button" @click="vfClearAll" class="text-xs font-bold text-slate-500 dark:text-slate-400 underline hover:text-slate-800 dark:hover:text-slate-100">Limpiar filtros</button>
+                    <button type="button" @click="vfClearAll" class="text-xs font-bold text-muted-foreground underline hover:text-slate-800">Limpiar filtros</button>
                 </div>
 
                 <!-- DASHBOARD — overlay de carga cubre KPI + pestañas al cambiar de alcance,
@@ -1973,40 +1992,40 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 />
 
                 <!-- Ficha producto seleccionado (el gestor ya se refleja arriba en las tarjetas KPI) -->
-                <div v-if="vfProduct" class="rounded-2xl border bg-white dark:bg-card p-4 shadow-sm">
+                <div v-if="vfProduct" class="rounded-2xl border bg-card p-4 shadow-sm">
                     <div class="mt-3 border-t pt-3" :class="!vfGestor ? 'mt-0 border-t-0 pt-0' : ''">
                         <div v-if="vfProductRow" class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
-                            <div><p class="text-xs text-slate-400 dark:text-slate-500">Producto</p><p class="font-black text-slate-900 dark:text-slate-50 truncate">{{ vfProductRow.producto }}</p></div>
-                            <div><p class="text-xs text-slate-400 dark:text-slate-500">Colocación</p><p class="font-bold text-indigo-700 dark:text-indigo-300">{{ money(vfProductRow.colocacion) }}</p></div>
-                            <div><p class="text-xs text-slate-400 dark:text-slate-500">Operaciones</p><p class="font-bold">{{ num(vfProductRow.operaciones) }}</p></div>
-                            <div><p class="text-xs text-slate-400 dark:text-slate-500">Cartera</p><p class="font-bold">{{ money(vfProductRow.cartera ?? 0) }}</p></div>
+                            <div><p class="text-xs text-muted-foreground">Producto</p><p class="font-semibold text-foreground truncate">{{ vfProductRow.producto }}</p></div>
+                            <div><p class="text-xs text-muted-foreground">Colocación</p><p class="font-bold text-primary">{{ money(vfProductRow.colocacion) }}</p></div>
+                            <div><p class="text-xs text-muted-foreground">Operaciones</p><p class="font-bold">{{ num(vfProductRow.operaciones) }}</p></div>
+                            <div><p class="text-xs text-muted-foreground">Cartera</p><p class="font-bold">{{ money(vfProductRow.cartera ?? 0) }}</p></div>
                         </div>
-                        <p v-else class="text-sm text-slate-400 dark:text-slate-500 italic">Sin información disponible para este producto.</p>
+                        <p v-else class="text-sm text-muted-foreground italic">Sin información disponible para este producto.</p>
                     </div>
                 </div>
 
                 <!-- EXPORTACIÓN — Excel/PDF SIEMPRE respetan el alcance activo arriba (chips).
                      Comparativos (mes/bimestre/trimestre vs X) tienen su propio alcance
                      independiente, porque comparan un periodo distinto al que se ve en pantalla. -->
-                <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
+                <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
                     <button @click="showFilteredPanel = !showFilteredPanel"
-                            class="flex w-full items-center justify-between px-5 py-3.5 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
-                        <span class="flex items-center gap-2"><Download class="size-4 text-indigo-500" /> Descargar / Comparativos</span>
-                        <ChevronDown v-if="!showFilteredPanel" class="size-4 text-slate-400 dark:text-slate-500" />
-                        <ChevronUp v-else class="size-4 text-slate-400 dark:text-slate-500" />
+                            class="flex w-full items-center justify-between px-5 py-3.5 text-sm font-bold text-foreground/80 hover:bg-muted transition">
+                        <span class="flex items-center gap-2"><Download class="size-4 text-primary" /> Descargar / Comparativos</span>
+                        <ChevronDown v-if="!showFilteredPanel" class="size-4 text-muted-foreground" />
+                        <ChevronUp v-else class="size-4 text-muted-foreground" />
                     </button>
 
                     <div v-if="showFilteredPanel" class="border-t px-5 py-4 space-y-4">
-                        <p class="text-xs text-slate-500 dark:text-slate-400">
+                        <p class="text-xs text-muted-foreground">
                             El Excel/PDF descargado abajo corresponde exactamente al alcance activo:
-                            <span class="font-black text-slate-800 dark:text-slate-100">{{ scopeChips.length ? scopeChips.map(c => c.label).join(' · ') : 'General (todas las sucursales)' }}</span>.
+                            <span class="font-semibold text-foreground">{{ scopeChips.length ? scopeChips.map(c => c.label).join(' · ') : 'General (todas las sucursales)' }}</span>.
                             Cambia la sucursal/gestor en los filtros de arriba para modificarlo.
                         </p>
 
                         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                             <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Tipo de comparación</label>
-                                <select v-model="filteredType" class="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+                                <label class="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Tipo de comparación</label>
+                                <select v-model="filteredType" class="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30">
                                     <option value="simple">Simple (este periodo)</option>
                                     <option value="month_vs_month">Mes vs Mes</option>
                                     <option value="bimester_vs_bimester">Bimestre vs Bimestre</option>
@@ -2014,59 +2033,61 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </select>
                             </div>
                             <div v-if="isComparative">
-                                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Periodo a comparar</label>
-                                <select v-model="filteredComparePeriodId" class="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+                                <label class="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Periodo a comparar</label>
+                                <select v-model="filteredComparePeriodId" class="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30">
                                     <option :value="null">— Seleccionar —</option>
                                     <option v-for="p in comparePeriodOptions" :key="p.id" :value="p.id" :disabled="!p.has_snapshot">{{ p.label }}{{ !p.has_snapshot ? ' (sin radiografía)' : '' }}</option>
                                 </select>
                             </div>
                             <div v-if="isComparative">
-                                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Alcance del comparativo</label>
-                                <select v-model="filteredScope" class="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100">
-                                    <option value="general">General</option>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Alcance del comparativo</label>
+                                <select v-model="filteredScope" class="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30">
+                                    <option v-if="isGeneralUser" value="general">General</option>
                                     <option value="branch">Por sucursal</option>
                                     <option value="employee">Por gestor</option>
                                 </select>
                             </div>
                             <div v-if="isComparative && filteredScope === 'branch'">
-                                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Sucursal</label>
-                                <select v-model="filteredBranchId" class="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+                                <label class="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Sucursal</label>
+                                <select v-model="filteredBranchId" class="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30">
                                     <option :value="null">— Seleccionar —</option>
                                     <option v-for="b in branches" :key="b.id" :value="b.id">{{ b.name }}</option>
                                 </select>
                             </div>
                             <div v-if="isComparative && filteredScope === 'employee'">
-                                <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Gestor / Empleado</label>
-                                <select v-model="filteredEmployeeId" class="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-3 py-2 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+                                <label class="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Gestor / Empleado</label>
+                                <select v-model="filteredEmployeeId" class="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30">
                                     <option :value="null">— Seleccionar —</option>
                                     <option v-for="e in employees" :key="e.id" :value="e.id">{{ e.name }}</option>
                                 </select>
                             </div>
                         </div>
 
-                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'employee' && filteredScope === 'employee' && filteredEmployeeId === appliedAdjustment.employeeId" class="text-xs text-indigo-700 dark:text-indigo-300 font-semibold">
+                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'employee' && filteredScope === 'employee' && filteredEmployeeId === appliedAdjustment.employeeId" class="text-xs text-primary font-semibold">
                             Estas descargas incluirán el ajuste temporal activo ({{ money(appliedAdjustment.amountPerEmployee) }}) — ver "AJUSTE TEMPORAL DEL REPORTE" más abajo.
                         </p>
-                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'branch_each_employee' && filteredScope === 'branch' && filteredBranchId === appliedAdjustment.branchId" class="text-xs text-indigo-700 dark:text-indigo-300 font-semibold">
+                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'branch_each_employee' && filteredScope === 'branch' && filteredBranchId === appliedAdjustment.branchId" class="text-xs text-primary font-semibold">
                             Estas descargas incluirán el ajuste temporal de sucursal activo ({{ money(appliedAdjustment.amountPerEmployee) }} × {{ appliedAdjustment.affectedCount }} colaboradores = {{ money(appliedAdjustment.amountPerEmployee * appliedAdjustment.affectedCount) }}).
                         </p>
-                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'all_each_employee' && filteredScope === 'general'" class="text-xs text-indigo-700 dark:text-indigo-300 font-semibold">
+                        <p v-if="!isComparative && appliedAdjustment && appliedAdjustment.mode === 'all_each_employee' && filteredScope === 'general'" class="text-xs text-primary font-semibold">
                             Estas descargas incluirán el ajuste temporal general activo ({{ money(appliedAdjustment.amountPerEmployee) }} × {{ appliedAdjustment.affectedCount }} colaboradores = {{ money(appliedAdjustment.amountPerEmployee * appliedAdjustment.affectedCount) }}).
                         </p>
 
                         <div class="flex flex-wrap gap-2 pt-1">
                             <a :href="canDownloadFiltered ? filteredXlsxUrl : '#'"
-                               :class="canDownloadFiltered ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700 pointer-events-none opacity-50'"
-                               class="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-sm font-bold text-white transition">
+                               :aria-disabled="!canDownloadFiltered"
+                               :class="canDownloadFiltered ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'bg-muted text-muted-foreground pointer-events-none'"
+                               class="inline-flex h-9 items-center gap-2 rounded-lg px-4 text-sm font-semibold transition">
                                 <FileSpreadsheet class="size-4" /> Descargar Excel
                             </a>
                             <a :href="canDownloadFiltered ? filteredPdfUrl : '#'"
-                               :class="canDownloadFiltered ? 'bg-rose-600 hover:bg-rose-500' : 'bg-slate-300 dark:bg-slate-700 pointer-events-none opacity-50'"
-                               class="inline-flex h-9 items-center gap-2 rounded-xl px-4 text-sm font-bold text-white transition">
-                                <FileText class="size-4" /> Descargar PDF
+                               :aria-disabled="!canDownloadFiltered"
+                               :class="canDownloadFiltered ? 'border-border bg-card text-foreground hover:bg-muted' : 'border-border bg-muted text-muted-foreground pointer-events-none'"
+                               class="inline-flex h-9 items-center gap-2 rounded-lg border px-4 text-sm font-semibold transition">
+                                <FileText class="size-4 text-danger" /> Descargar PDF
                             </a>
                             <a :href="employeesExportUrl"
-                               class="inline-flex h-9 items-center gap-2 rounded-xl bg-slate-800 px-4 text-sm font-bold text-white transition hover:bg-slate-700">
+                               class="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted">
                                 <FileSpreadsheet class="size-4" /> Descargar Excel de colaboradores
                             </a>
                             <p v-if="!canDownloadFiltered" class="self-center text-xs text-amber-600 dark:text-amber-400 font-semibold">
@@ -2075,7 +2096,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 <span v-else-if="isComparative && filteredScope === 'employee'">Selecciona un gestor.</span>
                             </p>
                         </div>
-                        <p class="text-xs text-slate-400 dark:text-slate-500">"Descargar Excel de colaboradores" siempre trae a TODOS los colaboradores del periodo (respeta sucursal cuando aplica) — nunca se limita al gestor seleccionado arriba. Si hay un ajuste temporal aplicado (cualquiera de los 3 paneles de abajo), también se refleja aquí, por colaborador.</p>
+                        <p class="text-xs text-muted-foreground">"Descargar Excel de colaboradores" siempre trae a TODOS los colaboradores del periodo (respeta sucursal cuando aplica) — nunca se limita al gestor seleccionado arriba. Si hay un ajuste temporal aplicado (cualquiera de los 3 paneles de abajo), también se refleja aquí, por colaborador.</p>
                     </div>
                 </div>
 
@@ -2085,36 +2106,36 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      $0.00. DRAFT (mientras se escribe, no dispara nada) → APPLIED (solo al
                      pulsar "Aplicar ajuste", UNA request). Un solo panel visible a la vez,
                      según el alcance activo — A10. -->
-                <div v-if="activeScope.type === 'employee' && activeScope.employee_id" class="rounded-2xl border border-indigo-100 dark:border-indigo-500/15 bg-indigo-50/60 dark:bg-indigo-500/10 p-5 shadow-sm">
+                <div v-if="activeScope.type === 'employee' && activeScope.employee_id" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-sm">
                     <template v-if="showManualDraftForm">
-                        <p class="font-black text-slate-950 dark:text-slate-50">Ajuste temporal del gestor</p>
-                        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Monto aproximado de gastos operativos de {{ activeScope.employee_name }} este periodo. Se suma al OPEX automático — nunca lo reemplaza.</p>
-                        <p class="mt-1 text-xs text-indigo-700 dark:text-indigo-300">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
+                        <p class="font-semibold text-foreground">Ajuste temporal del gestor</p>
+                        <p class="mt-1 text-sm text-muted-foreground">Monto aproximado de gastos operativos de {{ activeScope.employee_name }} este periodo. Se suma al OPEX automático — nunca lo reemplaza.</p>
+                        <p class="mt-1 text-xs text-primary">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
 
                         <div class="mt-4 grid gap-3 sm:grid-cols-2">
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Monto por gestor (MXN)</span>
+                                <span class="text-xs font-bold text-muted-foreground">Monto por gestor (MXN)</span>
                                 <div class="relative mt-1">
-                                    <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400 dark:text-slate-500">$</span>
+                                    <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-muted-foreground">$</span>
                                     <input v-model="manualDraft.amountPerEmployee" type="number" min="0" step="100" placeholder="0"
-                                           class="h-11 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                                           class="h-11 w-full rounded-2xl border border-border bg-card pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                                 </div>
                             </label>
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Notas (obligatorio si hay monto)</span>
+                                <span class="text-xs font-bold text-muted-foreground">Notas (obligatorio si hay monto)</span>
                                 <input v-model="manualDraft.notes" type="text" placeholder="Ej. incluye viáticos y comunicación"
-                                       class="mt-1 h-11 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                                       class="mt-1 h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                             </label>
                         </div>
                         <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600 dark:text-rose-400">{{ manualDraftError }}</p>
 
                         <div class="mt-4 flex items-center gap-3">
                             <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
-                                    class="h-9 rounded-2xl bg-indigo-600 px-4 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-2xl bg-primary px-4 text-xs font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
                             <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
-                                    class="h-9 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-card px-4 text-xs font-bold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
                         </div>
@@ -2122,18 +2143,18 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <template v-else>
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                                <p class="text-xs font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ajuste temporal activo</p>
-                                <p class="mt-1 text-2xl font-black text-slate-950 dark:text-slate-50">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0)) }}</p>
-                                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">{{ (appliedAdjustment?.notes ?? '') }}</p>
-                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Gestor: {{ (appliedAdjustment?.employeeName ?? '') }}</p>
+                                <p class="text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ajuste temporal activo</p>
+                                <p class="mt-1 text-2xl font-semibold text-foreground">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0)) }}</p>
+                                <p class="mt-1 text-sm text-muted-foreground">{{ (appliedAdjustment?.notes ?? '') }}</p>
+                                <p class="mt-1 text-xs text-muted-foreground">Gestor: {{ (appliedAdjustment?.employeeName ?? '') }}</p>
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
-                                        class="h-9 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-card px-4 text-xs font-bold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                     Modificar
                                 </button>
                                 <button type="button" :disabled="adjustmentLoading" @click="removeManualAdjustment"
-                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-white dark:bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
                                     {{ adjustmentLoading ? 'Quitando…' : 'Quitar ajuste' }}
                                 </button>
                             </div>
@@ -2145,41 +2166,41 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 <!-- Ajuste temporal de SUCURSAL (A5 Caso 2, nuevo en esta ronda) — el monto es
                      POR colaborador; el total que sube el OPEX de la sucursal es
                      monto × colaboradores canónicos de esa sucursal este periodo. -->
-                <div v-if="activeScope.type === 'branch' && activeScope.branch_id" class="rounded-2xl border border-indigo-100 dark:border-indigo-500/15 bg-indigo-50/60 dark:bg-indigo-500/10 p-5 shadow-sm">
+                <div v-if="activeScope.type === 'branch' && activeScope.branch_id" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-sm">
                     <template v-if="showManualDraftForm">
-                        <p class="font-black text-slate-950 dark:text-slate-50">Ajuste temporal de la sucursal</p>
-                        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Este importe se agregará al OPEX de CADA colaborador de {{ activeScope.branch_name }}.</p>
-                        <p class="mt-1 text-xs text-indigo-700 dark:text-indigo-300">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
+                        <p class="font-semibold text-foreground">Ajuste temporal de la sucursal</p>
+                        <p class="mt-1 text-sm text-muted-foreground">Este importe se agregará al OPEX de CADA colaborador de {{ activeScope.branch_name }}.</p>
+                        <p class="mt-1 text-xs text-primary">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
 
                         <div class="mt-4 grid gap-3 sm:grid-cols-2">
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Monto por colaborador (MXN)</span>
+                                <span class="text-xs font-bold text-muted-foreground">Monto por colaborador (MXN)</span>
                                 <div class="relative mt-1">
-                                    <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400 dark:text-slate-500">$</span>
+                                    <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-muted-foreground">$</span>
                                     <input v-model="manualDraft.amountPerEmployee" type="number" min="0" step="100" placeholder="0"
-                                           class="h-11 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                                           class="h-11 w-full rounded-2xl border border-border bg-card pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                                 </div>
                             </label>
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Notas (obligatorio si hay monto)</span>
+                                <span class="text-xs font-bold text-muted-foreground">Notas (obligatorio si hay monto)</span>
                                 <input v-model="manualDraft.notes" type="text" placeholder="Ej. gasto extraordinario del mes"
-                                       class="mt-1 h-11 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                                       class="mt-1 h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                             </label>
                         </div>
                         <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600 dark:text-rose-400">{{ manualDraftError }}</p>
 
-                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 dark:bg-slate-900/70 px-4 py-2.5 text-xs">
-                            <span class="font-bold text-slate-600 dark:text-slate-300">Gestores afectados: <span class="text-slate-950 dark:text-slate-50">{{ affectedEmployeeCountEstimate }}</span></span>
-                            <span class="font-bold text-slate-600 dark:text-slate-300">Impacto total estimado: <span class="text-indigo-700 dark:text-indigo-300">{{ money(estimatedTotalImpact) }}</span></span>
+                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 px-4 py-2.5 text-xs">
+                            <span class="font-bold text-muted-foreground">Gestores afectados: <span class="text-foreground">{{ affectedEmployeeCountEstimate }}</span></span>
+                            <span class="font-bold text-muted-foreground">Impacto total estimado: <span class="text-primary">{{ money(estimatedTotalImpact) }}</span></span>
                         </div>
 
                         <div class="mt-4 flex items-center gap-3">
                             <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
-                                    class="h-9 rounded-2xl bg-indigo-600 px-4 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-2xl bg-primary px-4 text-xs font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
                             <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
-                                    class="h-9 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-card px-4 text-xs font-bold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
                         </div>
@@ -2187,18 +2208,18 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <template v-else>
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                                <p class="text-xs font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ajuste temporal activo</p>
-                                <p class="mt-1 text-2xl font-black text-slate-950 dark:text-slate-50">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0) * (appliedAdjustment?.affectedCount ?? 0)) }}</p>
-                                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">{{ (appliedAdjustment?.notes ?? '') }}</p>
-                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Ámbito: Todos los gestores de {{ (appliedAdjustment?.branchName ?? '') }} — {{ money(appliedAdjustment?.amountPerEmployee ?? 0) }} c/u × {{ appliedAdjustment?.affectedCount ?? 0 }} gestores</p>
+                                <p class="text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ajuste temporal activo</p>
+                                <p class="mt-1 text-2xl font-semibold text-foreground">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0) * (appliedAdjustment?.affectedCount ?? 0)) }}</p>
+                                <p class="mt-1 text-sm text-muted-foreground">{{ (appliedAdjustment?.notes ?? '') }}</p>
+                                <p class="mt-1 text-xs text-muted-foreground">Ámbito: Todos los gestores de {{ (appliedAdjustment?.branchName ?? '') }} — {{ money(appliedAdjustment?.amountPerEmployee ?? 0) }} c/u × {{ appliedAdjustment?.affectedCount ?? 0 }} gestores</p>
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
-                                        class="h-9 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-card px-4 text-xs font-bold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                     Modificar
                                 </button>
                                 <button type="button" :disabled="adjustmentLoading" @click="removeManualAdjustment"
-                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-white dark:bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
                                     {{ adjustmentLoading ? 'Quitando…' : 'Quitar ajuste' }}
                                 </button>
                             </div>
@@ -2211,41 +2232,41 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      que sube el OPEX general es monto × colaboradores canónicos del periodo
                      completo. Reemplaza al viejo "aplicar a TODOS los colaboradores" (antes
                      solo tocaba el Excel de colaboradores, nunca Web/Excel/PDF general). -->
-                <div v-if="activeScope.type === 'general'" class="rounded-2xl border border-indigo-100 dark:border-indigo-500/15 bg-indigo-50/60 dark:bg-indigo-500/10 p-5 shadow-sm">
+                <div v-if="activeScope.type === 'general'" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-sm">
                     <template v-if="showManualDraftForm">
-                        <p class="font-black text-slate-950 dark:text-slate-50">Ajuste temporal general</p>
-                        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Este importe se agregará al OPEX de CADA colaborador del periodo.</p>
-                        <p class="mt-1 text-xs text-indigo-700 dark:text-indigo-300">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
+                        <p class="font-semibold text-foreground">Ajuste temporal general</p>
+                        <p class="mt-1 text-sm text-muted-foreground">Este importe se agregará al OPEX de CADA colaborador del periodo.</p>
+                        <p class="mt-1 text-xs text-primary">Este ajuste solo afecta la vista y las descargas actuales. No modifica los datos guardados. No pasa nada mientras escribes — solo se aplica al pulsar "Aplicar ajuste".</p>
 
                         <div class="mt-4 grid gap-3 sm:grid-cols-2">
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Monto por colaborador (MXN)</span>
+                                <span class="text-xs font-bold text-muted-foreground">Monto por colaborador (MXN)</span>
                                 <div class="relative mt-1">
-                                    <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-slate-400 dark:text-slate-500">$</span>
+                                    <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-muted-foreground">$</span>
                                     <input v-model="manualDraft.amountPerEmployee" type="number" min="0" step="100" placeholder="0"
-                                           class="h-11 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                                           class="h-11 w-full rounded-2xl border border-border bg-card pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                                 </div>
                             </label>
                             <label class="block">
-                                <span class="text-xs font-bold text-slate-600 dark:text-slate-300">Notas (obligatorio si hay monto)</span>
+                                <span class="text-xs font-bold text-muted-foreground">Notas (obligatorio si hay monto)</span>
                                 <input v-model="manualDraft.notes" type="text" placeholder="Ej. gasto extraordinario del mes"
-                                       class="mt-1 h-11 w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-indigo-100" />
+                                       class="mt-1 h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                             </label>
                         </div>
                         <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600 dark:text-rose-400">{{ manualDraftError }}</p>
 
-                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 dark:bg-slate-900/70 px-4 py-2.5 text-xs">
-                            <span class="font-bold text-slate-600 dark:text-slate-300">Colaboradores afectados: <span class="text-slate-950 dark:text-slate-50">{{ affectedEmployeeCountEstimate }}</span></span>
-                            <span class="font-bold text-slate-600 dark:text-slate-300">Impacto total estimado: <span class="text-indigo-700 dark:text-indigo-300">{{ money(estimatedTotalImpact) }}</span></span>
+                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 px-4 py-2.5 text-xs">
+                            <span class="font-bold text-muted-foreground">Colaboradores afectados: <span class="text-foreground">{{ affectedEmployeeCountEstimate }}</span></span>
+                            <span class="font-bold text-muted-foreground">Impacto total estimado: <span class="text-primary">{{ money(estimatedTotalImpact) }}</span></span>
                         </div>
 
                         <div class="mt-4 flex items-center gap-3">
                             <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
-                                    class="h-9 rounded-2xl bg-indigo-600 px-4 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-2xl bg-primary px-4 text-xs font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
                             <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
-                                    class="h-9 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-card px-4 text-xs font-bold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
                         </div>
@@ -2253,18 +2274,18 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <template v-else>
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                                <p class="text-xs font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ajuste temporal activo</p>
-                                <p class="mt-1 text-2xl font-black text-slate-950 dark:text-slate-50">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0) * (appliedAdjustment?.affectedCount ?? 0)) }}</p>
-                                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">{{ (appliedAdjustment?.notes ?? '') }}</p>
-                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Ámbito: Todos los gestores del periodo — {{ money(appliedAdjustment?.amountPerEmployee ?? 0) }} c/u × {{ appliedAdjustment?.affectedCount ?? 0 }} colaboradores</p>
+                                <p class="text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ajuste temporal activo</p>
+                                <p class="mt-1 text-2xl font-semibold text-foreground">+{{ money((appliedAdjustment?.amountPerEmployee ?? 0) * (appliedAdjustment?.affectedCount ?? 0)) }}</p>
+                                <p class="mt-1 text-sm text-muted-foreground">{{ (appliedAdjustment?.notes ?? '') }}</p>
+                                <p class="mt-1 text-xs text-muted-foreground">Ámbito: Todos los gestores del periodo — {{ money(appliedAdjustment?.amountPerEmployee ?? 0) }} c/u × {{ appliedAdjustment?.affectedCount ?? 0 }} colaboradores</p>
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
-                                        class="h-9 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-card px-4 text-xs font-bold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                     Modificar
                                 </button>
                                 <button type="button" :disabled="adjustmentLoading" @click="removeManualAdjustment"
-                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-white dark:bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
                                     {{ adjustmentLoading ? 'Quitando…' : 'Quitar ajuste' }}
                                 </button>
                             </div>
@@ -2276,21 +2297,21 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 <!-- TABS: scroll horizontal con flechas — visibles solo cuando hay contenido
                      oculto a cada lado, para que quede claro que hay más pestañas (p. ej.
                      Rotación de Personal / Categoría EBITDA) sin necesitar pantalla completa. -->
-                <div class="relative border-b border-slate-200 dark:border-slate-800">
+                <div class="relative border-b border-border">
                     <button v-if="canScrollTabsLeft" type="button" @click="scrollTabs('left')"
-                        class="absolute left-0 top-0 z-10 flex h-full items-center bg-gradient-to-r from-white via-white/90 to-transparent pl-1 pr-4 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:text-indigo-400"
+                        class="absolute left-0 top-0 z-10 flex h-full items-center bg-gradient-to-r from-white via-white/90 to-transparent pl-1 pr-4 text-muted-foreground hover:text-primary"
                         aria-label="Ver pestañas anteriores">
                         <ChevronLeft class="size-4" />
                     </button>
                     <div ref="tabsScrollEl" class="flex overflow-x-auto gap-1 scroll-smooth">
                         <button v-for="t in tabs" :key="t.key" :data-tab-key="t.key" @click="activeTab = t.key"
                             class="relative shrink-0 px-3.5 py-2.5 text-xs font-bold transition border-b-2 whitespace-nowrap"
-                            :class="activeTab === t.key ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-100'">
+                            :class="activeTab === t.key ? 'border-primary/30 text-primary ' : 'border-transparent text-muted-foreground hover:text-slate-800 '">
                             {{ t.label }}
                         </button>
                     </div>
                     <button v-if="canScrollTabsRight" type="button" @click="scrollTabs('right')"
-                        class="absolute right-0 top-0 z-10 flex h-full items-center bg-gradient-to-l from-white via-white/90 to-transparent pr-1 pl-4 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:text-indigo-400"
+                        class="absolute right-0 top-0 z-10 flex h-full items-center bg-gradient-to-l from-white via-white/90 to-transparent pr-1 pl-4 text-muted-foreground hover:text-primary"
                         aria-label="Ver más pestañas">
                         <ChevronRight class="size-4" />
                     </button>
@@ -2306,24 +2327,24 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- RESUMEN FINANCIERO GENERAL -->
-                    <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3">
-                            <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Resumen ejecutivo</h3>
+                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="border-b bg-muted/50 px-5 py-3">
+                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Resumen ejecutivo</h3>
                         </div>
                         <table class="w-full text-sm">
                             <tbody>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Recuperación total</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(recGlobal) }}</td></tr>
-                                <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Colocación total</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(colGlobal) }}</td></tr>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Cartera total</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(carteraGlobal) }}</td></tr>
-                                <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Cartera vencida / Mora total</td><td class="px-5 py-2.5 text-right font-black" :class="moraTotalGlobal > 0 ? 'text-red-700 dark:text-red-300' : 'text-slate-950 dark:text-slate-50'">{{ money(moraTotalGlobal) }}</td></tr>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Índice de mora</td><td class="px-5 py-2.5 text-right font-black" :class="kpiMoraPct > 25 ? 'text-red-700 dark:text-red-300' : 'text-slate-950 dark:text-slate-50'">{{ pct(kpiMoraPct) }}</td></tr>
-                                <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">OPEX</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(brGlobalGastosTotal) }}</td></tr>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Nómina y Capital Humano</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(nomTotal) }}</td></tr>
-                                <tr class="border-b-2 border-indigo-200 dark:border-indigo-500/20 bg-indigo-50 dark:bg-indigo-500/10"><td class="px-5 py-2.5 font-black text-indigo-900 dark:text-indigo-200">EBITDA</td><td class="px-5 py-2.5 text-right font-black text-lg" :class="utilidadGlobal < 0 ? 'text-red-700 dark:text-red-300' : 'text-indigo-900 dark:text-indigo-200'">{{ money(utilidadGlobal) }}</td></tr>
-                                <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2.5 text-slate-500 dark:text-slate-400 font-medium">Margen EBITDA</td><td class="px-5 py-2.5 text-right font-black" :class="margenEbitdaPct < 0 ? 'text-red-700 dark:text-red-300' : 'text-slate-950 dark:text-slate-50'">{{ pct(margenEbitdaPct) }}</td></tr>
-                                <tr class="border-b bg-amber-50/40 dark:bg-amber-500/10"><td class="px-5 py-2.5 text-slate-700 dark:text-slate-200 font-semibold">Excedente enviado a corporativo</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ hasBranchLevelTransfers ? money(excGlobal) : 'No atribuible' }}</td></tr>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Fondeo entre sucursales (rastreo, no afecta EBITDA)</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ hasBranchLevelTransfers ? money(fondeoGlobal) : 'No atribuible' }}</td></tr>
-                                <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Seguros y coberturas canalizadas</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ hasBranchLevelTransfers ? money(segurosPuenteTotal) : 'No atribuible' }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Recuperación total</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(recGlobal) }}</td></tr>
+                                <tr class="border-b bg-muted/50"><td class="px-5 py-2.5 text-muted-foreground font-medium">Colocación total</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(colGlobal) }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Cartera total</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(carteraGlobal) }}</td></tr>
+                                <tr class="border-b bg-muted/50"><td class="px-5 py-2.5 text-muted-foreground font-medium">Cartera vencida / Mora total</td><td class="px-5 py-2.5 text-right font-semibold" :class="moraTotalGlobal > 0 ? 'text-red-700 dark:text-red-300' : 'text-foreground '">{{ money(moraTotalGlobal) }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Índice de mora</td><td class="px-5 py-2.5 text-right font-semibold" :class="kpiMoraPct > 25 ? 'text-red-700 dark:text-red-300' : 'text-foreground '">{{ pct(kpiMoraPct) }}</td></tr>
+                                <tr class="border-b bg-muted/50"><td class="px-5 py-2.5 text-muted-foreground font-medium">OPEX</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(brGlobalGastosTotal) }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Nómina y Capital Humano</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(nomTotal) }}</td></tr>
+                                <tr class="border-b-2 border-primary/30 bg-accent"><td class="px-5 py-2.5 font-semibold text-primary">EBITDA</td><td class="px-5 py-2.5 text-right font-semibold text-lg" :class="utilidadGlobal < 0 ? 'text-red-700 dark:text-red-300' : 'text-primary '">{{ money(utilidadGlobal) }}</td></tr>
+                                <tr class="border-b bg-muted/50"><td class="px-5 py-2.5 text-muted-foreground font-medium">Margen EBITDA</td><td class="px-5 py-2.5 text-right font-semibold" :class="margenEbitdaPct < 0 ? 'text-red-700 dark:text-red-300' : 'text-foreground '">{{ pct(margenEbitdaPct) }}</td></tr>
+                                <tr class="border-b bg-amber-50/40 dark:bg-amber-500/10"><td class="px-5 py-2.5 text-foreground/80 font-semibold">Excedente enviado a corporativo</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ hasBranchLevelTransfers ? money(excGlobal) : 'No atribuible' }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Fondeo entre sucursales (rastreo, no afecta EBITDA)</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ hasBranchLevelTransfers ? money(fondeoGlobal) : 'No atribuible' }}</td></tr>
+                                <tr class="border-b bg-muted/50"><td class="px-5 py-2.5 text-muted-foreground font-medium">Seguros y coberturas canalizadas</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ hasBranchLevelTransfers ? money(segurosPuenteTotal) : 'No atribuible' }}</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -2331,46 +2352,46 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <!-- ── DESGLOSES DETALLADOS ─────────────────────────────────── -->
                     <div class="grid gap-4 lg:grid-cols-2">
                         <!-- A) Ingresos / Recuperación -->
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
                             <div class="border-b bg-emerald-50 dark:bg-emerald-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ingresos / Recuperación</h3>
-                                <span class="font-black text-emerald-800 dark:text-emerald-300">{{ money(recGlobal) }}</span>
+                                <h3 class="text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ingresos / Recuperación</h3>
+                                <span class="font-semibold text-emerald-800 dark:text-emerald-300">{{ money(recGlobal) }}</span>
                             </div>
                             <table class="w-full text-sm">
                                 <tbody>
-                                    <tr class="border-b"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Recuperación final (ingreso)</td><td class="px-5 py-2 text-right font-black text-emerald-700 dark:text-emerald-300">{{ money(recGlobal) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Recuperación final (ingreso)</td><td class="px-5 py-2 text-right font-semibold text-emerald-700 dark:text-emerald-300">{{ money(recGlobal) }}</td></tr>
                                     <template v-if="hasRecoveryComponents">
-                                        <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Capital recuperado</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrCapital) }}</td></tr>
-                                        <tr class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Intereses</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrInteres) }}</td></tr>
-                                        <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Impuestos</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrImpuesto) }}</td></tr>
-                                        <tr class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Moratorios / Multas</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrMultas) }}</td></tr>
-                                        <tr v-if="ingrCargosAdic > 0" class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Cargos adicionales</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrCargosAdic) }}</td></tr>
-                                        <tr v-if="ingrExcedente > 0" class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Excedentes recuperados</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrExcedente) }}</td></tr>
-                                        <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Cargos al inicio</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrCargosIni) }}</td></tr>
-                                        <tr class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Comisión por apertura</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrComAper) }}</td></tr>
-                                        <tr v-if="ingrCrece30 > 0" class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Seguro CRECE reconocido (30%)</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrCrece30) }}</td></tr>
-                                        <tr v-for="(o, i) in ingrOtrosDetalle" :key="o.label" class="border-b" :class="i % 2 === 1 ? 'bg-slate-50/60 dark:bg-slate-800/30' : ''"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ {{ o.label }}</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(o.value) }}</td></tr>
-                                        <tr v-if="!ingrOtrosDetalle.length && ingrOtros > 0" class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">→ Otros</td><td class="px-5 py-2 text-right text-xs text-slate-600 dark:text-slate-300">{{ money(ingrOtros) }}</td></tr>
+                                        <tr class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Capital recuperado</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrCapital) }}</td></tr>
+                                        <tr class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Intereses</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrInteres) }}</td></tr>
+                                        <tr class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Impuestos</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrImpuesto) }}</td></tr>
+                                        <tr class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Moratorios / Multas</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrMultas) }}</td></tr>
+                                        <tr v-if="ingrCargosAdic > 0" class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Cargos adicionales</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrCargosAdic) }}</td></tr>
+                                        <tr v-if="ingrExcedente > 0" class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Excedentes recuperados</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrExcedente) }}</td></tr>
+                                        <tr class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Cargos al inicio</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrCargosIni) }}</td></tr>
+                                        <tr class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Comisión por apertura</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrComAper) }}</td></tr>
+                                        <tr v-if="ingrCrece30 > 0" class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Seguro CRECE reconocido (30%)</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrCrece30) }}</td></tr>
+                                        <tr v-for="(o, i) in ingrOtrosDetalle" :key="o.label" class="border-b" :class="i % 2 === 1 ? 'bg-muted/50 ' : ''"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ {{ o.label }}</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(o.value) }}</td></tr>
+                                        <tr v-if="!ingrOtrosDetalle.length && ingrOtros > 0" class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">→ Otros</td><td class="px-5 py-2 text-right text-xs text-muted-foreground">{{ money(ingrOtros) }}</td></tr>
                                     </template>
-                                    <tr v-else class="border-b"><td colspan="2" class="px-5 py-2 pl-8 text-xs italic text-slate-400 dark:text-slate-500">Desglose por componente no disponible para este alcance — solo el total.</td></tr>
+                                    <tr v-else class="border-b"><td colspan="2" class="px-5 py-2 pl-8 text-xs italic text-muted-foreground">Desglose por componente no disponible para este alcance — solo el total.</td></tr>
                                 </tbody>
                             </table>
                         </div>
                         <!-- B) Colocación -->
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
                             <div class="border-b bg-blue-50 dark:bg-blue-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-black uppercase tracking-wider text-blue-700 dark:text-blue-300">Colocación por producto</h3>
-                                <span class="font-black text-blue-800 dark:text-blue-300">{{ money(colGlobal) }}</span>
+                                <h3 class="text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-300">Colocación por producto</h3>
+                                <span class="font-semibold text-blue-800 dark:text-blue-300">{{ money(colGlobal) }}</span>
                             </div>
                             <table class="w-full text-sm">
                                 <tbody>
                                     <tr v-for="(p, i) in productosSorted.slice(0, 10)" :key="p.producto"
-                                        :class="i % 2 === 1 ? 'bg-slate-50/60 dark:bg-slate-800/30' : ''" class="border-b">
-                                        <td class="px-5 py-2 text-slate-600 dark:text-slate-300">{{ p.producto }}</td>
-                                        <td class="px-5 py-2 text-right font-semibold text-slate-800 dark:text-slate-100">{{ money(p.colocacion ?? 0) }}</td>
+                                        :class="i % 2 === 1 ? 'bg-muted/50 ' : ''" class="border-b">
+                                        <td class="px-5 py-2 text-muted-foreground">{{ p.producto }}</td>
+                                        <td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(p.colocacion ?? 0) }}</td>
                                     </tr>
-                                    <tr v-if="!productosSorted.length"><td colspan="2" class="px-5 py-3 text-xs text-slate-400 dark:text-slate-500 italic">Sin desglose por producto disponible.</td></tr>
-                                    <tr class="border-t-2 border-blue-200 dark:border-blue-500/20 bg-blue-50 dark:bg-blue-500/10"><td class="px-5 py-2.5 font-black text-blue-900 dark:text-blue-200">Total colocación</td><td class="px-5 py-2.5 text-right font-black text-blue-900 dark:text-blue-200">{{ money(colGlobal) }}</td></tr>
+                                    <tr v-if="!productosSorted.length"><td colspan="2" class="px-5 py-3 text-xs text-muted-foreground italic">Sin desglose por producto disponible.</td></tr>
+                                    <tr class="border-t-2 border-blue-200 dark:border-blue-500/20 bg-blue-50 dark:bg-blue-500/10"><td class="px-5 py-2.5 font-semibold text-blue-900 dark:text-blue-200">Total colocación</td><td class="px-5 py-2.5 text-right font-semibold text-blue-900 dark:text-blue-200">{{ money(colGlobal) }}</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -2378,37 +2399,37 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                     <div class="grid gap-4 lg:grid-cols-2">
                         <!-- C) Cartera / Mora -->
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-red-50 dark:bg-red-500/10 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-red-700 dark:text-red-300">Valor Cartera / Mora</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                            <div class="border-b bg-red-50 dark:bg-red-500/10 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-red-700 dark:text-red-300">Valor Cartera / Mora</h3></div>
                             <table class="w-full text-sm">
                                 <tbody>
-                                    <tr class="border-b"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Valor cartera total</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(carteraGlobal) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Cartera vencida (5 columnas)</td><td class="px-5 py-2 text-right font-black text-red-700 dark:text-red-300">{{ money(moraTotalGlobal) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">Mora 1-30 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora0_30g) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">Mora 31-60 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora31_60g) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">Mora 61-90 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora61_90g) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">Mora 91-120 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora91_120g) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">Mora 120+ días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora120plusG) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Cartera sana</td><td class="px-5 py-2 text-right font-black text-emerald-700 dark:text-emerald-300">{{ money(Math.max(0, carteraGlobal - moraTotalGlobal)) }}</td></tr>
-                                    <tr><td class="px-5 py-2.5 font-black text-slate-800 dark:text-slate-100">Índice de mora</td><td class="px-5 py-2.5 text-right font-black" :class="kpiMoraPct > 25 ? 'text-red-700 dark:text-red-300' : 'text-slate-950 dark:text-slate-50'">{{ pct(kpiMoraPct) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Valor cartera total</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(carteraGlobal) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">Cartera vencida (5 columnas)</td><td class="px-5 py-2 text-right font-semibold text-red-700 dark:text-red-300">{{ money(moraTotalGlobal) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">Mora 1-30 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora0_30g) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">Mora 31-60 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora31_60g) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">Mora 61-90 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora61_90g) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">Mora 91-120 días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora91_120g) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">Mora 120+ días</td><td class="px-5 py-2 text-right text-xs text-red-600 dark:text-red-400">{{ money(mora120plusG) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">Cartera sana</td><td class="px-5 py-2 text-right font-semibold text-emerald-700 dark:text-emerald-300">{{ money(Math.max(0, carteraGlobal - moraTotalGlobal)) }}</td></tr>
+                                    <tr><td class="px-5 py-2.5 font-semibold text-foreground">Índice de mora</td><td class="px-5 py-2.5 text-right font-semibold" :class="kpiMoraPct > 25 ? 'text-red-700 dark:text-red-300' : 'text-foreground '">{{ pct(kpiMoraPct) }}</td></tr>
                                 </tbody>
                             </table>
                         </div>
                         <!-- D) OPEX -->
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
                             <div class="border-b bg-amber-50 dark:bg-amber-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">OPEX</h3>
-                                <span class="font-black text-amber-800 dark:text-amber-300">{{ money(brGlobalGastosTotal) }}</span>
+                                <h3 class="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">OPEX</h3>
+                                <span class="font-semibold text-amber-800 dark:text-amber-300">{{ money(brGlobalGastosTotal) }}</span>
                             </div>
                             <table class="w-full text-sm">
                                 <tbody>
-                                    <tr v-if="brGlobalGastos.length" class="border-b"><td colspan="2" class="px-5 py-1.5 text-xs font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-800/40">Principales conceptos</td></tr>
+                                    <tr v-if="brGlobalGastos.length" class="border-b"><td colspan="2" class="px-5 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50">Principales conceptos</td></tr>
                                     <tr v-for="(g, i) in brGlobalGastos.slice(0, 6)" :key="g.concepto"
-                                        :class="i % 2 === 0 ? '' : 'bg-slate-50/60 dark:bg-slate-800/30'" class="border-b last:border-0">
-                                        <td class="px-5 py-1.5 pl-8 text-slate-500 dark:text-slate-400 text-xs">{{ g.concepto }}</td>
-                                        <td class="px-5 py-1.5 text-right text-xs font-semibold text-slate-700 dark:text-slate-200">{{ money(g.total) }}</td>
+                                        :class="i % 2 === 0 ? '' : 'bg-muted/50 '" class="border-b last:border-0">
+                                        <td class="px-5 py-1.5 pl-8 text-muted-foreground text-xs">{{ g.concepto }}</td>
+                                        <td class="px-5 py-1.5 text-right text-xs font-semibold text-foreground/80">{{ money(g.total) }}</td>
                                     </tr>
-                                    <tr class="border-t-2 border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/10"><td class="px-5 py-2.5 font-black text-amber-900 dark:text-amber-200">OPEX total</td><td class="px-5 py-2.5 text-right font-black text-amber-900 dark:text-amber-200">{{ money(brGlobalGastosTotal) }}</td></tr>
+                                    <tr class="border-t-2 border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/10"><td class="px-5 py-2.5 font-semibold text-amber-900 dark:text-amber-200">OPEX total</td><td class="px-5 py-2.5 text-right font-semibold text-amber-900 dark:text-amber-200">{{ money(brGlobalGastosTotal) }}</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -2416,49 +2437,49 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                     <div class="grid gap-4 lg:grid-cols-2">
                         <!-- E) Nómina y Capital Humano -->
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
                             <div class="border-b bg-blue-50 dark:bg-blue-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-black uppercase tracking-wider text-blue-700 dark:text-blue-300">Nómina y Capital Humano</h3>
-                                <span class="font-black text-blue-800 dark:text-blue-300">{{ money(nomTotal) }}</span>
+                                <h3 class="text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-300">Nómina y Capital Humano</h3>
+                                <span class="font-semibold text-blue-800 dark:text-blue-300">{{ money(nomTotal) }}</span>
                             </div>
                             <table class="w-full text-sm">
                                 <tbody>
-                                    <tr class="border-b"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Sueldos / Nómina</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(nomNomina) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Comisiones</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(nomComis) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Vacaciones</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(nomVac) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Prima vacacional</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(nomPrimaVac) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Bonos</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(nomBonos) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Bonos aceleradores</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(nomBonosAcel) }}</td></tr>
-                                    <tr class="border-b bg-slate-50 dark:bg-slate-800/40"><td class="px-5 py-1.5 pl-5 text-slate-600 dark:text-slate-300 text-[11px] font-semibold uppercase tracking-wide" colspan="2">IMSS y gastos reales de empleados (sí afectan el total)</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Sueldos / Nómina</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(nomNomina) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">Comisiones</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(nomComis) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Vacaciones</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(nomVac) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">Prima vacacional</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(nomPrimaVac) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Bonos</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(nomBonos) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">Bonos aceleradores</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(nomBonosAcel) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-1.5 pl-5 text-muted-foreground text-[11px] font-semibold uppercase tracking-wide" colspan="2">IMSS y gastos reales de empleados (sí afectan el total)</td></tr>
                                     <template v-for="(item, i) in [...nomImssRow, ...nomGastoEmpleado]" :key="'afecta-'+item.label">
-                                        <tr :class="i % 2 === 0 ? '' : 'bg-slate-50/60 dark:bg-slate-800/30'" class="border-b">
-                                            <td class="px-5 py-1.5 pl-8 text-slate-600 dark:text-slate-300 text-xs">{{ item.label }}</td>
-                                            <td class="px-5 py-1.5 text-right text-xs font-semibold text-slate-700 dark:text-slate-200">{{ money(item.value) }}</td>
+                                        <tr :class="i % 2 === 0 ? '' : 'bg-muted/50 '" class="border-b">
+                                            <td class="px-5 py-1.5 pl-8 text-muted-foreground text-xs">{{ item.label }}</td>
+                                            <td class="px-5 py-1.5 text-right text-xs font-semibold text-foreground/80">{{ money(item.value) }}</td>
                                         </tr>
                                     </template>
-                                    <tr class="border-t-2 border-blue-200 dark:border-blue-500/20 bg-blue-50 dark:bg-blue-500/10"><td class="px-5 py-2.5 font-black text-blue-900 dark:text-blue-200">Total Nómina y Capital Humano</td><td class="px-5 py-2.5 text-right font-black text-blue-900 dark:text-blue-200">{{ money(nomTotal) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-1.5 pl-5 text-slate-500 dark:text-slate-400 text-[11px] font-semibold uppercase tracking-wide" colspan="2">Deducciones NOI — solo informativas, NO afectan el total</td></tr>
+                                    <tr class="border-t-2 border-blue-200 dark:border-blue-500/20 bg-blue-50 dark:bg-blue-500/10"><td class="px-5 py-2.5 font-semibold text-blue-900 dark:text-blue-200">Total Nómina y Capital Humano</td><td class="px-5 py-2.5 text-right font-semibold text-blue-900 dark:text-blue-200">{{ money(nomTotal) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-1.5 pl-5 text-muted-foreground text-[11px] font-semibold uppercase tracking-wide" colspan="2">Deducciones NOI — solo informativas, NO afectan el total</td></tr>
                                     <template v-for="(item, i) in nomDeduccionesInformativas" :key="'ded-'+item.label">
-                                        <tr :class="i % 2 === 0 ? '' : 'bg-slate-50/60 dark:bg-slate-800/30'" class="border-b">
-                                            <td class="px-5 py-1.5 pl-8 text-slate-500 dark:text-slate-400 text-xs">{{ item.label }}</td>
-                                            <td class="px-5 py-1.5 text-right text-xs font-semibold text-slate-500 dark:text-slate-400">{{ money(item.value) }}</td>
+                                        <tr :class="i % 2 === 0 ? '' : 'bg-muted/50 '" class="border-b">
+                                            <td class="px-5 py-1.5 pl-8 text-muted-foreground text-xs">{{ item.label }}</td>
+                                            <td class="px-5 py-1.5 text-right text-xs font-semibold text-muted-foreground">{{ money(item.value) }}</td>
                                         </tr>
                                     </template>
                                 </tbody>
                             </table>
                         </div>
                         <!-- F) EBITDA -->
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-indigo-50 dark:bg-indigo-500/10 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-indigo-700 dark:text-indigo-300">EBITDA — desglose</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                            <div class="border-b bg-accent px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-primary">EBITDA — desglose</h3></div>
                             <table class="w-full text-sm">
                                 <tbody>
-                                    <tr class="border-b"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Utilidad bruta</td><td class="px-5 py-2 text-right font-black text-emerald-700 dark:text-emerald-300">{{ money(ingresoEbitdaBaseGlobal) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">− Gastos Totales</td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(gastosEbitdaTotal) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">OPEX</td><td class="px-5 py-2 text-right text-xs text-slate-700 dark:text-slate-200">{{ money(brGlobalGastosTotal) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 pl-8 text-slate-500 dark:text-slate-400 text-xs">Nómina y Capital Humano</td><td class="px-5 py-2 text-right text-xs text-slate-700 dark:text-slate-200">{{ money(nomTotal) }}</td></tr>
-                                    <tr class="border-b-2 border-indigo-200 dark:border-indigo-500/20 bg-indigo-50 dark:bg-indigo-500/10"><td class="px-5 py-2.5 font-black text-indigo-900 dark:text-indigo-200">EBITDA</td><td class="px-5 py-2.5 text-right font-black text-lg" :class="utilidadGlobal < 0 ? 'text-red-700 dark:text-red-300' : 'text-indigo-900 dark:text-indigo-200'">{{ money(utilidadGlobal) }}</td></tr>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2 text-slate-500 dark:text-slate-400 font-medium">Margen EBITDA</td><td class="px-5 py-2 text-right font-black" :class="margenEbitdaPct < 0 ? 'text-red-700 dark:text-red-300' : 'text-slate-950 dark:text-slate-50'">{{ pct(margenEbitdaPct) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 text-slate-600 dark:text-slate-300 font-medium">Excedente enviado a corporativo <span class="text-[10px] uppercase tracking-wide text-slate-400 dark:text-slate-500">(informativo)</span></td><td class="px-5 py-2 text-right font-black text-slate-950 dark:text-slate-50">{{ money(excGlobal) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Utilidad bruta</td><td class="px-5 py-2 text-right font-semibold text-emerald-700 dark:text-emerald-300">{{ money(ingresoEbitdaBaseGlobal) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">− Gastos Totales</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(gastosEbitdaTotal) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">OPEX</td><td class="px-5 py-2 text-right text-xs text-foreground/80">{{ money(brGlobalGastosTotal) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">Nómina y Capital Humano</td><td class="px-5 py-2 text-right text-xs text-foreground/80">{{ money(nomTotal) }}</td></tr>
+                                    <tr class="border-b-2 border-primary/30 bg-accent"><td class="px-5 py-2.5 font-semibold text-primary">EBITDA</td><td class="px-5 py-2.5 text-right font-semibold text-lg" :class="utilidadGlobal < 0 ? 'text-red-700 dark:text-red-300' : 'text-primary '">{{ money(utilidadGlobal) }}</td></tr>
+                                    <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">Margen EBITDA</td><td class="px-5 py-2 text-right font-semibold" :class="margenEbitdaPct < 0 ? 'text-red-700 dark:text-red-300' : 'text-foreground '">{{ pct(margenEbitdaPct) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Excedente enviado a corporativo <span class="text-[10px] uppercase tracking-wide text-muted-foreground">(informativo)</span></td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(excGlobal) }}</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -2482,22 +2503,22 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <ChartCard title="Mora por bucket" :series="moraBucketSeries" :options="moraBucketOptions" type="donut" :height="260" />
 
                     <div class="grid gap-4 lg:grid-cols-2">
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Top sucursales por cartera</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top sucursales por cartera</h3></div>
                             <table v-if="branchesFull.length" class="w-full text-sm">
                                 <tbody>
-                                    <tr v-for="b in [...branchesFull].sort((a,b)=>b.cartera-a.cartera).slice(0,6)" :key="b.nombre" class="border-b last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                    <tr v-for="b in [...branchesFull].sort((a,b)=>b.cartera-a.cartera).slice(0,6)" :key="b.nombre" class="border-b last:border-0 hover:bg-muted">
                                         <td class="px-4 py-2 font-bold">{{ b.nombre }}</td>
-                                        <td class="px-4 py-2 text-right font-black">{{ money(b.cartera) }}</td>
+                                        <td class="px-4 py-2 text-right font-semibold">{{ money(b.cartera) }}</td>
                                     </tr>
                                 </tbody>
                             </table>
                             <EmptyState v-else class="m-4" title="Sin datos de sucursales" />
                         </div>
-                        <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Categoría por EBITDA</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Categoría por EBITDA</h3></div>
                             <table v-if="branchesFull.length" class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-2 text-left">Sucursal</th>
                                         <th class="px-4 py-2 text-right">EBITDA</th>
@@ -2505,9 +2526,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="b in branchesFull" :key="b.nombre" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                    <tr v-for="b in branchesFull" :key="b.nombre" class="border-t hover:bg-muted">
                                         <td class="px-4 py-2 font-bold">{{ b.nombre }}</td>
-                                        <td class="px-4 py-2 text-right font-black" :class="b.ebitda < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(b.ebitda) }}</td>
+                                        <td class="px-4 py-2 text-right font-semibold" :class="b.ebitda < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(b.ebitda) }}</td>
                                         <td class="px-4 py-2 text-center"><EbitdaBadge :categoria="b.categoria" /></td>
                                     </tr>
                                 </tbody>
@@ -2525,9 +2546,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             <ChartCard title="Ranking por cartera" :series="rankingCarteraSeries" :options="rankingCarteraOptions" type="donut" :height="320" />
                             <ChartCard title="EBITDA por sucursal" :series="rankingEbitdaSeries" :options="rankingEbitdaOptions" type="donut" :height="320" />
                         </div>
-                        <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Sucursal</th>
                                         <th class="px-4 py-3 text-right">Valor cartera</th>
@@ -2542,8 +2563,8 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="b in branchesFiltered" :key="b.nombre" class="cursor-pointer border-t hover:bg-slate-50 dark:hover:bg-slate-800/40"
-                                        :class="vfBranch === b.nombre ? 'bg-indigo-50 dark:bg-indigo-500/10' : ''" @click="vfBranch = vfBranch === b.nombre ? '' : b.nombre">
+                                    <tr v-for="b in branchesFiltered" :key="b.nombre" class="cursor-pointer border-t hover:bg-muted"
+                                        :class="vfBranch === b.nombre ? 'bg-accent ' : ''" @click="vfBranch = vfBranch === b.nombre ? '' : b.nombre">
                                         <td class="px-4 py-2.5 font-bold">{{ b.nombre }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.cartera) }}</td>
                                         <td class="px-4 py-2.5 text-right" :class="b.vencida > 0 ? 'font-bold text-red-700 dark:text-red-300' : ''">{{ money(b.vencida) }}</td>
@@ -2552,17 +2573,17 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                         <td class="px-4 py-2.5 text-right">{{ money(b.nomina) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.bonos) }}</td>
                                         <td class="px-4 py-2.5 text-right font-bold" :class="b.ebitda < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(b.ebitda) }}</td>
-                                        <td class="px-4 py-2.5 text-right font-bold" :class="b.margenEbitda < 0 ? 'text-red-700 dark:text-red-300' : 'text-slate-700 dark:text-slate-200'">{{ pct(b.margenEbitda) }}</td>
+                                        <td class="px-4 py-2.5 text-right font-bold" :class="b.margenEbitda < 0 ? 'text-red-700 dark:text-red-300' : 'text-foreground/80 '">{{ pct(b.margenEbitda) }}</td>
                                         <td class="px-4 py-2.5 text-center"><EbitdaBadge :categoria="b.categoria" /></td>
                                     </tr>
                                 </tbody>
                             </table>
                         </div>
                     </template>
-                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-white dark:bg-card p-6 shadow-sm">
-                        <p class="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Sucursal histórica del colaborador en este periodo</p>
-                        <p class="mt-1 text-2xl font-black text-slate-900 dark:text-slate-50">{{ activeScope.branch_name ?? 'Sin sucursal' }}</p>
-                        <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">No se muestra el ranking general de sucursales bajo alcance de colaborador — solo su sucursal de asignación en este periodo. Para ver el detalle completo de esa sucursal, selecciónala directamente en el filtro.</p>
+                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-sm">
+                        <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Sucursal histórica del colaborador en este periodo</p>
+                        <p class="mt-1 text-2xl font-semibold text-foreground">{{ activeScope.branch_name ?? 'Sin sucursal' }}</p>
+                        <p class="mt-3 text-xs text-muted-foreground">No se muestra el ranking general de sucursales bajo alcance de colaborador — solo su sucursal de asignación en este periodo. Para ver el detalle completo de esa sucursal, selecciónala directamente en el filtro.</p>
                     </div>
                     <EmptyState v-else title="Sin sucursales para este filtro" description="Ajusta o limpia los filtros para ver datos por sucursal." />
                 </div>
@@ -2579,18 +2600,18 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         <ChartCard title="Colocación por producto" :series="colocacionProductoSeries" :options="colocacionProductoOptions" type="donut" :height="280" />
                         <ChartCard title="Colocación por sucursal" :series="colocacionSucursalSeries" :options="colocacionSucursalOptions" type="donut" :height="280" />
                     </div>
-                    <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Ranking por producto (colocación)</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Ranking por producto (colocación)</h3></div>
                         <table v-if="productosSorted.length" class="w-full text-sm">
-                            <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Producto</th><th class="px-4 py-3 text-right">Operaciones</th><th class="px-4 py-3 text-right">Colocación</th><th class="px-4 py-3 text-right">Recuperación</th></tr>
                             </thead>
                             <tbody>
-                                <tr v-for="p in productosSorted" :key="p.producto" class="cursor-pointer border-t hover:bg-slate-50 dark:hover:bg-slate-800/40"
-                                    :class="vfProduct === p.producto ? 'bg-indigo-50 dark:bg-indigo-500/10' : ''" @click="vfProduct = vfProduct === p.producto ? '' : p.producto">
+                                <tr v-for="p in productosSorted" :key="p.producto" class="cursor-pointer border-t hover:bg-muted"
+                                    :class="vfProduct === p.producto ? 'bg-accent ' : ''" @click="vfProduct = vfProduct === p.producto ? '' : p.producto">
                                     <td class="px-4 py-2.5 font-bold">{{ p.producto }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ num(p.operaciones) }}</td>
-                                    <td class="px-4 py-2.5 text-right font-black">{{ money(p.colocacion) }}</td>
+                                    <td class="px-4 py-2.5 text-right font-semibold">{{ money(p.colocacion) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(p.recuperacion ?? 0) }}</td>
                                 </tr>
                             </tbody>
@@ -2599,10 +2620,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- A) Recuperación por componente -->
-                    <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">A) Recuperación por componente</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">A) Recuperación por componente</h3></div>
                         <table class="w-full text-sm">
-                            <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Componente</th><th class="px-4 py-3 text-right">Monto</th><th class="px-4 py-3 text-right">% del total</th></tr>
                             </thead>
                             <tbody>
@@ -2617,23 +2638,23 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                         { label: 'Excedentes recuperados', value: ingrExcedente },
                                         { label: 'Seguro CRECE reconocido (30%)', value: ingrCrece30 },
                                         ...ingrOtrosDetalle,
-                                    ].filter(c => c.value !== 0)" :key="c.label" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                    ].filter(c => c.value !== 0)" :key="c.label" class="border-t hover:bg-muted">
                                     <td class="px-4 py-2.5 font-semibold">{{ c.label }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(c.value) }}</td>
-                                    <td class="px-4 py-2.5 text-right text-slate-500 dark:text-slate-400">{{ recGlobal > 0 ? (c.value / recGlobal * 100).toFixed(1) : '0.0' }}%</td>
+                                    <td class="px-4 py-2.5 text-right text-muted-foreground">{{ recGlobal > 0 ? (c.value / recGlobal * 100).toFixed(1) : '0.0' }}%</td>
                                 </tr>
                             </tbody>
-                            <tfoot class="bg-slate-100 dark:bg-slate-800 font-black text-xs">
+                            <tfoot class="bg-muted font-semibold text-xs">
                                 <tr><td class="px-4 py-2.5 uppercase tracking-wider">Total recuperación</td><td class="px-4 py-2.5 text-right">{{ money(recGlobal) }}</td><td class="px-4 py-2.5 text-right">100%</td></tr>
                             </tfoot>
                         </table>
                     </div>
 
                     <!-- B) Recuperación por sucursal -->
-                    <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">B) Recuperación por sucursal</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">B) Recuperación por sucursal</h3></div>
                         <table class="w-full text-sm">
-                            <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                 <tr>
                                     <th class="px-4 py-3 text-left">Sucursal</th><th class="px-4 py-3 text-right">Capital</th><th class="px-4 py-3 text-right">Intereses</th>
                                     <th class="px-4 py-3 text-right">Impuestos</th><th class="px-4 py-3 text-right">Moratorios</th><th class="px-4 py-3 text-right">Cargos adic.</th>
@@ -2643,7 +2664,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="r in recuperacionPorSucursal" :key="r.sucursal" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                <tr v-for="r in recuperacionPorSucursal" :key="r.sucursal" class="border-t hover:bg-muted">
                                     <td class="px-4 py-2.5 font-bold">{{ r.sucursal }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(r.capital) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(r.interes) }}</td>
@@ -2655,20 +2676,20 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     <td class="px-4 py-2.5 text-right">{{ money(r.excedente) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(r.seguro_crece_30) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(r.otros) }}</td>
-                                    <td class="px-4 py-2.5 text-right font-black">{{ money(r.total) }}</td>
+                                    <td class="px-4 py-2.5 text-right font-semibold">{{ money(r.total) }}</td>
                                 </tr>
                             </tbody>
-                            <tfoot class="bg-slate-100 dark:bg-slate-800 font-black text-xs">
+                            <tfoot class="bg-muted font-semibold text-xs">
                                 <tr><td class="px-4 py-2.5 uppercase tracking-wider">Total</td><td colspan="10"></td><td class="px-4 py-2.5 text-right">{{ money(recGlobal) }}</td></tr>
                             </tfoot>
                         </table>
                     </div>
 
                     <!-- C) Recuperación por producto -->
-                    <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">C) Recuperación por producto</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">C) Recuperación por producto</h3></div>
                         <table v-if="recuperacionPorProducto.length" class="w-full text-sm">
-                            <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                 <tr>
                                     <th class="px-4 py-3 text-left">Producto</th><th class="px-4 py-3 text-right">Capital</th><th class="px-4 py-3 text-right">Intereses</th>
                                     <th class="px-4 py-3 text-right">Impuestos</th><th class="px-4 py-3 text-right">Moratorios</th><th class="px-4 py-3 text-right">Cargos adic.</th>
@@ -2677,7 +2698,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="p in recuperacionPorProducto" :key="p.producto" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                <tr v-for="p in recuperacionPorProducto" :key="p.producto" class="border-t hover:bg-muted">
                                     <td class="px-4 py-2.5 font-bold">{{ p.producto }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(p.capital) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(p.interes) }}</td>
@@ -2688,10 +2709,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     <td class="px-4 py-2.5 text-right">{{ money(p.excedente) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(p.seguro_crece_30) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(p.otros) }}</td>
-                                    <td class="px-4 py-2.5 text-right font-black">{{ money(p.total) }}</td>
+                                    <td class="px-4 py-2.5 text-right font-semibold">{{ money(p.total) }}</td>
                                 </tr>
                             </tbody>
-                            <tfoot class="bg-slate-100 dark:bg-slate-800 font-black text-xs">
+                            <tfoot class="bg-muted font-semibold text-xs">
                                 <tr><td class="px-4 py-2.5 uppercase tracking-wider">Total</td><td colspan="9"></td><td class="px-4 py-2.5 text-right">{{ money(recGlobal) }}</td></tr>
                             </tfoot>
                         </table>
@@ -2709,14 +2730,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                          atribuido por Observación/Justificación) + manual ("Gasto general por
                          gestor" de Etapa 4) — DOS FUENTES QUE SE SUMAN, nunca una reemplaza a la
                          otra. Ver RadiographySnapshotBuilder::buildEmployeeExpenseDetail(). -->
-                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3">
-                            <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Gastos operativos / OPEX del colaborador</h3>
+                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="border-b bg-muted/50 px-5 py-3">
+                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Gastos operativos / OPEX del colaborador</h3>
                         </div>
                         <div class="overflow-x-auto">
                             <table class="w-full text-xs">
                                 <thead>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30 text-slate-500 dark:text-slate-400">
+                                    <tr class="border-b bg-muted/50 text-muted-foreground">
                                         <th class="px-4 py-2 text-left font-bold">Concepto</th>
                                         <th class="px-4 py-2 text-left font-bold">Fuente</th>
                                         <th class="px-4 py-2 text-right font-bold">Monto</th>
@@ -2724,25 +2745,25 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </thead>
                                 <tbody>
                                     <tr v-for="item in gastosDetail?.automatic_items ?? []" :key="item.concept" class="border-b last:border-0">
-                                        <td class="px-4 py-1.5 text-slate-700 dark:text-slate-200">{{ item.concept }}</td>
-                                        <td class="px-4 py-1.5 text-slate-500 dark:text-slate-400">Gasto detectado automáticamente</td>
+                                        <td class="px-4 py-1.5 text-foreground/80">{{ item.concept }}</td>
+                                        <td class="px-4 py-1.5 text-muted-foreground">Gasto detectado automáticamente</td>
                                         <td class="px-4 py-1.5 text-right font-semibold">{{ money(item.amount) }}</td>
                                     </tr>
                                     <tr v-if="!(gastosDetail?.automatic_items ?? []).length">
-                                        <td colspan="3" class="px-4 py-3 text-center text-slate-400 dark:text-slate-500">Sin gastos detectados automáticamente para este colaborador.</td>
+                                        <td colspan="3" class="px-4 py-3 text-center text-muted-foreground">Sin gastos detectados automáticamente para este colaborador.</td>
                                     </tr>
                                 </tbody>
                                 <tfoot>
-                                    <tr class="border-t bg-slate-50/70 dark:bg-slate-800/35 font-bold">
+                                    <tr class="border-t bg-muted/50 font-bold">
                                         <td class="px-4 py-2" colspan="2">Subtotal automático</td>
                                         <td class="px-4 py-2 text-right">{{ money(gastosDetail?.automatic_total ?? 0) }}</td>
                                     </tr>
                                     <tr v-if="(gastosDetail?.manual_total ?? 0) > 0">
-                                        <td class="px-4 py-2 text-slate-700 dark:text-slate-200">{{ gastosDetail?.manual_notes || 'Gasto adicional registrado' }}</td>
-                                        <td class="px-4 py-2 text-slate-500 dark:text-slate-400">Ajuste manual del reporte</td>
+                                        <td class="px-4 py-2 text-foreground/80">{{ gastosDetail?.manual_notes || 'Gasto adicional registrado' }}</td>
+                                        <td class="px-4 py-2 text-muted-foreground">Ajuste manual del reporte</td>
                                         <td class="px-4 py-2 text-right font-semibold">{{ money(gastosDetail?.manual_total ?? 0) }}</td>
                                     </tr>
-                                    <tr class="border-t-2 bg-amber-50 dark:bg-amber-500/10 font-black text-amber-800 dark:text-amber-300">
+                                    <tr class="border-t-2 bg-amber-50 dark:bg-amber-500/10 font-semibold text-amber-800 dark:text-amber-300">
                                         <td class="px-4 py-2.5" colspan="2">TOTAL OPEX GESTOR</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(gastosDetail?.total ?? 0) }}</td>
                                     </tr>
@@ -2756,31 +2777,31 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         <ChartCard title="Top categorías de gasto" :series="gastosPorCategoriaSeries" :options="gastosPorCategoriaOptions" type="donut" :height="300" />
                     </div>
 
-                    <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                        <div class="flex items-center justify-between border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3">
-                            <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Gastos por sucursal — detalle</h3>
+                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="flex items-center justify-between border-b bg-muted/50 px-5 py-3">
+                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Gastos por sucursal — detalle</h3>
                             <div class="relative">
-                                <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+                                <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                                 <input v-model="gastosSearch" type="text" placeholder="Buscar sucursal o concepto…"
-                                       class="w-56 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card py-1.5 pl-8 pr-2 text-xs focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100" />
+                                       class="w-56 rounded-xl border border-border bg-card py-1.5 pl-8 pr-2 text-xs focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30" />
                             </div>
                         </div>
                         <div v-if="gastosTree.length">
                             <div v-for="g in gastosTree" :key="g.sucursal" class="border-b last:border-0">
                                 <button @click="expandedGastosBranch = expandedGastosBranch === g.sucursal ? null : g.sucursal"
-                                        class="flex w-full items-center justify-between px-5 py-2.5 text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
-                                    <span class="flex items-center gap-2"><Building2 class="size-3.5 text-slate-400 dark:text-slate-500" /> {{ g.sucursal }}</span>
+                                        class="flex w-full items-center justify-between px-5 py-2.5 text-sm font-bold text-foreground hover:bg-muted transition">
+                                    <span class="flex items-center gap-2"><Building2 class="size-3.5 text-muted-foreground" /> {{ g.sucursal }}</span>
                                     <span class="flex items-center gap-3">
                                         {{ money(g.total) }}
-                                        <ChevronDown v-if="expandedGastosBranch !== g.sucursal" class="size-3.5 text-slate-400 dark:text-slate-500" />
-                                        <ChevronUp v-else class="size-3.5 text-slate-400 dark:text-slate-500" />
+                                        <ChevronDown v-if="expandedGastosBranch !== g.sucursal" class="size-3.5 text-muted-foreground" />
+                                        <ChevronUp v-else class="size-3.5 text-muted-foreground" />
                                     </span>
                                 </button>
                                 <table v-if="expandedGastosBranch === g.sucursal && g.conceptos.length" class="w-full text-xs">
                                     <tbody>
-                                        <tr v-for="c in g.conceptos" :key="c.concepto" class="border-t bg-slate-50/60 dark:bg-slate-800/30">
-                                            <td class="px-8 py-1.5 text-slate-600 dark:text-slate-300">{{ c.concepto }}</td>
-                                            <td class="px-5 py-1.5 text-right font-semibold text-slate-700 dark:text-slate-200">{{ money(c.total) }}</td>
+                                        <tr v-for="c in g.conceptos" :key="c.concepto" class="border-t bg-muted/50">
+                                            <td class="px-8 py-1.5 text-muted-foreground">{{ c.concepto }}</td>
+                                            <td class="px-5 py-1.5 text-right font-semibold text-foreground/80">{{ money(c.total) }}</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -2790,17 +2811,17 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- ── Fondeos entre sucursales operativas ── -->
-                    <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3 flex items-center justify-between">
+                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="border-b bg-muted/50 px-5 py-3 flex items-center justify-between">
                             <div>
-                                <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Fondeos entre sucursales operativas</h3>
+                                <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Fondeos entre sucursales operativas</h3>
                             </div>
-                            <span class="text-xs font-black text-slate-700 dark:text-slate-200">{{ money(fondeoOperTotal) }}</span>
+                            <span class="text-xs font-semibold text-foreground/80">{{ money(fondeoOperTotal) }}</span>
                         </div>
                         <div v-if="fondeoOperDetalle.length" class="overflow-x-auto">
                             <table class="w-full text-xs">
                                 <thead>
-                                    <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30 text-slate-500 dark:text-slate-400">
+                                    <tr class="border-b bg-muted/50 text-muted-foreground">
                                         <th class="px-4 py-2 text-left font-bold">Fecha</th>
                                         <th class="px-4 py-2 text-left font-bold">Fondea (origen)</th>
                                         <th class="px-4 py-2 text-left font-bold">Recibe (destino)</th>
@@ -2809,12 +2830,12 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(f, i) in fondeoOperDetalle" :key="i" class="border-b last:border-0" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/50 dark:bg-slate-800/25'">
-                                        <td class="px-4 py-1.5 text-slate-500 dark:text-slate-400">{{ f.fecha || '—' }}</td>
-                                        <td class="px-4 py-1.5 text-slate-700 dark:text-slate-200 font-medium">{{ f.sucursal_origen }}</td>
-                                        <td class="px-4 py-1.5 text-slate-700 dark:text-slate-200 font-medium">{{ f.sucursal_destino }}</td>
-                                        <td class="px-4 py-1.5 text-right font-semibold text-slate-800 dark:text-slate-100">{{ money(f.monto) }}</td>
-                                        <td class="px-4 py-1.5 text-slate-500 dark:text-slate-400 text-xs">{{ f.observacion || '—' }}</td>
+                                    <tr v-for="(f, i) in fondeoOperDetalle" :key="i" class="border-b last:border-0" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
+                                        <td class="px-4 py-1.5 text-muted-foreground">{{ f.fecha || '—' }}</td>
+                                        <td class="px-4 py-1.5 text-foreground/80 font-medium">{{ f.sucursal_origen }}</td>
+                                        <td class="px-4 py-1.5 text-foreground/80 font-medium">{{ f.sucursal_destino }}</td>
+                                        <td class="px-4 py-1.5 text-right font-semibold text-foreground">{{ money(f.monto) }}</td>
+                                        <td class="px-4 py-1.5 text-muted-foreground text-xs">{{ f.observacion || '—' }}</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -2823,13 +2844,13 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- ── Excedentes / envío a CORPORATIVO ── -->
-                    <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden" v-if="excedentesTotal > 0 || excedentesDetalle.length">
+                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden" v-if="excedentesTotal > 0 || excedentesDetalle.length">
                         <div class="border-b bg-amber-50 dark:bg-amber-500/10 px-5 py-3 flex items-center justify-between">
                             <div>
-                                <h3 class="text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">Excedente enviado a corporativo</h3>
+                                <h3 class="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">Excedente enviado a corporativo</h3>
                                 <p class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Movimientos de efectivo enviados a corporativo — no afectan EBITDA ni OPEX</p>
                             </div>
-                            <span class="text-xs font-black text-amber-800 dark:text-amber-300">{{ money(excedentesTotal) }}</span>
+                            <span class="text-xs font-semibold text-amber-800 dark:text-amber-300">{{ money(excedentesTotal) }}</span>
                         </div>
                         <div v-if="excedentesDetalle.length" class="overflow-x-auto">
                             <table class="w-full text-xs">
@@ -2843,30 +2864,30 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(f, i) in excedentesDetalle" :key="i" class="border-b last:border-0" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-amber-50/30 dark:bg-amber-500/10'">
-                                        <td class="px-4 py-1.5 text-slate-500 dark:text-slate-400">{{ f.fecha || '—' }}</td>
-                                        <td class="px-4 py-1.5 text-slate-700 dark:text-slate-200 font-medium">{{ f.sucursal_origen }}</td>
+                                    <tr v-for="(f, i) in excedentesDetalle" :key="i" class="border-b last:border-0" :class="i % 2 === 0 ? 'bg-card ' : 'bg-amber-50/30 dark:bg-amber-500/10'">
+                                        <td class="px-4 py-1.5 text-muted-foreground">{{ f.fecha || '—' }}</td>
+                                        <td class="px-4 py-1.5 text-foreground/80 font-medium">{{ f.sucursal_origen }}</td>
                                         <td class="px-4 py-1.5 font-semibold text-amber-700 dark:text-amber-300">{{ f.destino }}</td>
-                                        <td class="px-4 py-1.5 text-right font-semibold text-slate-800 dark:text-slate-100">{{ money(f.monto) }}</td>
-                                        <td class="px-4 py-1.5 text-slate-500 dark:text-slate-400 text-xs">{{ f.observacion || '—' }}</td>
+                                        <td class="px-4 py-1.5 text-right font-semibold text-foreground">{{ money(f.monto) }}</td>
+                                        <td class="px-4 py-1.5 text-muted-foreground text-xs">{{ f.observacion || '—' }}</td>
                                     </tr>
                                 </tbody>
                             </table>
                         </div>
                     </div>
 
-                    <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3">
-                            <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Seguros y coberturas canalizadas</h3>
+                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="border-b bg-muted/50 px-5 py-3">
+                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Seguros y coberturas canalizadas</h3>
                         </div>
                         <table class="w-full text-sm">
                             <tbody>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Cobertura Savehearts</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(segurosSaveheartsBruto) }}</td></tr>
-                                <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Cobertura Crédito Grupal / Comadres</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(segurosComadresBruto) }}</td></tr>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Seguro CRECE total</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(segurosCreceBruto) }}</td></tr>
-                                <tr class="border-b bg-slate-50/60 dark:bg-slate-800/30"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Seguro CRECE reconocido como ingreso MR Lana (30%)</td><td class="px-5 py-2.5 text-right font-black text-emerald-700 dark:text-emerald-300">{{ money(segurosCrece30) }}</td></tr>
-                                <tr class="border-b"><td class="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-medium">Seguro CRECE canalizado a aseguradora (70%)</td><td class="px-5 py-2.5 text-right font-black text-slate-950 dark:text-slate-50">{{ money(segurosCrece70) }}</td></tr>
-                                <tr class="border-b-2 border-indigo-200 dark:border-indigo-500/20 bg-indigo-50 dark:bg-indigo-500/10"><td class="px-5 py-2.5 font-black text-indigo-900 dark:text-indigo-200">Total canalizado a aseguradora</td><td class="px-5 py-2.5 text-right font-black text-indigo-900 dark:text-indigo-200">{{ money(segurosPuenteTotal) }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Cobertura Savehearts</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(segurosSaveheartsBruto) }}</td></tr>
+                                <tr class="border-b bg-muted/50"><td class="px-5 py-2.5 text-muted-foreground font-medium">Cobertura Crédito Grupal / Comadres</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(segurosComadresBruto) }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Seguro CRECE total</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(segurosCreceBruto) }}</td></tr>
+                                <tr class="border-b bg-muted/50"><td class="px-5 py-2.5 text-muted-foreground font-medium">Seguro CRECE reconocido como ingreso MR Lana (30%)</td><td class="px-5 py-2.5 text-right font-semibold text-emerald-700 dark:text-emerald-300">{{ money(segurosCrece30) }}</td></tr>
+                                <tr class="border-b"><td class="px-5 py-2.5 text-muted-foreground font-medium">Seguro CRECE canalizado a aseguradora (70%)</td><td class="px-5 py-2.5 text-right font-semibold text-foreground">{{ money(segurosCrece70) }}</td></tr>
+                                <tr class="border-b-2 border-primary/30 bg-accent"><td class="px-5 py-2.5 font-semibold text-primary">Total canalizado a aseguradora</td><td class="px-5 py-2.5 text-right font-semibold text-primary">{{ money(segurosPuenteTotal) }}</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -2887,28 +2908,28 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
                     <ChartCard title="Nómina por sucursal" :series="nominaPorSucursalSeries" :options="nominaPorSucursalOptions" type="donut" :height="320" />
 
-                    <div class="rounded-2xl border bg-white dark:bg-card shadow-sm overflow-hidden">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Nómina por sucursal — detalle</h3></div>
+                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Nómina por sucursal — detalle</h3></div>
                         <div v-if="nominaTree.length">
                             <div v-for="n in nominaTree" :key="n.sucursal" class="border-b last:border-0">
                                 <button @click="expandedNominaBranch = expandedNominaBranch === n.sucursal ? null : n.sucursal"
-                                        class="flex w-full items-center justify-between px-5 py-2.5 text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
-                                    <span class="flex items-center gap-2"><Building2 class="size-3.5 text-slate-400 dark:text-slate-500" /> {{ n.sucursal }}</span>
+                                        class="flex w-full items-center justify-between px-5 py-2.5 text-sm font-bold text-foreground hover:bg-muted transition">
+                                    <span class="flex items-center gap-2"><Building2 class="size-3.5 text-muted-foreground" /> {{ n.sucursal }}</span>
                                     <span class="flex items-center gap-3 text-right">
-                                        <span class="text-xs text-slate-400 dark:text-slate-500">Neto {{ money(n.neto) }}</span>
+                                        <span class="text-xs text-muted-foreground">Neto {{ money(n.neto) }}</span>
                                         {{ money(n.total) }}
-                                        <ChevronDown v-if="expandedNominaBranch !== n.sucursal" class="size-3.5 text-slate-400 dark:text-slate-500" />
-                                        <ChevronUp v-else class="size-3.5 text-slate-400 dark:text-slate-500" />
+                                        <ChevronDown v-if="expandedNominaBranch !== n.sucursal" class="size-3.5 text-muted-foreground" />
+                                        <ChevronUp v-else class="size-3.5 text-muted-foreground" />
                                     </span>
                                 </button>
                                 <table v-if="expandedNominaBranch === n.sucursal" class="w-full text-xs">
                                     <tbody>
-                                        <tr v-for="c in n.conceptos" :key="c.concepto" class="border-t bg-slate-50/60 dark:bg-slate-800/30">
-                                            <td class="px-8 py-1.5 text-slate-600 dark:text-slate-300">
+                                        <tr v-for="c in n.conceptos" :key="c.concepto" class="border-t bg-muted/50">
+                                            <td class="px-8 py-1.5 text-muted-foreground">
                                                 {{ c.concepto }}
-                                                <span v-if="NOI_DEDUCTION_LABELS.has(c.concepto)" class="ml-1.5 text-[10px] uppercase tracking-wide text-slate-400 dark:text-slate-500">(informativo, no afecta)</span>
+                                                <span v-if="NOI_DEDUCTION_LABELS.has(c.concepto)" class="ml-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">(informativo, no afecta)</span>
                                             </td>
-                                            <td class="px-5 py-1.5 text-right font-semibold" :class="NOI_DEDUCTION_LABELS.has(c.concepto) ? 'text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200'">
+                                            <td class="px-5 py-1.5 text-right font-semibold" :class="NOI_DEDUCTION_LABELS.has(c.concepto) ? 'text-muted-foreground ' : 'text-foreground/80 '">
                                                 {{ money(c.total) }}
                                             </td>
                                         </tr>
@@ -2934,14 +2955,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
                     <ChartCard title="Top sucursales con más cartera vencida" :series="topVencidaSeries" :options="topVencidaOptions" type="donut" :height="300" />
 
-                    <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Distribución por días vencidos</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Distribución por días vencidos</h3></div>
                         <table v-if="snap.sections?.portfolio_buckets?.length" class="w-full text-sm">
-                            <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Bucket</th><th class="px-4 py-3 text-right">Contratos</th><th class="px-4 py-3 text-right">Balance</th><th class="px-4 py-3 text-right">Vencido</th></tr>
                             </thead>
                             <tbody>
-                                <tr v-for="b in snap.sections.portfolio_buckets" :key="b.label" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                <tr v-for="b in snap.sections.portfolio_buckets" :key="b.label" class="border-t hover:bg-muted">
                                     <td class="px-4 py-2.5 font-semibold">{{ b.label }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ num(b.contratos) }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ money(b.balance) }}</td>
@@ -2953,14 +2974,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- Desglose por componente -->
-                    <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
-                        <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3 flex items-center justify-between">
-                            <h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Desglose por componente / bucket</h3>
-                            <span class="text-xs font-bold text-slate-700 dark:text-slate-200">Total vencida: {{ money(kpiMora) }}</span>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="border-b bg-muted/50 px-5 py-3 flex items-center justify-between">
+                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Desglose por componente / bucket</h3>
+                            <span class="text-xs font-bold text-foreground/80">Total vencida: {{ money(kpiMora) }}</span>
                         </div>
                         <template v-if="hasMoraComponents">
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Bucket</th>
                                         <th class="px-4 py-3 text-right">Capital atrasado</th>
@@ -2973,7 +2994,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="b in moraComponentes" :key="b.key" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                    <tr v-for="b in moraComponentes" :key="b.key" class="border-t hover:bg-muted">
                                         <td class="px-4 py-2.5 font-semibold">{{ b.label }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.capital) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.interes) }}</td>
@@ -2981,10 +3002,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                         <td class="px-4 py-2.5 text-right">{{ money(b.moratorio) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.imp_moratorio) }}</td>
                                         <td class="px-4 py-2.5 text-right font-bold text-red-700 dark:text-red-300">{{ money(b.total) }}</td>
-                                        <td class="px-4 py-2.5 text-right text-slate-600 dark:text-slate-300">{{ b.pct.toFixed(1) }}%</td>
+                                        <td class="px-4 py-2.5 text-right text-muted-foreground">{{ b.pct.toFixed(1) }}%</td>
                                     </tr>
                                 </tbody>
-                                <tfoot class="bg-slate-100 dark:bg-slate-800 font-black text-xs">
+                                <tfoot class="bg-muted font-semibold text-xs">
                                     <tr>
                                         <td class="px-4 py-2.5 uppercase tracking-wider">Total mora</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(moraTotalesComponentes.capital) }}</td>
@@ -2998,7 +3019,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </tfoot>
                             </table>
                         </template>
-                        <p v-else class="px-5 py-4 text-xs italic text-slate-400 dark:text-slate-500">
+                        <p v-else class="px-5 py-4 text-xs italic text-muted-foreground">
                             Desglose por bucket de antigüedad no disponible para este alcance — el total de cartera vencida ({{ money(kpiMora) }}) ya está arriba, en Resumen y en el KPI.
                         </p>
                     </div>
@@ -3020,9 +3041,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             <KpiCard label="Cobros vencidos" :value="money(ecData?.vencido?.total ?? 0)" :icon="AlertTriangle" tone="red" />
                         </div>
 
-                        <div v-if="efectividad" class="rounded-2xl border bg-white dark:bg-card px-5 py-4 text-sm shadow-sm">
-                            <p class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Cómo se calcula la efectividad</p>
-                            <p class="mt-1.5 text-slate-600 dark:text-slate-300">
+                        <div v-if="efectividad" class="rounded-2xl border bg-card px-5 py-4 text-sm shadow-sm">
+                            <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cómo se calcula la efectividad</p>
+                            <p class="mt-1.5 text-muted-foreground">
                                 Recuperado de cartera en mora este periodo (<strong>{{ money(efectividad.recuperado_de_mora) }}</strong>)
                                 ÷ cartera en mora al cierre de
                                 <strong>{{ efectividad.periodo_anterior_label ?? 'el periodo anterior' }}</strong>
@@ -3033,10 +3054,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </p>
                         </div>
 
-                        <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
-                            <div class="border-b bg-slate-50 dark:bg-slate-800/40 px-5 py-3"><h3 class="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Cobranza por estatus del crédito</h3></div>
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cobranza por estatus del crédito</h3></div>
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Estatus</th>
                                         <th class="px-4 py-3 text-right">Contratos</th>
@@ -3049,7 +3070,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="s in ecStatus" :key="s.key" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                    <tr v-for="s in ecStatus" :key="s.key" class="border-t hover:bg-muted">
                                         <td class="px-4 py-2.5 font-semibold">{{ s.label }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ num(s.contratos ?? 0) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(s.capital ?? 0) }}</td>
@@ -3057,10 +3078,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                         <td class="px-4 py-2.5 text-right">{{ money(s.impuesto ?? 0) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(s.moratorios ?? 0) }}</td>
                                         <td class="px-4 py-2.5 text-right font-bold" :class="s.key === 'vencido' ? 'text-red-700 dark:text-red-300' : s.key === 'vigente' ? 'text-emerald-700 dark:text-emerald-300' : ''">{{ money(s.total ?? 0) }}</td>
-                                        <td class="px-4 py-2.5 text-right text-slate-600 dark:text-slate-300">{{ ecTotal.total > 0 ? ((s.total ?? 0) / ecTotal.total * 100).toFixed(1) : '0.0' }}%</td>
+                                        <td class="px-4 py-2.5 text-right text-muted-foreground">{{ ecTotal.total > 0 ? ((s.total ?? 0) / ecTotal.total * 100).toFixed(1) : '0.0' }}%</td>
                                     </tr>
                                 </tbody>
-                                <tfoot class="bg-slate-100 dark:bg-slate-800 font-black text-xs">
+                                <tfoot class="bg-muted font-semibold text-xs">
                                     <tr>
                                         <td class="px-4 py-2.5 uppercase tracking-wider">Total</td>
                                         <td class="px-4 py-2.5 text-right">{{ num(ecTotal.contratos) }}</td>
@@ -3087,17 +3108,17 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 <div v-show="activeTab === 'productos'" class="space-y-5">
                     <template v-if="productosRows.length">
                         <ChartCard title="Colocación por producto" :series="colocacionProductoSeries" :options="colocacionProductoOptions" type="donut" :height="300" />
-                        <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr><th class="px-4 py-3 text-left">Producto</th><th class="px-4 py-3 text-right">Operaciones</th><th class="px-4 py-3 text-right">Colocación</th><th class="px-4 py-3 text-right">Recuperación</th><th class="px-4 py-3 text-right">Cartera</th></tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="p in productosSorted" :key="p.producto" class="cursor-pointer border-t hover:bg-slate-50 dark:hover:bg-slate-800/40"
-                                        :class="vfProduct === p.producto ? 'bg-indigo-50 dark:bg-indigo-500/10' : ''" @click="vfProduct = vfProduct === p.producto ? '' : p.producto">
+                                    <tr v-for="p in productosSorted" :key="p.producto" class="cursor-pointer border-t hover:bg-muted"
+                                        :class="vfProduct === p.producto ? 'bg-accent ' : ''" @click="vfProduct = vfProduct === p.producto ? '' : p.producto">
                                         <td class="px-4 py-2.5 font-bold">{{ p.producto }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ num(p.operaciones) }}</td>
-                                        <td class="px-4 py-2.5 text-right font-black">{{ money(p.colocacion) }}</td>
+                                        <td class="px-4 py-2.5 text-right font-semibold">{{ money(p.colocacion) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(p.recuperacion ?? 0) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(p.cartera ?? 0) }}</td>
                                     </tr>
@@ -3125,13 +3146,13 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <!-- Gráfica fondeos por origen -->
                     <div v-if="fondeosPorOrigen.length" class="grid gap-4 lg:grid-cols-2">
                         <ChartCard title="Fondeos por sucursal origen" :series="fondeosPorOrigenSeries" :options="fondeosPorOrigenOptions" type="donut" :height="280" />
-                        <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr><th class="px-4 py-3 text-left">Sucursal origen</th><th class="px-4 py-3 text-right">Total fondeado</th></tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="r in fondeosPorOrigen" :key="r.sucursal" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                    <tr v-for="r in fondeosPorOrigen" :key="r.sucursal" class="border-t hover:bg-muted">
                                         <td class="px-4 py-2.5 font-bold">{{ r.sucursal }}</td>
                                         <td class="px-4 py-2.5 text-right font-semibold">{{ money(r.monto) }}</td>
                                     </tr>
@@ -3140,17 +3161,17 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </div>
                     </div>
                     <!-- Excedentes por sucursal -->
-                    <div v-if="corpFundingRows.length" class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                    <div v-if="corpFundingRows.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                         <div class="flex items-center justify-between px-5 py-3 border-b bg-amber-50/60 dark:bg-amber-500/10">
                             <span class="font-bold text-sm text-amber-800 dark:text-amber-300">Excedente enviado a corporativo por sucursal</span>
-                            <span class="font-black text-sm text-amber-900 dark:text-amber-200">{{ money(excGlobal) }}</span>
+                            <span class="font-semibold text-sm text-amber-900 dark:text-amber-200">{{ money(excGlobal) }}</span>
                         </div>
                         <table class="w-full text-sm">
-                            <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Sucursal</th><th class="px-4 py-3 text-right">Total enviado</th></tr>
                             </thead>
                             <tbody>
-                                <tr v-for="r in corpFundingRows" :key="r.branch" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                <tr v-for="r in corpFundingRows" :key="r.branch" class="border-t hover:bg-muted">
                                     <td class="px-4 py-2.5 font-bold">{{ r.branch }}</td>
                                     <td class="px-4 py-2.5 text-right font-semibold text-amber-700 dark:text-amber-300">{{ money(r.total) }}</td>
                                 </tr>
@@ -3158,13 +3179,13 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </table>
                     </div>
                     <!-- Detalle completo fondeos -->
-                    <div v-if="fondeoDetalleRows.length" class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                    <div v-if="fondeoDetalleRows.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                         <div class="flex items-center justify-between px-5 py-3 border-b">
                             <span class="font-bold text-sm">Detalle de fondeos entre sucursales</span>
-                            <span class="font-black text-sm">{{ money(fondeoDetalleTotal) }}</span>
+                            <span class="font-semibold text-sm">{{ money(fondeoDetalleTotal) }}</span>
                         </div>
                         <table class="w-full text-sm">
-                            <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                 <tr>
                                     <th class="px-4 py-3 text-left">Fecha</th>
                                     <th class="px-4 py-3 text-left">Origen</th>
@@ -3174,11 +3195,11 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="(f, i) in fondeoDetalleRows" :key="i" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/40 dark:bg-slate-800/20'">
-                                    <td class="px-4 py-2 text-slate-500 dark:text-slate-400 text-xs">{{ f.fecha ?? '—' }}</td>
+                                <tr v-for="(f, i) in fondeoDetalleRows" :key="i" class="border-t hover:bg-muted" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
+                                    <td class="px-4 py-2 text-muted-foreground text-xs">{{ f.fecha ?? '—' }}</td>
                                     <td class="px-4 py-2 font-semibold">{{ f.sucursal_origen ?? '—' }}</td>
                                     <td class="px-4 py-2">{{ f.sucursal_destino ?? '—' }}</td>
-                                    <td class="px-4 py-2 text-xs text-slate-600 dark:text-slate-300">{{ f.responsable ?? '—' }}</td>
+                                    <td class="px-4 py-2 text-xs text-muted-foreground">{{ f.responsable ?? '—' }}</td>
                                     <td class="px-4 py-2 text-right font-semibold">{{ money(f.monto) }}</td>
                                 </tr>
                             </tbody>
@@ -3190,18 +3211,18 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                 <!-- ══════════ ROTACIÓN DE PERSONAL ══════════ -->
                 <div v-show="activeTab === 'rotacion'" class="space-y-5">
-                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-white dark:bg-card p-6 shadow-sm">
-                        <p class="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Rotación — no aplica a un alcance individual</p>
-                        <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">La plantilla y el índice de rotación son cifras de toda la empresa; no tiene sentido mostrarlas para un solo colaborador. Su estado en este periodo:</p>
+                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-sm">
+                        <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Rotación — no aplica a un alcance individual</p>
+                        <p class="mt-2 text-sm text-muted-foreground">La plantilla y el índice de rotación son cifras de toda la empresa; no tiene sentido mostrarlas para un solo colaborador. Su estado en este periodo:</p>
                         <div v-if="rotacionIndividual" class="mt-4 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
-                            <div><p class="text-xs text-slate-400 dark:text-slate-500">Estado</p><p class="font-black text-slate-900 dark:text-slate-50">{{ rotacionIndividual.estado }}</p></div>
-                            <div v-if="rotacionIndividual.sucursal"><p class="text-xs text-slate-400 dark:text-slate-500">Sucursal</p><p class="font-bold text-slate-700 dark:text-slate-200">{{ rotacionIndividual.sucursal }}</p></div>
-                            <div v-if="rotacionIndividual.motivo"><p class="text-xs text-slate-400 dark:text-slate-500">Detalle</p><p class="text-slate-600 dark:text-slate-300">{{ rotacionIndividual.motivo }}</p></div>
+                            <div><p class="text-xs text-muted-foreground">Estado</p><p class="font-semibold text-foreground">{{ rotacionIndividual.estado }}</p></div>
+                            <div v-if="rotacionIndividual.sucursal"><p class="text-xs text-muted-foreground">Sucursal</p><p class="font-bold text-foreground/80">{{ rotacionIndividual.sucursal }}</p></div>
+                            <div v-if="rotacionIndividual.motivo"><p class="text-xs text-muted-foreground">Detalle</p><p class="text-muted-foreground">{{ rotacionIndividual.motivo }}</p></div>
                         </div>
                     </div>
                     <template v-else-if="rotacionData">
                         <div class="flex items-center justify-between">
-                            <h3 class="text-lg font-bold text-slate-800 dark:text-slate-100">Rotación de personal</h3>
+                            <h3 class="text-lg font-bold text-foreground">Rotación de personal</h3>
                         </div>
                         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                             <KpiCard :label="`Plantilla ${rotacionMesAnteriorLabel || 'anterior'}`" :value="num(rotacionPrevCount)" :icon="Building2" tone="neutral" />
@@ -3217,12 +3238,12 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             <ChartCard title="Altas vs Bajas del periodo" :series="rotacionAltasBajasSeries" :options="rotacionAltasBajasOptions" type="donut" :height="280" />
                         </div>
 
-                        <div v-if="rotacionPorSucursal.length" class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div v-if="rotacionPorSucursal.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                             <div class="px-5 py-3 border-b">
                                 <span class="font-bold text-sm">Rotación de personal por sucursal</span>
                             </div>
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Sucursal</th>
                                         <th class="px-4 py-3 text-right">Plantilla anterior</th>
@@ -3234,14 +3255,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(r, i) in rotacionPorSucursal" :key="i" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/40 dark:bg-slate-800/20'">
+                                    <tr v-for="(r, i) in rotacionPorSucursal" :key="i" class="border-t hover:bg-muted" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
                                         <td class="px-4 py-2.5 font-bold">{{ r.sucursal }}</td>
-                                        <td class="px-4 py-2.5 text-right text-slate-500 dark:text-slate-400">{{ Number(r.plantilla_anterior ?? 0).toFixed(0) }}</td>
+                                        <td class="px-4 py-2.5 text-right text-muted-foreground">{{ Number(r.plantilla_anterior ?? 0).toFixed(0) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ Number(r.promedio_personal).toFixed(0) }}</td>
                                         <td class="px-4 py-2.5 text-right text-emerald-700 dark:text-emerald-300 font-medium">{{ r.altas ?? 0 }}</td>
                                         <td class="px-4 py-2.5 text-right text-red-700 dark:text-red-300 font-medium">{{ r.bajas }}</td>
                                         <td class="px-4 py-2.5 text-right font-semibold"
-                                            :class="(Number(r.promedio_personal) - Number(r.plantilla_anterior ?? 0)) < 0 ? 'text-red-700 dark:text-red-300' : (Number(r.promedio_personal) - Number(r.plantilla_anterior ?? 0)) > 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500 dark:text-slate-400'">
+                                            :class="(Number(r.promedio_personal) - Number(r.plantilla_anterior ?? 0)) < 0 ? 'text-red-700 dark:text-red-300' : (Number(r.promedio_personal) - Number(r.plantilla_anterior ?? 0)) > 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-muted-foreground '">
                                             {{ (Number(r.variacion_plantilla ?? (r.promedio_personal - (r.plantilla_anterior ?? 0))) >= 0 ? '+' : '') + Number(r.variacion_plantilla ?? (r.promedio_personal - (r.plantilla_anterior ?? 0))).toFixed(0) }}
                                         </td>
                                         <td class="px-4 py-2.5 text-right font-semibold" :class="Number(r.indice_rotacion) > 5 ? 'text-red-700 dark:text-red-300' : Number(r.indice_rotacion) > 2 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-700 dark:text-emerald-300'">
@@ -3251,14 +3272,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </tbody>
                             </table>
                         </div>
-                        <p v-else class="text-sm text-slate-500 dark:text-slate-400 italic text-center py-4">Sin desglose por sucursal disponible para este periodo.</p>
+                        <p v-else class="text-sm text-muted-foreground italic text-center py-4">Sin desglose por sucursal disponible para este periodo.</p>
 
-                        <div v-if="rotacionDetalleMensual.length" class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div v-if="rotacionDetalleMensual.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                             <div class="px-5 py-3 border-b">
                                 <span class="font-bold text-sm">Detalle mensual del periodo consolidado</span>
                             </div>
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Mes</th>
                                         <th class="px-4 py-3 text-right">Altas</th>
@@ -3268,7 +3289,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(d, i) in rotacionDetalleMensual" :key="i" class="border-t hover:bg-slate-50 dark:hover:bg-slate-800/40" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/40 dark:bg-slate-800/20'">
+                                    <tr v-for="(d, i) in rotacionDetalleMensual" :key="i" class="border-t hover:bg-muted" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
                                         <td class="px-4 py-2.5 font-bold">{{ d.mes }}</td>
                                         <td class="px-4 py-2.5 text-right text-emerald-700 dark:text-emerald-300 font-medium">{{ d.altas }}</td>
                                         <td class="px-4 py-2.5 text-right text-red-700 dark:text-red-300 font-medium">{{ d.bajas }}</td>
@@ -3279,46 +3300,46 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                         </div>
 
-                        <div v-if="rotacionDetalle" class="rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div v-if="rotacionDetalle" class="rounded-2xl border bg-card shadow-sm">
                             <button
                                 type="button"
                                 class="flex w-full items-center justify-between px-5 py-3.5"
                                 @click="rotacionAuditoriaAbierta = !rotacionAuditoriaAbierta"
                             >
-                                <span class="font-bold text-sm text-slate-700 dark:text-slate-200">Auditoría de rotación</span>
-                                <ChevronDown v-if="!rotacionAuditoriaAbierta" class="size-4 text-slate-400 dark:text-slate-500" />
-                                <ChevronUp v-else class="size-4 text-slate-400 dark:text-slate-500" />
+                                <span class="font-bold text-sm text-foreground/80">Auditoría de rotación</span>
+                                <ChevronDown v-if="!rotacionAuditoriaAbierta" class="size-4 text-muted-foreground" />
+                                <ChevronUp v-else class="size-4 text-muted-foreground" />
                             </button>
                             <div v-show="rotacionAuditoriaAbierta" class="border-t px-5 py-4 space-y-5">
                                 <div class="grid gap-4 md:grid-cols-2">
                                     <div>
-                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                                             Altas ({{ rotacionAltasLista.length }})
                                         </p>
                                         <div class="max-h-64 overflow-y-auto rounded-xl border">
                                             <table class="w-full text-xs">
                                                 <tbody>
-                                                    <tr v-for="(e, i) in rotacionAltasLista" :key="'alta-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/60 dark:bg-slate-800/30'">
+                                                    <tr v-for="(e, i) in rotacionAltasLista" :key="'alta-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
                                                         <td class="px-3 py-1.5 font-medium text-emerald-700 dark:text-emerald-300">{{ e.nombre }}</td>
-                                                        <td class="px-3 py-1.5 text-right text-slate-500 dark:text-slate-400">{{ e.sucursal }}</td>
+                                                        <td class="px-3 py-1.5 text-right text-muted-foreground">{{ e.sucursal }}</td>
                                                     </tr>
-                                                    <tr v-if="!rotacionAltasLista.length"><td class="px-3 py-3 text-center text-slate-400 dark:text-slate-500 italic">Sin altas en el periodo</td></tr>
+                                                    <tr v-if="!rotacionAltasLista.length"><td class="px-3 py-3 text-center text-muted-foreground italic">Sin altas en el periodo</td></tr>
                                                 </tbody>
                                             </table>
                                         </div>
                                     </div>
                                     <div>
-                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                                             Bajas ({{ rotacionBajasLista.length }})
                                         </p>
                                         <div class="max-h-64 overflow-y-auto rounded-xl border">
                                             <table class="w-full text-xs">
                                                 <tbody>
-                                                    <tr v-for="(e, i) in rotacionBajasLista" :key="'baja-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/60 dark:bg-slate-800/30'">
+                                                    <tr v-for="(e, i) in rotacionBajasLista" :key="'baja-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
                                                         <td class="px-3 py-1.5 font-medium text-red-700 dark:text-red-300">{{ e.nombre }}</td>
-                                                        <td class="px-3 py-1.5 text-right text-slate-500 dark:text-slate-400">{{ e.sucursal }}</td>
+                                                        <td class="px-3 py-1.5 text-right text-muted-foreground">{{ e.sucursal }}</td>
                                                     </tr>
-                                                    <tr v-if="!rotacionBajasLista.length"><td class="px-3 py-3 text-center text-slate-400 dark:text-slate-500 italic">Sin bajas en el periodo</td></tr>
+                                                    <tr v-if="!rotacionBajasLista.length"><td class="px-3 py-3 text-center text-muted-foreground italic">Sin bajas en el periodo</td></tr>
                                                 </tbody>
                                             </table>
                                         </div>
@@ -3326,33 +3347,33 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 </div>
                                 <div class="grid gap-4 md:grid-cols-2">
                                     <div>
-                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                                             Plantilla {{ rotacionMesAnteriorLabel }} ({{ rotacionMesAnteriorLista.length }})
                                         </p>
                                         <div class="max-h-64 overflow-y-auto rounded-xl border">
                                             <table class="w-full text-xs">
                                                 <tbody>
-                                                    <tr v-for="(e, i) in rotacionMesAnteriorLista" :key="'prev-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/60 dark:bg-slate-800/30'">
+                                                    <tr v-for="(e, i) in rotacionMesAnteriorLista" :key="'prev-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
                                                         <td class="px-3 py-1.5">{{ e.nombre }}</td>
-                                                        <td class="px-3 py-1.5 text-right text-slate-500 dark:text-slate-400">{{ e.sucursal }}</td>
+                                                        <td class="px-3 py-1.5 text-right text-muted-foreground">{{ e.sucursal }}</td>
                                                     </tr>
-                                                    <tr v-if="!rotacionMesAnteriorLista.length"><td class="px-3 py-3 text-center text-slate-400 dark:text-slate-500 italic">Sin datos del periodo anterior</td></tr>
+                                                    <tr v-if="!rotacionMesAnteriorLista.length"><td class="px-3 py-3 text-center text-muted-foreground italic">Sin datos del periodo anterior</td></tr>
                                                 </tbody>
                                             </table>
                                         </div>
                                     </div>
                                     <div>
-                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                        <p class="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                                             Plantilla {{ rotacionMesActualLabel }} ({{ rotacionMesActualLista.length }})
                                         </p>
                                         <div class="max-h-64 overflow-y-auto rounded-xl border">
                                             <table class="w-full text-xs">
                                                 <tbody>
-                                                    <tr v-for="(e, i) in rotacionMesActualLista" :key="'curr-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-white dark:bg-card' : 'bg-slate-50/60 dark:bg-slate-800/30'">
+                                                    <tr v-for="(e, i) in rotacionMesActualLista" :key="'curr-'+i" class="border-t first:border-t-0" :class="i % 2 === 0 ? 'bg-card ' : 'bg-muted/50 '">
                                                         <td class="px-3 py-1.5">{{ e.nombre }}</td>
-                                                        <td class="px-3 py-1.5 text-right text-slate-500 dark:text-slate-400">{{ e.sucursal }}</td>
+                                                        <td class="px-3 py-1.5 text-right text-muted-foreground">{{ e.sucursal }}</td>
                                                     </tr>
-                                                    <tr v-if="!rotacionMesActualLista.length"><td class="px-3 py-3 text-center text-slate-400 dark:text-slate-500 italic">Sin datos del periodo actual</td></tr>
+                                                    <tr v-if="!rotacionMesActualLista.length"><td class="px-3 py-3 text-center text-muted-foreground italic">Sin datos del periodo actual</td></tr>
                                                 </tbody>
                                             </table>
                                         </div>
@@ -3371,9 +3392,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             <ChartCard title="Distribución por categoría" :series="categoriaDonutSeries" :options="categoriaDonutOptions" type="donut" :height="280" class="lg:col-span-1" />
                             <ChartCard title="EBITDA por sucursal" :series="ebitdaPorSucursalSeries" :options="ebitdaPorSucursalOptions" type="donut" :height="280" class="lg:col-span-2" />
                         </div>
-                        <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                             <table class="w-full text-sm">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Sucursal</th>
                                         <th class="px-4 py-3 text-right">Recuperación</th>
@@ -3385,28 +3406,28 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="b in branchesFiltered" :key="b.nombre" class="cursor-pointer border-t hover:bg-slate-50 dark:hover:bg-slate-800/40"
-                                        :class="vfBranch === b.nombre ? 'bg-indigo-50 dark:bg-indigo-500/10' : ''" @click="vfBranch = vfBranch === b.nombre ? '' : b.nombre">
+                                    <tr v-for="b in branchesFiltered" :key="b.nombre" class="cursor-pointer border-t hover:bg-muted"
+                                        :class="vfBranch === b.nombre ? 'bg-accent ' : ''" @click="vfBranch = vfBranch === b.nombre ? '' : b.nombre">
                                         <td class="px-4 py-2.5 font-bold">{{ b.nombre }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.recuperacion) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.colocacion) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.gastos) }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ money(b.nomina) }}</td>
-                                        <td class="px-4 py-2.5 text-right font-black" :class="b.ebitda < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(b.ebitda) }}</td>
+                                        <td class="px-4 py-2.5 text-right font-semibold" :class="b.ebitda < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(b.ebitda) }}</td>
                                         <td class="px-4 py-2.5 text-center"><EbitdaBadge :categoria="b.categoria" /></td>
                                     </tr>
                                 </tbody>
                             </table>
                         </div>
-                        <p class="text-xs italic text-slate-400 dark:text-slate-500">EBITDA = Utilidad bruta (intereses + impuestos + moratorios + comisión por apertura + cargos adicionales + excedentes + 30% Seguro CRECE) − Gastos Totales (OPEX + Nómina y Capital Humano). No incluye capital recuperado.</p>
+                        <p class="text-xs italic text-muted-foreground">EBITDA = Utilidad bruta (intereses + impuestos + moratorios + comisión por apertura + cargos adicionales + excedentes + 30% Seguro CRECE) − Gastos Totales (OPEX + Nómina y Capital Humano). No incluye capital recuperado.</p>
                     </template>
-                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-white dark:bg-card p-6 shadow-sm">
-                        <p class="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Categoría EBITDA del colaborador</p>
+                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-sm">
+                        <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Categoría EBITDA del colaborador</p>
                         <div class="mt-3 flex flex-wrap items-center gap-4">
-                            <p class="text-2xl font-black" :class="kpiUtil < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(kpiUtil) }}</p>
+                            <p class="text-2xl font-semibold" :class="kpiUtil < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(kpiUtil) }}</p>
                             <EbitdaBadge :categoria="ebitdaCategoryOf(kpiUtil)" />
                         </div>
-                        <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">No se muestra la distribución de todas las sucursales bajo alcance de colaborador — solo su propia categoría, con los mismos umbrales que el reporte general.</p>
+                        <p class="mt-3 text-xs text-muted-foreground">No se muestra la distribución de todas las sucursales bajo alcance de colaborador — solo su propia categoría, con los mismos umbrales que el reporte general.</p>
                     </div>
                     <EmptyState v-else title="Sin datos para calcular categoría EBITDA" />
                 </div>
@@ -3418,21 +3439,21 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                         <div class="flex flex-wrap gap-3">
                             <div class="relative flex-1 min-w-52">
-                                <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400 dark:text-slate-500" />
+                                <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                                 <input v-model="searchEmp" type="text" placeholder="Buscar por nombre o sucursal…"
-                                       class="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card py-2 pl-9 pr-4 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100" />
+                                       class="w-full rounded-xl border border-border bg-card py-2 pl-9 pr-4 text-sm focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30" />
                             </div>
-                            <select v-model="filterBranch" class="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-4 py-2 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100">
+                            <select v-model="filterBranch" class="rounded-xl border border-border bg-card px-4 py-2 text-sm focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30">
                                 <option value="">Todas las sucursales</option>
                                 <option v-for="b in branchOptions" :key="b" :value="b">{{ b }}</option>
                             </select>
                         </div>
 
-                        <div class="overflow-x-auto rounded-2xl border bg-white dark:bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
                             <table class="w-full text-xs">
-                                <thead class="bg-slate-50 dark:bg-slate-800/40 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                                     <tr>
-                                        <th class="px-3 py-3 text-left sticky left-0 bg-slate-50 dark:bg-slate-800/40">Gestor</th>
+                                        <th class="px-3 py-3 text-left sticky left-0 bg-muted/50">Gestor</th>
                                         <th class="px-3 py-3 text-left">Sucursal</th>
                                         <th class="px-3 py-3 text-right">Colocación</th>
                                         <th class="px-3 py-3 text-right">Recuperación</th>
@@ -3443,11 +3464,11 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="e in empVisible" :key="e.name + e.branch" class="cursor-pointer border-t hover:bg-slate-50 dark:hover:bg-slate-800/40"
-                                        :class="vfGestor === e.name ? 'bg-indigo-50 dark:bg-indigo-500/10' : ''" @click="vfGestor = vfGestor === e.name ? '' : e.name">
-                                        <td class="px-3 py-2 font-bold sticky left-0 bg-white dark:bg-card whitespace-nowrap">{{ e.name }}</td>
-                                        <td class="px-3 py-2 text-slate-600 dark:text-slate-300 whitespace-nowrap"><span :class="e.branch === 'Sin sucursal' ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''">{{ e.branch === 'Sin sucursal' ? '—' : e.branch }}</span></td>
-                                        <td class="px-3 py-2 text-right font-bold text-indigo-700 dark:text-indigo-300">{{ e.colocacion > 0 ? money(e.colocacion) : '—' }}</td>
+                                    <tr v-for="e in empVisible" :key="e.name + e.branch" class="cursor-pointer border-t hover:bg-muted"
+                                        :class="vfGestor === e.name ? 'bg-accent ' : ''" @click="vfGestor = vfGestor === e.name ? '' : e.name">
+                                        <td class="px-3 py-2 font-bold sticky left-0 bg-card whitespace-nowrap">{{ e.name }}</td>
+                                        <td class="px-3 py-2 text-muted-foreground whitespace-nowrap"><span :class="e.branch === 'Sin sucursal' ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''">{{ e.branch === 'Sin sucursal' ? '—' : e.branch }}</span></td>
+                                        <td class="px-3 py-2 text-right font-bold text-primary">{{ e.colocacion > 0 ? money(e.colocacion) : '—' }}</td>
                                         <td class="px-3 py-2 text-right">{{ e.recuperacion > 0 ? money(e.recuperacion) : '—' }}</td>
                                         <td class="px-3 py-2 text-right">{{ e.cartera > 0 ? money(e.cartera) : '—' }}</td>
                                         <td class="px-3 py-2 text-right" :class="e.mora > 25 ? 'font-bold text-red-700 dark:text-red-300' : ''">{{ e.cartera > 0 ? pct(e.mora) : '—' }}</td>
@@ -3458,11 +3479,11 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                         </div>
                         <div v-if="filteredEmp.length > 15" class="text-center">
-                            <button @click="showAllEmp = !showAllEmp" class="inline-flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-5 py-2 text-sm font-bold text-slate-600 dark:text-slate-300 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
+                            <button @click="showAllEmp = !showAllEmp" class="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-5 py-2 text-sm font-bold text-muted-foreground shadow-sm hover:bg-muted transition">
                                 {{ showAllEmp ? 'Ver menos' : `Ver todos (${filteredEmp.length})` }}
                             </button>
                         </div>
-                        <p class="text-xs text-slate-400 dark:text-slate-500">Mostrando {{ empVisible.length }} de {{ filteredEmp.length }} registros.</p>
+                        <p class="text-xs text-muted-foreground">Mostrando {{ empVisible.length }} de {{ filteredEmp.length }} registros.</p>
                     </template>
                     <EmptyState v-else title="Sin datos de gestores" description="Verifica que el archivo de nómina fue procesado para este periodo." />
                 </div>
@@ -3477,14 +3498,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      importar el scroll, la pestaña activa ni si algún ancestro define un
                      transform/filter que convertiría "fixed" en relativo a ese ancestro. -->
                 <Teleport to="body">
-                    <div v-if="scopedLoading" class="fixed inset-0 z-[9999] flex items-center justify-center bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm">
-                        <div class="flex flex-col items-center gap-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card px-8 py-6 shadow-2xl">
-                            <span class="size-10 animate-spin rounded-full border-4 border-indigo-200 dark:border-indigo-500/20 border-t-indigo-600"></span>
-                            <p class="text-sm font-black text-slate-900 dark:text-slate-50">{{ vfGestor || vfBranch ? 'Actualizando radiografía' : 'Limpiando filtros' }}</p>
-                            <p class="max-w-xs text-center text-xs text-slate-500 dark:text-slate-400">
+                    <div v-if="scopedLoading" class="fixed inset-0 z-[9999] flex items-center justify-center bg-card/60 backdrop-blur-sm">
+                        <div class="flex flex-col items-center gap-3 rounded-2xl border border-border bg-card px-8 py-6 shadow-soft-sm">
+                            <span class="size-10 animate-spin rounded-full border-4 border-primary/30 border-t-primary"></span>
+                            <p class="text-sm font-semibold text-foreground">{{ vfGestor || vfBranch ? 'Actualizando radiografía' : 'Limpiando filtros' }}</p>
+                            <p class="max-w-xs text-center text-xs text-muted-foreground">
                                 <template v-if="vfGestor || vfBranch">
                                     Cargando información para
-                                    <span class="font-bold text-slate-700 dark:text-slate-200">{{ vfGestor || vfBranch }}</span>… Espera un momento.
+                                    <span class="font-bold text-foreground/80">{{ vfGestor || vfBranch }}</span>… Espera un momento.
                                 </template>
                                 <template v-else>Volviendo al reporte general… Espera un momento.</template>
                             </p>
@@ -3499,7 +3520,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <p class="mt-1 text-rose-700 dark:text-rose-300">{{ scopedError }}</p>
                     <div class="mt-3 flex gap-2">
                         <button type="button" @click="retryScopedFetch" class="rounded-xl bg-rose-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-rose-500">Reintentar</button>
-                        <button type="button" @click="vfClearAll" class="rounded-xl border border-rose-300 dark:border-rose-500/25 bg-white dark:bg-card px-4 py-1.5 text-xs font-bold text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:bg-rose-500/15">Volver al reporte general</button>
+                        <button type="button" @click="vfClearAll" class="rounded-xl border border-rose-300 dark:border-rose-500/25 bg-card px-4 py-1.5 text-xs font-bold text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:bg-rose-500/15">Volver al reporte general</button>
                     </div>
                 </div>
 

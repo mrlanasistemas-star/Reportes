@@ -7,10 +7,12 @@ import {
     ChevronRight,
     FolderOpen,
     Info,
-    MoreHorizontal,
+    Lock,
+    LockOpen,
     Plus,
     Search,
     Sparkles,
+    Trash2,
 } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
@@ -118,11 +120,19 @@ const monthSelectOptions = monthNames
 const collapsedWeeklyGroups = ref<Record<string, boolean>>({})
 
 function toggleWeeklyGroup(key: string) {
-    collapsedWeeklyGroups.value[key] = !collapsedWeeklyGroups.value[key]
+    collapsedWeeklyGroups.value[key] = !isWeeklyGroupCollapsed(key)
 }
 
+// Fase 8.7: las semanas base son material de consulta; solo el primer mes del
+// listado empieza abierto para que la página no sea un muro de tarjetas.
 function isWeeklyGroupCollapsed(key: string) {
-    return !!collapsedWeeklyGroups.value[key]
+    const explicit = collapsedWeeklyGroups.value[key]
+
+    if (explicit !== undefined) {
+        return explicit
+    }
+
+    return groupedWeeklyPeriods.value[0]?.key !== key
 }
 
 function formatShortDate(date?: string | null) {
@@ -506,17 +516,28 @@ function getStatusClasses(period: {
 <template>
     <Head title="Periodos" />
 
-    <div class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 lg:p-8 dark:bg-none dark:bg-background">
+    <div class="p-4 sm:p-6 lg:p-8">
         <div class="mx-auto max-w-screen-2xl space-y-6">
 
-            <!-- El título ya vive en el breadcrumb del navbar — sin div gigante aquí. -->
+            <!-- Fase 8.7: encabezado compacto con el ciclo explicado en una línea. -->
+            <header class="flex flex-col gap-1" data-tour="periodos-header">
+                <p class="app-kicker">Operación</p>
+                <h1 class="app-title">Periodos</h1>
+                <p class="app-subtitle max-w-3xl">
+                    Ciclo: <strong class="font-semibold text-foreground">1. Generar semanas</strong> →
+                    <strong class="font-semibold text-foreground">2. Agruparlas en un mes operativo</strong> →
+                    3. Cargar los archivos de ese mes en «Carga de archivos». Bimestres, trimestres y demás se arman solos.
+                </p>
+            </header>
 
-            <section class="app-card overflow-hidden">
+            <div class="grid gap-6 xl:grid-cols-2 xl:items-start">
+            <section class="app-card overflow-hidden" data-tour="periodos-generate">
                 <div class="border-b px-4 py-4 sm:px-5">
                     <div class="flex items-start justify-between gap-4">
                         <div>
-                            <h2 class="text-lg font-bold tracking-tight">Generar semanas del mes</h2>
-                            <p class="mt-2 text-sm text-muted-foreground">
+                            <p class="app-kicker">Paso 1</p>
+                            <h2 class="mt-0.5 text-lg font-semibold tracking-tight">Generar semanas del mes</h2>
+                            <p class="mt-1 text-sm text-muted-foreground">
                                 Selecciona el año y mes base. Los periodos agregados se recalculan automáticamente.
                             </p>
                         </div>
@@ -524,9 +545,9 @@ function getStatusClasses(period: {
                 </div>
 
                 <form @submit.prevent="submitCreate" class="space-y-5 p-4 sm:p-5">
-                    <div class="rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3">
+                    <div class="app-banner app-banner-info">
+                        <Info aria-hidden="true" />
                         <div class="flex items-start gap-3">
-                            <Info class="mt-0.5 size-4 text-primary" />
                             <div class="text-sm text-muted-foreground">
                                 <p class="font-semibold text-foreground">Generación automática activada</p>
                                 <p class="mt-1">
@@ -539,7 +560,7 @@ function getStatusClasses(period: {
 
                     <div class="grid gap-4 sm:grid-cols-2">
                         <div class="space-y-2 sm:col-span-2">
-                            <label class="text-sm font-semibold">Tipo</label>
+                            <label class="text-sm font-semibold">Tipo de periodo</label>
                             <SelectField v-model="form.type" :options="periodTypeOptions" />
                             <InputError :message="form.errors.type" />
                         </div>
@@ -576,22 +597,23 @@ function getStatusClasses(period: {
                         </p>
                     </div>
 
-                    <div>
-                        <button type="submit" class="app-btn h-11 px-5" :disabled="form.processing">
-                            <Plus class="mr-2 size-4" />
-                            {{ form.processing ? 'Generando...' : 'Generar semanas y sincronizar' }}
+                    <div class="flex justify-end border-t pt-4">
+                        <button type="submit" class="app-btn app-btn-primary h-10 rounded-lg px-5 disabled:cursor-not-allowed disabled:opacity-60" :disabled="form.processing">
+                            <Plus class="size-4" />
+                            {{ form.processing ? 'Generando…' : 'Generar semanas y sincronizar' }}
                         </button>
                     </div>
                 </form>
             </section>
 
             <!-- ── Configurar mes operativo ── -->
-            <section class="app-card overflow-hidden">
+            <section class="app-card overflow-hidden" data-tour="periodos-monthly">
                 <div class="border-b px-4 py-4 sm:px-5">
                     <div class="flex items-start justify-between gap-4">
                         <div>
-                            <h2 class="text-lg font-bold tracking-tight">Configurar mes operativo</h2>
-                            <p class="mt-2 text-sm text-muted-foreground">
+                            <p class="app-kicker">Paso 2</p>
+                            <h2 class="mt-0.5 text-lg font-semibold tracking-tight">Configurar mes operativo</h2>
+                            <p class="mt-1 text-sm text-muted-foreground">
                                 Selecciona el año, mes y las semanas que formarán el periodo mensual operativo.
                             </p>
                         </div>
@@ -599,9 +621,9 @@ function getStatusClasses(period: {
                 </div>
 
                 <form @submit.prevent="submitConfigureMonth" class="space-y-5 p-4 sm:p-5">
-                    <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
+                    <div class="app-banner app-banner-success">
+                        <Info aria-hidden="true" />
                         <div class="flex items-start gap-3">
-                            <Info class="mt-0.5 size-4 text-emerald-600 dark:text-emerald-400" />
                             <div class="text-sm text-muted-foreground">
                                 <p class="font-semibold text-foreground">Agrupa semanas en un mes operativo</p>
                                 <p class="mt-1">
@@ -643,11 +665,11 @@ function getStatusClasses(period: {
                             </p>
                         </div>
 
-                        <div v-if="filteredWeeksForMonth.length" class="space-y-2">
+                        <div v-if="filteredWeeksForMonth.length" class="grid max-h-80 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
                             <label
                                 v-for="week in filteredWeeksForMonth"
                                 :key="week.id"
-                                class="flex cursor-pointer items-start gap-3 rounded-2xl border bg-muted/20 px-4 py-3 transition"
+                                class="flex cursor-pointer items-start gap-3 rounded-xl border bg-muted/20 px-3.5 py-2.5 transition"
                                 :class="monthlyForm.week_ids.includes(week.id)
                                     ? 'border-primary/40 bg-primary/5'
                                     : 'border-border/70 hover:border-primary/25 hover:bg-primary/5'"
@@ -737,24 +759,28 @@ function getStatusClasses(period: {
                         <InputError :message="monthlyForm.errors.week_ids" />
                     </div>
 
-                    <div>
+                    <div class="flex flex-col items-end gap-1.5 border-t pt-4">
                         <button
                             type="submit"
-                            class="app-btn h-11 px-5"
+                            class="app-btn app-btn-primary h-10 rounded-lg px-5 disabled:cursor-not-allowed disabled:opacity-60"
                             :disabled="monthlyForm.processing || monthlyForm.week_ids.length === 0"
                         >
-                            <Plus class="mr-2 size-4" />
-                            {{ monthlyForm.processing ? 'Creando...' : 'Crear mes operativo' }}
+                            <Plus class="size-4" />
+                            {{ monthlyForm.processing ? 'Creando…' : 'Crear mes operativo' }}
                         </button>
+                        <p v-if="monthlyForm.week_ids.length === 0 && !monthlyForm.processing" class="app-help">
+                            Se habilita al elegir año, mes y al menos una semana.
+                        </p>
                     </div>
                 </form>
             </section>
+            </div>
 
-            <section class="app-card overflow-hidden">
+            <section class="app-card overflow-hidden" data-tour="periodos-list">
                 <div class="border-b px-4 py-4 sm:px-5">
                     <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                         <div>
-                            <h2 class="text-lg font-bold tracking-tight">Listado de periodos</h2>
+                            <h2 class="text-lg font-semibold tracking-tight">Listado de periodos</h2>
                             <p class="mt-1 text-sm text-muted-foreground">
                                 Las semanas se agrupan por mes y los demás periodos aparecen como agrupaciones automáticas.
                             </p>
@@ -767,103 +793,15 @@ function getStatusClasses(period: {
                             <input
                                 v-model="filters.query"
                                 type="text"
-                                class="app-input h-11 rounded-full pl-10"
-                                placeholder="Buscar periodo..."
+                                class="app-input h-10 rounded-lg pl-10"
+                                aria-label="Buscar periodo"
+                                placeholder="Buscar periodo…"
                             />
                         </div>
                     </div>
                 </div>
 
                 <div v-if="filteredPeriods.length" class="space-y-8 p-4 sm:p-5">
-                    <div v-if="groupedWeeklyPeriods.length" class="space-y-5">
-                        <div class="flex items-center gap-3">
-                            <div class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                                <CalendarDays class="size-5" />
-                            </div>
-                            <div>
-                                <h3 class="text-base font-bold tracking-tight">Semanas calendario por mes</h3>
-                                <p class="text-sm text-muted-foreground">
-                                    Se muestran las semanas base generadas por calendario. Sirven para armar los meses operativos, pero no son reportes mensuales por sí mismas.
-                                </p>
-                            </div>
-                        </div>
-
-                        <section
-                            v-for="group in groupedWeeklyPeriods"
-                            :key="group.key"
-                            class="overflow-hidden rounded-[30px] border border-border/70 bg-background shadow-sm"
-                        >
-                            <div class="border-b bg-muted/30 px-5 py-4 sm:px-6">
-                                <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                                    <div class="flex items-center gap-3">
-                                        <div class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                                            <CalendarDays class="size-5" />
-                                        </div>
-
-                                        <div>
-                                            <h3 class="text-lg font-bold tracking-tight">
-                                                {{ group.title }}
-                                            </h3>
-                                            <p class="text-sm text-muted-foreground">
-                                                {{ group.periods.length }} semana(s) generadas
-                                                <span v-if="group.periods.length">
-                                                    · Rango:
-                                                    {{ formatShortDate(group.periods[0]?.start_date) }}
-                                                    al {{ formatShortDate(group.periods[group.periods.length - 1]?.end_date) }}
-                                                </span>
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    <button
-                                        type="button"
-                                        class="inline-flex h-10 items-center gap-2 rounded-full border border-border bg-background px-4 text-sm font-semibold transition hover:border-primary/25 hover:bg-primary/5"
-                                        @click="toggleWeeklyGroup(group.key)"
-                                    >
-                                        <ChevronDown
-                                            v-if="!isWeeklyGroupCollapsed(group.key)"
-                                            class="size-4"
-                                        />
-                                        <ChevronRight
-                                            v-else
-                                            class="size-4"
-                                        />
-                                        {{ isWeeklyGroupCollapsed(group.key) ? 'Expandir' : 'Contraer' }}
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div
-                                v-show="!isWeeklyGroupCollapsed(group.key)"
-                                class="grid gap-4 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-3"
-                            >
-                                <article
-                                    v-for="period in group.periods"
-                                    :key="period.id"
-                                    class="relative overflow-hidden rounded-[26px] border border-border/70 bg-background p-4 shadow-sm"
-                                >
-                                    <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/50 via-primary/20 to-transparent" />
-
-                                    <div class="flex items-center justify-between gap-3">
-                                        <span class="inline-flex items-center rounded-full bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary">
-                                            {{ getPeriodTitle(period) }}
-                                        </span>
-                                        <span class="text-xs text-muted-foreground">
-                                            Semana base
-                                        </span>
-                                    </div>
-
-                                    <p class="mt-3 text-sm font-semibold text-foreground">
-                                        {{ getPeriodSubtitle(period) }}
-                                    </p>
-                                    <p class="mt-0.5 text-xs text-muted-foreground">
-                                        {{ formatShortDate(period.start_date) }} — {{ formatShortDate(period.end_date) }}
-                                    </p>
-                                </article>
-                            </div>
-                        </section>
-                    </div>
-
                     <!-- ── Periodos mensuales operativos ── -->
                     <div v-if="monthlyPeriods.length" class="space-y-5">
                         <div class="flex items-center gap-3">
@@ -882,7 +820,7 @@ function getStatusClasses(period: {
                             <article
                                 v-for="period in monthlyPeriods"
                                 :key="period.id"
-                                class="group relative overflow-hidden rounded-[26px] border border-border/70 bg-background p-5 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-emerald-400/40 hover:shadow-xl"
+                                class="relative flex flex-col overflow-hidden rounded-xl border border-border/70 bg-background p-5 shadow-soft-xs"
                             >
                                 <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400/80 via-teal-400/80 to-emerald-200/20" />
 
@@ -917,10 +855,31 @@ function getStatusClasses(period: {
                                     </div>
                                 </div>
 
+                                <!-- Fase 8.7: disponibilidad de datos del mes -->
+                                <div v-if="period.required_sources_count" class="mt-4">
+                                    <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
+                                        <span class="font-semibold text-foreground">Archivos cargados</span>
+                                        <span class="text-muted-foreground tabular-nums">{{ getProgressText(period) }}</span>
+                                    </div>
+                                    <div class="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" :aria-valuenow="Math.round(getProgress(period))" aria-valuemin="0" aria-valuemax="100" :aria-label="`Archivos cargados de ${period.label}`">
+                                        <div class="h-full rounded-full bg-primary transition-all" :style="{ width: `${getProgress(period)}%` }" />
+                                    </div>
+                                </div>
+
+                                <div v-if="!period.is_closed && period.can_close === false && period.close_issues_count" class="app-banner app-banner-warning mt-3 text-xs">
+                                    <Info aria-hidden="true" />
+                                    <div>
+                                        <p class="font-semibold">{{ period.close_issues_count }} pendiente(s) por revisar</p>
+                                        <ul v-if="period.close_issues_preview?.length" class="mt-1 list-disc pl-4 text-muted-foreground">
+                                            <li v-for="issue in period.close_issues_preview" :key="issue">{{ issue }}</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
                                 <!-- Detalle de semanas -->
                                 <div
                                     v-if="period.component_weeks?.length"
-                                    class="mt-4 rounded-2xl border border-emerald-200/60 bg-emerald-50/40 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/5"
+                                    class="mt-4 mb-4 rounded-2xl border border-emerald-200/60 bg-emerald-50/40 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/5"
                                 >
                                     <p class="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-emerald-700/70 dark:text-emerald-400/70">
                                         Semanas incluidas
@@ -939,13 +898,17 @@ function getStatusClasses(period: {
                                     </ul>
                                 </div>
 
-                                <div class="mt-5 flex items-center justify-end border-t border-border/60 pt-4">
+                                <!-- Acción peligrosa separada y discreta (pide confirmación). -->
+                                <div class="mt-auto flex items-center justify-between gap-3 border-t border-border/60 pt-3">
+                                    <span class="app-help">Las semanas no se borran: vuelven a quedar libres.</span>
                                     <button
                                         type="button"
-                                        class="inline-flex h-10 items-center gap-2 rounded-full border border-red-200 bg-red-50 px-4 text-sm font-semibold text-red-700 transition hover:border-red-300 hover:bg-red-100 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300 dark:hover:bg-red-500/20"
+                                        class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-danger transition hover:bg-danger-soft"
+                                        :aria-label="`Eliminar el mes operativo ${period.label}`"
                                         @click="destroyMonthly(period)"
                                     >
-                                        Eliminar mes operativo
+                                        <Trash2 class="size-3.5" aria-hidden="true" />
+                                        Eliminar
                                     </button>
                                 </div>
                             </article>
@@ -968,7 +931,7 @@ function getStatusClasses(period: {
                         <section
                             v-for="group in groupedOtherPeriods"
                             :key="group.key"
-                            class="overflow-hidden rounded-[30px] border border-border/70 bg-background shadow-sm"
+                            class="overflow-hidden rounded-2xl border border-border/70 bg-background shadow-soft-xs"
                         >
                             <div class="border-b bg-muted/30 px-5 py-4 sm:px-6">
                                 <h3 class="text-lg font-bold tracking-tight">
@@ -983,7 +946,7 @@ function getStatusClasses(period: {
                                 <article
                                     v-for="period in group.periods"
                                     :key="period.id"
-                                    class="group relative overflow-hidden rounded-[26px] border border-border/70 bg-background p-5 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/25 hover:shadow-xl"
+                                    class="relative flex flex-col overflow-hidden rounded-xl border border-border/70 bg-background p-5 shadow-soft-xs"
                                 >
                                     <div
                                         class="absolute inset-x-0 top-0 h-1"
@@ -1016,7 +979,7 @@ function getStatusClasses(period: {
                                         </span>
                                     </div>
 
-                                    <div class="mt-5 rounded-2xl border border-border/60 bg-muted/25 p-4">
+                                    <div class="mt-4 mb-4 rounded-xl border border-border/60 bg-muted/25 p-3.5">
                                         <div class="mb-2 flex items-center justify-between gap-3">
                                             <span class="text-sm font-semibold text-foreground">
                                                 Progreso del periodo
@@ -1035,20 +998,113 @@ function getStatusClasses(period: {
                                         </div>
                                     </div>
 
-                                    <div class="mt-5 flex items-center justify-end border-t border-border/60 pt-4">
+                                    <div class="mt-auto flex items-center justify-between gap-3 border-t border-border/60 pt-3">
+                                        <span class="app-help">Se pide confirmación antes de cambiar el estado.</span>
                                         <button
                                             type="button"
-                                            class="app-btn app-btn-secondary h-11 rounded-full px-5 transition-all duration-300 group-hover:border-primary/20 group-hover:bg-primary/5"
+                                            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition"
+                                            :class="period.is_closed ? 'border-warning-border text-warning hover:bg-warning-soft' : 'border-border text-foreground hover:bg-muted'"
                                             @click="togglePeriod(period)"
                                         >
-                                            <MoreHorizontal class="mr-2 size-4" />
-                                            {{ period.is_closed ? 'Reabrir' : 'Cambiar estado' }}
+                                            <LockOpen v-if="period.is_closed" class="size-3.5" aria-hidden="true" />
+                                            <Lock v-else class="size-3.5" aria-hidden="true" />
+                                            {{ period.is_closed ? 'Reabrir periodo' : 'Cerrar periodo' }}
                                         </button>
                                     </div>
                                 </article>
                             </div>
                         </section>
                     </div>
+                    <div v-if="groupedWeeklyPeriods.length" class="space-y-5">
+                        <div class="flex items-center gap-3">
+                            <div class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                                <CalendarDays class="size-5" />
+                            </div>
+                            <div>
+                                <h3 class="text-base font-bold tracking-tight">Semanas calendario por mes</h3>
+                                <p class="text-sm text-muted-foreground">
+                                    Se muestran las semanas base generadas por calendario. Sirven para armar los meses operativos, pero no son reportes mensuales por sí mismas.
+                                </p>
+                            </div>
+                        </div>
+
+                        <section
+                            v-for="group in groupedWeeklyPeriods"
+                            :key="group.key"
+                            class="overflow-hidden rounded-2xl border border-border/70 bg-background shadow-soft-xs"
+                        >
+                            <div class="border-b bg-muted/30 px-5 py-4 sm:px-6">
+                                <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                    <div class="flex items-center gap-3">
+                                        <div class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                                            <CalendarDays class="size-5" />
+                                        </div>
+
+                                        <div>
+                                            <h3 class="text-lg font-bold tracking-tight">
+                                                {{ group.title }}
+                                            </h3>
+                                            <p class="text-sm text-muted-foreground">
+                                                {{ group.periods.length }} semana(s) generadas
+                                                <span v-if="group.periods.length">
+                                                    · Rango:
+                                                    {{ formatShortDate(group.periods[0]?.start_date) }}
+                                                    al {{ formatShortDate(group.periods[group.periods.length - 1]?.end_date) }}
+                                                </span>
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        type="button"
+                                        class="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-semibold transition hover:bg-muted"
+                                        :aria-expanded="!isWeeklyGroupCollapsed(group.key)"
+                                        @click="toggleWeeklyGroup(group.key)"
+                                    >
+                                        <ChevronDown
+                                            v-if="!isWeeklyGroupCollapsed(group.key)"
+                                            class="size-4"
+                                        />
+                                        <ChevronRight
+                                            v-else
+                                            class="size-4"
+                                        />
+                                        {{ isWeeklyGroupCollapsed(group.key) ? 'Ver semanas' : 'Ocultar' }}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div
+                                v-show="!isWeeklyGroupCollapsed(group.key)"
+                                class="grid gap-4 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-3"
+                            >
+                                <article
+                                    v-for="period in group.periods"
+                                    :key="period.id"
+                                    class="relative overflow-hidden rounded-xl border border-border/70 bg-background p-4"
+                                >
+                                    <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/50 via-primary/20 to-transparent" />
+
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="inline-flex items-center rounded-full bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary">
+                                            {{ getPeriodTitle(period) }}
+                                        </span>
+                                        <span class="text-xs text-muted-foreground">
+                                            Semana base
+                                        </span>
+                                    </div>
+
+                                    <p class="mt-3 text-sm font-semibold text-foreground">
+                                        {{ getPeriodSubtitle(period) }}
+                                    </p>
+                                    <p class="mt-0.5 text-xs text-muted-foreground">
+                                        {{ formatShortDate(period.start_date) }} — {{ formatShortDate(period.end_date) }}
+                                    </p>
+                                </article>
+                            </div>
+                        </section>
+                    </div>
+
                 </div>
 
                 <div v-else class="px-4 py-12 text-center sm:px-5">

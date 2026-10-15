@@ -7,7 +7,7 @@ import { useCurrentUrl } from '@/composables/useCurrentUrl'
 import { visibleMainNavItems } from '@/config/mainNav'
 
 const { setOpenMobile } = useSidebar()
-const { isCurrentUrl } = useCurrentUrl()
+const { isCurrentOrParentUrl } = useCurrentUrl()
 const page = usePage()
 
 // Solo 4 accesos directos abajo — el resto del menú vive detrás de "Más",
@@ -38,21 +38,22 @@ const quickItems = computed(() => {
                 v-for="item in quickItems"
                 :key="item.title"
                 :href="item.href"
-                class="flex flex-col items-center justify-center gap-1 py-2.5 text-[10px] font-semibold text-sidebar-foreground/60 transition-colors duration-200 active:scale-95"
-                :class="isCurrentUrl(item.href) ? 'text-indigo-500' : 'hover:text-sidebar-foreground'"
+                class="flex flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-semibold text-sidebar-foreground/60 transition-colors duration-200 active:scale-95"
+                :class="isCurrentOrParentUrl(item.href) ? 'text-primary' : 'hover:text-sidebar-foreground'"
+                :aria-current="isCurrentOrParentUrl(item.href) ? 'page' : undefined"
             >
                 <span
                     class="flex size-9 items-center justify-center rounded-xl transition-colors duration-200"
-                    :class="isCurrentUrl(item.href) ? 'bg-indigo-500/10' : ''"
+                    :class="isCurrentOrParentUrl(item.href) ? 'bg-primary/10' : ''"
                 >
                     <component :is="item.icon" class="size-5" />
                 </span>
-                <span class="max-w-[4.5rem] truncate">{{ item.title }}</span>
+                <span class="max-w-[4.75rem] truncate">{{ item.shortTitle ?? item.title }}</span>
             </Link>
 
             <button
                 type="button"
-                class="flex flex-col items-center justify-center gap-1 py-2.5 text-[10px] font-semibold text-sidebar-foreground/60 transition-colors duration-200 hover:text-sidebar-foreground active:scale-95"
+                class="flex flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-semibold text-sidebar-foreground/60 transition-colors duration-200 hover:text-sidebar-foreground active:scale-95"
                 aria-label="Ver todo el menú"
                 @click="setOpenMobile(true)"
             >

@@ -49,9 +49,21 @@ class SecurityController extends Controller implements HasMiddleware
      */
     public function update(PasswordUpdateRequest $request): RedirectResponse
     {
-        $request->user()->update([
+        $user = $request->user();
+        $user->update([
             'password' => $request->password,
         ]);
+
+        // Fase 6.5 — cambiar la contraseña cierra las DEMÁS sesiones abiertas (otro
+        // equipo/navegador con la contraseña anterior) y anula los "recordarme"; la
+        // sesión actual sigue activa. Antes solo se guardaba la contraseña nueva.
+        $user->forceFill(['remember_token' => \Illuminate\Support\Str::random(60)])->save();
+        if (config('session.driver') === 'database') {
+            \Illuminate\Support\Facades\DB::table(config('session.table', 'sessions'))
+                ->where('user_id', $user->id)
+                ->where('id', '!=', $request->session()->getId())
+                ->delete();
+        }
 
         return back();
     }

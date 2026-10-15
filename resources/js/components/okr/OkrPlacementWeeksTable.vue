@@ -32,9 +32,14 @@ async function toggle(week: number) {
 
 function status(w: any): { label: string; class: string } {
     if (w.uploaded) {
-        return w.coverage_status === 'full'
-            ? { label: 'Completa', class: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' }
-            : { label: 'Parcial', class: 'bg-sky-500/10 text-sky-700 dark:text-sky-300' }
+        // 4.6: un gestor ausente de un reporte parcial queda PENDIENTE (nunca $0).
+        if (props.isChild && w.counted_amount === null) {
+            return { label: 'Pendiente · no aparece en el reporte parcial', class: 'bg-amber-500/10 text-amber-700 dark:text-amber-300' }
+        }
+
+        return w.declared_complete === true || w.coverage_status === 'full'
+            ? { label: 'Reporte completo', class: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' }
+            : { label: 'Reporte parcial', class: 'bg-sky-500/10 text-sky-700 dark:text-sky-300' }
     }
 
     if (w.week_number < props.currentWeek) {
@@ -74,7 +79,11 @@ function status(w: any): { label: string; class: string } {
                             <span v-if="w.from_branch_file" class="text-[10px] text-muted-foreground">archivo de la sucursal</span>
                             <span v-if="!w.uploaded" class="text-muted-foreground">—</span>
                         </td>
-                        <td class="px-3 py-2.5 text-right font-semibold tabular-nums text-foreground">{{ w.uploaded ? formatCurrency(w.counted_amount ?? w.total_amount) : '—' }}</td>
+                        <td class="px-3 py-2.5 text-right font-semibold tabular-nums text-foreground">
+                            <template v-if="!w.uploaded">—</template>
+                            <span v-else-if="isChild && w.counted_amount === null" class="text-[11px] font-semibold text-amber-700 dark:text-amber-300">Sin dato</span>
+                            <template v-else>{{ formatCurrency(w.counted_amount ?? w.total_amount) }}</template>
+                        </td>
                         <td v-if="!isChild" class="px-3 py-2.5 text-center tabular-nums">{{ w.uploaded ? w.gestores_count : '—' }}</td>
                         <td v-if="!isChild" class="px-3 py-2.5 text-right tabular-nums" :class="w.unattributed_amount ? 'font-semibold text-amber-700 dark:text-amber-300' : 'text-muted-foreground'">{{ w.uploaded ? formatCurrency(w.unattributed_amount ?? 0) : '—' }}</td>
                         <td class="px-3 py-2.5"><span class="rounded-full px-2 py-0.5 text-[10px] font-bold" :class="status(w).class">{{ status(w).label }}</span></td>
@@ -97,6 +106,11 @@ function status(w: any): { label: string; class: string } {
                             <div v-if="expanded[w.week_number]?.loading" class="flex items-center gap-2 text-muted-foreground"><Loader2 class="size-4 animate-spin" /> Cargando desglose…</div>
                             <p v-else-if="expanded[w.week_number]?.error" class="text-destructive">{{ expanded[w.week_number]?.error }}</p>
                             <div v-else-if="expanded[w.week_number]?.data" class="space-y-2 animate-in fade-in duration-200">
+                                <p v-if="!expanded[w.week_number]?.data.rows.length" class="rounded-lg border border-dashed border-border bg-background px-3 py-2 text-muted-foreground">
+                                    {{ expanded[w.week_number]?.data.upload?.declared_complete === true || expanded[w.week_number]?.data.upload?.coverage_status === 'full'
+                                        ? 'Este gestor no aparece en el reporte completo de la semana: su colocación de la semana es $0.00.'
+                                        : 'Este gestor no aparece en el reporte parcial de la semana: su colocación queda pendiente hasta cargar el reporte completo (no se registra en cero).' }}
+                                </p>
                                 <div class="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
                                     <div v-for="r in expanded[w.week_number]?.data.rows" :key="(r.employee_id ?? r.name)" class="flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5">
                                         <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-[9px] font-bold text-white" :class="r.attributed ? avatarTone(r.employee_id) : 'from-slate-400 to-slate-500'">{{ initialsOf(r.name) }}</span>

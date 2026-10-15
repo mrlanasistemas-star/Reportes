@@ -1,15 +1,6 @@
 <script setup lang="ts">
 import { Head, router, useForm } from '@inertiajs/vue3'
-import {
-    AlertTriangle,
-    CheckCircle2,
-    Search,
-    Sparkles,
-    UserMinus,
-    UserPlus,
-    UserRound,
-    Wand2,
-} from 'lucide-vue-next'
+import { CalendarDays, Search, UserRound, Wand2 } from 'lucide-vue-next'
 import { computed, reactive, ref, watch } from 'vue'
 
 import AssignBranchModal from '@/components/asignaciones/AssignBranchModal.vue'
@@ -18,6 +9,7 @@ import EmployeeAssignmentCard from '@/components/asignaciones/EmployeeAssignment
 import LaborHistoryPanel from '@/components/asignaciones/LaborHistoryPanel.vue'
 import PendingReconciliationPanel from '@/components/asignaciones/PendingReconciliationPanel.vue'
 import PeriodMovementsPanel from '@/components/asignaciones/PeriodMovementsPanel.vue'
+import RosterKpiStrip from '@/components/asignaciones/RosterKpiStrip.vue'
 import RosterOverviewPanel from '@/components/asignaciones/RosterOverviewPanel.vue'
 import SelectField from '@/components/forms/SelectField.vue'
 import type { Assignment, BranchHeadcount, Branch, LaborData, LaborHistoryRow, PeriodOption, RosterMovementItem } from '@/types/asignaciones'
@@ -114,29 +106,46 @@ const branchFilterOptions = computed(() => {
     ]
 })
 
-// Distribución EXACTA de colaboradores por sucursal — parte del catálogo completo
-// de sucursales reales (nunca solo las que aparecen en assignments), así una
-// sucursal con 0 colaboradores este periodo también se ve, no desaparece.
+// Distribución EXACTA por sucursal — cuenta PERSONAS de la plantilla NOI (una
+// persona con varios registros de asignación cuenta una vez). Solo si el roster
+// del periodo aún no existe se cae a registros de asignación, y el panel lo dice.
+// Parte del catálogo completo de sucursales reales: una sucursal con 0 también se ve.
+const distributionBasis = computed<'plantilla' | 'asignaciones'>(() => (props.labor?.roster.calculado ? 'plantilla' : 'asignaciones'))
+
 const branchDistribution = computed<BranchHeadcount[]>(() => {
     const counts = new Map<string, number>()
 
     for (const b of props.branches) {
-counts.set(b.name, 0)
-}
+        counts.set(b.name, 0)
+    }
 
-    for (const a of props.assignments) {
-        if (!a.branch_name) {
-continue
-}
+    const names = distributionBasis.value === 'plantilla'
+        ? (props.labor?.active ?? []).map((a) => a.branch_name)
+        : props.assignments.map((a) => a.branch_name)
 
-        counts.set(a.branch_name, (counts.get(a.branch_name) ?? 0) + 1)
+    for (const name of names) {
+        if (name) {
+            counts.set(name, (counts.get(name) ?? 0) + 1)
+        }
     }
 
     return Array.from(counts.entries())
         .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count)
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 })
 
+const selectedPeriod = computed(() => props.periods.find((p) => p.id === props.selected_period_id) ?? null)
+const periodRange = computed(() => {
+    const p = selectedPeriod.value
+
+    if (!p?.start_date || !p?.end_date) {
+        return null
+    }
+
+    const fmt = (d: string) => d.split('-').reverse().join('/')
+
+    return `${fmt(p.start_date)} – ${fmt(p.end_date)}`
+})
 const selectedPeriodId = computed({
     get: () => (props.selected_period_id ? String(props.selected_period_id) : ''),
     set: (value: string) => {
@@ -294,44 +303,38 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
 <template>
     <Head title="Colaboradores" />
 
-    <div class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 p-4 sm:p-6 dark:bg-none dark:bg-background">
+    <div class="min-h-screen bg-background p-4 sm:p-6">
         <div class="mx-auto max-w-screen-2xl space-y-5">
 
-            <!-- El título/ubicación ya vive arriba en el navbar (breadcrumb). Los KPIs ya
-                 no son tarjetononas en su propia fila — son chips chicos, del mismo alto
-                 que el select, a la derecha de "Periodo". -->
-            <section class="flex flex-wrap items-center gap-3">
-                <label class="shrink-0 text-sm font-semibold text-slate-600 dark:text-slate-300">Periodo:</label>
-                <div class="w-full sm:w-64">
-                    <SelectField v-model="selectedPeriodId" :options="periodSelectOptions" placeholder="Selecciona un periodo" />
-                </div>
-
-                <div class="flex flex-wrap items-center gap-2">
-                    <div
-                        v-for="stat in [
-                            { icon: UserRound, label: 'Plantilla NOI', value: summary.plantilla, fg: 'text-slate-500 dark:text-slate-400', title: 'Personas (sin duplicados) en la nómina NOI normal o fiscal de este periodo.' },
-                            { icon: CheckCircle2, label: 'Con sucursal', value: summary.with_branch, fg: 'text-emerald-500 dark:text-emerald-400', title: `De ${summary.total} registro(s) con asignación de sucursal en el periodo.` },
-                            { icon: AlertTriangle, label: 'Incidencias de sucursal', value: summary.needs_review, fg: 'text-amber-500 dark:text-amber-400', title: 'Registros sin sucursal o con una coincidencia que conviene revisar. No son bajas.' },
-                            { icon: Sparkles, label: 'Manuales', value: summary.manual, fg: 'text-sky-500 dark:text-sky-400' },
-                            { icon: UserPlus, label: 'Altas', value: summary.hires, fg: 'text-emerald-500 dark:text-emerald-400', title: 'Altas confirmadas y reingresos: aparecen en la nómina NOI de este periodo y no estaban en el anterior.' },
-                            { icon: UserMinus, label: 'Bajas confirmadas', value: summary.leavers_confirmadas, fg: 'text-rose-500 dark:text-rose-400', title: 'Solo con evidencia: directorio laboral INACTIVO, finiquito en NOI o conciliación autorizada. Son las que cuentan en la rotación.' },
-                            { icon: AlertTriangle, label: 'Pendientes de conciliación', value: summary.pendientes_conciliacion, fg: 'text-amber-500 dark:text-amber-400', title: 'Posibles bajas, no localizados, duplicados o fuentes que se contradicen. No cuentan como bajas confirmadas.' },
-                        ]"
-                        :key="stat.label"
-                        :title="stat.title"
-                        class="flex h-11 items-center gap-1.5 rounded-2xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-card dark:text-slate-300 dark:hover:shadow-black/20"
-                    >
-                        <component :is="stat.icon" :class="['size-3.5 shrink-0', stat.fg]" />
-                        <span class="font-black text-slate-950 dark:text-slate-50">{{ stat.value }}</span>
-                        <span class="text-slate-400 dark:text-slate-500">{{ stat.label }}</span>
+            <!-- Periodo visible siempre: todas las cifras de la página son de este periodo. -->
+            <section class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div class="flex flex-wrap items-center gap-3">
+                    <label for="periodo-colaboradores" class="shrink-0 text-sm font-semibold text-muted-foreground">Periodo</label>
+                    <div id="periodo-colaboradores" class="w-full sm:w-64">
+                        <SelectField v-model="selectedPeriodId" :options="periodSelectOptions" placeholder="Selecciona un periodo" />
                     </div>
                 </div>
+                <p v-if="selected_period_label" class="flex items-center gap-1.5 text-sm text-muted-foreground">
+                    <CalendarDays class="size-4" />
+                    <span class="font-semibold text-foreground">{{ selected_period_label }}</span>
+                    <span v-if="periodRange" class="tabular-nums">· {{ periodRange }}</span>
+                </p>
             </section>
+
+            <RosterKpiStrip v-if="labor" :labor="labor" />
 
             <!-- 1. Plantilla del periodo + activos confirmados (roster NOI deduplicado) -->
             <RosterOverviewPanel v-if="labor" :roster="labor.roster" :active="labor.active" :period-label="selected_period_label" />
 
-            <!-- 2. Movimientos laborales confirmados + incidencias de asignación -->
+            <!-- 2. Por conciliar (nunca se muestran como bajas) -->
+            <PendingReconciliationPanel
+                v-if="labor"
+                :items="labor.pending"
+                :period-id="selected_period_id ?? null"
+                :can-reconcile="can_reconcile"
+            />
+
+            <!-- 3. Movimientos laborales confirmados + registros sin sucursal -->
             <PeriodMovementsPanel
                 :incidences="incidences"
                 :hires="labor?.movements.altas ?? hires"
@@ -343,35 +346,29 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                 @assign="openAssignModal"
             />
 
-            <!-- 3. Pendientes de conciliación (nunca se muestran como bajas) -->
-            <PendingReconciliationPanel
-                v-if="labor"
-                :items="labor.pending"
-                :period-id="selected_period_id ?? null"
-                :can-reconcile="can_reconcile"
-            />
-
             <!-- 4. Histórico laboral por periodo -->
             <LaborHistoryPanel v-if="labor_history.length" :rows="labor_history" :selected-period-id="selected_period_id ?? null" />
 
             <!-- 5. Asignación por sucursal -->
             <BranchHeadcountPanel
                 :distribution="branchDistribution"
-                :hires="summary.hires"
-                :leavers="summary.leavers_confirmadas"
+                :basis="distributionBasis"
+                :without-branch="labor?.roster.sin_sucursal ?? 0"
                 :pending-leavers="summary.leavers_pendientes"
                 :mass-drop-detected="summary.mass_drop_detected"
                 :drop-ratio="summary.drop_ratio"
             />
 
             <!-- Employee cards -->
-            <section class="app-card overflow-hidden">
-                <div class="border-b px-4 py-4 sm:px-5">
+            <section class="app-section overflow-hidden">
+                <div class="border-b border-border px-4 py-4 sm:px-5">
                     <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                         <div>
-                            <h2 class="text-lg font-bold tracking-tight">Asignación de sucursal por colaborador</h2>
+                            <h2 class="app-section-title">Asignación de sucursal por colaborador</h2>
                             <p class="mt-1 text-sm text-muted-foreground">
-                                Haz clic en <span class="font-semibold">Asignar sucursal</span> para crear o corregir la asignación de cualquier empleado.
+                                Registros de asignación del periodo ({{ summary.total }}; {{ summary.with_branch }} con sucursal, {{ summary.manual }} manuales,
+                                {{ summary.needs_review }} por revisar). Son registros, no la plantilla: haz clic en
+                                <span class="font-semibold">Asignar sucursal</span> para crear o corregir uno.
                             </p>
                         </div>
 

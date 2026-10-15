@@ -27,6 +27,8 @@ export type UserRow = {
     employee_name: string | null
     employee_is_active: boolean | null
     current_branch: string | null
+    /** Fase 6.4 — alcance por sucursal (DataScopeService::describe). */
+    data_scope: UserDataScope
     is_self: boolean
     is_last_admin: boolean
     urls: {
@@ -37,9 +39,14 @@ export type UserRow = {
         resend_invitation: string
         update_role: string
         link_employee: string
+        update_branch_scope: string
     }
-    can: { manage_access: boolean; reset_password: boolean; invite: boolean; change_role: boolean; link_employee: boolean }
+    can: { manage_access: boolean; reset_password: boolean; invite: boolean; change_role: boolean; link_employee: boolean; change_branch_scope: boolean }
 }
+
+export type BranchScopeMode = 'all' | 'branches'
+export type BranchOption = { id: number; name: string }
+export type UserDataScope = { mode: 'admin' | 'all' | 'branches' | 'legacy'; general: boolean; branch_ids: number[]; label: string }
 
 export type UserRoleOption = {
     key: string

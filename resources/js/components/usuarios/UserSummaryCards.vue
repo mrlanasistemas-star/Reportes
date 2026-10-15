@@ -20,7 +20,7 @@ const stats = computed(() => {
 </script>
 
 <template>
-    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+    <div class="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <AppStatCard v-for="s in stats" :key="s.title" :title="s.title" :value="s.value" :helper="s.helper" />
     </div>
 </template>

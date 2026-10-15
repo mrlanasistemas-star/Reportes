@@ -9,15 +9,15 @@ import { store } from '@/routes/password/confirm';
 
 defineOptions({
     layout: {
-        title: 'Confirm your password',
+        title: 'Confirma tu contraseña',
         description:
-            'This is a secure area of the application. Please confirm your password before continuing.',
+            'Estás entrando a una sección protegida (seguridad de la cuenta). Por tu seguridad, escribe de nuevo tu contraseña.',
     },
 });
 </script>
 
 <template>
-    <Head title="Confirm password" />
+    <Head title="Confirmar contraseña" />
 
     <Form
         v-bind="store.form()"
@@ -26,7 +26,7 @@ defineOptions({
     >
         <div class="space-y-6">
             <div class="grid gap-2">
-                <Label htmlFor="password">Password</Label>
+                <Label for="password">Contraseña</Label>
                 <PasswordInput
                     id="password"
                     name="password"
@@ -46,7 +46,7 @@ defineOptions({
                     data-test="confirm-password-button"
                 >
                     <Spinner v-if="processing" />
-                    Confirm password
+                    {{ processing ? 'Confirmando…' : 'Confirmar y continuar' }}
                 </Button>
             </div>
         </div>

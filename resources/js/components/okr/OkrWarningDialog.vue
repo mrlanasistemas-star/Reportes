@@ -33,9 +33,9 @@ const notice = ref<{ code: string; message: string } | null>(null)
 // Motivo clasificado de cada bloqueo (ver OkrWarningService::eligibility()).
 const REASON_LABELS: Record<string, string> = {
     not_active: 'OKR no activado', week_open: 'Semana abierta', no_evidence: 'Sin evidencia suficiente',
-    no_breach: 'Sin incumplimiento comprobado', no_letter: 'Sin Carta Compromiso vigente', no_subject: 'Sin persona evaluada',
+    no_breach: 'Cumplió su meta', no_letter: 'Sin Carta Compromiso vigente', no_subject: 'Sin persona evaluada',
     duplicate: 'Documento ya emitido', out_of_range: 'Semana fuera de rango', no_key_results: 'Falta KR',
-    no_placement: 'Falta colocación', cancelled: 'OKR cancelado', not_started: 'OKR sin iniciar',
+    no_placement: 'Falta el reporte de colocación', cancelled: 'OKR cancelado', not_started: 'OKR sin iniciar',
 }
 // "Falta autorización" (15-oct-2026): el backend indica si este usuario puede emitir.
 const authorizationNotice = ref<string | null>(null)
@@ -77,12 +77,21 @@ const current = computed(() => weeks.value.find((w) => w.week.number === selecte
 const STATUS: Record<string, { label: string; class: string; icon: any }> = {
     eligible: { label: 'Incumplimiento', class: 'bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/30', icon: ShieldAlert },
     pending: { label: 'Pendiente de evaluación', class: 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30', icon: Clock },
-    not_eligible: { label: 'Sin incumplimiento', class: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30', icon: CheckCircle2 },
+    not_eligible: { label: 'Cumplió lo esperado', class: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30', icon: CheckCircle2 },
     blocked: { label: 'Incumplimiento · no emitible', class: 'bg-orange-500/10 text-orange-700 dark:text-orange-300 border-orange-500/30', icon: AlertTriangle },
+    unavailable: { label: 'No evaluable', class: 'bg-muted text-muted-foreground border-border', icon: Info },
 }
 
 function chip(w: any) {
-    return STATUS[w.status === 'not_eligible' && w.has_breach ? 'blocked' : w.status]
+    if (w.status === 'not_eligible' && w.has_breach) {
+        return STATUS.blocked
+    }
+
+    if (w.status === 'not_eligible' && !(w.reasons ?? []).includes('no_breach')) {
+        return STATUS.unavailable
+    }
+
+    return STATUS[w.status] ?? STATUS.unavailable
 }
 
 async function submit() {
@@ -170,7 +179,7 @@ async function submit() {
                     </div>
 
                     <div v-if="current.blockers.length" class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-200">
-                        <p class="mb-1 font-bold">No se puede emitir un Warning para esta semana:</p>
+                        <p class="mb-1 font-bold">{{ current.reasons?.includes('no_breach') && current.reasons.length === 1 ? 'No corresponde emitir un Warning:' : 'Todavía no se puede emitir un Warning para esta semana:' }}</p>
                         <div class="mb-1.5 flex flex-wrap gap-1">
                             <span v-for="r in current.reasons ?? []" :key="r" class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold">{{ REASON_LABELS[r] ?? r }}</span>
                         </div>

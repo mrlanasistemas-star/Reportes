@@ -22,6 +22,8 @@ import OkrWeeklyHistory from '@/components/okr/OkrWeeklyHistory.vue'
 import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
 import OkrAuditTrail from '@/components/okr/show/OkrAuditTrail.vue'
 import OkrDocumentsPanel from '@/components/okr/show/OkrDocumentsPanel.vue'
+import OkrEvaluationContext from '@/components/okr/show/OkrEvaluationContext.vue'
+import OkrEvidencePanel from '@/components/okr/show/OkrEvidencePanel.vue'
 import OkrGestorTable from '@/components/okr/show/OkrGestorTable.vue'
 import OkrKpiResultsTable from '@/components/okr/show/OkrKpiResultsTable.vue'
 import OkrObjectiveSummary from '@/components/okr/show/OkrObjectiveSummary.vue'
@@ -184,6 +186,10 @@ watch(() => (page.props as any).flash, (flash) => {
     }
 }, { immediate: true })
 
+function scrollTo(id: string) {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 // Acceso directo desde "Seguimiento por gestor" (?panel=letter|warning|documents|history).
 onMounted(async () => {
     const panel = new URLSearchParams(window.location.search).get('panel')
@@ -194,7 +200,7 @@ onMounted(async () => {
         warningOpen.value = true
     } else if (panel) {
         await nextTick()
-        document.getElementById(panel === 'documents' ? 'okr-documents' : 'okr-history')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        scrollTo(panel === 'documents' ? 'okr-documents' : 'okr-history')
     }
 })
 </script>
@@ -204,7 +210,7 @@ onMounted(async () => {
         <OkrTrackingHeader
             :objective="objective" :can-assign="canAssign" :can-update="canUpdate" :can-manage="canManage" :can-checkin="canCheckin" :can-upload-placement="canUploadPlacement"
             @letter="letterOpen = true" @upload="openUpload()" @checkin="checkInOpen = true" @activate="activationOpen = true"
-            @edit="onEdit" @weights="weightsOpen = true" @refresh="refresh" @destroy="destroyObjective"
+            @edit="onEdit" @weights="weightsOpen = true" @refresh="refresh" @destroy="destroyObjective" @warning="warningOpen = true"
         />
 
         <button type="button" class="inline-flex items-center gap-1.5 text-xs font-bold text-primary hover:underline" @click="startTour('okr')">
@@ -218,15 +224,6 @@ onMounted(async () => {
             <span class="ml-auto font-bold text-primary transition group-hover:translate-x-0.5">Ver sucursal →</span>
         </a>
 
-        <div v-if="objective.lifecycle_status === 'draft'" class="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/25 bg-primary/5 px-4 py-3 text-xs">
-            <AlertTriangle class="size-4 text-primary" />
-            <span class="flex-1 font-semibold text-primary">
-                OKR en borrador — {{ keyResults.length ? `ponderación ${objective.weight_summary.total}%` : 'sin Key Results' }}. Al activarlo se congela la línea base.
-            </span>
-            <Button v-if="!keyResults.length && canUpdate" size="sm" class="h-8 rounded-lg" @click="configureSelf">Configurar Key Results</Button>
-            <Button v-else-if="canAssign" size="sm" class="h-8 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500" @click="activationOpen = true">Revisar y activar</Button>
-        </div>
-
         <div v-if="alerts.length" class="space-y-1.5">
             <div v-for="a in alerts" :key="a.id" class="flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs font-semibold text-amber-700 dark:text-amber-300">
                 <Bell class="size-3.5 shrink-0" /> {{ a.message }}
@@ -235,8 +232,35 @@ onMounted(async () => {
 
         <OkrScopeFilters :objective="objective" :branches="filterBranches" :periods="filterPeriods" />
 
-        <OkrObjectiveSummary :objective="objective" :key-results="keyResults" />
+        <!-- §1 Qué se evalúa, a quién y qué falta · §2 base/meta/avance/cumplimiento -->
+        <OkrEvaluationContext
+            :objective="objective" :key-results="keyResults" :can-assign="canAssign" :can-update="canUpdate"
+            @activate="activationOpen = true" @configure="configureSelf" @letter="letterOpen = true" @upload="openUpload()" @documents="scrollTo('okr-documents')"
+        />
 
+        <OkrObjectiveSummary v-if="keyResults.length" :objective="objective" :key-results="keyResults" />
+
+        <!-- §3 Resultados por KPI -->
+        <section id="okr-kpi-results" class="rounded-2xl border border-border bg-card shadow-sm">
+            <header class="flex items-center gap-2 border-b border-border px-4 py-3">
+                <span class="flex size-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-300"><LineChart class="size-4" /></span>
+                <div>
+                    <p class="text-sm font-bold text-foreground">Resultados por KPI</p>
+                    <p class="text-[11px] text-muted-foreground">Actual contra lo esperado a la fecha; la proyección aparece solo con datos semanales suficientes.</p>
+                </div>
+            </header>
+            <div class="p-4">
+                <OkrKpiResultsTable v-if="keyResults.length" :key-results="keyResults" :lifecycle="objective.lifecycle_status" :can-update="canUpdate" @edit="openEditKr" @remove="removeDraftKr" />
+                <div v-else class="flex flex-col items-center gap-2 rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-6 text-center">
+                    <AlertTriangle class="size-6 text-amber-600" />
+                    <p class="text-sm font-semibold text-foreground">Este OKR no tiene Key Results</p>
+                    <p class="max-w-md text-xs text-muted-foreground">Captura su KPI, línea base y meta propias. Nunca se copia la meta de la sucursal.</p>
+                    <Button v-if="canUpdate && objective.lifecycle_status === 'draft'" size="sm" class="mt-1 rounded-lg" @click="configureSelf">Configurar KR</Button>
+                </div>
+            </div>
+        </section>
+
+        <!-- §4 Seguimiento por gestor -->
         <OkrGestorTable
             v-if="isBranch && (objective.gestor_tracking ?? []).length"
             :tracking="objective.gestor_tracking" :contributions="objective.contributions ?? []"
@@ -244,7 +268,8 @@ onMounted(async () => {
             @configure="configureChild"
         />
 
-        <section v-if="hasPlacement" class="rounded-2xl border border-border bg-card shadow-sm">
+        <!-- §5 Colocación semanal con archivos y desglose -->
+        <section v-if="hasPlacement" id="okr-placement" class="rounded-2xl border border-border bg-card shadow-sm">
             <header class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
                 <div class="flex items-center gap-2">
                     <span class="flex size-9 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-300"><CalendarRange class="size-4" /></span>
@@ -260,32 +285,19 @@ onMounted(async () => {
             </div>
         </section>
 
-        <section id="okr-kpi-results" class="rounded-2xl border border-border bg-card shadow-sm">
-            <header class="flex items-center gap-2 border-b border-border px-4 py-3">
-                <span class="flex size-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-300"><LineChart class="size-4" /></span>
-                <div>
-                    <p class="text-sm font-bold text-foreground">Resultados por KPI</p>
-                    <p class="text-[11px] text-muted-foreground">Actual contra lo esperado a la fecha; la proyección aparece solo con datos semanales suficientes.</p>
-                </div>
-            </header>
-            <div class="p-4">
-                <OkrKpiResultsTable v-if="keyResults.length" :key-results="keyResults" :lifecycle="objective.lifecycle_status" :can-update="canUpdate" @edit="openEditKr" @remove="removeDraftKr" />
-                <div v-else class="flex flex-col items-center gap-2 rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-6 text-center">
-                    <AlertTriangle class="size-6 text-amber-600" />
-                    <p class="text-sm font-semibold text-foreground">Este OKR no tiene Key Results</p>
-                    <p class="max-w-md text-xs text-muted-foreground">Captura su KPI, línea base y meta propias. Nunca se copia la meta de la sucursal.</p>
-                    <Button v-if="canUpdate && objective.lifecycle_status === 'draft'" size="sm" class="mt-1 rounded-lg" @click="configureSelf">Configurar Key Results</Button>
-                </div>
-            </div>
-        </section>
-
+        <!-- §6 Documentos: carta, warnings, firmas -->
         <div id="okr-documents">
             <OkrDocumentsPanel
-                :objective="objective" :warnings="warnings" :evidences="evidences" :check-ins="checkIns"
-                :can-assign="canAssign" :can-update="canUpdate" :can-upload-evidence="canUploadEvidence" :can-checkin="canCheckin"
-                @letter="letterOpen = true" @warning="warningOpen = true" @evidence="evidenceOpen = true" @checkin="checkInOpen = true"
+                :objective="objective" :warnings="warnings" :can-assign="canAssign" :can-update="canUpdate"
+                @letter="letterOpen = true" @warning="warningOpen = true"
             />
         </div>
+
+        <!-- §7 Evidencias, check-ins e histórico -->
+        <OkrEvidencePanel
+            :objective="objective" :evidences="evidences" :check-ins="checkIns" :can-upload-evidence="canUploadEvidence" :can-checkin="canCheckin"
+            @evidence="evidenceOpen = true" @checkin="checkInOpen = true"
+        />
 
         <div id="okr-history"><OkrWeeklyHistory :key-results="keyResults" /></div>
 

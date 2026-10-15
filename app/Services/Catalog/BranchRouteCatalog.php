@@ -31,6 +31,13 @@ final class BranchRouteCatalog
         'MIACATLAN', 'ORIZABA', 'SAN LUIS POTOSI', 'TLAXCALA', 'TULA',
     ];
 
+    /**
+     * Sucursales que existen SOLO en el catálogo histórico financiero de Reportería
+     * (BranchResolverService::operativeFinancialBranches(), 13 = OKR_BRANCHES + estas 2).
+     * Sus cifras históricas no se tocan, pero nunca son sucursal operativa de OKR.
+     */
+    public const HISTORICAL_FINANCIAL_BRANCHES = ['SAN JUAN DEL RÍO', 'TENANGO DEL VALLE'];
+
     /** Estructuras que nunca son sucursal operativa en OKR (históricos intactos). */
     public const NON_OPERATIVE = ['MATRIZ', 'MATRIZ NORTE', 'REGION Q1', 'REGION Q2', 'REGION Q3', 'AGUASCALIENTES'];
 

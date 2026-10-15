@@ -3,10 +3,13 @@
 namespace App\Services\Imports;
 
 use App\Models\Employee;
+use App\Models\EmployeeMatchRejection;
 use App\Models\NoiMovement;
 use App\Models\ReportUpload;
 use App\Services\PersonIdentityResolverService;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -17,6 +20,22 @@ use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 
 class NoiNominaImportService
 {
+    private const NOI_IDENTITY_TYPE = 'noi_clave';
+
+    /** Identidad dentro del archivo en curso: nombre normalizado => [clave => employee_id]. */
+    private array $fileIdentity = [];
+
+    /** Incidencias de identidad (homónimos, claves reutilizadas) del archivo en curso. */
+    private array $identityIncidents = [];
+
+    private string $identitySystem = 'noi_nomina';
+
+    private string $identityFile = '';
+
+    private ?int $identityPeriodId = null;
+
+    private ?bool $identitiesTable = null;
+
     private array $employeeCache = [];
 
     /** Cache de evaluateNoiCandidateEvidence() por nombre normalizado, vigente solo dentro de una corrida de handle(). */
@@ -41,6 +60,7 @@ class NoiNominaImportService
         // reiniciarse en cada import — el cache solo es válido DENTRO de un mismo archivo.
         $this->employeeCache = [];
         $this->evidenceCache = [];
+        $this->startIdentityScope($upload);
 
         if (!$upload->stored_path) {
             throw new \RuntimeException('El archivo no tiene stored_path.');
@@ -319,7 +339,7 @@ class NoiNominaImportService
             'rows_skipped' => $rowsSkipped,
             'rows_with_errors' => $rowsWithErrors,
             'identity_stats' => $identityStats,
-            'incidents' => $identityIncidents,
+            'incidents' => array_merge($identityIncidents, $this->identityIncidents),
             'log' => sprintf(
                 'Importación NOI completada. Leídas: %d, insertadas: %d, omitidas: %d, con error: %d. '
                 . 'Identidad — vinculados: %d, roles sin cartera: %d, requieren revisión: %d, ignorados ($0 sin respaldo): %d.',
@@ -384,6 +404,7 @@ class NoiNominaImportService
         }
 
         $employeesByKey = [];
+        $currentCode = null;
         $rowsRead = 0;
         $rowsSkipped = 0;
         $incidents = [];
@@ -416,10 +437,20 @@ class NoiNominaImportService
                 $col0 = $this->cleanString($row[0] ?? null);
                 $col1 = $this->cleanString($row[1] ?? null);
 
-                $employeeCode = $this->extractEmployeeCode($col1);
+                // El bloque NOI trae "Clave del trabajador : N" en una fila y el
+                // nombre en las siguientes: la clave vigente se arrastra al nombre.
+                $blockCode = $this->extractEmployeeCode($col1);
+                if ($blockCode !== null) {
+                    $currentCode = $blockCode;
+                    // Formato plano (clave y nombre en la misma fila): el nombre va en A.
+                    if (!$this->isValidEmployeeName($col0)) {
+                        continue;
+                    }
+                }
+
                 $employeeName = null;
 
-                if ($this->isValidEmployeeName($col1)) {
+                if ($blockCode === null && $this->isValidEmployeeName($col1)) {
                     $employeeName = $col1;
                 } elseif ($this->isValidEmployeeName($col0)) {
                     $employeeName = $col0;
@@ -437,79 +468,33 @@ class NoiNominaImportService
                     continue;
                 }
 
-                $key = $employeeCode ? "code:{$employeeCode}" : "name:{$normalized}";
+                $key = $currentCode ? "code:{$currentCode}" : "name:{$normalized}";
 
                 if (isset($employeesByKey[$key])) {
                     continue;
                 }
 
-                [$firstName, $paternalLastName, $maternalLastName] = $this->splitName($employeeName);
-
-                $employeesByKey[$key] = [
-                    'employee_code' => $employeeCode,
-                    'full_name' => $employeeName,
-                    'normalized_name' => $normalized,
-                    'first_name' => $firstName,
-                    'paternal_last_name' => $paternalLastName,
-                    'maternal_last_name' => $maternalLastName,
-                    'is_active' => true,
-                    'source_system' => 'noi',
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
+                $employeesByKey[$key] = ['employee_code' => $currentCode, 'full_name' => $employeeName, 'normalized_name' => $normalized];
             }
 
             unset($chunkRows);
             gc_collect_cycles();
         }
 
+        // BUG CORREGIDO (cierre 2026-10): antes se hacía upsert(['employee_code' |
+        // 'normalized_name', 'source_system']) — `employees` no tiene índice ÚNICO en
+        // esas columnas, así que en MySQL el upsert era un INSERT simple y cada
+        // "Actualizar BD" duplicaba a toda la plantilla (verificado en un clon:
+        // 157 → 284 registros con una sola carga). Ahora se usa la MISMA resolución
+        // de identidad que la importación de movimientos (resolveNoiIdentity).
+        $this->employeeCache = [];
+        $this->startIdentityScope($upload);
         $employeesDetected = 0;
-        $employees = array_values($employeesByKey);
-
-        if (!empty($employees)) {
-            $withCode = collect($employees)
-                ->filter(fn (array $employee) => filled($employee['employee_code']))
-                ->values();
-
-            $withoutCode = collect($employees)
-                ->filter(fn (array $employee) => blank($employee['employee_code']))
-                ->values();
-
-            foreach ($withCode->chunk(300) as $chunk) {
-                Employee::query()->upsert(
-                    $chunk->all(),
-                    ['employee_code', 'source_system'],
-                    [
-                        'full_name',
-                        'normalized_name',
-                        'first_name',
-                        'paternal_last_name',
-                        'maternal_last_name',
-                        'is_active',
-                        'updated_at',
-                    ],
-                );
-
-                $employeesDetected += $chunk->count();
-            }
-
-            foreach ($withoutCode->chunk(300) as $chunk) {
-                Employee::query()->upsert(
-                    $chunk->all(),
-                    ['normalized_name', 'source_system'],
-                    [
-                        'full_name',
-                        'first_name',
-                        'paternal_last_name',
-                        'maternal_last_name',
-                        'is_active',
-                        'updated_at',
-                    ],
-                );
-
-                $employeesDetected += $chunk->count();
-            }
+        foreach ($employeesByKey as $employee) {
+            $this->resolveEmployee(['employee_code' => $employee['employee_code'], 'employee_name' => $employee['full_name']]);
+            $employeesDetected++;
         }
+        $incidents = array_merge($incidents, $this->identityIncidents);
 
         return [
             'employees_detected' => $employeesDetected,
@@ -757,30 +742,216 @@ class NoiNominaImportService
             return null;
         }
 
-        [$firstName, $paternalLastName, $maternalLastName] = $this->splitName($fullName);
-
-        $cacheKey = "name:{$normalizedName}";
+        $cacheKey = "name:{$normalizedName}|code:" . ($employeeCode ?? '-');
 
         if (array_key_exists($cacheKey, $this->employeeCache)) {
             return $this->employeeCache[$cacheKey];
         }
 
-        $employee = Employee::query()->updateOrCreate(
-            [
-                'normalized_name' => $normalizedName,
-                'source_system' => 'noi',
-            ],
-            [
-                'employee_code' => $employeeCode,
-                'full_name' => $fullName,
-                'first_name' => $firstName,
-                'paternal_last_name' => $paternalLastName,
-                'maternal_last_name' => $maternalLastName,
-                'is_active' => true,
-            ],
-        );
+        return $this->employeeCache[$cacheKey] = $this->resolveNoiIdentity($fullName, $normalizedName, $employeeCode);
+    }
 
-        return $this->employeeCache[$cacheKey] = $employee;
+    /**
+     * Identidad NOI (cierre 2026-10) — una sola regla para handle() y para
+     * scanForDatabaseUpdate():
+     *
+     *   1. La clave del trabajador es estable DENTRO de un mismo sistema (NOI
+     *      Nómina o NOI Nómina Fiscal; se verificó Abril–Junio 2026 sin
+     *      reutilizaciones), pero NO entre sistemas (la clave 36 normal y la 36
+     *      fiscal son personas distintas). Se guarda como identidad explícita en
+     *      employee_external_identities (system_code = fuente, external_type =
+     *      'noi_clave') y se usa para reconocer a la misma persona aunque cambie
+     *      la captura del nombre (si el nombre es muy distinto, la clave se
+     *      considera reutilizada y NO se usa).
+     *   2. Sin clave vinculada: mismo nombre normalizado (registro más antiguo).
+     *   3. Mismo nombre con OTRA clave en el MISMO archivo = homónimo: se crea
+     *      (o reutiliza por clave) un registro aparte y se registra el rechazo de
+     *      fusión (employee_match_rejections) para que ningún consumidor los
+     *      junte por nombre. Queda una incidencia para revisión.
+     */
+    private function resolveNoiIdentity(string $fullName, string $normalizedName, ?string $code): Employee
+    {
+        [$firstName, $paternalLastName, $maternalLastName] = $this->splitName($fullName);
+        $attributes = [
+            'full_name' => $fullName,
+            'first_name' => $firstName,
+            'paternal_last_name' => $paternalLastName,
+            'maternal_last_name' => $maternalLastName,
+            'is_active' => true,
+        ];
+
+        $seenInFile = $this->fileIdentity[$normalizedName] ?? [];
+
+        if ($code !== null && $seenInFile !== [] && !isset($seenInFile[$code])) {
+            $employee = $this->employeeByNoiCode($code, $normalizedName, excludeIds: array_values($seenInFile))
+                ?? Employee::query()->create($attributes + [
+                    'normalized_name' => $normalizedName,
+                    'source_system' => 'noi',
+                    'employee_code' => $code,
+                ]);
+            foreach ($seenInFile as $otherCode => $otherId) {
+                $this->rejectMerge((int) $otherId, (int) $employee->id, "Homónimos en la misma nómina NOI ({$this->identityFile}): claves {$otherCode} y {$code}.");
+            }
+            $this->identityIncidents[] = [
+                'type' => 'noi_identidad.homonimo',
+                'severity' => 'warning',
+                'message' => "\"{$fullName}\" aparece con dos claves distintas en el mismo archivo NOI (" . implode(', ', array_keys($seenInFile)) . " y {$code}). Se registraron como personas distintas; verifica la identidad antes de conciliar.",
+                'context' => ['normalized_name' => $normalizedName, 'employee_code' => $code, 'employee_id' => $employee->id],
+            ];
+        } else {
+            $employee = $code !== null ? $this->employeeByNoiCode($code, $normalizedName) : null;
+
+            if ($employee === null) {
+                // Mismo nombre en CUALQUIER fuente (preferente NOI): el catálogo de
+                // colaboradores es uno solo. Antes solo se buscaba source_system='noi'
+                // y una persona dada de alta primero por Lendus cobranza quedaba
+                // duplicada en cada importación (8 casos en Abril–Junio 2026).
+                $employee = Employee::query()
+                    ->where('normalized_name', $normalizedName)
+                    ->orderByRaw("CASE WHEN source_system = 'noi' THEN 0 ELSE 1 END")
+                    ->orderBy('id')
+                    ->first();
+
+                if ($employee === null) {
+                    $employee = Employee::query()->create($attributes + [
+                        'normalized_name' => $normalizedName,
+                        'source_system' => 'noi',
+                        'employee_code' => $code,
+                    ]);
+                } else {
+                    $employee->fill($attributes + ['employee_code' => $code ?? $employee->employee_code])->save();
+                }
+            } elseif ($employee->normalized_name !== $normalizedName) {
+                // Misma clave, nombre capturado distinto: se conserva el registro y el
+                // nombre nuevo queda como alias conciliado por clave (nunca se renombra).
+                $this->registerAlias($employee, $fullName, $normalizedName);
+                $employee->forceFill(['employee_code' => $code, 'is_active' => true])->save();
+            } else {
+                $employee->fill($attributes + ['employee_code' => $code])->save();
+            }
+        }
+
+        if ($code !== null) {
+            $this->fileIdentity[$normalizedName][$code] = (int) $employee->id;
+            $this->linkNoiCode($employee, $code);
+        }
+
+        return $employee;
+    }
+
+    /** Employee vinculado a la clave NOI en este sistema, si el nombre es compatible. */
+    private function employeeByNoiCode(string $code, string $normalizedName, array $excludeIds = []): ?Employee
+    {
+        if (!$this->identitiesAvailable()) {
+            return null;
+        }
+
+        $employeeId = DB::table('employee_external_identities')
+            ->where('system_code', $this->identitySystem)
+            ->where('external_type', self::NOI_IDENTITY_TYPE)
+            ->where('external_id', $code)
+            ->where('active', true)
+            ->value('employee_id');
+        if ($employeeId === null || in_array((int) $employeeId, array_map('intval', $excludeIds), true)) {
+            return null;
+        }
+
+        $employee = Employee::query()->find($employeeId);
+        if ($employee === null) {
+            return null;
+        }
+        if ($employee->normalized_name === $normalizedName
+            || $this->identityResolver->isLikelySamePerson($employee->normalized_name, $normalizedName, 90.0)) {
+            return $employee;
+        }
+
+        $this->identityIncidents[] = [
+            'type' => 'noi_identidad.clave_reutilizada',
+            'severity' => 'warning',
+            'message' => "La clave NOI {$code} ({$this->identitySystem}) estaba vinculada a \"{$employee->full_name}\" y ahora aparece con \"{$normalizedName}\". No se usó la clave para identificarlo: verifica si es la misma persona.",
+            'context' => ['normalized_name' => $normalizedName, 'employee_code' => $code, 'linked_employee_id' => $employee->id],
+        ];
+
+        return null;
+    }
+
+    private function linkNoiCode(Employee $employee, string $code): void
+    {
+        if (!$this->identitiesAvailable()) {
+            return;
+        }
+
+        $exists = DB::table('employee_external_identities')
+            ->where('system_code', $this->identitySystem)
+            ->where('external_type', self::NOI_IDENTITY_TYPE)
+            ->where('external_id', $code)
+            ->where('active', true)
+            ->exists();
+        if ($exists) {
+            return; // nunca se reasigna en silencio una clave ya vinculada
+        }
+
+        DB::table('employee_external_identities')->insert([
+            'employee_id' => $employee->id,
+            'system_code' => $this->identitySystem,
+            'external_id' => $code,
+            'external_type' => self::NOI_IDENTITY_TYPE,
+            'verified_at' => now(),
+            'verification_method' => "Importación NOI: clave del trabajador en {$this->identityFile}",
+            'active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function rejectMerge(int $a, int $b, string $reason): void
+    {
+        if ($a === $b || !Schema::hasTable('employee_match_rejections')) {
+            return;
+        }
+
+        DB::table('employee_match_rejections')->insertOrIgnore([
+            'employee_id_a' => min($a, $b),
+            'employee_id_b' => max($a, $b),
+            'period_id' => $this->identityPeriodId,
+            'pair_key' => EmployeeMatchRejection::pairKey($a, $b),
+            'reason' => mb_substr($reason, 0, 500),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function registerAlias(Employee $employee, string $fullName, string $normalizedName): void
+    {
+        if (!Schema::hasTable('employee_aliases')
+            || DB::table('employee_aliases')->where('employee_id', $employee->id)->where('normalized_alias', $normalizedName)->exists()) {
+            return;
+        }
+
+        DB::table('employee_aliases')->insert([
+            'employee_id' => $employee->id,
+            'alias_name' => $fullName,
+            'normalized_alias' => $normalizedName,
+            'source' => 'noi_clave',
+            'confidence' => 0.95,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function identitiesAvailable(): bool
+    {
+        return $this->identitiesTable ??= Schema::hasTable('employee_external_identities');
+    }
+
+    /** Reinicia el estado de identidad: válido solo dentro de UN archivo. */
+    private function startIdentityScope(ReportUpload $upload): void
+    {
+        $this->fileIdentity = [];
+        $this->identityIncidents = [];
+        $this->identitySystem = $upload->dataSource?->code === 'noi_nomina_fiscal' ? 'noi_nomina_fiscal' : 'noi_nomina';
+        $this->identityFile = (string) ($upload->original_name ?: "carga {$upload->id}");
+        $this->identityPeriodId = $upload->period_id ? (int) $upload->period_id : null;
     }
 
     private function extractEmployeeCode(?string $value): ?string

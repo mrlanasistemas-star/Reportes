@@ -72,11 +72,20 @@ function onScrollOrResize() {
     }
 }
 
+// Fase 8.15: Escape cierra el recorrido (la guía nunca debe atrapar al usuario).
+function onKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && activeTourId.value) {
+        skip()
+    }
+}
+
 onMounted(() => {
+    window.addEventListener('keydown', onKeydown)
     window.addEventListener('resize', onScrollOrResize)
     window.addEventListener('scroll', onScrollOrResize, true)
 })
 onBeforeUnmount(() => {
+    window.removeEventListener('keydown', onKeydown)
     window.removeEventListener('resize', onScrollOrResize)
     window.removeEventListener('scroll', onScrollOrResize, true)
     clearTimeout(searchTimer ?? undefined)
@@ -105,7 +114,7 @@ const cardStyle = computed(() => {
     }
 
     const r = targetRect.value
-    const cardWidth = 340
+    const cardWidth = Math.min(340, window.innerWidth - 28)
     const spaceBelow = window.innerHeight - (r.top + r.height)
     const top = spaceBelow > 220 ? r.top + r.height + 14 : Math.max(14, r.top - 220)
     const left = Math.min(Math.max(14, r.left), window.innerWidth - cardWidth - 14)
@@ -128,17 +137,20 @@ const cardStyle = computed(() => {
 
             <!-- Tarjeta informativa -->
             <div
+                role="dialog"
+                aria-live="polite"
+                :aria-label="currentStep.title"
                 class="pointer-events-auto fixed z-[71] rounded-2xl border border-border bg-card p-4 shadow-2xl"
-                :style="cardStyle ?? { top: '50%', left: '50%', width: '360px', transform: 'translate(-50%, -50%)' }"
+                :style="cardStyle ?? { top: '50%', left: '50%', width: 'min(360px, calc(100vw - 28px))', transform: 'translate(-50%, -50%)' }"
             >
                 <div class="flex items-start justify-between gap-2">
                     <p class="flex items-center gap-1.5 text-sm font-bold text-foreground"><Lightbulb class="size-4 text-primary" /> {{ currentStep.title }}</p>
-                    <button type="button" class="text-muted-foreground transition hover:text-foreground" aria-label="Saltar recorrido" @click="skip">
+                    <button type="button" class="text-muted-foreground transition hover:text-foreground" aria-label="Cerrar recorrido (Esc)" @click="skip">
                         <X class="size-4" />
                     </button>
                 </div>
-                <p class="mt-2 text-xs leading-relaxed text-muted-foreground">{{ currentStep.body }}</p>
-                <p v-if="currentStep.example" class="mt-1.5 text-[11px] italic leading-relaxed text-muted-foreground/80">{{ currentStep.example }}</p>
+                <p class="mt-2 text-sm leading-relaxed text-muted-foreground">{{ currentStep.body }}</p>
+                <p v-if="currentStep.example" class="mt-1.5 text-xs italic leading-relaxed text-muted-foreground/80">{{ currentStep.example }}</p>
 
                 <div class="mt-3 flex items-center justify-between gap-2">
                     <span class="text-[11px] font-semibold text-muted-foreground">Paso {{ stepIndex + 1 }} de {{ totalSteps }}</span>

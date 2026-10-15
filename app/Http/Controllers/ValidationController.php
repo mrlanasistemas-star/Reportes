@@ -15,6 +15,10 @@ use Inertia\Response;
 class ValidationController extends Controller {
 
     public function index(): Response {
+        // Fase 6.4 — validaciones de calidad de datos de TODAS las sucursales (incluye
+        // personas sin sucursal): solo alcance general.
+        app(\App\Services\Access\DataScopeService::class)->requireGeneral(request()->user(), 'El tablero de validaciones');
+
         $items = collect();
         /*
         | 1) NOI con empleado pero sin sucursal asignada

@@ -66,6 +66,15 @@ const UPLOAD_SAVE_PATH_PATTERNS: RegExp[] = [/^\/historico-general\/?$/];
 // autorizados (Reportería / Histórico General).
 const LOCAL_FEEDBACK_MODULE_PATTERNS: RegExp[] = [/^\/okr(\/|$)/];
 
+// Fase 8.14 (15-oct-2026) — un envío de formulario (POST/PUT/PATCH/DELETE) no es
+// un cambio de pantalla: el botón ya muestra su propio estado ("Guardando…",
+// spinner, disabled) y, si hay 422/403/500, el error aparece junto al campo o en
+// un aviso. Tapar toda la página ahí solo estorbaba (iniciar sesión, guardar un
+// usuario, editar un rol, eliminar un periodo). La única excepción son los
+// procesos largos de Histórico General (incidencias, procesar), que conservan la
+// pantalla de espera que ya conocen los usuarios.
+const LONG_PROCESS_MUTATION_PATTERNS: RegExp[] = [/^\/historico-general\//];
+
 type OverlayVisit = { url: URL; method?: string; only?: string[]; async?: boolean; prefetch?: boolean };
 
 export function isExcludedFromGlobalOverlay(visit: OverlayVisit): boolean {
@@ -85,10 +94,11 @@ export function isExcludedFromGlobalOverlay(visit: OverlayVisit): boolean {
 
     const method = (visit.method ?? 'get').toLowerCase();
 
-    return (
-        method === 'post' &&
-        UPLOAD_SAVE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))
-    );
+    if (method === 'post' && UPLOAD_SAVE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
+        return true;
+    }
+
+    return method !== 'get' && !LONG_PROCESS_MUTATION_PATTERNS.some((pattern) => pattern.test(visit.url.pathname));
 }
 
 let overlayEl: HTMLDivElement | null = null;

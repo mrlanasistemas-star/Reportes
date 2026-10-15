@@ -12,6 +12,7 @@ use App\Models\PeriodBranchSummary;
 use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
+use App\Services\Access\DataScopeService;
 use App\Services\PeriodDerivedDataCleaner;
 use App\Services\PeriodRadiographyService;
 use App\Services\RadiografiaExportService;
@@ -70,6 +71,13 @@ class MonthlyReportController extends Controller {
             ->get()
             ->unique(fn (PeriodRadiographyRun $run) => implode('|', $run->identity()))
             ->values();
+
+        // Fase 6.4 — alcance restringido: solo reportes por sucursal/gestor de SUS
+        // sucursales; los generales (y los consolidados heredados) no se listan.
+        $restricted = app(DataScopeService::class)->isRestricted($request->user());
+        if ($restricted) {
+            $runs = $runs->filter(fn (PeriodRadiographyRun $run) => $this->runWithinScope($request->user(), $run))->values();
+        }
 
         $summaryIds = $runs->pluck('period_summary_id')->filter()->unique();
         $summaries  = PeriodSummary::query()->whereIn('id', $summaryIds)->get()->keyBy('id');
@@ -142,6 +150,7 @@ class MonthlyReportController extends Controller {
             ->with(['period:id,name,code,type,year,month,sequence,start_date,end_date'])
             ->where('status', 'generated')
             ->whereNotIn('period_id', $periodIdsWithSimpleGeneralRun)
+            ->when($restricted, fn ($q) => $q->whereRaw('1 = 0'))
             ->latest('generated_at')
             ->get()
             ->map(fn (PeriodSummary $summary) => [
@@ -338,6 +347,7 @@ class MonthlyReportController extends Controller {
 
     public function downloadRunExcel(PeriodRadiographyRun $run)
     {
+        $this->authorizeRun($run);
         $path = $this->resolveRunExportPath($run, 'excel');
 
         return response()->download($path, basename($path), [
@@ -349,6 +359,7 @@ class MonthlyReportController extends Controller {
 
     public function downloadRunPdf(PeriodRadiographyRun $run)
     {
+        $this->authorizeRun($run);
         $path = $this->resolveRunExportPath($run, 'pdf');
 
         return response()->download($path, basename($path), [
@@ -366,6 +377,7 @@ class MonthlyReportController extends Controller {
      */
     public function viewRun(PeriodRadiographyRun $run)
     {
+        $this->authorizeRun($run);
         $reportType = $run->report_type ?: 'simple';
         $scope      = $run->scope ?: 'general';
 
@@ -406,8 +418,24 @@ class MonthlyReportController extends Controller {
         return redirect()->route('reportes-mensuales.index', ['period' => $period->id]);
     }
 
-    public function previewPage(Period $period, Request $request, RadiographySnapshotBuilder $snapshotBuilder, RadiografiaExportService $exportService): Response
+    public function previewPage(Period $period, Request $request, RadiographySnapshotBuilder $snapshotBuilder, RadiografiaExportService $exportService): Response|RedirectResponse
     {
+        // Fase 6.4 — alcance restringido: nunca la radiografía general. Sin alcance en
+        // la URL se abre directamente la vista de su (primera) sucursal; un gestor
+        // ajeno → 403 (una sucursal ajena ya la rechaza EnsureBranchScope).
+        $dataScope = app(DataScopeService::class);
+        $restricted = $dataScope->isRestricted($request->user());
+        if ($restricted) {
+            $scopeParam = $request->query('scope');
+            if ($scopeParam === 'employee' && (int) $request->query('employee_id', 0)) {
+                $dataScope->authorizeEmployee($request->user(), (int) $request->query('employee_id'), $period->id);
+            } elseif ($scopeParam !== 'branch' || ! (int) $request->query('branch_id', 0)) {
+                return redirect()->route('reportes-mensuales.preview', [
+                    'period' => $period->id, 'scope' => 'branch',
+                    'branch_id' => $dataScope->resolveBranch($request->user(), null),
+                ]);
+            }
+        }
         $summary = PeriodSummary::query()
             ->with(['branchSummaries', 'incidents'])
             ->where('period_id', $period->id)
@@ -466,7 +494,8 @@ class MonthlyReportController extends Controller {
             }
         }
 
-        $activeSnapshot = $initialSnapshot ?? $snapshot;
+        // Restringido: solo el snapshot ya filtrado; nunca cae al general si falló.
+        $activeSnapshot = $restricted ? $initialSnapshot : ($initialSnapshot ?? $snapshot);
 
         // Operative branches: hardcoded constant — never shows routes or non-op branches
         $operativeBranches = Branch::query()
@@ -514,6 +543,15 @@ class MonthlyReportController extends Controller {
                     ->map(fn ($e) => ['id' => $e->id, 'name' => $e->full_name, 'branch' => ''])
                     ->values();
             }
+
+            // Fase 6.4 — el selector de gestores solo ofrece los de sus sucursales.
+            if ($restricted) {
+                $employees = $employees->filter(fn ($e) => $dataScope->allowsBranchName($request->user(), $e['branch'] ?? null))->values();
+            }
+        }
+
+        if ($restricted) {
+            $operativeBranches = collect($dataScope->filterBranchOptions($request->user(), $operativeBranches));
         }
 
         // All available periods for compare selectors (with snapshot flag for comparativo protection)
@@ -614,6 +652,18 @@ class MonthlyReportController extends Controller {
             ->map(fn ($b) => ['id' => $b->id, 'name' => $b->name])
             ->values();
 
+        // Fase 6.4 — alcance restringido: sin comparativo general; su sucursal por defecto.
+        $dataScope = app(DataScopeService::class);
+        if ($dataScope->isRestricted($request->user())) {
+            $operativeBranches = collect($dataScope->filterBranchOptions($request->user(), $operativeBranches));
+            if ($scope === 'employee' && $employeeId) {
+                $dataScope->authorizeEmployee($request->user(), $employeeId, $periodAId);
+            } elseif ($scope !== 'employee') {
+                $scope = 'branch';
+                $branchId = $dataScope->resolveBranch($request->user(), $branchId);
+            }
+        }
+
         return Inertia::render('ReportesMensuales/ComparativePreview', [
             'initialPeriodAId'   => $periodAId,
             'initialPeriodBId'   => $periodBId,
@@ -665,6 +715,8 @@ class MonthlyReportController extends Controller {
         $reportType = self::PERIOD_TYPE_TO_COMPARATIVE_REPORT_TYPE[$periodA->type];
 
         $config = ['scope' => $scope, 'report_type' => $reportType, 'compare_period_id' => $periodB->id];
+
+        $this->authorizeReportScope($request, $scope, (int) $request->query('employee_id', 0), $periodA->id, 'El comparativo general');
 
         if ($scope === 'branch') {
             $branchId = (int) $request->query('branch_id', 0);
@@ -745,6 +797,12 @@ class MonthlyReportController extends Controller {
 
         $rows = $rosterService->rosterRowsForSelector($period)['rows'] ?? [];
 
+        // Fase 6.4 — solo colaboradores de las sucursales del usuario.
+        $dataScope = app(DataScopeService::class);
+        if ($dataScope->isRestricted($request->user())) {
+            $rows = array_values(array_filter($rows, fn ($r) => array_key_exists('branch_id', $r) ? $dataScope->allows($request->user(), $r['branch_id']) : $dataScope->allowsEmployee($request->user(), (int) $r['employee_id'], $period->id)));
+        }
+
         return response()->json([
             'employees' => collect($rows)->map(fn ($r) => [
                 'id'   => (int) $r['employee_id'],
@@ -755,6 +813,7 @@ class MonthlyReportController extends Controller {
 
     public function consolidate(Period $period, PeriodRadiographyService $service): RedirectResponse
     {
+        app(DataScopeService::class)->requireGeneral(request()->user(), 'Consolidar el periodo');
         $status = $this->sourceStatus($period);
         $allMissing = array_merge($status['missing'], $status['errors']);
         if (!empty($allMissing)) {
@@ -774,6 +833,7 @@ class MonthlyReportController extends Controller {
      */
     public function updateSaldoInicial(Period $period, Request $request): JsonResponse|RedirectResponse
     {
+        app(DataScopeService::class)->requireGeneral($request->user(), 'El saldo inicial en caja del periodo');
         $validated = $request->validate([
             'saldo_inicial_caja' => ['required', 'numeric'],
         ]);
@@ -789,6 +849,7 @@ class MonthlyReportController extends Controller {
 
     public function exportSummary(Period $period): StreamedResponse
     {
+        app(DataScopeService::class)->requireGeneral(request()->user(), 'El consolidado del periodo');
         $rows = MonthlyEmployeeSummary::query()->with(['employee:id,full_name','branch:id,name'])->where('period_id', $period->id)->orderByDesc('included_in_report')->orderBy('employee_id')->get();
         $filename = sprintf('consolidado_%s.csv', $period->code ?: $period->id);
         return response()->streamDownload(function () use ($rows, $period) {
@@ -803,6 +864,7 @@ class MonthlyReportController extends Controller {
 
     public function exportRadiography(Period $period, RadiografiaExportService $service)
     {
+        app(DataScopeService::class)->requireGeneral(request()->user(), 'La radiografía general');
         // Check summary FIRST — a pending old job must NOT block an already-generated report
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
@@ -903,6 +965,7 @@ class MonthlyReportController extends Controller {
 
     public function exportRadiographyPdf(Period $period, RadiografiaExportService $service)
     {
+        app(DataScopeService::class)->requireGeneral(request()->user(), 'La radiografía general');
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
             ->where('status', 'generated')
@@ -945,6 +1008,8 @@ class MonthlyReportController extends Controller {
 
     public function exportFilteredRadiography(Period $period, Request $request, RadiografiaExportService $service, PeriodDerivedDataCleaner $cleaner)
     {
+        // Fase 6.4 — alcance ANTES que cualquier otra respuesta (general/gestor/sucursal ajena → 403).
+        $this->authorizeReportScope($request, $request->input('scope'), (int) $request->input('employee_id', 0), $period->id, 'La radiografía general');
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
             ->where('status', 'generated')
@@ -1002,6 +1067,8 @@ class MonthlyReportController extends Controller {
 
     public function exportFilteredRadiographyPdf(Period $period, Request $request, RadiografiaExportService $service, PeriodDerivedDataCleaner $cleaner)
     {
+        // Fase 6.4 — alcance ANTES que cualquier otra respuesta (general/gestor/sucursal ajena → 403).
+        $this->authorizeReportScope($request, $request->input('scope'), (int) $request->input('employee_id', 0), $period->id, 'La radiografía general');
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
             ->where('status', 'generated')
@@ -1053,6 +1120,11 @@ class MonthlyReportController extends Controller {
     public function exportEmployeesHistorico(Period $period, Request $request, EmployeesHistoricoExportService $service)
     {
         $filters = $request->only(['branch_id']);
+        // Fase 6.4 — restringido: siempre filtrado a una de sus sucursales.
+        $scopedBranch = app(DataScopeService::class)->resolveBranch($request->user(), (int) ($filters['branch_id'] ?? 0) ?: null);
+        if ($scopedBranch !== null) {
+            $filters['branch_id'] = $scopedBranch;
+        }
         $manualAdjustment = $this->manualAdjustmentFromRequest($request);
 
         try {
@@ -1105,6 +1177,8 @@ class MonthlyReportController extends Controller {
         }
 
         $config = ['scope' => $scope];
+
+        $this->authorizeReportScope($request, $scope, (int) $request->query('employee_id', 0), $period->id, 'La radiografía general');
 
         if ($scope === 'branch') {
             $branchId = (int) $request->query('branch_id', 0);
@@ -1245,4 +1319,54 @@ class MonthlyReportController extends Controller {
         return compact('processed', 'errors', 'missing');
     }
 
+
+    /**
+     * Fase 6.4 — alcance de un reporte pedido por parámetros: general → solo
+     * alcance general; gestor → debe pertenecer a sus sucursales; sucursal → la
+     * valida EnsureBranchScope (y aquí otra vez, por defensa en profundidad).
+     */
+    private function authorizeReportScope(Request $request, ?string $scope, int $employeeId, ?int $periodId, string $what): void
+    {
+        $dataScope = app(DataScopeService::class);
+        $user = $request->user();
+
+        // Sin el ID correspondiente, un alcance branch/employee podría terminar en el
+        // reporte general: para alcance restringido se trata como general (403).
+        if ($scope === 'employee' && $employeeId > 0) {
+            $dataScope->authorizeEmployee($user, $employeeId, $periodId);
+
+            return;
+        }
+        $branchId = (int) $request->input('branch_id', 0);
+        if ($scope === 'branch' && $branchId > 0) {
+            $dataScope->authorizeBranch($user, $branchId);
+
+            return;
+        }
+
+        $dataScope->requireGeneral($user, $what);
+    }
+
+    private function runWithinScope(\App\Models\User $user, PeriodRadiographyRun $run): bool
+    {
+        $dataScope = app(DataScopeService::class);
+
+        return match ($run->scope ?: 'general') {
+            'branch' => $dataScope->allows($user, $run->branch_id ? (int) $run->branch_id : null),
+            'employee' => $run->employee_id && $dataScope->allowsEmployee($user, (int) $run->employee_id, (int) $run->period_id),
+            default => $dataScope->isGeneral($user),
+        };
+    }
+
+    /** Descarga/vista de un run: 403 si su sucursal/gestor está fuera del alcance (o es general y el usuario no). */
+    private function authorizeRun(PeriodRadiographyRun $run): void
+    {
+        $user = request()->user();
+        if ($this->runWithinScope($user, $run)) {
+            return;
+        }
+
+        abort(403, 'Este reporte corresponde a información fuera de tu alcance por sucursal ('
+            . app(DataScopeService::class)->label($user) . '). Si necesitas consultarlo, pide a un administrador que amplíe tu alcance en Usuarios.');
+    }
 }

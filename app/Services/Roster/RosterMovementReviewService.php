@@ -29,9 +29,10 @@ class RosterMovementReviewService
             throw ValidationException::withMessages(['decision' => 'La decisión no es válida.']);
         }
 
+        // La llave es employee_key (= nombre normalizado salvo homónimos separados).
         $row = DB::table('period_employee_rosters')
             ->where('period_id', $period->id)
-            ->where('nombre_normalizado', $nombreNormalizado)
+            ->where('employee_key', $nombreNormalizado)
             ->where('is_active_for_period', false)
             ->first();
 
@@ -69,7 +70,7 @@ class RosterMovementReviewService
 
         $after = DB::table('period_employee_rosters')
             ->where('period_id', $period->id)
-            ->where('nombre_normalizado', $nombreNormalizado)
+            ->where('employee_key', $nombreNormalizado)
             ->value('reconciliation_status');
 
         return ['applied' => $warning === null, 'status' => (string) $after, 'warning' => $warning];
@@ -81,7 +82,7 @@ class RosterMovementReviewService
         $extra = Schema::hasColumn('period_employee_rosters', 'requires_review') ? ['requires_review' => false] : [];
         DB::table('period_employee_rosters')
             ->where('period_id', $period->id)
-            ->where('nombre_normalizado', $name)
+            ->where('employee_key', $name)
             ->where('is_active_for_period', false)
             ->update($extra + [
                 'movement_type' => $confirm ? S::MOVEMENT_BAJA : S::MOVEMENT_AUSENCIA,

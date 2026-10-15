@@ -88,7 +88,7 @@ watch(() => props.focus, (id) => {
                 type="button"
                 class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition duration-150"
                 :class="i === currentIndex
-                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                    ? 'bg-primary text-white shadow-md shadow-primary/20'
                     : i < currentIndex
                         ? 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-500/10'
                         : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100'"
@@ -111,7 +111,7 @@ watch(() => props.focus, (id) => {
             <Transition :name="direction === 'forward' ? 'guide-forward' : 'guide-back'" mode="out-in">
                 <div :key="current.id" class="app-card space-y-5 p-6 sm:p-8">
                     <div class="flex items-center gap-3">
-                        <div class="flex size-10 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300"><component :is="current.icon" class="size-5" /></div>
+                        <div class="flex size-10 items-center justify-center rounded-2xl bg-accent text-primary dark:bg-accent dark:text-accent-foreground"><component :is="current.icon" class="size-5" /></div>
                         <h2 class="text-xl font-black text-slate-950 dark:text-slate-50">{{ currentIndex + 1 }}. {{ current.label }}</h2>
                     </div>
 
@@ -139,7 +139,7 @@ watch(() => props.focus, (id) => {
                                 { icon: Sliders, t: 'Configurar y generar', d: 'Eliges tipo y alcance, y generas el reporte.' },
                                 { icon: Eye, t: 'Revisar y descargar', d: 'Consultas la vista previa y descargas Excel/PDF.' },
                             ]" :key="i" class="rounded-2xl border border-slate-200 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md dark:border-slate-800 dark:hover:border-indigo-800">
-                                <div class="flex size-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300">
+                                <div class="flex size-9 items-center justify-center rounded-xl bg-accent text-primary dark:bg-accent dark:text-accent-foreground">
                                     <component :is="step.icon" class="size-4.5" />
                                 </div>
                                 <p class="mt-3 text-sm font-black text-slate-900 dark:text-slate-50">{{ i + 1 }}. {{ step.t }}</p>
@@ -172,7 +172,7 @@ watch(() => props.focus, (id) => {
                             <GuideMockup title="Periodos">
                                 <div class="flex items-center justify-between">
                                     <span class="text-xs font-black text-slate-700">Periodos</span>
-                                    <span class="rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-black text-white">+ Crear periodo</span>
+                                    <span class="rounded-lg bg-primary px-3 py-1.5 text-[11px] font-black text-white">+ Crear periodo</span>
                                 </div>
                                 <div class="mt-3 flex gap-2">
                                     <span class="rounded-full bg-indigo-100 px-2.5 py-1 text-[10px] font-black text-indigo-700">Mensual</span>
@@ -286,7 +286,7 @@ watch(() => props.focus, (id) => {
                         <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">Elige el tipo de reporte y qué tanto vas a revisar (alcance).</p>
                         <div class="grid gap-3 sm:grid-cols-2">
                             <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
-                                <p class="text-xs font-black tracking-wide text-indigo-600 uppercase dark:text-indigo-400">Tipos de reporte</p>
+                                <p class="text-xs font-black tracking-wide text-primary uppercase dark:text-primary">Tipos de reporte</p>
                                 <ul class="mt-2 space-y-2 text-sm text-slate-600 dark:text-slate-300">
                                     <li><strong>Radiografía simple</strong> — para ver un periodo individual.</li>
                                     <li><strong>Comparativo mes vs mes</strong> — para comparar un mes contra otro.</li>
@@ -295,7 +295,7 @@ watch(() => props.focus, (id) => {
                                 </ul>
                             </div>
                             <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
-                                <p class="text-xs font-black tracking-wide text-indigo-600 uppercase dark:text-indigo-400">Alcances</p>
+                                <p class="text-xs font-black tracking-wide text-primary uppercase dark:text-primary">Alcances</p>
                                 <ul class="mt-2 space-y-2 text-sm text-slate-600 dark:text-slate-300">
                                     <li><strong>General</strong> — todas las sucursales juntas.</li>
                                     <li><strong>Por sucursal</strong> — para revisar una sucursal específica.</li>
@@ -306,12 +306,12 @@ watch(() => props.focus, (id) => {
                         <GuideMockup title="Configurar reporte">
                             <p class="text-[11px] font-black text-slate-500">TIPO DE REPORTE</p>
                             <div class="mt-1.5 flex flex-wrap gap-2">
-                                <span class="rounded-xl bg-indigo-600 px-3 py-1.5 text-[10px] font-black text-white">Radiografía simple</span>
+                                <span class="rounded-xl bg-primary px-3 py-1.5 text-[10px] font-black text-white">Radiografía simple</span>
                                 <span class="rounded-xl bg-white px-3 py-1.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">Comparativo mes vs mes</span>
                             </div>
                             <p class="mt-3 text-[11px] font-black text-slate-500">ALCANCE</p>
                             <div class="mt-1.5 flex flex-wrap gap-2">
-                                <span class="rounded-xl bg-indigo-600 px-3 py-1.5 text-[10px] font-black text-white">General</span>
+                                <span class="rounded-xl bg-primary px-3 py-1.5 text-[10px] font-black text-white">General</span>
                                 <span class="rounded-xl bg-white px-3 py-1.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">Por sucursal</span>
                                 <span class="rounded-xl bg-white px-3 py-1.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">Por empleado / gestor</span>
                             </div>
@@ -356,7 +356,7 @@ watch(() => props.focus, (id) => {
                         </p>
                         <GuideMockup title="Vista previa">
                             <div class="flex gap-2 overflow-hidden text-[10px] font-bold">
-                                <span class="rounded-lg bg-indigo-600 px-2.5 py-1 text-white">Resumen</span>
+                                <span class="rounded-lg bg-primary px-2.5 py-1 text-white">Resumen</span>
                                 <span class="rounded-lg bg-white px-2.5 py-1 text-slate-500 ring-1 ring-slate-200">Sucursales</span>
                                 <span class="rounded-lg bg-white px-2.5 py-1 text-slate-500 ring-1 ring-slate-200">Nómina</span>
                                 <span class="rounded-lg bg-white px-2.5 py-1 text-slate-500 ring-1 ring-slate-200">Mora</span>
@@ -428,7 +428,7 @@ watch(() => props.focus, (id) => {
                         <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                             El reporte resultante muestra el rango completo del periodo, incluyendo qué meses abarca:
                         </p>
-                        <div class="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 font-mono text-xs leading-6 text-indigo-800 dark:border-indigo-500/20 dark:bg-indigo-500/10 dark:text-indigo-300">
+                        <div class="rounded-2xl border border-indigo-200 bg-accent p-4 font-mono text-xs leading-6 text-indigo-800 dark:border-indigo-500/20 dark:bg-accent dark:text-accent-foreground">
                             Trimestre 2 - 2026<br>
                             Abril 2026 + Mayo 2026 + Junio 2026<br>
                             Rango: 2026-03-30 → 2026-06-21
@@ -562,7 +562,7 @@ watch(() => props.focus, (id) => {
                 <button
                     v-if="!isLast"
                     type="button"
-                    class="inline-flex h-11 items-center gap-1.5 rounded-2xl bg-indigo-600 px-5 text-sm font-black text-white shadow-lg shadow-indigo-600/20 transition duration-150 hover:-translate-y-0.5 hover:bg-indigo-500 hover:shadow-xl hover:shadow-indigo-600/30"
+                    class="inline-flex h-11 items-center gap-1.5 rounded-2xl bg-primary px-5 text-sm font-black text-white shadow-lg shadow-primary/20 transition duration-150 hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-xl hover:shadow-primary/30"
                     @click="next"
                 >
                     Siguiente <ChevronRight class="size-4" />

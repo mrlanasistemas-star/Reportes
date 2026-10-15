@@ -136,37 +136,40 @@ return `${startDate} → ${endDate}`
     <div class="space-y-6 p-4 sm:p-6 lg:p-8">
         <!-- Encabezado compacto (cierre 17-sep-2026 ronda 5 — se quitó el banner
              oscuro grande a petición explícita del usuario). -->
-        <section class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div class="flex items-center gap-3">
-                <div class="flex size-10 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-900/20">
-                    <FileBarChart2 class="size-5 text-white" />
+        <section class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between" data-tour="reportes-header">
+            <div class="flex items-start gap-3">
+                <div class="mt-0.5 flex size-11 shrink-0 items-center justify-center rounded-xl border bg-accent text-primary">
+                    <FileBarChart2 class="size-5" />
                 </div>
                 <div>
-                    <h1 class="text-xl font-black tracking-tight text-slate-950 dark:text-slate-50">Reportes generados</h1>
-                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ message }}</p>
+                    <p class="app-kicker">Análisis</p>
+                    <h1 class="app-title">Reportes mensuales</h1>
+                    <p class="app-subtitle mt-0.5">{{ message }}</p>
                 </div>
             </div>
-            <span class="w-fit rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+            <span class="app-pill app-pill-success w-fit px-3 py-1 text-xs" aria-live="polite">
                 {{ filteredReports.length }} de {{ generatedReports.length }} disponibles
             </span>
         </section>
 
         <!-- Filtros -->
-        <section v-if="generatedReports.length" class="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <section v-if="generatedReports.length" class="flex flex-col gap-3 rounded-xl border bg-card p-2 shadow-soft-xs lg:flex-row lg:items-center" data-tour="reportes-filters">
             <div class="relative flex-1">
-                <Search class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" />
+                <Search class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
                 <input
                     v-model="searchQuery"
                     type="search"
                     placeholder="Buscar por nombre, periodo o tipo…"
-                    class="h-11 w-full rounded-2xl border border-slate-200 bg-white pr-4 pl-10 text-sm shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 dark:border-slate-800 dark:bg-card"
+                    aria-label="Buscar reportes"
+                    class="app-input h-10 rounded-lg pl-10"
                 />
             </div>
-            <div class="flex flex-wrap gap-1.5">
+            <div class="scrollbar-none -mx-2 flex gap-1.5 overflow-x-auto px-2 lg:mx-0 lg:flex-wrap lg:px-0" role="group" aria-label="Filtrar por estado">
                 <button
                     type="button"
-                    :class="filterStatus === '' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:hover:bg-slate-800'"
-                    class="rounded-xl px-3 py-2 text-xs font-bold transition"
+                    :aria-pressed="filterStatus === ''"
+                    :class="filterStatus === '' ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground'"
+                    class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold transition"
                     @click="filterStatus = ''"
                 >
                     Todos
@@ -175,8 +178,9 @@ return `${startDate} → ${endDate}`
                     v-for="(label, key) in STATUS_LABELS"
                     :key="key"
                     type="button"
-                    :class="filterStatus === key ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800/60 dark:text-slate-300 dark:hover:bg-slate-800'"
-                    class="rounded-xl px-3 py-2 text-xs font-bold transition"
+                    :aria-pressed="filterStatus === key"
+                    :class="filterStatus === key ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground'"
+                    class="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold transition"
                     @click="filterStatus = key"
                 >
                     {{ label }}
@@ -189,21 +193,21 @@ return `${startDate} → ${endDate}`
             <article
                 v-for="report in filteredReports"
                 :key="report.id"
-                class="group flex flex-col rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lg dark:border-slate-800 dark:bg-card dark:hover:border-slate-700 dark:hover:shadow-black/20"
+                class="flex flex-col rounded-2xl border bg-card p-5 shadow-soft-xs transition-shadow hover:shadow-soft-md"
             >
                 <div class="flex items-start justify-between gap-2">
-                    <div class="flex items-center gap-1.5 text-xs font-bold text-slate-400">
-                        <span class="size-2 rounded-full" :class="statusDot(report.status)" />
+                    <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold" :class="statusBadge(report.status)">
+                        <span class="size-1.5 rounded-full" :class="statusDot(report.status)" />
                         {{ statusLabel(report.status) }}
-                    </div>
-                    <span v-if="report.period_type" class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black tracking-wide text-slate-500 uppercase dark:bg-slate-800/60 dark:text-slate-400">
+                    </span>
+                    <span v-if="report.period_type" class="app-pill app-pill-muted uppercase">
                         {{ periodTypeLabel(report.period_type) }}
                     </span>
                 </div>
 
-                <h3 class="mt-2.5 text-sm leading-snug font-black text-slate-950 dark:text-slate-50" :title="report.name">{{ report.name }}</h3>
+                <h3 class="mt-3 text-sm leading-snug font-semibold text-foreground" :title="report.name">{{ report.name }}</h3>
 
-                <div class="mt-3 space-y-1.5 text-xs text-slate-500 dark:text-slate-400">
+                <div class="mt-2.5 space-y-1.5 text-xs text-muted-foreground">
                     <p class="flex items-center gap-1.5">
                         <CalendarRange class="size-3.5 shrink-0 text-slate-400" />
                         <span class="font-semibold text-slate-700 dark:text-slate-200">{{ report.period }}</span>
@@ -222,28 +226,28 @@ return `${startDate} → ${endDate}`
                     <p class="text-slate-400">Generado {{ report.generated_at ?? '—' }}</p>
                 </div>
 
-                <div class="mt-4 flex items-center justify-between border-t border-slate-100 pt-4 dark:border-slate-800">
-                    <span class="rounded-full px-2.5 py-1 text-[10px] font-black" :class="statusBadge(report.status)">{{ statusLabel(report.status) }}</span>
-                    <div class="flex gap-1.5">
-                        <a :href="report.preview_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 dark:border-slate-800 dark:text-slate-400 dark:hover:border-indigo-500/40 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300" title="Ver">
-                            <Eye class="size-4" />
-                        </a>
-                        <a :href="report.excel_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-600 dark:border-slate-800 dark:text-slate-400 dark:hover:border-emerald-500/40 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-300" title="Excel">
-                            <FileSpreadsheet class="size-4" />
-                        </a>
-                        <a :href="report.pdf_url" class="inline-flex size-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:border-slate-800 dark:text-slate-400 dark:hover:border-rose-500/40 dark:hover:bg-rose-500/10 dark:hover:text-rose-300" title="PDF">
-                            <FileText class="size-4" />
-                        </a>
-                    </div>
+                <!-- Fase 8.9: acciones con texto (antes solo iconos sin etiqueta). -->
+                <div class="mt-auto flex flex-wrap items-center gap-2 border-t pt-4">
+                    <a :href="report.preview_url" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90" :aria-label="`Ver ${report.name}`">
+                        <Eye class="size-4" aria-hidden="true" /> Ver
+                    </a>
+                    <a :href="report.excel_url" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted" :aria-label="`Descargar Excel de ${report.name}`">
+                        <FileSpreadsheet class="size-4 text-success" aria-hidden="true" /> Excel
+                    </a>
+                    <a :href="report.pdf_url" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted" :aria-label="`Descargar PDF de ${report.name}`">
+                        <FileText class="size-4 text-danger" aria-hidden="true" /> PDF
+                    </a>
                 </div>
             </article>
         </section>
 
-        <div v-if="!generatedReports.length" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-card dark:text-slate-400">
-            Aún no hay reportes generados. Genéralos desde Histórico general.
+        <div v-if="!generatedReports.length" class="rounded-2xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">
+            <p class="font-semibold text-foreground">Aún no hay reportes generados.</p>
+            <p class="mt-1">Se generan desde «Carga de archivos», en la etapa «Generar reporte» del periodo.</p>
         </div>
-        <div v-else-if="!filteredReports.length" class="rounded-[1.75rem] border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-card dark:text-slate-400">
-            No hay reportes que coincidan con los filtros aplicados.
+        <div v-else-if="!filteredReports.length" class="rounded-2xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">
+            <p>No hay reportes que coincidan con los filtros aplicados.</p>
+            <button type="button" class="mt-3 inline-flex h-9 items-center rounded-lg border border-border px-3 text-sm font-medium text-foreground hover:bg-muted" @click="searchQuery = ''; filterStatus = ''">Limpiar filtros</button>
         </div>
     </div>
 </template>

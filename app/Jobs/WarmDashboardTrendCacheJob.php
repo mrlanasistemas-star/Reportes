@@ -37,6 +37,7 @@ class WarmDashboardTrendCacheJob implements ShouldQueue
     {
         @ini_set('memory_limit', '512M');
         @set_time_limit(240);
+        $jobStarted = microtime(true);
 
         try {
             $trendService->build();
@@ -46,6 +47,20 @@ class WarmDashboardTrendCacheJob implements ShouldQueue
             // usuario espere ~10-25 s en pantalla.
             if ($this->periodId !== null && ($period = \App\Models\Period::query()->find($this->periodId))) {
                 app(\App\Services\RadiografiaExportService::class)->buildSnapshot($period);
+            }
+
+            // Fase 7.1 — tendencia por sucursal: con la corrida general de cada periodo
+            // ya cacheada (arriba), cada punto de sucursal es solo una proyección
+            // (~0.2 s), así que se precalientan las 13 operativas. Con tope de tiempo:
+            // si no alcanza, la request del usuario calcula lo que falte (igual de exacto).
+            foreach (app(\App\Services\Reporting\OperativeBranchService::class)->names() as $name) {
+                if (microtime(true) - $jobStarted > 200) {
+                    break;
+                }
+                $branchId = \App\Models\Branch::query()->where('name', $name)->value('id');
+                if ($branchId) {
+                    $trendService->build((int) $branchId);
+                }
             }
         } catch (\Throwable $exception) {
             // No crítico: el dashboard sigue funcionando, solo pierde el

@@ -95,6 +95,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // (antes el botón descargaba la Radiografía completa). Mismo permiso de
     // exportación que tenía el enlace anterior.
     Route::get('/dashboard/exportar.pdf', [DashboardController::class, 'exportPdf'])->middleware('permission:reportes,exportar')->name('dashboard.export-pdf');
+    // Fase 7.3 — Excel del Dashboard: mismo alcance, mismos datos y MISMO permiso que el PDF.
+    Route::get('/dashboard/exportar.xlsx', [DashboardController::class, 'exportExcel'])->middleware('permission:reportes,exportar')->name('dashboard.export-excel');
     // Alias 'home' — el scaffolding de auth (login/logout/verificación/tests de
     // ejemplo) espera route('home') por convención de Laravel; este proyecto no tenía
     // ese nombre registrado, lo que rompía AuthenticationTest/
@@ -243,6 +245,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('/{user}/reenviar-invitacion', 'resendWelcomeEmail')->middleware(['throttle:10,1', 'permission:usuarios,invitar'])->name('resend-invitation');
             Route::put('/{user}/rol', 'updateRole')->middleware('permission:usuarios,asignar_rol')->name('update-role');
             Route::put('/{user}/colaborador', 'linkEmployee')->middleware('permission:usuarios,editar')->name('link-employee');
+            // Fase 6.4 — alcance por sucursal (mismo permiso que asignar rol: define qué datos ve).
+            Route::put('/{user}/sucursales', 'updateBranchScope')->middleware('permission:usuarios,asignar_rol')->name('update-branch-scope');
         });
 
     Route::prefix('roles')

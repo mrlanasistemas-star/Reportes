@@ -14,6 +14,15 @@ export type Auth = {
     user: User;
     /** Módulos que el rol del usuario puede ver (ver ModuleAccessService). */
     modules: string[];
+    /** Fase 6.4 — alcance por sucursal (DataScopeService::describe). Solo UX: el backend decide. */
+    dataScope?: DataScope | null;
+};
+
+export type DataScope = {
+    mode: 'admin' | 'all' | 'branches' | 'legacy';
+    general: boolean;
+    branch_ids: number[];
+    label: string;
 };
 
 export type TwoFactorConfigContent = {

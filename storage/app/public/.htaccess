@@ -1,0 +1,13 @@
+# Fase 10 (seguridad de archivos) — este directorio guarda los ORIGINALES
+# cargados (NOI, Lendus, cartera, gastos, efectividad...). Nunca se sirven por
+# URL pública: la app los entrega solo por controladores autenticados con
+# permiso + alcance (ReportUploadController::download). Bloquea el acceso
+# directo vía el symlink public/storage en Apache/WAMP. En Nginx ver
+# docs/despliegue-vps-limpio.md (location ^~ /storage/ { deny all; }).
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

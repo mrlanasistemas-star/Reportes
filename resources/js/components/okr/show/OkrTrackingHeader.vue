@@ -4,7 +4,7 @@
 // principales visibles; el resto en un menú secundario.
 import { Link } from '@inertiajs/vue3'
 import {
-    ArrowLeft, CalendarRange, ClipboardCheck, FileSignature, History, MoreHorizontal, PencilLine, RefreshCw, Rocket, Scale, Trash2, Upload, UserRound,
+    ArrowLeft, CalendarRange, ClipboardCheck, FileSignature, History, MoreHorizontal, PencilLine, RefreshCw, Rocket, Scale, Settings2, ShieldAlert, Trash2, Upload, UserRound,
 } from 'lucide-vue-next'
 import OkrStatusBadge from '@/components/okr/OkrStatusBadge.vue'
 import { Button } from '@/components/ui/button'
@@ -19,7 +19,7 @@ const props = defineProps<{
     canCheckin: boolean
     canUploadPlacement: boolean
 }>()
-const emit = defineEmits<{ letter: []; upload: []; checkin: []; activate: []; edit: []; weights: []; refresh: []; destroy: [] }>()
+const emit = defineEmits<{ letter: []; upload: []; checkin: []; activate: []; edit: []; weights: []; refresh: []; destroy: []; warning: [] }>()
 
 const isBranch = props.objective.scope_type === 'branch'
 const progressPct = Math.min(100, Math.round(((props.objective.current_week ?? 0) / Math.max(1, props.objective.duration_weeks)) * 100))
@@ -42,8 +42,9 @@ const progressPct = Math.min(100, Math.round(((props.objective.current_week ?? 0
                     <OkrStatusBadge kind="lifecycle" :value="objective.lifecycle_status" />
                     <OkrStatusBadge v-if="objective.health_status" kind="health" :value="objective.health_status" />
                     <span class="flex items-center gap-1 text-slate-300"><CalendarRange class="size-3.5" /> {{ formatFriendlyDate(objective.start_date) }} – {{ formatFriendlyDate(objective.end_date) }}</span>
-                    <span class="flex items-center gap-1 text-slate-300"><UserRound class="size-3.5" /> Responsable general: {{ objective.responsible?.name ?? '—' }}</span>
-                    <span v-if="!isBranch && objective.subject?.position" class="text-slate-300">· {{ objective.subject.position }}</span>
+                    <!-- Evaluado (con SU puesto) y responsable del seguimiento, nunca mezclados. -->
+                    <span v-if="!isBranch && objective.subject?.full_name" class="flex items-center gap-1 font-semibold text-white" title="Colaborador evaluado por este OKR."><UserRound class="size-3.5" /> Evaluado: {{ objective.subject.full_name }}<template v-if="objective.subject?.position"> · {{ objective.subject.position }}</template></span>
+                    <span class="text-slate-300" title="Usuario del sistema que administra el seguimiento; no es la persona evaluada.">Seguimiento a cargo de: {{ objective.responsible?.name ?? "—" }}</span>
                 </div>
                 <div class="flex max-w-md items-center gap-2 pt-1">
                     <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10"><div class="h-full rounded-full bg-gradient-to-r from-indigo-400 to-emerald-400 transition-all duration-700" :style="{ width: `${progressPct}%` }" /></div>
@@ -55,8 +56,10 @@ const progressPct = Math.min(100, Math.round(((props.objective.current_week ?? 0
                 <Button v-if="objective.lifecycle_status === 'draft' && canAssign" class="h-10 gap-2 rounded-xl bg-emerald-500 text-white shadow-lg shadow-emerald-500/30 hover:bg-emerald-400" @click="emit('activate')">
                     <Rocket class="size-4" /> Activar OKR
                 </Button>
-                <Button class="h-10 gap-2 rounded-xl bg-white text-slate-900 hover:bg-indigo-50" @click="emit('letter')"><FileSignature class="size-4" /> Revisar compromiso</Button>
+                <Button v-if="objective.lifecycle_status === 'draft' && canUpdate" variant="outline" class="h-10 gap-2 rounded-xl border-white/20 bg-white/5 text-white hover:bg-white/15 hover:text-white" @click="emit('edit')"><Settings2 class="size-4" /> Configurar KR</Button>
+                <Button class="h-10 gap-2 rounded-xl bg-white text-slate-900 hover:bg-indigo-50" @click="emit('letter')"><FileSignature class="size-4" /> Revisar carta</Button>
                 <Button v-if="canUploadPlacement" variant="outline" class="h-10 gap-2 rounded-xl border-white/20 bg-white/5 text-white hover:bg-white/15 hover:text-white" @click="emit('upload')"><Upload class="size-4" /> Cargar colocación</Button>
+                <Button v-if="objective.lifecycle_status === 'active' || objective.lifecycle_status === 'closed'" variant="outline" class="h-10 gap-2 rounded-xl border-white/20 bg-white/5 text-white hover:bg-white/15 hover:text-white" @click="emit('warning')"><ShieldAlert class="size-4" /> Evaluar Warning</Button>
                 <Button v-if="canCheckin && objective.lifecycle_status === 'active'" variant="outline" class="h-10 gap-2 rounded-xl border-white/20 bg-white/5 text-white hover:bg-white/15 hover:text-white" @click="emit('checkin')"><ClipboardCheck class="size-4" /> Registrar seguimiento</Button>
                 <DropdownMenu>
                     <DropdownMenuTrigger as-child>

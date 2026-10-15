@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Form, Head } from '@inertiajs/vue3'
-import { Eye, EyeOff, Lock, Mail } from 'lucide-vue-next'
+import { CircleAlert, Eye, EyeOff, Lock, Mail } from 'lucide-vue-next'
 import { ref } from 'vue'
 import AuthAsidePanel from '@/components/auth/AuthAsidePanel.vue'
 import AuthFormPanel from '@/components/auth/AuthFormPanel.vue'
@@ -31,17 +31,24 @@ const showPassword = ref(false)
         <AuthAsidePanel />
 
         <AuthFormPanel
-            mobile-title="Bienvenido"
-            desktop-title="Bienvenido de vuelta"
-            desktop-subtitle="Ingresa tus credenciales para continuar."
+            mobile-title="Iniciar sesión"
+            desktop-title="Iniciar sesión"
+            desktop-subtitle="Entra con el correo y la contraseña que te asignó tu administrador."
             :status="status"
         >
-            <Form v-bind="store.form()" :reset-on-success="['password']" v-slot="{ errors, processing }" class="space-y-5">
+            <Form v-bind="store.form()" :reset-on-success="['password']" v-slot="{ errors, processing }" class="space-y-5" novalidate>
+                <!-- Resumen del error de acceso (credenciales, cuenta bloqueada, demasiados intentos) -->
+                <div v-if="errors.email" role="alert" class="app-banner app-banner-danger">
+                    <CircleAlert aria-hidden="true" />
+                    <p>{{ errors.email }}</p>
+                </div>
+
                 <div class="space-y-2">
                     <Label for="email">Correo electrónico</Label>
                     <div class="group relative">
                         <Mail
-                            class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground transition-colors duration-200 group-focus-within:text-indigo-500"
+                            class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground transition-colors duration-200 group-focus-within:text-primary"
+                            aria-hidden="true"
                         />
                         <Input
                             id="email"
@@ -51,10 +58,10 @@ const showPassword = ref(false)
                             autofocus
                             autocomplete="email"
                             placeholder="correo@ejemplo.com"
-                            class="h-11 rounded-xl pl-10 transition duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/40"
+                            class="h-11 rounded-xl pl-10"
+                            :aria-invalid="!!errors.email"
                         />
                     </div>
-                    <InputError :message="errors.email" />
                 </div>
 
                 <div class="space-y-2">
@@ -63,14 +70,15 @@ const showPassword = ref(false)
                         <TextLink
                             v-if="canResetPassword"
                             :href="request()"
-                            class="text-xs font-semibold text-indigo-600 transition duration-200 hover:text-indigo-500 hover:underline dark:text-indigo-400"
+                            class="text-xs font-semibold text-primary underline-offset-4 hover:underline"
                         >
                             ¿Olvidaste tu contraseña?
                         </TextLink>
                     </div>
                     <div class="group relative">
                         <Lock
-                            class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground transition-colors duration-200 group-focus-within:text-indigo-500"
+                            class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground transition-colors duration-200 group-focus-within:text-primary"
+                            aria-hidden="true"
                         />
                         <Input
                             id="password"
@@ -79,11 +87,12 @@ const showPassword = ref(false)
                             required
                             autocomplete="current-password"
                             placeholder="••••••••"
-                            class="h-11 rounded-xl pr-11 pl-10 transition duration-200 focus-visible:ring-2 focus-visible:ring-indigo-500/40"
+                            class="h-11 rounded-xl pr-11 pl-10"
+                            :aria-invalid="!!errors.password"
                         />
                         <button
                             type="button"
-                            class="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-muted-foreground transition duration-200 hover:scale-110 hover:text-indigo-500 active:scale-95"
+                            class="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-muted-foreground transition-colors hover:text-foreground"
                             :aria-label="showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'"
                             @click="showPassword = !showPassword"
                         >
@@ -98,15 +107,11 @@ const showPassword = ref(false)
                     type="submit"
                     :disabled="processing"
                     data-test="login-button"
-                    class="group relative h-11 w-full overflow-hidden rounded-xl bg-indigo-600 font-bold shadow-lg shadow-indigo-600/20 transition duration-200 hover:-translate-y-0.5 hover:bg-indigo-500 hover:shadow-xl hover:shadow-indigo-600/30 active:translate-y-0"
+                    size="lg"
+                    class="h-11 w-full rounded-xl text-[0.95rem] font-semibold"
                 >
-                    <span
-                        class="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 group-hover:translate-x-full"
-                    ></span>
-                    <span class="relative flex items-center justify-center gap-2">
-                        <Spinner v-if="processing" class="size-4" />
-                        <span>{{ processing ? 'Validando…' : 'Iniciar sesión' }}</span>
-                    </span>
+                    <Spinner v-if="processing" class="size-4" />
+                    <span>{{ processing ? 'Entrando…' : 'Entrar' }}</span>
                 </Button>
             </Form>
         </AuthFormPanel>

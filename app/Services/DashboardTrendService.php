@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Branch;
 use App\Models\Period;
 use App\Models\PeriodSummary;
 use Illuminate\Support\Facades\Cache;
@@ -14,11 +15,20 @@ use Illuminate\Support\Facades\Cache;
  * request (causa real de "tarda muchísimo"/timeout reportada en producción: PHP
  * puede fatalear por max_execution_time a la mitad de ese cálculo, dejando el
  * fetch del frontend sin JSON válido — ver DashboardController::trend()).
+ *
+ * Fase 7.1 (15-oct-2026) — la tendencia respeta el ALCANCE elegido: con sucursal,
+ * cada punto sale del snapshot de ESA sucursal (mismo buildSnapshot() con
+ * scope=branch que alimenta los KPI del Dashboard y Reportería por sucursal), así
+ * el último punto coincide siempre con la tarjeta EBITDA/OPEX de arriba. Sin
+ * sucursal, consolidado (snapshot general). Caché POR PUNTO: periodo + resumen
+ * vigente (id y updated_at) + alcance/sucursal — regenerar un periodo invalida
+ * solo sus puntos, nunca deja cifras viejas hasta que venza un TTL.
  */
 class DashboardTrendService
 {
-    private const CACHE_TTL = 900; // 15 min
+    private const POINT_TTL = 43_200; // 12 h — la clave ya cambia sola al regenerar el periodo
     private const PERIODS_COUNT = 6;
+    private const CACHE_VERSION = 'v2';
 
     public function __construct(private readonly RadiografiaExportService $exportService)
     {
@@ -37,45 +47,88 @@ class DashboardTrendService
             ->get();
     }
 
-    /** Construye (o reutiliza de caché) la tendencia de los últimos periodos del sistema. */
-    public function build(): array
+    /**
+     * Tendencia de los últimos periodos del sistema para el alcance pedido.
+     *
+     * Cada punto: label, period_id, ebitda, opex y available (false = la sucursal no
+     * tuvo radiografía ese periodo: ebitda/opex null, nunca un 0 inventado).
+     *
+     * @return array<int, array{label: string, period_id: int, ebitda: ?float, opex: ?float, available: bool}>
+     */
+    public function build(?int $branchId = null): array
     {
         $periods = $this->availablePeriods();
         if ($periods->isEmpty()) {
             return [];
         }
 
-        // ->all() (array PHP plano, nunca un objeto Collection) antes de cachear — el
-        // driver 'database' de cache serializa/deserializa vía serialize() nativo de
-        // PHP; un Collection devuelto por Cache::remember() en este contexto volvía
-        // como __PHP_Incomplete_Class (confirmado con inspección directa de la fila en
-        // la tabla `cache`, que sí tenía el valor correcto serializado — el problema
-        // era la reconstrucción del objeto Collection en el mismo request, no el dato).
-        // Un array plano no tiene esa ambigüedad de clase — json_encode() nunca falla.
-        return Cache::remember($this->cacheKey($periods), self::CACHE_TTL, function () use ($periods) {
-            return $periods->take(self::PERIODS_COUNT)->reverse()->map(function (Period $p) {
-                $s = $this->exportService->buildSnapshot($p, ['scope' => 'general']);
+        $selected = $periods->take(self::PERIODS_COUNT)->reverse()->values();
+        $versions = $this->summaryVersions($selected->pluck('id')->all());
 
-                return [
-                    'label'  => $p->label,
-                    'ebitda' => round((float) ($s['summary']['ebitda_final'] ?? 0), 2),
-                    'opex'   => round((float) ($s['summary']['opex_total'] ?? 0), 2),
-                ];
-            })->values()->all();
-        });
+        // ->all() / arreglos planos antes de cachear — el driver 'database' serializa
+        // con serialize() nativo; un Collection podía volver como __PHP_Incomplete_Class
+        // (ver historial de este archivo). Un array plano no tiene esa ambigüedad.
+        return $selected->map(function (Period $p) use ($branchId, $versions) {
+            $version = $versions[$p->id] ?? null;
+            if ($version === null) {
+                return ['label' => $p->label, 'period_id' => $p->id, 'ebitda' => null, 'opex' => null, 'available' => false];
+            }
+
+            return Cache::remember($this->pointKey($p->id, $version, $branchId), self::POINT_TTL, fn () => $this->point($p, $branchId));
+        })->values()->all();
+    }
+
+    /** Nombre legible del alcance para títulos/notas ("Todas las sucursales" o la sucursal). */
+    public function scopeLabel(?int $branchId): string
+    {
+        if (!$branchId) {
+            return 'Todas las sucursales';
+        }
+
+        return (string) (Branch::query()->whereKey($branchId)->value('name') ?? 'Sucursal');
+    }
+
+    private function point(Period $p, ?int $branchId): array
+    {
+        $config = $branchId ? ['scope' => 'branch', 'branch_id' => $branchId] : [];
+        $s = $this->exportService->buildSnapshot($p, $config);
+
+        if ($branchId && !($s['scope']['available'] ?? true)) {
+            return ['label' => $p->label, 'period_id' => $p->id, 'ebitda' => null, 'opex' => null, 'available' => false];
+        }
+
+        // MISMO redondeo que los KPI de DashboardController::payloadForPeriod().
+        return [
+            'label'     => $p->label,
+            'period_id' => $p->id,
+            'ebitda'    => round((float) ($s['summary']['ebitda_final'] ?? 0), 2),
+            'opex'      => round((float) ($s['summary']['opex_total'] ?? 0), 2),
+            'available' => true,
+        ];
     }
 
     /**
-     * La clave incluye la versión (updated_at) del resumen de cada periodo: si un
-     * periodo se regenera o invalida, la tendencia se recalcula al instante en vez
-     * de mostrar cifras anteriores hasta que venza el TTL.
+     * Versión del resumen VIGENTE de cada periodo (mismo criterio que
+     * RadiografiaExportService::requireSummary(): generado, no invalidado, el más
+     * reciente) — "id@updated_at".
+     *
+     * @param  int[]  $periodIds
+     * @return array<int, string>
      */
-    private function cacheKey($periods): string
+    private function summaryVersions(array $periodIds): array
     {
-        $ids = $periods->take(self::PERIODS_COUNT)->pluck('id');
-        $versions = PeriodSummary::query()->whereIn('period_id', $ids)->orderBy('period_id')
-            ->get(['period_id', 'updated_at'])->map(fn ($s) => $s->period_id . '@' . ($s->updated_at?->timestamp ?? 0))->implode(',');
+        return PeriodSummary::query()
+            ->whereIn('period_id', $periodIds)
+            ->where('status', 'generated')
+            ->whereNull('invalidated_at')
+            ->orderBy('id')
+            ->get(['id', 'period_id', 'updated_at'])
+            ->mapWithKeys(fn (PeriodSummary $s) => [$s->period_id => $s->id . '@' . ($s->updated_at?->timestamp ?? 0)])
+            ->all();
+    }
 
-        return 'dashboard_trend_' . $ids->implode('_') . '_' . md5($versions);
+    private function pointKey(int $periodId, string $version, ?int $branchId): string
+    {
+        return sprintf('dashboard_trend_point:%s:%d:%s:%s', self::CACHE_VERSION, $periodId, $version, $branchId ? 'branch-' . $branchId : 'general');
     }
 }

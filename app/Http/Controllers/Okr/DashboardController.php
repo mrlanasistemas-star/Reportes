@@ -103,7 +103,8 @@ class DashboardController extends Controller
                 'avg_compliance'    => $avgCompliance,
                 'branches_with_okr' => $branchesWithOkr,
                 'employees_with_okr'=> $employeesWithOkr,
-                'total_branches'    => count($this->operativeBranchNames()),
+                // Fase 6.4 — alcance restringido: denominadores de SUS sucursales, nunca de toda la empresa.
+                'total_branches'    => app(\App\Services\Access\DataScopeService::class)->isGeneral($request->user()) ? count($this->operativeBranchNames()) : $this->assignableBranches()->count(),
                 // D12 del cierre (17-sep-2026): con sucursal filtrada, el
                 // denominador debe ser el total de ESA sucursal, nunca el global
                 // (bug real: mostraba "X / 78" para Córdoba en vez de "X / TOTAL
@@ -111,9 +112,7 @@ class DashboardController extends Controller
                 // canónica que employeesForBranch() (D1/D2) — nunca
                 // Employee::count() a secas, que cuenta IDs históricos duplicados
                 // como personas distintas.
-                'total_employees'   => ($branchIdForEmployeeCount = $request->integer('branch_id'))
-                    ? app(OkrEmployeeBranchResolver::class)->countForBranch($branchIdForEmployeeCount)
-                    : app(OkrEmployeeBranchResolver::class)->countAllActive(),
+                'total_employees'   => $this->totalEmployeesInScope($request),
             ],
             // "Cumplimiento general" (docs/imagenesOKR/1.png y 2.png) — donut
             // por semáforo de los OKR activos del alcance filtrado.
@@ -322,5 +321,25 @@ class DashboardController extends Controller
             'key_results' => $o->keyResults->map(fn ($kr) => $kr->description)->all(),
             'kpis' => $o->keyResults->map(fn ($kr) => $kr->kpi->name)->unique()->values()->all(),
         ];
+    }
+    /**
+     * Fase 6.4 — total de colaboradores del alcance: con sucursal elegida, el de
+     * esa sucursal (EnsureBranchScope ya rechazó una ajena); sin sucursal, el de
+     * toda la empresa SOLO para alcance general — un restringido recibe la suma
+     * de sus sucursales.
+     */
+    private function totalEmployeesInScope(Request $request): int
+    {
+        $resolver = app(OkrEmployeeBranchResolver::class);
+        if ($branchId = $request->integer('branch_id')) {
+            return $resolver->countForBranch($branchId);
+        }
+
+        $allowed = app(\App\Services\Access\DataScopeService::class)->allowedBranchIds($request->user());
+        if ($allowed === null) {
+            return $resolver->countAllActive();
+        }
+
+        return array_sum(array_map(fn (int $id) => $resolver->countForBranch($id), $allowed));
     }
 }

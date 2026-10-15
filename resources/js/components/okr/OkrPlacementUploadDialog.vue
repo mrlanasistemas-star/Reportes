@@ -15,7 +15,10 @@ const props = defineProps<{ objectiveId: number; scopeType: string; week: { week
 const open = defineModel<boolean>('open', { default: false })
 
 const file = ref<File | null>(null)
-const completeReport = ref(true)
+// 4.6 (19-oct-2026): el tipo de reporte se ELIGE explícitamente — sin valor
+// por defecto. Completo: quien no aparece colocó $0. Parcial: la ausencia
+// queda como dato pendiente, nunca en cero.
+const reportType = ref<'complete' | 'partial' | null>(null)
 const uploading = ref(false)
 const dragging = ref(false)
 // Conflicto "ya hay archivo" — se confirma DENTRO del diálogo (un SweetAlert
@@ -25,7 +28,7 @@ const conflict = ref<{ original_filename: string; total_amount: number } | null>
 watch(open, (v) => {
     if (v) {
         file.value = null
-        completeReport.value = true
+        reportType.value = null
         conflict.value = null
     }
 })
@@ -52,8 +55,8 @@ async function submit(confirmReplace = false) {
         data.append('confirm_replace', '1')
     }
 
-    if (props.scopeType === 'branch' && completeReport.value) {
-        data.append('complete_report', '1')
+    if (props.scopeType === 'branch') {
+        data.append('complete_report', reportType.value === 'complete' ? '1' : '0')
     }
 
     uploading.value = true
@@ -79,6 +82,10 @@ async function submit(confirmReplace = false) {
         u.rows_cancelled ? `${u.rows_cancelled} movimiento(s) cancelados o revertidos excluidos` : null,
         u.rows_out_of_objective_range ? `${u.rows_out_of_objective_range} fila(s) fuera del plazo del OKR excluidas` : null,
         u.unattributed_amount ? `${formatCurrency(u.unattributed_amount)} pendiente de atribución: sin gestor identificado con seguridad (solo cuenta para la sucursal)` : null,
+        props.scopeType === 'branch' && u.declared_complete === false && u.coverage_status !== 'full'
+            ? 'Reporte parcial: los gestores que no aparecen quedan con la semana pendiente (no se registran en cero)'
+            : null,
+        props.scopeType === 'branch' && u.declared_complete ? 'Reporte completo: los gestores que no aparecen registran $0.00 esta semana' : null,
     ].filter(Boolean)
     open.value = false
     Swal.fire({
@@ -108,10 +115,21 @@ async function submit(confirmReplace = false) {
                 <input type="file" accept=".xlsx,.xls,.csv" class="hidden" @change="pick">
             </label>
 
-            <label v-if="scopeType === 'branch'" class="flex cursor-pointer items-start gap-2 rounded-xl bg-muted/30 p-3 text-xs text-muted-foreground transition hover:bg-muted/50">
-                <input v-model="completeReport" type="checkbox" class="mt-0.5 accent-primary">
-                <span><strong class="text-foreground">Es el reporte completo de la sucursal en esa semana.</strong> Un gestor que no aparezca colocó $0.00. Si es un archivo parcial, desmárcalo: los gestores sin filas quedan "sin dato", nunca en cero.</span>
-            </label>
+            <fieldset v-if="scopeType === 'branch'" class="space-y-1.5">
+                <legend class="mb-1 text-xs font-bold text-foreground">¿Qué tipo de reporte es? <span class="font-normal text-destructive">(obligatorio)</span></legend>
+                <label
+                    v-for="opt in [
+                        { value: 'complete', title: 'Reporte completo de la semana', text: 'Trae todos los movimientos de la sucursal. Un gestor que no aparezca colocó $0.00 esa semana.' },
+                        { value: 'partial', title: 'Reporte parcial', text: 'Solo trae una parte. Los gestores que no aparezcan quedan con la semana pendiente; nunca se registran en cero.' },
+                    ]"
+                    :key="opt.value"
+                    class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 text-xs transition"
+                    :class="reportType === opt.value ? 'border-primary bg-primary/5 ring-1 ring-primary/30' : 'border-border hover:border-primary/40 hover:bg-muted/30'"
+                >
+                    <input v-model="reportType" type="radio" name="okr-report-type" :value="opt.value" class="mt-0.5 accent-primary">
+                    <span><strong class="block text-foreground">{{ opt.title }}</strong><span class="text-muted-foreground">{{ opt.text }}</span></span>
+                </label>
+            </fieldset>
 
             <div v-if="conflict" class="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-xs animate-in fade-in">
                 <p class="text-foreground">La semana {{ week?.week_number }} ya tiene el archivo <strong>{{ conflict.original_filename }}</strong> ({{ formatCurrency(conflict.total_amount) }}). El anterior se conserva como reemplazado.</p>
@@ -123,7 +141,8 @@ async function submit(confirmReplace = false) {
 
             <div v-else class="flex justify-end gap-2">
                 <Button variant="ghost" class="rounded-xl" :disabled="uploading" @click="open = false">Cancelar</Button>
-                <Button class="gap-1.5 rounded-xl" :disabled="!file || uploading" @click="submit()">
+                <p v-if="file && scopeType === 'branch' && !reportType" class="mr-auto self-center text-[11px] font-semibold text-amber-700 dark:text-amber-300">Indica si el reporte es completo o parcial.</p>
+                <Button class="gap-1.5 rounded-xl" :disabled="!file || uploading || (scopeType === 'branch' && !reportType)" @click="submit()">
                     <Loader2 v-if="uploading" class="size-4 animate-spin" /><Upload v-else class="size-4" /> {{ uploading ? 'Procesando…' : (week?.uploaded ? 'Reemplazar archivo' : 'Cargar archivo') }}
                 </Button>
             </div>

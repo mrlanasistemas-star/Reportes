@@ -65,10 +65,27 @@ class CanonicalEmployeeResolver
      */
     public function canonicalize(Collection $rows): Collection
     {
+        // Cierre 2026-10: dos registros con el MISMO nombre pero un rechazo de
+        // fusión explícito (employee_match_rejections — homónimos con clave NOI
+        // distinta, o decisión de un usuario) son personas DISTINTAS. Es la
+        // señal de desambiguación que faltaba (ver la limitación documentada
+        // arriba); misma regla que Roster\RosterIdentityResolver.
+        $rejected = $this->rejectedPairs($rows->pluck('id')->map(fn ($id) => (int) $id)->all());
+        $membersByKey = [];
         $byIdentity = [];
         foreach ($rows as $row) {
             $norm = trim((string) ($row->normalized_name ?? ''));
             $key  = $norm !== '' ? $norm : ('__employee_' . $row->id);
+            if ($rejected !== []) {
+                $base = $key;
+                $suffix = 0;
+                while (isset($membersByKey[$key]) && collect($membersByKey[$key])->contains(
+                    fn ($m) => isset($rejected[\App\Models\EmployeeMatchRejection::pairKey((int) $m, (int) $row->id)])
+                )) {
+                    $key = $base . '#' . (++$suffix);
+                }
+                $membersByKey[$key][] = (int) $row->id;
+            }
 
             if (!isset($byIdentity[$key])) {
                 $byIdentity[$key] = ['id' => (int) $row->id, 'full_name' => $row->full_name ?? null, 'employee_ids' => []];
@@ -78,5 +95,23 @@ class CanonicalEmployeeResolver
         }
 
         return collect(array_values($byIdentity))->map(fn ($r) => (object) $r);
+    }
+
+    /** @return array<string, true> pair_key de rechazos que involucran a estos ids. */
+    private function rejectedPairs(array $ids): array
+    {
+        // Sin BD disponible (pruebas unitarias puras) no hay rechazos que consultar.
+        if (count($ids) < 2 || !app()->bound('db') || !\Illuminate\Support\Facades\Schema::hasTable('employee_match_rejections')) {
+            return [];
+        }
+        $out = [];
+        foreach (array_chunk($ids, 500) as $chunk) {
+            foreach (\Illuminate\Support\Facades\DB::table('employee_match_rejections')
+                ->whereIn('employee_id_a', $chunk)->orWhereIn('employee_id_b', $chunk)->pluck('pair_key') as $k) {
+                $out[(string) $k] = true;
+            }
+        }
+
+        return $out;
     }
 }

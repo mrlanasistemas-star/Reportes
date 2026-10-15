@@ -1,4 +1,4 @@
-# Instalación limpia en el VPS nuevo (Reportería + OKR + Efectividad V4)
+# Instalación limpia en el VPS nuevo (Reportería + OKR + Efectividad V7)
 
 > **Solo instrucciones.** Este documento no despliega nada. Instalación **desde cero**: no se
 > migra la base anterior, ni usuarios, sesiones, tokens o importaciones viejas. El usuario
@@ -9,7 +9,7 @@ Stack: PHP 8.4, Nginx, MySQL 8 (InnoDB), Node.js 24, Composer 2, Supervisor, Lar
 Scheduler (cron), Puppeteer/Chrome (Browsershot), SMTP y Laravel Sanctum (API).
 
 Rutas de ejemplo: proyecto en `/var/www/reportes`, usuario de servicio `www-data`, dominio
-`reportes.ejemplo.mx`. Ajústalas a las reales.
+`reportes.mr-lana.com`. Ajústalas a las reales.
 
 ---
 
@@ -68,7 +68,7 @@ Valores mínimos (sin comillas sobrantes):
 APP_NAME="Reportes MR LANA"
 APP_ENV=production
 APP_DEBUG=false
-APP_URL=https://reportes.ejemplo.mx      # los enlaces de los correos usan este dominio
+APP_URL=https://reportes.mr-lana.com      # los enlaces de los correos usan este dominio
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
@@ -93,7 +93,7 @@ MAIL_PORT=587
 MAIL_USERNAME=********
 MAIL_PASSWORD=********
 MAIL_ENCRYPTION=tls
-MAIL_FROM_ADDRESS="reportes@ejemplo.mx"
+MAIL_FROM_ADDRESS="reportes@mr-lana.com"
 MAIL_FROM_NAME="${APP_NAME}"
 
 BROWSERSHOT_NODE_BINARY=/usr/bin/node
@@ -116,9 +116,8 @@ sudo -u www-data php artisan migrate --force
 sudo -u www-data php artisan db:seed --force     # SOLO: DataSourceSeeder, BranchSeeder, OkrKpiSeeder
 ```
 
-Verificado el 12-oct-2026 en una BD vacía de MySQL 8.4 con `DB_ENGINE=InnoDB`: corrieron
-88 migraciones (las 3 de V4 incluidas) en ~18 s, con 63 tablas InnoDB y 113 claves
-foráneas. Los seeders crearon 12 fuentes de datos (incluida `lendus_saldos_cliente_foto`),
+Verificado de nuevo el 15-oct-2026 en una BD vacía de MySQL 8.4 con `DB_ENGINE=InnoDB`:
+corrieron las 105 migraciones, con 69 tablas InnoDB. Los seeders crearon 12 fuentes de datos (incluida `lendus_saldos_cliente_foto`),
 13 sucursales oficiales y 15 KPI de OKR. **No se crean usuarios.**
 
 Comprobación:
@@ -137,7 +136,7 @@ sudo -u www-data php artisan tinker --execute="
 \$u = new App\Models\User;
 \$u->forceFill([
   'name' => 'Administrador',
-  'email' => 'admin@ejemplo.mx',
+  'email' => 'admin@mr-lana.com',
   'password' => Illuminate\Support\Facades\Hash::make('CAMBIAR-ESTA-CLAVE'),
   'role' => 'admin',
   'email_verified_at' => now(),
@@ -167,18 +166,18 @@ sudo chmod -R ug+rwX storage bootstrap/cache
 ```nginx
 server {
     listen 80;
-    server_name reportes.ejemplo.mx;
+    server_name reportes.mr-lana.com;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name reportes.ejemplo.mx;
+    server_name reportes.mr-lana.com;
     root /var/www/reportes/public;
     index index.php;
 
-    ssl_certificate     /etc/letsencrypt/live/reportes.ejemplo.mx/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/reportes.ejemplo.mx/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/reportes.mr-lana.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/reportes.mr-lana.com/privkey.pem;
 
     client_max_body_size 140M;          # la validación permite Excel de hasta 128 MB
 
@@ -186,8 +185,10 @@ server {
     add_header X-Content-Type-Options "nosniff";
 
     # Originales con información financiera y personal: nunca por URL pública.
-    location ^~ /storage/reports/      { deny all; return 404; }
-    location ^~ /storage/report_uploads/ { deny all; return 404; }
+    # Fase 10: TODO /storage/ (disco public = originales NOI/Lendus/cartera/efectividad).
+    # Ningún archivo del sistema se sirve por URL pública; las descargas pasan por
+    # controladores con permiso + alcance. (En Apache lo bloquea storage/app/public/.htaccess.)
+    location ^~ /storage/ { deny all; return 404; }
 
     location / {
         try_files $uri $uri/ /index.php?$query_string;
@@ -205,7 +206,7 @@ server {
 ```
 
 ```bash
-sudo certbot --nginx -d reportes.ejemplo.mx
+sudo certbot --nginx -d reportes.mr-lana.com
 # PHP-FPM (php.ini): upload_max_filesize=128M, post_max_size=140M, memory_limit=512M
 sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -285,10 +286,10 @@ sudo -u www-data php artisan event:cache
 ## 16. Validar la API
 
 ```bash
-curl -s https://reportes.ejemplo.mx/api/v1/health                      # 200 sin token
+curl -s https://reportes.mr-lana.com/api/v1/health                      # 200 sin token
 sudo -u www-data php artisan api:consumers:create "Sistema X" sistema-x --ability=collections.read --ability=periods.read
-curl -s -H "Authorization: Bearer <TOKEN>" "https://reportes.ejemplo.mx/api/v1/collections/effectiveness?period_id=<ID_SEMANA>"
-curl -s -o /dev/null -w "%{http_code}\n" https://reportes.ejemplo.mx/storage/reports/x.xlsx   # debe dar 404
+curl -s -H "Authorization: Bearer <TOKEN>" "https://reportes.mr-lana.com/api/v1/collections/effectiveness?period_id=<ID_SEMANA>"
+curl -s -o /dev/null -w "%{http_code}\n" https://reportes.mr-lana.com/storage/reports/x.xlsx   # debe dar 404
 ```
 
 ## 17-20. Carga inicial y validación funcional (en orden)
@@ -296,11 +297,12 @@ curl -s -o /dev/null -w "%{http_code}\n" https://reportes.ejemplo.mx/storage/rep
 1. Con el admin: **Periodos**. Crea los meses operativos y sus semanas lunes-domingo.
 2. **Histórico General** (mes operativo): NOI, Gastos, Ingresos Cobranza, Saldos por Cliente
    mensual, etc. Para cada archivo, **Analizar** o **Actualizar BD**.
-3. **Efectividad de Cobranza**: elige una semana. En **Disponibilidad de información**
-   carga las **8 fotografías** (domingo base … domingo corte). Cada tarjeta debe quedar en
-   *Disponible*.
-4. **Generar reporte** (Semanal). Revisa las 9 etapas, el resultado, las incidencias, el
-   CSV y el Excel. Comprueba que llegan la notificación interna y el correo.
+3. **Efectividad de Cobranza** (calculadora temporal, metodología V7): sube las carteras
+   «Saldos por Cliente» (domingo base … domingo corte) y el «Ingresos Cobranza». Calcula la
+   semana y comprueba que el resultado dice «Metodología V7». Descarga PNG y PDF. Los
+   archivos no se guardan: «Limpiar archivos» borra el espacio temporal.
+4. Compara una semana real contra la macro V7: misma fila de GRAN TOTAL (sano, atraso,
+   vencido, cobranza total y %).
 5. **Reportería**: genera la radiografía mensual y revisa indicadores, exportaciones y
    descargas de originales.
 6. **OKR**: objetivos, KR, avances, evidencias, vista previa y PDF (Browsershot).
@@ -314,7 +316,8 @@ Checklist final:
 - [ ] `/storage/reports/*` responde 404.
 - [ ] Correo de prueba recibido.
 - [ ] PDF de OKR generado.
-- [ ] Efectividad V4 de una semana real generada y revisada contra el Excel de la macro.
+- [ ] Efectividad V7 de una semana real calculada y revisada contra la macro V7.
+- [ ] `php artisan reportes:verificar-despliegue` termina en «Todo en orden».
 
 ## Qué NO hacer en esta instalación
 
@@ -322,3 +325,128 @@ Checklist final:
 - No copiar `.env` del servidor viejo (contiene `APP_KEY`, sesiones y tokens anteriores).
 - No ejecutar `migrate:fresh` sobre una BD con información ya cargada.
 - No apagar ni borrar el servidor anterior hasta validar todos los puntos anteriores.
+
+---
+
+## 21. Actualizar una versión ya instalada (sin detener los demás servicios del VPS)
+
+Solo toca `/var/www/reportes` y su base. No reinicies Nginx ni MySQL completos: basta con
+recargar.
+
+```bash
+cd /var/www/reportes
+# 0) Respaldo ANTES de cualquier cambio (base + storage privado + .env)
+mysqldump --single-transaction --routines reportes > ~/respaldos/reportes_$(date +%F_%H%M).sql
+tar czf ~/respaldos/storage_$(date +%F_%H%M).tgz storage/app/private .env
+git rev-parse HEAD > ~/respaldos/version_anterior.txt
+
+# 1) Código y dependencias
+sudo -u www-data php artisan down --retry=60          # opcional: aviso de mantenimiento
+sudo -u www-data git pull --ff-only
+sudo -u www-data composer install --no-dev --optimize-autoloader --no-interaction
+sudo -u www-data npm ci && sudo -u www-data npm run build
+
+# 2) Base de datos ANTES de servir la versión nueva (todas las migraciones son aditivas)
+sudo -u www-data php artisan migrate --force
+
+# 3) Cachés: SIEMPRE limpiar y regenerar (una caché de rutas vieja = 404 en módulos nuevos)
+sudo -u www-data php artisan optimize:clear
+sudo -u www-data php artisan optimize               # config, rutas, vistas y eventos
+
+# 4) Que PHP-FPM y los workers lean el código nuevo (OPcache conserva el anterior)
+sudo systemctl reload php8.4-fpm
+sudo -u www-data php artisan queue:restart
+
+sudo -u www-data php artisan up
+sudo -u www-data php artisan reportes:verificar-despliegue   # debe terminar en «Todo en orden»
+sudo -u www-data php artisan reports:pdf-health
+```
+
+Migraciones de esta versión (15-oct-2026), todas aditivas (solo crean tablas/columnas o
+insertan permisos con `insertOrIgnore`; los `drop` existen únicamente en `down()`):
+`2026_10_17_000001` atribución de colocación · `2026_10_17_000002` conciliaciones de sucursal ·
+`2026_10_17_100000` campos de acceso de usuarios · `2026_10_17_100100` siembra de permisos por
+acción · `2026_10_18_000001` evidencia de movimientos laborales · `2026_10_19_000001` un solo
+documento OKR vigente · `2026_10_19_120000` alcance por sucursal. (Lista completa:
+`php artisan migrate:status`.)
+
+## 22. Verificación posterior al despliegue
+
+1. `php artisan reportes:verificar-despliegue` → rutas críticas, menú lateral, cachés,
+   migraciones, build de Vite, permisos de escritura, archivos sensibles, Montserrat y
+   configuración. Sale con código 1 si algo crítico falla.
+2. `php artisan reports:pdf-health` → Node, Chrome, Browsershot y escritura.
+3. En el navegador, con el administrador: Dashboard (PDF y Excel), Usuarios, Roles y permisos,
+   Colaboradores, Reportes mensuales (un comparativo), Efectividad (una semana) y OKR (abrir un
+   objetivo y su Carta en el visor).
+4. `curl -s -o /dev/null -w "%{http_code}\n" https://reportes.mr-lana.com/storage/reports/x.xlsx`
+   → debe dar 403 o 404, nunca 200.
+5. Con un usuario de alcance restringido (una sola sucursal): otra sucursal por URL directa
+   debe responder 403 con mensaje.
+
+## 23. Reversión
+
+Las migraciones son aditivas: la versión anterior funciona con las tablas/columnas nuevas
+presentes, así que **no hace falta** `migrate:rollback` (y no debe correrse sobre datos reales).
+
+```bash
+cd /var/www/reportes
+sudo -u www-data php artisan down --retry=60
+sudo -u www-data git checkout $(cat ~/respaldos/version_anterior.txt)
+sudo -u www-data composer install --no-dev --optimize-autoloader --no-interaction
+sudo -u www-data npm ci && sudo -u www-data npm run build
+sudo -u www-data php artisan optimize:clear && sudo -u www-data php artisan optimize
+sudo systemctl reload php8.4-fpm && sudo -u www-data php artisan queue:restart
+sudo -u www-data php artisan up
+```
+
+Solo si hubo daño de datos: restaurar el `mysqldump` del paso 0 en una base NUEVA, revisarla y
+después cambiar `DB_DATABASE` (nunca sobrescribir la base viva sin revisar).
+
+## 24. Diagnóstico: «404» en Usuarios / Roles y permisos (u otro módulo nuevo)
+
+Síntoma: el menú lateral muestra el módulo (el frontend ya es nuevo) pero al entrar da 404.
+El código sí registra `/usuarios` y `/roles` (lo comprueba `tests/Feature/SidebarRoutesTest.php`);
+la causa está en el servidor:
+
+1. **Caché de rutas vieja** (`route:cache` de la versión anterior): `php artisan optimize:clear`
+   y luego `php artisan optimize`.
+2. **OPcache de PHP-FPM** con el código anterior (`opcache.validate_timestamps=0`):
+   `sudo systemctl reload php8.4-fpm`.
+3. **Migraciones pendientes** o **build sin compilar**: `php artisan reportes:verificar-despliegue`
+   lo indica con la acción exacta.
+4. `php artisan route:list --path=usuarios` debe mostrar `usuarios.index`; si no aparece, el
+   `git pull` no trajo el código nuevo.
+
+## 25. Base de datos: InnoDB obligatorio
+
+Las protecciones de concurrencia (un solo documento vigente, cargas de colocación, cancelación
+de procesos) se apoyan en transacciones y bloqueos de fila. Con MyISAM no existen: el código
+añade candados entre procesos e índices únicos, pero la instalación del VPS **debe** usar
+`DB_ENGINE=InnoDB` (sección 4) y `default_storage_engine=InnoDB` en MySQL. Comprobación:
+
+```bash
+mysql -e "SELECT ENGINE, COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='reportes' GROUP BY ENGINE;"
+```
+
+## 26. Datos sensibles en el repositorio (requiere autorización)
+
+Hasta el commit `30664e2` se versionaron archivos reales (nóminas NOI, saldos por cliente,
+gastos, IMSS y el libro de Efectividad de Tula) en `documentosEjemplo/`, `documentosJunio/`,
+`documentosMayo/`, `documentosColumnas/`, `docRadios/` y
+`docs/efectividad/MR_LANA_EFECTIVIDAD PRUEBA TULA.xlsm`. El `.gitignore` ya impide agregar más,
+pero **siguen en el historial y en GitHub**. El código no depende de ellos (solo comentarios
+los mencionan). Con autorización del responsable:
+
+```bash
+# Dejar de versionarlos (los archivos locales se conservan):
+git rm -r --cached documentosEjemplo documentosJunio documentosMayo documentosColumnas docRadios \
+  "docs/efectividad/MR_LANA_EFECTIVIDAD PRUEBA TULA.xlsm"
+git commit -m "Retirar datos reales del repositorio"
+# Purgar el historial (reescribe commits; coordinar con quien tenga clones):
+#   git filter-repo --path documentosEjemplo --path documentosJunio ... --invert-paths
+#   git push --force   (y verificar que el repositorio de GitHub sea privado)
+```
+
+En el VPS, clona después de esa limpieza o borra esas carpetas del servidor: no están bajo
+`public/`, pero no deben residir en producción.

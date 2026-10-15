@@ -24,6 +24,7 @@ use Throwable;
 class WarningController extends Controller
 {
     use AuthorizesRequests;
+    use Concerns\ServesOkrDocuments;
 
     /** Elegibilidad de cada semana transcurrida (o de una sola con ?week=). */
     public function eligibility(Request $request, OkrObjective $objective, OkrWarningService $service): JsonResponse
@@ -128,35 +129,22 @@ class WarningController extends Controller
         return response()->json(['warning' => $this->payload($warning)]);
     }
 
-    public function download(Request $request, OkrWarning $warning): StreamedResponse
+    /** ?view=1 → inline; ?signed=1 → copia firmada; faltante → mensaje específico. */
+    public function download(Request $request, OkrWarning $warning): \Symfony\Component\HttpFoundation\Response
     {
         $this->authorize('view', $warning->objective);
-        abort_unless(Storage::disk($warning->disk)->exists($warning->stored_path), 404, 'El documento ya no está disponible.');
 
-        $filename = "{$warning->folio}.pdf";
-
-        // ?view=1: misma lógica que Carta Compromiso — disposición "inline"
-        // para previsualizar en el sistema o en otra pestaña sin forzar descarga.
-        return $request->boolean('view')
-            ? Storage::disk($warning->disk)->response($warning->stored_path, $filename)
-            : Storage::disk($warning->disk)->download($warning->stored_path, $filename);
+        return $this->serveDocument($request, $warning, 'Warning');
     }
 
     public function uploadSigned(Request $request, OkrWarning $warning): JsonResponse
     {
         $this->authorize('update', $warning->objective);
-        abort_if($warning->isVoided(), 422, 'Este Warning está anulado — no admite copia firmada.');
-        $request->validate(['file' => ['required', 'file', 'max:10240', 'mimes:pdf']]);
+        if ($warning->isVoided()) {
+            return response()->json(['message' => "El Warning {$warning->folio} está anulado: no admite copia firmada."], 422);
+        }
 
-        $disk = 'local';
-        $path = $request->file('file')->store('okr-warnings/' . $warning->okr_objective_id . '/firmados', $disk);
-
-        $warning->update([
-            'signed_stored_path' => $path, 'signed_disk' => $disk,
-            'signed_uploaded_by' => $request->user()->id, 'signed_uploaded_at' => now(),
-        ]);
-
-        return response()->json(['success' => true]);
+        return $this->storeSignedCopy($request, $warning, 'okr-warnings/' . $warning->okr_objective_id . '/firmados', 'Warning');
     }
 
     private function payload(OkrWarning $warning): array
@@ -166,9 +154,11 @@ class WarningController extends Controller
             'collaborator' => $warning->snapshot['collaborator_name'] ?? $warning->snapshot['employee_name'] ?? null,
             'generated_at' => $warning->generated_at->toDateTimeString(),
             'is_signed' => $warning->isSigned(),
+            'file_available' => $warning->hasStoredFile(),
             'voided_at' => $warning->voided_at?->toDateTimeString(), 'void_reason' => $warning->void_reason,
             'download_url' => route('okr.warnings.download', $warning),
             'view_url' => route('okr.warnings.download', $warning) . '?view=1',
+            'signed_view_url' => $warning->isSigned() ? route('okr.warnings.download', $warning) . '?view=1&signed=1' : null,
         ];
     }
 }

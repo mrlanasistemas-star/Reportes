@@ -30,14 +30,14 @@ function clearAll() {
 }
 
 const selectClass =
-    'rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 dark:border-slate-700 dark:bg-card dark:text-slate-200 dark:focus:border-indigo-500 dark:focus:ring-indigo-500/20'
+    'rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground/80 shadow-sm transition focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30     '
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-white p-4 shadow-sm dark:bg-card">
+    <div class="rounded-2xl border bg-card p-4 shadow-sm">
         <div class="flex flex-wrap items-center gap-2.5">
-            <span class="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                <Filter class="size-3.5 text-indigo-500" /> Filtros
+            <span class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <Filter class="size-3.5 text-primary" /> Filtros
             </span>
 
             <select v-model="branch" :class="selectClass">
@@ -70,16 +70,16 @@ const selectClass =
             </div>
 
             <div v-if="gestorOptions.length > 12" class="relative">
-                <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
+                <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
                     v-model="gestorSearch"
                     type="text"
                     placeholder="Buscar gestor…"
-                    class="w-36 rounded-xl border border-slate-200 bg-white py-1.5 pl-8 pr-2 text-xs focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 dark:border-slate-700 dark:bg-card dark:text-slate-200 dark:focus:border-indigo-500 dark:focus:ring-indigo-500/20"
+                    class="w-36 rounded-xl border border-border bg-card py-1.5 pl-8 pr-2 text-xs focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring/30"
                 />
             </div>
 
-            <span v-if="activeCount > 0" class="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300">
+            <span v-if="activeCount > 0" class="inline-flex items-center gap-1 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold text-primary">
                 {{ activeCount }} filtro{{ activeCount > 1 ? 's' : '' }} activo{{ activeCount > 1 ? 's' : '' }}
             </span>
 
@@ -87,7 +87,7 @@ const selectClass =
                 v-if="activeCount > 0"
                 type="button"
                 @click="clearAll"
-                class="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                class="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground transition hover:bg-muted/80"
             >
                 <X class="size-3.5" /> Limpiar filtros
             </button>

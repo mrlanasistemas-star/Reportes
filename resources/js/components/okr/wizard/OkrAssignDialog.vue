@@ -79,9 +79,17 @@ watch(open, (isOpen) => {
     }
 })
 
+// 4.3 (19-oct-2026): apagar "OKR individuales" por error ya no borra lo
+// capturado — se guarda aparte y se restaura al volver a encenderlo. Mientras
+// está apagado, ningún gestor viaja al guardar.
+const stashedGestores: GestorPlan[] = []
 watch(individualsEnabled, (enabled) => {
     if (!enabled) {
+        stashedGestores.splice(0, stashedGestores.length, ...gestores)
         gestores.splice(0, gestores.length)
+    } else if (!gestores.length && stashedGestores.length) {
+        gestores.push(...stashedGestores)
+        stashedGestores.splice(0, stashedGestores.length)
     }
 })
 
@@ -139,6 +147,15 @@ function onEmployeeSearch(term: string) {
 }
 
 watch(() => form.branch_id, () => {
+    // Los gestores elegidos pertenecen a la sucursal anterior: nunca se guarda un
+    // gestor de otra sucursal (contradicción). Se avisa en vez de quitarlos en silencio.
+    const removed = gestores.length + stashedGestores.length
+
+    if (removed) {
+        Swal.fire({ toast: true, position: 'top-end', icon: 'info', timer: 4200, showConfirmButton: false, title: 'Cambiaste de sucursal', text: `Se quitaron ${removed} gestor(es) de la sucursal anterior; elige los de la nueva sucursal.` })
+    }
+
+    stashedGestores.splice(0, stashedGestores.length)
     gestores.splice(0, gestores.length)
     // La línea base consultada pertenece a la sucursal anterior — se invalida.
     branchRows.value.forEach((kr) => {

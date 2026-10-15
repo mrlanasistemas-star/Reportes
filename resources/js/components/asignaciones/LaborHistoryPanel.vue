@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { router } from '@inertiajs/vue3'
-import { History } from 'lucide-vue-next'
+import AppSectionCard from '@/components/app/AppSectionCard.vue'
 import type { LaborHistoryRow } from '@/types/asignaciones'
 
 defineProps<{
@@ -14,15 +14,11 @@ function open(periodId: number) {
 </script>
 
 <template>
-    <section class="app-card overflow-hidden">
-        <div class="border-b px-4 py-4 sm:px-6 sm:py-5">
-            <div class="flex items-center gap-2">
-                <History class="size-4 text-indigo-500" />
-                <h2 class="text-lg font-bold tracking-tight">Histórico laboral</h2>
-            </div>
-            <p class="mt-1 text-sm text-muted-foreground">Plantilla y movimientos de cada periodo mensual, tal como se calcularon. Solo las bajas confirmadas cuentan en la rotación.</p>
-        </div>
-
+    <AppSectionCard
+        title="Histórico laboral"
+        subtitle="Plantilla y movimientos de cada periodo mensual, tal como se calcularon. Solo las bajas confirmadas cuentan en la rotación. Haz clic en un periodo para abrirlo."
+        :padded="false"
+    >
         <div class="overflow-x-auto">
             <table class="w-full min-w-[560px] text-sm">
                 <thead class="bg-muted/40 text-left text-xs text-muted-foreground">
@@ -39,7 +35,7 @@ function open(periodId: number) {
                         v-for="row in rows"
                         :key="row.period_id"
                         class="cursor-pointer transition hover:bg-muted/40"
-                        :class="row.period_id === selectedPeriodId ? 'bg-indigo-50/60 dark:bg-indigo-500/10' : ''"
+                        :class="row.period_id === selectedPeriodId ? 'bg-muted/60' : ''"
                         @click="open(row.period_id)"
                     >
                         <td class="px-4 py-2.5 font-semibold sm:px-6">{{ row.label }}</td>
@@ -54,5 +50,5 @@ function open(periodId: number) {
                 </tbody>
             </table>
         </div>
-    </section>
+    </AppSectionCard>
 </template>

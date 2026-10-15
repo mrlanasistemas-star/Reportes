@@ -2,7 +2,7 @@
 // Tabla del módulo Usuarios: estado de acceso, invitación, colaborador,
 // último acceso y menú de acciones (solo las que el rol del actor permite;
 // el backend vuelve a validar cada una).
-import { Ban, KeyRound, Link2, Loader2, MailWarning, MoreHorizontal, RotateCw, ShieldCheck, ShieldOff, UserCheck, UserCog } from 'lucide-vue-next'
+import { Ban, KeyRound, Link2, Loader2, MailWarning, MapPinned, MoreHorizontal, RotateCw, ShieldCheck, ShieldOff, UserCheck, UserCog } from 'lucide-vue-next'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ACCESS_META, INVITATION_META, formatDateTime } from './users'
@@ -11,11 +11,11 @@ import type { UserRow } from './users'
 defineProps<{ users: UserRow[]; resendingId: number | null }>()
 const emit = defineEmits<{
     enable: [UserRow]; revoke: [UserRow]; toggleBlocked: [UserRow]; reset: [UserRow]
-    resend: [UserRow]; changeRole: [UserRow]; linkEmployee: [UserRow]
+    resend: [UserRow]; changeRole: [UserRow]; linkEmployee: [UserRow]; editScope: [UserRow]
 }>()
 
 function hasActions(u: UserRow): boolean {
-    return u.can.manage_access || u.can.reset_password || u.can.change_role || u.can.link_employee || u.can.invite
+    return u.can.manage_access || u.can.reset_password || u.can.change_role || u.can.link_employee || u.can.invite || u.can.change_branch_scope
 }
 </script>
 
@@ -44,13 +44,16 @@ function hasActions(u: UserRow): boolean {
                             <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold" :class="u.role === 'admin' ? 'bg-primary/10 text-primary' : 'bg-muted text-foreground'">
                                 <ShieldCheck v-if="u.role === 'admin'" class="size-3.5" /> {{ u.role_name }}
                             </span>
+                            <p class="mt-1 flex max-w-[14rem] items-center gap-1 text-[11px] text-muted-foreground" :title="u.data_scope.mode === 'legacy' ? 'Alcance por defecto de su nivel (usuario previo a la asignación por sucursal). Un administrador puede restringirlo.' : 'Alcance por sucursal'">
+                                <MapPinned class="size-3 shrink-0" /> <span class="truncate">{{ u.data_scope.label }}</span>
+                            </p>
                         </td>
                         <td class="px-4 py-3">
-                            <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold" :class="ACCESS_META[u.access].tone" :title="ACCESS_META[u.access].hint">{{ ACCESS_META[u.access].label }}</span>
+                            <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap" :class="ACCESS_META[u.access].tone" :title="ACCESS_META[u.access].hint">{{ ACCESS_META[u.access].label }}</span>
                         </td>
                         <td class="px-4 py-3">
                             <div class="flex items-center gap-1.5">
-                                <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold" :class="INVITATION_META[u.invitation.status].tone">
+                                <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap" :class="INVITATION_META[u.invitation.status].tone">
                                     <MailWarning v-if="u.invitation.status === 'failed'" class="size-3.5" /> {{ INVITATION_META[u.invitation.status].label }}
                                 </span>
                                 <button
@@ -85,8 +88,9 @@ function hasActions(u: UserRow): boolean {
                                     </template>
                                     <DropdownMenuItem v-if="u.can.reset_password" @click="emit('reset', u)"><KeyRound class="size-4" /> Restablecer contraseña</DropdownMenuItem>
                                     <DropdownMenuItem v-if="u.can.invite" @click="emit('resend', u)"><RotateCw class="size-4" /> Reenviar invitación</DropdownMenuItem>
-                                    <DropdownMenuSeparator v-if="u.can.change_role || u.can.link_employee" />
+                                    <DropdownMenuSeparator v-if="u.can.change_role || u.can.link_employee || u.can.change_branch_scope" />
                                     <DropdownMenuItem v-if="u.can.change_role" @click="emit('changeRole', u)"><UserCog class="size-4" /> Cambiar rol</DropdownMenuItem>
+                                    <DropdownMenuItem v-if="u.can.change_branch_scope" @click="emit('editScope', u)"><MapPinned class="size-4" /> Alcance por sucursal</DropdownMenuItem>
                                     <DropdownMenuItem v-if="u.can.link_employee" @click="emit('linkEmployee', u)"><Link2 class="size-4" /> Vincular colaborador</DropdownMenuItem>
                                 </DropdownMenuContent>
                             </DropdownMenu>

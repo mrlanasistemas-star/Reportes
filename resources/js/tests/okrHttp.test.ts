@@ -45,4 +45,17 @@ describe('okrRequest', () => {
         expect(r.status).toBe(0);
         expect(!r.ok && r.message).toContain('Revisa tu red');
     });
+
+    it('una ruta no registrada en el servidor se explica con el método y la ruta exactos (4.4)', async () => {
+        respond(404, { message: 'The route okr/2/activation-check could not be found.' });
+        const r = await okrRequest('/okr/2/activation-check');
+        expect(!r.ok && r.message).toContain('la ruta GET /okr/2/activation-check no está registrada');
+        expect(!r.ok && r.message).not.toMatch(/could not be found/i);
+    });
+
+    it('un 404 con mensaje propio del backend (archivo faltante) se muestra tal cual', async () => {
+        respond(404, { message: 'No encontramos el PDF de CC-2026-000004 en el almacenamiento. El registro y su folio se conservan.' });
+        const r = await okrRequest('/okr/commitment-letters/4/download');
+        expect(!r.ok && r.message).toContain('No encontramos el PDF de CC-2026-000004');
+    });
 });

@@ -22,7 +22,7 @@ const visibleSources = computed(() => props.sources.filter((s) => !AUTO_DERIVED_
         />
         <AutomaticPeriodInfo v-if="period?.is_derived" :period="period" />
         <template v-else>
-            <div class="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <SourceUploadCard
                     v-for="source in visibleSources"
                     :key="source.id"

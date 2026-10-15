@@ -15,19 +15,13 @@ export function updateTheme(value: Appearance): void {
         return;
     }
 
-    if (value === 'system') {
-        const mediaQueryList = window.matchMedia(
-            '(prefers-color-scheme: dark)',
-        );
-        const systemTheme = mediaQueryList.matches ? 'dark' : 'light';
+    const dark = value === 'system'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+        : value === 'dark';
 
-        document.documentElement.classList.toggle(
-            'dark',
-            systemTheme === 'dark',
-        );
-    } else {
-        document.documentElement.classList.toggle('dark', value === 'dark');
-    }
+    document.documentElement.classList.toggle('dark', dark);
+    // Controles nativos (scrollbars, selects, date pickers) en el mismo tema.
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
 }
 
 const setCookie = (name: string, value: string, days = 365) => {

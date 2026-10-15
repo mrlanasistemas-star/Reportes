@@ -8,6 +8,7 @@ use App\Models\Employee;
 use App\Models\OkrObjective;
 use App\Models\User;
 use App\Services\Access\AccessDelegationGuard;
+use App\Services\Access\DataScopeService;
 use App\Services\Access\ActionPermissionService;
 use App\Services\Access\ModuleAccessService;
 use App\Services\Access\RoleCatalogService;
@@ -95,6 +96,8 @@ class ResponsibleController extends Controller
                     'employee_name' => $u->employee?->full_name,
                     'employee_is_active' => $u->employee?->is_active,
                     'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
+                    // Fase 6.4 — alcance por sucursal (general o lista) para la tabla y el editor.
+                    'data_scope' => app(DataScopeService::class)->describe($u),
                     'is_self' => $u->id === $actor->id,
                     'is_last_admin' => $isLastAdmin,
                     // URLs generadas por el BACKEND (route()): respetan el prefijo/subcarpeta
@@ -108,6 +111,7 @@ class ResponsibleController extends Controller
                         'resend_invitation' => route('usuarios.resend-invitation', $u),
                         'update_role' => route('usuarios.update-role', $u),
                         'link_employee' => route('usuarios.link-employee', $u),
+                        'update_branch_scope' => route('usuarios.update-branch-scope', $u),
                     ],
                     'can' => [
                         'manage_access' => $manageable && ! $isLastAdmin && $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso'),
@@ -115,6 +119,7 @@ class ResponsibleController extends Controller
                         'invite' => $this->guard->canManageUser($actor, $u) && $this->actions->canAction($actor, 'usuarios', 'invitar'),
                         'change_role' => $manageable && ! ($u->isAdmin() && $isLastAdmin) && $this->actions->canAction($actor, 'usuarios', 'asignar_rol'),
                         'link_employee' => $this->guard->canManageUser($actor, $u) && $this->actions->canAction($actor, 'usuarios', 'editar'),
+                        'change_branch_scope' => ! $u->isAdmin() && $manageable && $this->actions->canAction($actor, 'usuarios', 'asignar_rol'),
                     ],
                 ];
             });
@@ -144,6 +149,9 @@ class ResponsibleController extends Controller
             'enabled_admin_count' => $enabledAdmins,
             'invitation_expires_minutes' => $this->invitations->expiresInMinutes(),
             'store_url' => route('usuarios.store'),
+            // Fase 6.4 — sucursales que ESTE actor puede conceder (nunca más que las suyas).
+            'scope_branches' => app(DataScopeService::class)->filterBranchOptions($actor, app(DataScopeService::class)->assignableBranches()),
+            'actor_scope' => app(DataScopeService::class)->describe($actor),
             'roles_url' => $moduleAccess->allows($actor, 'roles') ? route('roles.index') : null,
             'can' => [
                 'create' => $this->actions->canAction($actor, 'usuarios', 'crear'),
@@ -173,7 +181,13 @@ class ResponsibleController extends Controller
             'employee_id' => ['nullable', 'integer', 'exists:employees,id', Rule::unique('users', 'employee_id')],
             'enable_access' => ['nullable', 'boolean'],
             'send_invitation' => ['nullable', 'boolean'],
+            // Fase 6.4 — alcance por sucursal del usuario nuevo.
+            'branch_scope' => ['nullable', Rule::in([DataScopeService::MODE_ALL, DataScopeService::MODE_BRANCHES])],
+            'branch_ids' => ['nullable', 'array'],
+            'branch_ids.*' => ['integer', 'exists:branches,id'],
         ], [
+            'branch_scope.in' => 'Elige «Todas las sucursales» o «Sucursales específicas».',
+            'branch_ids.*.exists' => 'Una de las sucursales elegidas no existe.',
             'role.in' => 'Elige un rol válido.',
             'email.unique' => 'Ya existe un usuario con ese correo.',
             'employee_id.unique' => 'Ese colaborador ya está vinculado a otro usuario.',
@@ -184,6 +198,20 @@ class ResponsibleController extends Controller
 
         $role = $data['role'] ?? User::ROLE_COLABORADOR;
         abort_unless($this->guard->canGrantRole($actor, $role), 403, 'No puedes asignar un rol con más permisos que el tuyo.');
+
+        // Fase 6.4 — alcance: el elegido; si no se eligió y quien da el alta tiene alcance
+        // restringido, hereda SUS sucursales (nunca queda con «todas» por omisión).
+        $dataScope = app(DataScopeService::class);
+        $scopeMode = $data['branch_scope'] ?? null;
+        $scopeIds = array_map('intval', $data['branch_ids'] ?? []);
+        if ($scopeMode === null && $dataScope->isRestricted($actor)) {
+            $scopeMode = DataScopeService::MODE_BRANCHES;
+            $scopeIds = $dataScope->allowedBranchIds($actor) ?? [];
+        }
+        if ($scopeMode === DataScopeService::MODE_BRANCHES && $scopeIds === []) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['branch_ids' => 'Elige al menos una sucursal o marca «Todas las sucursales».']);
+        }
+        abort_if($scopeMode !== null && ! $dataScope->canGrant($actor, $scopeMode, $scopeIds), 403, 'No puedes conceder un alcance mayor al tuyo: solo puedes asignar sucursales que tú mismo tienes autorizadas.');
 
         $mode = $data['password_mode'] ?? 'auto';
         $tempPassword = $mode === 'auto' ? Str::password(16) : null;
@@ -211,6 +239,11 @@ class ResponsibleController extends Controller
             'access_enabled_at' => ($data['enable_access'] ?? false) && $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso') ? now() : null,
             'welcome_email_status' => $sendInvitation ? UserInvitationService::STATUS_PENDING : null,
         ])->save();
+
+        if ($scopeMode !== null) {
+            $label = $dataScope->save($user, $scopeMode, $scopeIds, $actor);
+            $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, 'branch_scope_changed', 'branch_scope', null, $label);
+        }
 
         $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, 'user_created', 'role', null, $role, match ($mode) {
             'manual' => 'Contraseña manual', 'auto' => 'Contraseña generada', default => 'Por invitación',
@@ -379,6 +412,15 @@ class ResponsibleController extends Controller
             }
         }
 
+        // Fase 6.4 — un usuario sin alcance explícito (previo a la fase) obtiene su
+        // alcance por defecto del NIVEL de su rol: subirlo a gerencial lo dejaría con
+        // «todas». Si quien cambia el rol tiene alcance restringido, se congela antes
+        // el alcance actual del usuario (que ya cabe en el suyo): nunca se escala.
+        $dataScope = app(DataScopeService::class);
+        if ($dataScope->isRestricted($request->user()) && $dataScope->modeOf($user) === null) {
+            $dataScope->save($user, DataScopeService::MODE_BRANCHES, $dataScope->allowedBranchIds($user) ?? [], $request->user());
+        }
+
         $old = $user->role;
         $user->forceFill(['role' => $data['role']])->save();
         $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'role_changed', 'role', $catalog->label($old), $catalog->label($data['role']));
@@ -412,6 +454,45 @@ class ResponsibleController extends Controller
         return back()->with('success', $data['employee_id'] !== null
             ? "Colaborador vinculado a {$user->name}."
             : "Vínculo de colaborador removido para {$user->name}.");
+    }
+
+    /**
+     * Fase 6.4 — asigna el alcance por sucursal de un usuario: «todas» o una lista.
+     * Nadie concede un alcance mayor al propio (DataScopeService::canGrant) ni
+     * administra a quien tiene más alcance que él (AccessDelegationGuard). El
+     * cambio aplica en la siguiente petición del usuario (sin caché residual).
+     */
+    public function updateBranchScope(Request $request, User $user, DataScopeService $dataScope): RedirectResponse
+    {
+        $data = $request->validate([
+            'branch_scope' => ['required', Rule::in([DataScopeService::MODE_ALL, DataScopeService::MODE_BRANCHES])],
+            'branch_ids' => ['nullable', 'array'],
+            'branch_ids.*' => ['integer', 'exists:branches,id'],
+        ], [
+            'branch_scope.required' => 'Elige «Todas las sucursales» o «Sucursales específicas».',
+            'branch_scope.in' => 'Elige «Todas las sucursales» o «Sucursales específicas».',
+            'branch_ids.*.exists' => 'Una de las sucursales elegidas no existe.',
+        ]);
+
+        $this->assertManageable($request, $user);
+
+        if ($user->isAdmin()) {
+            return back()->with('error', 'El Administrador siempre tiene alcance general; no se configura.');
+        }
+        if ($user->id === $request->user()->id) {
+            return back()->with('error', 'No puedes cambiar tu propio alcance por sucursal.');
+        }
+
+        $ids = array_map('intval', $data['branch_ids'] ?? []);
+        if ($data['branch_scope'] === DataScopeService::MODE_BRANCHES && $ids === []) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['branch_ids' => 'Elige al menos una sucursal o marca «Todas las sucursales».']);
+        }
+
+        $old = $dataScope->label($user);
+        $new = $dataScope->save($user, $data['branch_scope'], $ids, $request->user());
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'branch_scope_changed', 'branch_scope', $old, $new);
+
+        return back()->with('success', "Alcance de {$user->name} actualizado: {$new}.");
     }
 
     private function assertManageable(Request $request, User $user): void

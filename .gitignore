@@ -35,3 +35,13 @@ yarn-error.log
 
 # Ejemplos reales de Efectividad (información financiera y personal) — solo locales
 /docs/ejemplosCorte/
+
+# Datos reales de nómina, clientes, gastos e IMSS (15-oct-2026): nunca versionar.
+# Ya rastreados antes de esta regla: sacarlos del índice requiere autorización
+# (ver docs/despliegue-vps-limpio.md, "Datos sensibles en el repositorio").
+/documentosEjemplo/
+/documentosJunio/
+/documentosMayo/
+/documentosColumnas/
+/docRadios/
+/docs/efectividad/MR_LANA_EFECTIVIDAD PRUEBA TULA.xlsm

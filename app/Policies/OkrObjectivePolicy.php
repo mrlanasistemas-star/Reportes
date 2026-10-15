@@ -60,7 +60,9 @@ class OkrObjectivePolicy
      */
     public function assign(User $user, OkrObjective $objective): bool
     {
-        return $user->hasManagerialAccess();
+        // Fase 6.4: además, el OKR debe estar dentro de su alcance por sucursal
+        // (un gerencial solo-ATLIXCO no activa ni emite documentos de TULA).
+        return $user->hasManagerialAccess() && $this->visibility->canView($user, $objective);
     }
 
     public function delete(User $user, OkrObjective $objective): bool

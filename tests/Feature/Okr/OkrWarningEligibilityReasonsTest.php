@@ -69,14 +69,14 @@ beforeEach(function () {
     app()->instance(BrowsershotPdfRenderer::class, $renderer);
 });
 
-it('a closed week without data on the Colocación KR says "Falta colocación" and stays pending (never a breach)', function () {
+it('a closed week without data on the Colocación KR says "Falta cargar el reporte semanal de colocación" and stays pending (never a breach)', function () {
     [$objective, , $admin] = wrReasonsObjective();
 
     $week = $this->actingAs($admin)->getJson(route('okr.warnings.eligibility', $objective) . '?week=1')->assertOk()->json('weeks.0');
 
     expect($week['status'])->toBe('pending');
     expect($week['reasons'])->toContain('no_placement')->not->toContain('no_breach');
-    expect(implode(' ', $week['blockers']))->toContain('Falta colocación');
+    expect(implode(' ', $week['blockers']))->toContain('Falta cargar el reporte semanal de colocación');
 });
 
 it('a closed week without data on another KR says "Sin evidencia suficiente"', function () {

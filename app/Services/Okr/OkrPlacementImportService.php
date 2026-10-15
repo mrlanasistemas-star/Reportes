@@ -81,57 +81,113 @@ class OkrPlacementImportService
         $path = $file->store('okr-placement-uploads/' . $objective->id, $disk);
         $absolutePath = Storage::disk($disk)->path($path);
 
-        $parsed = $this->parseFile($absolutePath, $objective, $weekStart, $weekEnd, $weekNumber);
-        $coverageStatus = $declaredComplete && $objective->scope_type === OkrObjective::SCOPE_BRANCH
-            ? OkrPlacementUpload::COVERAGE_FULL
-            : $this->resolveCoverageStatus($objective, $weekStart, $weekEnd, $parsed['employee_ids_seen']);
-        $parsed['rows_duplicated'] = $this->countDuplicatedAgainstOtherWeeks($objective, $weekNumber, $parsed['rows']);
+        // 4.9 (19-oct-2026): si el archivo no se puede leer o la carga no se
+        // confirma, el archivo guardado se borra — nunca archivos huérfanos — y
+        // se deshace lo escrito (compensación explícita: con tablas MyISAM la
+        // transacción no revierte nada).
+        $state = new \ArrayObject(['upload_id' => null, 'superseded_id' => null]); // objeto: se comparte entre closures
+        try {
+            $parsed = $this->parseFile($absolutePath, $objective, $weekStart, $weekEnd, $weekNumber);
+            $isBranchFile = $objective->scope_type === OkrObjective::SCOPE_BRANCH;
+            // 4.6: reporte COMPLETO declarado → quien no aparece = $0 real; PARCIAL →
+            // la cobertura se verifica contra el roster y la ausencia queda como
+            // dato faltante (nunca un cero asumido).
+            $coverageStatus = $declaredComplete && $isBranchFile
+                ? OkrPlacementUpload::COVERAGE_FULL
+                : $this->resolveCoverageStatus($objective, $weekStart, $weekEnd, $parsed['employee_ids_seen']);
+            $parsed['rows_duplicated'] = $this->countDuplicatedAgainstOtherWeeks($objective, $weekNumber, $parsed['rows']);
 
-        return DB::transaction(function () use ($objective, $weekNumber, $weekStart, $weekEnd, $file, $path, $disk, $user, $existing, $parsed, $coverageStatus) {
-            if ($existing) {
-                $existing->update(['status' => OkrPlacementUpload::STATUS_SUPERSEDED]);
+            return app(OkrDocumentIssuer::class)->exclusively('okr-placement:' . $objective->id, fn () => DB::transaction(function () use ($objective, $weekNumber, $weekStart, $weekEnd, $file, $path, $disk, $user, $parsed, $coverageStatus, $confirmReplace, $declaredComplete, $isBranchFile, $state) {
+                // Concurrencia: dos cargas simultáneas de la MISMA semana. Se
+                // bloquea el OKR y se vuelve a leer la carga activa dentro de la
+                // transacción; el índice okr_uploads_one_current es la red final.
+                OkrObjective::query()->whereKey($objective->id)->lockForUpdate()->first();
+                $existing = OkrPlacementUpload::query()->where('okr_objective_id', $objective->id)
+                    ->where('week_number', $weekNumber)->where('status', OkrPlacementUpload::STATUS_ACTIVE)->lockForUpdate()->first();
+                if ($existing && !$confirmReplace) {
+                    throw new OkrPlacementUploadConflictException($existing);
+                }
+
+                return $this->persistUpload($objective, $weekNumber, $weekStart, $weekEnd, $file, $path, $disk, $user, $existing, $parsed, $coverageStatus, $isBranchFile ? $declaredComplete : null, $state);
+            }));
+        } catch (\Throwable $e) {
+            Storage::disk($disk)->delete($path);
+            $this->compensate($state);
+            if (\App\Services\Okr\OkrDocumentIssuer::isCurrentGuardViolation($e)) {
+                $winner = OkrPlacementUpload::query()->where('okr_objective_id', $objective->id)
+                    ->where('week_number', $weekNumber)->where('status', OkrPlacementUpload::STATUS_ACTIVE)->first();
+                if ($winner) {
+                    throw new OkrPlacementUploadConflictException($winner);
+                }
             }
+            throw $e;
+        }
+    }
 
-            $upload = OkrPlacementUpload::query()->create([
-                'okr_objective_id'         => $objective->id,
-                'week_number'              => $weekNumber,
-                'week_start'                => $weekStart,
-                'week_end'                  => $weekEnd,
-                'original_filename'        => $file->getClientOriginalName(),
-                'stored_path'               => $path,
-                'disk'                      => $disk,
-                'uploaded_by'               => $user->id,
-                'status'                    => OkrPlacementUpload::STATUS_ACTIVE,
-                'replaced_upload_id'        => $existing?->id,
-                'total_amount'              => $parsed['total_amount'],
-                'rows_count'                => count($parsed['rows']),
-                'unattributed_amount'       => $parsed['unattributed_amount'],
-                'rows_outside_week_range'   => $parsed['rows_outside_week_range'],
-                'coverage_status'           => $coverageStatus,
-                'rows_duplicated'           => $parsed['rows_duplicated'],
-                'rows_other_branch'         => $parsed['rows_other_branch'],
-                'rows_cancelled'            => $parsed['rows_cancelled'],
-                'rows_out_of_objective_range' => $parsed['rows_out_of_objective_range'],
-                'rows_pending_attribution'  => $parsed['rows_pending_attribution'],
+    /** Deshace una carga a medias (movimientos, carga nueva y reemplazo). */
+    private function compensate(\ArrayObject $state): void
+    {
+        try {
+            if ($state['upload_id'] !== null) {
+                OkrPlacementMovement::query()->where('okr_placement_upload_id', $state['upload_id'])->delete();
+                OkrPlacementUpload::query()->whereKey($state['upload_id'])->delete();
+            }
+            if ($state['superseded_id'] !== null) {
+                OkrPlacementUpload::query()->whereKey($state['superseded_id'])->first()?->update(['status' => OkrPlacementUpload::STATUS_ACTIVE]);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('OKR: no se pudo deshacer una carga de colocación fallida', ['state' => $state->getArrayCopy(), 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function persistUpload(OkrObjective $objective, int $weekNumber, \Illuminate\Support\Carbon $weekStart, \Illuminate\Support\Carbon $weekEnd, UploadedFile $file, string $path, string $disk, User $user, ?OkrPlacementUpload $existing, array $parsed, string $coverageStatus, ?bool $declaredComplete, \ArrayObject $state): OkrPlacementUpload
+    {
+        if ($existing) {
+            $existing->update(['status' => OkrPlacementUpload::STATUS_SUPERSEDED]);
+            $state['superseded_id'] = $existing->id;
+        }
+
+        $upload = OkrPlacementUpload::query()->create([
+            'okr_objective_id'         => $objective->id,
+            'week_number'              => $weekNumber,
+            'week_start'                => $weekStart,
+            'week_end'                  => $weekEnd,
+            'original_filename'        => $file->getClientOriginalName(),
+            'stored_path'               => $path,
+            'disk'                      => $disk,
+            'uploaded_by'               => $user->id,
+            'status'                    => OkrPlacementUpload::STATUS_ACTIVE,
+            'replaced_upload_id'        => $existing?->id,
+            'total_amount'              => $parsed['total_amount'],
+            'rows_count'                => count($parsed['rows']),
+            'unattributed_amount'       => $parsed['unattributed_amount'],
+            'rows_outside_week_range'   => $parsed['rows_outside_week_range'],
+            'coverage_status'           => $coverageStatus,
+            'declared_complete'         => $declaredComplete,
+            'rows_duplicated'           => $parsed['rows_duplicated'],
+            'rows_other_branch'         => $parsed['rows_other_branch'],
+            'rows_cancelled'            => $parsed['rows_cancelled'],
+            'rows_out_of_objective_range' => $parsed['rows_out_of_objective_range'],
+            'rows_pending_attribution'  => $parsed['rows_pending_attribution'],
+        ]);
+        $state['upload_id'] = $upload->id;
+
+        foreach ($parsed['rows'] as $row) {
+            OkrPlacementMovement::query()->create([
+                'okr_placement_upload_id' => $upload->id,
+                'employee_id'             => $row['employee_id'],
+                'employee_name_raw'       => $row['employee_name_raw'],
+                'attribution_status'      => $row['attribution_status'],
+                'attribution_method'      => $row['attribution_method'],
+                'attribution_note'        => $row['attribution_note'],
+                'amount'                  => $row['amount'],
+                'operation_date'          => $row['operation_date'],
+                'fingerprint'             => $row['fingerprint'],
+                'raw_payload'             => $row['raw_payload'],
             ]);
+        }
 
-            foreach ($parsed['rows'] as $row) {
-                OkrPlacementMovement::query()->create([
-                    'okr_placement_upload_id' => $upload->id,
-                    'employee_id'             => $row['employee_id'],
-                    'employee_name_raw'       => $row['employee_name_raw'],
-                    'attribution_status'      => $row['attribution_status'],
-                    'attribution_method'      => $row['attribution_method'],
-                    'attribution_note'        => $row['attribution_note'],
-                    'amount'                  => $row['amount'],
-                    'operation_date'          => $row['operation_date'],
-                    'fingerprint'             => $row['fingerprint'],
-                    'raw_payload'             => $row['raw_payload'],
-                ]);
-            }
-
-            return $upload;
-        });
+        return $upload;
     }
 
     /**

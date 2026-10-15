@@ -29,6 +29,9 @@ class EmployeeController extends Controller
         $period = Period::findOrFail($validated['period_id']);
         $note   = $validated['notes'] ?? "Asignado manualmente a {$branch->name}.";
 
+        // Fase 6.4 — no reasignar personas que hoy pertenecen a una sucursal fuera del alcance.
+        $this->authorizeCurrentAssignments($request, $validated['employee_ids'], $period->id);
+
         foreach ($validated['employee_ids'] as $employeeId) {
             EmployeeBranchAssignment::query()->updateOrCreate(
                 ['period_id' => $period->id, 'employee_id' => $employeeId],
@@ -60,6 +63,8 @@ class EmployeeController extends Controller
 
         $branch = Branch::findOrFail($validated['branch_id']);
         $period = Period::findOrFail($validated['period_id']);
+
+        $this->authorizeCurrentAssignments($request, [$employee->id], $period->id);
 
         EmployeeBranchAssignment::query()->updateOrCreate(
             [
@@ -93,8 +98,31 @@ class EmployeeController extends Controller
             'position' => ['nullable', 'string', 'max:120'],
         ]);
 
+        app(\App\Services\Access\DataScopeService::class)->authorizeEmployee($request->user(), $employee->id);
+
         $employee->update(['position' => $validated['position'] ?: null]);
 
         return back()->with('success', "Puesto actualizado: {$employee->full_name}.");
+    }
+    /**
+     * Fase 6.4 — un usuario con alcance restringido solo reasigna personas sin
+     * sucursal en el periodo o que ya pertenecen a una de SUS sucursales.
+     *
+     * @param array<int, int|string> $employeeIds
+     */
+    private function authorizeCurrentAssignments(Request $request, array $employeeIds, int $periodId): void
+    {
+        $dataScope = app(\App\Services\Access\DataScopeService::class);
+        if (! $dataScope->isRestricted($request->user())) {
+            return;
+        }
+
+        $current = EmployeeBranchAssignment::query()->where('period_id', $periodId)
+            ->whereIn('employee_id', array_map('intval', $employeeIds))
+            ->whereNotNull('branch_id')->pluck('branch_id')->unique();
+
+        foreach ($current as $branchId) {
+            $dataScope->authorizeBranch($request->user(), (int) $branchId);
+        }
     }
 }

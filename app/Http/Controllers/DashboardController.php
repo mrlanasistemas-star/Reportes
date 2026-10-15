@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\Branch;
 use App\Models\Period;
 use App\Models\PeriodSummary;
+use App\Services\Access\DataScopeService;
+use App\Services\Dashboard\DashboardExcelExporter;
 use App\Services\Dashboard\DashboardPdfChartBuilder;
 use App\Services\DashboardTrendService;
 use App\Services\Pdf\BrowsershotPdfRenderer;
@@ -67,15 +69,25 @@ class DashboardController extends Controller
             return Inertia::render('Dashboard', ['hasData' => false, 'periods' => [], 'branches' => $this->branchOptions()]);
         }
 
-        $branchId = $request->integer('branch_id') ?: null;
+        // Fase 6.4 — alcance por sucursal: restringido sin selección → su primera sucursal.
+        $branchId = app(DataScopeService::class)->resolveBranch($request->user(), $request->integer('branch_id') ?: null);
 
-        return Inertia::render('Dashboard', array_merge(
-            [
-                'periods' => $periods->map(fn (Period $p) => ['id' => $p->id, 'label' => $p->label])->values(),
-                'branches' => $this->branchOptions(),
-            ],
-            $this->payloadForPeriod($latestPeriod, $branchId)
-        ));
+        // Cierre 15-oct-2026 (8.3) — la página abre AL INSTANTE: las cifras (snapshot
+        // completo, hasta ~20 s en frío) ya no se calculan aquí, porque eso dejaba al
+        // usuario esperando frente a "Entrando…" en el login. Dashboard.vue las pide a
+        // dashboard-data al montarse, con estados de carga por tarjeta.
+        $branchName = $branchId ? Branch::query()->whereKey($branchId)->value('name') : null;
+
+        return Inertia::render('Dashboard', [
+            'hasData' => true,
+            'periods' => $periods->map(fn (Period $p) => ['id' => $p->id, 'label' => $p->label])->values(),
+            'branches' => $this->branchOptions(),
+            'initialPeriodId' => $latestPeriod->id,
+            'scope' => ['type' => $branchId ? 'branch' : 'general', 'branch_id' => $branchId, 'branch_name' => $branchName, 'available' => true],
+            'kpis' => null,
+            'charts' => null,
+            'deferred' => true,
+        ]);
     }
 
     /** JSON para el selector de periodo/sucursal en vivo — nunca recarga la página. Un solo snapshot, rápido. */
@@ -91,7 +103,7 @@ class DashboardController extends Controller
             return response()->json(['hasData' => false], 200, ['Cache-Control' => 'no-store, no-cache, must-revalidate']);
         }
 
-        $branchId = $request->integer('branch_id') ?: null;
+        $branchId = app(DataScopeService::class)->resolveBranch($request->user(), $request->integer('branch_id') ?: null);
 
         return response()->json(
             $this->payloadForPeriod($period, $branchId),
@@ -108,32 +120,46 @@ class DashboardController extends Controller
      */
     private function branchOptions(): array
     {
-        return Branch::query()
+        $options = Branch::query()
             ->whereIn('name', $this->operativeBranches->names())
             ->orderBy('name')
             ->get(['id', 'name'])
             ->map(fn (Branch $b) => ['id' => $b->id, 'name' => $b->name])
             ->values()
             ->all();
+
+        // Fase 6.4 — el selector solo ofrece las sucursales del alcance del usuario.
+        $user = request()->user();
+
+        return $user ? app(DataScopeService::class)->filterBranchOptions($user, $options) : $options;
     }
 
     /**
-     * Tendencia EBITDA/OPEX — los últimos hasta 6 periodos mensuales reales del sistema,
-     * SIEMPRE los mismos sin importar qué periodo esté viendo el usuario en los KPIs de
-     * arriba. Cacheada 15 min (ver DashboardTrendService): el frontend la pide una sola
-     * vez al montar la página, nunca en cada cambio de filtro. Con caché fría (primera
+     * Tendencia EBITDA/OPEX — los últimos hasta 6 periodos mensuales reales del sistema
+     * (los mismos sin importar qué periodo esté viendo el usuario), para el ALCANCE
+     * elegido (sucursal o consolidado). Cacheada por punto (ver DashboardTrendService):
+     * el frontend la vuelve a pedir solo al cambiar de sucursal. Con caché fría (primera
      * vez tras generar un periodo nuevo) esto encadena hasta 6 buildSnapshot() — por
      * eso el mismo margen de tiempo/memoria que index()/data(), y por eso
      * GenerateRadiographyJob dispara WarmDashboardTrendCacheJob al terminar: casi
      * nunca debería tocarle a un usuario pagar ese costo en frío.
      */
-    public function trend(): JsonResponse
+    public function trend(Request $request): JsonResponse
     {
+        // Fase 7.1 — la tendencia sigue el MISMO alcance que los KPI: con sucursal,
+        // la de esa sucursal; sin sucursal, el consolidado. Fase 6.4 (convive): un
+        // usuario restringido nunca recibe el consolidado — resolveBranch() le asigna
+        // su sucursal por defecto o responde 403 si pide una fuera de su alcance.
+        $branchId = app(DataScopeService::class)->resolveBranch($request->user(), $request->integer('branch_id') ?: null);
+
         @ini_set('memory_limit', '512M');
         @set_time_limit(120);
 
         return response()->json(
-            ['trend' => $this->trendService->build()],
+            [
+                'trend' => $this->trendService->build($branchId),
+                'scope' => ['branch_id' => $branchId, 'label' => $this->trendService->scopeLabel($branchId)],
+            ],
             200,
             ['Cache-Control' => 'no-store, no-cache, must-revalidate']
         );
@@ -159,7 +185,7 @@ class DashboardController extends Controller
                 ->header('Content-Type', 'text/html; charset=UTF-8');
         }
 
-        $branchId = $request->integer('branch_id') ?: null;
+        $branchId = app(DataScopeService::class)->resolveBranch($request->user(), $request->integer('branch_id') ?: null);
         $payload = $this->payloadForPeriod($period, $branchId);
         $branchName = $branchId ? ($payload['scope']['branch_name'] ?? Branch::query()->whereKey($branchId)->value('name')) : null;
 
@@ -169,7 +195,9 @@ class DashboardController extends Controller
                 'kpis' => $payload['kpis'],
                 'charts' => $payload['charts'],
                 'scope' => $payload['scope'],
-                'trend' => $payload['kpis'] ? $this->trendService->build() : [],
+                // Fase 7.2 — tendencia del MISMO alcance del documento ($branchId ya
+                // resuelto/autorizado arriba: un restringido nunca recibe el consolidado).
+                'trend' => $payload['kpis'] ? $this->trendService->build($branchId) : [],
                 'periodLabel' => $period->label,
                 'branchName' => $branchName,
                 'generatedAt' => now(),
@@ -188,6 +216,54 @@ class DashboardController extends Controller
         $filename = 'dashboard-' . Str::slug($period->label) . ($branchName ? '-' . Str::slug($branchName) : '-todas-las-sucursales') . '.pdf';
 
         return response()->download($path, $filename, ['Content-Type' => 'application/pdf'])->deleteFileAfterSend();
+    }
+
+    /**
+     * Excel del Dashboard (Fase 7.3, 15-oct-2026) — MISMO payloadForPeriod() y MISMA
+     * tendencia por alcance que la pantalla y el PDF (ningún cálculo nuevo): hoja de
+     * resumen ejecutivo + hoja de desglose, montos en formato moneda MXN y gráficas
+     * nativas de Excel (RadiographyStyleHelper, el motor de gráficas que ya usa la
+     * Reportería). Antes el botón "Exportar Excel" descargaba la Radiografía completa.
+     */
+    public function exportExcel(Request $request, DashboardExcelExporter $exporter)
+    {
+        @ini_set('memory_limit', '512M');
+        @set_time_limit(180);
+
+        $periods = $this->availablePeriods();
+        $period = $periods->firstWhere('id', (int) $request->integer('period_id'));
+        if (!$period) {
+            return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px">'
+                . '<p><strong>No hay radiografía generada para el periodo solicitado.</strong></p><p>Elige un periodo con radiografía generada en el Dashboard e intenta de nuevo.</p></body>', 404)
+                ->header('Content-Type', 'text/html; charset=UTF-8');
+        }
+
+        $branchId = app(DataScopeService::class)->resolveBranch($request->user(), $request->integer('branch_id') ?: null);
+        $payload = $this->payloadForPeriod($period, $branchId);
+        $branchName = $branchId ? ($payload['scope']['branch_name'] ?? Branch::query()->whereKey($branchId)->value('name')) : null;
+
+        try {
+            $path = $exporter->export([
+                'kpis' => $payload['kpis'],
+                'charts' => $payload['charts'],
+                'trend' => $payload['kpis'] ? $this->trendService->build($branchId) : [],
+                'periodLabel' => $period->label,
+                'branchName' => $branchName,
+                'generatedAt' => now(),
+                'generatedBy' => $request->user()?->name,
+            ], storage_path('app/tmp/dashboard-' . $period->id . '-' . ($branchId ?? 'general') . '-' . uniqid() . '.xlsx'));
+        } catch (\Throwable $e) {
+            $ref = 'DASH-XLSX-' . now()->format('ymdHis') . '-' . strtoupper(Str::random(4));
+            Log::error('Dashboard: fallo generando el Excel', ['ref' => $ref, 'period_id' => $period->id, 'branch_id' => $branchId, 'error' => $e->getMessage()]);
+
+            return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#7f1d1d">'
+                . '<p><strong>No pudimos generar el Excel del Dashboard.</strong></p><p>Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: <strong>' . e($ref) . '</strong>.</p></body>', 500)
+                ->header('Content-Type', 'text/html; charset=UTF-8');
+        }
+
+        $filename = 'dashboard-' . Str::slug($period->label) . ($branchName ? '-' . Str::slug($branchName) : '-todas-las-sucursales') . '.xlsx';
+
+        return response()->download($path, $filename, ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])->deleteFileAfterSend();
     }
 
     /** Periodos mensuales reales (nunca de prueba/migración) con radiografía generada, más reciente primero. */

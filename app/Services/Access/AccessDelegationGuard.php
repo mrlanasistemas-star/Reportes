@@ -27,7 +27,13 @@ class AccessDelegationGuard
 
     public function canManageUser(User $actor, User $target): bool
     {
-        return $actor->isAdmin() || ! $target->isAdmin();
+        if ($actor->isAdmin()) {
+            return true;
+        }
+
+        // Fase 6.4 — tampoco administra (contraseña, bloqueo, rol...) a alguien con
+        // un alcance por sucursal MAYOR que el suyo: sería una forma de escalar.
+        return ! $target->isAdmin() && app(DataScopeService::class)->contains($actor, $target);
     }
 
     public function canGrantRole(User $actor, string $roleKey): bool

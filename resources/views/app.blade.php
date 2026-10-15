@@ -6,27 +6,38 @@
 
         {{-- Inline script to detect system dark mode preference and apply it immediately --}}
         <script>
+            // Fase 8.2 (15-oct-2026): claro por defecto; la preferencia guardada
+            // (localStorage primero, luego la cookie que ya leyó el servidor)
+            // se aplica ANTES de pintar — sin parpadeo entre login y app aunque
+            // la cookie se haya perdido y solo quede localStorage.
             (function() {
-                const appearance = '{{ $appearance ?? "light" }}';
+                var appearance = '{{ $appearance ?? "light" }}';
 
-                if (appearance === 'system') {
-                    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                try {
+                    var stored = window.localStorage.getItem('appearance');
 
-                    if (prefersDark) {
-                        document.documentElement.classList.add('dark');
+                    if (stored === 'light' || stored === 'dark' || stored === 'system') {
+                        appearance = stored;
                     }
-                }
+                } catch (e) {}
+
+                var dark = appearance === 'dark'
+                    || (appearance === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+                document.documentElement.classList.toggle('dark', dark);
+                document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
             })();
         </script>
 
-        {{-- Inline style to set the HTML background color based on our theme in app.css --}}
+        {{-- Fondo del <html> igual al token --background (theme.css) para que la
+             primera pintura no destelle en blanco/negro distinto al de la app. --}}
         <style>
             html {
-                background-color: oklch(1 0 0);
+                background-color: #f8fafc;
             }
 
             html.dark {
-                background-color: oklch(0.145 0 0);
+                background-color: #0a0a0a;
             }
         </style>
 
@@ -43,7 +54,7 @@
         <link rel="apple-touch-icon" href="/apple-touch-icon.png{{ $assetV('apple-touch-icon.png') }}">
         <link rel="manifest" href="/manifest.webmanifest">
         <meta name="msapplication-TileImage" content="{{ url('/logoMrLana.png' . $assetV('logoMrLana.png')) }}">
-        <meta name="theme-color" content="#4f46e5">
+        <meta name="theme-color" content="#047857">
         <meta name="mobile-web-app-capable" content="yes">
         <meta name="apple-mobile-web-app-capable" content="yes">
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">

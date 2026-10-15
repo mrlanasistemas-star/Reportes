@@ -23,3 +23,22 @@ describe('isExcludedFromGlobalOverlay', () => {
         expect(isExcludedFromGlobalOverlay(visit('/okr/5/activate', { method: 'post' }))).toBe(true);
     });
 });
+
+// Fase 8.14: los envíos de formulario usan el estado de su propio botón; solo los
+// procesos largos de Histórico General conservan la pantalla de espera.
+describe('envíos de formulario y pantalla completa', () => {
+    it('iniciar sesión, guardar usuarios/roles o eliminar periodos no tapan la pantalla', () => {
+        expect(isExcludedFromGlobalOverlay(visit('/login', { method: 'post' }))).toBe(true);
+        expect(isExcludedFromGlobalOverlay(visit('/usuarios/3', { method: 'put' }))).toBe(true);
+        expect(isExcludedFromGlobalOverlay(visit('/roles/2', { method: 'patch' }))).toBe(true);
+        expect(isExcludedFromGlobalOverlay(visit('/periodos/9', { method: 'delete' }))).toBe(true);
+    });
+
+    it('los procesos largos de Histórico General sí conservan la pantalla de espera', () => {
+        expect(isExcludedFromGlobalOverlay(visit('/historico-general/12/incidencias/resolver', { method: 'post' }))).toBe(false);
+    });
+
+    it('subir un archivo en Histórico General sigue sin pantalla completa', () => {
+        expect(isExcludedFromGlobalOverlay(visit('/historico-general', { method: 'post' }))).toBe(true);
+    });
+});

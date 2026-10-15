@@ -64,9 +64,9 @@ const themedOptions = computed(() => {
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-card p-5 text-card-foreground shadow-sm transition duration-200 hover:shadow-md dark:hover:shadow-black/20">
+    <div class="rounded-2xl border bg-card p-5 text-card-foreground shadow-sm transition duration-200 hover:shadow-md">
         <div class="mb-3">
-            <h3 class="text-xs font-black tracking-wider text-muted-foreground uppercase">{{ title }}</h3>
+            <h3 class="text-xs font-semibold tracking-wider text-muted-foreground uppercase">{{ title }}</h3>
             <p v-if="subtitle" class="mt-0.5 text-[11px] text-muted-foreground/80">{{ subtitle }}</p>
         </div>
         <div
@@ -74,7 +74,7 @@ const themedOptions = computed(() => {
             class="flex flex-col items-center justify-center gap-2 text-center text-xs text-muted-foreground"
             :style="{ height: (height ?? 260) + 'px' }"
         >
-            <span class="size-5 animate-spin rounded-full border-2 border-border border-t-indigo-500"></span>
+            <span class="size-5 animate-spin rounded-full border-2 border-border border-t-primary"></span>
             Cargando…
         </div>
         <div v-else-if="isEmpty" class="flex items-center justify-center text-center text-xs text-muted-foreground" :style="{ height: (height ?? 260) + 'px' }">
