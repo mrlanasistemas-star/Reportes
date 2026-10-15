@@ -78,6 +78,7 @@ $field = function (?string $value) {
     <div class="section-title">I. Datos del colaborador</div>
     <div class="boxed">
       <div><div class="label">Nombre del colaborador:</div>{!! $field($collaborator) !!}</div>
+      <div><div class="label">Número de empleado:</div>{!! $field($snapshot['employee_code'] ?? null) !!}</div>
       <div><div class="label">Puesto:</div>{!! $field($snapshot['position'] ?? null) !!}</div>
       <div><div class="label">Sucursal / Área:</div>{!! $field($snapshot['branch_name'] ?? null) !!}</div>
       <div><div class="label">Jefe inmediato:</div>{!! $field($boss) !!}</div>

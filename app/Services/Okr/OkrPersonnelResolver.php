@@ -139,6 +139,66 @@ class OkrPersonnelResolver
             ->all();
     }
 
+    /**
+     * normalized_name de PLAZAS/VACANTES del directorio vigente (15-oct-2026,
+     * cierre de errores OKR) — causa real verificada: el Excel de personal
+     * trae filas como "VACANTE SUBGERENTE MIACATLAN" o "TEMIXCO VACANTE" con
+     * estatus ACTIVO. ACTIVO no basta para ser una persona real elegible — se
+     * excluyen de asignaciones individuales de OKR aquí, nunca se borran del
+     * directorio original.
+     *
+     * @return string[]
+     */
+    public function vacancyPlaceholderNames(): array
+    {
+        $directory = $this->currentDirectory();
+        if (!$directory) {
+            return [];
+        }
+
+        return DB::table('lendus_employee_directory')
+            ->where('report_upload_id', $directory['upload_id'])
+            ->whereNotNull('normalized_name')
+            ->where('nombre', 'like', '%VACANTE%')
+            ->pluck('normalized_name')
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * IDs de Employee cuya sucursal INFERIDA del directorio Lendus vigente
+     * (BranchResolverService — mismo catálogo de equivalencias ruta/oficina →
+     * sucursal oficial que usa el resto de Reportería) es $branchId. Excluye
+     * vacantes/plazas ficticias. Usado como FALLBACK por
+     * OkrEmployeeBranchResolver cuando el colaborador aún no tiene ninguna
+     * fila en `employee_branch_assignments` (alta reciente, sin movimientos
+     * transaccionales todavía) — nunca sustituye una asignación ya resuelta.
+     *
+     * @return int[]
+     */
+    public function employeeIdsByInferredBranch(int $branchId): array
+    {
+        $directory = $this->currentDirectory();
+        if (!$directory) {
+            return [];
+        }
+
+        $normNames = DB::table('lendus_employee_directory')
+            ->where('report_upload_id', $directory['upload_id'])
+            ->where('inferred_branch_id', $branchId)
+            ->where('nombre', 'not like', '%VACANTE%')
+            ->whereNotNull('normalized_name')
+            ->pluck('normalized_name')
+            ->unique();
+
+        if ($normNames->isEmpty()) {
+            return [];
+        }
+
+        return Employee::query()->whereIn('normalized_name', $normNames)->pluck('id')->map(fn ($id) => (int) $id)->all();
+    }
+
     /** Puestos ACTIVOS de una sucursal en el directorio vigente (sin vacantes). */
     private function activeByPosition(int $branchId, string $position): \Illuminate\Support\Collection
     {

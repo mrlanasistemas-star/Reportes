@@ -22,12 +22,25 @@ const corrective = ref('')
 const observations = ref('')
 const authorized = ref(false)
 const submitting = ref(false)
+// Bug real corregido (15-oct-2026): un 403/404/500/sin red en eligibility()
+// dejaba weeks=[] en silencio — la UI entonces mostraba "Aún no hay semanas
+// transcurridas para evaluar", un motivo FALSO que escondía el error real.
+const loadError = ref<string | null>(null)
 
 async function load() {
     loading.value = true
+    loadError.value = null
     const res = await okrRequest<{ weeks: any[] }>(`/okr/${props.objectiveId}/warnings/eligibility`)
     loading.value = false
-    weeks.value = res.ok ? res.data.weeks : []
+
+    if (!res.ok) {
+        weeks.value = []
+        loadError.value = res.message
+
+        return
+    }
+
+    weeks.value = res.data.weeks
     selected.value = weeks.value.find((w) => w.status === 'eligible')?.week.number ?? weeks.value[weeks.value.length - 1]?.week.number ?? null
 }
 
@@ -36,6 +49,7 @@ watch(open, (v) => {
         corrective.value = ''
         observations.value = ''
         authorized.value = false
+        loadError.value = null
         load()
     }
 })
@@ -84,6 +98,11 @@ async function submit() {
             <p class="-mt-1 text-xs text-muted-foreground">El sistema solo detecta; emitir un Warning requiere revisar los datos y autorizarlo. Se evalúan semanas cerradas contra lo esperado a esa semana, nunca contra la meta final.</p>
 
             <div v-if="loading" class="space-y-2"><div v-for="n in 3" :key="n" class="h-10 animate-pulse rounded-lg bg-muted" /></div>
+
+            <div v-else-if="loadError" class="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                <p>{{ loadError }}</p>
+                <Button size="sm" variant="outline" class="rounded-lg" @click="load">Reintentar</Button>
+            </div>
 
             <template v-else>
                 <div class="flex flex-wrap gap-1.5">

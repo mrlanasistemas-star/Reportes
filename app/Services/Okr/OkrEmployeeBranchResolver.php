@@ -22,8 +22,10 @@ use Illuminate\Support\Facades\DB;
  */
 class OkrEmployeeBranchResolver
 {
-    public function __construct(private readonly CanonicalEmployeeResolver $canonicalResolver)
-    {
+    public function __construct(
+        private readonly CanonicalEmployeeResolver $canonicalResolver,
+        private readonly OkrPersonnelResolver $personnelResolver,
+    ) {
     }
 
     /**
@@ -125,9 +127,18 @@ class OkrEmployeeBranchResolver
 
         // Segunda señal de baja (15-oct-2026): en el directorio Lendus vigente
         // la persona solo aparece como INACTIVO.
-        $inactiveOnly = app(OkrPersonnelResolver::class)->inactiveOnlyNames();
+        $inactiveOnly = $this->personnelResolver->inactiveOnlyNames();
         if ($inactiveOnly !== []) {
             $query->where(fn ($q) => $q->whereNull('normalized_name')->orWhereNotIn('normalized_name', $inactiveOnly));
+        }
+
+        // Plazas/vacantes (15-oct-2026, cierre de errores OKR): "VACANTE
+        // SUBGERENTE MIACATLAN", "TEMIXCO VACANTE", etc. aparecen ACTIVO en el
+        // directorio pero no son una persona real elegible para un OKR
+        // individual.
+        $vacancies = $this->personnelResolver->vacancyPlaceholderNames();
+        if ($vacancies !== []) {
+            $query->where(fn ($q) => $q->whereNull('normalized_name')->orWhereNotIn('normalized_name', $vacancies));
         }
 
         return $query;
@@ -242,22 +253,52 @@ class OkrEmployeeBranchResolver
         return $this->canonicalize($rows)->count();
     }
 
-    /** IDs de empleados activos cuya asignación más reciente apunta a $branchId. */
+    /**
+     * IDs de empleados cuya asignación más reciente apunta a $branchId, MÁS
+     * los que todavía no tienen ninguna fila en `employee_branch_assignments`
+     * pero el directorio de personal Lendus vigente ya resuelve a esa
+     * sucursal (fallback, ver currentBranchIdFor()).
+     */
     private function employeeIdsForBranch(int $branchId): \Illuminate\Support\Collection
     {
-        return EmployeeBranchAssignment::query()
+        $assignedBranchByEmployee = EmployeeBranchAssignment::query()
             ->whereIn('id', $this->latestAssignmentIdsSubquery())
-            ->where('branch_id', $branchId)
-            ->pluck('employee_id');
+            ->pluck('branch_id', 'employee_id');
+
+        $fromAssignment = $assignedBranchByEmployee->filter(fn ($b) => (int) $b === $branchId)->keys();
+
+        $fromDirectory = collect($this->personnelResolver->employeeIdsByInferredBranch($branchId))
+            ->reject(fn ($id) => $assignedBranchByEmployee->has($id));
+
+        return $fromAssignment->merge($fromDirectory)->unique()->values();
     }
 
-    /** Branch_id de la asignación MÁS RECIENTE del empleado, o null si no tiene ninguna. */
+    /**
+     * Branch_id de la asignación MÁS RECIENTE del empleado (fuente
+     * transaccional, `employee_branch_assignments`), o — si todavía no tiene
+     * ninguna fila ahí (alta reciente, sin cobranza/colocación/nómina
+     * procesada todavía) — el que ya resuelve el directorio de personal
+     * Lendus vigente para esa persona (BranchResolverService: mismo catálogo
+     * de equivalencias ruta/oficina → sucursal oficial que usa el resto de
+     * Reportería). Corrección 15-oct-2026 (cierre de errores OKR): antes esta
+     * ausencia de fila se interpretaba como "no pertenece a ninguna
+     * sucursal" — rechazaba a colaboradores activos y correctamente
+     * clasificados en el directorio (p. ej. oficina CHOL/TOCH → ATLIXCO)
+     * solo porque aún no generaban movimientos transaccionales. Null = de
+     * verdad no hay ninguna fuente con la que resolver su sucursal.
+     */
     public function currentBranchIdFor(int $employeeId): ?int
     {
-        return EmployeeBranchAssignment::query()
+        $branchId = EmployeeBranchAssignment::query()
             ->whereIn('employee_id', $this->canonicalIdsFor($employeeId))
             ->orderByDesc('period_id')
             ->value('branch_id');
+
+        if ($branchId !== null) {
+            return (int) $branchId;
+        }
+
+        return $this->personnelResolver->profileFor($employeeId)['branch_id'];
     }
 
     public function employeeBelongsToBranch(int $employeeId, int $branchId): bool

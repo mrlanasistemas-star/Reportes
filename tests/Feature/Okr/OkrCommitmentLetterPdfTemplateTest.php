@@ -20,6 +20,7 @@ function okrLetterHtml(array $overrides = [], bool $isPreview = false): string
         'branch_name' => 'CUERNAVACA',
         'collaborator_name' => 'JUAN PÉREZ',
         'employee_name' => 'JUAN PÉREZ',
+        'employee_code' => 'CUE01234',
         'immediate_boss' => 'María Fernanda López',
         'responsible_name' => 'María Fernanda López',
         'start_date' => '2026-10-05',
@@ -40,6 +41,7 @@ it('renders the commitment letter with the Objective data in flowing HTML (no ab
     $html = okrLetterHtml();
 
     expect($html)->toContain('JUAN PÉREZ')
+        ->toContain('CUE01234')
         ->toContain('GESTOR')
         ->toContain('CUERNAVACA')
         ->toContain('María Fernanda López')
@@ -69,9 +71,11 @@ it('renders the commitment letter with the Objective data in flowing HTML (no ab
 });
 
 it('marks missing data as pending in the preview instead of leaving blanks under labels', function () {
-    $html = okrLetterHtml(['position' => null, 'immediate_boss' => null, 'responsible_name' => null], isPreview: true);
+    // employee_code ausente también cuenta como "Pendiente de captura"
+    // (15-oct-2026: Número de empleado en la carta).
+    $html = okrLetterHtml(['position' => null, 'immediate_boss' => null, 'responsible_name' => null, 'employee_code' => null], isPreview: true);
 
-    expect(substr_count($html, 'Pendiente de captura'))->toBe(2);
+    expect(substr_count($html, 'Pendiente de captura'))->toBe(3);
     expect($html)->toContain('VISTA PREVIA');
 });
 
