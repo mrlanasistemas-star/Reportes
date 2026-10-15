@@ -58,7 +58,7 @@ class PlacementUploadController extends Controller
             ->where('u.okr_objective_id', $sourceObjectiveId)->where('u.status', 'active')->where('u.week_number', '<', $week)
             ->pluck('m.fingerprint')->flip();
 
-        $movements = $upload->movements()->get(['employee_id', 'employee_name_raw', 'amount', 'fingerprint']);
+        $movements = $upload->movements()->get(['employee_id', 'employee_name_raw', 'amount', 'fingerprint', 'attribution_status', 'attribution_note']);
         $children = OkrObjective::query()->where('parent_id', $sourceObjectiveId)->whereNotNull('employee_id')->get(['id', 'employee_id']);
         $resolver = app(\App\Services\Okr\OkrEmployeeBranchResolver::class);
         $childByEmployee = [];
@@ -77,6 +77,9 @@ class PlacementUploadController extends Controller
                     'employee_id' => $first->employee_id,
                     'name' => $first->employee_id ? (\App\Models\Employee::query()->find($first->employee_id)?->full_name ?? $first->employee_name_raw) : ($first->employee_name_raw ?: 'Sin gestor'),
                     'attributed' => $first->employee_id !== null,
+                    // Prioridad 4: pendiente de atribución (no suma a ningún gestor) con su motivo.
+                    'pending_attribution' => $first->employee_id === null,
+                    'pending_reason' => $first->employee_id === null ? ($group->pluck('attribution_note')->filter()->first() ?? 'Sin gestor identificado.') : null,
                     'child_objective_id' => $first->employee_id ? ($childByEmployee[$first->employee_id] ?? null) : null,
                     'movements' => $counted->count(),
                     'duplicates' => $group->count() - $counted->count(),
@@ -91,7 +94,7 @@ class PlacementUploadController extends Controller
                 'id' => $upload->id, 'original_filename' => $upload->original_filename, 'uploaded_at' => $upload->created_at?->toDateTimeString(),
                 'uploaded_by' => $upload->uploader?->name, 'from_branch_file' => $sourceObjectiveId !== $objective->id,
                 'total_amount' => $upload->total_amount, 'rows_count' => $upload->rows_count, 'coverage_status' => $upload->coverage_status,
-                'unattributed_amount' => $upload->unattributed_amount, 'rows_duplicated' => $upload->rows_duplicated,
+                'unattributed_amount' => $upload->unattributed_amount, 'rows_pending_attribution' => $upload->rows_pending_attribution ?? 0, 'rows_duplicated' => $upload->rows_duplicated,
                 'rows_other_branch' => $upload->rows_other_branch, 'rows_cancelled' => $upload->rows_cancelled,
                 'rows_out_of_objective_range' => $upload->rows_out_of_objective_range, 'rows_outside_week_range' => $upload->rows_outside_week_range,
             ],
@@ -155,6 +158,7 @@ class PlacementUploadController extends Controller
                 'original_filename' => $upload->original_filename,
                 'rows_count' => $upload->rows_count,
                 'unattributed_amount' => $upload->unattributed_amount,
+                'rows_pending_attribution' => $upload->rows_pending_attribution ?? 0,
                 'rows_outside_week_range' => $upload->rows_outside_week_range,
                 'rows_duplicated' => $upload->rows_duplicated,
                 'rows_other_branch' => $upload->rows_other_branch,

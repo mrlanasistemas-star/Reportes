@@ -5,12 +5,17 @@ namespace App\Http\Controllers;
 use App\Models\Branch;
 use App\Models\Period;
 use App\Models\PeriodSummary;
+use App\Services\Dashboard\DashboardPdfChartBuilder;
 use App\Services\DashboardTrendService;
+use App\Services\Pdf\BrowsershotPdfRenderer;
+use App\Services\Pdf\PdfRenderException;
 use App\Services\RadiografiaExportService;
 use App\Services\Reporting\OperativeBranchService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -132,6 +137,57 @@ class DashboardController extends Controller
             200,
             ['Cache-Control' => 'no-store, no-cache, must-revalidate']
         );
+    }
+
+    /**
+     * PDF del Dashboard (15-oct-2026). Antes el botón "Exportar PDF" apuntaba a
+     * la Radiografía completa (/reportes-mensuales/{id}/radiografia.pdf) — otro
+     * reporte, de muchas páginas. Ahora genera un documento con EXACTAMENTE los
+     * KPI y gráficas que el Dashboard muestra para el periodo/sucursal elegidos,
+     * desde el mismo payloadForPeriod() (ningún cálculo nuevo).
+     */
+    public function exportPdf(Request $request, BrowsershotPdfRenderer $renderer, DashboardPdfChartBuilder $chart)
+    {
+        @ini_set('memory_limit', '512M');
+        @set_time_limit(180);
+
+        $periods = $this->availablePeriods();
+        $period = $periods->firstWhere('id', (int) $request->integer('period_id'));
+        if (!$period) {
+            return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px">'
+                . '<p><strong>No hay radiografía generada para el periodo solicitado.</strong></p><p>Elige un periodo con radiografía generada en el Dashboard e intenta de nuevo.</p></body>', 404)
+                ->header('Content-Type', 'text/html; charset=UTF-8');
+        }
+
+        $branchId = $request->integer('branch_id') ?: null;
+        $payload = $this->payloadForPeriod($period, $branchId);
+        $branchName = $branchId ? ($payload['scope']['branch_name'] ?? Branch::query()->whereKey($branchId)->value('name')) : null;
+
+        $path = storage_path('app/tmp/dashboard-' . $period->id . '-' . ($branchId ?? 'general') . '-' . uniqid() . '.pdf');
+        try {
+            $renderer->renderViewToFile('reports.dashboard-pdf', [
+                'kpis' => $payload['kpis'],
+                'charts' => $payload['charts'],
+                'scope' => $payload['scope'],
+                'trend' => $payload['kpis'] ? $this->trendService->build() : [],
+                'periodLabel' => $period->label,
+                'branchName' => $branchName,
+                'generatedAt' => now(),
+                'generatedBy' => $request->user()?->name,
+                'chart' => $chart,
+            ], $path, ['footer_left' => config('pdf.branding.app_name') . ' · Dashboard ' . $period->label . ($branchName ? ' · ' . $branchName : '')]);
+        } catch (PdfRenderException $e) {
+            $ref = 'DASH-PDF-' . now()->format('ymdHis') . '-' . strtoupper(Str::random(4));
+            Log::error('Dashboard: fallo generando el PDF', ['ref' => $ref, 'period_id' => $period->id, 'branch_id' => $branchId, 'code' => $e->code(), 'error' => $e->getMessage()]);
+
+            return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#7f1d1d">'
+                . '<p><strong>No pudimos generar el PDF del Dashboard.</strong></p><p>Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: <strong>' . e($ref) . '</strong>.</p></body>', 500)
+                ->header('Content-Type', 'text/html; charset=UTF-8');
+        }
+
+        $filename = 'dashboard-' . Str::slug($period->label) . ($branchName ? '-' . Str::slug($branchName) : '-todas-las-sucursales') . '.pdf';
+
+        return response()->download($path, $filename, ['Content-Type' => 'application/pdf'])->deleteFileAfterSend();
     }
 
     /** Periodos mensuales reales (nunca de prueba/migración) con radiografía generada, más reciente primero. */

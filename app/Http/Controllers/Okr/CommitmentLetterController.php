@@ -8,12 +8,16 @@ use App\Models\OkrCommitmentLetter;
 use App\Models\OkrObjective;
 use App\Services\Okr\OkrAuditLogger;
 use App\Services\Okr\OkrCommitmentLetterService;
+use App\Services\Okr\OkrCommitmentLetterIncompleteException;
 use App\Services\Okr\OkrEmployeeBranchResolver;
+use App\Services\Pdf\PdfRenderException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -46,11 +50,22 @@ class CommitmentLetterController extends Controller
         ], 200, ['Cache-Control' => 'no-store']);
     }
 
-    public function preview(Request $request, OkrObjective $objective, OkrCommitmentLetterService $service): StreamedResponse
+    public function preview(Request $request, OkrObjective $objective, OkrCommitmentLetterService $service): StreamedResponse|\Illuminate\Http\Response
     {
         $this->authorize('view', $objective);
 
-        $path = $service->renderPreviewPdf($objective, config('company.document_place'), $this->authorizedOverrides($request));
+        try {
+            $path = $service->renderPreviewPdf($objective, config('company.document_place'), $this->authorizedOverrides($request));
+        } catch (PdfRenderException $e) {
+            // La vista previa se abre en un iframe / pestaña: respuesta HTML
+            // legible (no una pantalla de error del framework) con referencia.
+            $ref = 'CC-PREV-' . now()->format('ymdHis') . '-' . strtoupper(Str::random(4));
+            Log::error('Carta Compromiso: fallo generando la vista previa', ['ref' => $ref, 'objective_id' => $objective->id, 'code' => $e->code(), 'error' => $e->getMessage()]);
+
+            return response('<!doctype html><meta charset="utf-8"><body style="font-family:Montserrat,Segoe UI,Arial,sans-serif;padding:24px;color:#7f1d1d;background:#fef2f2">'
+                . '<p><strong>No pudimos generar la vista previa.</strong></p><p>Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: <strong>' . e($ref) . '</strong>.</p></body>', 500)
+                ->header('Content-Type', 'text/html; charset=UTF-8');
+        }
 
         // Previsualización en el sistema y "abrir en otra pestaña" (15-oct-2026,
         // sección 6 de la auditoría) necesitan Content-Disposition: inline para
@@ -73,6 +88,17 @@ class CommitmentLetterController extends Controller
 
         try {
             $letter = $service->generate($objective, $request->user(), config('company.document_place'), $this->authorizedOverrides($request));
+        } catch (OkrCommitmentLetterIncompleteException $e) {
+            // Datos faltantes (p. ej. jefe inmediato sin confirmar): la UI
+            // ofrece "Completar información" y resalta los campos.
+            return response()->json(['message' => $e->getMessage(), 'action' => 'complete_information', 'action_label' => 'Completar información', 'missing' => $e->missing], 422);
+        } catch (PdfRenderException $e) {
+            // Fallo técnico real del motor PDF: la transacción ya se revirtió
+            // (sin folio ni documento definitivo); referencia para Sistemas.
+            $ref = 'CC-PDF-' . now()->format('ymdHis') . '-' . strtoupper(Str::random(4));
+            Log::error('Carta Compromiso: fallo generando el PDF definitivo', ['ref' => $ref, 'objective_id' => $objective->id, 'code' => $e->code(), 'error' => $e->getMessage()]);
+
+            return response()->json(['message' => "No pudimos generar el documento (no se emitió ningún folio). Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: {$ref}.", 'reference' => $ref], 500);
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }

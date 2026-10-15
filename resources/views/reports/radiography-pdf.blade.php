@@ -3,8 +3,8 @@ use App\Services\Radiography\RadiographyMetricToneHelper as Tone;
 
 $snap = $snapshot;
 $sum  = $snap['summary'];
-$fmt  = fn($v) => '$' . number_format((float)$v, 2);
-$fmt0 = fn($v) => '$' . number_format((float)$v, 0);
+$fmt  = fn($v) => (round((float)$v, 2) < 0 ? '-' : '') . '$' . number_format(abs((float)$v), 2); // -$1,234.56 (nunca $-1,234.56)
+$fmt0 = fn($v) => (round((float)$v) < 0 ? '-' : '') . '$' . number_format(abs((float)$v), 0);
 $fmtp = fn($v) => number_format((float)$v, 2) . '%';
 $fmtn = fn($v) => number_format((float)$v, 0);
 

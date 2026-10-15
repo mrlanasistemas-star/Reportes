@@ -23,6 +23,11 @@ class ModuleAccessService
         'reportes' => ['label' => 'Reportes mensuales', 'url' => '/reportes-mensuales', 'description' => 'Radiografía, comparativo, validaciones y exportes.'],
         'efectividad' => ['label' => 'Efectividad de Cobranza', 'url' => '/efectividad-cobranza', 'description' => 'Calculadora de efectividad por ruta.'],
         'okr' => ['label' => 'OKR', 'url' => '/okr', 'description' => 'Objetivos, check-ins y seguimiento.'],
+        // Administración (prioridad 8) — por defecto solo el Administrador; se
+        // pueden delegar, pero nadie puede otorgar más de lo que él mismo tiene
+        // (ver AccessDelegationGuard).
+        'usuarios' => ['label' => 'Usuarios', 'url' => '/usuarios', 'description' => 'Altas, accesos, invitaciones y contraseñas.'],
+        'roles' => ['label' => 'Roles y permisos', 'url' => '/roles', 'description' => 'Roles, módulos y acciones permitidas.'],
     ];
 
     public const CONFIGURABLE_ROLES = [User::ROLE_GERENCIAL, User::ROLE_COLABORADOR];

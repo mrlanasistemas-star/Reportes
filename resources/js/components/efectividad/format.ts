@@ -190,7 +190,7 @@ export async function describeHttpFailure(
     }
 
     if (res.status === 401 || res.status === 419) {
-        return 'Tu sesión expiró. Recarga la página para iniciar sesión de nuevo antes de continuar.';
+        return 'Tu sesión expiró por inactividad. Inicia sesión de nuevo para continuar.';
     }
 
     if (res.status === 403) {
@@ -230,7 +230,17 @@ export async function describeHttpFailure(
     }
 
     if (res.status >= 500) {
-        return 'Ocurrió un error en el servidor al procesar la solicitud. Intenta de nuevo; si el problema persiste, contacta a soporte.';
+        try {
+            const body = await res.json();
+
+            if (typeof body?.message === 'string' && body?.reference) {
+                return body.message;
+            }
+        } catch {
+            // sin cuerpo JSON: mensaje genérico de error técnico
+        }
+
+        return 'No pudimos completar la operación por un error técnico. Intenta nuevamente; si continúa, informa a Sistemas.';
     }
 
     return `No se pudo completar la solicitud (código ${res.status}).`;

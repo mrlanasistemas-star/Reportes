@@ -9,8 +9,11 @@ use App\Services\Okr\OkrWarningService;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 /**
  * Warning Rojo — el sistema NUNCA sanciona solo: muestra la elegibilidad
@@ -45,17 +48,46 @@ class WarningController extends Controller
             ? [$request->integer('week')]
             : range(1, max(1, min((int) $objective->duration_weeks, max(1, $objective->currentWeekNumber()))));
 
+        // Bug real corregido (15-oct-2026): el catch decía `Throwable` sin
+        // `use Throwable;` — dentro de este namespace se resolvía como
+        // App\Http\Controllers\Okr\Throwable (inexistente), así que NUNCA
+        // atrapaba nada y el usuario veía un 500 genérico sin referencia.
         try {
             $rows = array_map(fn ($w) => $service->eligibility($objective, $w), $weeks);
         } catch (Throwable $e) {
-            $ref = 'WR-ELIG-' . now()->format('YmdHis');
-            report($e);
-            \Illuminate\Support\Facades\Log::error('Elegibilidad de Warning falló', ['ref' => $ref, 'objective_id' => $objective->id, 'error' => $e->getMessage()]);
-
-            return response()->json(['message' => "Error técnico al evaluar las semanas (referencia {$ref}). No es un incumplimiento; intenta de nuevo o repórtalo a soporte."], 500);
+            return $this->technicalError('WR-ELIG', $e, $objective->id);
         }
 
-        return response()->json(['weeks' => $rows, 'notice' => null], 200, ['Cache-Control' => 'no-store']);
+        // "Falta autorización": quien solo puede consultar ve la evaluación,
+        // pero se le dice por qué no puede emitir (no es un error).
+        $canIssue = $request->user()?->can('assign', $objective) ?? false;
+
+        return response()->json([
+            'weeks' => $rows,
+            'notice' => null,
+            'can_issue' => $canIssue,
+            'authorization_notice' => $canIssue ? null : 'Puedes consultar la evaluación, pero emitir un Warning requiere permiso de administrador o gerencia.',
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * Fallo técnico REAL (no una condición de negocio): mensaje acordado con
+     * el usuario + referencia única registrada en el log para que Sistemas
+     * encuentre el detalle exacto.
+     */
+    private function technicalError(string $prefix, Throwable $e, int $objectiveId, string $what = 'consultar la información'): JsonResponse
+    {
+        $ref = $prefix . '-' . now()->format('ymdHis') . '-' . strtoupper(Str::random(4));
+        Log::error('OKR Warning: fallo técnico', [
+            'ref' => $ref, 'objective_id' => $objectiveId,
+            'exception' => get_class($e), 'error' => $e->getMessage(),
+            'at' => $e->getFile() . ':' . $e->getLine(),
+        ]);
+
+        return response()->json([
+            'message' => "No pudimos {$what}. Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: {$ref}.",
+            'reference' => $ref,
+        ], 500);
     }
 
     public function store(Request $request, OkrObjective $objective, OkrWarningService $service): JsonResponse
@@ -71,8 +103,12 @@ class WarningController extends Controller
 
         try {
             $warning = $service->generate($objective, $data['week_number'], $data['corrective_actions'], $data['observations'] ?? null, $request->user());
+        } catch (\App\Services\Pdf\PdfRenderException $e) {
+            return $this->technicalError('WR-PDF', $e, $objective->id, 'generar el documento del Warning (no se emitió ningún folio)');
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
+        } catch (Throwable $e) {
+            return $this->technicalError('WR-EMIT', $e, $objective->id, 'emitir el Warning (no se emitió ningún folio)');
         }
 
         return response()->json(['warning' => $this->payload($warning)]);

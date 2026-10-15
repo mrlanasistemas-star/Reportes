@@ -6,6 +6,9 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
 
+// Las páginas nuevas aún no están en el manifest de Vite hasta el siguiente build.
+beforeEach(fn () => $this->withoutVite());
+
 /**
  * Módulos por rol (14-oct-2026) — configurables desde "Usuarios y accesos".
  * Caso real: gerentes que SOLO deben entrar a Efectividad de Cobranza.
@@ -56,7 +59,9 @@ it('admin always keeps every module regardless of the configuration', function (
 
     $this->actingAs($admin)->get(route('dashboard'))->assertOk();
     $this->actingAs($admin)->get(route('efectividad-cobranza.index'))->assertOk();
-    $this->actingAs($admin)->get(route('okr.responsibles.index'))->assertOk();
+    $this->actingAs($admin)->get(route('usuarios.index'))->assertOk();
+    $this->actingAs($admin)->get(route('roles.index'))->assertOk();
+    $this->actingAs($admin)->get(route('okr.responsibles.index'))->assertRedirect(route('usuarios.index'));
 });
 
 it('shares only the allowed modules to the frontend menu', function () {

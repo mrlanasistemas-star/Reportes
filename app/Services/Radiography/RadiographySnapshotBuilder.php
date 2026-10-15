@@ -871,7 +871,7 @@ class RadiographySnapshotBuilder
             ];
         }
         if (isset($s['rotation_detail'])) {
-            foreach (['altas', 'bajas', 'activos', 'empleados_mes_actual', 'empleados_mes_anterior'] as $k) {
+            foreach (['altas', 'bajas', 'bajas_pendientes', 'activos', 'empleados_mes_actual', 'empleados_mes_anterior'] as $k) {
                 if (isset($s['rotation_detail'][$k]) && is_array($s['rotation_detail'][$k])) {
                     $s['rotation_detail'][$k] = $this->filterRowsByField($s['rotation_detail'][$k], ['sucursal'], $name);
                 }
@@ -1173,7 +1173,7 @@ class RadiographySnapshotBuilder
             $s['imss'] = ['colaboradores' => $this->filterRowsByField($s['imss']['colaboradores'], ['nombre'], $employee->full_name)];
         }
         if (isset($s['rotation_detail'])) {
-            foreach (['altas', 'bajas', 'activos', 'empleados_mes_actual', 'empleados_mes_anterior'] as $k) {
+            foreach (['altas', 'bajas', 'bajas_pendientes', 'activos', 'empleados_mes_actual', 'empleados_mes_anterior'] as $k) {
                 if (isset($s['rotation_detail'][$k]) && is_array($s['rotation_detail'][$k])) {
                     $s['rotation_detail'][$k] = $this->filterRowsByField($s['rotation_detail'][$k], ['nombre'], $employee->full_name);
                 }
@@ -4206,7 +4206,7 @@ class RadiographySnapshotBuilder
             ->where('per.is_active_for_period', true)
             ->orderBy('per.branch_name')
             ->orderBy('per.nombre_original')
-            ->get(['per.branch_id', 'per.branch_name', 'per.nombre_original', 'per.source', 'per.movement_type', 'e.employee_code']);
+            ->get(['per.branch_id', 'per.branch_name', 'per.nombre_original', 'per.source', 'per.movement_type', 'per.reconciliation_status', 'e.employee_code']);
 
         $bajaRows = DB::table('period_employee_rosters as per')
             ->leftJoin('employees as e', 'per.employee_id', '=', 'e.id')
@@ -4215,7 +4215,19 @@ class RadiographySnapshotBuilder
             ->where('per.movement_type', 'baja')
             ->orderBy('per.branch_name')
             ->orderBy('per.nombre_original')
-            ->get(['per.branch_id', 'per.branch_name', 'per.nombre_original', 'per.source', 'e.employee_code']);
+            ->get(['per.branch_id', 'per.branch_name', 'per.nombre_original', 'per.source', 'per.reconciliation_note', 'e.employee_code']);
+
+        // 18-oct-2026: movement_type='baja' ya es SOLO baja confirmada con evidencia; las
+        // ausencias sin confirmar (movement_type='ausencia') se listan aparte como pendientes
+        // de conciliación — nunca como baja ni dentro del índice de rotación.
+        $pendingRows = DB::table('period_employee_rosters as per')
+            ->leftJoin('employees as e', 'per.employee_id', '=', 'e.id')
+            ->where('per.period_id', $period->id)
+            ->where('per.is_active_for_period', false)
+            ->where('per.movement_type', 'ausencia')
+            ->orderBy('per.branch_name')
+            ->orderBy('per.nombre_original')
+            ->get(['per.branch_name', 'per.nombre_original', 'per.reconciliation_status', 'per.reconciliation_note', 'e.employee_code']);
 
         $sourceLabel = fn (string $s) => match ($s) {
             'ambos'              => 'NOI Nómina + NOI Nómina Fiscal',
@@ -4234,7 +4246,15 @@ class RadiographySnapshotBuilder
             'sucursal' => $r->branch_name ?: 'SIN SUCURSAL',
             'clave'    => $r->employee_code ?: '—',
             'nombre'   => $r->nombre_original,
-            'motivo'   => 'Aparecía en el periodo anterior y no aparece en el periodo actual',
+            'motivo'   => $r->reconciliation_note ?: 'Aparecía en el periodo anterior y no aparece en el periodo actual',
+        ])->values()->all();
+
+        $bajasPendientes = $pendingRows->map(fn ($r) => [
+            'sucursal' => $r->branch_name ?: 'SIN SUCURSAL',
+            'clave'    => $r->employee_code ?: '—',
+            'nombre'   => $r->nombre_original,
+            'estatus'  => \App\Services\Roster\RosterMovementStatus::label(\App\Services\Roster\RosterMovementStatus::resolve($r->reconciliation_status, 'ausencia', false)),
+            'motivo'   => $r->reconciliation_note ?: 'Ausente de la nómina del periodo, sin baja confirmada',
         ])->values()->all();
 
         $activos = $activeRows->map(fn ($r) => [
@@ -4243,6 +4263,7 @@ class RadiographySnapshotBuilder
             'nombre'        => $r->nombre_original,
             'fuente'        => $sourceLabel($r->source),
             'movement_type' => $r->movement_type,
+            'estatus'       => $r->reconciliation_status,
         ])->values()->all();
 
         $sinSucursal = $activeRows->whereNull('branch_id')->map(fn ($r) => [
@@ -4255,8 +4276,9 @@ class RadiographySnapshotBuilder
         // Lista del periodo anterior reconstruida a partir del roster actual: los que
         // siguen activos (movement_type='activo') más los que causaron baja. Evita una
         // consulta aparte — el periodo anterior ya no tiene por qué seguir en BD igual.
-        $mesAnteriorLista = array_values(array_filter($activos, fn ($r) => $r['movement_type'] === 'activo'));
-        foreach ($bajas as $b) {
+        $notInPrev = ['retorno_tras_ausencia', 'registro_duplicado', 'plantilla_inicial'];
+        $mesAnteriorLista = array_values(array_filter($activos, fn ($r) => $r['movement_type'] === 'activo' && !in_array($r['estatus'] ?? null, $notInPrev, true)));
+        foreach (array_merge($bajas, $bajasPendientes) as $b) {
             $mesAnteriorLista[] = [
                 'sucursal' => $b['sucursal'],
                 'clave'    => $b['clave'],
@@ -4271,6 +4293,7 @@ class RadiographySnapshotBuilder
         return [
             'altas'            => $altas,
             'bajas'            => $bajas,
+            'bajas_pendientes' => $bajasPendientes,
             'activos'          => $activos,
             'sin_sucursal'     => $sinSucursal,
             'mes_actual'       => strtoupper($period->label),

@@ -168,7 +168,10 @@ class StoreObjectiveRequest extends FormRequest
             }
 
             if ($branchId && !$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
-                $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador no pertenece a la sucursal seleccionada.');
+                $conflict = $resolver->branchConflictFor($employeeId);
+                $validator->errors()->add("individual_objectives.{$i}.employee_id", $conflict !== null
+                    ? $conflict['message'] . ' ' . $conflict['detail'] . '. Concilia su sucursal antes de asignarle un OKR.'
+                    : 'Ese colaborador no pertenece a la sucursal seleccionada.');
 
                 continue;
             }
@@ -220,7 +223,10 @@ class StoreObjectiveRequest extends FormRequest
         }
 
         if (!$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
-            $validator->errors()->add('employee_id', 'El colaborador seleccionado no pertenece a la sucursal indicada.');
+            $conflict = $resolver->branchConflictFor($employeeId);
+            $validator->errors()->add('employee_id', $conflict !== null
+                ? $conflict['message'] . ' ' . $conflict['detail'] . '. Concilia su sucursal antes de asignarle un OKR.'
+                : 'El colaborador seleccionado no pertenece a la sucursal indicada.');
 
             return;
         }

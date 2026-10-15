@@ -88,6 +88,8 @@ class User extends Authenticatable
             // Cuenta deshabilitada (14-oct-2026): bloquea el login en todo el sistema.
             'disabled_at' => 'datetime',
             'welcome_email_sent_at' => 'datetime',
+            'welcome_email_last_attempt_at' => 'datetime', // invitación: último intento (prioridad 10)
+            'last_login_at' => 'datetime', // último inicio de sesión (RecordUserLastLogin)
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
         ];

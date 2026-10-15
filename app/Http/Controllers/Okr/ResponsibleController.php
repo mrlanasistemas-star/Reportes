@@ -3,66 +3,61 @@
 namespace App\Http\Controllers\Okr;
 
 use App\Http\Controllers\Controller;
-use App\Mail\UserAccessGrantedMail;
 use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\OkrObjective;
 use App\Models\User;
+use App\Services\Access\AccessDelegationGuard;
+use App\Services\Access\ActionPermissionService;
 use App\Services\Access\ModuleAccessService;
 use App\Services\Access\RoleCatalogService;
+use App\Services\Access\UserAccessAuditLogger;
+use App\Services\Access\UserInvitationService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
-use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
 /**
- * Módulo OKR — catálogo de "Responsables". Un responsable ES un `User` de la
- * tabla real (responsible_user_id ya apunta a `users`) — esto NO crea una
- * entidad paralela, solo da una pantalla cómoda para verlos y agregar uno
- * nuevo sin pasar por un flujo de registro completo. Solo administradores
- * (users.role='admin') pueden entrar aquí — ver OkrServiceProvider.
+ * Módulo USUARIOS (prioridad 8/10) — antes "Responsables OKR" / "Usuarios y
+ * accesos" dentro de /okr. Ahora vive en /usuarios (routes/web.php) con su
+ * propio módulo (`module:usuarios`) y un permiso por acción
+ * (`permission:usuarios,*`). Las rutas /okr/responsibles/* se conservan como
+ * alias con los MISMOS middlewares (routes/okr.php).
  *
- * CORRECCIÓN 09-sep-2026 (punto 10 de la auditoría): antes se ponía
- * `email_verified_at = now()` artificialmente al crear — una mentira (nadie
- * verificó nada). Este repo no tiene envío de correo configurado, así que se
- * optó por la opción C del pedido: el responsable se crea SIN acceso y un
- * administrador lo habilita explícitamente cuando confirma la identidad de
- * la persona (enableAccess()).
+ * Reglas que NO cambian:
+ *   - email_verified_at nunca se finge (auditoría puntos 30/32).
+ *   - access_enabled_at = activación administrativa del acceso (OKR la exige,
+ *     ver EnsureOkrAccessEnabled); disabled_at = cuenta bloqueada (no puede
+ *     iniciar sesión, ver EnsureUserNotDisabled).
+ *   - Contraseñas: siempre con hash; la generada se muestra UNA sola vez.
  *
- * CORRECCIÓN 10-sep-2026 (punto 32 de la auditoría): la primera versión de
- * este fix seguía usando `email_verified_at` para representar "acceso
- * habilitado" — mezclaba VERIFICACIÓN DE CORREO con HABILITACIÓN DE ACCESO,
- * dos conceptos distintos. Ahora existe una columna propia
- * `users.access_enabled_at` para lo segundo; `email_verified_at` recupera su
- * significado real y NUNCA se fija artificialmente aquí.
- *
- * Nota técnica verificada: `User` NO implementa `MustVerifyEmail` (ver
- * app/Models/User.php, comentado), así que el middleware `verified` del
- * grupo de rutas es hoy un no-op para todos los usuarios — ninguna versión
- * de este flujo (ni antes ni ahora) bloqueaba realmente el login a nivel
- * framework. `access_enabled_at` es un estado administrativo/informativo
- * (Activo/Pendiente en la UI), no un control de acceso de Laravel.
- *
- * La contraseña temporal se muestra UNA SOLA VEZ al admin en la respuesta
- * (nunca se vuelve a poder consultar) — la persona debe usar "¿Olvidaste tu
- * contraseña?" para fijar la suya antes de poder entrar.
+ * CORRECCIÓN prioridad 2 — ACCESO ≠ SITUACIÓN LABORAL: enableAccess()/
+ * disableAccess() modificaban Employee.is_active (alta/baja del colaborador)
+ * — administrar el acceso de un usuario daba de baja a la persona en nómina,
+ * roster y reportes. Ahora solo cambian columnas de `users`; employees,
+ * nómina e históricos nunca se tocan desde aquí.
  */
 class ResponsibleController extends Controller
 {
-    use AuthorizesRequests;
+    public function __construct(
+        private readonly ActionPermissionService $actions,
+        private readonly AccessDelegationGuard $guard,
+        private readonly UserAccessAuditLogger $audit,
+        private readonly UserInvitationService $invitations,
+    ) {
+    }
 
-    public function index(Request $request, OkrEmployeeBranchResolver $branchResolver, ModuleAccessService $moduleAccess, \App\Services\Access\ActionPermissionService $actionPermissions): Response
+    public function index(Request $request, OkrEmployeeBranchResolver $branchResolver, ModuleAccessService $moduleAccess): Response
     {
-        $this->authorize('okr.admin');
+        $actor = $request->user();
+        $catalog = app(RoleCatalogService::class);
 
         $usageCounts = OkrObjective::query()
             ->whereNotNull('responsible_user_id')
@@ -70,333 +65,338 @@ class ResponsibleController extends Controller
             ->groupBy('responsible_user_id')
             ->pluck('total', 'responsible_user_id');
 
-        $responsibles = User::query()->with('employee:id,full_name,is_active')->orderBy('name')
-            ->get(['id', 'name', 'email', 'role', 'access_enabled_at', 'disabled_at', 'employee_id', 'welcome_email_sent_at', 'welcome_email_error'])
-            ->map(function ($u) use ($usageCounts, $branchResolver) {
-                $currentBranchId = $u->employee_id ? $branchResolver->currentBranchIdFor($u->employee_id) : null;
+        $branchNames = Branch::query()->pluck('name', 'id');
+        $enabledAdmins = User::query()->where('role', User::ROLE_ADMIN)->whereNull('disabled_at')->count();
+
+        $users = User::query()->with('employee:id,full_name,is_active')->orderBy('name')->get()
+            ->map(function (User $u) use ($usageCounts, $branchResolver, $branchNames, $actor, $catalog, $enabledAdmins) {
+                $branchId = $u->employee_id ? $branchResolver->currentBranchIdFor($u->employee_id) : null;
+                $manageable = $u->id !== $actor->id && $this->guard->canManageUser($actor, $u);
+                $isLastAdmin = $u->isAdmin() && $u->disabled_at === null && $enabledAdmins <= 1;
 
                 return [
-                    'id' => $u->id, 'name' => $u->name, 'email' => $u->email, 'role' => $u->role,
-                    // Activo = el admin habilitó el acceso explícitamente. Pendiente =
-                    // creado pero sin habilitar todavía. Campo propio — NUNCA
-                    // email_verified_at (ver docblock de la clase).
-                    'status' => $u->access_enabled_at !== null ? 'active' : 'pending',
-                    // Cuenta bloqueada para iniciar sesión (14-oct-2026) — distinto de "acceso OKR".
-                    'disabled' => $u->disabled_at !== null,
+                    'id' => $u->id, 'name' => $u->name, 'email' => $u->email,
+                    'role' => $u->role, 'role_name' => $catalog->label($u->role),
+                    // Estado de ACCESO (nunca situación laboral): bloqueado > pendiente > habilitado.
+                    'access' => $u->disabled_at !== null ? 'blocked' : ($u->access_enabled_at !== null ? 'enabled' : 'pending'),
+                    'access_enabled_at' => $u->access_enabled_at?->toDateTimeString(),
+                    'disabled_at' => $u->disabled_at?->toDateTimeString(),
+                    'last_login_at' => $u->last_login_at?->toDateTimeString(),
+                    'created_at' => $u->created_at?->toDateTimeString(),
+                    'invitation' => [
+                        'status' => UserInvitationService::statusOf($u),
+                        'sent_at' => $u->welcome_email_sent_at?->toDateTimeString(),
+                        'error' => $u->welcome_email_error,
+                        'attempts' => (int) ($u->welcome_email_attempts ?? 0),
+                        'last_attempt_at' => $u->welcome_email_last_attempt_at?->toDateTimeString(),
+                    ],
                     'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
-                    // 1/2 del cierre (05-oct-2026) — identidad persistente User↔Employee.
                     'employee_id' => $u->employee_id,
                     'employee_name' => $u->employee?->full_name,
                     'employee_is_active' => $u->employee?->is_active,
-                    'current_branch' => $currentBranchId ? Branch::find($currentBranchId)?->name : null,
-                    // Estado REAL del correo de bienvenida (sección 11 de la auditoría) —
-                    // nunca se afirma "enviado" si el servidor no lo confirmó.
-                    'welcome_email_sent_at' => $u->welcome_email_sent_at?->toDateTimeString(),
-                    'welcome_email_error' => $u->welcome_email_error,
+                    'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
+                    'is_self' => $u->id === $actor->id,
+                    'is_last_admin' => $isLastAdmin,
+                    // URLs generadas por el BACKEND (route()): respetan el prefijo/subcarpeta
+                    // real del servidor — un '/okr/...' fijo en el frontend daba 404 si la app
+                    // no está en la raíz del dominio (ver prioridad 10, botón reenviar).
+                    'urls' => [
+                        'enable_access' => route('usuarios.enable-access', $u),
+                        'disable_access' => route('usuarios.disable-access', $u),
+                        'toggle_disabled' => route('usuarios.toggle-disabled', $u),
+                        'reset_password' => route('usuarios.reset-password', $u),
+                        'resend_invitation' => route('usuarios.resend-invitation', $u),
+                        'update_role' => route('usuarios.update-role', $u),
+                        'link_employee' => route('usuarios.link-employee', $u),
+                    ],
+                    'can' => [
+                        'manage_access' => $manageable && ! $isLastAdmin && $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso'),
+                        'reset_password' => $manageable && $this->actions->canAction($actor, 'usuarios', 'restablecer'),
+                        'invite' => $this->guard->canManageUser($actor, $u) && $this->actions->canAction($actor, 'usuarios', 'invitar'),
+                        'change_role' => $manageable && ! ($u->isAdmin() && $isLastAdmin) && $this->actions->canAction($actor, 'usuarios', 'asignar_rol'),
+                        'link_employee' => $this->guard->canManageUser($actor, $u) && $this->actions->canAction($actor, 'usuarios', 'editar'),
+                    ],
                 ];
             });
 
-        // Catálogo de Employees vinculables: activos, MÁS cualquiera que ya
-        // esté vinculado a un User (aunque esté inactivo, para no ocultar un
-        // vínculo histórico existente — 2 del cierre). linked_user_id deja
-        // que el frontend excluya, por fila, los que ya pertenecen a OTRO
-        // usuario, sin pedir al backend fila por fila.
+        // Colaboradores vinculables: activos, más cualquiera ya vinculado (aunque esté
+        // inactivo) para no ocultar un vínculo histórico existente.
         $employees = Employee::query()
             ->where(fn ($q) => $q->where('is_active', true)->orWhereHas('user'))
             ->with('user:id,employee_id')
             ->orderBy('full_name')
             ->get(['id', 'full_name', 'is_active'])
-            ->map(fn ($e) => [
-                'id' => $e->id, 'full_name' => $e->full_name, 'is_active' => $e->is_active,
-                'linked_user_id' => $e->user?->id,
-            ]);
+            ->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name, 'is_active' => $e->is_active, 'linked_user_id' => $e->user?->id]);
 
-        return Inertia::render('Okr/Responsibles', [
-            'responsibles' => $responsibles,
-            'employees' => $employees,
-            // Se muestra UNA SOLA VEZ justo después de crear un responsable —
-            // session()->pull() la lee Y la borra en el mismo golpe, así que
-            // un refresh posterior de esta misma pantalla ya no la repite.
-            // (Este repo no comparte `flash` de sesión a Inertia globalmente
-            // — ver HandleInertiaRequests — por eso viaja como prop normal.)
-            'temp_password' => session()->pull('temp_password'),
-                    'reset_password' => session()->pull('reset_password'),
-            // current_user_id/admin_count (cierre 17-sep-2026, ronda 4) — para que la UI
-            // oculte por sí sola "cambiar rol" en tu propia fila y "quitar admin" cuando
-            // eres el único admin, en vez de dejar que el usuario intente algo que el
-            // backend rechazará igual (ver updateRole()) sin ningún mensaje visible (este
-            // repo no comparte flash de sesión a Inertia globalmente).
-            'current_user_id' => $request->user()->id,
-            'admin_count' => $responsibles->where('role', 'admin')->count(),
-            // Módulos por rol (14-oct-2026) — ver RoleModuleAccessController.
-            'module_catalog' => $moduleAccess->catalog(),
-            'module_access' => $moduleAccess->matrix(),
-            // Permisos por acción (Fase 7 de la auditoría, 15-oct-2026) — eliminar/exportar.
-            'action_catalog' => $actionPermissions->catalog(),
-            'action_permissions' => $actionPermissions->matrix(),
-            // Roles (sistema + personalizados) con su configuración y cuántos usuarios los usan — 16-oct-2026.
-            'roles' => $this->rolesPayload($responsibles, $moduleAccess, $actionPermissions),
-        ]);
-    }
-
-    private function rolesPayload(\Illuminate\Support\Collection $responsibles, ModuleAccessService $moduleAccess, \App\Services\Access\ActionPermissionService $actionPermissions): array
-    {
-        $modules = $moduleAccess->matrix();
-        $actions = $actionPermissions->matrix();
-        $counts = $responsibles->countBy('role');
-
-        return collect(app(RoleCatalogService::class)->all())->map(fn ($r) => $r + [
-            'users_count' => (int) ($counts[$r['key']] ?? 0),
-            'modules' => $r['key'] === User::ROLE_ADMIN ? array_keys(ModuleAccessService::MODULES) : ($modules[$r['key']] ?? []),
-            'actions' => $r['key'] === User::ROLE_ADMIN ? null : (object) ($actions[$r['key']] ?? []),
+        $roles = collect($catalog->all())->map(fn ($r) => [
+            'key' => $r['key'], 'name' => $r['name'], 'description' => $r['description'], 'base_level' => $r['base_level'], 'is_system' => $r['is_system'],
+            'modules_count' => $r['key'] === User::ROLE_ADMIN ? count(ModuleAccessService::MODULES) : count($moduleAccess->matrix()[$r['key']] ?? []),
+            'assignable' => $r['key'] !== User::ROLE_ADMIN && $this->guard->canGrantRole($actor, $r['key']),
+            'grantable' => $this->guard->canGrantRole($actor, $r['key']),
         ])->values()->all();
+
+        return Inertia::render('usuarios/Index', [
+            'users' => $users,
+            'employees' => $employees,
+            'roles' => $roles,
+            'audit' => $this->audit->recent(),
+            'current_user_id' => $actor->id,
+            'enabled_admin_count' => $enabledAdmins,
+            'invitation_expires_minutes' => $this->invitations->expiresInMinutes(),
+            'store_url' => route('usuarios.store'),
+            'roles_url' => $moduleAccess->allows($actor, 'roles') ? route('roles.index') : null,
+            'can' => [
+                'create' => $this->actions->canAction($actor, 'usuarios', 'crear'),
+                'invite' => $this->actions->canAction($actor, 'usuarios', 'invitar'),
+                'manage_access' => $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso'),
+            ],
+            // Se muestran UNA SOLA VEZ (session()->pull() las lee y las borra).
+            'temp_password' => session()->pull('temp_password'),
+            'reset_password' => session()->pull('reset_password'),
+            'invitation_result' => session()->pull('invitation_result'),
+        ]);
     }
 
     public function store(Request $request): RedirectResponse
     {
-        $this->authorize('okr.admin');
+        $actor = $request->user();
 
         $data = $request->validate([
-            'name'          => ['required', 'string', 'max:191'],
-            'email'         => ['required', 'email', 'max:191', Rule::unique('users', 'email')],
-            // Contraseña manual u automática (sección 10 de la auditoría, 15-oct-2026):
-            // antes SIEMPRE se generaba una al azar. Si el admin prefiere entregarla él
-            // mismo (ej. en persona), puede escribirla; si no, se genera como antes.
-            'password_mode' => ['nullable', Rule::in(['auto', 'manual'])],
-            'password'      => ['required_if:password_mode,manual', 'nullable', 'string', 'min:8', 'max:72', 'confirmed'],
-            // 16-oct-2026 — el usuario nace con el rol elegido (sistema o
-            // personalizado). Nunca Administrador desde aquí (ver D7 abajo).
-            'role'          => ['nullable', 'string', Rule::in(app(RoleCatalogService::class)->configurableKeys())],
-        ], ['role.in' => 'Elige un rol válido.']);
-
-        $isManual     = ($data['password_mode'] ?? 'auto') === 'manual';
-        $tempPassword = $isManual ? null : Str::password(16);
-        $finalPassword = $isManual ? $data['password'] : $tempPassword;
-
-        // D7 del cierre (17-sep-2026): esta pantalla NUNCA crea un admin — el rol
-        // se valida contra los roles configurables (todos menos Administrador);
-        // para hacer a alguien administrador se cambia su rol después.
-        $user = User::query()->create([
-            'name'              => $data['name'],
-            'email'             => $data['email'],
-            'password'          => Hash::make($finalPassword),
-            'role'              => $data['role'] ?? User::ROLE_COLABORADOR,
-            'email_verified_at' => null, // real: nadie ha verificado nada todavía
+            'name' => ['required', 'string', 'max:191'],
+            'email' => ['required', 'email', 'max:191', Rule::unique('users', 'email')],
+            // invite = el usuario establece su contraseña desde el correo;
+            // auto = se genera y se muestra una sola vez; manual = la escribe quien da el alta.
+            'password_mode' => ['nullable', Rule::in(['invite', 'auto', 'manual'])],
+            'password' => ['required_if:password_mode,manual', 'nullable', 'string', 'min:8', 'max:72', 'confirmed'],
+            // Nunca Administrador desde aquí (D7): se asigna después, desde la tabla.
+            'role' => ['nullable', 'string', Rule::in(app(RoleCatalogService::class)->configurableKeys())],
+            'employee_id' => ['nullable', 'integer', 'exists:employees,id', Rule::unique('users', 'employee_id')],
+            'enable_access' => ['nullable', 'boolean'],
+            'send_invitation' => ['nullable', 'boolean'],
+        ], [
+            'role.in' => 'Elige un rol válido.',
+            'email.unique' => 'Ya existe un usuario con ese correo.',
+            'employee_id.unique' => 'Ese colaborador ya está vinculado a otro usuario.',
+            'password.required_if' => 'Escribe la contraseña o elige otra opción.',
+            'password.confirmed' => 'La confirmación no coincide con la contraseña.',
+            'password.min' => 'La contraseña debe tener al menos 8 caracteres.',
         ]);
 
-        $emailResult = $this->sendWelcomeEmail($user);
+        $role = $data['role'] ?? User::ROLE_COLABORADOR;
+        abort_unless($this->guard->canGrantRole($actor, $role), 403, 'No puedes asignar un rol con más permisos que el tuyo.');
 
-        $response = back()->with('success', 'Responsable agregado — sin acceso todavía.')->with('welcome_email', $emailResult);
-
-        // La contraseña temporal (auto-generada) se muestra UNA SOLA VEZ para que el
-        // admin pueda copiarla si prefiere entregarla él mismo además del correo. Si
-        // fue manual, el propio admin ya la sabe — no hay nada que mostrar de vuelta.
-        return $tempPassword !== null ? $response->with('temp_password', $tempPassword) : $response;
-    }
-
-    /**
-     * Envía el correo de bienvenida con un enlace de un solo uso (mismo mecanismo de
-     * "¿Olvidaste tu contraseña?" de Fortify) — nunca la contraseña en texto plano.
-     * Síncrono a propósito: el admin necesita saber AHORA si de verdad se envió, no
-     * depender de que el worker de colas esté corriendo (ver docblock de la clase).
-     * Nunca afirma éxito si el servidor no lo confirmó.
-     *
-     * @return array{sent:bool,error:?string}
-     */
-    private function sendWelcomeEmail(User $user): array
-    {
-        try {
-            $token = Password::broker()->createToken($user);
-            $url   = route('password.reset', ['token' => $token, 'email' => $user->email]);
-
-            Mail::to($user->email)->send(new UserAccessGrantedMail($user, $url));
-
-            $user->forceFill(['welcome_email_sent_at' => now(), 'welcome_email_error' => null])->save();
-
-            return ['sent' => true, 'error' => null];
-        } catch (\Throwable $e) {
-            Log::error('No se pudo enviar el correo de bienvenida.', ['user_id' => $user->id, 'error' => $e->getMessage()]);
-            $user->forceFill(['welcome_email_sent_at' => null, 'welcome_email_error' => $e->getMessage()])->save();
-
-            return ['sent' => false, 'error' => 'No se pudo enviar el correo. Puedes reintentarlo desde esta pantalla.'];
+        $mode = $data['password_mode'] ?? 'auto';
+        $tempPassword = $mode === 'auto' ? Str::password(16) : null;
+        // invite: contraseña aleatoria que nadie conoce — la persona fija la suya con el enlace.
+        $finalPassword = match ($mode) {
+            'manual' => $data['password'],
+            'auto' => $tempPassword,
+            default => Str::password(40),
+        };
+        $sendInvitation = $mode === 'invite' || ($data['send_invitation'] ?? true);
+        if ($sendInvitation && ! $this->actions->canAction($actor, 'usuarios', 'invitar')) {
+            abort_if($mode === 'invite', 403, 'Tu rol no permite enviar invitaciones.');
+            $sendInvitation = false;
         }
+
+        $user = User::query()->create([
+            'name' => $data['name'],
+            'email' => $data['email'],
+            'password' => Hash::make($finalPassword),
+            'role' => $role,
+            'employee_id' => $data['employee_id'] ?? null,
+        ]);
+        $user->forceFill([
+            'email_verified_at' => null, // real: nadie ha verificado nada todavía
+            'access_enabled_at' => ($data['enable_access'] ?? false) && $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso') ? now() : null,
+            'welcome_email_status' => $sendInvitation ? UserInvitationService::STATUS_PENDING : null,
+        ])->save();
+
+        $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, 'user_created', 'role', null, $role, match ($mode) {
+            'manual' => 'Contraseña manual', 'auto' => 'Contraseña generada', default => 'Por invitación',
+        });
+
+        $response = back()->with('success', "Usuario {$user->name} creado.");
+
+        if ($sendInvitation) {
+            $result = $this->invitations->send($user);
+            $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, $result['sent'] ? 'invitation_accepted' : 'invitation_failed');
+            $response->with('invitation_result', $result + ['email' => $user->email]);
+        }
+
+        return $tempPassword !== null
+            ? $response->with('temp_password', ['name' => $user->name, 'email' => $user->email, 'password' => $tempPassword])
+            : $response;
     }
 
-    /** Reintenta el envío del correo de bienvenida sin recrear al usuario ni su contraseña. */
-    public function resendWelcomeEmail(Request $request, User $user): RedirectResponse|\Illuminate\Http\JsonResponse
+    /** Reintenta la invitación sin recrear al usuario ni cambiar su contraseña. */
+    public function resendWelcomeEmail(Request $request, User $user): RedirectResponse|JsonResponse
     {
-        $this->authorize('okr.admin');
+        abort_unless($this->guard->canManageUser($request->user(), $user), 403, 'Solo un administrador puede reenviar la invitación de otro administrador.');
 
-        $result = $this->sendWelcomeEmail($user);
+        $result = $this->invitations->send($user);
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, $result['sent'] ? 'invitation_accepted' : 'invitation_failed');
 
-        // 16-oct-2026 — la UI lo llama por fetch (spinner en el botón + mensaje
-        // claro); nunca deja al usuario frente a una página de error cruda.
         if ($request->expectsJson()) {
+            $fresh = $user->fresh();
+
             return response()->json([
                 'sent' => $result['sent'],
-                'message' => $result['sent'] ? "Correo reenviado a {$user->email}." : $result['error'],
-                'welcome_email_sent_at' => $user->fresh()->welcome_email_sent_at?->toDateTimeString(),
+                'message' => $result['message'],
+                'invitation' => [
+                    'status' => UserInvitationService::statusOf($fresh),
+                    'sent_at' => $fresh->welcome_email_sent_at?->toDateTimeString(),
+                    'error' => $fresh->welcome_email_error,
+                    'attempts' => (int) $fresh->welcome_email_attempts,
+                    'last_attempt_at' => $fresh->welcome_email_last_attempt_at?->toDateTimeString(),
+                ],
             ], $result['sent'] ? 200 : 422);
         }
 
-        return back()->with($result['sent'] ? 'success' : 'error', $result['sent']
-            ? "Correo reenviado a {$user->email}."
-            : $result['error']);
+        return back()->with($result['sent'] ? 'success' : 'error', $result['message']);
     }
 
     /**
-     * Habilita el acceso de un responsable ya creado — decisión EXPLÍCITA del
-     * administrador (nunca automática), después de confirmar la identidad de
-     * la persona fuera de este sistema.
-     *
-     * 05-oct-2026 (acoplado a petición explícita del usuario): si tiene un
-     * Employee vinculado, también lo reactiva (is_active=true) — "acceso
-     * habilitado" y "colaborador activo" son el MISMO estado para este
-     * sistema, nunca dos interruptores que puedan quedar desincronizados
-     * (un acceso habilitado con el Employee todavía marcado de baja sería
-     * un estado inconsistente).
+     * Activa el acceso — decisión EXPLÍCITA de quien administra usuarios.
+     * Solo cambia users.access_enabled_at; NUNCA el estado laboral del colaborador.
      */
-    public function enableAccess(User $user): RedirectResponse
+    public function enableAccess(Request $request, User $user): RedirectResponse
     {
-        $this->authorize('okr.admin');
+        $this->assertManageable($request, $user);
 
         $user->forceFill(['access_enabled_at' => now()])->save();
-        $user->employee?->update(['is_active' => true]);
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'access_enabled');
 
-        return back()->with('success', "Acceso habilitado para {$user->name}. Debe usar \"¿Olvidaste tu contraseña?\" para entrar la primera vez.");
+        return back()->with('success', "Acceso activado para {$user->name}.");
     }
 
     /**
-     * Revierte la habilitación de acceso (cierre 17-sep-2026, ronda 4) — antes
-     * esta pantalla solo podía HABILITAR, nunca deshabilitar de nuevo. Sin
-     * efecto sobre un admin (EnsureOkrAccessEnabled ya lo deja pasar siempre,
-     * sin importar access_enabled_at) — solo aplica de verdad a colaboradores.
-     *
-     * 05-oct-2026: "quitar acceso" para un colaborador operativo SIGNIFICA
-     * que causó baja — también marca su Employee vinculado como inactivo
-     * (is_active=false), lo que a su vez lo saca de roster/reportes de
-     * Reportería que ya filtran por empleados activos. Sin efecto si el
-     * usuario no tiene Employee vinculado (ej. admin/gerencial puros).
+     * Revoca la activación (vuelve a "pendiente de activación"): deja de poder
+     * entrar al módulo OKR hasta que se active de nuevo. No toca employees.
      */
-    public function disableAccess(User $user): RedirectResponse
+    public function disableAccess(Request $request, User $user): RedirectResponse
     {
-        $this->authorize('okr.admin');
+        $this->assertManageable($request, $user);
+
+        if ($user->id === $request->user()->id) {
+            return back()->with('error', 'No puedes revocar tu propio acceso.');
+        }
 
         $user->forceFill(['access_enabled_at' => null])->save();
-        $user->employee?->update(['is_active' => false]);
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'access_revoked');
 
-        return back()->with('success', "Acceso deshabilitado para {$user->name}.");
+        return back()->with('success', "Se revocó la activación del acceso de {$user->name}. Su información de colaborador no cambió.");
     }
 
     /**
-     * Restablece la contraseña de otro usuario (14-oct-2026). Se genera una
-     * contraseña aleatoria que el admin ve UNA SOLA VEZ para copiarla y
-     * entregarla; se cierran todas las sesiones abiertas de esa persona. La
-     * propia contraseña se cambia en Configuración › Seguridad.
+     * Restablece la contraseña de otro usuario: generada (se muestra UNA vez) o
+     * manual (con confirmación). Siempre con hash; cierra sus sesiones abiertas.
      */
-    public function resetPassword(User $user, Request $request): RedirectResponse
+    public function resetPassword(Request $request, User $user): RedirectResponse
     {
-        $this->authorize('okr.admin');
+        $this->assertManageable($request, $user);
 
         if ($user->id === $request->user()->id) {
             return back()->with('error', 'Tu propia contraseña se cambia en Configuración › Seguridad.');
         }
 
-        $password = Str::password(14, symbols: false);
-        $user->forceFill([
-            'password' => Hash::make($password),
-            'remember_token' => Str::random(60),
-        ])->save();
+        $data = $request->validate([
+            'password_mode' => ['nullable', Rule::in(['auto', 'manual'])],
+            'password' => ['required_if:password_mode,manual', 'nullable', 'string', 'min:8', 'max:72', 'confirmed'],
+        ], [
+            'password.required_if' => 'Escribe la nueva contraseña.',
+            'password.confirmed' => 'La confirmación no coincide con la contraseña.',
+            'password.min' => 'La contraseña debe tener al menos 8 caracteres.',
+        ]);
+
+        $manual = ($data['password_mode'] ?? 'auto') === 'manual';
+        $password = $manual ? $data['password'] : Str::password(14, symbols: false);
+
+        $user->forceFill(['password' => Hash::make($password), 'remember_token' => Str::random(60)])->save();
         $this->closeSessions($user);
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'password_reset', null, null, null, $manual ? 'Contraseña manual' : 'Contraseña generada');
+
+        if ($manual) {
+            return back()->with('success', "Contraseña de {$user->name} actualizada. Sus sesiones abiertas se cerraron.");
+        }
 
         return back()->with('reset_password', ['name' => $user->name, 'email' => $user->email, 'password' => $password]);
     }
 
     /**
-     * Deshabilita / rehabilita la CUENTA (14-oct-2026) — bloquea el login en todo
-     * el sistema (`disabled_at`, ver EnsureUserNotDisabled). Distinto de "Quitar
-     * acceso", que solo aplica al módulo OKR. Candados: no a ti mismo y nunca al
-     * último administrador habilitado.
+     * Bloquea / desbloquea la CUENTA (`disabled_at`): no puede iniciar sesión en
+     * ningún módulo. Candados: no a ti mismo y nunca al último administrador habilitado.
      */
-    public function toggleDisabled(User $user, Request $request): RedirectResponse
+    public function toggleDisabled(Request $request, User $user): RedirectResponse
     {
-        $this->authorize('okr.admin');
+        $this->assertManageable($request, $user);
 
         if ($user->id === $request->user()->id) {
-            return back()->with('error', 'No puedes deshabilitar tu propia cuenta.');
+            return back()->with('error', 'No puedes bloquear tu propia cuenta.');
         }
 
         if ($user->disabled_at === null) {
-            if ($user->role === 'admin' && User::query()->where('role', 'admin')->whereNull('disabled_at')->count() <= 1) {
-                return back()->with('error', 'No puedes deshabilitar al único administrador habilitado.');
+            if ($user->isAdmin() && User::query()->where('role', User::ROLE_ADMIN)->whereNull('disabled_at')->count() <= 1) {
+                return back()->with('error', 'No puedes bloquear al único administrador habilitado: el sistema se quedaría sin nadie que lo administre.');
             }
             $user->forceFill(['disabled_at' => now(), 'remember_token' => Str::random(60)])->save();
             $this->closeSessions($user);
+            $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'account_blocked');
 
-            return back()->with('success', "Cuenta de {$user->name} deshabilitada.");
+            return back()->with('success', "Cuenta de {$user->name} bloqueada. Sus sesiones abiertas se cerraron.");
         }
 
         $user->forceFill(['disabled_at' => null])->save();
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'account_unblocked');
 
-        return back()->with('success', "Cuenta de {$user->name} habilitada de nuevo.");
-    }
-
-    private function closeSessions(User $user): void
-    {
-        if (config('session.driver') === 'database') {
-            DB::table(config('session.table', 'sessions'))->where('user_id', $user->id)->delete();
-        }
+        return back()->with('success', "Cuenta de {$user->name} desbloqueada.");
     }
 
     /**
-     * Cambia el rol de un usuario (cierre 17-sep-2026, ronda 4) — antes esta
-     * pantalla no permitía editar el rol de nadie después de creado. Dos
-     * candados de seguridad, ambos para evitar quedarse sin ningún admin que
-     * pueda entrar a arreglarlo:
-     *   - nadie puede cambiar su PROPIO rol desde aquí (evita que un admin se
-     *     autodegrade por error mientras está operando esta pantalla).
-     *   - no se puede degradar al ÚLTIMO admin restante.
+     * Cambia el rol de otro usuario. Candados: nunca el propio; nunca quitar al
+     * último administrador habilitado; quien no es admin no asigna Administrador
+     * ni un rol con más permisos que el suyo.
      */
-    public function updateRole(User $user, Request $request): RedirectResponse
+    public function updateRole(Request $request, User $user): RedirectResponse
     {
-        $this->authorize('okr.admin');
-
+        $catalog = app(RoleCatalogService::class);
         $data = $request->validate([
-            'role' => ['required', Rule::in(app(RoleCatalogService::class)->keys())], // sistema + personalizados (16-oct-2026)
-        ]);
+            'role' => ['required', Rule::in($catalog->keys())],
+        ], ['role.in' => 'Elige un rol válido.']);
+
+        $this->assertManageable($request, $user);
 
         if ($user->id === $request->user()->id) {
             return back()->with('error', 'No puedes cambiar tu propio rol desde aquí.');
         }
 
-        if ($data['role'] !== 'admin' && $user->role === 'admin') {
-            $adminCount = User::query()->where('role', 'admin')->count();
-            if ($adminCount <= 1) {
-                return back()->with('error', 'No puedes quitar el único administrador restante del sistema.');
+        abort_unless($this->guard->canGrantRole($request->user(), $data['role']), 403, 'No puedes asignar un rol con más permisos que el tuyo.');
+
+        if ($data['role'] !== User::ROLE_ADMIN && $user->isAdmin()) {
+            $otherEnabledAdmins = User::query()->where('role', User::ROLE_ADMIN)->whereNull('disabled_at')->whereKeyNot($user->id)->count();
+            if ($otherEnabledAdmins < 1) {
+                return back()->with('error', 'No puedes quitar el único administrador habilitado del sistema.');
             }
         }
 
+        $old = $user->role;
         $user->forceFill(['role' => $data['role']])->save();
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'role_changed', 'role', $catalog->label($old), $catalog->label($data['role']));
 
-        $roleLabels = ['admin' => 'Administrador', 'gerencial' => 'Gerencial', 'colaborador' => 'Colaborador'];
-
-        return back()->with('success', "Rol de {$user->name} actualizado a " . ($roleLabels[$data['role']] ?? $data['role']) . '.');
+        return back()->with('success', "Rol de {$user->name} actualizado a {$catalog->label($data['role'])}.");
     }
 
     /**
-     * 1/2 del cierre (05-oct-2026) — vincula/desvincula el Employee real de
-     * este User. Backend valida también (nunca solo el frontend): un
-     * Employee no puede quedar vinculado a dos Users a la vez (además hay
-     * UNIQUE a nivel BD, pero aquí se devuelve un mensaje claro en vez de un
-     * 500 por violación de constraint).
+     * Vincula/desvincula el colaborador real de este usuario. Un colaborador no
+     * puede quedar ligado a dos usuarios (también hay UNIQUE en BD).
      */
-    public function linkEmployee(User $user, Request $request): RedirectResponse
+    public function linkEmployee(Request $request, User $user): RedirectResponse
     {
-        $this->authorize('okr.admin');
-
         $data = $request->validate([
             'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
         ]);
+
+        abort_unless($this->guard->canManageUser($request->user(), $user), 403, 'Solo un administrador puede modificar a otro administrador.');
 
         if ($data['employee_id'] !== null) {
             $alreadyLinked = User::query()->where('employee_id', $data['employee_id'])->where('id', '!=', $user->id)->exists();
@@ -405,10 +405,24 @@ class ResponsibleController extends Controller
             }
         }
 
+        $old = $user->employee?->full_name;
         $user->forceFill(['employee_id' => $data['employee_id']])->save();
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'employee_linked', 'employee', $old, $user->fresh()->employee?->full_name);
 
         return back()->with('success', $data['employee_id'] !== null
             ? "Colaborador vinculado a {$user->name}."
             : "Vínculo de colaborador removido para {$user->name}.");
+    }
+
+    private function assertManageable(Request $request, User $user): void
+    {
+        abort_unless($this->guard->canManageUser($request->user(), $user), 403, 'Solo un administrador puede modificar a otro administrador.');
+    }
+
+    private function closeSessions(User $user): void
+    {
+        if (config('session.driver') === 'database') {
+            DB::table(config('session.table', 'sessions'))->where('user_id', $user->id)->delete();
+        }
     }
 }

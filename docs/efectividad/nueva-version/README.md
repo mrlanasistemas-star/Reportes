@@ -188,8 +188,13 @@ segun foto diaria | Sin moratorios"**.
 - **Vencido/atraso según foto diaria:** el estado sale de la fotografía del día de
   reconocimiento. Si el contrato no está en ella, se usa la última foto previa, nunca una
   futura. VENCIDO si el `Substatus` lo dice o si el reconocimiento es posterior a la
-  `Fecha vencimiento`. ATRASO si ese día tenía `Total atrasado` > 0 (o `Pagos atrasados`
-  > 0) o si se pagó después de la fecha de cuota. En otro caso, SANO.
+  `Fecha vencimiento`. ATRASO solo si se pagó después de la fecha de cuota. En otro caso,
+  SANO. **Metodología V7** (nota técnica V6→V7, `EfectividadV4Calculator::METODOLOGIA`): el
+  pago puntual de la cuota vigente es SANO aunque ese día el contrato tuviera `Total atrasado`
+  o `Pagos atrasados` > 0; en V6 ese atraso previo lo reclasificaba como atraso. No cambian
+  totales, saldos por cobrar, vencido ni porcentaje total: solo se mueve importe de Vigente con
+  atraso cobrado a Sano cobrado. En la semana Tula 05–11/10/2026: 57 cobros, $48,505.99.
+  El Vigente con atraso **por cobrar** sigue siendo el saldo de la foto del corte.
 - **Denominadores:** Sano por cobrar = cuotas programadas del rango reportado. Vigente con
   atraso y Vencido por cobrar = stocks de la **foto del corte** (no se suman días). Para
   Vencido: `Total atrasado`; si es 0, la suma de los componentes de saldo (con negativos);

@@ -38,6 +38,11 @@ const internalOptions = computed(() => props.options.map((o) => ({
   value: o.value === '' ? SENTINEL_EMPTY : String(o.value),
 })))
 
+// Texto visible siempre desde las opciones VIGENTES: Reka conserva el texto del
+// item al momento de elegirlo, y una etiqueta que cambia (p.ej. "faltan carteras"
+// → "listo para calcular") quedaba desactualizada en el botón.
+const selectedLabel = computed(() => internalOptions.value.find((o) => o.value === internalValue.value)?.label ?? null)
+
 function onUpdate(value: unknown) {
   model.value = value === SENTINEL_EMPTY ? '' : (value as string)
 }
@@ -54,7 +59,8 @@ function onUpdate(value: unknown) {
 
     <Select :model-value="internalValue" :disabled="disabled" @update:model-value="onUpdate">
       <SelectTrigger class="h-11 w-full rounded-2xl px-4 text-sm">
-        <SelectValue :placeholder="placeholder" />
+        <SelectValue v-if="selectedLabel" :placeholder="placeholder">{{ selectedLabel }}</SelectValue>
+        <SelectValue v-else :placeholder="placeholder" />
       </SelectTrigger>
       <SelectContent>
         <SelectItem v-for="opt in internalOptions" :key="opt.value" :value="opt.value">

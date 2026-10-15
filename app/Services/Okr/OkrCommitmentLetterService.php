@@ -29,6 +29,8 @@ use RuntimeException;
  */
 class OkrCommitmentLetterService
 {
+    public const BOSS_MISSING_MESSAGE = 'No es posible emitir la Carta Compromiso porque falta confirmar el jefe inmediato.';
+
     public function __construct(
         private readonly OkrCalendarService $calendar,
         private readonly OkrDocumentFolioGenerator $folioGenerator,
@@ -87,6 +89,10 @@ class OkrCommitmentLetterService
         }
 
         $boss = $clean($overrides['immediate_boss'] ?? null);
+        $bossIssue = $boss !== null ? $this->bossIssue($objective, $subject, $boss) : null;
+        if ($bossIssue !== null) {
+            $boss = null; // nunca se imprime ni se emite un jefe sin respaldo
+        }
 
         return [
             'place' => $place,
@@ -105,6 +111,7 @@ class OkrCommitmentLetterService
             'branch_name' => $objective->branch?->name,
             'immediate_boss' => $boss,
             'immediate_boss_source' => $boss ? 'Confirmado por el emisor en la revisión' : null,
+            'immediate_boss_issue' => $bossIssue,
             // Responsable ADMINISTRATIVO del seguimiento — dato informativo,
             // nunca el colaborador ni el firmante por defecto.
             'responsible_name' => $objective->responsibleUser?->name,
@@ -135,6 +142,39 @@ class OkrCommitmentLetterService
     }
 
     /**
+     * Jefe inmediato capturado SIN relación jerárquica respaldada (15-oct-2026).
+     * Se rechaza: (a) el propio colaborador evaluado; (b) el responsable
+     * administrativo o el creador del OKR (usuarios del sistema, típicamente el
+     * admin), salvo que esa misma persona sea el jefe sugerido por el
+     * directorio laboral vigente (subgerente/gerente activo de la sucursal).
+     */
+    private function bossIssue(OkrObjective $objective, ?Employee $subject, string $boss): ?string
+    {
+        $norm = fn (?string $v) => $v === null ? '' : \Illuminate\Support\Str::of($v)->ascii()->upper()->squish()->value();
+        $bossNorm = $norm($boss);
+
+        if ($subject && $bossNorm === $norm($subject->full_name)) {
+            return 'no puede ser el mismo colaborador evaluado';
+        }
+
+        $objective->loadMissing(['responsibleUser', 'creator']);
+        $systemUsers = array_filter([$objective->responsibleUser?->name, $objective->creator?->name]);
+        foreach ($systemUsers as $userName) {
+            if ($bossNorm !== $norm($userName)) {
+                continue;
+            }
+            $suggested = $subject && $objective->branch_id
+                ? ($this->personnel->suggestImmediateBoss($subject->id, (int) $objective->branch_id)['name'] ?? null)
+                : null;
+            if ($suggested === null || $norm($suggested) !== $bossNorm) {
+                return 'el nombre capturado es el usuario que creó o administra el OKR y el directorio laboral no lo respalda como jefe de este colaborador';
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Datos indispensables faltantes — se muestran ANTES de emitir; nunca se
      * emite con huecos.
      *
@@ -160,6 +200,9 @@ class OkrCommitmentLetterService
             if (!is_string($snapshot[$key] ?? null) || trim($snapshot[$key]) === '') {
                 $missing[$key] = $label;
             }
+        }
+        if (!empty($snapshot['immediate_boss_issue'])) {
+            $missing['immediate_boss'] = 'Jefe inmediato confirmado (' . $snapshot['immediate_boss_issue'] . ')';
         }
         if (empty($snapshot['key_results'])) {
             $missing['key_results'] = 'Key Results con meta (este OKR no tiene KR configurados)';
@@ -199,7 +242,16 @@ class OkrCommitmentLetterService
         $snapshot = $this->buildSnapshot($objective, $place, $overrides);
         $missing = $this->missingFields($objective, $snapshot);
         if ($missing !== []) {
-            throw new RuntimeException('Faltan datos indispensables para emitir la Carta Compromiso: ' . implode(', ', $missing) . '.');
+            // Jefe inmediato sin confirmar: mensaje acordado con el usuario
+            // (15-oct-2026) + acción "Completar información" en la UI.
+            if (isset($missing['immediate_boss'])) {
+                $others = array_diff_key($missing, ['immediate_boss' => true]);
+                throw new OkrCommitmentLetterIncompleteException(
+                    self::BOSS_MISSING_MESSAGE . ($others !== [] ? ' También falta: ' . implode(', ', $others) . '.' : ''),
+                    $missing,
+                );
+            }
+            throw new OkrCommitmentLetterIncompleteException('Faltan datos indispensables para emitir la Carta Compromiso: ' . implode(', ', $missing) . '.', $missing);
         }
 
         $replaces = $objective->commitmentLetters()->where('status', OkrCommitmentLetter::STATUS_VOIDED)->latest('id')->value('id');

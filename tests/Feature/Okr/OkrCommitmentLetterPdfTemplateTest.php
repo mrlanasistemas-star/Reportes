@@ -67,7 +67,7 @@ it('renders the commitment letter with the Objective data in flowing HTML (no ab
     // Casillas Aplica: Colocación Sí; Recuperación/EBITDA/Otro No.
     expect(substr_count($html, '<i class="on"></i>'))->toBe(4);
     // Firmas completas.
-    expect($html)->toContain('Colaborador')->toContain('Jefe inmediato / Responsable')->toContain('Vo. Bo. MR LANA');
+    expect($html)->toContain('Colaborador')->toContain('Jefe inmediato')->not->toContain('Jefe inmediato / Responsable')->toContain('Vo. Bo. MR LANA');
 });
 
 it('marks missing data as pending in the preview instead of leaving blanks under labels', function () {

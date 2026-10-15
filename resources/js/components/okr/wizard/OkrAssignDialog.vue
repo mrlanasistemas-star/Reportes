@@ -89,6 +89,7 @@ watch(individualsEnabled, (enabled) => {
 const employeeOptions = ref<{ id: number; full_name: string; position?: string | null }[]>([])
 const branchEmployeeCount = ref(0)
 const roster = ref<{ label: string | null; is_stale: boolean; days_old: number | null } | null>(null)
+const canReconcileBranch = ref(false)
 const loadingEmployees = ref(false)
 let employeeSearchTimer: ReturnType<typeof setTimeout> | null = null
 let employeeSearchVersion = 0
@@ -121,6 +122,7 @@ async function loadEmployees(search = '') {
         employeeOptions.value = data.employees ?? []
         branchEmployeeCount.value = data.total_in_branch ?? 0
         roster.value = data.roster ?? null
+        canReconcileBranch.value = !!data.can_reconcile_branch
     } finally {
         if (myVersion === employeeSearchVersion) {
             loadingEmployees.value = false
@@ -428,8 +430,8 @@ const primaryBranchKr = computed(() => branchRows.value[0] ?? null)
                     <div v-else-if="step === 2" key="s2" class="space-y-4">
                         <OkrGestorPicker
                             v-if="individualsEnabled"
-                            :employees="employeeOptions" :selected="gestores" :loading="loadingEmployees" :roster-period="roster?.label ?? null" :branch-selected="!!form.branch_id" :branch-name="selectedBranchName"
-                            @toggle="toggleGestor" @remove="removeGestor" @search="onEmployeeSearch"
+                            :employees="employeeOptions" :selected="gestores" :loading="loadingEmployees" :roster-period="roster?.label ?? null" :branch-selected="!!form.branch_id" :branch-name="selectedBranchName" :can-reconcile="canReconcileBranch"
+                            @toggle="toggleGestor" @remove="removeGestor" @search="onEmployeeSearch" @reconciled="loadEmployees()"
                         />
                         <div v-else class="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border p-10 text-center">
                             <Users class="size-8 text-muted-foreground" />

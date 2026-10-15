@@ -7,7 +7,7 @@ import type { BranchHeadcount } from '@/types/asignaciones'
 const props = defineProps<{
     distribution: BranchHeadcount[]
     hires: number
-    /** Solo bajas sin contradicción (ver PeriodEmployeeRosterService::classifyBaja) — nunca el total de ausencias. */
+    /** Solo bajas CONFIRMADAS con evidencia (ver PeriodEmployeeRosterService) — nunca el total de ausencias. */
     leavers: number
     pendingLeavers?: number
     massDropDetected?: boolean
@@ -76,7 +76,7 @@ const movementSeries = computed(() => [props.hires, props.leavers])
             <div class="flex flex-col gap-2">
                 <ChartCard
                     title="Rotación del periodo"
-                    subtitle="Altas vs. bajas sin contradicción (ver nota)"
+                    subtitle="Altas vs. bajas confirmadas"
                     type="donut"
                     :height="Math.max(180, distribution.length * 26)"
                     :series="movementSeries"
@@ -85,8 +85,8 @@ const movementSeries = computed(() => [props.hires, props.leavers])
                 <p v-if="pendingLeavers" class="flex items-start gap-1.5 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
                     <AlertTriangle class="mt-0.5 size-3.5 shrink-0" />
                     <span>
-                        {{ pendingLeavers }} ausencia(s) de nómina más están pendientes de revisión (posible cambio de nombre o archivo incompleto) y
-                        <strong>no</strong> se incluyen aquí como bajas — ver pestaña "Bajas del periodo".
+                        {{ pendingLeavers }} ausencia(s) de nómina están pendientes de conciliación (posible baja, no localizado, duplicado o
+                        fuentes que se contradicen) y <strong>no</strong> se incluyen aquí como bajas — ver "Pendientes de conciliación".
                     </span>
                 </p>
                 <p v-if="massDropDetected" class="flex items-start gap-1.5 rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">

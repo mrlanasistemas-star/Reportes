@@ -31,13 +31,15 @@ export async function okrRequest<T = any>(url: string, init: RequestInit & { jso
         // porque esos SÍ están escritos para el usuario (ver controllers Okr\*).
         const friendlyByStatus: Record<number, string> = {
             403: 'No tienes permiso para esta acción.',
-            404: 'No se encontró la información solicitada. Intenta de nuevo o recarga la página.',
-            405: 'No se pudo completar la acción. Recarga la página e intenta de nuevo.',
-            419: 'Tu sesión expiró. Recarga la página e inicia sesión de nuevo.',
+            404: 'Lo que intentas consultar ya no existe: pudo eliminarse o el enlace ya no es válido. Vuelve al listado para ver la información vigente.',
+            405: 'Esta acción no está disponible desde aquí. Si el problema continúa, informa a Sistemas.',
+            419: 'Tu sesión expiró por inactividad. Inicia sesión de nuevo para continuar.',
         }
+        // 403 con mensaje propio del backend (abort(403, '...') escrito para el usuario) se respeta.
         const message = firstError
+            ?? (res.status === 403 && typeof data?.message === 'string' && data.message !== 'This action is unauthorized.' ? data.message : undefined)
             ?? (res.status in friendlyByStatus ? friendlyByStatus[res.status] : data?.message)
-            ?? (res.status >= 500 ? 'Ocurrió un error en el servidor. Intenta de nuevo.' : 'No se pudo completar la acción.')
+            ?? (res.status >= 500 ? 'No pudimos completar la operación por un error técnico. Intenta nuevamente; si continúa, informa a Sistemas.' : `No se pudo completar la acción (código ${res.status}).`)
 
         return { ok: false, status: res.status, message, data }
     } catch {

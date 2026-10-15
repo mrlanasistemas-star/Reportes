@@ -38,7 +38,7 @@ function bgSetup(): array
         if ($inRoster) {
             PeriodEmployeeRoster::query()->create([
                 'period_id' => $period->id, 'employee_id' => $e->id, 'employee_key' => 'k' . $e->id, 'nombre_normalizado' => mb_strtolower($name),
-                'branch_id' => $b->id, 'is_active_for_period' => $rosterActive, 'movement_type' => $rosterActive ? 'activo' : 'baja',
+                'branch_id' => $b->id, 'is_active_for_period' => $rosterActive, 'movement_type' => $rosterActive ? 'activo' : 'baja', 'reconciliation_status' => $rosterActive ? null : 'baja_confirmada', // 18-oct-2026: fila 'baja' = baja CONFIRMADA
             ]);
         }
 

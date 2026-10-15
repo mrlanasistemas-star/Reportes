@@ -32,26 +32,32 @@ const notice = ref<{ code: string; message: string } | null>(null)
 
 // Motivo clasificado de cada bloqueo (ver OkrWarningService::eligibility()).
 const REASON_LABELS: Record<string, string> = {
-    not_active: 'OKR no activado', week_open: 'Semana no cerrada', no_evidence: 'Falta evidencia',
+    not_active: 'OKR no activado', week_open: 'Semana abierta', no_evidence: 'Sin evidencia suficiente',
     no_breach: 'Sin incumplimiento comprobado', no_letter: 'Sin Carta Compromiso vigente', no_subject: 'Sin persona evaluada',
-    duplicate: 'Warning ya emitido', out_of_range: 'Semana fuera de rango',
+    duplicate: 'Documento ya emitido', out_of_range: 'Semana fuera de rango', no_key_results: 'Falta KR',
+    no_placement: 'Falta colocación', cancelled: 'OKR cancelado', not_started: 'OKR sin iniciar',
 }
+// "Falta autorización" (15-oct-2026): el backend indica si este usuario puede emitir.
+const authorizationNotice = ref<string | null>(null)
 
 async function load() {
     loading.value = true
     loadError.value = null
     notice.value = null
-    const res = await okrRequest<{ weeks: any[]; notice?: { code: string; message: string } | null }>(`/okr/${props.objectiveId}/warnings/eligibility`)
+    const res = await okrRequest<{ weeks: any[]; notice?: { code: string; message: string } | null; authorization_notice?: string | null }>(`/okr/${props.objectiveId}/warnings/eligibility`)
     loading.value = false
 
     if (!res.ok) {
         weeks.value = []
+        // Un 500 trae el mensaje con la referencia registrada en el log; un
+        // corte de red/403/404 trae el mensaje amigable de okrRequest.
         loadError.value = res.message
 
         return
     }
 
     notice.value = res.data.notice ?? null
+    authorizationNotice.value = res.data.authorization_notice ?? null
     weeks.value = res.data.weeks ?? []
     selected.value = weeks.value.find((w) => w.status === 'eligible')?.week.number ?? weeks.value[weeks.value.length - 1]?.week.number ?? null
 }
@@ -171,7 +177,12 @@ async function submit() {
                         <ul class="space-y-0.5 pl-4"><li v-for="b in current.blockers" :key="b" class="list-disc">{{ b }}</li></ul>
                     </div>
 
-                    <div v-else-if="canIssue" class="space-y-2 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3">
+                    <div v-else-if="!canIssue || authorizationNotice" class="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-200">
+                        <Info class="mt-0.5 size-4 shrink-0" />
+                        <p><strong>Falta autorización.</strong> {{ authorizationNotice ?? 'Puedes consultar la evaluación, pero emitir un Warning requiere permiso de administrador o gerencia.' }}</p>
+                    </div>
+
+                    <div v-else class="space-y-2 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3">
                         <p class="text-xs font-bold text-rose-700 dark:text-rose-300">Causa: resultado real por debajo de lo esperado a la semana {{ current.week.number }} (desviación negativa) con la semana cerrada.</p>
                         <textarea v-model="corrective" rows="3" maxlength="2000" class="app-textarea text-sm" placeholder="Acciones correctivas acordadas (obligatorio)" />
                         <textarea v-model="observations" rows="2" maxlength="2000" class="app-textarea text-sm" placeholder="Observaciones de la empresa (opcional)" />

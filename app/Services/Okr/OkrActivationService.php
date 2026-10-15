@@ -29,18 +29,36 @@ class OkrActivationService
      */
     public function activate(OkrObjective $objective, int $userId): ?string
     {
+        return $this->attempt($objective, $userId)['message'];
+    }
+
+    /**
+     * Igual que activate() pero indica también la acción que resuelve el bloqueo
+     * (p.ej. 'configure_kr' → "Completar línea base") para que la pantalla la ofrezca.
+     *
+     * @return array{message: string|null, action: string|null, action_label: string|null}
+     */
+    public function attempt(OkrObjective $objective, int $userId): array
+    {
+        $fail = fn (?string $message, ?string $action = null, ?string $label = null) => ['message' => $message, 'action' => $action, 'action_label' => $label];
+
         if ($objective->lifecycle_status !== OkrObjective::STATUS_DRAFT) {
-            return 'Solo un Objective en borrador puede activarse.';
+            return $fail('Este OKR ya no está en borrador (' . $this->statusLabel($objective->lifecycle_status) . '): solo un borrador puede activarse.');
         }
         // Mismas validaciones que la revisión previa (colaborador vigente, KR, periodo).
         $readiness = $this->readiness($objective);
         if (!$readiness['ready']) {
-            return implode(' ', $readiness['issues']);
+            $first = $readiness['items'][0] ?? null;
+            $message = count($readiness['items']) === 1 && ($first['reason'] ?? null) !== null
+                ? "No puedes activar el OKR de {$readiness['label']} porque {$first['reason']}."
+                : "No puedes activar el OKR de {$readiness['label']}. " . implode(' ', $readiness['issues']);
+
+            return $fail($message, $first['action'] ?? null, $first['action_label'] ?? null);
         }
         if (!$this->weightValidator->isValid($objective)) {
             $summary = $this->weightValidator->summary($objective);
 
-            return "La ponderación debe sumar 100% (actual: {$summary['total']}%).";
+            return $fail("No puedes activar el OKR de {$readiness['label']}: la ponderación debe sumar 100% (actual: {$summary['total']}%).", 'configure_kr', 'Ajustar ponderación');
         }
 
         $period = $this->periodResolver->getPeriodForDate(now());
@@ -72,11 +90,16 @@ class OkrActivationService
         if (!empty($failures)) {
             $list = implode(', ', $failures);
 
-            return "No fue posible obtener la línea base automática del KPI {$list} para este alcance y periodo. "
-                . 'Verifica que Reportería tenga radiografía generada para ese alcance/periodo, o captura la línea base manualmente antes de activar.';
+            return $fail("No puedes activar el OKR de {$readiness['label']}: Reportería no tiene un valor de {$list} para este alcance y periodo, así que no hay línea base que congelar. "
+                . 'Genera la radiografía de ese periodo o captura la línea base manual con su motivo.', 'configure_kr', 'Capturar línea base');
         }
 
-        DB::transaction(function () use ($objective, $period, $resolvedBaselines, $userId) {
+        $activated = DB::transaction(function () use ($objective, $period, $resolvedBaselines, $userId) {
+            // Bloqueo de fila: dos clics (o dos usuarios) no activan ni congelan dos veces.
+            $locked = OkrObjective::query()->whereKey($objective->id)->lockForUpdate()->first();
+            if ($locked === null || $locked->lifecycle_status !== OkrObjective::STATUS_DRAFT) {
+                return false;
+            }
             foreach ($objective->keyResults()->with('kpi')->get() as $kr) {
                 if (isset($resolvedBaselines[$kr->id])) {
                     $kr->baseline_value = $resolvedBaselines[$kr->id];
@@ -94,11 +117,39 @@ class OkrActivationService
 
             $objective->update(['lifecycle_status' => OkrObjective::STATUS_ACTIVE, 'activated_at' => now()]);
             $this->logger->log('objective', $objective->id, $userId, 'activated');
+
+            return true;
         });
 
-        $this->snapshotService->evaluateObjective($objective->fresh());
+        if (!$activated) {
+            return $fail('Este OKR acaba de ser activado por otra solicitud; no se volvió a congelar su línea base.');
+        }
 
-        return null;
+        // La activación ya quedó completa (transacción). Si la primera evaluación
+        // falla, no se revierte: se registra y se recalcula en la siguiente evaluación.
+        try {
+            $this->snapshotService->evaluateObjective($objective->fresh());
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return $fail(null);
+    }
+
+    private function statusLabel(string $status): string
+    {
+        return match ($status) {
+            OkrObjective::STATUS_ACTIVE => 'activo',
+            OkrObjective::STATUS_DRAFT => 'borrador',
+            default => $status,
+        };
+    }
+
+    private function personName(OkrObjective $objective): string
+    {
+        $name = $objective->employee?->full_name;
+
+        return $name ? mb_convert_case(mb_strtolower(trim($name)), MB_CASE_TITLE) : ($objective->title ?? 'este colaborador');
     }
 
     /**
@@ -114,57 +165,66 @@ class OkrActivationService
     {
         $objective->loadMissing(['employee', 'branch', 'keyResults.kpi']);
         $issues = [];
+        $items = [];
         $notes = [];
-        $label = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE
-            ? ($objective->employee?->full_name ?? $objective->title)
-            : 'Sucursal ' . ($objective->branch?->name ?? '');
+        $isEmployee = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE;
+        $label = $isEmployee ? $this->personName($objective) : 'Sucursal ' . ($objective->branch?->name ?? '');
+        // Cada pendiente: mensaje concreto + la acción que lo resuelve (la UI la ofrece como botón).
+        $add = function (string $message, ?string $action = null, ?string $actionLabel = null, ?string $reason = null) use (&$issues, &$items) {
+            $issues[] = $message;
+            $items[] = ['message' => $message, 'action' => $action, 'action_label' => $actionLabel, 'reason' => $reason];
+        };
 
         if ($objective->lifecycle_status !== OkrObjective::STATUS_DRAFT) {
             return ['id' => $objective->id, 'label' => $label, 'scope' => $objective->scope_type, 'status' => $objective->lifecycle_status,
-                'ready' => false, 'issues' => [], 'notes' => ['Ya no está en borrador (' . $objective->lifecycle_status . ').']];
+                'ready' => false, 'issues' => [], 'items' => [], 'notes' => ['Ya no está en borrador (' . $this->statusLabel($objective->lifecycle_status) . ').']];
         }
 
         $krs = $objective->keyResults;
         if ($krs->isEmpty()) {
-            $issues[] = 'No tiene Key Results — usa "Configurar KR" para capturar su KPI, línea base y meta.';
+            $add("Falta configurar los Key Results de {$label} (KPI, línea base, incremento y meta).", 'configure_kr', 'Configurar Key Results');
         } else {
             $total = round($krs->sum(fn ($kr) => (float) $kr->weight), 2);
             if (abs($total - 100.0) > 0.01) {
-                $issues[] = "La ponderación de sus KR suma {$total}% (debe ser 100%).";
+                $add("La ponderación de los Key Results de {$label} suma {$total}% y debe sumar 100%.", 'configure_kr', 'Ajustar ponderación');
             }
             foreach ($krs as $kr) {
-                if ($kr->baseline_value === null && $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE) {
+                if ($kr->baseline_value === null && $isEmployee) {
                     // Regla definitiva (16-oct-2026): base del gestor = captura manual.
-                    $issues[] = "{$kr->kpi->name}: captura la línea base del gestor (valor inicial desde el cual se medirá su incremento).";
+                    $add("Falta capturar la línea base de {$label} en «{$kr->kpi->name}» (valor inicial desde el cual se medirá su incremento).", 'configure_kr', 'Completar línea base', "falta capturar su línea base en «{$kr->kpi->name}»");
                 } elseif ($kr->baseline_value === null && !$kr->kpi->isAutomatic()) {
-                    $issues[] = "{$kr->kpi->name}: falta capturar la línea base (KPI manual).";
+                    $add("Falta capturar la línea base de «{$kr->kpi->name}»: es un KPI manual y Reportería no la calcula.", 'configure_kr', 'Completar línea base');
                 } elseif ($kr->baseline_value === null) {
                     $notes[] = "{$kr->kpi->name}: la línea base se consulta y congela en Reportería al activar.";
                 }
                 if ($kr->target_value === null) {
-                    $issues[] = "{$kr->kpi->name}: falta la meta.";
+                    $add("Falta la meta de «{$kr->kpi->name}».", 'configure_kr', 'Capturar meta');
                 }
             }
         }
 
         if ($objective->end_date && $objective->end_date->lt(now()->startOfDay())) {
-            $issues[] = 'Su periodo ya terminó (' . $objective->end_date->format('d/m/Y') . ').';
+            $add('Su periodo ya terminó (' . $objective->end_date->format('d/m/Y') . '): un OKR vencido no puede activarse. Crea uno nuevo con fechas vigentes.');
         }
 
-        if ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE && $objective->employee_id) {
+        if ($isEmployee && $objective->employee_id) {
             $resolver = app(OkrEmployeeBranchResolver::class);
             if (!$resolver->employeeIsActive((int) $objective->employee_id)) {
-                $issues[] = 'El colaborador ya no está vigente en la nómina — no se activa una asignación nueva.';
+                $add("{$label} no aparece como vigente en la nómina, así que no se activa una asignación nueva. Si sigue trabajando, concilia su situación en Colaboradores.", 'employees', 'Revisar en Colaboradores');
             } elseif ($objective->branch_id && !$resolver->employeeBelongsToBranch((int) $objective->employee_id, (int) $objective->branch_id)) {
                 $membership = $resolver->membershipFor((int) $objective->employee_id);
-                $issues[] = $membership['branch_id'] === null
-                    ? 'No hay una fuente vigente (cartera, nómina o directorio) que ubique al colaborador en una sucursal — verifica su registro.'
-                    : "El colaborador está vigente en {$membership['branch_name']} ({$membership['source_label']}), no en la sucursal del OKR.";
+                if (($membership['conflict'] ?? null) !== null) {
+                    $add($membership['conflict']['message'] . ' ' . $membership['conflict']['detail'] . '. Concilia su sucursal antes de activar.', 'reconcile_branch', 'Conciliar sucursal');
+                } elseif ($membership['branch_id'] === null) {
+                    $add("No hay una fuente vigente (cartera, nómina o directorio) que ubique a {$label} en una sucursal: verifica su registro.", 'employees', 'Revisar en Colaboradores');
+                } else {
+                    $add("{$label} está vigente en {$membership['branch_name']} ({$membership['source_label']}), no en la sucursal de este OKR.", 'employees', 'Revisar en Colaboradores');
+                }
             }
         }
 
         return ['id' => $objective->id, 'label' => $label, 'scope' => $objective->scope_type, 'status' => $objective->lifecycle_status,
-            'ready' => $issues === [], 'issues' => $issues, 'notes' => $notes];
+            'ready' => $issues === [], 'issues' => $issues, 'items' => $items, 'notes' => $notes];
     }
 
     /**

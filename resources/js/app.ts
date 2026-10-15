@@ -51,6 +51,30 @@ router.on('httpException', (event) => {
     if (status === 419 || status === 401) {
         event.preventDefault();
         window.location.reload();
+
+        return;
+    }
+
+    // Error técnico: el backend responde {message, reference} (ver
+    // App\Support\TechnicalErrorReference). Se muestra ese mensaje con su
+    // referencia en vez de la página de error cruda del servidor.
+    if (status !== undefined && status >= 500) {
+        let data: unknown = event.detail.response?.data;
+
+        if (typeof data === 'string') {
+            try {
+                data = JSON.parse(data);
+            } catch {
+                data = null;
+            }
+        }
+
+        const body = data as { message?: unknown; reference?: unknown } | null;
+
+        if (body && typeof body.message === 'string' && body.reference) {
+            event.preventDefault();
+            Swal.fire({ icon: 'error', title: 'No se completó la operación', text: body.message, confirmButtonText: 'Entendido' });
+        }
     }
 });
 

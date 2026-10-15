@@ -124,9 +124,10 @@ class EfectividadCalculadoraController extends Controller
         } catch (EfectividadArchivoException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         } catch (Throwable $e) {
-            report($e);
+            $ref = \App\Support\TechnicalErrorReference::forCurrentRequest();
+            report($e); // el log lleva error_ref = $ref
 
-            return response()->json(['message' => 'Ocurrió un error inesperado al procesar tus archivos. Intenta de nuevo.'], 500);
+            return response()->json(['message' => \App\Support\TechnicalErrorReference::message($ref), 'reference' => $ref], 500);
         }
     }
 }

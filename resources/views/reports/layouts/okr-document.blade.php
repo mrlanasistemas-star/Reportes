@@ -18,14 +18,6 @@
  * - window.__PDF_READY__ se activa hasta que document.fonts confirma la
  *   tipografía — BrowsershotPdfRenderer espera esa señal (full_bleed=true).
  */
-$okrDocFonts = '';
-foreach ([400, 500, 600, 700, 800] as $weight) {
-    $fontPath = resource_path("fonts/montserrat/montserrat-latin-{$weight}-normal.woff2");
-    if (is_file($fontPath)) {
-        $okrDocFonts .= "@font-face{font-family:'Montserrat';font-style:normal;font-weight:{$weight};font-display:block;"
-            . "src:url(data:font/woff2;base64," . base64_encode(file_get_contents($fontPath)) . ") format('woff2');}\n";
-    }
-}
 $okrDocImage = fn (string $name) => 'data:image/png;base64,' . base64_encode(file_get_contents(resource_path("templates/okr/branding/{$name}.png")));
 ?>
 <!DOCTYPE html>
@@ -39,7 +31,7 @@ $okrDocImage = fn (string $name) => 'data:image/png;base64,' . base64_encode(fil
   setTimeout(function () { window.__PDF_READY__ = true; }, 4000);
 </script>
 <style>
-{!! $okrDocFonts !!}
+@include('reports.partials.montserrat-font-face')
   * { margin: 0; padding: 0; box-sizing: border-box; }
   @page { size: 612pt 792pt; margin: 0; }
   html, body { width: 612pt; background: #fff; }
@@ -104,17 +96,23 @@ $okrDocImage = fn (string $name) => 'data:image/png;base64,' . base64_encode(fil
   .blank-line { display: inline-block; min-width: 80pt; border-bottom: .8pt solid #6b7280; height: 11pt; vertical-align: bottom; }
   .ruled { border-bottom: .8pt solid #9ca3af; height: 17pt; }
 
-  .signatures { display: grid; grid-template-columns: repeat(3, 1fr); column-gap: 22pt; margin-top: 22pt; break-inside: avoid; text-align: center; }
-  .signatures .line { border-top: .9pt solid #1f2933; padding-top: 4pt; }
-  .signatures .role { font-weight: 700; font-size: 8.6pt; color: #1f2933; text-transform: uppercase; }
-  .signatures .name { font-size: 8pt; color: #374151; font-weight: 600; min-height: 11pt; }
-  .signatures .hint { font-size: 7.6pt; color: #6b7280; }
+  /* Firmas en TABLA (15-oct-2026): espacio de firma, línea, rol, nombre y
+     leyenda quedan alineados entre las 3 columnas aunque un nombre largo
+     ocupe 2-3 renglones (con grid, "Nombre y firma" quedaba a distintas
+     alturas y el rol de 2 renglones desfasaba los nombres). */
+  table.signatures { width: 100%; border-collapse: separate; border-spacing: 16pt 0; table-layout: fixed; margin-top: 10pt; break-inside: avoid; text-align: center; }
+  table.signatures td { vertical-align: top; padding: 0 1pt; }
+  table.signatures tr.sig-space td { height: 34pt; border-bottom: .9pt solid #1f2933; }
+  table.signatures td.role { padding-top: 4pt; font-weight: 700; font-size: 8.4pt; color: #1f2933; text-transform: uppercase; letter-spacing: .2pt; }
+  table.signatures td.name { padding-top: 1pt; font-size: 8pt; color: #374151; font-weight: 600; line-height: 1.3; word-break: break-word; }
+  table.signatures td.hint { padding-top: 2pt; font-size: 7.4pt; color: #6b7280; }
 
   .badge-preview {
     position: fixed; top: 16pt; right: 22pt; z-index: 5; background: #fde68a; color: #92400e;
     font-size: 7.5pt; font-weight: 800; padding: 3pt 8pt; border-radius: 3pt; letter-spacing: .5pt;
   }
   .avoid-break { break-inside: avoid; }
+  .label.keep-next, .section-title { break-after: avoid; }
   .page-break { break-before: page; }
 @stack('styles')
 </style>

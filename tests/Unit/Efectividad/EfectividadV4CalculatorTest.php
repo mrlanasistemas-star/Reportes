@@ -116,14 +116,43 @@ it('Vencido según foto diaria: se usa la foto del día de reconocimiento, no la
     expect($t['vencido_cob'])->toEqual(100.0)->and($t['atraso_cob'])->toEqual(0.0);
 });
 
-it('Atraso según foto diaria: con Total atrasado ese día, un pago puntual se clasifica como atraso', function () {
+it('V7: con Total atrasado ese día, el pago PUNTUAL de la cuota vigente es Sano (V6 lo clasificaba como atraso)', function () {
     $conAtraso = [v4Fila(['total_atrasado' => 200.0, 'pagos_atrasados' => 2.0])];
-    $t = v4Total(v4Calc($conAtraso, [v4Pago()]));
-    expect($t['atraso_cob'])->toEqual(100.0)->and($t['sano_cob'])->toEqual(0.0);
+    $r = v4Calc($conAtraso, [v4Pago()]);
+    $t = v4Total($r);
+    expect(EfectividadV4Calculator::METODOLOGIA)->toBe('V7')->and($r['metodologia'])->toBe('V7')
+        ->and($t['sano_cob'])->toEqual(100.0)->and($t['atraso_cob'])->toEqual(0.0)
+        ->and($r['movimientos'][0]['atraso_foto'])->toBeGreaterThan(0.0)
+        ->and($r['movimientos'][0]['categoria'])->toBe('sano');
 
-    // Bandera 0.01: pagos atrasados sin importe útil también cuentan como atraso del día.
+    // Bandera 0.01 (pagos atrasados sin importe útil): tampoco reclasifica el pago puntual.
     $bandera = [v4Fila(['total_atrasado' => 0.0, 'pagos_atrasados' => 1.0])];
-    expect(v4Total(v4Calc($bandera, [v4Pago()]))['atraso_cob'])->toEqual(100.0);
+    $tb = v4Total(v4Calc($bandera, [v4Pago()]));
+    expect($tb['sano_cob'])->toEqual(100.0)->and($tb['atraso_cob'])->toEqual(0.0);
+});
+
+it('V7 ejemplo de la nota técnica: debe $2 de una cuota anterior y paga puntual $1,327 de la vigente', function () {
+    // Cuota vigente 05/10 de $1,327; quedan $2 pendientes de la cuota del 28/09.
+    $foto = [v4Fila(['cuota_total' => 1327.0, 'fecha_primer_pago' => '2026-09-21', 'total_atrasado' => 2.0, 'pagos_atrasados' => 1.0])];
+    $vigente = v4Pago(['capital' => 1327.0, 'fecha_transaccion' => '2026-10-05', 'fecha_cuota' => '2026-10-05']);
+    $anterior = v4Pago(['capital' => 2.0, 'fecha_transaccion' => '2026-10-05', 'fecha_cuota' => '2026-09-28', 'numero_cuota' => 2]);
+
+    $t = v4Total(v4Calc($foto, [$vigente, $anterior]));
+    expect($t['sano_cob'])->toEqual(1327.0)        // V6: 0.00
+        ->and($t['atraso_cob'])->toEqual(2.0)      // V6: 1,329.00; el $2 de la cuota pasada sigue siendo atraso
+        ->and($t['vencido_cob'])->toEqual(0.0)
+        ->and($t['cobranza_total'])->toEqual(1329.0);
+});
+
+it('V7 no cambia: pago tardío = atraso, contrato VENCIDO = vencido aunque pague puntual', function () {
+    $conAtraso = [v4Fila(['total_atrasado' => 200.0, 'pagos_atrasados' => 2.0])];
+    $tarde = v4Pago(['fecha_transaccion' => '2026-10-07', 'fecha_cuota' => '2026-10-05']);
+    expect(v4Total(v4Calc($conAtraso, [$tarde]))['atraso_cob'])->toEqual(100.0);
+
+    // Segundo contrato sano para que la ruta tenga Sano por cobrar (las rutas sin sano no figuran).
+    $vencido = [v4Fila(['substatus' => 'VENCIDO', 'total_atrasado' => 300.0]), v4Fila(['contrato' => 'C2'])];
+    $t = v4Total(v4Calc($vencido, [v4Pago()]));
+    expect($t['vencido_cob'])->toEqual(100.0)->and($t['sano_cob'])->toEqual(0.0)->and($t['atraso_cob'])->toEqual(0.0);
 });
 
 it('Pago tardío de un contrato vigente = atraso; posterior al vencimiento del contrato = vencido', function () {

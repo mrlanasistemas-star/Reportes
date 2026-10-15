@@ -15,9 +15,12 @@ import { computed, reactive, ref, watch } from 'vue'
 import AssignBranchModal from '@/components/asignaciones/AssignBranchModal.vue'
 import BranchHeadcountPanel from '@/components/asignaciones/BranchHeadcountPanel.vue'
 import EmployeeAssignmentCard from '@/components/asignaciones/EmployeeAssignmentCard.vue'
+import LaborHistoryPanel from '@/components/asignaciones/LaborHistoryPanel.vue'
+import PendingReconciliationPanel from '@/components/asignaciones/PendingReconciliationPanel.vue'
 import PeriodMovementsPanel from '@/components/asignaciones/PeriodMovementsPanel.vue'
+import RosterOverviewPanel from '@/components/asignaciones/RosterOverviewPanel.vue'
 import SelectField from '@/components/forms/SelectField.vue'
-import type { Assignment, BranchHeadcount, Branch, PeriodOption, RosterMovementItem } from '@/types/asignaciones'
+import type { Assignment, BranchHeadcount, Branch, LaborData, LaborHistoryRow, PeriodOption, RosterMovementItem } from '@/types/asignaciones'
 
 const props = withDefaults(
     defineProps<{
@@ -39,8 +42,8 @@ const props = withDefaults(
             hires: number
             leavers: number
             leavers_confirmadas: number
-            leavers_posible_coincidencia: number
             leavers_pendientes: number
+            pendientes_conciliacion: number
             plantilla: number
             roster_calculado: boolean
             mass_drop_detected: boolean
@@ -49,6 +52,9 @@ const props = withDefaults(
         incidences?: Assignment[]
         hires?: RosterMovementItem[]
         leavers?: RosterMovementItem[]
+        labor?: LaborData | null
+        labor_history?: LaborHistoryRow[]
+        can_reconcile?: boolean
     }>(),
     {
         assignments: () => [],
@@ -69,8 +75,8 @@ const props = withDefaults(
             hires: 0,
             leavers: 0,
             leavers_confirmadas: 0,
-            leavers_posible_coincidencia: 0,
             leavers_pendientes: 0,
+            pendientes_conciliacion: 0,
             plantilla: 0,
             roster_calculado: false,
             mass_drop_detected: false,
@@ -79,6 +85,9 @@ const props = withDefaults(
         incidences: () => [],
         hires: () => [],
         leavers: () => [],
+        labor: null,
+        labor_history: () => [],
+        can_reconcile: false,
     },
 )
 
@@ -300,13 +309,13 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                 <div class="flex flex-wrap items-center gap-2">
                     <div
                         v-for="stat in [
-                            { icon: UserRound, label: 'Activos', value: summary.total, fg: 'text-slate-500 dark:text-slate-400' },
-                            { icon: CheckCircle2, label: 'Con sucursal', value: summary.with_branch, fg: 'text-emerald-500 dark:text-emerald-400' },
-                            { icon: AlertTriangle, label: 'Incidencias', value: summary.needs_review, fg: 'text-amber-500 dark:text-amber-400' },
+                            { icon: UserRound, label: 'Plantilla NOI', value: summary.plantilla, fg: 'text-slate-500 dark:text-slate-400', title: 'Personas (sin duplicados) en la nómina NOI normal o fiscal de este periodo.' },
+                            { icon: CheckCircle2, label: 'Con sucursal', value: summary.with_branch, fg: 'text-emerald-500 dark:text-emerald-400', title: `De ${summary.total} registro(s) con asignación de sucursal en el periodo.` },
+                            { icon: AlertTriangle, label: 'Incidencias de sucursal', value: summary.needs_review, fg: 'text-amber-500 dark:text-amber-400', title: 'Registros sin sucursal o con una coincidencia que conviene revisar. No son bajas.' },
                             { icon: Sparkles, label: 'Manuales', value: summary.manual, fg: 'text-sky-500 dark:text-sky-400' },
-                            { icon: UserPlus, label: 'Altas', value: summary.hires, fg: 'text-emerald-500 dark:text-emerald-400', title: 'Colaboradores que aparecen en la nómina NOI de este periodo y no estaban en el anterior.' },
-                            { icon: UserMinus, label: 'Bajas (sin contradicción)', value: summary.leavers_confirmadas, fg: 'text-rose-500 dark:text-rose-400', title: 'Dejaron de aparecer en la nómina y no hay un alta con nombre similar ni una caída masiva de archivo que lo explique. Es la mejor estimación disponible, no una confirmación de RH.' },
-                            { icon: AlertTriangle, label: 'Ausencias pendientes de revisión', value: summary.leavers_posible_coincidencia + summary.leavers_pendientes, fg: 'text-amber-500 dark:text-amber-400', title: 'Ausencias de nómina que podrían ser un cambio de nombre entre archivos o un archivo NOI incompleto ese mes — no se cuentan como bajas confirmadas.' },
+                            { icon: UserPlus, label: 'Altas', value: summary.hires, fg: 'text-emerald-500 dark:text-emerald-400', title: 'Altas confirmadas y reingresos: aparecen en la nómina NOI de este periodo y no estaban en el anterior.' },
+                            { icon: UserMinus, label: 'Bajas confirmadas', value: summary.leavers_confirmadas, fg: 'text-rose-500 dark:text-rose-400', title: 'Solo con evidencia: directorio laboral INACTIVO, finiquito en NOI o conciliación autorizada. Son las que cuentan en la rotación.' },
+                            { icon: AlertTriangle, label: 'Pendientes de conciliación', value: summary.pendientes_conciliacion, fg: 'text-amber-500 dark:text-amber-400', title: 'Posibles bajas, no localizados, duplicados o fuentes que se contradicen. No cuentan como bajas confirmadas.' },
                         ]"
                         :key="stat.label"
                         :title="stat.title"
@@ -319,23 +328,40 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                 </div>
             </section>
 
-            <!-- Colaboradores por sucursal — exacto, antes de la lista -->
+            <!-- 1. Plantilla del periodo + activos confirmados (roster NOI deduplicado) -->
+            <RosterOverviewPanel v-if="labor" :roster="labor.roster" :active="labor.active" :period-label="selected_period_label" />
+
+            <!-- 2. Movimientos laborales confirmados + incidencias de asignación -->
+            <PeriodMovementsPanel
+                :incidences="incidences"
+                :hires="labor?.movements.altas ?? hires"
+                :reentries="labor?.movements.reingresos ?? []"
+                :leavers="labor?.movements.bajas ?? leavers"
+                :branch-changes="labor?.movements.cambios_sucursal ?? []"
+                :returns="labor?.movements.retornos ?? []"
+                :roster-calculado="summary.roster_calculado"
+                @assign="openAssignModal"
+            />
+
+            <!-- 3. Pendientes de conciliación (nunca se muestran como bajas) -->
+            <PendingReconciliationPanel
+                v-if="labor"
+                :items="labor.pending"
+                :period-id="selected_period_id ?? null"
+                :can-reconcile="can_reconcile"
+            />
+
+            <!-- 4. Histórico laboral por periodo -->
+            <LaborHistoryPanel v-if="labor_history.length" :rows="labor_history" :selected-period-id="selected_period_id ?? null" />
+
+            <!-- 5. Asignación por sucursal -->
             <BranchHeadcountPanel
                 :distribution="branchDistribution"
                 :hires="summary.hires"
                 :leavers="summary.leavers_confirmadas"
-                :pending-leavers="summary.leavers_posible_coincidencia + summary.leavers_pendientes"
+                :pending-leavers="summary.leavers_pendientes"
                 :mass-drop-detected="summary.mass_drop_detected"
                 :drop-ratio="summary.drop_ratio"
-            />
-
-            <!-- Movimientos del periodo — incidencias / altas / bajas -->
-            <PeriodMovementsPanel
-                :incidences="incidences"
-                :hires="hires"
-                :leavers="leavers"
-                :roster-calculado="summary.roster_calculado"
-                @assign="openAssignModal"
             />
 
             <!-- Employee cards -->
@@ -343,7 +369,7 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                 <div class="border-b px-4 py-4 sm:px-5">
                     <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                         <div>
-                            <h2 class="text-lg font-bold tracking-tight">Empleados del periodo</h2>
+                            <h2 class="text-lg font-bold tracking-tight">Asignación de sucursal por colaborador</h2>
                             <p class="mt-1 text-sm text-muted-foreground">
                                 Haz clic en <span class="font-semibold">Asignar sucursal</span> para crear o corregir la asignación de cualquier empleado.
                             </p>

@@ -112,6 +112,7 @@ class OkrPlacementImportService
                 'rows_other_branch'         => $parsed['rows_other_branch'],
                 'rows_cancelled'            => $parsed['rows_cancelled'],
                 'rows_out_of_objective_range' => $parsed['rows_out_of_objective_range'],
+                'rows_pending_attribution'  => $parsed['rows_pending_attribution'],
             ]);
 
             foreach ($parsed['rows'] as $row) {
@@ -119,6 +120,9 @@ class OkrPlacementImportService
                     'okr_placement_upload_id' => $upload->id,
                     'employee_id'             => $row['employee_id'],
                     'employee_name_raw'       => $row['employee_name_raw'],
+                    'attribution_status'      => $row['attribution_status'],
+                    'attribution_method'      => $row['attribution_method'],
+                    'attribution_note'        => $row['attribution_note'],
                     'amount'                  => $row['amount'],
                     'operation_date'          => $row['operation_date'],
                     'fingerprint'             => $row['fingerprint'],
@@ -178,6 +182,8 @@ class OkrPlacementImportService
         $rowsOtherBranch = 0;
         $rowsCancelled = 0;
         $rowsOutOfObjectiveRange = 0;
+        $rowsPendingAttribution = 0;
+        $attributor = app(OkrPlacementAttributionResolver::class);
 
         foreach (array_slice($allRows, $headerRowIndex + 1) as $row) {
             if ($this->isEmptyRow($row)) {
@@ -187,8 +193,7 @@ class OkrPlacementImportService
             $employeeNameRaw = $this->str($row[$colMap['employee']] ?? null);
             $amount = $this->toDecimal($row[$colMap['amount']] ?? null);
             $employeeCode = isset($colMap['employee_code']) ? $this->str($row[$colMap['employee_code']] ?? null) : null;
-            $employee = ($employeeCode ? $this->resolveEmployeeByCode($employeeCode) : null)
-                ?? ($employeeNameRaw ? $this->resolveEmployee($employeeNameRaw) : null);
+            $operationDate = isset($colMap['date']) ? $this->toDate($row[$colMap['date']] ?? null) : null;
             $contract = isset($colMap['contract']) ? $this->str($row[$colMap['contract']] ?? null) : null;
             $branchRaw = isset($colMap['branch']) ? $this->str($row[$colMap['branch']] ?? null) : null;
             $routeRaw = isset($colMap['route']) ? $this->str($row[$colMap['route']] ?? null) : null;
@@ -211,8 +216,15 @@ class OkrPlacementImportService
                 continue;
             }
 
-            if ($employee !== null) {
-                $employeeIdsSeen[$employee->id] = true; // cuenta aunque el monto sea 0/nulo
+            // Prioridad 4 (15-oct-2026): atribución por número de empleado vigente
+            // para la FECHA del movimiento → identidad canónica → código de
+            // vendedor → asignación del periodo → sucursal oficial; el nombre solo
+            // si es exacto y no contradice nada. Ambigüedad = pendiente.
+            $attribution = $attributor->resolve($employeeCode, $employeeNameRaw, $operationDate ?? $weekEnd->toDateString(), $objectiveBranchName, $rowBranch !== null);
+            $employeeId = $attribution['employee_id'];
+
+            if ($employeeId !== null) {
+                $employeeIdsSeen[$employeeId] = true; // cuenta aunque el monto sea 0/nulo
             }
             if ($amount === null || $amount == 0.0) {
                 continue;
@@ -225,9 +237,7 @@ class OkrPlacementImportService
                 continue;
             }
 
-            $operationDate = isset($colMap['date']) ? $this->toDate($row[$colMap['date']] ?? null) : null;
-
-            if ($restrictToEmployeeIds !== null && !in_array($employee?->id, $restrictToEmployeeIds, true)) {
+            if ($restrictToEmployeeIds !== null && !in_array($employeeId, $restrictToEmployeeIds, true)) {
                 continue; // fila de otro colaborador — nunca se suma a este Objective individual
             }
 
@@ -250,7 +260,7 @@ class OkrPlacementImportService
             $fingerprint = $contract !== null
                 ? hash('sha256', implode('|', ['contract', mb_strtoupper($contract), $amount, $operationDate ?? '']))
                 : hash('sha256', implode('|', array_filter([
-                    $employeeNameRaw ?? '', $amount, $operationDate ?? '', $employee?->id ?? '',
+                    $employeeNameRaw ?? '', $amount, $operationDate ?? '', $employeeId ?? '', $employeeCode,
                     // Sin contrato NI fecha la fila no tiene identidad propia entre
                     // semanas (el mismo importe del mismo gestor puede repetirse
                     // legítimamente): se ancla a su semana para no descartarla.
@@ -263,26 +273,31 @@ class OkrPlacementImportService
             $seenFingerprints[$fingerprint] = true;
 
             $rows[] = [
-                'employee_id'       => $employee?->id,
+                'employee_id'       => $employeeId,
                 'employee_name_raw' => $employeeNameRaw,
+                'attribution_status' => $attribution['status'],
+                'attribution_method' => $attribution['method'],
+                'attribution_note'  => $attribution['note'] !== null ? mb_substr($attribution['note'], 0, 600) : null,
                 'amount'            => $amount,
                 'operation_date'    => $operationDate,
                 'fingerprint'       => $fingerprint,
                 'raw_payload'       => array_filter([
                     'employee_name_raw' => $employeeNameRaw, 'amount' => $amount, 'operation_date' => $operationDate,
                     'contract' => $contract, 'branch' => $branchRaw, 'route' => $routeRaw, 'movement_type' => $movementType,
+                    'employee_code' => $employeeCode,
                 ], fn ($v) => $v !== null),
             ];
 
             $totalAmount += $amount;
-            if ($employee === null) {
+            if ($employeeId === null) {
                 $unattributedAmount += $amount;
                 $hasUnattributed = true;
+                $rowsPendingAttribution++;
             }
         }
 
         if (empty($rows)) {
-            throw new \RuntimeException($restrictToEmployeeId !== null
+            throw new \RuntimeException($restrictToEmployeeIds !== null
                 ? 'El archivo no tiene ninguna fila atribuible a este colaborador.'
                 : 'El archivo no tiene ninguna fila con monto válido.');
         }
@@ -295,6 +310,7 @@ class OkrPlacementImportService
             'rows_other_branch' => $rowsOtherBranch,
             'rows_cancelled' => $rowsCancelled,
             'rows_out_of_objective_range' => $rowsOutOfObjectiveRange,
+            'rows_pending_attribution' => $rowsPendingAttribution,
             'employee_ids_seen' => array_keys($employeeIdsSeen),
         ];
     }
@@ -307,7 +323,7 @@ class OkrPlacementImportService
      */
     private function officialBranchForRoute(string $route): ?string
     {
-        return app(\App\Services\BranchResolverService::class)->resolveRealBranchFromRoute($route);
+        return \App\Services\Catalog\BranchRouteCatalog::officialBranchFor($route);
     }
 
     private function normalizeBranch(string $value): string
@@ -417,27 +433,6 @@ class OkrPlacementImportService
         }
 
         return $map;
-    }
-
-    /** Gestor por número de empleado Lendus (directorio de colaboradores, cualquier carga). */
-    private function resolveEmployeeByCode(string $code): ?Employee
-    {
-        $norm = DB::table('lendus_employee_directory')->whereRaw('UPPER(TRIM(codigo)) = ?', [mb_strtoupper(trim($code))])->value('normalized_name');
-
-        return $norm ? Employee::query()->where('normalized_name', $norm)->orderBy('id')->first() : null;
-    }
-
-    private function resolveEmployee(string $name): ?Employee
-    {
-        return Employee::query()->where('normalized_name', $this->normalize($name))->orderBy('id')->first();
-    }
-
-    private function normalize(string $value): string
-    {
-        $value = mb_strtolower(trim($value));
-        $value = strtr($value, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n']);
-
-        return preg_replace('/\s+/', ' ', $value) ?? $value;
     }
 
     private function toDecimal(mixed $value): ?float

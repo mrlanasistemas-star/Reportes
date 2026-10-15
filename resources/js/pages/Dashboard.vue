@@ -16,6 +16,7 @@ import {
     Users,
     Wallet,
 } from 'lucide-vue-next'
+import Swal from 'sweetalert2'
 import { computed, onMounted, ref, watch } from 'vue'
 import SelectField from '@/components/forms/SelectField.vue'
 import ChartCard from '@/components/radiography/ChartCard.vue'
@@ -183,9 +184,11 @@ function reload() {
 watch(selectedPeriodId, reload)
 watch(selectedBranchId, reload)
 
-// Exportar Excel/PDF (Fase 10 de la auditoría, 15-oct-2026): MISMOS endpoints ya
-// existentes de Reportes mensuales (scope general o branch) — nunca un motor de
-// exportación nuevo, así que el documento SIEMPRE coincide con lo que se ve aquí.
+// Exportar Excel/PDF (Fase 10 de la auditoría, 15-oct-2026). Excel: MISMOS
+// endpoints de Reportes mensuales (scope general o branch). PDF (corregido
+// 15-oct-2026): antes descargaba la Radiografía completa — otro reporte de
+// muchas páginas —; ahora /dashboard/exportar.pdf genera los MISMOS KPI y
+// gráficas que se ven aquí, para el periodo y la sucursal seleccionados.
 const exportUrls = computed(() => {
     const periodId = kpis.value?.period_id
 
@@ -194,11 +197,18 @@ const exportUrls = computed(() => {
     }
 
     const branchId = selectedBranchId.value ? Number(selectedBranchId.value) : null
+    const pdfParams = new URLSearchParams({ period_id: String(periodId) })
+
+    if (branchId) {
+        pdfParams.set('branch_id', String(branchId))
+    }
+
+    const pdf = `/dashboard/exportar.pdf?${pdfParams.toString()}`
 
     if (!branchId) {
         return {
             excel: `/reportes-mensuales/${periodId}/radiografia.xlsx`,
-            pdf: `/reportes-mensuales/${periodId}/radiografia.pdf`,
+            pdf,
         }
     }
 
@@ -206,9 +216,14 @@ const exportUrls = computed(() => {
 
     return {
         excel: `/reportes-mensuales/${periodId}/export-filtrado.xlsx?${qs}`,
-        pdf: `/reportes-mensuales/${periodId}/export-filtrado.pdf?${qs}`,
+        pdf,
     }
 })
+
+// El PDF tarda (arma el mismo snapshot que el Dashboard): aviso para no repetir el clic.
+function notifyPdf() {
+    Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: 'Generando el PDF del Dashboard…', text: 'La descarga inicia sola en unos segundos.', timer: 6000, showConfirmButton: false })
+}
 
 const money = (v: number) => '$' + Number(v || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })
 
@@ -328,7 +343,7 @@ const quickLinks = [
                     <a :href="exportUrls.excel" class="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-800 dark:bg-card dark:text-slate-300">
                         <FileSpreadsheet class="size-4" /> Exportar Excel
                     </a>
-                    <a :href="exportUrls.pdf" class="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-rose-300 hover:text-rose-700 dark:border-slate-800 dark:bg-card dark:text-slate-300">
+                    <a :href="exportUrls.pdf" title="KPI y gráficas del periodo y la sucursal seleccionados" @click="notifyPdf" class="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-rose-300 hover:text-rose-700 dark:border-slate-800 dark:bg-card dark:text-slate-300">
                         <FileText class="size-4" /> Exportar PDF
                     </a>
                 </div>

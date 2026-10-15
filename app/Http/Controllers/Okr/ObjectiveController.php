@@ -103,6 +103,9 @@ class ObjectiveController extends Controller
             'branch_name' => $memberships[$e->id]['branch_name'] ?? null,
             'membership_source' => $memberships[$e->id]['source_label'] ?? null,
             'flags' => $flags[$e->id] ?? [],
+            // Prioridad 5: fuentes del mismo periodo con sucursales distintas —
+            // la UI muestra el aviso y no permite asignar hasta conciliar.
+            'branch_conflict' => $memberships[$e->id]['conflict'] ?? null,
         ])->values();
 
         // Nunca cacheable (Parte C4 del cierre, 17-sep-2026) — resultado sensible
@@ -117,6 +120,7 @@ class ObjectiveController extends Controller
             // Nómina vigente usada para decidir quién está activo (14-oct-2026).
             'roster_period' => $resolver->currentRosterPeriodLabel(),
             'roster' => $resolver->rosterStatus(),
+            'can_reconcile_branch' => $request->user()->can('okr.admin'),
         ], 200, self::NO_STORE_HEADERS);
     }
 
@@ -673,9 +677,10 @@ class ObjectiveController extends Controller
     {
         $this->authorize('assign', $objective);
 
-        $error = $activation->activate($objective, (int) auth()->id());
-        if ($error !== null) {
-            return back()->withErrors(['activate' => $error]);
+        $result = $activation->attempt($objective, (int) auth()->id());
+        if ($result['message'] !== null) {
+            // activate_action: acción que resuelve el bloqueo (la pantalla la ofrece como botón).
+            return back()->withErrors(array_filter(['activate' => $result['message'], 'activate_action' => $result['action'], 'activate_action_label' => $result['action_label']]));
         }
 
         // Corrección 14-oct-2026: al activar el OKR de sucursal se pueden activar

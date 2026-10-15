@@ -238,6 +238,7 @@ class EfectividadCalculadoraService
         $resultado += [
             'modo' => $modo,
             'leyenda' => EfectividadV4Calculator::LEYENDA,
+            'metodologia' => EfectividadV4Calculator::METODOLOGIA,
             'avisos' => $avisos,
             'generado' => now('America/Mexico_City')->format('d/m/Y H:i'),
             'fuentes' => [
