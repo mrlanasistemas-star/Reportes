@@ -2,7 +2,7 @@
 // "Configurar Key Results" (15-oct-2026) — completa un OKR en borrador que
 // nació sin KR (individuales creados antes de la corrección del asistente),
 // sin rehacer la asignación: mismo editor y misma tabla de metas que el
-// asistente, con la línea base consultada para ESE colaborador. Nunca copia
+// asistente; la línea base del colaborador se CAPTURA manualmente. Nunca copia
 // la meta de la sucursal; los pesos suman 100% dentro de este OKR.
 import { router } from '@inertiajs/vue3'
 import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, Settings2 } from 'lucide-vue-next'
@@ -37,7 +37,7 @@ watch(open, (v) => {
                 kpi_id: kr.kpi.id, description: kr.description, weight: String(kr.weight),
                 baseline_value: kr.baseline_value === null ? '' : String(kr.baseline_value), target_value: String(kr.target_value),
                 increment: kr.baseline_value === null ? '' : String(Number(kr.target_value) - Number(kr.baseline_value)),
-                baseline_mode: kr.baseline_source === 'manual_authorized' ? 'manual_authorized' : (kr.kpi.automation === 'automatic' ? 'auto' : 'manual'),
+                baseline_mode: kr.baseline_source === 'manual_authorized' ? 'manual_authorized' : (props.target?.scope_type !== 'employee' && kr.kpi.automation === 'automatic' ? 'auto' : 'manual'),
                 baseline_manual_reason: kr.baseline_source === 'manual_authorized' ? 'Línea base manual autorizada previamente (ver bitácora).' : '',
             }))
             : [newKrRow({ weight: '100' })]
@@ -55,10 +55,14 @@ const scope = computed(() => ({
 
 function toGoals() {
     step.value = 2
-    rows.value.filter((kr) => isAutomatic(kpiOf(kr.kpi_id)) && !kr.preview && !kr.loading).forEach((kr) => consult(kr, scope.value))
+
+    // Solo el OKR de sucursal consulta su base en Reportería; la del gestor se captura (16-oct-2026).
+    if (scope.value.scope_type === 'branch') {
+        rows.value.filter((kr) => isAutomatic(kpiOf(kr.kpi_id)) && !kr.preview && !kr.loading).forEach((kr) => consult(kr, scope.value))
+    }
 }
 
-const complete = computed(() => rows.value.length > 0 && rows.value.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id))))
+const complete = computed(() => rows.value.length > 0 && rows.value.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id), scope.value.scope_type)))
 
 async function save() {
     if (!props.target) {
@@ -67,7 +71,7 @@ async function save() {
 
     saving.value = true
     const res = await okrRequest(`/okr/${props.target.id}/key-results/complete`, {
-        method: 'POST', json: { key_results: rows.value.map((kr) => serializeKr(kr, kpiOf(kr.kpi_id))), replace: !!props.target.existing?.length },
+        method: 'POST', json: { key_results: rows.value.map((kr) => serializeKr(kr, kpiOf(kr.kpi_id), scope.value.scope_type)), replace: !!props.target.existing?.length },
     })
     saving.value = false
 

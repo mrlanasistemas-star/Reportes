@@ -58,7 +58,7 @@ class ActionPermissionService
         }
 
         $matrix = [];
-        foreach (self::CONFIGURABLE_ROLES as $role) {
+        foreach ($this->configurableRoles() as $role) {
             $matrix[$role] = [];
             foreach (self::ACTIONS as $module => $actions) {
                 $matrix[$role][$module] = array_values(array_intersect(array_keys($actions), $stored[$role][$module] ?? []));
@@ -78,9 +78,29 @@ class ActionPermissionService
             return true;
         }
 
-        $role = $user->isGerencial() ? User::ROLE_GERENCIAL : User::ROLE_COLABORADOR;
+        $role = in_array($user->role, $this->configurableRoles(), true)
+            ? $user->role
+            : ($user->isGerencial() ? User::ROLE_GERENCIAL : User::ROLE_COLABORADOR);
 
         return in_array($action, $this->matrix()[$role][$module] ?? [], true);
+    }
+
+    /** 16-oct-2026 — roles del sistema + personalizados (todos menos admin). @return list<string> */
+    private function configurableRoles(): array
+    {
+        return app(RoleCatalogService::class)->configurableKeys() ?: self::CONFIGURABLE_ROLES;
+    }
+
+    /** @param array<string, list<string>> $actions módulo => acciones */
+    public function saveRole(string $role, array $actions): void
+    {
+        $this->save([$role => $actions]);
+    }
+
+    public function deleteRole(string $role): void
+    {
+        DB::table('role_action_permissions')->where('role', $role)->delete();
+        Cache::forget(self::CACHE_KEY);
     }
 
     /** @param array<string, array<string, list<string>>> $matrix */
@@ -88,7 +108,8 @@ class ActionPermissionService
     {
         DB::transaction(function () use ($matrix) {
             $now = now();
-            foreach (self::CONFIGURABLE_ROLES as $role) {
+            // Solo los roles enviados (y configurables) — guardar uno no borra los demás.
+            foreach (array_intersect(array_keys($matrix), $this->configurableRoles()) as $role) {
                 DB::table('role_action_permissions')->where('role', $role)->delete();
                 $rows = [];
                 foreach (self::ACTIONS as $module => $actions) {

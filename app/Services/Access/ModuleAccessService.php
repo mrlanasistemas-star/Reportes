@@ -49,11 +49,37 @@ class ModuleAccessService
         }
 
         $matrix = [];
-        foreach (self::CONFIGURABLE_ROLES as $role) {
+        foreach ($this->configurableRoles() as $role) {
             $matrix[$role] = array_values(array_intersect(array_keys(self::MODULES), $stored[$role] ?? []));
         }
 
         return $matrix;
+    }
+
+    /** 16-oct-2026 — roles del sistema + personalizados (todos menos admin). @return list<string> */
+    private function configurableRoles(): array
+    {
+        return app(RoleCatalogService::class)->configurableKeys() ?: self::CONFIGURABLE_ROLES;
+    }
+
+    /** Clave de permisos del usuario: su propio rol si es configurable; si no, su nivel base. */
+    private function permissionKeyFor(User $user): string
+    {
+        return in_array($user->role, $this->configurableRoles(), true)
+            ? $user->role
+            : ($user->isGerencial() ? User::ROLE_GERENCIAL : User::ROLE_COLABORADOR);
+    }
+
+    /** @param list<string> $modules */
+    public function saveRole(string $role, array $modules): void
+    {
+        $this->save([$role => $modules]);
+    }
+
+    public function deleteRole(string $role): void
+    {
+        DB::table('role_module_access')->where('role', $role)->delete();
+        Cache::forget(self::CACHE_KEY);
     }
 
     /** @return list<string> */
@@ -66,7 +92,7 @@ class ModuleAccessService
             return array_keys(self::MODULES);
         }
 
-        return $this->matrix()[$user->isGerencial() ? User::ROLE_GERENCIAL : User::ROLE_COLABORADOR] ?? [];
+        return $this->matrix()[$this->permissionKeyFor($user)] ?? [];
     }
 
     public function allows(?User $user, string $module): bool
@@ -87,7 +113,8 @@ class ModuleAccessService
     {
         DB::transaction(function () use ($matrix) {
             $now = now();
-            foreach (self::CONFIGURABLE_ROLES as $role) {
+            // Solo los roles enviados (y configurables) — guardar uno no borra los demás.
+            foreach (array_intersect(array_keys($matrix), $this->configurableRoles()) as $role) {
                 $modules = array_values(array_intersect(array_keys(self::MODULES), $matrix[$role] ?? []));
                 DB::table('role_module_access')->where('role', $role)->delete();
                 DB::table('role_module_access')->insert(array_map(

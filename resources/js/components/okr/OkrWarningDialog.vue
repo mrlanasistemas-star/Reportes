@@ -4,7 +4,7 @@
 // real, brecha, causa) → acciones correctivas → autorización explícita →
 // documento. Una semana abierta o sin dato queda "Pendiente de evaluación".
 import { router } from '@inertiajs/vue3'
-import { AlertTriangle, CheckCircle2, Clock, Loader2, ShieldAlert } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, Clock, Info, Loader2, ShieldAlert } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
@@ -26,11 +26,22 @@ const submitting = ref(false)
 // dejaba weeks=[] en silencio — la UI entonces mostraba "Aún no hay semanas
 // transcurridas para evaluar", un motivo FALSO que escondía el error real.
 const loadError = ref<string | null>(null)
+// Situación no evaluable del OKR completo (borrador, cancelado, sin iniciar) —
+// se explica, nunca se muestra como error (16-oct-2026).
+const notice = ref<{ code: string; message: string } | null>(null)
+
+// Motivo clasificado de cada bloqueo (ver OkrWarningService::eligibility()).
+const REASON_LABELS: Record<string, string> = {
+    not_active: 'OKR no activado', week_open: 'Semana no cerrada', no_evidence: 'Falta evidencia',
+    no_breach: 'Sin incumplimiento comprobado', no_letter: 'Sin Carta Compromiso vigente', no_subject: 'Sin persona evaluada',
+    duplicate: 'Warning ya emitido', out_of_range: 'Semana fuera de rango',
+}
 
 async function load() {
     loading.value = true
     loadError.value = null
-    const res = await okrRequest<{ weeks: any[] }>(`/okr/${props.objectiveId}/warnings/eligibility`)
+    notice.value = null
+    const res = await okrRequest<{ weeks: any[]; notice?: { code: string; message: string } | null }>(`/okr/${props.objectiveId}/warnings/eligibility`)
     loading.value = false
 
     if (!res.ok) {
@@ -40,7 +51,8 @@ async function load() {
         return
     }
 
-    weeks.value = res.data.weeks
+    notice.value = res.data.notice ?? null
+    weeks.value = res.data.weeks ?? []
     selected.value = weeks.value.find((w) => w.status === 'eligible')?.week.number ?? weeks.value[weeks.value.length - 1]?.week.number ?? null
 }
 
@@ -100,8 +112,17 @@ async function submit() {
             <div v-if="loading" class="space-y-2"><div v-for="n in 3" :key="n" class="h-10 animate-pulse rounded-lg bg-muted" /></div>
 
             <div v-else-if="loadError" class="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                <p class="text-[10px] font-bold uppercase tracking-wide">Error técnico</p>
                 <p>{{ loadError }}</p>
                 <Button size="sm" variant="outline" class="rounded-lg" @click="load">Reintentar</Button>
+            </div>
+
+            <div v-else-if="notice" class="flex items-start gap-2 rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 text-sm text-sky-800 dark:text-sky-200">
+                <Info class="mt-0.5 size-4 shrink-0" />
+                <div>
+                    <p class="text-[10px] font-bold uppercase tracking-wide">{{ REASON_LABELS[notice.code] ?? 'No evaluable' }}</p>
+                    <p>{{ notice.message }}</p>
+                </div>
             </div>
 
             <template v-else>
@@ -144,6 +165,9 @@ async function submit() {
 
                     <div v-if="current.blockers.length" class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-200">
                         <p class="mb-1 font-bold">No se puede emitir un Warning para esta semana:</p>
+                        <div class="mb-1.5 flex flex-wrap gap-1">
+                            <span v-for="r in current.reasons ?? []" :key="r" class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold">{{ REASON_LABELS[r] ?? r }}</span>
+                        </div>
                         <ul class="space-y-0.5 pl-4"><li v-for="b in current.blockers" :key="b" class="list-disc">{{ b }}</li></ul>
                     </div>
 
@@ -151,6 +175,7 @@ async function submit() {
                         <p class="text-xs font-bold text-rose-700 dark:text-rose-300">Causa: resultado real por debajo de lo esperado a la semana {{ current.week.number }} (desviación negativa) con la semana cerrada.</p>
                         <textarea v-model="corrective" rows="3" maxlength="2000" class="app-textarea text-sm" placeholder="Acciones correctivas acordadas (obligatorio)" />
                         <textarea v-model="observations" rows="2" maxlength="2000" class="app-textarea text-sm" placeholder="Observaciones de la empresa (opcional)" />
+                        <p v-if="!authorized" class="text-[10px] font-semibold text-amber-700 dark:text-amber-300">Falta autorización: marca la confirmación para poder emitir.</p>
                         <label class="flex cursor-pointer items-start gap-2 text-xs text-foreground">
                             <input v-model="authorized" type="checkbox" class="mt-0.5 accent-rose-600">
                             <span>Revisé los datos y <strong>autorizo</strong> emitir el Warning a nombre de <strong>{{ current.subject?.full_name }}</strong>.</span>

@@ -338,7 +338,7 @@ class GenerateRadiographyJob implements ShouldQueue
         // El periodo recién generado puede cambiar la tendencia EBITDA/OPEX del
         // dashboard (nueva key de caché) — recalentarla aquí evita que el primer
         // usuario que abra el dashboard pague ese costo en su propia request.
-        WarmDashboardTrendCacheJob::dispatch();
+        WarmDashboardTrendCacheJob::dispatch($period->id);
 
         $tMailStart = microtime(true);
         $this->notifyUser(

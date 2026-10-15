@@ -55,7 +55,13 @@ class RadiografiaExportService
             md5(json_encode($config))
         );
 
-        return Cache::remember($key, 180, fn () => $this->snapshotBuilder->build($period, $summary, $config));
+        // 16-oct-2026 — el snapshot GENERAL (sin alcance) se conserva 12 h: la clave
+        // ya cambia sola si el reporte se regenera (summary.updated_at), y el
+        // comparativo tardaba ~13 s en cada visita porque 3 min casi nunca
+        // alcanzaban. Los alcances filtrados mantienen la ventana corta.
+        $ttl = $config === [] ? 43_200 : 180;
+
+        return Cache::remember($key, $ttl, fn () => $this->snapshotBuilder->build($period, $summary, $config));
     }
 
     public function export(Period $period, array $config = []): string

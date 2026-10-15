@@ -185,27 +185,31 @@ it('prevents a duplicated individual assignment overlapping an existing draft/ac
     $this->actingAs($s['admin'])->post(route('okr.store'), bgPayload($s, [$row]))->assertSessionHasErrors('individual_objectives.0.employee_id');
 });
 
-it('accepts a manual baseline for an AUTOMATIC KPI only with a reason, and records it in the audit log', function () {
+it('uses a MANUAL baseline for each gestor (16-oct-2026 rule): required, no reason needed, never looked up in Reportería, and logged', function () {
     $s = bgSetup();
     $kpi = bgPlacementKpi();
-    $kr = fn (array $extra) => [['kpi_id' => $kpi->id, 'description' => 'Colocación gestor A', 'target_value' => 50000, 'weight' => 100] + $extra];
+    $kr = fn (array $extra) => [['kpi_id' => $kpi->id, 'description' => 'Colocación gestor A', 'target_value' => 130000, 'weight' => 100] + $extra];
 
-    // Sin motivo → rechazado.
+    // Sin línea base → rechazado con el mensaje de captura manual.
     $this->actingAs($s['admin'])->post(route('okr.store'), bgPayload($s, [
-        ['employee_id' => $s['a']->id, 'title' => 'Colocación individual del gestor A', 'key_results' => $kr(['baseline_value' => 20000])],
-    ]))->assertSessionHasErrors('individual_objectives.0.key_results.0.baseline_value');
+        ['employee_id' => $s['a']->id, 'title' => 'Colocación individual del gestor A', 'key_results' => $kr([])],
+    ]))->assertSessionHasErrors(['individual_objectives.0.key_results.0.baseline_value' => 'Captura la línea base del gestor: es el valor inicial desde el cual se medirá su incremento.']);
 
-    // Con motivo y sin dato verificable en Reportería → aceptado y trazado.
+    // Con línea base capturada (sin motivo, KPI automático) → aceptado tal cual.
     $this->actingAs($s['admin'])->post(route('okr.store'), bgPayload($s, [
-        ['employee_id' => $s['a']->id, 'title' => 'Colocación individual del gestor A', 'key_results' => $kr(['baseline_value' => 20000, 'baseline_manual_reason' => 'Gestor de nuevo ingreso sin colocación histórica en Reportería'])],
+        ['employee_id' => $s['a']->id, 'title' => 'Colocación individual del gestor A', 'key_results' => $kr(['baseline_value' => 100000])],
     ]))->assertSessionHasNoErrors();
 
     $child = OkrObjective::query()->where('employee_id', $s['a']->id)->firstOrFail();
     $savedKr = $child->keyResults()->firstOrFail();
-    expect((float) $savedKr->baseline_value)->toBe(20000.0);
-    expect($savedKr->baseline_source)->toBe('manual_authorized');
-    expect(\App\Models\OkrAuditLog::query()->where('auditable_type', 'key_result')->where('auditable_id', $savedKr->id)->where('action', 'baseline_manual_authorized')->value('reason'))
-        ->toContain('nuevo ingreso');
+    expect((float) $savedKr->baseline_value)->toBe(100000.0);
+    expect($savedKr->baseline_source)->toBe(\App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL);
+    expect(\App\Models\OkrAuditLog::query()->where('auditable_type', 'key_result')->where('auditable_id', $savedKr->id)->where('action', 'baseline_manual_individual')->exists())->toBeTrue();
+
+    // La consulta de línea base por gestor ya no consulta ni bloquea.
+    $this->actingAs($s['admin'])->getJson(route('okr.baseline-preview', [
+        'kpi_id' => $kpi->id, 'scope_type' => 'employee', 'branch_id' => $s['branch']->id, 'employee_id' => $s['a']->id, 'start_date' => now()->toDateString(),
+    ]))->assertOk()->assertJson(['available' => false, 'manual_required' => true, 'message' => 'Captura la línea base del gestor.']);
 });
 
 it('one single Lendus file feeds the branch total and each gestor, excludes other branches/cancelled rows and never double counts a movement repeated the next week', function () {

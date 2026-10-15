@@ -27,13 +27,35 @@ class WarningController extends Controller
     {
         $this->authorize('view', $objective);
 
+        // 16-oct-2026: una situación NO elegible abre y se explica; solo un fallo
+        // técnico real responde como error (con referencia para soporte).
+        $notice = match ($objective->lifecycle_status) {
+            OkrObjective::STATUS_DRAFT => ['code' => 'not_active', 'message' => 'Este OKR todavía no está activado: los Warnings solo se evalúan sobre OKR activos con línea base congelada.'],
+            OkrObjective::STATUS_CANCELLED => ['code' => 'cancelled', 'message' => 'Este OKR está cancelado — no se evalúan incumplimientos.'],
+            default => !$objective->hasStarted()
+                ? ['code' => 'not_started', 'message' => 'El OKR aún no inicia (' . $objective->start_date->format('d/m/Y') . ') — no hay semanas que evaluar.']
+                : null,
+        };
+
+        if ($notice !== null) {
+            return response()->json(['weeks' => [], 'notice' => $notice], 200, ['Cache-Control' => 'no-store']);
+        }
+
         $weeks = $request->filled('week')
             ? [$request->integer('week')]
             : range(1, max(1, min((int) $objective->duration_weeks, max(1, $objective->currentWeekNumber()))));
 
-        return response()->json([
-            'weeks' => array_map(fn ($w) => $service->eligibility($objective, $w), $weeks),
-        ], 200, ['Cache-Control' => 'no-store']);
+        try {
+            $rows = array_map(fn ($w) => $service->eligibility($objective, $w), $weeks);
+        } catch (Throwable $e) {
+            $ref = 'WR-ELIG-' . now()->format('YmdHis');
+            report($e);
+            \Illuminate\Support\Facades\Log::error('Elegibilidad de Warning falló', ['ref' => $ref, 'objective_id' => $objective->id, 'error' => $e->getMessage()]);
+
+            return response()->json(['message' => "Error técnico al evaluar las semanas (referencia {$ref}). No es un incumplimiento; intenta de nuevo o repórtalo a soporte."], 500);
+        }
+
+        return response()->json(['weeks' => $rows, 'notice' => null], 200, ['Cache-Control' => 'no-store']);
     }
 
     public function store(Request $request, OkrObjective $objective, OkrWarningService $service): JsonResponse

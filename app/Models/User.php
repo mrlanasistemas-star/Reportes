@@ -48,7 +48,10 @@ class User extends Authenticatable
 
     public function isGerencial(): bool
     {
-        return $this->role === self::ROLE_GERENCIAL;
+        // 16-oct-2026 — un rol personalizado se comporta según su NIVEL BASE
+        // (gerencial/colaborador); sus módulos y acciones son propios.
+        return $this->role === self::ROLE_GERENCIAL
+            || ($this->role !== self::ROLE_ADMIN && app(\App\Services\Access\RoleCatalogService::class)->baseLevel($this->role) === self::ROLE_GERENCIAL);
     }
 
     public function isColaborador(): bool
@@ -76,6 +79,7 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'tour_welcome_seen_at' => 'datetime', // bienvenida al recorrido, una vez por usuario (16-oct-2026)
             // 'access_enabled_at' agregado 10-sep-2026 — módulo OKR (ver
             // ResponsibleController): habilitación ADMINISTRATIVA de acceso,
             // distinta de la verificación real del correo (email_verified_at

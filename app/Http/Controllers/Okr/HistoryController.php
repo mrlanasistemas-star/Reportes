@@ -46,7 +46,7 @@ class HistoryController extends Controller
         return Inertia::render('Okr/History', [
             'objectives' => $objectives,
             'filters' => [
-                'branches'  => Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']),
+                'branches'  => $this->filterBranches(),
                 // Colaborador ya NO se precarga completo — se busca bajo demanda
                 // vía GET /okr/employees-lookup (mismo criterio que el dashboard).
             ],

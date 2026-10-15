@@ -3,7 +3,7 @@
 //   1 Sucursal y objetivo · 2 Gestores · 3 KR generales · 4 Metas generales
 //   5 METAS Y KR POR GESTOR · 6 Resumen y guardar
 // El OKR general mide a la sucursal; cada gestor elegido tiene SUS propios KR,
-// SU línea base (consultada para ESE gestor), SU incremento y SU meta — nunca
+// SU línea base (CAPTURADA manualmente para ESE gestor), SU incremento y SU meta — nunca
 // se copian base ni meta de la sucursal. Todo se configura ANTES de guardar;
 // guardar un borrador con gestores pendientes es una decisión explícita.
 import { useForm } from '@inertiajs/vue3'
@@ -188,18 +188,17 @@ function kpiOf(id: number | null) {
     return props.kpis.find((k) => k.id === id) ?? null
 }
 
-// ── Consultas de línea base (en paralelo): sucursal en el paso 4, cada gestor en el paso 5 ──
+// ── Consulta de línea base de la SUCURSAL (paso 4); la de cada gestor es manual (paso 5) ──
 const { consult } = useOkrBaselinePreview()
 const scopeBase = computed(() => ({ branch_id: form.branch_id, start_date: form.start_date }))
 
-function consultPending(rows: KrRow[], scope: { scope_type: 'branch' | 'employee'; employee_id?: number }) {
+function consultPending(rows: KrRow[], scope: { scope_type: 'branch' }) {
     rows.filter((kr) => isAutomatic(kpiOf(kr.kpi_id)) && !kr.preview && !kr.loading && kr.baseline_mode !== 'manual_authorized')
         .forEach((kr) => consult(kr, { ...scopeBase.value, ...scope }))
 }
 
 function copyStructureTo(g: GestorPlan) {
     g.key_results = cloneKrStructure(branchRows.value)
-    consultPending(g.key_results, { scope_type: 'employee', employee_id: g.employee_id })
     Swal.fire({ toast: true, position: 'top-end', icon: 'success', timer: 2400, showConfirmButton: false, title: 'Estructura copiada', text: 'Solo KPI, descripción y peso. La base y la meta son de cada gestor.' })
 }
 
@@ -217,30 +216,16 @@ watch(step, (s) => {
             if (g.key_results.length === 0) {
                 g.key_results = [newKrRow({ weight: '100' })]
             }
-
-            if (krStructureIsComplete(g.key_results)) {
-                consultPending(g.key_results, { scope_type: 'employee', employee_id: g.employee_id })
-            }
         })
         openGestor.value = gestores.find((g) => !gestorComplete(g))?.client_key ?? gestores[0]?.client_key ?? null
     }
 })
 
-// Al completar la estructura de un gestor, su línea base se consulta sola.
-watch(() => gestores.map((g) => g.key_results.map((kr) => `${kr.kpi_id}:${kr.weight}:${kr.description.length > 0}`).join('|')), () => {
-    if (step.value !== 5) {
-        return
-    }
-
-    gestores.forEach((g) => {
-        if (krStructureIsComplete(g.key_results)) {
-            consultPending(g.key_results, { scope_type: 'employee', employee_id: g.employee_id })
-        }
-    })
-})
+// Regla definitiva (16-oct-2026): la línea base de cada gestor se CAPTURA
+// manualmente en su tarjeta — nunca se consulta en Reportería.
 
 function gestorComplete(g: GestorPlan): boolean {
-    return krStructureIsComplete(g.key_results) && g.key_results.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id)))
+    return krStructureIsComplete(g.key_results) && g.key_results.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id), 'employee'))
 }
 
 const branchGoalsComplete = computed(() => branchRows.value.length > 0 && branchRows.value.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id))))
@@ -325,7 +310,7 @@ function submit(saveIncomplete = false) {
             title: g.title,
             // Borrador incompleto: un gestor sin metas terminadas viaja SIN KR (queda
             // marcado "Configurar KR"); nunca con KR a medias.
-            key_results: gestorComplete(g) ? g.key_results.map((kr) => serializeKr(kr, kpiOf(kr.kpi_id))) : [],
+            key_results: gestorComplete(g) ? g.key_results.map((kr) => serializeKr(kr, kpiOf(kr.kpi_id), 'employee')) : [],
         })),
     })).post('/okr', {
         onSuccess: () => {
@@ -486,7 +471,7 @@ const primaryBranchKr = computed(() => branchRows.value[0] ?? null)
                             <span class="flex size-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><Users class="size-4" /></span>
                             <div>
                                 <p class="text-sm font-bold text-foreground">Metas y Key Results por gestor</p>
-                                <p class="text-[11px] text-muted-foreground">"Consultar" trae la colocación de ESE gestor, nunca la de la sucursal. Las metas son independientes entre sí y de la meta general.</p>
+                                <p class="text-[11px] text-muted-foreground">Captura la línea base de cada gestor (valor inicial desde el cual se medirá su incremento). Las metas son independientes entre sí y de la meta general.</p>
                             </div>
                             <span class="ml-auto rounded-full bg-muted px-2.5 py-1 text-[11px] font-bold tabular-nums">{{ gestores.length - incompleteGestores.length }}/{{ gestores.length }} completos</span>
                         </div>

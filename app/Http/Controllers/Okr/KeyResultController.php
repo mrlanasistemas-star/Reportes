@@ -46,9 +46,10 @@ class KeyResultController extends Controller
             'weight'         => ['required', 'numeric', 'min:0.01', 'max:100'],
         ]);
 
-        $this->assertBaselineAllowed($data);
+        $this->assertBaselineAllowed($data, $objective);
 
-        $objective->keyResults()->create($data);
+        $objective->keyResults()->create($data + ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE
+            ? ['baseline_source' => \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL] : []));
 
         return back()->with('success', 'Key Result agregado.');
     }
@@ -95,7 +96,7 @@ class KeyResultController extends Controller
             if ($error !== null) {
                 $errors["key_results.{$i}.{$error['field']}"] = [$error['message']];
             }
-            if (($kr['baseline_value'] ?? null) === null && !OkrKpi::query()->find($kr['kpi_id'])?->isAutomatic()) {
+            if ($error === null && ($kr['baseline_value'] ?? null) === null && !OkrKpi::query()->find($kr['kpi_id'])?->isAutomatic()) {
                 $errors["key_results.{$i}.baseline_value"] = ['Captura la línea base de este KPI manual.'];
             }
         }
@@ -109,18 +110,21 @@ class KeyResultController extends Controller
                     "Reemplazado al editar las metas del borrador ({$old->kpi->name}).");
                 $old->delete();
             }
+            $isIndividual = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE;
             foreach ($data['key_results'] as $row) {
                 $reason = trim((string) ($row['baseline_manual_reason'] ?? ''));
-                $authorized = ($row['baseline_value'] ?? null) !== null && $reason !== '';
+                $authorized = !$isIndividual && ($row['baseline_value'] ?? null) !== null && $reason !== '';
                 $kr = $objective->keyResults()->create([
                     'kpi_id' => $row['kpi_id'], 'description' => $row['description'],
                     'baseline_value' => $row['baseline_value'] ?? null,
-                    'baseline_source' => $authorized ? 'manual_authorized' : null,
+                    'baseline_source' => $isIndividual ? \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL : ($authorized ? 'manual_authorized' : null),
                     'target_value' => $row['target_value'], 'weight' => $row['weight'],
                 ]);
                 $logger->log('key_result', $kr->id, auth()->id(), 'key_result_completed', 'target_value', null, $kr->target_value,
                     $data['reason'] ?? 'Key Result capturado para completar un OKR que nació sin KR.');
-                if ($authorized) {
+                if ($isIndividual) {
+                    $logger->log('key_result', $kr->id, auth()->id(), 'baseline_manual_individual', 'baseline_value', null, $kr->baseline_value, 'Línea base individual capturada para el gestor.');
+                } elseif ($authorized) {
                     $logger->log('key_result', $kr->id, auth()->id(), 'baseline_manual_authorized', 'baseline_value', null, $kr->baseline_value, $reason);
                 }
             }
@@ -145,9 +149,10 @@ class KeyResultController extends Controller
             'weight'         => ['required', 'numeric', 'min:0.01', 'max:100'],
         ]);
 
-        $this->assertBaselineAllowed($data);
+        $this->assertBaselineAllowed($data, $objective);
 
-        $keyResult->update($data);
+        $keyResult->update($data + ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE
+            ? ['baseline_source' => \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL] : []));
 
         return back()->with('success', 'Key Result actualizado.');
     }
@@ -168,9 +173,21 @@ class KeyResultController extends Controller
         abort_if($objective->lifecycle_status !== OkrObjective::STATUS_DRAFT, 422, 'Solo se pueden modificar Key Results mientras el Objective está en borrador. Usa "editar meta" para un OKR activo.');
     }
 
-    /** KPI automático → baseline_value SIEMPRE null aquí (solo Reportería la fija al activar). */
-    private function assertBaselineAllowed(array $data): void
+    /**
+     * KPI automático de SUCURSAL → baseline_value SIEMPRE null aquí (solo
+     * Reportería la fija al activar). OKR individual (16-oct-2026) → la línea
+     * base es MANUAL y obligatoria.
+     */
+    private function assertBaselineAllowed(array $data, OkrObjective $objective): void
     {
+        if ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE) {
+            if (($data['baseline_value'] ?? null) === null) {
+                throw ValidationException::withMessages(['baseline_value' => 'Captura la línea base del gestor.']);
+            }
+
+            return;
+        }
+
         if (($data['baseline_value'] ?? null) === null) {
             return;
         }

@@ -159,10 +159,87 @@ class OkrPersonnelResolver
         return DB::table('lendus_employee_directory')
             ->where('report_upload_id', $directory['upload_id'])
             ->whereNotNull('normalized_name')
-            ->where('nombre', 'like', '%VACANTE%')
+            ->where(fn ($q) => $q->where('nombre', 'like', '%VACANTE%')
+                ->orWhere('nombre', 'like', 'PLAZA %')
+                ->orWhere('nombre', 'like', '%POR CONTRATAR%')
+                ->orWhere('nombre', 'like', '%SIN ASIGNAR%'))
             ->pluck('normalized_name')
             ->unique()
             ->values()
+            ->all();
+    }
+
+    /**
+     * normalized_name con al menos una fila ACTIVO en el directorio vigente
+     * (16-oct-2026): respalda la vigencia de quien aún no aparece en la nómina
+     * NOI del periodo (alta reciente, vacaciones, incapacidad) — sin NOI no es
+     * una baja confirmada.
+     *
+     * @return string[]
+     */
+    public function activeDirectoryNames(): array
+    {
+        $directory = $this->currentDirectory();
+        if (!$directory) {
+            return [];
+        }
+
+        return DB::table('lendus_employee_directory')
+            ->where('report_upload_id', $directory['upload_id'])
+            ->whereNotNull('normalized_name')
+            ->whereRaw('UPPER(estatus) = ?', ['ACTIVO'])
+            ->pluck('normalized_name')
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Número(s) de empleado Lendus (p. ej. ATLX12513) por persona — de todas
+     * las cargas del directorio: el código es estable aunque cambie el periodo.
+     * Es la llave con la que la cartera identifica al promotor (promoter_code).
+     *
+     * @param  string[]  $normalizedNames
+     * @return array<string, string[]> normalized_name => códigos
+     */
+    public function directoryCodesByName(array $normalizedNames): array
+    {
+        if ($normalizedNames === []) {
+            return [];
+        }
+
+        return DB::table('lendus_employee_directory')
+            ->whereIn('normalized_name', $normalizedNames)
+            ->whereNotNull('codigo')
+            ->where('codigo', '!=', '')
+            ->select('normalized_name', 'codigo')
+            ->distinct()
+            ->get()
+            ->groupBy('normalized_name')
+            ->map(fn ($rows) => $rows->pluck('codigo')->map(fn ($c) => mb_strtoupper(trim((string) $c)))->unique()->values()->all())
+            ->all();
+    }
+
+    /**
+     * Fila del directorio VIGENTE por persona (prefiere la ACTIVA).
+     *
+     * @param  string[]  $normalizedNames
+     * @return array<string, object>
+     */
+    public function currentDirectoryRows(array $normalizedNames): array
+    {
+        $directory = $this->currentDirectory();
+        if (!$directory || $normalizedNames === []) {
+            return [];
+        }
+
+        return DB::table('lendus_employee_directory')
+            ->where('report_upload_id', $directory['upload_id'])
+            ->whereIn('normalized_name', $normalizedNames)
+            ->get(['normalized_name', 'codigo', 'estatus', 'puesto', 'inferred_branch_id', 'inferred_branch_name'])
+            ->sortBy(fn ($r) => mb_strtoupper((string) $r->estatus) === 'ACTIVO' ? 0 : 1)
+            ->unique('normalized_name')
+            ->keyBy('normalized_name')
             ->all();
     }
 

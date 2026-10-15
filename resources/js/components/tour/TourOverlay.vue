@@ -13,7 +13,6 @@ const { currentStep, stepIndex, totalSteps, isFirstStep, isLastStep, activeTourI
 const targetRect = ref<{ top: number; left: number; width: number; height: number } | null>(null)
 const searching = ref(false)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
-let resizeObserver: ResizeObserver | null = null
 
 function locateTarget(): void {
     clearTimeout(searchTimer ?? undefined)
@@ -25,6 +24,7 @@ function locateTarget(): void {
     }
 
     const step = currentStep.value
+
     if (!step) {
         targetRect.value = null
 
@@ -38,6 +38,7 @@ function locateTarget(): void {
     }
 
     const el = document.querySelector(`[data-tour="${step.target}"]`)
+
     if (!el) {
         // Salto automático (requisito explícito): el elemento no existe en esta
         // pantalla/rol — nunca se traba el recorrido esperando algo que no va a aparecer.
@@ -45,6 +46,7 @@ function locateTarget(): void {
             searching.value = true
             searchTimer = setTimeout(() => {
                 searching.value = false
+
                 if (!document.querySelector(`[data-tour="${step.target}"]`)) {
                     next()
                 } else {
@@ -78,13 +80,13 @@ onBeforeUnmount(() => {
     window.removeEventListener('resize', onScrollOrResize)
     window.removeEventListener('scroll', onScrollOrResize, true)
     clearTimeout(searchTimer ?? undefined)
-    resizeObserver?.disconnect()
 })
 
 const ringStyle = computed(() => {
     if (!targetRect.value) {
         return null
     }
+
     const pad = 6
     const r = targetRect.value
 
@@ -101,6 +103,7 @@ const cardStyle = computed(() => {
     if (!targetRect.value) {
         return null
     }
+
     const r = targetRect.value
     const cardWidth = 340
     const spaceBelow = window.innerHeight - (r.top + r.height)

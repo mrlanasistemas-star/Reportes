@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Services\Pdf\BrowsershotPdfRenderer;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -13,6 +15,17 @@ class SystemGuideController extends Controller
     public function index(): Response
     {
         return Inertia::render('SystemGuide/Index');
+    }
+
+    /** La bienvenida al recorrido se muestra UNA vez por usuario (16-oct-2026). */
+    public function markWelcomeSeen(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if ($user->tour_welcome_seen_at === null) {
+            $user->forceFill(['tour_welcome_seen_at' => now()])->save();
+        }
+
+        return response()->json(['seen' => true]);
     }
 
     public function pdf(BrowsershotPdfRenderer $renderer): StreamedResponse

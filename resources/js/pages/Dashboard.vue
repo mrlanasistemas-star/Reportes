@@ -6,7 +6,6 @@ import {
     Banknote,
     Building2,
     CalendarRange,
-    Download,
     FileSpreadsheet,
     FileText,
     FolderOpen,
@@ -135,9 +134,11 @@ async function loadPeriod(periodId: number, branchId: number | null) {
 
     try {
         const params = new URLSearchParams({ period_id: String(periodId) })
+
         if (branchId) {
             params.set('branch_id', String(branchId))
         }
+
         const resp = await fetch(`/dashboard-data?${params.toString()}`, {
             signal: myController.signal,
             cache: 'no-store',
@@ -187,11 +188,13 @@ watch(selectedBranchId, reload)
 // exportación nuevo, así que el documento SIEMPRE coincide con lo que se ve aquí.
 const exportUrls = computed(() => {
     const periodId = kpis.value?.period_id
+
     if (!periodId) {
         return null
     }
 
     const branchId = selectedBranchId.value ? Number(selectedBranchId.value) : null
+
     if (!branchId) {
         return {
             excel: `/reportes-mensuales/${periodId}/radiografia.xlsx`,

@@ -88,8 +88,22 @@ class ObjectiveController extends Controller
         }
 
         $employees = $resolver->employeesForBranch($branchId, $request->string('search')->toString());
-        $positions = $personnel->positionsFor($employees->pluck('id')->all());
-        $employees = $employees->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name, 'position' => $positions[$e->id] ?? null])->values();
+        $ids = $employees->pluck('id')->all();
+        $positions = $personnel->positionsFor($ids);
+        // 16-oct-2026: ruta y fuente de pertenencia vigente + señales (sin NOI,
+        // sin actividad) — visibles, nunca convertidas en baja.
+        $memberships = $resolver->membershipMap($ids);
+        $flags = $resolver->statusFlags($ids);
+        $normById = Employee::query()->whereIn('id', $ids)->pluck('normalized_name', 'id');
+        $codes = $personnel->directoryCodesByName($normById->filter()->values()->all());
+        $employees = $employees->map(fn ($e) => [
+            'id' => $e->id, 'full_name' => $e->full_name, 'position' => $positions[$e->id] ?? null,
+            'employee_code' => ($codes[$normById[$e->id] ?? ''] ?? [null])[0],
+            'route' => $memberships[$e->id]['route'] ?? null,
+            'branch_name' => $memberships[$e->id]['branch_name'] ?? null,
+            'membership_source' => $memberships[$e->id]['source_label'] ?? null,
+            'flags' => $flags[$e->id] ?? [],
+        ])->values();
 
         // Nunca cacheable (Parte C4 del cierre, 17-sep-2026) — resultado sensible
         // a búsqueda/sucursal, un cache compartido/proxy podría servir la lista de
@@ -178,18 +192,15 @@ class ObjectiveController extends Controller
 
         $kpi = OkrKpi::query()->findOrFail($data['kpi_id']);
 
-        // Corrección 14-oct-2026: la consulta por GESTOR exige un colaborador
-        // vigente que pertenezca a esa sucursal — nunca se consulta (ni se
-        // sugiere) la base de un gestor dado de baja o de otra sucursal, y
-        // jamás se responde con la base de la sucursal como sustituto.
+        // Regla definitiva (16-oct-2026): la línea base de un OKR INDIVIDUAL se
+        // captura manualmente — nunca se consulta en Reportería ni se sustituye
+        // por la de la sucursal. Se responde sin consultar y sin bloquear.
         if ($data['scope_type'] === OkrObjective::SCOPE_EMPLOYEE) {
-            $employeeResolver = app(OkrEmployeeBranchResolver::class);
-            $employeeId = (int) ($data['employee_id'] ?? 0);
-            abort_if($employeeId === 0, 422, 'Indica el colaborador para consultar su línea base individual.');
-            abort_unless($employeeResolver->employeeIsActive($employeeId), 422, 'Ese colaborador no está activo en la nómina vigente.');
-            if (!empty($data['branch_id'])) {
-                abort_unless($employeeResolver->employeeBelongsToBranch($employeeId, (int) $data['branch_id']), 422, 'Ese colaborador no pertenece a la sucursal seleccionada.');
-            }
+            return response()->json([
+                'available' => false, 'value' => null, 'period' => null, 'source' => 'manual_individual',
+                'scope_type' => $data['scope_type'], 'manual_required' => true,
+                'message' => 'Captura la línea base del gestor.',
+            ], 200, self::NO_STORE_HEADERS);
         }
 
         if (!$kpi->isAutomatic()) {
@@ -287,20 +298,25 @@ class ObjectiveController extends Controller
      */
     private function createKeyResults(OkrObjective $objective, array $keyResults, OkrAuditLogger $logger): void
     {
+        $isIndividual = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE;
+
         foreach ($keyResults as $krData) {
             $reason = trim((string) ($krData['baseline_manual_reason'] ?? ''));
-            $isAuthorizedManual = ($krData['baseline_value'] ?? null) !== null && $reason !== '';
+            $isAuthorizedManual = !$isIndividual && ($krData['baseline_value'] ?? null) !== null && $reason !== '';
 
             $kr = $objective->keyResults()->create([
                 'kpi_id'          => $krData['kpi_id'],
                 'description'     => $krData['description'],
                 'baseline_value'  => $krData['baseline_value'] ?? null,
-                'baseline_source' => $isAuthorizedManual ? 'manual_authorized' : null,
+                // OKR individual (16-oct-2026): línea base MANUAL del gestor, siempre.
+                'baseline_source' => $isIndividual ? \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL : ($isAuthorizedManual ? 'manual_authorized' : null),
                 'target_value'    => $krData['target_value'],
                 'weight'          => $krData['weight'],
             ]);
 
-            if ($isAuthorizedManual) {
+            if ($isIndividual) {
+                $logger->log('key_result', $kr->id, auth()->id(), 'baseline_manual_individual', 'baseline_value', null, $kr->baseline_value, 'Línea base individual capturada para el gestor.');
+            } elseif ($isAuthorizedManual) {
                 $logger->log('key_result', $kr->id, auth()->id(), 'baseline_manual_authorized', 'baseline_value', null, $kr->baseline_value, $reason);
             }
         }
@@ -545,7 +561,7 @@ class ObjectiveController extends Controller
             'canUploadEvidence' => auth()->user()?->can('uploadEvidence', $objective) ?? false,
             // Filtro "Seguimiento" (docs/imagenesOKR/9.png) — cambiar de
             // sucursal/colaborador/OKR/periodo sin volver al Dashboard.
-            'filterBranches' => Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']),
+            'filterBranches' => $this->filterBranches(),
             'filterPeriods'  => Period::query()->where('type', 'monthly')->orderByDesc('id')->limit(24)->get()->map(fn ($p) => ['id' => $p->id, 'label' => $p->label]),
             // Para el selector "Responsable" del check-in (acción correctiva).
             'users' => User::query()->orderBy('name')->get(['id', 'name']),

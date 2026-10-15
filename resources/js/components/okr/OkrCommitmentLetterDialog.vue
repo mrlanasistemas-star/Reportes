@@ -52,12 +52,14 @@ async function loadReview() {
     }
 
     loading.value = false
+
     if (!res.ok) {
         review.value = null
         loadError.value = res.message
 
         return
     }
+
     review.value = res.data
 }
 
@@ -235,7 +237,7 @@ async function voidLetter(letter: any) {
                     <div class="mt-2 space-y-1.5">
                         <div v-for="(kr, i) in snap.key_results" :key="i" class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5 text-xs">
                             <span class="font-semibold text-foreground">{{ kr.kpi_name }} <span class="font-normal text-muted-foreground">· {{ kr.description }} · {{ kr.weight }}%</span></span>
-                            <span class="tabular-nums text-muted-foreground">Base {{ kr.baseline_value === null ? 'se congela al activar' : formatByUnit(kr.baseline_value, kr.unit) }} → <strong class="text-primary">Meta {{ formatByUnit(kr.target_value, kr.unit) }}</strong></span>
+                            <span class="tabular-nums text-muted-foreground">{{ kr.baseline_label ?? 'Base' }} {{ kr.baseline_value === null ? 'se congela al activar' : formatByUnit(kr.baseline_value, kr.unit) }}<template v-if="kr.increment_value !== null && kr.increment_value !== undefined"> · Incremento {{ formatByUnit(kr.increment_value, kr.unit) }}</template> → <strong class="text-primary">Meta {{ formatByUnit(kr.target_value, kr.unit) }}</strong></span>
                         </div>
                         <p v-if="!snap.key_results.length" class="text-xs text-amber-700 dark:text-amber-300">Este OKR no tiene Key Results configurados.</p>
                     </div>

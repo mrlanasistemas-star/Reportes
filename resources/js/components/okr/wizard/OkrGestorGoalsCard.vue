@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // Paso "Metas y KR por gestor" (15-oct-2026): UN gestor con SUS propios Key
-// Results, SU línea base (consultada para ESE gestor), SU incremento y SU
+// Results, SU línea base (capturada manualmente para ESE gestor), SU incremento y SU
 // meta. Copiar la estructura del KR general es opcional y visible, y nunca
 // copia importes ni líneas base.
-import { AlertTriangle, CheckCircle2, ChevronDown, Copy, Loader2 } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, ChevronDown, Copy } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { Button } from '@/components/ui/button'
 import OkrGoalsTable from './OkrGoalsTable.vue'
@@ -27,8 +27,7 @@ function kpiOf(id: number | null) {
 }
 
 const structureOk = computed(() => krStructureIsComplete(gestor.value.key_results))
-const goalsOk = computed(() => structureOk.value && gestor.value.key_results.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id))))
-const loading = computed(() => gestor.value.key_results.some((kr) => kr.loading))
+const goalsOk = computed(() => structureOk.value && gestor.value.key_results.every((kr) => krGoalIsComplete(kr, kpiOf(kr.kpi_id), 'employee')))
 const missing = computed(() => {
     if (!gestor.value.key_results.length) {
         return 'Sin Key Results'
@@ -38,7 +37,7 @@ const missing = computed(() => {
         return `KPI/descripción o pesos incompletos (${totalWeight(gestor.value.key_results)}%)`
     }
 
-    return goalsOk.value ? null : 'Falta línea base o meta'
+    return goalsOk.value ? null : 'Captura su línea base y su meta'
 })
 </script>
 
@@ -50,7 +49,6 @@ const missing = computed(() => {
                 <p class="truncate text-sm font-bold text-foreground">Gestor {{ index + 1 }} — {{ gestor.employee_name }}</p>
                 <p class="truncate text-[11px] text-muted-foreground">{{ gestor.position ?? 'Puesto no registrado' }} · {{ branchName }}</p>
             </div>
-            <Loader2 v-if="loading" class="size-4 animate-spin text-primary" />
             <span v-if="goalsOk" class="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300"><CheckCircle2 class="size-3.5" /> Completo</span>
             <span v-else class="flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-1 text-[10px] font-bold text-amber-700 dark:text-amber-300"><AlertTriangle class="size-3.5" /> {{ missing }}</span>
             <ChevronDown class="size-4 text-muted-foreground transition" :class="open ? 'rotate-180' : ''" />

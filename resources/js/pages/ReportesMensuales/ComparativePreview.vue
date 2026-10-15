@@ -2,10 +2,10 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ComparativeHero from '@/components/comparative/ComparativeHero.vue'
 import ComparativeKpiCard from '@/components/comparative/ComparativeKpiCard.vue'
+import ComparativeLoadingPanel from '@/components/comparative/ComparativeLoadingPanel.vue'
 import ComparativeSelectors from '@/components/comparative/ComparativeSelectors.vue'
 import ComparativeTable from '@/components/comparative/ComparativeTable.vue'
 import ChartCard from '@/components/radiography/ChartCard.vue'
-import { Skeleton } from '@/components/ui/skeleton'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { columnOptions, percentColumnOptions, donutOptions, radialBarOptions, chartColors } from '@/lib/chart-theme'
 import { HEADLINE_METRICS, CHART_CURRENCY_METRICS, CHART_PERCENT_METRICS, toneFor } from '@/lib/comparative-metrics'
@@ -298,12 +298,10 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
             {{ error }}
         </div>
 
-        <div v-if="loading && !data" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Skeleton v-for="i in 8" :key="i" class="h-32 rounded-2xl" />
-        </div>
+        <ComparativeLoadingPanel v-if="loading && !data" :label-a="labelA" :label-b="labelB" />
 
         <template v-else-if="data">
-            <p v-if="loading" class="text-xs font-bold text-indigo-600">Actualizando comparativo…</p>
+            <p v-if="loading" class="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300"><span class="size-2 animate-ping rounded-full bg-indigo-500" /> Actualizando comparativo… la primera consulta de un periodo puede tardar unos segundos.</p>
 
             <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <ComparativeKpiCard v-for="row in headlineRows" :key="row.label"
