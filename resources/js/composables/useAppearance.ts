@@ -53,7 +53,20 @@ const getStoredAppearance = () => {
         return null;
     }
 
-    return localStorage.getItem('appearance') as Appearance | null;
+    // Preferencia guardada: localStorage y, si se borró, la cookie que usa el
+    // servidor para pintar la primera carga — así nunca se contradicen (antes,
+    // sin localStorage, la página volvía a claro aunque la cookie dijera oscuro).
+    let stored: string | null = null;
+
+    try {
+        stored = localStorage.getItem('appearance');
+    } catch {
+        stored = null;
+    }
+
+    stored ??= document.cookie.match(/(?:^|; )appearance=(light|dark|system)/)?.[1] ?? null;
+
+    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : null;
 };
 
 const prefersDark = (): boolean => {
@@ -90,9 +103,7 @@ const appearance = ref<Appearance>('light');
 
 export function useAppearance(): UseAppearanceReturn {
     onMounted(() => {
-        const savedAppearance = localStorage.getItem(
-            'appearance',
-        ) as Appearance | null;
+        const savedAppearance = getStoredAppearance();
 
         if (savedAppearance) {
             appearance.value = savedAppearance;

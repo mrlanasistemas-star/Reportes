@@ -154,7 +154,7 @@ class RadiographyChartSvgBuilder
 
     private function formatMoney(float $value): string
     {
-        return '$' . number_format($value, 0);
+        return (round($value) < 0 ? '-' : '') . '$' . number_format(abs($value), 0); // -$1,234 (nunca $-1,234)
     }
 
     private function esc(string $value): string

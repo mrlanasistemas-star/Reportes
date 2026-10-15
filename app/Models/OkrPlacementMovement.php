@@ -9,6 +9,7 @@ class OkrPlacementMovement extends Model
 {
     protected $fillable = [
         'okr_placement_upload_id', 'employee_id', 'employee_name_raw',
+        'attribution_status', 'attribution_method', 'attribution_note',
         'amount', 'operation_date', 'fingerprint', 'raw_payload',
     ];
 

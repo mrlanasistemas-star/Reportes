@@ -46,7 +46,7 @@ class RoleModuleAccessController extends Controller
         foreach (ActionPermissionService::CONFIGURABLE_ROLES as $role) {
             $rules["actions.{$role}"] = ['present', 'array'];
             foreach (ActionPermissionService::ACTIONS as $module => $moduleActions) {
-                $rules["actions.{$role}.{$module}"] = ['present', 'array'];
+                $rules["actions.{$role}.{$module}"] = ['sometimes', 'array'];
                 $rules["actions.{$role}.{$module}.*"] = ['string', Rule::in(array_keys($moduleActions))];
             }
         }

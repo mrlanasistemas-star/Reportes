@@ -33,7 +33,7 @@ $letterDate = $snapshot['letter_date'] ?? null;
   .wr-red { color: #9b1c1c; }
   table.data.wr th { background: #1f4e5f; }
   .wr-box { background: #f6f8fb; border: .8pt solid #d6dde7; padding: 7pt 10pt; font-weight: 600; color: #0f2a3d; font-size: 9.8pt; line-height: 1.4; }
-  ol.wr-list { margin: 4pt 0 0 14pt; }
+  ol.wr-list { margin: 4pt 0 0 14pt; break-inside: avoid; }
   ol.wr-list li { margin-top: 3pt; text-align: justify; padding-left: 2pt; }
   .gap-positive { color: #9b1c1c; }
 @endpush
@@ -47,7 +47,9 @@ $letterDate = $snapshot['letter_date'] ?? null;
     <div><div class="label">FOLIO:</div>{!! $field($folio) !!}</div>
     <div><div class="label">FECHA:</div>{!! $field(Fmt::dateShort($generatedAt?->toDateString())) !!}</div>
     <div><div class="label">COLABORADOR:</div>{!! $field($collaborator) !!}</div>
+    <div><div class="label">NÚMERO DE EMPLEADO:</div>{!! $field($snapshot['employee_code'] ?? null) !!}</div>
     <div><div class="label">PUESTO:</div>{!! $field($snapshot['position'] ?? null) !!}</div>
+    <div><div class="label">JEFE INMEDIATO:</div>{!! $field($boss) !!}</div>
     <div><div class="label">SUCURSAL / ÁREA:</div>{!! $field($snapshot['branch_name'] ?? null) !!}</div>
     <div><div class="label">PERIODO EVALUADO:</div>{!! $field('Semana ' . ($snapshot['week_number'] ?? '') . ' · del ' . Fmt::dateShort($snapshot['week_start'] ?? null) . ' al ' . Fmt::dateShort($snapshot['week_end'] ?? null)) !!}</div>
   </div>
@@ -94,11 +96,13 @@ $letterDate = $snapshot['letter_date'] ?? null;
     </ol>
   </div>
 
-  <div class="section keep">
-    <div class="label">ACCIONES CORRECTIVAS ACORDADAS:</div>
+  {{-- Sin .keep (15-oct-2026): con acciones/observaciones largas el bloque
+       completo saltaba de página y dejaba media hoja en blanco. --}}
+  <div class="section">
+    <div class="label keep-next">ACCIONES CORRECTIVAS ACORDADAS:</div>
     <div class="wr-box" style="font-weight: 500; white-space: pre-line;">{{ $correctiveActions }}</div>
     @if(!empty($observations))
-      <div class="label" style="margin-top: 6pt;">OBSERVACIONES DE LA EMPRESA:</div>
+      <div class="label keep-next" style="margin-top: 6pt;">OBSERVACIONES DE LA EMPRESA:</div>
       <div class="wr-box" style="font-weight: 500; white-space: pre-line;">{{ $observations }}</div>
     @endif
   </div>
@@ -111,10 +115,10 @@ $letterDate = $snapshot['letter_date'] ?? null;
       <div class="label" style="font-size: 9.6pt;">OBSERVACIONES DEL COLABORADOR</div>
       <div class="ruled"></div><div class="ruled"></div><div class="ruled"></div>
     </div>
-    <div class="signatures">
-      <div><div class="line"><div class="role">Colaborador</div><div class="name">{{ $collaborator }}</div><div class="hint">Nombre y firma</div></div></div>
-      <div><div class="line"><div class="role">Jefe inmediato</div><div class="name">{{ $boss }}</div><div class="hint">Nombre y firma</div></div></div>
-      <div><div class="line"><div class="role">RH / Testigo (opcional)</div><div class="name"></div><div class="hint">Nombre y firma</div></div></div>
-    </div>
+    @include('reports.partials.okr-signatures', ['signers' => [
+      ['role' => 'Colaborador', 'name' => $collaborator],
+      ['role' => 'Jefe inmediato', 'name' => $boss],
+      ['role' => 'RH / Testigo (opcional)', 'name' => null],
+    ]])
   </div>
 @endsection

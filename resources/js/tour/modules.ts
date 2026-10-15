@@ -54,7 +54,7 @@ export const GUIDE_MODULES: GuideModule[] = [
     {
         id: 'usuarios', tourId: 'usuarios', label: 'Usuarios y accesos', icon: ShieldCheck, tone: 'from-slate-600 to-slate-800',
         description: 'Usuarios, roles y permisos por módulo y acción.',
-        paths: ['/okr/responsibles'], topics: ['Roles', 'Permisos', 'Correo de bienvenida'],
+        paths: ['/usuarios', '/roles'], topics: ['Roles', 'Permisos', 'Correo de bienvenida'],
     },
     {
         id: 'okr', tourId: 'okr', label: 'OKR', icon: Target, tone: 'from-violet-500 to-purple-700',

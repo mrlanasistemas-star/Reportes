@@ -38,7 +38,10 @@ beforeEach(function () {
 
 it('reports the SAME hires/leavers count as period_employee_rosters — never its own raw employee_id diff', function () {
     $expectedHires  = DB::table('period_employee_rosters')->where('period_id', $this->period->id)->where('movement_type', 'alta')->count();
-    $expectedLeavers = DB::table('period_employee_rosters')->where('period_id', $this->period->id)->where('movement_type', 'baja')->count();
+    // 18-oct-2026: "Bajas" = SOLO bajas confirmadas con evidencia; las ausencias sin
+    // confirmar (incluidas filas antiguas sin clasificar) van a pendientes de conciliación.
+    $expectedLeavers = DB::table('period_employee_rosters')->where('period_id', $this->period->id)
+        ->where('movement_type', 'baja')->where('reconciliation_status', 'baja_confirmada')->count();
     $expectedPlantilla = DB::table('period_employee_rosters')->where('period_id', $this->period->id)->where('is_active_for_period', true)->count();
 
     $response = $this->actingAs($this->user)->get(route('asignaciones-empleado-sucursal.index', ['period_id' => $this->period->id]));

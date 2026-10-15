@@ -37,20 +37,24 @@ $alcance = collect([
 <meta charset="utf-8">
 <title>Efectividad de Cobranza — {{ $r['titulo'] }}</title>
 <style>
+    {{-- Montserrat local embebida (15-oct-2026): misma tipografía que la macro de
+         Efectividad y que los documentos OKR; antes "Segoe UI", que no existe en el
+         VPS Linux (el PDF salía con otra fuente según el servidor). --}}
+    @include('reports.partials.montserrat-font-face')
     * { box-sizing: border-box; }
     @page { size: A4 landscape; }
     html, body { margin: 0; padding: 0; }
-    body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; color: #0f172a; font-size: 8.4pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { font-family: 'Montserrat', "Segoe UI", Helvetica, Arial, sans-serif; color: #0f172a; font-size: 8.4pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .page { padding: {{ $imagen ? '28px 32px' : '0' }}; background: #fff; {{ $imagen ? 'width: 1400px;' : '' }} }
-    .brand { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #0f766e; padding-bottom: 10px; margin-bottom: 12px; }
+    .brand { display: flex; gap: 18px; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #0f766e; padding-bottom: 10px; margin-bottom: 12px; }
     .brand .co { font-size: 9pt; font-weight: 700; letter-spacing: .14em; color: #0f766e; }
     .brand h1 { margin: 2px 0 0; font-size: 17pt; font-weight: 700; }
     .brand .sub { color: #475569; font-size: 9pt; margin-top: 2px; }
-    .brand .meta { text-align: right; font-size: 8pt; color: #475569; line-height: 1.55; }
+    .brand .meta { text-align: right; font-size: 8pt; color: #475569; line-height: 1.55; white-space: nowrap; flex-shrink: 0; }
     .brand .meta b { color: #0f172a; }
     .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 12px; }
     .kpi { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; background: #f8fafc; }
-    .kpi .l { font-size: 7pt; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
+    .kpi .l { font-size: 6.6pt; text-transform: uppercase; letter-spacing: .03em; color: #64748b; white-space: nowrap; }
     .kpi .v { font-size: 12pt; font-weight: 700; margin-top: 2px; white-space: nowrap; }
     .kpi.ok .v { color: #047857; } .kpi.warn .v { color: #b45309; } .kpi.bad .v { color: #b91c1c; }
     /* Columnas con ancho automático: los importes nunca se recortan; el nombre del
@@ -197,6 +201,11 @@ $alcance = collect([
     </div>
     @endif
 </div>
-<script>window.__PDF_READY__ = true;</script>
+<script>
+  // Lista para imprimir cuando la tipografía embebida ya cargó (máx. 4 s).
+  window.__PDF_READY__ = false;
+  (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(function () { window.__PDF_READY__ = true; });
+  setTimeout(function () { window.__PDF_READY__ = true; }, 4000);
+</script>
 </body>
 </html>

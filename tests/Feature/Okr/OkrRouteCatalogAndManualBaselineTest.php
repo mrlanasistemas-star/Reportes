@@ -41,7 +41,7 @@ function rcRoster(Period $period, Employee $e, Branch $b, bool $active = true): 
 {
     PeriodEmployeeRoster::query()->create([
         'period_id' => $period->id, 'employee_id' => $e->id, 'employee_key' => 'k' . $e->id . $period->id, 'nombre_normalizado' => $e->normalized_name,
-        'branch_id' => $b->id, 'branch_name' => $b->name, 'is_active_for_period' => $active, 'movement_type' => $active ? 'activo' : 'baja',
+        'branch_id' => $b->id, 'branch_name' => $b->name, 'is_active_for_period' => $active, 'movement_type' => $active ? 'activo' : 'baja', 'reconciliation_status' => $active ? null : 'baja_confirmada', // 18-oct-2026: fila 'baja' = baja CONFIRMADA
     ]);
 }
 
@@ -197,10 +197,13 @@ it('reports the exact missing field when an individual OKR has no manual baselin
 
     $check = $this->actingAs($admin)->getJson(route('okr.activation-check', $okr))->assertOk()->json('objective');
     expect($check['ready'])->toBeFalse()
-        ->and(implode(' ', $check['issues']))->toContain('captura la línea base del gestor')
-        ->and(implode(' ', $check['issues']))->not->toContain('automática');
+        ->and(implode(' ', $check['issues']))->toContain('Falta capturar la línea base de David Gamboa Cano')
+        ->and(implode(' ', $check['issues']))->not->toContain('automática')
+        ->and($check['items'][0]['action'])->toBe('configure_kr')
+        ->and($check['items'][0]['action_label'])->toBe('Completar línea base');
 
-    $this->actingAs($admin)->post(route('okr.activate', $okr))->assertSessionHasErrors('activate');
+    $this->actingAs($admin)->post(route('okr.activate', $okr))
+        ->assertSessionHasErrors(['activate' => "No puedes activar el OKR de David Gamboa Cano porque falta capturar su línea base en «{$kpi->name}».", 'activate_action' => 'configure_kr']);
     expect($okr->fresh()->lifecycle_status)->toBe(OkrObjective::STATUS_DRAFT);
 });
 

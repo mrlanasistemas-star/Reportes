@@ -11,10 +11,25 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { okrRequest } from '@/lib/okrHttp'
 
-type Readiness = { id: number; label: string; scope: string; status: string; ready: boolean; issues: string[]; notes: string[] }
+type ReadinessItem = { message: string; action: string | null; action_label: string | null }
+type Readiness = { id: number; label: string; scope: string; status: string; ready: boolean; issues: string[]; items?: ReadinessItem[]; notes: string[] }
 
 const props = defineProps<{ objectiveId: number }>()
 const emit = defineEmits<{ configure: [objectiveId: number] }>()
+
+// Acciones que resuelven un pendiente: Key Results/línea base/meta se configuran en el
+// mismo OKR; vigencia o sucursal se concilian en Colaboradores.
+function runAction(objectiveId: number, action: string | null) {
+    if (action === 'configure_kr') {
+        emit('configure', objectiveId)
+    } else if (action === 'employees' || action === 'reconcile_branch') {
+        router.visit('/asignaciones-empleado-sucursal')
+    }
+}
+
+function itemsOf(item: Readiness): ReadinessItem[] {
+    return item.items ?? item.issues.map((message) => ({ message, action: null, action_label: null }))
+}
 const open = defineModel<boolean>('open', { default: false })
 
 const loading = ref(false)
@@ -53,7 +68,21 @@ function activate(includeChildren: boolean) {
             open.value = false
         },
         onError: (errors) => {
-            Swal.fire({ icon: 'error', title: 'No se pudo activar', text: String(Object.values(errors)[0] ?? 'Revisa los datos del OKR.') })
+            const action = errors.activate_action ?? null
+            const message = errors.activate ?? Object.values(errors)[0]
+            Swal.fire({
+                icon: 'warning',
+                title: 'El OKR sigue en borrador',
+                text: String(message ?? 'Revisa los pendientes indicados en esta ventana.'),
+                showCancelButton: !!action,
+                confirmButtonText: errors.activate_action_label ?? 'Entendido',
+                cancelButtonText: 'Cerrar',
+            }).then((r) => {
+                if (r.isConfirmed && action) {
+                    runAction(props.objectiveId, action)
+                }
+            })
+            load()
         },
         onFinish: () => {
             submitting.value = null
@@ -86,13 +115,15 @@ function activate(includeChildren: boolean) {
                         </p>
                         <span class="text-[11px] font-bold" :class="item.ready ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">{{ item.ready ? 'Listo' : (item.status === 'draft' ? 'Pendiente' : 'No aplica') }}</span>
                     </div>
-                    <ul v-if="item.issues.length" class="mt-1.5 space-y-0.5 pl-6 text-xs text-amber-800 dark:text-amber-200">
-                        <li v-for="issue in item.issues" :key="issue" class="list-disc">{{ issue }}</li>
+                    <ul v-if="item.issues.length" class="mt-1.5 space-y-1 pl-6 text-xs text-amber-800 dark:text-amber-200">
+                        <li v-for="issue in itemsOf(item)" :key="issue.message" class="list-disc">
+                            {{ issue.message }}
+                            <button v-if="issue.action" type="button" class="ml-1 font-bold text-primary hover:underline" @click="runAction(item.id, issue.action)">{{ issue.action_label }} →</button>
+                        </li>
                     </ul>
                     <ul v-if="item.notes.length" class="mt-1 space-y-0.5 pl-6 text-[11px] text-muted-foreground">
                         <li v-for="note in item.notes" :key="note" class="list-disc">{{ note }}</li>
                     </ul>
-                    <button v-if="!item.ready && item.issues.some((i) => i.includes('Key Results'))" type="button" class="mt-2 text-xs font-bold text-primary hover:underline" @click="emit('configure', item.id)">Configurar Key Results →</button>
                 </div>
 
                 <p v-if="pendingChildren.length" class="flex items-start gap-2 rounded-xl bg-muted/40 p-3 text-xs text-muted-foreground">

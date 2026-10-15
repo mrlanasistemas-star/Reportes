@@ -102,7 +102,8 @@ function status(w: any): { label: string; class: string } {
                                         <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-[9px] font-bold text-white" :class="r.attributed ? avatarTone(r.employee_id) : 'from-slate-400 to-slate-500'">{{ initialsOf(r.name) }}</span>
                                         <div class="min-w-0 flex-1">
                                             <p class="truncate font-semibold text-foreground">{{ r.name }}</p>
-                                            <p class="text-[10px] text-muted-foreground">{{ r.movements }} mov.<template v-if="r.duplicates"> · {{ r.duplicates }} repetido(s) excluidos</template><template v-if="r.child_objective_id"> · con OKR individual</template><template v-if="!r.attributed"> · sin atribución</template></p>
+                                            <p class="text-[10px] text-muted-foreground">{{ r.movements }} mov.<template v-if="r.duplicates"> · {{ r.duplicates }} repetido(s) excluidos</template><template v-if="r.child_objective_id"> · con OKR individual</template><template v-if="!r.attributed"> · pendiente de atribución (no suma a ningún gestor)</template></p>
+                                            <p v-if="r.pending_reason" class="text-[10px] text-amber-700 dark:text-amber-300" :title="r.pending_reason">{{ r.pending_reason }}</p>
                                         </div>
                                         <span class="font-bold tabular-nums">{{ formatCurrency(r.amount) }}</span>
                                     </div>

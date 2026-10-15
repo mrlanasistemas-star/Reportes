@@ -144,12 +144,12 @@ export const TOURS: Record<string, TourDefinition> = {
             {
                 href: '/efectividad-cobranza',
                 title: 'Efectividad de cobranza',
-                body: 'Sube el archivo de cobranza de Lendus del periodo y el sistema calcula la efectividad por ruta y por gestor.',
+                body: 'Sube las carteras diarias (Saldos por Cliente) y el Ingresos Cobranza de Lendus; el sistema calcula la efectividad por ruta y por gestor en modo diario, acumulado, semanal o mensual. Los archivos no se guardan: el cálculo es temporal.',
                 example: 'Ejemplo: una ruta que cobró $90 de $100 esperados tiene 90% de efectividad.',
             },
             {
                 title: 'Resultados',
-                body: 'Revisa el detalle por ruta y gestor y descárgalo en Excel. Solo se consideran las rutas con cartera sana del periodo.',
+                body: 'Revisa el detalle por ruta y gestor y descárgalo como imagen PNG o PDF. Solo se consideran las rutas con cartera sana del periodo. El pago puntual de la cuota vigente cuenta como sano aunque el cliente tenga atrasos anteriores.',
             },
         ],
     },
@@ -158,14 +158,19 @@ export const TOURS: Record<string, TourDefinition> = {
         label: 'Usuarios y accesos',
         steps: [
             {
-                href: '/okr/responsibles',
-                title: 'Usuarios y accesos',
-                body: 'Administra quién puede entrar al sistema, qué rol tiene (Administrador, Gerencial o Colaborador) y a qué módulos puede acceder.',
+                href: '/usuarios',
+                title: 'Usuarios',
+                body: 'Aquí administras quién puede entrar: su rol (de sistema o personalizado), el estado de su acceso (habilitado, pendiente de activación o bloqueado), su invitación y su último acceso. Activar o bloquear un acceso nunca cambia la situación laboral del colaborador.',
             },
             {
                 target: 'usuarios-add',
-                title: 'Agregar usuario',
-                body: 'Crea un nuevo usuario con contraseña automática o manual. Se le envía un correo con un enlace propio para entrar la primera vez.',
+                title: 'Nuevo usuario',
+                body: 'Elige el rol y cómo obtiene su contraseña: invitación por correo para que la establezca, contraseña generada (la verás una sola vez) o escrita por ti con confirmación.',
+            },
+            {
+                href: '/roles',
+                title: 'Roles y permisos',
+                body: 'Es un módulo aparte. Crea roles personalizados en 3 pasos (nombre, módulos y acciones), revisa la matriz Ver/Crear/Editar/Eliminar/Exportar/Autorizar de cada rol y quién lo tiene asignado.',
             },
         ],
     },

@@ -65,8 +65,17 @@ class DashboardTrendService
         });
     }
 
+    /**
+     * La clave incluye la versión (updated_at) del resumen de cada periodo: si un
+     * periodo se regenera o invalida, la tendencia se recalcula al instante en vez
+     * de mostrar cifras anteriores hasta que venza el TTL.
+     */
     private function cacheKey($periods): string
     {
-        return 'dashboard_trend_' . $periods->take(self::PERIODS_COUNT)->pluck('id')->implode('_');
+        $ids = $periods->take(self::PERIODS_COUNT)->pluck('id');
+        $versions = PeriodSummary::query()->whereIn('period_id', $ids)->orderBy('period_id')
+            ->get(['period_id', 'updated_at'])->map(fn ($s) => $s->period_id . '@' . ($s->updated_at?->timestamp ?? 0))->implode(',');
+
+        return 'dashboard_trend_' . $ids->implode('_') . '_' . md5($versions);
     }
 }

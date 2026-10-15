@@ -151,7 +151,7 @@ it('15-oct — never allows a Warning for a week that is still OPEN, even with d
 
     $check = $this->actingAs($admin)->getJson(route('okr.warnings.eligibility', $objective) . '?week=4')->assertOk()->json('weeks.0');
     expect($check['status'])->toBe('pending');
-    expect(implode(' ', $check['blockers']))->toContain('sigue abierta');
+    expect(implode(' ', $check['blockers']))->toContain('La semana todavía no termina. Podrás evaluar su cumplimiento después del cierre.');
 
     $this->actingAs($admin)->postJson(route('okr.warnings.store', $objective), [
         'week_number' => 4, 'corrective_actions' => 'Intento prematuro.', 'authorized' => true,

@@ -11,6 +11,12 @@ use Illuminate\Support\Facades\DB;
  * las 13 sucursales operativas — igual que Cartera/Colocación/OPEX.
  * Índice de rotación = bajas / plantilla actual * 100 (misma fórmula que el
  * reporte manual anterior).
+ *
+ * 18-oct-2026: "bajas" son SOLO bajas confirmadas (movement_type='baja', que
+ * PeriodEmployeeRosterService reserva para evidencia: directorio INACTIVO,
+ * finiquito o conciliación autorizada). Las ausencias sin confirmar
+ * (movement_type='ausencia') se reportan aparte como pendientes de conciliación
+ * y nunca entran al índice.
  */
 class RotacionDerivedFromNoiService
 {
@@ -32,6 +38,7 @@ class RotacionDerivedFromNoiService
             ->get(['branch_id', 'branch_name', 'is_active_for_period', 'movement_type']);
 
         $byBranch = [];
+        $bajasPendientes = 0;
         foreach ($rows as $row) {
             $branchId = (int) $row->branch_id;
             $byBranch[$branchId] ??= ['branch_name' => $row->branch_name, 'altas' => 0, 'bajas' => 0, 'plantilla' => 0];
@@ -43,6 +50,8 @@ class RotacionDerivedFromNoiService
                 }
             } elseif ($row->movement_type === 'baja') {
                 $byBranch[$branchId]['bajas']++;
+            } elseif ($row->movement_type === 'ausencia') {
+                $bajasPendientes++;
             }
         }
 
@@ -104,6 +113,7 @@ class RotacionDerivedFromNoiService
         return [
             'altas'          => $totalAltas,
             'bajas'          => $totalBajas,
+            'bajas_pendientes' => $bajasPendientes,
             'plantilla'      => $totalPlantilla,
             'indice'         => $indiceGlobal,
             'branches'       => count($insert),

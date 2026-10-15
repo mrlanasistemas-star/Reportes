@@ -1,7 +1,7 @@
 @php
 use App\Services\Radiography\RadiographyMetricToneHelper as Tone;
 
-$fmt  = fn($v) => '$' . number_format((float)$v, 2);
+$fmt  = fn($v) => (round((float)$v, 2) < 0 ? '-' : '') . '$' . number_format(abs((float)$v), 2); // -$1,234.56 (nunca $-1,234.56)
 $fmtp = fn($v) => number_format((float)$v, 2) . '%';
 $fmti = fn($v) => number_format((float)$v, 0);
 $rowFmt = fn($v, $f) => $f === 'percent' ? $fmtp($v) : ($f === 'integer' ? $fmti($v) : $fmt($v));
@@ -88,7 +88,8 @@ $topVariations = collect($rows)->filter(fn($r) => $r['var_pct'] != 0)
         <td class="b">{{ $row['label'] }}</td>
         <td class="r">{{ $rowFmt($row['prev'], $row['fmt']) }}</td>
         <td class="r">{{ $rowFmt($row['curr'], $row['fmt']) }}</td>
-        <td class="r">{{ $row['fmt'] === 'percent' ? $rowFmt($row['diff'], $row['fmt']) : ($row['diff'] >= 0 ? '+' : '') . $rowFmt($row['diff'], $row['fmt']) }}</td>
+        {{-- Diferencia de un porcentaje = puntos porcentuales con signo (15-oct-2026: antes "0.20%" sin signo). --}}
+        <td class="r">{{ $row['fmt'] === 'percent' ? (($row['diff'] >= 0 ? '+' : '') . number_format((float) $row['diff'], 2) . ' pp') : ($row['diff'] >= 0 ? '+' : '') . $rowFmt($row['diff'], $row['fmt']) }}</td>
         <td class="r {{ Tone::toneClass($row['label'], $row['var_pct']) }}">{{ $row['var_pct'] >= 0 ? '+' : '' }}{{ number_format($row['var_pct'], 2) }}%</td>
     </tr>
     @endforeach
@@ -107,6 +108,11 @@ $topVariations = collect($rows)->filter(fn($r) => $r['var_pct'] != 0)
 Chart.defaults.font.family = "'Segoe UI', Helvetica, Arial, sans-serif";
 Chart.defaults.font.size = 10;
 Chart.defaults.animation = false;
+// 15-oct-2026: moneda $1,234,567 y porcentajes con %, nunca el locale del Chrome headless ("8.000.000").
+Chart.defaults.locale = 'en-US';
+const money = (v) => (v < 0 ? '-' : '') + '$' + Math.abs(Number(v)).toLocaleString('en-US', { maximumFractionDigits: 0 });
+const moneyAxis = { beginAtZero: true, ticks: { callback: (v) => money(v) } };
+const pctAxis = { beginAtZero: true, ticks: { callback: (v) => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) + '%' } };
 
 new Chart(document.getElementById('chartCurrency'), {
     type: 'bar',
@@ -117,7 +123,7 @@ new Chart(document.getElementById('chartCurrency'), {
             { label: {!! json_encode($period->label) !!}, data: {!! json_encode($chartCurrCurrency) !!}, backgroundColor: '#106A59', borderRadius: 4 },
         ],
     },
-    options: { plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
+    options: { plugins: { legend: { position: 'bottom' } }, scales: { y: moneyAxis } },
 });
 
 new Chart(document.getElementById('chartPercent'), {
@@ -129,19 +135,19 @@ new Chart(document.getElementById('chartPercent'), {
             { label: {!! json_encode($period->label) !!}, data: {!! json_encode($chartCurrPercent) !!}, backgroundColor: '#5B9BD5', borderRadius: 4 },
         ],
     },
-    options: { plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
+    options: { plugins: { legend: { position: 'bottom' } }, scales: { y: pctAxis } },
 });
 
 new Chart(document.getElementById('chartCarteraPrev'), {
     type: 'doughnut',
     data: { labels: ['Sana', 'Vencida'], datasets: [{ data: {!! json_encode($carteraDonutPrev) !!}, backgroundColor: ['#1DC1A2', '#EF4444'] }] },
-    options: { plugins: { legend: { position: 'bottom' } } },
+    options: { aspectRatio: 1.7, plugins: { legend: { position: 'bottom' } } }, // antes llenaba media hoja
 });
 
 new Chart(document.getElementById('chartCarteraCurr'), {
     type: 'doughnut',
     data: { labels: ['Sana', 'Vencida'], datasets: [{ data: {!! json_encode($carteraDonutCurr) !!}, backgroundColor: ['#1DC1A2', '#EF4444'] }] },
-    options: { plugins: { legend: { position: 'bottom' } } },
+    options: { aspectRatio: 1.7, plugins: { legend: { position: 'bottom' } } }, // antes llenaba media hoja
 });
 
 window.__PDF_READY__ = true;

@@ -27,8 +27,11 @@
 Chart.defaults.font.family = "'Segoe UI', Helvetica, Arial, sans-serif";
 Chart.defaults.font.size = 10;
 Chart.defaults.animation = false;
-
-const palette = ['#106A59', '#1DC1A2', '#5B9BD5', '#F59E0B', '#EF4444', '#8B5CF6', '#0EA5E9', '#84CC16'];
+// 15-oct-2026: ejes en moneda mexicana $1,234,567 — antes Chart.js usaba el
+// locale del Chrome headless y pintaba "8.000.000" (puntos, sin $).
+Chart.defaults.locale = 'en-US';
+const money = (v) => (v < 0 ? '-' : '') + '$' + Math.abs(Number(v)).toLocaleString('en-US', { maximumFractionDigits: 0 });
+const moneyAxis = { beginAtZero: true, ticks: { callback: (v) => money(v) } };
 
 new Chart(document.getElementById('chartCategorias'), {
     type: 'doughnut',
@@ -45,7 +48,7 @@ new Chart(document.getElementById('chartMora'), {
         labels: {!! json_encode(array_column($moraBuckets, 'label')) !!},
         datasets: [{ data: {!! json_encode(array_column($moraBuckets, 'valor')) !!}, backgroundColor: '#EF4444', borderRadius: 4 }],
     },
-    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
+    options: { plugins: { legend: { display: false } }, scales: { y: moneyAxis } },
 });
 
 new Chart(document.getElementById('chartGastos'), {
@@ -54,16 +57,16 @@ new Chart(document.getElementById('chartGastos'), {
         labels: {!! json_encode(array_keys($gastosTopN)) !!},
         datasets: [{ data: {!! json_encode(array_values($gastosTopN)) !!}, backgroundColor: '#5B9BD5', borderRadius: 4 }],
     },
-    options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } },
+    options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: moneyAxis } },
 });
 
 new Chart(document.getElementById('chartEbitdaSucursal'), {
     type: 'bar',
     data: {
         labels: {!! json_encode(array_column($categorias, 'nombre')) !!},
-        datasets: [{ data: {!! json_encode(array_column($categorias, 'ebitda')) !!}, backgroundColor: palette, borderRadius: 4 }],
+        datasets: [{ data: {!! json_encode(array_column($categorias, 'ebitda')) !!}, backgroundColor: {!! json_encode(array_map(fn ($c) => $c['ebitda'] < 0 ? '#EF4444' : '#106A59', $categorias)) !!}, borderRadius: 4 }],
     },
-    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
+    options: { plugins: { legend: { display: false } }, scales: { y: moneyAxis } },
 });
 
 new Chart(document.getElementById('chartColocRec'), {
@@ -75,7 +78,7 @@ new Chart(document.getElementById('chartColocRec'), {
             { label: 'Recuperación', data: {!! json_encode(array_column($sucursalRows, 'recuperacion')) !!}, backgroundColor: '#1DC1A2', borderRadius: 4 },
         ],
     },
-    options: { plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true } } },
+    options: { plugins: { legend: { position: 'bottom' } }, scales: { y: moneyAxis } },
 });
 
 window.__PDF_READY__ = true;

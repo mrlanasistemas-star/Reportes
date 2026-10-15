@@ -1,101 +1,102 @@
 <script setup lang="ts">
-import { AlertTriangle, PenSquare, UserMinus, UserPlus } from 'lucide-vue-next'
+import { AlertTriangle, ArrowLeftRight, PenSquare, RotateCcw, UserMinus, UserPlus } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
+import RosterMovementCard from '@/components/asignaciones/RosterMovementCard.vue'
 import type { Assignment, RosterMovementItem } from '@/types/asignaciones'
 
-const props = defineProps<{
-    incidences: Assignment[]
-    hires: RosterMovementItem[]
-    leavers: RosterMovementItem[]
-    rosterCalculado: boolean
-}>()
+const props = withDefaults(
+    defineProps<{
+        incidences: Assignment[]
+        hires: RosterMovementItem[]
+        reentries?: RosterMovementItem[]
+        /** Solo bajas CONFIRMADAS con evidencia — las ausencias sin confirmar van a "Pendientes de conciliación". */
+        leavers: RosterMovementItem[]
+        branchChanges?: RosterMovementItem[]
+        returns?: RosterMovementItem[]
+        rosterCalculado: boolean
+    }>(),
+    { reentries: () => [], branchChanges: () => [], returns: () => [] },
+)
 
 defineEmits<{ assign: [item: Assignment] }>()
 
-// Antes esto era 3 columnas apiladas mostrando TODA la lista sin límite — con
-// periodos grandes (muchas incidencias/altas/bajas) la sección se volvía
-// gigantesca ("se desparrama toda la lista"). Ahora es un solo panel con tabs
-// (una lista visible a la vez) y cada lista tiene altura tope + scroll propio.
-type TabKey = 'incidencias' | 'altas' | 'bajas'
+// Un solo panel con tabs (una lista visible a la vez, altura tope + scroll) para
+// que periodos grandes no "desparramen" la página.
+type TabKey = 'incidencias' | 'altas' | 'reingresos' | 'bajas' | 'cambios' | 'regresos'
 
 const tabs = computed(() => [
-    { key: 'incidencias' as TabKey, label: 'Incidencias', icon: AlertTriangle, count: props.incidences.length, tone: 'amber' },
-    { key: 'altas' as TabKey, label: 'Altas del periodo', icon: UserPlus, count: props.hires.length, tone: 'emerald' },
-    { key: 'bajas' as TabKey, label: 'Bajas del periodo', icon: UserMinus, count: props.leavers.length, tone: 'rose' },
+    { key: 'altas' as TabKey, label: 'Altas confirmadas', icon: UserPlus, count: props.hires.length, tone: 'emerald' },
+    { key: 'reingresos' as TabKey, label: 'Reingresos', icon: RotateCcw, count: props.reentries.length, tone: 'emerald' },
+    { key: 'bajas' as TabKey, label: 'Bajas confirmadas', icon: UserMinus, count: props.leavers.length, tone: 'rose' },
+    { key: 'cambios' as TabKey, label: 'Cambios de sucursal', icon: ArrowLeftRight, count: props.branchChanges.length, tone: 'sky' },
+    { key: 'regresos' as TabKey, label: 'Regresos sin baja', icon: RotateCcw, count: props.returns.length, tone: 'sky' },
+    { key: 'incidencias' as TabKey, label: 'Incidencias de sucursal', icon: AlertTriangle, count: props.incidences.length, tone: 'amber' },
 ])
 
-const activeTab = ref<TabKey>('incidencias')
+const activeTab = ref<TabKey>('altas')
 
-// Si la pestaña activa se queda sin datos al cambiar de periodo/filtro, salta a
-// la primera que sí tenga algo — nunca deja al usuario viendo una lista vacía
-// por accidente si hay otra con contenido real.
 watch(
-    () => [props.incidences.length, props.hires.length, props.leavers.length],
+    () => tabs.value.map((t) => t.count).join(','),
     () => {
         const current = tabs.value.find((t) => t.key === activeTab.value)
 
         if (current && current.count > 0) {
-return
-}
+            return
+        }
 
         const firstWithData = tabs.value.find((t) => t.count > 0)
 
         if (firstWithData) {
-activeTab.value = firstWithData.key
-}
+            activeTab.value = firstWithData.key
+        }
     },
     { immediate: true },
 )
 
 const toneClasses: Record<string, { active: string; badge: string }> = {
-    amber: {
-        active: 'bg-amber-500 text-white shadow-amber-500/30',
-        badge: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
-    },
-    emerald: {
-        active: 'bg-emerald-500 text-white shadow-emerald-500/30',
-        badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
-    },
-    rose: {
-        active: 'bg-rose-500 text-white shadow-rose-500/30',
-        badge: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300',
-    },
+    amber: { active: 'bg-amber-500 text-white shadow-amber-500/30', badge: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' },
+    emerald: { active: 'bg-emerald-500 text-white shadow-emerald-500/30', badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' },
+    rose: { active: 'bg-rose-500 text-white shadow-rose-500/30', badge: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300' },
+    sky: { active: 'bg-sky-500 text-white shadow-sky-500/30', badge: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300' },
 }
 
-// Mismas 3 categorías que PeriodEmployeeRosterService::classifyBaja() — "sin
-// contradicción" es la más cercana a una baja real (nadie confirmado por RH,
-// pero sin evidencia en contra); las otras dos son explícitamente dudosas.
-function reconciliationBadge(status?: string | null) {
-    switch (status) {
-        case 'sin_contradiccion':
-            return { label: 'Sin contradicción', classes: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300' }
-        case 'posible_coincidencia_nombre':
-            return { label: 'Posible mismo nombre', classes: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' }
-        case 'pendiente_conciliacion':
-            return { label: 'Archivo incompleto', classes: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' }
+const listByTab = computed<RosterMovementItem[]>(() => {
+    switch (activeTab.value) {
+        case 'altas':
+            return props.hires
+        case 'reingresos':
+            return props.reentries
+        case 'bajas':
+            return props.leavers
+        case 'cambios':
+            return props.branchChanges
+        case 'regresos':
+            return props.returns
         default:
-            return { label: 'Sin clasificar', classes: 'bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-300' }
+            return []
     }
-}
+})
 
 const emptyMessage = computed(() => {
     if (activeTab.value === 'incidencias') {
-return 'Sin incidencias — todo el periodo tiene sucursal asignada.'
-}
-
-    if (!props.rosterCalculado) {
-        return 'El roster de colaboradores de este periodo aún no se ha calculado — corre "Actualizar BD" en Histórico General primero.'
+        return 'Sin incidencias: todo el periodo tiene sucursal asignada.'
     }
 
-    return activeTab.value === 'altas' ? 'Sin altas detectadas.' : 'Sin bajas detectadas.'
+    if (!props.rosterCalculado) {
+        return 'La plantilla de este periodo aún no se ha calculado: ejecuta "Actualizar BD" en Histórico General primero.'
+    }
+
+    return 'Sin movimientos de este tipo en el periodo.'
 })
 </script>
 
 <template>
     <section class="app-card overflow-hidden">
         <div class="border-b px-4 py-4 sm:px-6 sm:py-5">
-            <h2 class="text-lg font-bold tracking-tight">Movimientos del periodo</h2>
-            <p class="mt-1 text-sm text-muted-foreground">Incidencias que necesitan atención, y quién entró o salió respecto al periodo anterior.</p>
+            <h2 class="text-lg font-bold tracking-tight">Movimientos laborales</h2>
+            <p class="mt-1 text-sm text-muted-foreground">
+                Hechos confirmados respecto al periodo anterior. Las ausencias sin evidencia están en "Pendientes de conciliación".
+            </p>
 
             <div class="mt-4 flex flex-wrap gap-2">
                 <button
@@ -122,13 +123,9 @@ return 'Sin incidencias — todo el periodo tiene sucursal asignada.'
             </div>
         </div>
 
-        <!-- Incidencias -->
+        <!-- Incidencias de asignación de sucursal -->
         <div v-if="activeTab === 'incidencias'" class="max-h-[26rem] space-y-3 overflow-y-auto p-4 sm:p-6">
-            <article
-                v-for="item in incidences"
-                :key="`inc-${item.id}`"
-                class="rounded-2xl border border-border/70 bg-background px-4 py-4"
-            >
+            <article v-for="item in incidences" :key="`inc-${item.id}`" class="rounded-2xl border border-border/70 bg-background px-4 py-4">
                 <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0">
                         <p class="truncate font-semibold">{{ item.employee_name }}</p>
@@ -148,48 +145,14 @@ return 'Sin incidencias — todo el periodo tiene sucursal asignada.'
             <p v-if="!incidences.length" class="py-10 text-center text-sm text-muted-foreground">{{ emptyMessage }}</p>
         </div>
 
-        <!-- Altas -->
-        <div v-else-if="activeTab === 'altas'" class="max-h-[26rem] space-y-3 overflow-y-auto p-4 sm:p-6">
-            <article
-                v-for="item in hires"
-                :key="`hire-${item.id}`"
-                class="rounded-2xl border border-border/70 bg-background px-4 py-4"
-            >
-                <p class="font-semibold">{{ item.employee_name }}</p>
-                <p class="mt-1 text-sm text-muted-foreground">{{ item.branch_name || 'Sin sucursal asignada' }}</p>
-            </article>
-            <p v-if="!hires.length" class="py-10 text-center text-sm text-muted-foreground">{{ emptyMessage }}</p>
-        </div>
-
-        <!-- Bajas -->
         <div v-else class="max-h-[26rem] space-y-3 overflow-y-auto p-4 sm:p-6">
-            <p class="mb-1 text-xs text-muted-foreground">
-                Ninguna de estas ausencias está confirmada por una fuente de RH — son personas que dejaron de aparecer en la nómina NOI.
-                El color indica qué tan confiable es cada caso.
-            </p>
-            <article
-                v-for="item in leavers"
-                :key="`leave-${item.id}`"
-                class="rounded-2xl border border-border/70 bg-background px-4 py-4"
-            >
-                <div class="flex items-start justify-between gap-3">
-                    <div class="min-w-0">
-                        <p class="font-semibold">{{ item.employee_name }}</p>
-                        <p class="mt-1 text-sm text-muted-foreground">Última sucursal conocida: {{ item.branch_name || 'Sin sucursal asignada' }}</p>
-                        <p class="mt-2 text-xs text-muted-foreground">Último periodo: {{ item.period_label || '—' }}</p>
-                    </div>
-                    <span
-                        class="shrink-0 rounded-full px-2 py-1 text-[10px] font-bold"
-                        :class="reconciliationBadge(item.reconciliation_status).classes"
-                    >
-                        {{ reconciliationBadge(item.reconciliation_status).label }}
-                    </span>
-                </div>
-                <p v-if="item.reconciliation_note" class="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                    {{ item.reconciliation_note }}
-                </p>
-            </article>
-            <p v-if="!leavers.length" class="py-10 text-center text-sm text-muted-foreground">{{ emptyMessage }}</p>
+            <RosterMovementCard
+                v-for="item in listByTab"
+                :key="`${activeTab}-${item.nombre_normalizado ?? item.id}`"
+                :item="item"
+                :branch-prefix="activeTab === 'bajas' ? 'Última sucursal conocida' : undefined"
+            />
+            <p v-if="!listByTab.length" class="py-10 text-center text-sm text-muted-foreground">{{ emptyMessage }}</p>
         </div>
     </section>
 </template>

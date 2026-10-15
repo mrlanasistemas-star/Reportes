@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\OkrObjective;
 use App\Models\User;
+use App\Services\Access\ActionPermissionService;
 use App\Services\Okr\OkrObjectiveVisibilityService;
 
 /**
@@ -49,7 +50,7 @@ class OkrObjectivePolicy
     /** Editar meta/peso, recalcular progreso. */
     public function update(User $user, OkrObjective $objective): bool
     {
-        return $this->isAdmin($user) || $this->visibility->isResponsible($user, $objective);
+        return $this->isAdmin($user) || $this->visibility->isResponsible($user, $objective) || $this->managesOthers($user, $objective);
     }
 
     /**
@@ -78,14 +79,28 @@ class OkrObjectivePolicy
     {
         return $this->isAdmin($user)
             || $this->visibility->isResponsible($user, $objective)
-            || $this->visibility->isOwner($user, $objective);
+            || $this->visibility->isOwner($user, $objective)
+            || $this->managesOthers($user, $objective);
     }
 
     public function uploadEvidence(User $user, OkrObjective $objective): bool
     {
         return $this->isAdmin($user)
             || $this->visibility->isResponsible($user, $objective)
-            || $this->visibility->isOwner($user, $objective);
+            || $this->visibility->isOwner($user, $objective)
+            || $this->managesOthers($user, $objective);
+    }
+
+    /**
+     * Prioridad 9 — permiso "Administrar OKR de otros empleados" (Roles y
+     * permisos): da a ese rol las facultades de edición/seguimiento del
+     * responsable, SOLO sobre lo que su rol ya puede ver (misma regla de
+     * visibilidad/alcance). No activa, emite ni elimina por sí solo.
+     */
+    private function managesOthers(User $user, OkrObjective $objective): bool
+    {
+        return app(ActionPermissionService::class)->canAction($user, 'okr', 'administrar_otros')
+            && $this->visibility->canView($user, $objective);
     }
 
     private function isAdmin(User $user): bool

@@ -54,7 +54,7 @@ function ptEmployee(string $name, Branch $branch, Period $period, bool $active =
     EmployeeBranchAssignment::query()->create(['period_id' => $period->id, 'employee_id' => $e->id, 'branch_id' => $branch->id]);
     PeriodEmployeeRoster::query()->create([
         'period_id' => $period->id, 'employee_id' => $e->id, 'employee_key' => 'k' . $e->id, 'nombre_normalizado' => mb_strtolower($name),
-        'branch_id' => $branch->id, 'is_active_for_period' => $active, 'movement_type' => $active ? 'activo' : 'baja',
+        'branch_id' => $branch->id, 'is_active_for_period' => $active, 'movement_type' => $active ? 'activo' : 'baja', 'reconciliation_status' => $active ? null : 'baja_confirmada', // 18-oct-2026: fila 'baja' = baja CONFIRMADA
     ]);
 
     return $e;

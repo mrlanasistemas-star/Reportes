@@ -10,6 +10,10 @@ use App\Models\Period;
 use App\Services\BranchResolverService;
 use App\Services\EmployeeBranchAutoMatchService;
 use App\Services\EmployeeNameCanonicalizer;
+use App\Services\Access\ActionPermissionService;
+use App\Services\Roster\RosterMovementReviewService;
+use App\Services\Roster\RosterMovementsPresenter;
+use App\Services\Roster\RosterMovementStatus;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -60,8 +64,8 @@ class EmployeeBranchAssignmentController extends Controller
             'hires' => 0,
             'leavers' => 0,
             'leavers_confirmadas' => 0,
-            'leavers_posible_coincidencia' => 0,
             'leavers_pendientes' => 0,
+            'pendientes_conciliacion' => 0,
             'plantilla' => 0,
             'roster_calculado' => false,
             'mass_drop_detected' => false,
@@ -71,6 +75,8 @@ class EmployeeBranchAssignmentController extends Controller
         $hires = collect();
         $leavers = collect();
         $incidences = collect();
+        $labor = null;
+        $laborHistory = [];
 
         if ($selectedPeriod) {
             $rawAssignments = EmployeeBranchAssignment::query()
@@ -137,61 +143,22 @@ class EmployeeBranchAssignmentController extends Controller
 
             $assignments = $assignments->values();
 
-            // Altas/bajas (cierre 17-sep-2026, ronda 4) — bug real confirmado: esta pantalla
-            // calculaba altas/bajas comparando employee_id CRUDOS (sin deduplicar por persona
-            // real — NOI normal y NOI fiscal generan DOS employee_id para la misma persona,
-            // ver PeriodEmployeeRosterService) contra "el periodo anterior por fecha", SIN
-            // filtrar por type='monthly' — para Junio 2026 esto comparaba contra una SEMANA
-            // de Mayo (asignaciones semanales, un universo totalmente distinto), mostrando
-            // 132 "altas" y 0 "bajas" cuando la realidad (misma fuente que el Índice de
-            // Rotación de OKR, ver RotacionDerivedFromNoiService) era 5 altas / 5 bajas.
-            // Ahora se lee DIRECTO de `period_employee_rosters` — el roster canónico,
-            // deduplicado por persona real, ya calculado mes-contra-mes-anterior durante
-            // "Actualizar BD" — la MISMA fuente que OKR, nunca un segundo cálculo.
-            $rosterRows = $selectedPeriod->isMonthly()
-                ? DB::table('period_employee_rosters')
-                    ->where('period_id', $selectedPeriod->id)
-                    ->get(['employee_id', 'nombre_original', 'branch_name', 'is_active_for_period', 'movement_type', 'reconciliation_status', 'reconciliation_note'])
-                : collect();
+            // Altas/bajas — se leen DIRECTO de `period_employee_rosters` (roster canónico,
+            // deduplicado por persona real, calculado mes-contra-mes-anterior mensual
+            // durante "Actualizar BD") — la MISMA fuente que Rotación y OKR, nunca un
+            // diff crudo de employee_id (bug del 17-sep-2026: 132 "altas" falsas).
+            //
+            // 18-oct-2026: una ausencia de nómina NO es una baja. Solo las bajas
+            // confirmadas con evidencia cuentan como "Bajas"; el resto va a
+            // "Pendientes de conciliación" (ver Roster\RosterMovementsPresenter).
+            if ($selectedPeriod->isMonthly()) {
+                $presenter = app(RosterMovementsPresenter::class);
+                $labor = $presenter->forPeriod($selectedPeriod, $periods);
+                $laborHistory = $presenter->history($periods);
+            }
 
-            $lastKnownPeriod = $selectedPeriod->isMonthly() ? $selectedPeriod->previousMonthly($periods) : null;
-
-            $toRosterItem = fn ($r, ?string $periodLabel = null) => [
-                'id'                     => (int) $r->employee_id,
-                'employee_id'            => (int) $r->employee_id,
-                'employee_name'          => $r->nombre_original,
-                'branch_name'            => $r->branch_name,
-                'period_label'           => $periodLabel,
-                'reconciliation_status'  => $r->reconciliation_status ?? null,
-                'reconciliation_note'    => $r->reconciliation_note ?? null,
-            ];
-
-            $hires = $rosterRows->where('movement_type', 'alta')->map(fn ($r) => $toRosterItem($r, $selectedPeriod->label))->values();
-            $leaverRows = $rosterRows->where('movement_type', 'baja');
-            $leavers = $leaverRows->map(fn ($r) => $toRosterItem($r, $lastKnownPeriod?->label))->values();
-            $plantillaActual = $rosterRows->where('is_active_for_period', true)->count();
-            $rosterCalculado = $rosterRows->isNotEmpty();
-
-            // Sección 6 de la auditoría (15-oct-2026): no toda ausencia de nómina es una
-            // baja laboral confirmada. "sin_contradiccion" es lo más cercano a una baja
-            // real que el sistema puede afirmar (nadie reapareció con nombre similar y no
-            // hubo caída masiva de archivo) — las otras dos categorías son explícitamente
-            // NO confirmadas y se muestran aparte para que la pantalla nunca las presente
-            // como un hecho consumado.
-            $leaversConfirmadas       = $leaverRows->where('reconciliation_status', 'sin_contradiccion')->count();
-            $leaversPosibleCoincidencia = $leaverRows->where('reconciliation_status', 'posible_coincidencia_nombre')->count();
-            $leaversPendientes        = $leaverRows->where('reconciliation_status', 'pendiente_conciliacion')->count();
-            // Filas antiguas (creadas antes de esta migración) no tienen reconciliation_status
-            // — se cuentan como confirmadas para no perder el dato histórico que ya existía,
-            // nunca se reclasifican solas.
-            $leaversSinClasificar = $leaverRows->whereNull('reconciliation_status')->count();
-            $leaversConfirmadas += $leaversSinClasificar;
-
-            $prevActiveCount = $lastKnownPeriod
-                ? DB::table('period_employee_rosters')->where('period_id', $lastKnownPeriod->id)->where('is_active_for_period', true)->count()
-                : 0;
-            $dropRatio = $prevActiveCount > 0 ? max(0.0, ($prevActiveCount - $plantillaActual) / $prevActiveCount) : 0.0;
-            $massDropDetected = $leaversPendientes > 0;
+            $hires = collect($labor['movements']['altas'] ?? [])->merge($labor['movements']['reingresos'] ?? [])->values();
+            $leavers = collect($labor['movements']['bajas'] ?? [])->values();
 
             $incidences = $assignments
                 ->filter(function (array $item) {
@@ -212,14 +179,15 @@ class EmployeeBranchAssignmentController extends Controller
                 'high_confidence' => $assignments->filter(fn ($item) => ($item['confidence'] ?? 0) >= 0.9)->count(),
                 'needs_review' => $incidences->count(),
                 'hires' => $hires->count(),
+                // Solo bajas CONFIRMADAS con evidencia (directorio INACTIVO, finiquito o conciliación).
                 'leavers' => $leavers->count(),
-                'leavers_confirmadas' => $leaversConfirmadas,
-                'leavers_posible_coincidencia' => $leaversPosibleCoincidencia,
-                'leavers_pendientes' => $leaversPendientes,
-                'plantilla' => $plantillaActual,
-                'roster_calculado' => $rosterCalculado,
-                'mass_drop_detected' => $massDropDetected,
-                'drop_ratio' => round($dropRatio, 4),
+                'leavers_confirmadas' => $leavers->count(),
+                'leavers_pendientes' => (int) ($labor['counts']['ausencias_pendientes'] ?? 0),
+                'pendientes_conciliacion' => (int) ($labor['counts']['pendientes'] ?? 0),
+                'plantilla' => (int) ($labor['roster']['plantilla'] ?? 0),
+                'roster_calculado' => (bool) ($labor['roster']['calculado'] ?? false),
+                'mass_drop_detected' => (bool) ($labor['roster']['mass_drop_detected'] ?? false),
+                'drop_ratio' => (float) ($labor['roster']['drop_ratio'] ?? 0.0),
             ];
         }
 
@@ -239,7 +207,39 @@ class EmployeeBranchAssignmentController extends Controller
             'incidences' => $incidences,
             'hires' => $hires,
             'leavers' => $leavers,
+            'labor' => $labor,
+            'labor_history' => $laborHistory,
+            'can_reconcile' => app(ActionPermissionService::class)->canAction($request->user(), 'colaboradores', 'conciliar'),
         ]);
+    }
+
+    /**
+     * Conciliación autorizada de una ausencia de nómina (18-oct-2026): confirmar
+     * la baja o descartarla, con motivo obligatorio (queda en la bitácora).
+     */
+    public function reviewMovement(Request $request, Period $period, RosterMovementReviewService $service): RedirectResponse
+    {
+        $validated = $request->validate([
+            'nombre_normalizado' => ['required', 'string', 'max:191'],
+            'decision' => ['required', 'in:' . RosterMovementStatus::DECISION_CONFIRMAR . ',' . RosterMovementStatus::DECISION_DESCARTAR],
+            'note' => ['required', 'string', 'min:5', 'max:1000'],
+        ], [
+            'decision.in' => 'La decisión no es válida.',
+            'note.required' => 'Escribe el motivo o la evidencia de la decisión.',
+            'note.min' => 'El motivo debe tener al menos 5 caracteres.',
+        ]);
+
+        if (!$period->isMonthly()) {
+            return back()->with('error', 'Solo se concilian movimientos de periodos mensuales.');
+        }
+
+        $result = $service->review($period, $validated['nombre_normalizado'], $validated['decision'], $validated['note'], $request->user());
+
+        $message = $validated['decision'] === RosterMovementStatus::DECISION_CONFIRMAR
+            ? 'Baja confirmada y registrada en la bitácora. La rotación del periodo ya la considera; regenera la radiografía para verla en Excel/PDF.'
+            : 'Ausencia descartada como baja y registrada en la bitácora.';
+
+        return back()->with($result['warning'] ? 'warning' : 'success', $result['warning'] ?? $message);
     }
 
     public function pending(Request $request): Response

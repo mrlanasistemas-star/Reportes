@@ -5,6 +5,8 @@
 // marque recibe un OKR individual; el resto sigue aportando a la sucursal.
 import { AlertTriangle, CheckCircle2, Info, MapPin, Search, UserPlus, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
+import OkrBranchConflictNotice from './OkrBranchConflictNotice.vue'
+import type { BranchConflict } from './OkrBranchConflictNotice.vue'
 import { avatarTone, initialsOf } from './okrWizard'
 import type { GestorPlan } from './okrWizard'
 
@@ -16,6 +18,7 @@ type Candidate = {
     route?: string | null
     membership_source?: string | null
     flags?: { code: string; label: string }[]
+    branch_conflict?: BranchConflict | null
 }
 
 const props = defineProps<{
@@ -25,8 +28,9 @@ const props = defineProps<{
     loading: boolean
     rosterPeriod: string | null
     branchSelected: boolean
+    canReconcile?: boolean
 }>()
-const emit = defineEmits<{ toggle: [employee: { id: number; full_name: string; position?: string | null }]; remove: [index: number]; search: [term: string] }>()
+const emit = defineEmits<{ toggle: [employee: { id: number; full_name: string; position?: string | null }]; remove: [index: number]; search: [term: string]; reconciled: [] }>()
 
 const term = ref('')
 const selectedIds = computed(() => new Set(props.selected.map((g) => g.employee_id)))
@@ -59,11 +63,12 @@ function onSearch(value: string) {
         </div>
 
         <div v-else class="grid max-h-64 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+            <div v-for="e in employees" :key="e.id" class="flex flex-col gap-1">
             <button
-                v-for="e in employees" :key="e.id" type="button"
-                class="group flex items-center gap-3 rounded-xl border p-2.5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
-                :class="selectedIds.has(e.id) ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/30' : 'border-border bg-card hover:border-primary/30'"
-                @click="emit('toggle', e)"
+                type="button" :disabled="!!e.branch_conflict"
+                class="group flex items-center gap-3 rounded-xl border p-2.5 text-left transition-all duration-200 enabled:hover:-translate-y-0.5 enabled:hover:shadow-md disabled:cursor-not-allowed disabled:opacity-80"
+                :class="e.branch_conflict ? 'border-amber-300/70 bg-card' : selectedIds.has(e.id) ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/30' : 'border-border bg-card hover:border-primary/30'"
+                @click="!e.branch_conflict && emit('toggle', e)"
             >
                 <span class="flex size-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-[11px] font-bold text-white shadow-sm transition-transform duration-200 group-hover:scale-105" :class="avatarTone(e.id)">
                     {{ initialsOf(e.full_name) }}
@@ -74,12 +79,17 @@ function onSearch(value: string) {
                     <span class="flex items-center gap-1 truncate text-[10px] text-muted-foreground" :title="e.membership_source ?? ''">
                         <MapPin class="size-3 shrink-0" /> <template v-if="e.route">Ruta {{ e.route }} → </template>{{ branchName ?? '' }}
                     </span>
-                    <span v-for="f in e.flags ?? []" :key="f.code" class="mt-0.5 flex items-center gap-1 truncate text-[10px] font-semibold text-amber-700 dark:text-amber-300"><AlertTriangle class="size-3 shrink-0" /> {{ f.label }}</span>
-                    <span class="block text-[10px] font-semibold" :class="selectedIds.has(e.id) ? 'text-primary' : 'text-muted-foreground/70'">{{ selectedIds.has(e.id) ? 'Con OKR individual' : 'Clic para asignar meta propia' }}</span>
+                    <span v-for="f in (e.flags ?? []).filter((x) => x.code !== 'branch_conflict')" :key="f.code" class="mt-0.5 flex items-center gap-1 truncate text-[10px] font-semibold text-amber-700 dark:text-amber-300"><AlertTriangle class="size-3 shrink-0" /> {{ f.label }}</span>
+                    <span class="block text-[10px] font-semibold" :class="selectedIds.has(e.id) ? 'text-primary' : 'text-muted-foreground/70'">{{ e.branch_conflict ? 'Sucursal por conciliar' : selectedIds.has(e.id) ? 'Con OKR individual' : 'Clic para asignar meta propia' }}</span>
                 </span>
                 <CheckCircle2 v-if="selectedIds.has(e.id)" class="size-5 shrink-0 text-primary animate-in zoom-in duration-200" />
                 <UserPlus v-else class="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
             </button>
+            <OkrBranchConflictNotice
+                v-if="e.branch_conflict" :conflict="e.branch_conflict" :employee-id="e.id" :employee-name="e.full_name" :can-reconcile="!!canReconcile"
+                @reconciled="emit('reconciled')"
+            />
+            </div>
             <p v-if="!employees.length" class="col-span-full rounded-xl border border-dashed border-border p-5 text-center text-xs text-muted-foreground">
                 No hay colaboradores vigentes que coincidan en esta sucursal.
             </p>

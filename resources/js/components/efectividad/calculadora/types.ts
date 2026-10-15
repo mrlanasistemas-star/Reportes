@@ -89,6 +89,7 @@ export type Resultado = {
     modo: Modo;
     titulo: string;
     leyenda: string;
+    metodologia: string;
     generado: string;
     parametros: {
         modo: string;

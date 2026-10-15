@@ -5,6 +5,7 @@ namespace App\Services\Okr;
 use App\Models\Employee;
 use App\Services\CanonicalEmployeeResolver;
 use App\Services\Catalog\BranchRouteCatalog;
+use App\Services\Roster\RosterMovementStatus;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -55,7 +56,10 @@ class OkrEmployeeBranchResolver
         $query = $this->eligibleEmployeesQuery();
 
         if ($branchId !== null) {
-            $query->whereIn('id', $this->employeeIdsForBranch($branchId));
+            // Prioridad 5: quien tiene fuentes en conflicto que incluyen esta
+            // sucursal SE MUESTRA (con su aviso) para poder conciliarlo, pero no
+            // pertenece a ella (employeeBelongsToBranch) hasta que se concilie.
+            $query->whereIn('id', $this->employeeIdsForBranch($branchId, includeConflicts: true));
         }
 
         if ($search !== null && trim($search) !== '') {
@@ -126,16 +130,23 @@ class OkrEmployeeBranchResolver
             // vigente (ni nómina activa ni directorio ACTIVO — "posible baja").
             // Quien solo falta en NOI pero sigue ACTIVO en el directorio vigente
             // permanece elegible y se marca "Sin registro NOI del periodo".
-            $query->whereNotIn('id', DB::table('period_employee_rosters')
-                ->where('period_id', $rosterPeriodId)
-                ->where('is_active_for_period', false)
-                ->select('employee_id'));
+            //
+            // 18-oct-2026: "baja confirmada" = movement_type='baja' Y categoría
+            // baja_confirmada (evidencia: directorio INACTIVO, finiquito o
+            // conciliación autorizada — ver PeriodEmployeeRosterService). Una
+            // ausencia sin confirmar (posible baja, no localizado, contradicción,
+            // fila antigua sin clasificar) NO se excluye en silencio: sigue
+            // elegible con la advertencia 'pending_reconciliation' de statusFlags().
+            $query->whereNotIn('id', $this->confirmedBajaQuery($rosterPeriodId)->select('employee_id'));
 
             $activeInDirectory = $this->personnelResolver->activeDirectoryNames();
             $query->where(fn ($q) => $q
                 ->whereIn('id', DB::table('period_employee_rosters')
                     ->where('period_id', $rosterPeriodId)
-                    ->where('is_active_for_period', true)
+                    ->where(fn ($r) => $r->where('is_active_for_period', true)
+                        ->orWhere('movement_type', '!=', 'baja')
+                        ->orWhereNull('reconciliation_status')
+                        ->orWhere('reconciliation_status', '!=', 'baja_confirmada'))
                     ->select('employee_id'))
                 ->when($activeInDirectory !== [], fn ($qq) => $qq->orWhereIn('normalized_name', $activeInDirectory)));
         }
@@ -157,6 +168,16 @@ class OkrEmployeeBranchResolver
         }
 
         return $query;
+    }
+
+    /** Filas de baja CONFIRMADA (con evidencia) del periodo de nómina vigente. */
+    private function confirmedBajaQuery(int $rosterPeriodId): \Illuminate\Database\Query\Builder
+    {
+        return DB::table('period_employee_rosters')
+            ->where('period_id', $rosterPeriodId)
+            ->where('is_active_for_period', false)
+            ->where('movement_type', 'baja')
+            ->where('reconciliation_status', 'baja_confirmada');
     }
 
     /**
@@ -273,12 +294,13 @@ class OkrEmployeeBranchResolver
      * $branchId — 16-oct-2026: una sola regla para el buscador, el conteo y
      * la validación de pertenencia.
      */
-    private function employeeIdsForBranch(int $branchId): \Illuminate\Support\Collection
+    private function employeeIdsForBranch(int $branchId, bool $includeConflicts = false): \Illuminate\Support\Collection
     {
         $ids = $this->eligibleEmployeesQuery()->pluck('id')->map(fn ($id) => (int) $id)->all();
 
         return collect($this->membershipMap($ids))
-            ->filter(fn ($m) => $m['branch_id'] === $branchId)
+            ->filter(fn ($m) => $m['branch_id'] === $branchId
+                || ($includeConflicts && ($m['conflict'] ?? null) !== null && in_array($branchId, $m['conflict']['branch_ids'], true)))
             ->keys()
             ->values();
     }
@@ -318,7 +340,7 @@ class OkrEmployeeBranchResolver
     }
 
     /**
-     * @return array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string}
+     * @return array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string, conflict:?array}
      */
     public function membershipFor(int $employeeId): array
     {
@@ -332,7 +354,7 @@ class OkrEmployeeBranchResolver
      * Versión en lote de membershipFor() — número fijo de consultas.
      *
      * @param  int[]  $employeeIds
-     * @return array<int, array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string}>
+     * @return array<int, array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string, conflict:?array}>
      */
     public function membershipMap(array $employeeIds): array
     {
@@ -441,9 +463,63 @@ class OkrEmployeeBranchResolver
         }
 
         $branchNames = \App\Models\Branch::query()->pluck('name', 'id');
+        $reconciliations = $this->reconciliationsFor($groupOf, $employees);
         foreach ($employeeIds as $id) {
             // Fecha más reciente primero; a igual fecha, menor número de prioridad.
-            $best = collect($candidates[$id] ?? [])->sort(fn ($x, $y) => [$y[1], $x[0]] <=> [$x[1], $y[0]])->first();
+            $sorted = collect($candidates[$id] ?? [])->sort(fn ($x, $y) => [$y[1], $x[0]] <=> [$x[1], $y[0]])->values();
+            $best = $sorted->first();
+
+            // Prioridad 5 (15-oct-2026): dos fuentes FUERTES (cartera, nómina NOI,
+            // asignación de Reportería) del MISMO periodo que dan sucursales
+            // distintas = conflicto. Antes ganaba la de menor número de
+            // prioridad sin avisar. El directorio (prefijo del código) no basta
+            // para contradecir: no detecta transferencias.
+            $conflict = null;
+            if ($best !== null) {
+                $tied = $sorted->filter(fn ($c) => $c[1] === $best[1] && $c[0] <= 3);
+                if ($tied->pluck(2)->unique()->count() > 1) {
+                    $conflict = $tied->map(fn ($c) => [
+                        'source' => $c[3], 'label' => $c[4], 'branch_id' => $c[2],
+                        'branch_name' => $branchNames[$c[2]] ?? null, 'route' => $c[5], 'evidence_date' => $c[1],
+                    ])->values()->all();
+                }
+            }
+
+            $rec = $reconciliations[$id] ?? null;
+            if ($rec !== null && ($best === null || $rec->evidence_date === null || (string) $rec->evidence_date >= substr((string) $best[1], 0, 10))) {
+                $this->membershipCache[$id] = [
+                    'branch_id' => (int) $rec->branch_id,
+                    'branch_name' => $branchNames[$rec->branch_id] ?? null,
+                    'route' => null,
+                    'inactive_route' => $inactiveRoute[$id] ?? null,
+                    'source' => 'okr_reconciliation',
+                    'source_label' => 'Conciliación autorizada OKR' . ($rec->evidence_date ? ' (evidencia al ' . substr((string) $rec->evidence_date, 0, 10) . ')' : ''),
+                    'conflict' => null,
+                ];
+
+                continue;
+            }
+
+            if ($conflict !== null) {
+                // Nunca se elige arbitrariamente: sin sucursal hasta conciliar.
+                $this->membershipCache[$id] = [
+                    'branch_id' => null,
+                    'branch_name' => null,
+                    'route' => null,
+                    'inactive_route' => $inactiveRoute[$id] ?? null,
+                    'source' => 'conflict',
+                    'source_label' => self::CONFLICT_MESSAGE,
+                    'conflict' => [
+                        'message' => self::CONFLICT_MESSAGE,
+                        'detail' => collect($conflict)->map(fn ($c) => "{$c['label']}: " . ($c['branch_name'] ?? 'sucursal desconocida'))->implode(' · '),
+                        'evidence_date' => $best[1],
+                        'branch_ids' => collect($conflict)->pluck('branch_id')->unique()->values()->all(),
+                        'sources' => $conflict,
+                    ],
+                ];
+
+                continue;
+            }
 
             $this->membershipCache[$id] = [
                 'branch_id' => $best[2] ?? null,
@@ -452,8 +528,87 @@ class OkrEmployeeBranchResolver
                 'inactive_route' => $inactiveRoute[$id] ?? null,
                 'source' => $best[3] ?? null,
                 'source_label' => $best[4] ?? null,
+                'conflict' => null,
             ];
         }
+    }
+
+    public const CONFLICT_MESSAGE = 'Encontramos información diferente sobre la sucursal de este colaborador.';
+
+    /**
+     * Conciliación OKR más reciente por persona (cualquier id de su grupo
+     * canónico o su normalized_name). Tolera que la tabla aún no exista
+     * (migración pendiente en el servidor).
+     *
+     * @param  array<int, int[]>  $groupOf
+     * @return array<int, object>
+     */
+    private function reconciliationsFor(array $groupOf, \Illuminate\Support\Collection $employees): array
+    {
+        static $hasTable = null;
+        $hasTable ??= \Illuminate\Support\Facades\Schema::hasTable('okr_branch_reconciliations');
+        if (!$hasTable || $groupOf === []) {
+            return [];
+        }
+
+        $allIds = array_values(array_unique(array_merge([], ...array_values($groupOf))));
+        $norms = $employees->pluck('normalized_name')->filter()->unique()->values()->all();
+        $rows = DB::table('okr_branch_reconciliations')
+            ->where(fn ($q) => $q->whereIn('employee_id', $allIds)->when($norms !== [], fn ($qq) => $qq->orWhereIn('normalized_name', $norms)))
+            ->orderByDesc('evidence_date')->orderByDesc('id')
+            ->get(['employee_id', 'normalized_name', 'branch_id', 'evidence_date']);
+
+        $out = [];
+        foreach ($groupOf as $id => $group) {
+            $norm = $employees->get($id)?->normalized_name;
+            $hit = $rows->first(fn ($r) => in_array((int) $r->employee_id, $group, true) || ($norm !== null && $r->normalized_name === $norm));
+            if ($hit !== null) {
+                $out[$id] = $hit;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Conflicto de sucursal vigente (o null) — para la UI y la validación.
+     *
+     * @return array{message:string, detail:string, evidence_date:string, branch_ids:int[], sources:array}|null
+     */
+    public function branchConflictFor(int $employeeId): ?array
+    {
+        return $this->membershipFor($employeeId)['conflict'] ?? null;
+    }
+
+    /**
+     * Registra una conciliación AUTORIZADA: la sucursal elegida debe ser una de
+     * las que reportan las fuentes en conflicto (nunca una inventada).
+     */
+    public function reconcileBranch(int $employeeId, int $branchId, \App\Models\User $user, ?string $notes = null): \App\Models\OkrBranchReconciliation
+    {
+        $conflict = $this->branchConflictFor($employeeId);
+        if ($conflict === null) {
+            throw new \RuntimeException('Este colaborador no tiene información contradictoria de sucursal que conciliar.');
+        }
+        if (!in_array($branchId, $conflict['branch_ids'], true)) {
+            throw new \RuntimeException('La sucursal elegida no corresponde a ninguna de las fuentes en conflicto.');
+        }
+
+        $chosen = collect($conflict['sources'])->firstWhere('branch_id', $branchId);
+        $rec = \App\Models\OkrBranchReconciliation::query()->create([
+            'employee_id' => $employeeId,
+            'normalized_name' => Employee::query()->whereKey($employeeId)->value('normalized_name'),
+            'branch_id' => $branchId,
+            'evidence_date' => substr((string) $conflict['evidence_date'], 0, 10) ?: null,
+            'chosen_source' => $chosen['source'] ?? null,
+            'sources' => $conflict['sources'],
+            'notes' => $notes,
+            'resolved_by' => $user->id,
+        ]);
+
+        $this->membershipCache = [];
+
+        return $rec;
     }
 
     /**
@@ -505,6 +660,22 @@ class OkrEmployeeBranchResolver
             ->where('period_id', $rosterPeriodId)->where('is_active_for_period', true)
             ->pluck('employee_id')->map(fn ($v) => (int) $v)->all());
 
+        // 18-oct-2026 — ausencia de la nómina vigente SIN baja confirmada: se
+        // muestra con advertencia, nunca se excluye ni se incluye "como si nada".
+        $pendingAbsence = [];
+        if ($rosterPeriodId !== null) {
+            DB::table('period_employee_rosters')
+                ->where('period_id', $rosterPeriodId)
+                ->where('is_active_for_period', false)
+                ->get(['employee_id', 'movement_type', 'reconciliation_status'])
+                ->each(function ($r) use (&$pendingAbsence) {
+                    $status = RosterMovementStatus::resolve($r->reconciliation_status, $r->movement_type, false);
+                    if (!RosterMovementStatus::isConfirmedBaja($status, $r->movement_type) && $status !== RosterMovementStatus::AUSENCIA_JUSTIFICADA) {
+                        $pendingAbsence[(int) $r->employee_id] = RosterMovementStatus::label($status);
+                    }
+                });
+        }
+
         $employees = Employee::query()->whereIn('id', $employeeIds)->get(['id', 'normalized_name'])->keyBy('id');
         $norms = $employees->pluck('normalized_name')->filter()->unique()->values()->all();
         $codesByNorm = $this->personnelResolver->directoryCodesByName($norms);
@@ -521,6 +692,10 @@ class OkrEmployeeBranchResolver
             if ($rosterPeriodId !== null && !collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($inRoster[$g]))) {
                 $list[] = ['code' => 'no_noi', 'label' => 'Sin registro NOI ' . ($rosterLabel ?? 'del periodo') . ' · vigencia por verificar'];
             }
+            $pendingLabel = collect($this->canonicalIdsFor($id))->map(fn ($g) => $pendingAbsence[$g] ?? null)->filter()->first();
+            if ($pendingLabel !== null) {
+                $list[] = ['code' => 'pending_reconciliation', 'label' => "{$pendingLabel} en " . ($rosterLabel ?? 'el periodo vigente') . ' · pendiente de conciliación en Colaboradores'];
+            }
             $codes = $codesByNorm[$employees->get($id)?->normalized_name] ?? [];
             if ($latestPortfolio && $codes !== [] && !collect($codes)->contains(fn ($c) => isset($producing[$c]))) {
                 $list[] = ['code' => 'no_activity', 'label' => "Sin actividad en cartera ({$latestPortfolio->name})"];
@@ -528,7 +703,9 @@ class OkrEmployeeBranchResolver
             if ($memberships[$id]['inactive_route']) {
                 $list[] = ['code' => 'inactive_route', 'label' => "Ruta {$memberships[$id]['inactive_route']} inactiva (solo histórico)"];
             }
-            if ($memberships[$id]['branch_id'] === null) {
+            if (($memberships[$id]['conflict'] ?? null) !== null) {
+                $list[] = ['code' => 'branch_conflict', 'label' => self::CONFLICT_MESSAGE . ' ' . $memberships[$id]['conflict']['detail']];
+            } elseif ($memberships[$id]['branch_id'] === null) {
                 $list[] = ['code' => 'branch_pending', 'label' => 'Sucursal vigente pendiente de verificar'];
             }
             $flags[$id] = $list;

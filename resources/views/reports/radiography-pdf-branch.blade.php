@@ -1,7 +1,7 @@
 @php
 $fmt  = fn($v) => number_format((float)$v, 2);
-$fmt0 = fn($v) => '$' . number_format((float)$v, 0);
-$fmt2 = fn($v) => '$' . number_format((float)$v, 2);
+$fmt0 = fn($v) => (round((float)$v) < 0 ? '-' : '') . '$' . number_format(abs((float)$v), 0);
+$fmt2 = fn($v) => (round((float)$v, 2) < 0 ? '-' : '') . '$' . number_format(abs((float)$v), 2); // -$1,234.56 (nunca $-1,234.56)
 $fmtp = fn($v) => number_format((float)$v, 2) . '%';
 $catColors = $ebitdaCategoriaColors ?? ['bg' => 'FFF1F5F9', 'fg' => 'FF475569'];
 $catBg = '#' . substr($catColors['bg'], 2);

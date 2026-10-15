@@ -66,9 +66,15 @@ const UPLOAD_SAVE_PATH_PATTERNS: RegExp[] = [/^\/historico-general\/?$/];
 // autorizados (Reportería / Histórico General).
 const LOCAL_FEEDBACK_MODULE_PATTERNS: RegExp[] = [/^\/okr(\/|$)/];
 
-type OverlayVisit = { url: URL; method?: string };
+type OverlayVisit = { url: URL; method?: string; only?: string[]; async?: boolean; prefetch?: boolean };
 
-function isExcludedFromGlobalOverlay(visit: OverlayVisit): boolean {
+export function isExcludedFromGlobalOverlay(visit: OverlayVisit): boolean {
+    // Recarga parcial de una tarjeta/consulta (only), petición asíncrona o precarga:
+    // la página sigue usable y cada componente muestra su propio estado de carga.
+    if ((visit.only?.length ?? 0) > 0 || visit.async === true || visit.prefetch === true) {
+        return true;
+    }
+
     if (BACKGROUND_ENQUEUE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
         return true;
     }

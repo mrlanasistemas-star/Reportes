@@ -29,7 +29,7 @@ class EnsureModuleAccess
                 return redirect($this->access->landingUrlFor($user));
             }
 
-            abort(403, 'Tu rol no tiene acceso a este módulo. Pide a un administrador que lo habilite en "Usuarios y accesos".');
+            abort(403, 'Tu rol no tiene acceso a este módulo. Pide a un administrador que lo habilite en Roles y permisos.');
         }
 
         return $next($request);

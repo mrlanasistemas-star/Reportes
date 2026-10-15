@@ -8,6 +8,7 @@ import {
     ShieldCheck,
     Target,
     TrendingUp,
+    UserCog,
     Users,
 } from 'lucide-vue-next';
 import { dashboard } from '@/routes';
@@ -74,11 +75,18 @@ export const mainNavItems: NavItem[] = [
         href: '/settings/profile',
         icon: Settings,
     },
+    // Administración (prioridad 8): dos módulos propios, delegables por rol.
     {
-        title: 'Usuarios y accesos',
-        href: '/okr/responsibles',
+        title: 'Usuarios',
+        href: '/usuarios',
+        icon: UserCog,
+        module: 'usuarios',
+    },
+    {
+        title: 'Roles y permisos',
+        href: '/roles',
         icon: ShieldCheck,
-        roles: ['admin'],
+        module: 'roles',
     },
 ];
 

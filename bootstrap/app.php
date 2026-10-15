@@ -34,6 +34,30 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        // Error técnico real (no validación, permiso ni 404): el usuario recibe un
+        // mensaje humano con una referencia; el detalle (SQL, rutas, traza) solo
+        // queda en el log del servidor bajo esa misma referencia.
+        $exceptions->context(function (\Throwable $e) {
+            if (\App\Support\TechnicalErrorReference::isTechnical($e)) {
+                return ['error_ref' => \App\Support\TechnicalErrorReference::forCurrentRequest()];
+            }
+
+            return [];
+        });
+        $exceptions->render(function (\Throwable $e, \Illuminate\Http\Request $request) {
+            if (! \App\Support\TechnicalErrorReference::isTechnical($e) || config('app.debug')) {
+                return null;
+            }
+            if (! ($request->expectsJson() || $request->header('X-Inertia'))) {
+                return null;
+            }
+            $ref = \App\Support\TechnicalErrorReference::forCurrentRequest();
+
+            return response()->json([
+                'message' => \App\Support\TechnicalErrorReference::message($ref),
+                'reference' => $ref,
+            ], 500, ['X-Error-Reference' => $ref]);
+        });
         $exceptions->render(function (\Illuminate\Http\Exceptions\PostTooLargeException $e, \Illuminate\Http\Request $request) {
             $maxMb = round(((int) ini_get('post_max_size')) ?: 50);
             if ($request->expectsJson() || $request->wantsJson()) {

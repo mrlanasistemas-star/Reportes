@@ -107,7 +107,7 @@ const p = computed(() => props.resultado.parametros);
                     {{ fmtFecha(p.domingo_base) }}
                 </p>
             </div>
-            <p class="text-xs text-muted-foreground">{{ resultado.leyenda }}</p>
+            <p class="text-xs text-muted-foreground">{{ resultado.leyenda }} · Metodología {{ resultado.metodologia }}</p>
         </div>
 
         <div

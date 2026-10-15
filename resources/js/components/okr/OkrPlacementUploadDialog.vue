@@ -78,7 +78,7 @@ async function submit(confirmReplace = false) {
         u.rows_other_branch ? `${u.rows_other_branch} fila(s) de otra sucursal excluidas` : null,
         u.rows_cancelled ? `${u.rows_cancelled} movimiento(s) cancelados o revertidos excluidos` : null,
         u.rows_out_of_objective_range ? `${u.rows_out_of_objective_range} fila(s) fuera del plazo del OKR excluidas` : null,
-        u.unattributed_amount ? `${formatCurrency(u.unattributed_amount)} sin gestor identificado (solo cuenta para la sucursal)` : null,
+        u.unattributed_amount ? `${formatCurrency(u.unattributed_amount)} pendiente de atribución: sin gestor identificado con seguridad (solo cuenta para la sucursal)` : null,
     ].filter(Boolean)
     open.value = false
     Swal.fire({

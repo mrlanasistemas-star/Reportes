@@ -130,32 +130,47 @@ class OkrWarningService
             $reasons[] = 'out_of_range';
         }
         if (!in_array($objective->lifecycle_status, [OkrObjective::STATUS_ACTIVE, OkrObjective::STATUS_CLOSED], true)) {
-            $blockers[] = 'El OKR no está activo — solo se evalúan OKR activados con línea base congelada.';
+            $blockers[] = 'El OKR no está activado — solo se evalúan OKR activados con línea base congelada.';
             $reasons[] = 'not_active';
         }
         if (!$weekClosed) {
-            $blockers[] = 'La semana ' . $weekNumber . ' sigue abierta (termina el ' . $weekEnd->format('d/m/Y') . ') — pendiente de evaluación.';
+            // Texto acordado con el usuario (15-oct-2026) + la fecha concreta de cierre.
+            $blockers[] = 'La semana todavía no termina. Podrás evaluar su cumplimiento después del cierre. (La semana ' . $weekNumber . ' cierra el ' . $weekEnd->format('d/m/Y') . ').';
             $reasons[] = 'week_open';
         }
         if ($objective->commitmentLetter === null) {
             $blockers[] = 'No existe una Carta Compromiso vigente para este OKR — el Warning se emite con base en ella.';
             $reasons[] = 'no_letter';
         }
-        if (OkrWarning::query()->where('okr_objective_id', $objective->id)->where('week_number', $weekNumber)->where('status', OkrWarning::STATUS_ISSUED)->exists()) {
-            $blockers[] = 'Ya existe un Warning vigente para esta semana.';
+        $existingFolio = OkrWarning::query()->where('okr_objective_id', $objective->id)->where('week_number', $weekNumber)->where('status', OkrWarning::STATUS_ISSUED)->value('folio');
+        if ($existingFolio !== null) {
+            $blockers[] = "Documento ya emitido: esta semana ya tiene un Warning vigente (folio {$existingFolio}). Si tenía datos incorrectos, anúlalo con motivo antes de emitir otro.";
             $reasons[] = 'duplicate';
         }
 
         $week = $this->buildWeekSnapshot($objective, $weekNumber);
-        if (!$week['has_any_data']) {
-            $blockers[] = 'Falta evidencia: la semana no tiene información real suficiente — no se convierte la falta de datos en incumplimiento.';
-            $reasons[] = 'no_evidence';
+        // Sin Key Results no hay indicador contra el cual medir — no es "sin evidencia".
+        if ($week['rows'] === []) {
+            $blockers[] = 'Falta KR: este OKR no tiene Key Results configurados, así que no hay indicador contra el cual evaluar la semana.';
+            $reasons[] = 'no_key_results';
+        } elseif (!$week['has_any_data']) {
+            // Semana sin información ≠ incumplimiento. Si el KR que falta es
+            // Colocación se dice explícitamente (es la carga más común pendiente).
+            $missingPlacement = collect($week['rows'])->contains(fn ($r) => !$r['has_data']
+                && str_contains(\Illuminate\Support\Str::of($r['kpi_name'] ?? '')->ascii()->upper()->value(), 'COLOCAC'));
+            if ($missingPlacement) {
+                $blockers[] = 'Falta colocación: todavía no hay colocación registrada para esta semana. Sin ese dato no se puede evaluar — no se interpreta como incumplimiento.';
+                $reasons[] = 'no_placement';
+            } else {
+                $blockers[] = 'Sin evidencia suficiente: la semana no tiene información real suficiente — no se convierte la falta de datos en incumplimiento.';
+                $reasons[] = 'no_evidence';
+            }
         } elseif (!$week['has_breach']) {
-            $blockers[] = 'No existe incumplimiento en la semana seleccionada: el resultado está en o por encima de lo esperado a esa semana.';
+            $blockers[] = 'No existe incumplimiento comprobado en la semana seleccionada: el resultado está en o por encima de lo esperado a esa semana.';
             $reasons[] = 'no_breach';
         }
 
-        $status = $blockers === [] ? 'eligible' : (!$weekClosed || !$week['has_any_data'] ? 'pending' : 'not_eligible');
+        $status = $blockers === [] ? 'eligible' : (!$weekClosed || (!$week['has_any_data'] && $week['rows'] !== []) ? 'pending' : 'not_eligible');
 
         return [
             'status' => $status,
@@ -192,6 +207,7 @@ class OkrWarningService
             'branch_name' => $objective->branch?->name,
             // Puesto y jefe inmediato: los REVISADOS en la carta vigente de esta persona.
             'position' => $letterSnapshot['position'] ?? null,
+            'employee_code' => ($letterSnapshot['employee_code'] ?? null) ?: \App\Models\Employee::query()->whereKey($check['subject']['id'])->value('employee_code'),
             'immediate_boss' => $letterSnapshot['immediate_boss'] ?? null,
             'responsible_name' => $objective->responsibleUser?->name,
             'letter_folio' => $letter?->folio,

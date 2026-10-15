@@ -33,6 +33,13 @@ class EfectividadV4Calculator
 {
     public const ENGINE_VERSION = 'mrlana-v4-2026-10';
 
+    /**
+     * Metodología de cálculo vigente (independiente de la versión técnica del motor).
+     * V7: el pago puntual de la cuota vigente cuenta como SANO aunque el contrato tenga
+     * atrasos anteriores; solo el pago posterior a su fecha de cuota es VIGENTE CON ATRASO.
+     */
+    public const METODOLOGIA = 'V7';
+
     public const LEYENDA = 'Anticipos a fecha cuota | Reno solo su semana | Vencido/atraso segun foto diaria | Sin moratorios';
 
     /** Nombres de hoja de la macro, en orden de fotografía (índice = días desde el domingo base). */
@@ -207,6 +214,7 @@ class EfectividadV4Calculator
 
         return [
             'engine_version' => self::ENGINE_VERSION,
+            'metodologia' => self::METODOLOGIA,
             'parametros' => [
                 'modo' => $modo,
                 'domingo_base' => $this->ymd($fBase),
@@ -659,7 +667,9 @@ class EfectividadV4Calculator
             if ($bVenc) {
                 $categoria = 'vencido';
                 $this->sumarDic($this->cobVencido, $grp, $importe);
-            } elseif ($bAtraso || $fTrans > $fCuota) {
+            } elseif ($fTrans > $fCuota) {
+                // V7: el atraso previo del contrato (atraso_foto) ya no reclasifica un pago
+                // puntual de su cuota vigente; solo cuenta el pago posterior a la fecha de cuota.
                 $categoria = 'atraso';
                 $this->sumarDic($this->cobAtraso, $grp, $importe);
             } else {

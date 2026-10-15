@@ -79,6 +79,7 @@ watch(open, (v) => {
         fields.observations = ''
         accountableId.value = null
         showInlinePreview.value = false
+        issueBlock.value = null
         loadError.value = null
         loadReview()
         loadBranchEmployees()
@@ -131,6 +132,16 @@ function useBossSuggestion() {
 // Confirmaciones DENTRO del diálogo (15-oct-2026): un SweetAlert encima de un
 // Dialog abierto no recibe clics/foco — el botón "Sí, emitir" no respondía.
 const confirmingIssue = ref(false)
+// Bloqueo de emisión por datos faltantes (15-oct-2026) + "Completar información".
+const BOSS_MISSING_MESSAGE = 'No es posible emitir la Carta Compromiso porque falta confirmar el jefe inmediato.'
+const issueBlock = ref<string | null>(null)
+const bossInput = ref<HTMLInputElement | null>(null)
+
+function completeInformation() {
+    confirmingIssue.value = false
+    bossInput.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    bossInput.value?.focus()
+}
 const voidingId = ref<number | null>(null)
 const voidReason = ref('')
 const voiding = ref(false)
@@ -142,11 +153,23 @@ async function generate() {
     confirmingIssue.value = false
 
     if (!res.ok) {
+        // Datos faltantes (p. ej. jefe inmediato sin confirmar): se explica
+        // dentro del diálogo con la acción "Completar información", nunca
+        // como un error genérico.
+        if (res.data?.action === 'complete_information') {
+            issueBlock.value = res.message
+            await loadReview()
+            completeInformation()
+
+            return
+        }
+
         Swal.fire({ icon: 'error', title: 'No se pudo emitir la carta', text: res.message })
 
         return
     }
 
+    issueBlock.value = null
     Swal.fire({ toast: true, position: 'top-end', icon: 'success', title: `Carta emitida · ${res.data.letter.folio}`, timer: 2600, showConfirmButton: false })
     await loadReview()
     router.reload({ only: ['objective'] })
@@ -220,7 +243,7 @@ async function voidLetter(letter: any) {
                     </div>
                     <div class="rounded-xl border p-3" :class="missing.immediate_boss ? 'border-amber-500/40 bg-amber-500/5' : 'border-border'">
                         <p class="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Jefe inmediato (confirmar)</p>
-                        <input v-model="fields.immediate_boss" maxlength="160" class="app-input mt-1 h-9 text-sm" placeholder="Nombre del jefe inmediato real">
+                        <input ref="bossInput" v-model="fields.immediate_boss" maxlength="160" class="app-input mt-1 h-9 text-sm" placeholder="Nombre del jefe inmediato real">
                         <div v-if="ctx?.boss_suggestion" class="mt-1.5 text-[11px]">
                             <button v-if="ctx.boss_suggestion.name && fields.immediate_boss !== ctx.boss_suggestion.name" type="button" class="flex items-center gap-1 font-semibold text-primary hover:underline" @click="useBossSuggestion">
                                 <Lightbulb class="size-3.5" /> Usar sugerencia: {{ ctx.boss_suggestion.name }} ({{ ctx.boss_suggestion.position }})
@@ -245,7 +268,12 @@ async function voidLetter(letter: any) {
                 </section>
 
                 <div v-if="Object.keys(missing).length" class="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-200">
-                    <AlertTriangle class="mt-0.5 size-4 shrink-0" /><span>Para emitir falta: <strong>{{ Object.values(missing).join(', ') }}</strong>.</span>
+                    <AlertTriangle class="mt-0.5 size-4 shrink-0" />
+                    <div class="flex-1 space-y-1">
+                        <p v-if="missing.immediate_boss || issueBlock" class="font-bold">{{ issueBlock ?? BOSS_MISSING_MESSAGE }}</p>
+                        <p>Para emitir falta: <strong>{{ Object.values(missing).join(', ') }}</strong>. La vista previa sí está disponible (marca lo pendiente y no genera folio).</p>
+                    </div>
+                    <Button v-if="missing.immediate_boss" size="sm" variant="outline" class="shrink-0 rounded-lg border-amber-500/40" @click="completeInformation">Completar información</Button>
                 </div>
                 <div v-else class="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
                     <CheckCircle2 class="size-4" /> Datos completos.

@@ -51,6 +51,9 @@ class HandleInertiaRequests extends Middleware
                 // Módulos que el menú debe mostrar (14-oct-2026) — misma fuente que
                 // EnsureModuleAccess; ocultar en el menú es solo UX.
                 'modules' => app(ModuleAccessService::class)->modulesFor($request->user()),
+                // Acciones permitidas "modulo.accion" (prioridad 9) — solo para ocultar
+                // botones; la autorización real es el middleware permission:* en cada ruta.
+                'permissions' => fn () => app(\App\Services\Access\ActionPermissionService::class)->flatFor($request->user()),
             ],
             // Mensajes de sesión (14-oct-2026, módulo OKR): resultado de acciones
             // como la activación en cascada de OKR individuales.

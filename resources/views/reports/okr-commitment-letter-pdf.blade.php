@@ -82,18 +82,21 @@ $field = function (?string $value) {
       <div><div class="label">Puesto:</div>{!! $field($snapshot['position'] ?? null) !!}</div>
       <div><div class="label">Sucursal / Área:</div>{!! $field($snapshot['branch_name'] ?? null) !!}</div>
       <div><div class="label">Jefe inmediato:</div>{!! $field($boss) !!}</div>
+      {{-- Periodo en la 6ª celda (15-oct-2026): antes era un recuadro aparte
+           que dejaba la celda junto a "Jefe inmediato" vacía y empujaba la
+           tabla de KPI a partirse en dos páginas con una sola fila suelta. --}}
+      <div><div class="label">Periodo de medición:</div>{!! $field(
+        ($snapshot['start_date'] ?? null) && ($snapshot['end_date'] ?? null)
+          ? 'Del ' . Fmt::dateShort($snapshot['start_date']) . ' al ' . Fmt::dateShort($snapshot['end_date'])
+            . (!empty($snapshot['duration_weeks']) ? ' (' . $snapshot['duration_weeks'] . ' semanas)' : '')
+          : null
+      ) !!}</div>
     </div>
   </div>
 
-  <div class="section keep">
-    <div class="section-title">II. Periodo y objetivo comprometido</div>
-    <div class="boxed">
-      <div><div class="label">Fecha de inicio:</div>{!! $field(Fmt::dateShort($snapshot['start_date'] ?? null)) !!}</div>
-      <div><div class="label">Fecha de término:</div>{!! $field(Fmt::dateShort($snapshot['end_date'] ?? null)) !!}</div>
-    </div>
-  </div>
+  <div class="section-title" style="margin-top: 10pt;">II. Objetivo comprometido</div>
 
-  <p class="body">
+  <p class="body" style="margin-top: 0;">
     Por medio de la presente, <b>PRODUCTOS Y SERVICIOS MR LANA S.A.P.I. DE C.V.</b> establece con el colaborador
     señalado el presente compromiso de desempeño, con la finalidad de documentar de manera clara, objetiva y medible
     el <b>Objetivo y Resultado Clave (OKR)</b> correspondiente al periodo indicado, así como los <b>Indicadores Clave de
@@ -167,10 +170,13 @@ $field = function (?string $value) {
   <div class="keep">
   <p class="body muted">La presente carta constituye un instrumento interno de planeación, seguimiento y gestión del desempeño y deberá conservarse como evidencia del objetivo comunicado y aceptado para el periodo correspondiente.</p>
 
-  <div class="signatures">
-    <div><div class="line"><div class="role">Colaborador</div><div class="name">{{ $collaborator }}</div><div class="hint">Nombre y firma</div></div></div>
-    <div><div class="line"><div class="role">Jefe inmediato / Responsable</div><div class="name">{{ $boss }}</div><div class="hint">Nombre y firma</div></div></div>
-    <div><div class="line"><div class="role">Vo. Bo. MR LANA</div><div class="name"></div><div class="hint">Nombre y firma</div></div></div>
-  </div>
+  {{-- 15-oct-2026: "Jefe inmediato" (el CONFIRMADO en la revisión) — ya no
+       "Jefe inmediato / Responsable": el responsable administrativo del OKR
+       nunca firma como jefe sin relación jerárquica respaldada. --}}
+  @include('reports.partials.okr-signatures', ['signers' => [
+    ['role' => 'Colaborador', 'name' => $collaborator],
+    ['role' => 'Jefe inmediato', 'name' => $boss],
+    ['role' => 'Vo. Bo. MR LANA', 'name' => null],
+  ]])
   </div>
 @endsection

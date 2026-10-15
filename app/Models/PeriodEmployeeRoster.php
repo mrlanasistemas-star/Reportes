@@ -21,6 +21,10 @@ class PeriodEmployeeRoster extends Model {
         'appears_in_nomina_fiscal',
         'is_active_for_period',
         'movement_type',
+        'reconciliation_status',
+        'reconciliation_note',
+        'movement_evidence',
+        'requires_review',
     ];
 
     protected $casts = [
@@ -28,6 +32,8 @@ class PeriodEmployeeRoster extends Model {
         'appears_in_nomina_normal' => 'boolean',
         'appears_in_nomina_fiscal' => 'boolean',
         'is_active_for_period'     => 'boolean',
+        'movement_evidence'        => 'array',
+        'requires_review'          => 'boolean',
     ];
 
     public function period(): BelongsTo {

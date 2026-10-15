@@ -120,3 +120,44 @@ objetivos largos pisaban etiquetas, líneas y casillas. Ahora:
 - Carta del gestor = SUS Key Results individuales; carta de sucursal = meta de sucursal.
 - Warning: imprime también las acciones correctivas y observaciones capturadas; usa los KR y
   snapshots del Objective evaluado (un Warning individual nunca usa resultados de la sucursal).
+
+## Actualización 15-oct-2026 — jefe inmediato confirmado, Warnings con motivo exacto, PDFs revisados visualmente
+
+**Carta Compromiso**
+- Jefe inmediato: solo el CONFIRMADO en la revisión. Se rechaza (queda "Pendiente de captura" y
+  no se emite) si es el propio colaborador evaluado, o si coincide con el usuario responsable /
+  creador del OKR y el directorio laboral vigente no lo respalda como su jefe
+  (`OkrCommitmentLetterService::bossIssue()`).
+- Sin jefe confirmado la emisión responde 422 con el mensaje
+  "No es posible emitir la Carta Compromiso porque falta confirmar el jefe inmediato." y
+  `action: complete_information` → la UI muestra el botón **Completar información**
+  (enfoca el campo). Excepción tipada: `OkrCommitmentLetterIncompleteException`.
+- Fallo del motor PDF al emitir: la transacción se revierte (sin folio) y se responde con una
+  referencia `CC-PDF-…` registrada en el log. La vista previa fallida muestra una página HTML
+  legible con referencia `CC-PREV-…`.
+- Plantilla: periodo de medición dentro de "I. Datos del colaborador" (la tabla de KPI ya no se
+  parte con una fila suelta), firmas en tabla alineada (`reports/partials/okr-signatures`),
+  rol "Jefe inmediato" (ya no "Jefe inmediato / Responsable").
+
+**Warning**
+- La ventana siempre abre; motivos clasificados: OKR no activado, Falta KR, Semana abierta
+  ("La semana todavía no termina. Podrás evaluar su cumplimiento después del cierre."),
+  Falta colocación, Sin evidencia suficiente, Sin incumplimiento comprobado, Documento ya
+  emitido (con folio), Falta autorización (`authorization_notice`). Semana sin información =
+  "Pendiente de evaluación", nunca incumplimiento.
+- Error técnico real: "No pudimos consultar la información. Intenta nuevamente. Si continúa,
+  proporciona esta referencia a Sistemas: WR-ELIG-…" (referencia en el log). Corregido el
+  `catch (Throwable)` sin `use Throwable;` que nunca atrapaba nada.
+- El Warning imprime número de empleado y jefe inmediato de la persona evaluada.
+
+**Tipografía**: `reports/partials/montserrat-font-face.blade.php` embebe Montserrat local
+(base64) — lo usan los documentos OKR, el PDF del Dashboard y la calculadora de Efectividad.
+`pdffonts` reporta `MontserratThin-*` (nombre interno de la familia variable de
+@fontsource; es Montserrat con sus pesos 400–800). El pie de página que inyecta Chrome en
+los PDFs no full-bleed sigue en Helvetica/Arial (las plantillas de pie de Chrome no cargan
+fuentes web). Radiografías y guía siguen en Helvetica/Arial (no cambiadas: tablas densas).
+
+**Dashboard**: "Exportar PDF" ahora llama `GET /dashboard/exportar.pdf?period_id=&branch_id=`
+(`DashboardController::exportPdf`, vista `reports.dashboard-pdf`, gráficas SVG de
+`DashboardPdfChartBuilder`) con los mismos 8 KPI y 4 gráficas del Dashboard. Antes descargaba
+la Radiografía completa.

@@ -1,7 +1,7 @@
 @php
 $fmt  = fn($v) => number_format((float)$v, 2);
-$fmt0 = fn($v) => '$' . number_format((float)$v, 0);
-$fmt2 = fn($v) => '$' . number_format((float)$v, 2);
+$fmt0 = fn($v) => (round((float)$v) < 0 ? '-' : '') . '$' . number_format(abs((float)$v), 0);
+$fmt2 = fn($v) => (round((float)$v, 2) < 0 ? '-' : '') . '$' . number_format(abs((float)$v), 2); // -$1,234.56 (nunca $-1,234.56)
 $fmtp = fn($v) => number_format((float)$v, 2) . '%';
 $catColors = $ebitdaCategoriaColors ?? ['bg' => 'FFF1F5F9', 'fg' => 'FF475569'];
 $catBg = '#' . substr($catColors['bg'], 2);
@@ -27,6 +27,11 @@ $recoveryComponentLabels = [
     'moratorios' => 'Moratorios', 'cargos_adicionales' => 'Cargos adicionales',
     'cargos_inicio' => 'Cargos al inicio', 'comision_apertura' => 'Comisión por apertura',
     'excedentes' => 'Excedentes recuperados', 'otros' => 'Otros',
+    // 15-oct-2026: claves del desglose por colaborador — antes se imprimían
+    // crudas ("Charges", "Interes recuperado", "Otros recuperacion").
+    'interes_recuperado' => 'Intereses', 'impuesto_recuperado' => 'Impuestos', 'charges' => 'Moratorios / Multas',
+    'excedente_recuperado' => 'Excedentes recuperados', 'seguro_crece_reconocido' => 'Seguro CRECE reconocido (30%)',
+    'otros_recuperacion' => 'Otros', 'capital_recuperado' => 'Capital recuperado', 'moratorios_multas' => 'Moratorios / Multas',
 ];
 @endphp
 <x-pdf.layout :title="'Radiografía ' . $empName . ' — ' . $period->label">
