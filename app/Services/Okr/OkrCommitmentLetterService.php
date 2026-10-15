@@ -93,6 +93,10 @@ class OkrCommitmentLetterService
             'scope_type' => $objective->scope_type,
             'subject_employee_id' => $subject?->id,
             'collaborator_name' => $subject?->full_name,
+            // Número de empleado (15-oct-2026, cierre de errores OKR) — requerido
+            // en la revisión y en el documento; identificador estable aunque el
+            // nombre o la sucursal cambien de representación.
+            'employee_code' => $subject?->employee_code,
             'position' => $position,
             'position_source' => $positionSource,
             'branch_name' => $objective->branch?->name,

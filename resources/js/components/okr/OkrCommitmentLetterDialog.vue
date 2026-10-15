@@ -22,6 +22,11 @@ const open = defineModel<boolean>('open', { default: false })
 const fields = reactive({ position: '', immediate_boss: '', observations: '' })
 const review = ref<any | null>(null)
 const loading = ref(false)
+// Bug real corregido (15-oct-2026): cuando /commitment-letter/review fallaba
+// (403/404/500/sin conexión), review.value quedaba en null y el template no
+// tenía NINGÚN estado para eso — el diálogo se quedaba con el título y nada
+// más, sin mensaje ni Reintentar. Ahora el error se guarda y se muestra.
+const loadError = ref<string | null>(null)
 const generating = ref(false)
 const accountableId = ref<number | null>(null)
 const savingAccountable = ref(false)
@@ -39,6 +44,7 @@ function query(): string {
 async function loadReview() {
     const mine = ++version
     loading.value = true
+    loadError.value = null
     const res = await okrRequest(`/okr/${props.objectiveId}/commitment-letter/review?${query()}`)
 
     if (mine !== version) {
@@ -46,7 +52,13 @@ async function loadReview() {
     }
 
     loading.value = false
-    review.value = res.ok ? res.data : null
+    if (!res.ok) {
+        review.value = null
+        loadError.value = res.message
+
+        return
+    }
+    review.value = res.data
 }
 
 async function loadBranchEmployees() {
@@ -65,6 +77,7 @@ watch(open, (v) => {
         fields.observations = ''
         accountableId.value = null
         showInlinePreview.value = false
+        loadError.value = null
         loadReview()
         loadBranchEmployees()
     }
@@ -163,12 +176,17 @@ async function voidLetter(letter: any) {
 
             <div v-if="!review && loading" class="space-y-2 py-2"><div v-for="n in 4" :key="n" class="h-10 animate-pulse rounded-lg bg-muted" /></div>
 
+            <div v-else-if="loadError" class="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                <p>{{ loadError }}</p>
+                <Button size="sm" variant="outline" class="rounded-lg" @click="loadReview">Reintentar</Button>
+            </div>
+
             <div v-else-if="snap" class="space-y-4">
                 <!-- Persona evaluada -->
                 <section class="rounded-2xl border border-border p-3">
                     <p class="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground"><UserCheck class="size-3.5" /> {{ scopeType === 'branch' ? 'Titular del OKR de sucursal' : 'Colaborador evaluado' }}</p>
                     <template v-if="snap.collaborator_name">
-                        <p class="text-base font-bold text-foreground">{{ snap.collaborator_name }}</p>
+                        <p class="text-base font-bold text-foreground">{{ snap.collaborator_name }} <span v-if="snap.employee_code" class="font-mono text-xs font-normal text-muted-foreground">· {{ snap.employee_code }}</span></p>
                         <p class="text-xs text-muted-foreground">Sucursal {{ snap.branch_name }} · Responsable de seguimiento (administrativo): {{ snap.responsible_name ?? '—' }}</p>
                     </template>
                     <div v-else-if="scopeType === 'branch'" class="space-y-2">
@@ -283,6 +301,13 @@ async function voidLetter(letter: any) {
                         </div>
                     </div>
                 </section>
+            </div>
+
+            <!-- Nunca una ventana vacía (sección 8 del cierre, 15-oct-2026): si la
+                 carga terminó sin error pero sin datos utilizables, se explica. -->
+            <div v-else class="rounded-xl border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+                No se pudo preparar la revisión de la Carta Compromiso para este OKR.
+                <Button size="sm" variant="outline" class="ml-2 rounded-lg" @click="loadReview">Reintentar</Button>
             </div>
         </DialogContent>
     </Dialog>
