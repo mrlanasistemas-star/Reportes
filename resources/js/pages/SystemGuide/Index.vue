@@ -21,8 +21,6 @@ defineOptions({ layout: AppLayout })
 const { startTour } = useTour()
 const guidedTours = Object.values(TOURS).map((t) => ({ id: t.id, label: t.label }))
 
-defineOptions({ layout: AppLayout })
-
 // Guía rediseñada como WIZARD paso a paso (cierre 17-sep-2026, ronda 5) — reemplaza la
 // versión anterior de scroll largo con ancla de tabla de contenido (el usuario pidió
 // explícitamente quitarla: "la guía actual no me ayuda mucho"). Mismo contenido
