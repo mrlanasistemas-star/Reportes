@@ -1,77 +1,34 @@
 <script setup lang="ts">
-// Módulo OKR — "Seguimiento OKR". Reconstruido 10-sep-2026 para reproducir
-// 1:1 docs/imagenesOKR/9-12.png (auditoría de esa fecha, secciones 22-28):
-// hero + UNA barra de filtros + 7 cards en una fila + grid 64/36 (Avance por
-// KPI | Evidencias + Check-in). Sin tabs, sin command-center, sin progress
-// ring gigante, sin Attention Center — esas ideas del rediseño anterior NO
-// están en la referencia.
-import { Link, router, usePage } from '@inertiajs/vue3'
-import {
-    ArrowDown, ArrowLeft, ArrowUp, Bell, CalendarClock, FileSignature, Flag, Gauge,
-    History, Target, TrendingDown, TrendingUp, Upload, X,
-} from 'lucide-vue-next'
+// Módulo OKR — "Seguimiento OKR". Rediseño 15-oct-2026: la página solo
+// orquesta secciones organizadas según el trabajo real del usuario:
+//   encabezado + acciones → filtros (qué alcance se ve) → resumen del objetivo
+//   → SEGUIMIENTO POR GESTOR (protagonista en sucursal) → colocación semanal
+//   → resultados por KPI → documentos y compromisos → histórico → bitácora.
+// Ninguna acción usa pantalla de carga global: cada botón tiene su spinner.
+import { router, usePage } from '@inertiajs/vue3'
+import { AlertTriangle, Bell, CalendarRange, LineChart, Target, Upload } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import AppEmptyState from '@/components/app/AppEmptyState.vue'
-import SearchableSelect from '@/components/forms/SearchableSelect.vue'
-import SelectField from '@/components/forms/SelectField.vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import OkrActivationDialog from '@/components/okr/OkrActivationDialog.vue'
 import OkrCheckInDialog from '@/components/okr/OkrCheckInDialog.vue'
 import OkrCommitmentLetterDialog from '@/components/okr/OkrCommitmentLetterDialog.vue'
+import OkrCompleteKrDialog from '@/components/okr/OkrCompleteKrDialog.vue'
 import OkrEditGoalDialog from '@/components/okr/OkrEditGoalDialog.vue'
 import OkrEvidenceUploadDialog from '@/components/okr/OkrEvidenceUploadDialog.vue'
-import OkrGestorTrackingSection from '@/components/okr/OkrGestorTrackingSection.vue'
-import OkrGoalHeadline from '@/components/okr/OkrGoalHeadline.vue'
-import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
-import OkrProgressBar from '@/components/okr/OkrProgressBar.vue'
-import OkrStatCard from '@/components/okr/OkrStatCard.vue'
+import OkrPlacementUploadDialog from '@/components/okr/OkrPlacementUploadDialog.vue'
+import OkrPlacementWeeksTable from '@/components/okr/OkrPlacementWeeksTable.vue'
+import OkrWarningDialog from '@/components/okr/OkrWarningDialog.vue'
 import OkrWeeklyHistory from '@/components/okr/OkrWeeklyHistory.vue'
 import OkrWeightsDialog from '@/components/okr/OkrWeightsDialog.vue'
+import OkrAuditTrail from '@/components/okr/show/OkrAuditTrail.vue'
+import OkrDocumentsPanel from '@/components/okr/show/OkrDocumentsPanel.vue'
+import OkrGestorTable from '@/components/okr/show/OkrGestorTable.vue'
+import OkrKpiResultsTable from '@/components/okr/show/OkrKpiResultsTable.vue'
+import OkrObjectiveSummary from '@/components/okr/show/OkrObjectiveSummary.vue'
+import OkrScopeFilters from '@/components/okr/show/OkrScopeFilters.vue'
+import OkrTrackingHeader from '@/components/okr/show/OkrTrackingHeader.vue'
 import { Button } from '@/components/ui/button'
 import AppLayout from '@/layouts/AppLayout.vue'
-import { formatByUnit, formatFriendlyDate, formatFriendlyDateTime, formatPp } from '@/lib/okrFormat'
-
-// Historial del OKR (cierre 17-sep-2026 ronda 5) — antes le pegaba " modificada" a
-// CUALQUIER acción sin importar cuál fuera ("created modificada", "activated
-// modificada" — texto técnico en inglés, ni siquiera con sentido gramatical). Cada
-// action/field real (ver OkrAuditLogger — 'created'/'activated'/
-// 'key_result_removed'/'field_changed') tiene aquí su propia frase en español.
-const FIELD_LABELS: Record<string, string> = {
-    weight: 'Ponderación',
-    target_value: 'Meta',
-}
-function auditLogLabel(log: { action: string; field?: string | null }): string {
-    if (log.field && FIELD_LABELS[log.field]) {
-return `${FIELD_LABELS[log.field]} modificada`
-}
-
-    switch (log.action) {
-        case 'created': return 'OKR creado'
-        case 'activated': return 'OKR activado'
-        case 'baseline_manual_authorized': return 'Línea base manual autorizada'
-        case 'key_result_removed': return 'Resultado clave eliminado'
-        case 'field_changed': return `${log.field ?? 'Campo'} modificado`
-        default: return log.field ? `${log.field} modificado` : 'Actualización del OKR'
-    }
-}
-
-// D13 del cierre (17-sep-2026) — auditoría real confirmó que este sistema SOLO
-// genera radiografía a nivel MENSUAL (nunca semanal), así que un KPI automático
-// evaluado en la semana 1 y en la semana 2 del MISMO mes lee el MISMO total
-// mensual — el backend ya lo etiqueta honestamente (OkrSnapshotService::
-// resolveSourceMetadata(), source_quality='monthly_proxy'|'last_available'), pero
-// esa etiqueta nunca llegaba a mostrarse — el usuario no tenía forma de saber que
-// "Actual" no es una lectura semanal real. Se muestra aquí, nunca se inventa una
-// granularidad que no existe.
-function latestSourceQuality(kr: any): string | null {
-    const snaps = kr.snapshots ?? []
-
-    return snaps.length ? (snaps[snaps.length - 1]?.source_quality ?? null) : null
-}
-const SOURCE_QUALITY_LABELS: Record<string, string> = {
-    monthly_proxy: 'Este valor es el TOTAL MENSUAL de Reportería (proxy) — el sistema no tiene granularidad semanal real; "Actual" no cambia entre semanas del mismo mes.',
-    last_available: 'Reportería todavía no cierra el mes de esta semana — se muestra el último mes con radiografía generada disponible.',
-    missing: 'Sin archivo de colocación cargado para esta semana — nunca se muestra como 0 para no fingir un resultado que no existe.',
-}
 
 defineOptions({ layout: AppLayout })
 
@@ -95,45 +52,126 @@ const props = defineProps<{
     users: { id: number; name: string }[]
 }>()
 
-const statusLabel: Record<string, string> = { draft: 'Borrador', active: 'Activo', closed: 'Cerrado', cancelled: 'Cancelado' }
-function fmt(v: number | null, unit?: string) {
- return formatByUnit(v, unit) 
+type CompleteTarget = { id: number; title: string; employee: string | null; scope_type: string; branch_id: number | null; employee_id: number | null; start_date: string; existing?: any[] }
+
+const isBranch = computed(() => props.objective.scope_type === 'branch')
+const hasPlacement = computed(() => (props.objective.placement_weeks ?? []).length > 0)
+const canUploadPlacement = computed(() => hasPlacement.value && !props.objective.is_read_only && props.canUploadEvidence && isBranch.value)
+
+const activationOpen = ref(false)
+const letterOpen = ref(false)
+const warningOpen = ref(false)
+const checkInOpen = ref(false)
+const evidenceOpen = ref(false)
+const weightsOpen = ref(false)
+const editGoalOpen = ref(false)
+const editingKr = ref<any | null>(null)
+const completeOpen = ref(false)
+const completeTarget = ref<CompleteTarget | null>(null)
+const uploadOpen = ref(false)
+const uploadWeek = ref<any | null>(null)
+const refreshing = ref(false)
+
+const alreadyCheckedInThisWeek = computed(() => props.checkIns.some((c) => c.week_number === props.objective.current_week))
+
+function openComplete(target: CompleteTarget) {
+    completeTarget.value = target
+    completeOpen.value = true
 }
 
-// Activación — si es un OKR de sucursal con individuales en borrador, ofrece
-// activarlos en la misma acción (cada uno congela SU propia línea base).
-async function activate() {
-    const draftChildren = (props.objective.children ?? []).filter((c: any) => c.lifecycle_status === 'draft')
-    let includeChildren = false
+function configureSelf() {
+    openComplete({
+        id: props.objective.id, title: props.objective.title, employee: props.objective.employee?.full_name ?? null,
+        scope_type: props.objective.scope_type, branch_id: props.objective.branch?.id ?? null, employee_id: props.objective.employee?.id ?? null,
+        start_date: props.objective.start_date, existing: props.keyResults,
+    })
+}
 
-    if (props.objective.scope_type === 'branch' && draftChildren.length) {
-        const r = await Swal.fire({
-            icon: 'question', title: 'Activar OKR de sucursal',
-            html: `También hay <strong>${draftChildren.length}</strong> OKR individual(es) en borrador. ¿Activarlos ahora? Cada uno congela su propia línea base; el que esté incompleto se queda en borrador y se te indica por qué.`,
-            showDenyButton: true, showCancelButton: true,
-            confirmButtonText: 'Activar sucursal + individuales', denyButtonText: 'Solo la sucursal', cancelButtonText: 'Cancelar',
-            confirmButtonColor: '#059669', denyButtonColor: '#4f46e5',
-        })
+function configureChild(row: any) {
+    openComplete({
+        id: row.id, title: row.title, employee: row.employee, scope_type: 'employee', branch_id: props.objective.branch?.id ?? null,
+        employee_id: row.employee_id ?? null, start_date: props.objective.start_date, existing: row.key_results ?? [],
+    })
+}
 
-        if (r.isDismissed) {
-            return
-        }
+function configureFromActivation(objectiveId: number) {
+    activationOpen.value = false
 
-        includeChildren = r.isConfirmed
+    if (objectiveId === props.objective.id) {
+        configureSelf()
+
+        return
     }
 
-    Swal.fire({ title: 'Activando…', text: 'Congelando líneas base con Reportería.', allowOutsideClick: false, didOpen: () => Swal.showLoading() })
-    router.post(`/okr/${props.objective.id}/activate`, { include_children: includeChildren }, {
-        onError: (errors) => Swal.fire({ icon: 'error', title: 'No se pudo activar', text: Object.values(errors)[0] as string }),
+    const row = (props.objective.gestor_tracking ?? []).find((g: any) => g.id === objectiveId)
+
+    if (row) {
+        configureChild(row)
+    }
+}
+
+function onEdit() {
+    if (props.objective.lifecycle_status === 'draft') {
+        configureSelf()
+
+        return
+    }
+
+    if (props.objective.lifecycle_status === 'active' && props.keyResults.length === 1) {
+        editingKr.value = props.keyResults[0]
+        editGoalOpen.value = true
+
+        return
+    }
+
+    document.getElementById('okr-kpi-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function openEditKr(kr: any) {
+    editingKr.value = kr
+    editGoalOpen.value = true
+}
+
+function openUpload(week?: any) {
+    const weeks = props.objective.placement_weeks ?? []
+    const current = props.objective.current_week || 1
+    uploadWeek.value = week
+        ?? weeks.find((w: any) => !w.uploaded && w.week_number <= current)
+        ?? weeks.find((w: any) => w.week_number === current)
+        ?? weeks[0] ?? null
+    uploadOpen.value = true
+}
+
+function refresh() {
+    refreshing.value = true
+    router.post(`/okr/${props.objective.id}/refresh`, {}, {
+        preserveScroll: true,
+        onError: (e) => Swal.fire({ icon: 'error', title: 'No se pudo recalcular', text: String(Object.values(e)[0] ?? '') }),
         onFinish: () => {
-            if (Swal.isLoading()) {
-                Swal.close()
-            }
+            refreshing.value = false
         },
     })
 }
 
-// Mensajes de sesión (resultado de la activación en cascada, etc.).
+async function destroyObjective() {
+    const r = await Swal.fire({
+        icon: 'warning', title: '¿Eliminar este OKR?', text: 'Se cancelará y quedará fuera del tablero activo. El histórico, evidencias y documentos se conservan.',
+        showCancelButton: true, confirmButtonText: 'Sí, eliminar', cancelButtonText: 'Cancelar', confirmButtonColor: '#e11d48',
+    })
+
+    if (r.isConfirmed) {
+        router.delete(`/okr/${props.objective.id}`)
+    }
+}
+
+async function removeDraftKr(kr: any) {
+    const r = await Swal.fire({ icon: 'warning', title: `¿Quitar el KR "${kr.kpi.name}"?`, showCancelButton: true, confirmButtonText: 'Quitar', cancelButtonText: 'Cancelar', confirmButtonColor: '#dc2626' })
+
+    if (r.isConfirmed) {
+        router.delete(`/okr/${props.objective.id}/key-results/${kr.id}`, { preserveScroll: true })
+    }
+}
+
 const page = usePage()
 watch(() => (page.props as any).flash, (flash) => {
     if (flash?.warning) {
@@ -143,733 +181,119 @@ watch(() => (page.props as any).flash, (flash) => {
     }
 }, { immediate: true })
 
-function auditValue(log: any, value: any): string {
-    if (value === null || value === undefined || value === '') {
-        return '—'
+// Acceso directo desde "Seguimiento por gestor" (?panel=letter|warning|documents|history).
+onMounted(async () => {
+    const panel = new URLSearchParams(window.location.search).get('panel')
+
+    if (panel === 'letter') {
+        letterOpen.value = true
+    } else if (panel === 'warning') {
+        warningOpen.value = true
+    } else if (panel) {
+        await nextTick()
+        document.getElementById(panel === 'documents' ? 'okr-documents' : 'okr-history')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-
-    return log.field === 'target_value' || log.field === 'baseline_value' ? formatByUnit(value, log.unit) : (log.field === 'weight' ? `${value}%` : String(value))
-}
-function refresh() {
- router.post(`/okr/${props.objective.id}/refresh`) 
-}
-function destroyObjective() {
-    Swal.fire({
-        icon: 'warning', title: '¿Eliminar este OKR?', text: 'Se cancelará y quedará fuera del tablero activo. El histórico se conserva.',
-        showCancelButton: true, confirmButtonText: 'Sí, eliminar', cancelButtonText: 'Cancelar', confirmButtonColor: '#e11d48',
-    }).then((r) => {
- if (r.isConfirmed) {
-router.delete(`/okr/${props.objective.id}`)
-} 
 })
-}
-
-// ── Filtros de Seguimiento (docs/imagenesOKR/9.png) — cambiar de OKR sin volver al Dashboard. ──
-const filterBranchId = ref<number | null>(props.objective.branch?.id ?? null)
-const filterEmployeeId = ref<number | null>(props.objective.employee?.id ?? null)
-const filterPeriodId = ref<string>('')
-const filterSearch = ref('')
-const selectedObjectiveId = ref<number>(props.objective.id)
-const employeeOptions = ref<{ id: number; full_name: string }[]>([])
-const objectiveOptions = ref<{ id: number; title: string }[]>([{ id: props.objective.id, title: props.objective.title }])
-
-// Parte C del cierre (17-sep-2026): tokens de versión — sin esto, una
-// respuesta vieja (ej. tecleo rápido o cambio de sucursal) podía pisar el
-// resultado de una búsqueda más nueva y dejar opciones equivocadas.
-let employeesVersion = 0
-let objectivesVersion = 0
-let objectivesSearchTimer: ReturnType<typeof setTimeout> | null = null
-
-async function loadEmployees() {
-    const params = new URLSearchParams()
-
-    if (filterBranchId.value) {
-params.set('branch_id', String(filterBranchId.value))
-}
-
-    const myVersion = ++employeesVersion
-    const res = await fetch(`/okr/employees-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-
-    if (myVersion !== employeesVersion) {
-return
-}
-
-    employeeOptions.value = res.ok ? (await res.json()).employees ?? [] : []
-}
-async function loadObjectives() {
-    const params = new URLSearchParams()
-
-    if (filterBranchId.value) {
-params.set('branch_id', String(filterBranchId.value))
-}
-
-    if (filterEmployeeId.value) {
-params.set('employee_id', String(filterEmployeeId.value))
-}
-
-    if (filterPeriodId.value) {
-params.set('period_id', filterPeriodId.value)
-}
-
-    if (filterSearch.value) {
-params.set('search', filterSearch.value)
-}
-
-    const myVersion = ++objectivesVersion
-    const res = await fetch(`/okr/objectives-lookup?${params.toString()}`, { cache: 'no-store', headers: { Accept: 'application/json' } })
-
-    if (myVersion !== objectivesVersion) {
-return
-}
-
-    objectiveOptions.value = res.ok ? (await res.json()).objectives ?? [] : []
-}
-onMounted(loadEmployees)
-watch(filterBranchId, () => {
- filterEmployeeId.value = null; loadEmployees(); loadObjectives() 
-})
-watch([filterEmployeeId, filterPeriodId], loadObjectives)
-function onObjectiveSearch(term: string) {
-    filterSearch.value = term
-
-    if (objectivesSearchTimer) {
-clearTimeout(objectivesSearchTimer)
-}
-
-    objectivesSearchTimer = setTimeout(loadObjectives, 250)
-}
-function goToObjective(id: number | string | null) {
- if (id && id !== props.objective.id) {
-router.get(`/okr/${id}`)
-} 
-}
-function clearTrackingFilters() {
-    filterBranchId.value = null; filterEmployeeId.value = null; filterPeriodId.value = ''; filterSearch.value = ''
-    loadEmployees(); loadObjectives()
-}
-
-const kpiSearch = ref('')
-const filteredKeyResults = computed(() => {
-    if (!kpiSearch.value.trim()) {
-return props.keyResults
-}
-
-    const term = kpiSearch.value.toLowerCase()
-
-    return props.keyResults.filter((kr) => kr.kpi.name.toLowerCase().includes(term) || kr.description.toLowerCase().includes(term))
-})
-
-// ── Editar meta / redistribuir pesos ──
-const editGoalOpen = ref(false)
-const editingKr = ref<any | null>(null)
-function openEditGoal(kr: any) {
- editingKr.value = kr; editGoalOpen.value = true 
-}
-const weightsOpen = ref(false)
-
-// ── Check-in / Evidencia (Dialogs) ──
-const checkInOpen = ref(false)
-const evidenceOpen = ref(false)
-const currentWeek = props.objective.current_week
-const alreadyCheckedInThisWeek = computed(() => props.checkIns.some((c) => c.week_number === currentWeek))
-
-function trendIcon(kr: any) {
-    return (kr.deviation_pp ?? 0) >= 0 ? TrendingUp : TrendingDown
-}
-
-// ── Editor de Key Results en DRAFT (Parte 5/7 del cierre, 04-oct-2026) ──
-// Un Objective individual creado por el wizard de individualización nace EN
-// BORRADOR y SIN Key Results propios a propósito (ver ObjectiveController::
-// store()) — esto es lo que faltaba para poder completarlo (su propio KPI/
-// baseline/meta/peso) y activarlo. Reutiliza key-results.store/destroy
-// (ya existían en el backend, sin ninguna pantalla que los llamara) y
-// baseline-preview (misma consulta que el wizard de asignación).
-const newKr = reactive({ kpi_id: null as number | null, description: '', baseline_value: '' as string | number, target_value: '' as string | number, weight: '100' })
-const newKrBaselinePreview = ref<{ available: boolean; value: number | null } | null>(null)
-const newKrLoadingPreview = ref(false)
-const newKrSubmitting = ref(false)
-const selectedNewKrKpi = computed(() => props.kpis.find((k) => k.id === newKr.kpi_id) ?? null)
-
-async function fetchNewKrBaseline() {
-    if (!selectedNewKrKpi.value || selectedNewKrKpi.value.automation !== 'automatic') {
-return
-}
-
-    newKrLoadingPreview.value = true
-
-    try {
-        const params = new URLSearchParams({ kpi_id: String(newKr.kpi_id), scope_type: props.objective.scope_type, start_date: props.objective.start_date })
-
-        if (props.objective.branch?.id) {
-params.set('branch_id', String(props.objective.branch.id))
-}
-
-        if (props.objective.employee?.id) {
-params.set('employee_id', String(props.objective.employee.id))
-}
-
-        const res = await fetch(`/okr/baseline-preview?${params.toString()}`, { headers: { Accept: 'application/json' } })
-        const data = res.ok ? await res.json() : null
-        newKrBaselinePreview.value = data
-
-        if (data?.available) {
-newKr.baseline_value = data.value
-}
-    } finally {
-        newKrLoadingPreview.value = false
-    }
-}
-watch(() => newKr.kpi_id, () => {
-    newKrBaselinePreview.value = null
-    newKr.baseline_value = ''
-
-    if (selectedNewKrKpi.value?.automation === 'automatic') {
-fetchNewKrBaseline()
-}
-})
-
-function submitNewKr() {
-    if (!newKr.kpi_id || !newKr.description.trim() || newKr.target_value === '') {
-return
-}
-
-    newKrSubmitting.value = true
-    router.post(`/okr/${props.objective.id}/key-results`, {
-        kpi_id: newKr.kpi_id, description: newKr.description,
-        baseline_value: selectedNewKrKpi.value?.automation === 'automatic' ? null : (newKr.baseline_value === '' ? null : Number(newKr.baseline_value)),
-        target_value: Number(newKr.target_value), weight: Number(newKr.weight),
-    }, {
-        onFinish: () => {
- newKrSubmitting.value = false
-},
-        onSuccess: () => {
-            newKr.kpi_id = null
-            newKr.description = ''
-            newKr.baseline_value = ''
-            newKr.target_value = ''
-            newKr.weight = '100'
-            newKrBaselinePreview.value = null
-        },
-    })
-}
-
-function removeDraftKr(krId: number) {
-    Swal.fire({
-        icon: 'warning', title: '¿Eliminar este Key Result?', showCancelButton: true,
-        confirmButtonText: 'Eliminar', cancelButtonText: 'Cancelar', confirmButtonColor: '#dc2626',
-    }).then((r) => {
- if (r.isConfirmed) {
-router.delete(`/okr/${props.objective.id}/key-results/${krId}`)
-}
-})
-}
-
-// Sin meta csrf-token en este layout — se lee la cookie XSRF-TOKEN que
-// Laravel ya pone en cada respuesta (mismo mecanismo que usa axios
-// internamente para las peticiones de Inertia). Compartido por colocación/
-// carta/warning — todos postean vía fetch() fuera de Inertia.
-function csrfFetch(url: string, init: RequestInit = {}) {
-    const xsrfToken = decodeURIComponent(document.cookie.match(/XSRF-TOKEN=([^;]+)/)?.[1] ?? '')
-
-    return fetch(url, { ...init, headers: { ...(init.headers ?? {}), 'X-XSRF-TOKEN': xsrfToken, Accept: 'application/json' } })
-}
-
-// ── Colocación semanal (Parte 6/7 del cierre, 04-oct-2026) ──────────────
-const placementWeekNumber = ref<number | null>(null)
-const placementFile = ref<File | null>(null)
-const placementUploading = ref(false)
-// El reporte de Lendus de la sucursal lista TODOS los créditos de la semana:
-// si un gestor no aparece, colocó $0 (no "dato faltante"). Se declara aquí.
-const placementCompleteReport = ref(true)
-function onPlacementFileChange(e: Event) {
-    placementFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
-}
-async function submitPlacement(confirmReplace = false) {
-    if (!placementWeekNumber.value || !placementFile.value) {
-return
-}
-
-    placementUploading.value = true
-    const formData = new FormData()
-    formData.append('week_number', String(placementWeekNumber.value))
-    formData.append('file', placementFile.value)
-
-    if (confirmReplace) {
-formData.append('confirm_replace', '1')
-}
-
-    if (props.objective.scope_type === 'branch' && placementCompleteReport.value) {
-        formData.append('complete_report', '1')
-    }
-
-    try {
-        const res = await csrfFetch(`/okr/${props.objective.id}/placement-uploads`, { method: 'POST', body: formData })
-        const data = await res.json()
-
-        if (res.status === 409) {
-            placementUploading.value = false
-            Swal.fire({
-                icon: 'warning', title: 'Ya existe colocación cargada para esta semana',
-                html: `Archivo actual: <strong>${data.existing_upload.original_filename}</strong><br>Monto: ${fmt(data.existing_upload.total_amount, 'currency')}<br><br>¿Deseas reemplazarla?`,
-                showCancelButton: true, confirmButtonText: 'Reemplazar', cancelButtonText: 'Cancelar', confirmButtonColor: '#dc2626',
-            }).then((r) => {
- if (r.isConfirmed) {
-submitPlacement(true)
-}
-})
-
-            return
-        }
-
-        if (!res.ok) {
-            Swal.fire({ icon: 'error', title: 'No se pudo cargar el archivo', text: data.message ?? 'Error desconocido.' })
-
-            return
-        }
-
-        const u = data.upload
-        const notes = [
-            u.rows_duplicated ? `${u.rows_duplicated} movimiento(s) ya contados en otra semana (no se suman dos veces)` : null,
-            u.rows_other_branch ? `${u.rows_other_branch} fila(s) de otra sucursal excluidas` : null,
-            u.rows_cancelled ? `${u.rows_cancelled} movimiento(s) cancelados excluidos` : null,
-            u.rows_out_of_objective_range ? `${u.rows_out_of_objective_range} fila(s) fuera del plazo del OKR excluidas` : null,
-            u.unattributed_amount ? `${fmt(u.unattributed_amount, 'currency')} sin gestor identificado (cuenta solo para la sucursal)` : null,
-        ].filter(Boolean)
-        Swal.fire({
-            icon: 'success', title: data.replaced ? 'Colocación reemplazada' : 'Colocación cargada',
-            html: `<p class="text-sm">Semana ${u.week_number}: <strong>${fmt(u.total_amount, 'currency')}</strong> en ${u.rows_count} movimiento(s).</p>`
-                + (props.objective.scope_type === 'branch' && (props.objective.children ?? []).length ? '<p class="mt-1 text-xs">Los OKR individuales de la sucursal se actualizaron con este mismo archivo.</p>' : '')
-                + (notes.length ? `<ul class="mt-2 text-left text-xs">${notes.map((n) => `<li>• ${n}</li>`).join('')}</ul>` : ''),
-        })
-        placementWeekNumber.value = null
-        placementFile.value = null
-        router.reload({ only: ['objective', 'keyResults'] })
-    } finally {
-        placementUploading.value = false
-    }
-}
-
-// ── Carta Compromiso (Parte 2 del cierre, 04-oct-2026) ──────────────────
-// 14-oct-2026: la emisión pasa por una revisión previa (OkrCommitmentLetterDialog)
-// que muestra los datos que llevará el PDF y exige los indispensables.
-const letterDialogOpen = ref(false)
-async function uploadSignedLetter(e: Event) {
-    const file = (e.target as HTMLInputElement).files?.[0]
-
-    if (!file || !props.objective.commitment_letter) {
-return
-}
-
-    const formData = new FormData()
-    formData.append('file', file)
-    await csrfFetch(`/okr/commitment-letters/${props.objective.commitment_letter.id}/signed`, { method: 'POST', body: formData })
-    router.reload({ only: ['objective'] })
-}
-
-// ── Warning Rojo (Parte 3 del cierre, 04-oct-2026) ──────────────────────
-// 12: el botón "Generar Warning" solo se habilita cuando existe una semana
-// con incumplimiento REAL — mismo criterio canónico que el backend
-// (OkrWarningService::buildWeekSnapshot, deviation_pp < 0, calculado por
-// OkrProgressCalculator). Nunca basta con "hay semanas disponibles": una
-// semana sin datos o en cumplimiento NO habilita el botón.
-const weeksWithBreach = computed<number[]>(() => {
-    const weeks = new Set<number>()
-
-    for (const kr of props.keyResults) {
-        for (const s of kr.snapshots ?? []) {
-            if (s.deviation_pp !== null && s.deviation_pp !== undefined && Number(s.deviation_pp) < 0) {
-                weeks.add(s.week_number)
-            }
-        }
-    }
-
-    return [...weeks].sort((a, b) => a - b)
-})
-
-const warningOpen = ref(false)
-const warningWeekNumber = ref<number | null>(null)
-const warningCorrectiveActions = ref('')
-const warningObservations = ref('')
-const warningSubmitting = ref(false)
-async function submitWarning() {
-    if (!warningWeekNumber.value || !warningCorrectiveActions.value.trim()) {
-return
-}
-
-    warningSubmitting.value = true
-
-    try {
-        const res = await csrfFetch(`/okr/${props.objective.id}/warnings`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ week_number: warningWeekNumber.value, corrective_actions: warningCorrectiveActions.value, observations: warningObservations.value || null }),
-        })
-        const data = await res.json()
-
-        if (!res.ok) {
-            Swal.fire({ icon: 'error', title: 'No se pudo generar el Warning', text: data.message ?? 'Error desconocido.' })
-
-            return
-        }
-
-        Swal.fire({ icon: 'success', title: 'Warning generado', text: `Folio ${data.warning.folio}`, timer: 2500, showConfirmButton: false })
-        warningOpen.value = false
-        warningWeekNumber.value = null
-        warningCorrectiveActions.value = ''
-        warningObservations.value = ''
-        router.reload({ only: ['warnings'] })
-    } finally {
-        warningSubmitting.value = false
-    }
-}
-async function uploadSignedWarning(warningId: number, e: Event) {
-    const file = (e.target as HTMLInputElement).files?.[0]
-
-    if (!file) {
-return
-}
-
-    const formData = new FormData()
-    formData.append('file', file)
-    await csrfFetch(`/okr/warnings/${warningId}/signed`, { method: 'POST', body: formData })
-    router.reload({ only: ['warnings'] })
-}
 </script>
 
 <template>
-    <div class="w-full space-y-4 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-        <div class="flex items-center gap-2">
-            <Link href="/okr" class="text-muted-foreground transition hover:text-foreground"><ArrowLeft class="size-4" /></Link>
-            <span class="text-xs text-muted-foreground">Volver al dashboard</span>
-        </div>
+    <div class="w-full space-y-5 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+        <OkrTrackingHeader
+            :objective="objective" :can-assign="canAssign" :can-update="canUpdate" :can-manage="canManage" :can-checkin="canCheckin" :can-upload-placement="canUploadPlacement"
+            @letter="letterOpen = true" @upload="openUpload()" @checkin="checkInOpen = true" @activate="activationOpen = true"
+            @edit="onEdit" @weights="weightsOpen = true" @refresh="refresh" @destroy="destroyObjective"
+        />
 
-        <!-- Hero -->
-        <section class="overflow-hidden rounded-2xl bg-slate-950 px-5 py-5 text-white shadow-md sm:px-7">
-            <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div>
-                    <p class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300"><Target class="size-3.5" /> Sistema Reportes</p>
-                    <h1 class="mt-1 text-2xl font-bold tracking-tight">Seguimiento OKR</h1>
-                    <p class="mt-1 text-sm text-slate-300">Controla el avance real vs esperado, evidencia y acciones correctivas.</p>
-                </div>
-                <div class="flex shrink-0 flex-wrap gap-2">
-                    <Button v-if="canUploadEvidence" class="h-10 gap-2 rounded-xl bg-emerald-500 text-white hover:bg-emerald-400" @click="evidenceOpen = true">
-                        <Upload class="size-4" /> Cargar evidencia
-                    </Button>
-                    <Link href="/okr/history">
-                        <Button variant="outline" class="h-10 gap-2 rounded-xl border-white/20 bg-white/5 text-white hover:bg-white/10"><History class="size-4" /> Histórico</Button>
-                    </Link>
-                </div>
-            </div>
-        </section>
-
-        <!-- Acciones de ciclo de vida (activar/recalcular/redistribuir/eliminar) -->
-        <div v-if="(objective.lifecycle_status === 'draft' && canAssign) || (objective.lifecycle_status === 'active' && canUpdate) || canManage" class="flex flex-wrap items-center gap-2">
-            <Button v-if="objective.lifecycle_status === 'draft' && canAssign" size="sm" class="h-9 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500" @click="activate">Activar OKR</Button>
-            <Button v-if="objective.lifecycle_status === 'active' && canUpdate" size="sm" variant="outline" class="h-9 rounded-xl" @click="refresh">Recalcular</Button>
-            <Button v-if="objective.lifecycle_status === 'active' && canUpdate" size="sm" variant="outline" class="h-9 rounded-xl" @click="weightsOpen = true">Redistribuir ponderaciones</Button>
-            <Button v-if="canManage && objective.lifecycle_status !== 'cancelled'" size="sm" variant="outline" class="h-9 rounded-xl border-destructive/30 text-destructive hover:bg-destructive/10" @click="destroyObjective">Eliminar</Button>
-        </div>
-
-        <Link v-if="objective.parent" :href="`/okr/${objective.parent.id}`" class="group flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-xs transition hover:border-primary/40 hover:shadow-md">
+        <a v-if="objective.parent" :href="`/okr/${objective.parent.id}`" class="group flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-xs shadow-sm transition hover:border-primary/40 hover:shadow-md">
             <Target class="size-4 text-primary" />
             <span class="text-muted-foreground">OKR individual ligado al objetivo general de <strong class="text-foreground">{{ objective.parent.branch ?? 'la sucursal' }}</strong>:</span>
             <span class="truncate font-semibold text-foreground">{{ objective.parent.title }}</span>
-            <ArrowLeft class="ml-auto size-3.5 rotate-180 text-primary transition-transform group-hover:translate-x-1" />
-        </Link>
+            <span class="ml-auto font-bold text-primary transition group-hover:translate-x-0.5">Ver sucursal →</span>
+        </a>
 
-        <p v-if="objective.lifecycle_status === 'draft'" class="rounded-xl border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs font-semibold text-primary">
-            OKR en borrador — ponderación {{ objective.weight_summary.total }}% ({{ objective.weight_summary.is_valid ? 'lista para activar' : 'incompleta' }}). Al activar, la línea base queda congelada.
-        </p>
+        <div v-if="objective.lifecycle_status === 'draft'" class="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/25 bg-primary/5 px-4 py-3 text-xs">
+            <AlertTriangle class="size-4 text-primary" />
+            <span class="flex-1 font-semibold text-primary">
+                OKR en borrador — {{ keyResults.length ? `ponderación ${objective.weight_summary.total}%` : 'sin Key Results' }}. Al activarlo se congela la línea base.
+            </span>
+            <Button v-if="!keyResults.length && canUpdate" size="sm" class="h-8 rounded-lg" @click="configureSelf">Configurar Key Results</Button>
+            <Button v-else-if="canAssign" size="sm" class="h-8 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500" @click="activationOpen = true">Revisar y activar</Button>
+        </div>
+
         <div v-if="alerts.length" class="space-y-1.5">
             <div v-for="a in alerts" :key="a.id" class="flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs font-semibold text-amber-700 dark:text-amber-300">
                 <Bell class="size-3.5 shrink-0" /> {{ a.message }}
             </div>
         </div>
 
-        <!-- Filtros -->
-        <div class="app-card p-3">
-            <div class="flex flex-col gap-3 lg:flex-row lg:items-end">
-                <div class="grid flex-1 grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-                    <SelectField v-model="filterBranchId as any" label="Sucursal" placeholder="Todas" :options="[{ value: '', label: 'Todas' }, ...filterBranches.map((b) => ({ value: b.id, label: b.name }))]" />
-                    <SearchableSelect v-model="filterEmployeeId as any" label="Colaborador" placeholder="Todos" :options="employeeOptions" label-key="full_name" secondary-key="__none" allow-null null-label="Todos" />
-                    <SearchableSelect v-model="selectedObjectiveId as any" label="Objective / OKR" :options="objectiveOptions" label-key="title" secondary-key="__none" @update:search="onObjectiveSearch" @change="goToObjective" />
-                    <SelectField v-model="filterPeriodId" label="Periodo" placeholder="Todos" :options="[{ value: '', label: 'Todos' }, ...filterPeriods.map((p) => ({ value: String(p.id), label: p.label }))]" />
-                    <div class="space-y-1.5 sm:col-span-3 lg:col-span-1">
-                        <label class="text-sm font-semibold text-foreground">Buscar</label>
-                        <input v-model="kpiSearch" placeholder="Buscar por KPI, archivo o nota..." class="app-input">
-                    </div>
-                </div>
-                <Button type="button" variant="ghost" size="sm" class="h-11 shrink-0 gap-1.5 rounded-xl text-muted-foreground" @click="clearTrackingFilters(); kpiSearch = ''">
-                    <X class="size-3.5" /> Limpiar filtros
-                </Button>
-            </div>
-        </div>
+        <OkrScopeFilters :objective="objective" :branches="filterBranches" :periods="filterPeriods" />
 
-        <!-- 7 cards -->
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
-            <OkrStatCard :icon="Target" label="Objective / OKR" :value="objective.branch?.name ?? objective.employee?.full_name ?? '—'" :hint="objective.title.slice(0, 28) + '…'" tone="primary" />
-            <OkrStatCard :icon="CalendarClock" label="Plazo" :value="`${objective.duration_weeks} semanas`" :hint="`${formatFriendlyDate(objective.start_date)} - ${formatFriendlyDate(objective.end_date)}`" />
-            <OkrStatCard :icon="TrendingUp" label="Avance esperado" :value="`${objective.expected_compliance}%`" hint="Esperado a la fecha" />
-            <OkrStatCard :icon="Gauge" label="Avance real" :value="`${objective.compliance}%`" hint="Real a la fecha" tone="primary" />
-            <OkrStatCard :icon="objective.deviation_pp >= 0 ? ArrowUp : ArrowDown" label="Desviación" :value="formatPp(objective.deviation_pp)" hint="vs esperado" :tone="objective.deviation_pp >= 0 ? 'success' : 'danger'" />
-            <OkrStatCard :icon="Target" label="Proyección de cierre" :value="objective.projected_compliance === null ? '—' : `${objective.projected_compliance}%`" hint="Al final del periodo" />
-            <OkrStatCard :icon="Flag" label="Estado" :value="statusLabel[objective.lifecycle_status]" :hint="objective.health_status ?? undefined" tone="warning" />
-        </div>
+        <OkrObjectiveSummary :objective="objective" :key-results="keyResults" />
 
-        <!-- OBJETIVO GENERAL / INDIVIDUAL — base, meta, real, incrementos, cumplimiento -->
-        <OkrGoalHeadline
-            v-if="keyResults.length"
-            :heading="objective.scope_type === 'branch' ? `Objetivo general — ${objective.branch?.name ?? ''}` : `Objetivo individual — ${objective.employee?.full_name ?? ''}`"
-            :key-results="keyResults"
+        <OkrGestorTable
+            v-if="isBranch && (objective.gestor_tracking ?? []).length"
+            :tracking="objective.gestor_tracking" :contributions="objective.contributions ?? []"
+            :current-week="objective.current_week" :duration-weeks="objective.duration_weeks" :can-update="canUpdate"
+            @configure="configureChild"
         />
 
-        <!-- SEGUIMIENTO POR GESTOR -->
-        <OkrGestorTrackingSection v-if="(objective.gestor_tracking ?? []).length" :tracking="objective.gestor_tracking" :contributions="objective.contributions ?? []" />
-
-        <!-- Grid 64/36 -->
-        <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,16fr)_minmax(280px,9fr)]">
-            <!-- Avance por KPI -->
-            <div class="app-card p-4">
-                <p class="mb-3 text-sm font-bold text-foreground">Avance por KPI</p>
-                <div v-if="filteredKeyResults.length" class="overflow-x-auto">
-                    <table class="w-full min-w-[760px] text-xs">
-                        <thead class="border-b border-border text-muted-foreground">
-                            <tr>
-                                <th class="px-2 py-2 text-left font-semibold">KPI</th>
-                                <th class="px-2 py-2 text-left font-semibold">Base</th>
-                                <th class="px-2 py-2 text-left font-semibold">Meta</th>
-                                <th class="px-2 py-2 text-left font-semibold">Actual</th>
-                                <th class="px-2 py-2 text-left font-semibold">Esperado a la fecha</th>
-                                <th class="px-2 py-2 text-left font-semibold">Desviación</th>
-                                <th class="px-2 py-2 text-left font-semibold">Cumplimiento</th>
-                                <th class="px-2 py-2 text-left font-semibold">Tendencia</th>
-                                <th class="px-2 py-2"></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="kr in filteredKeyResults" :key="kr.id" class="border-t border-border">
-                                <td class="max-w-[180px] px-2 py-2.5">
-                                    <p class="truncate font-semibold text-foreground">{{ kr.kpi.name }}</p>
-                                    <p class="truncate text-[11px] text-muted-foreground">{{ kr.description }}</p>
-                                </td>
-                                <td class="whitespace-nowrap px-2 py-2.5 tabular-nums">{{ fmt(kr.baseline_value, kr.kpi.unit) }}</td>
-                                <td class="whitespace-nowrap px-2 py-2.5 tabular-nums">{{ fmt(kr.target_value, kr.kpi.unit) }}</td>
-                                <td class="whitespace-nowrap px-2 py-2.5 font-semibold tabular-nums">
-                                    <span class="inline-flex items-center gap-1">
-                                        {{ fmt(kr.current_value, kr.kpi.unit) }}
-                                        <OkrHelpTooltip v-if="SOURCE_QUALITY_LABELS[latestSourceQuality(kr) ?? '']" :text="SOURCE_QUALITY_LABELS[latestSourceQuality(kr) ?? '']" />
-                                    </span>
-                                </td>
-                                <td class="whitespace-nowrap px-2 py-2.5 tabular-nums">{{ fmt(kr.expected_value, kr.kpi.unit) }}</td>
-                                <td class="whitespace-nowrap px-2 py-2.5 font-semibold tabular-nums" :class="(kr.deviation_pp ?? 0) < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'">{{ formatPp(kr.deviation_pp) }}</td>
-                                <td class="px-2 py-2.5">
-                                    <div class="flex items-center gap-1.5">
-                                        <OkrProgressBar v-if="kr.actual_progress_percentage !== null" :value="kr.actual_progress_percentage" />
-                                        <span class="shrink-0 text-[11px] font-semibold tabular-nums">{{ kr.actual_progress_percentage === null ? '—' : kr.actual_progress_percentage + '%' }}</span>
-                                    </div>
-                                </td>
-                                <td class="px-2 py-2.5">
-                                    <component :is="trendIcon(kr)" class="size-4" :class="(kr.deviation_pp ?? 0) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'" />
-                                </td>
-                                <td class="px-2 py-2.5">
-                                    <button v-if="objective.lifecycle_status === 'active' && canUpdate" class="text-[11px] font-bold text-primary hover:underline" @click="openEditGoal(kr)">Editar</button>
-                                    <button v-if="objective.lifecycle_status === 'draft' && canUpdate" class="text-[11px] font-bold text-destructive hover:underline" @click="removeDraftKr(kr.id)">Eliminar</button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <AppEmptyState v-else-if="objective.lifecycle_status !== 'draft'" title="Sin Key Results" message="Este OKR todavía no tiene resultados clave configurados." />
-
-                <!-- Editor de Key Results en DRAFT (Parte 5/7 del cierre) — necesario para poder activar el OKR -->
-                <div v-if="objective.lifecycle_status === 'draft' && canUpdate" class="mt-4 space-y-3 rounded-xl border border-dashed border-border p-3">
-                    <p class="flex items-center gap-1.5 text-xs font-bold text-foreground">
-                        Agregar Key Result
-                        <OkrHelpTooltip text="El OKR necesita al menos un Key Result, con pesos que sumen 100%, antes de poder activarse." />
-                    </p>
-                    <div class="grid grid-cols-1 gap-2 sm:grid-cols-6">
-                        <select v-model="newKr.kpi_id" class="app-input h-9 text-xs">
-                            <option :value="null" disabled>KPI</option>
-                            <option v-for="k in kpis" :key="k.id" :value="k.id">{{ k.name }}</option>
-                        </select>
-                        <input v-model="newKr.description" placeholder="Descripción del resultado clave" class="app-input h-9 text-xs sm:col-span-2">
-                        <template v-if="selectedNewKrKpi?.automation === 'automatic'">
-                            <div class="flex items-center gap-1 rounded-lg border border-border px-2 text-[11px]">
-                                <span class="font-semibold tabular-nums text-foreground">{{ newKr.baseline_value !== '' ? fmt(Number(newKr.baseline_value), selectedNewKrKpi?.unit) : 'Sin consultar' }}</span>
-                                <button type="button" class="ml-auto font-bold text-primary" :disabled="newKrLoadingPreview" @click="fetchNewKrBaseline">↻</button>
-                            </div>
-                        </template>
-                        <input v-else v-model="newKr.baseline_value" type="number" step="0.01" placeholder="Línea base" class="app-input h-9 text-xs">
-                        <input v-model="newKr.target_value" type="number" step="0.01" placeholder="Meta" class="app-input h-9 text-xs">
-                        <input v-model="newKr.weight" type="number" step="0.01" placeholder="Peso %" class="app-input h-9 text-xs">
-                    </div>
-                    <Button size="sm" class="h-9 text-xs" :disabled="!newKr.kpi_id || !newKr.description.trim() || newKr.target_value === '' || newKrSubmitting" @click="submitNewKr">Agregar</Button>
-                </div>
-
-                <!-- "Rendimiento por gestor" se movió a la sección SEGUIMIENTO POR GESTOR (OkrGestorTrackingSection, 14-oct-2026). -->
-            </div>
-
-            <!-- Evidencias + Check-in -->
-            <div class="space-y-4">
-                <!-- Colocación semanal (Parte 6/7 del cierre) — solo si el OKR tiene un KR de colocación -->
-                <div v-if="(objective.placement_weeks ?? []).length" class="app-card p-4">
-                    <p class="mb-3 flex items-center gap-1.5 text-sm font-bold text-foreground">
-                        Colocación semanal
-                        <OkrHelpTooltip text="Cada semana se carga en su propio archivo — nunca se sobrescribe la anterior. Si una semana no tiene archivo, el seguimiento la muestra como 'sin datos', nunca como 0." />
-                    </p>
-                    <div class="mb-3 space-y-1.5">
-                        <div v-for="w in objective.placement_weeks" :key="w.week_number" class="group flex items-center justify-between rounded-lg border border-border px-2.5 py-1.5 text-xs transition hover:border-primary/30 hover:bg-muted/30" :title="w.original_filename ?? ''">
-                            <span class="font-semibold text-foreground">Semana {{ w.week_number }}</span>
-                            <span v-if="w.uploaded" class="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
-                                <span class="font-semibold tabular-nums">{{ fmt(w.counted_amount ?? w.total_amount, 'currency') }}</span>
-                                <span v-if="w.rows_duplicated" class="rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-sky-700 dark:text-sky-300" :title="`${w.rows_duplicated} movimiento(s) repetidos de otra semana — contados una sola vez`">−{{ w.rows_duplicated }} dup.</span>
-                                <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold">{{ w.from_branch_file ? 'Archivo de sucursal' : 'Cargada' }}</span>
-                            </span>
-                            <span v-else class="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">Sin archivo</span>
-                        </div>
-                    </div>
-                    <div v-if="!objective.is_read_only && canUploadEvidence" class="flex items-center gap-2">
-                        <select v-model="placementWeekNumber" class="app-input h-9 w-28 text-xs">
-                            <option :value="null" disabled>Semana</option>
-                            <option v-for="w in objective.placement_weeks" :key="w.week_number" :value="w.week_number">Semana {{ w.week_number }}</option>
-                        </select>
-                        <input type="file" accept=".xlsx,.xls,.csv" class="app-input h-9 flex-1 text-xs" @change="onPlacementFileChange">
-                        <Button size="sm" class="h-9 shrink-0 gap-1 text-xs transition hover:-translate-y-0.5" :disabled="!placementWeekNumber || !placementFile || placementUploading" @click="submitPlacement()"><Upload class="size-3.5" /> Subir</Button>
-                    </div>
-                    <label v-if="!objective.is_read_only && canUploadEvidence && objective.scope_type === 'branch'" class="mt-2 flex cursor-pointer items-start gap-2 rounded-lg bg-muted/30 p-2 text-[11px] text-muted-foreground transition hover:bg-muted/50">
-                        <input v-model="placementCompleteReport" type="checkbox" class="mt-0.5 accent-primary">
-                        <span><strong class="text-foreground">Es el reporte completo de la sucursal en esa semana.</strong> Un solo archivo alimenta a la sucursal y a cada gestor; quien no aparezca colocó $0.00. Si es un archivo parcial, desmárcalo (los gestores sin filas quedan "sin dato").</span>
-                    </label>
-                </div>
-
-                <!-- Carta Compromiso + Warning Rojo (Parte 2/3/11 del cierre) -->
-                <div class="app-card space-y-4 p-4">
+        <section v-if="hasPlacement" class="rounded-2xl border border-border bg-card shadow-sm">
+            <header class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+                <div class="flex items-center gap-2">
+                    <span class="flex size-9 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-300"><CalendarRange class="size-4" /></span>
                     <div>
-                        <p class="mb-2 flex items-center gap-1.5 text-sm font-bold text-foreground">
-                            Carta Compromiso
-                            <OkrHelpTooltip text="Se genera UNA sola vez, cuando el OKR ya está activado. Si la meta cambia después, la carta emitida NUNCA se modifica — es un documento congelado." />
-                        </p>
-                        <div v-if="objective.commitment_letter" class="space-y-2">
-                            <div class="flex items-center justify-between rounded-lg border border-border px-2.5 py-2 text-xs">
-                                <span><span class="font-semibold text-foreground">Folio {{ objective.commitment_letter.folio }}</span> · {{ formatFriendlyDate(objective.commitment_letter.generated_at?.slice(0, 10)) }}</span>
-                                <a :href="objective.commitment_letter.download_url" class="font-bold text-primary hover:underline">Descargar</a>
-                            </div>
-                            <div class="flex items-center gap-2 text-xs">
-                                <span v-if="objective.commitment_letter.is_signed" class="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">Firmada</span>
-                                <template v-else>
-                                    <span class="text-muted-foreground">Sin firma subida —</span>
-                                    <label class="cursor-pointer font-bold text-primary hover:underline">
-                                        subir firmada
-                                        <input type="file" accept=".pdf" class="hidden" @change="uploadSignedLetter">
-                                    </label>
-                                </template>
-                            </div>
-                        </div>
-                        <div v-else class="space-y-1.5">
-                            <Button size="sm" class="h-9 gap-1.5 rounded-xl text-xs transition hover:-translate-y-0.5 hover:shadow-md" @click="letterDialogOpen = true">
-                                <FileSignature class="size-3.5" /> {{ objective.activated_at && canAssign ? 'Revisar y emitir Carta Compromiso' : 'Revisar / vista previa' }}
-                            </Button>
-                            <p v-if="!objective.activated_at" class="text-[11px] text-muted-foreground">La carta definitiva se emite una vez que el OKR se active; la vista previa está disponible desde ya.</p>
-                        </div>
-                    </div>
-
-                    <div class="border-t border-border pt-4">
-                        <div class="mb-2 flex items-center justify-between">
-                            <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
-                                Warnings
-                                <OkrHelpTooltip text="El sistema detecta desviación y HABILITA este botón — nunca sanciona solo. Usa el resultado REAL de la semana elegida, no el dato de hoy." />
-                            </p>
-                            <Button v-if="canAssign && weeksWithBreach.length" size="sm" variant="outline" class="h-8 text-xs" @click="warningOpen = !warningOpen">Generar Warning</Button>
-                        </div>
-                        <p v-if="canAssign && !weeksWithBreach.length" class="text-xs text-muted-foreground">Sin incumplimiento detectado todavía — el botón se habilita solo cuando una semana evaluada muestra una desviación real.</p>
-
-                        <div v-if="warningOpen" class="mb-3 space-y-2 rounded-lg border border-border p-3">
-                            <select v-model="warningWeekNumber" class="app-input h-9 w-full text-xs">
-                                <option :value="null" disabled>Semana a evaluar</option>
-                                <option v-for="w in weeksWithBreach" :key="w" :value="w">Semana {{ w }}</option>
-                            </select>
-                            <textarea v-model="warningCorrectiveActions" rows="2" placeholder="Acciones correctivas (obligatorio)" class="app-textarea text-xs" />
-                            <textarea v-model="warningObservations" rows="2" placeholder="Observaciones (opcional)" class="app-textarea text-xs" />
-                            <Button size="sm" class="h-9 w-full text-xs" :disabled="!warningWeekNumber || !warningCorrectiveActions.trim() || warningSubmitting" @click="submitWarning">Emitir Warning</Button>
-                        </div>
-
-                        <div v-if="warnings.length" class="space-y-2">
-                            <div v-for="w in warnings" :key="w.id" class="flex items-center justify-between rounded-lg border border-border px-2.5 py-2 text-xs">
-                                <span><span class="font-semibold text-foreground">Semana {{ w.week_number }}</span> · Folio {{ w.folio }}</span>
-                                <div class="flex items-center gap-2">
-                                    <a :href="w.download_url" class="font-bold text-primary hover:underline">Descargar</a>
-                                    <span v-if="w.is_signed" class="rounded-full bg-emerald-500/10 px-2 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">Firmado</span>
-                                    <label v-else class="cursor-pointer font-bold text-primary hover:underline">
-                                        firmar
-                                        <input type="file" accept=".pdf" class="hidden" @change="(e) => uploadSignedWarning(w.id, e)">
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                        <p v-else class="text-xs text-muted-foreground">Sin warnings emitidos.</p>
+                        <p class="text-sm font-bold text-foreground">Colocación semanal</p>
+                        <p class="text-[11px] text-muted-foreground">{{ isBranch ? 'Un solo archivo por semana alimenta a la sucursal y a cada gestor; los movimientos repetidos se cuentan una vez.' : 'Se toma del archivo semanal de la sucursal: solo los movimientos de este gestor.' }}</p>
                     </div>
                 </div>
+                <Button v-if="canUploadPlacement" class="h-9 gap-1.5 rounded-xl shadow-md transition hover:-translate-y-0.5" @click="openUpload()"><Upload class="size-4" /> Cargar colocación</Button>
+            </header>
+            <div class="p-4">
+                <OkrPlacementWeeksTable :objective-id="objective.id" :weeks="objective.placement_weeks" :current-week="objective.current_week" :can-upload="canUploadPlacement" :is-child="!isBranch" @upload="openUpload" />
+            </div>
+        </section>
 
-                <div class="app-card p-4">
-                    <div class="mb-3 flex items-center justify-between">
-                        <p class="text-sm font-bold text-foreground">Evidencias y archivos de seguimiento</p>
-                        <Button v-if="canUploadEvidence" size="sm" variant="outline" class="h-8 gap-1.5 rounded-lg text-xs" @click="evidenceOpen = true"><Upload class="size-3" /> Subir archivo</Button>
-                    </div>
-                    <div v-if="evidences.length" class="space-y-2">
-                        <a v-for="e in evidences" :key="e.id" :href="`/okr/evidences/${e.id}/download`" class="flex items-center gap-2 rounded-lg border border-border p-2 text-xs transition hover:bg-muted/40">
-                            <span class="min-w-0 flex-1">
-                                <span class="block truncate font-semibold text-foreground">{{ e.original_name }}</span>
-                                <span class="block text-[11px] text-muted-foreground">{{ e.uploader }} · {{ formatFriendlyDate(e.created_at?.slice(0, 10)) }}</span>
-                            </span>
-                            <span class="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Cargado</span>
-                        </a>
-                    </div>
-                    <p v-else class="py-4 text-center text-xs text-muted-foreground">Sin evidencias todavía.</p>
+        <section id="okr-kpi-results" class="rounded-2xl border border-border bg-card shadow-sm">
+            <header class="flex items-center gap-2 border-b border-border px-4 py-3">
+                <span class="flex size-9 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600 dark:text-violet-300"><LineChart class="size-4" /></span>
+                <div>
+                    <p class="text-sm font-bold text-foreground">Resultados por KPI</p>
+                    <p class="text-[11px] text-muted-foreground">Actual contra lo esperado a la fecha; la proyección aparece solo con datos semanales suficientes.</p>
                 </div>
-
-                <div class="app-card p-4">
-                    <div class="mb-3 flex items-center justify-between">
-                        <p class="text-sm font-bold text-foreground">Check-in semanal</p>
-                        <Button v-if="canCheckin" size="sm" variant="outline" class="h-8 rounded-lg text-xs" @click="checkInOpen = true">Registrar check-in</Button>
-                    </div>
-                    <div v-if="checkIns.length" class="space-y-2">
-                        <div v-for="c in checkIns.slice(0, 3)" :key="c.id" class="rounded-lg border border-border p-2 text-xs">
-                            <p class="font-semibold text-foreground">Semana {{ c.week_number }} — {{ c.user }}</p>
-                            <p v-if="c.main_blocker" class="text-muted-foreground">Bloqueo: {{ c.main_blocker }}</p>
-                            <p v-if="c.corrective_action" class="text-muted-foreground">Acción: {{ c.corrective_action }}</p>
-                        </div>
-                    </div>
-                    <p v-else class="py-4 text-center text-xs text-muted-foreground">Sin check-ins todavía.</p>
-                </div>
-
-                <div v-if="correctiveActions.length" class="app-card p-4">
-                    <p class="mb-2 text-sm font-bold text-foreground">Acciones correctivas</p>
-                    <div class="space-y-2">
-                        <div v-for="a in correctiveActions" :key="a.id" class="flex items-center justify-between rounded-lg border border-border p-2 text-xs">
-                            <div class="min-w-0"><p class="truncate font-semibold text-foreground">{{ a.description }}</p><p class="text-muted-foreground">{{ a.responsible }} — vence {{ formatFriendlyDate(a.due_date) }}</p></div>
-                            <span class="shrink-0 rounded-full px-2 py-0.5 font-semibold" :class="a.is_overdue ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'">{{ a.is_overdue ? 'Vencida' : a.status }}</span>
-                        </div>
-                    </div>
+            </header>
+            <div class="p-4">
+                <OkrKpiResultsTable v-if="keyResults.length" :key-results="keyResults" :lifecycle="objective.lifecycle_status" :can-update="canUpdate" @edit="openEditKr" @remove="removeDraftKr" />
+                <div v-else class="flex flex-col items-center gap-2 rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-6 text-center">
+                    <AlertTriangle class="size-6 text-amber-600" />
+                    <p class="text-sm font-semibold text-foreground">Este OKR no tiene Key Results</p>
+                    <p class="max-w-md text-xs text-muted-foreground">Captura su KPI, línea base y meta propias. Nunca se copia la meta de la sucursal.</p>
+                    <Button v-if="canUpdate && objective.lifecycle_status === 'draft'" size="sm" class="mt-1 rounded-lg" @click="configureSelf">Configurar Key Results</Button>
                 </div>
             </div>
+        </section>
+
+        <div id="okr-documents">
+            <OkrDocumentsPanel
+                :objective="objective" :warnings="warnings" :evidences="evidences" :check-ins="checkIns"
+                :can-assign="canAssign" :can-update="canUpdate" :can-upload-evidence="canUploadEvidence" :can-checkin="canCheckin"
+                @letter="letterOpen = true" @warning="warningOpen = true" @evidence="evidenceOpen = true" @checkin="checkInOpen = true"
+            />
         </div>
 
-        <OkrWeeklyHistory :key-results="keyResults" />
+        <div id="okr-history"><OkrWeeklyHistory :key-results="keyResults" /></div>
 
-        <!-- Historial del OKR (bitácora — requisito PDF sección 24, no visible en el recorte de las imágenes) -->
-        <details v-if="auditLogs.length" class="app-card p-4">
-            <summary class="cursor-pointer text-sm font-bold text-foreground">Historial del OKR ({{ auditLogs.length }})</summary>
-            <div class="mt-3 space-y-2">
-                <div v-for="log in auditLogs" :key="log.id" class="border-l-2 border-border pl-3 text-xs">
-                    <p class="font-semibold text-foreground">{{ auditLogLabel(log) }} <span v-if="log.old_value !== null || log.new_value !== null" class="font-normal text-muted-foreground">— {{ auditValue(log, log.old_value) }} → {{ auditValue(log, log.new_value) }}</span></p>
-                    <p class="text-muted-foreground">{{ log.user ?? 'Sistema' }} · {{ formatFriendlyDateTime(log.created_at) }} <span v-if="log.reason">· "{{ log.reason }}"</span></p>
-                </div>
-            </div>
-        </details>
+        <OkrAuditTrail :logs="auditLogs" />
 
+        <p v-if="refreshing" class="fixed bottom-4 right-4 z-40 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-lg">Recalculando con Reportería…</p>
+
+        <OkrActivationDialog v-model:open="activationOpen" :objective-id="objective.id" @configure="configureFromActivation" />
+        <OkrCompleteKrDialog v-model:open="completeOpen" :target="completeTarget" :kpis="kpis" />
+        <OkrCommitmentLetterDialog v-model:open="letterOpen" :objective-id="objective.id" :scope-type="objective.scope_type" :branch-id="objective.branch?.id ?? null" :can-issue="canAssign" />
+        <OkrWarningDialog v-model:open="warningOpen" :objective-id="objective.id" :can-issue="canAssign" />
+        <OkrPlacementUploadDialog v-model:open="uploadOpen" :objective-id="objective.id" :scope-type="objective.scope_type" :week="uploadWeek" :has-children="(objective.children ?? []).length > 0" />
         <OkrEditGoalDialog v-model:open="editGoalOpen" :objective-id="objective.id" :key-result="editingKr" />
         <OkrWeightsDialog v-model:open="weightsOpen" :objective-id="objective.id" :key-results="keyResults" />
         <OkrCheckInDialog v-model:open="checkInOpen" :objective-id="objective.id" :key-results="keyResults" :users="users" :already-checked-in-this-week="alreadyCheckedInThisWeek" />
         <OkrEvidenceUploadDialog v-model:open="evidenceOpen" :objective-id="objective.id" />
-        <OkrCommitmentLetterDialog v-model:open="letterDialogOpen" :objective-id="objective.id" :can-generate="canAssign && !!objective.activated_at" @generated="router.reload({ only: ['objective'] })" />
     </div>
 </template>

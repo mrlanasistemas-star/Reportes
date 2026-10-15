@@ -44,7 +44,7 @@ $okrDocImage = fn (string $name) => 'data:image/png;base64,' . base64_encode(fil
   @page { size: 612pt 792pt; margin: 0; }
   html, body { width: 612pt; background: #fff; }
   body {
-    font-family: 'Montserrat', sans-serif; font-size: 9.3pt; line-height: 1.5; color: #1f2933;
+    font-family: 'Montserrat', sans-serif; font-size: 9.1pt; line-height: 1.45; color: #1f2933;
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
   b, strong { font-weight: 700; color: #111827; }
@@ -61,11 +61,11 @@ $okrDocImage = fn (string $name) => 'data:image/png;base64,' . base64_encode(fil
   .doc-frame > tfoot > tr > td { height: 66pt; }
   .doc-frame > tbody > tr > td { padding: 0 56pt; vertical-align: top; }
 
-  .doc-title { text-align: center; margin-bottom: 14pt; }
+  .doc-title { text-align: center; margin-bottom: 10pt; }
   .doc-title h1 { font-size: 19pt; font-weight: 700; letter-spacing: .3pt; color: #1f2329; line-height: 1.25; }
   .doc-title p { font-size: 10pt; font-weight: 600; color: #6b7280; letter-spacing: .4pt; }
 
-  .section { margin-top: 11pt; }
+  .section { margin-top: 9pt; }
   .keep { break-inside: avoid; }
   .keep-next { break-after: avoid; }
   .section-title {
@@ -74,23 +74,23 @@ $okrDocImage = fn (string $name) => 'data:image/png;base64,' . base64_encode(fil
   }
   .label { font-size: 8.2pt; font-weight: 700; color: #374151; letter-spacing: .15pt; }
   .value {
-    display: block; min-height: 16pt; padding: 2pt 0 2pt; border-bottom: .8pt solid #6b7280;
+    display: block; min-height: 18pt; margin-top: 3pt; padding: 1pt 2pt 4pt; border-bottom: .8pt solid #6b7280;
     font-size: 9.6pt; font-weight: 600; color: #0f2a3d; line-height: 1.35; word-break: break-word;
   }
   .value.pending { color: #b45309; font-style: italic; font-weight: 600; border-bottom-color: #f59e0b; }
 
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; column-gap: 26pt; row-gap: 8pt; }
   .boxed { border: .8pt solid #cbd5e1; display: grid; grid-template-columns: 1fr 1fr; }
-  .boxed > div { padding: 6pt 9pt 7pt; }
+  .boxed > div { padding: 6pt 10pt 7pt; }
   .boxed > div:nth-child(odd) { border-right: .8pt solid #cbd5e1; }
   .boxed > div:nth-child(n+3) { border-top: .8pt solid #cbd5e1; }
 
-  p.body { text-align: justify; margin-top: 6pt; }
+  p.body { text-align: justify; margin-top: 5pt; }
   p.muted { color: #6b7280; }
 
   table.data { width: 100%; border-collapse: collapse; margin-top: 6pt; font-size: 8.6pt; break-inside: auto; }
   table.data th { background: #3a3a3a; color: #fff; font-weight: 700; text-transform: uppercase; font-size: 8pt; padding: 4pt 6pt; text-align: center; letter-spacing: .2pt; }
-  table.data td { border: .8pt solid #d1d5db; padding: 5pt 6pt; vertical-align: middle; line-height: 1.35; }
+  table.data td { border: .8pt solid #d1d5db; padding: 4pt 6pt; vertical-align: middle; line-height: 1.35; }
   table.data tr { break-inside: avoid; }
   table.data td.kpi { font-weight: 700; color: #111827; }
   table.data td.num { text-align: right; font-weight: 700; color: #0f2a3d; white-space: nowrap; }
@@ -104,7 +104,7 @@ $okrDocImage = fn (string $name) => 'data:image/png;base64,' . base64_encode(fil
   .blank-line { display: inline-block; min-width: 80pt; border-bottom: .8pt solid #6b7280; height: 11pt; vertical-align: bottom; }
   .ruled { border-bottom: .8pt solid #9ca3af; height: 17pt; }
 
-  .signatures { display: grid; grid-template-columns: repeat(3, 1fr); column-gap: 22pt; margin-top: 30pt; break-inside: avoid; text-align: center; }
+  .signatures { display: grid; grid-template-columns: repeat(3, 1fr); column-gap: 22pt; margin-top: 22pt; break-inside: avoid; text-align: center; }
   .signatures .line { border-top: .9pt solid #1f2933; padding-top: 4pt; }
   .signatures .role { font-weight: 700; font-size: 8.6pt; color: #1f2933; text-transform: uppercase; }
   .signatures .name { font-size: 8pt; color: #374151; font-weight: 600; min-height: 11pt; }

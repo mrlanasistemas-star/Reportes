@@ -36,7 +36,10 @@ class OkrPlacementImportService
         'amount'        => ['colocacion', 'colocación', 'monto', 'importe', 'monto colocado', 'amount', 'monto otorgado', 'importe otorgado', 'monto prestado'],
         'date'          => ['fecha', 'fecha operacion', 'fecha de operación', 'fecha operación', 'operation_date', 'fecha otorgamiento', 'fecha de otorgamiento', 'fecha de entrega'],
         'contract'      => ['contrato', 'no. contrato', 'no contrato', 'numero de contrato', 'número de contrato', 'folio', 'credito', 'crédito', 'id credito', 'prestamo', 'préstamo'],
+        // Oficina = Sucursal (las 13 oficiales). Ruta es distinta: pertenece a una
+        // sucursal según las equivalencias verificadas de Reportería.
         'branch'        => ['sucursal', 'oficina'],
+        'route'         => ['ruta', 'nombre ruta', 'ruta lendus'],
         'movement_type' => ['tipo', 'tipo de movimiento', 'tipo movimiento', 'movimiento', 'estatus', 'status', 'estado'],
     ];
 
@@ -183,11 +186,17 @@ class OkrPlacementImportService
             $employee = $employeeNameRaw ? $this->resolveEmployee($employeeNameRaw) : null;
             $contract = isset($colMap['contract']) ? $this->str($row[$colMap['contract']] ?? null) : null;
             $branchRaw = isset($colMap['branch']) ? $this->str($row[$colMap['branch']] ?? null) : null;
+            $routeRaw = isset($colMap['route']) ? $this->str($row[$colMap['route']] ?? null) : null;
             $movementType = isset($colMap['movement_type']) ? $this->str($row[$colMap['movement_type']] ?? null) : null;
+
+            // Sucursal de la fila: la columna Sucursal/Oficina manda; si el archivo
+            // solo trae Ruta, se traduce a su sucursal con las equivalencias
+            // verificadas (una ruta sin equivalencia nunca se atribuye).
+            $rowBranch = $branchRaw ?? ($routeRaw !== null ? ($this->officialBranchForRoute($routeRaw) ?? '__ruta_sin_equivalencia__') : null);
 
             // Fila de OTRA sucursal (solo si el archivo trae la columna): nunca se
             // mezcla colocación de otras sucursales en este OKR.
-            if ($branchRaw !== null && $objectiveBranchName !== null && $this->normalizeBranch($branchRaw) !== $this->normalizeBranch($objectiveBranchName)) {
+            if ($rowBranch !== null && $objectiveBranchName !== null && $this->normalizeBranch($rowBranch) !== $this->normalizeBranch($objectiveBranchName)) {
                 $rowsOtherBranch++;
 
                 continue;
@@ -252,7 +261,7 @@ class OkrPlacementImportService
                 'fingerprint'       => $fingerprint,
                 'raw_payload'       => array_filter([
                     'employee_name_raw' => $employeeNameRaw, 'amount' => $amount, 'operation_date' => $operationDate,
-                    'contract' => $contract, 'branch' => $branchRaw, 'movement_type' => $movementType,
+                    'contract' => $contract, 'branch' => $branchRaw, 'route' => $routeRaw, 'movement_type' => $movementType,
                 ], fn ($v) => $v !== null),
             ];
 
@@ -279,6 +288,17 @@ class OkrPlacementImportService
             'rows_out_of_objective_range' => $rowsOutOfObjectiveRange,
             'employee_ids_seen' => array_keys($employeeIdsSeen),
         ];
+    }
+
+    /**
+     * Sucursal oficial de una RUTA de Lendus (p. ej. ATLIX-GTE → ATLIXCO) con las
+     * equivalencias VERIFICADAS de Reportería (BranchResolverService) —
+     * 15-oct-2026. Oficina = Sucursal (13 oficiales); una ruta es distinta y solo
+     * se traduce con esa tabla. Ruta desconocida → null (nunca por aproximación).
+     */
+    private function officialBranchForRoute(string $route): ?string
+    {
+        return app(\App\Services\BranchResolverService::class)->resolveRealBranchFromRoute($route);
     }
 
     private function normalizeBranch(string $value): string

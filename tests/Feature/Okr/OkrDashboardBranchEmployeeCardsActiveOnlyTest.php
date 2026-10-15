@@ -38,6 +38,9 @@ it('an ACTIVE objective DOES count toward "Sucursales con OKR" and "Colaboradore
         'employee_code' => 'C5-TEST', 'full_name' => 'Colaborador C5', 'normalized_name' => 'colaborador c5',
         'is_active' => true, 'source_system' => 'noi',
     ]);
+    // 15-oct-2026: activar un OKR individual exige que el colaborador pertenezca a la sucursal.
+    $period = \App\Models\Period::query()->create(['name' => 'C5', 'code' => 'C5-' . uniqid(), 'type' => 'weekly', 'year' => 2026, 'month' => 1, 'sequence' => 1, 'start_date' => '2026-01-01', 'end_date' => '2026-01-07']);
+    \App\Models\EmployeeBranchAssignment::query()->create(['period_id' => $period->id, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
     $individualObjective = \App\Models\OkrObjective::query()->create([
         'scope_type' => \App\Models\OkrObjective::SCOPE_EMPLOYEE, 'branch_id' => $branch->id, 'employee_id' => $employee->id,
         'title' => 'Objective individual de prueba C5', 'responsible_user_id' => $admin->id, 'created_by' => $admin->id,

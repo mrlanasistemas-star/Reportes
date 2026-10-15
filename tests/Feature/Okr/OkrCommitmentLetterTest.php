@@ -44,6 +44,12 @@ function okrLetterKpi(): OkrKpi
     ]);
 }
 
+/** 15-oct-2026: un OKR de sucursal necesita un TITULAR real para su carta (nunca el usuario creador). */
+function okrLetterTitular(string $name = 'TITULAR GERENTE PRUEBA'): Employee
+{
+    return Employee::query()->firstOrCreate(['normalized_name' => mb_strtolower($name)], ['full_name' => $name, 'is_active' => true]);
+}
+
 beforeEach(fn () => fakeBrowsershotRenderer());
 
 it('a DRAFT objective only gets a preview — generate() rejects it (2.1: la carta definitiva representa el Objective ACTIVADO)', function () {
@@ -85,14 +91,18 @@ it('TEST 9 — an INDIVIDUAL commitment letter uses the employee Objective and i
     $individualObjective->keyResults()->create(['kpi_id' => okrLetterKpi()->id, 'description' => 'KR individual', 'baseline_value' => 50_000, 'target_value' => 700_000, 'weight' => 100]);
 
     $response = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $individualObjective), [
-        'place' => 'Ciudad de México', 'position' => 'Gestor de Crédito',
+        'place' => 'Ciudad de México', 'position' => 'Gestor de Crédito', 'immediate_boss' => 'SUBGERENTE DE PRUEBA',
     ]);
     $response->assertOk();
     $letterId = $response->json('letter.id');
 
     $letter = OkrCommitmentLetter::query()->findOrFail($letterId);
     expect($letter->okr_objective_id)->toBe($individualObjective->id);
-    expect($letter->snapshot['employee_name'])->toBe('GESTOR CARTA PRUEBA');
+    expect($letter->snapshot['collaborator_name'])->toBe('GESTOR CARTA PRUEBA');
+    expect($letter->subject_employee_id)->toBe($employee->id);
+    // Nunca el usuario que creó el OKR ni el responsable administrativo.
+    expect($letter->snapshot['collaborator_name'])->not->toBe($admin->name);
+    expect($letter->snapshot['immediate_boss'])->toBe('SUBGERENTE DE PRUEBA');
     expect($letter->snapshot['objective_title'])->toBe('Objective individual de Gestor Carta Prueba');
     expect((float) $letter->snapshot['key_results'][0]['target_value'])->toBe(700000.0);
     // NUNCA la meta de 3,000,000 de la sucursal.
@@ -105,7 +115,7 @@ it('generate() is idempotent — calling it twice returns the SAME letter, never
     $branch = Branch::query()->create(['code' => 'LET3', 'name' => 'LETRA SUCURSAL TRES', 'normalized_name' => 'letra sucursal tres', 'is_active' => true]);
     $admin = User::factory()->create();
     $objective = OkrObjective::query()->create([
-        'scope_type' => 'branch', 'branch_id' => $branch->id, 'title' => 'Objective para idempotencia de carta',
+        'scope_type' => 'branch', 'branch_id' => $branch->id, 'title' => 'Objective para idempotencia de carta', 'accountable_employee_id' => okrLetterTitular()->id,
         'responsible_user_id' => $admin->id, 'created_by' => $admin->id,
         'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(), 'duration_weeks' => 4,
         'lifecycle_status' => OkrObjective::STATUS_ACTIVE, 'activated_at' => now(),
@@ -132,7 +142,7 @@ it('uploading a signed copy never replaces the original snapshot/PDF', function 
     $branch = Branch::query()->create(['code' => 'LET4', 'name' => 'LETRA SUCURSAL CUATRO', 'normalized_name' => 'letra sucursal cuatro', 'is_active' => true]);
     $admin = User::factory()->create();
     $objective = OkrObjective::query()->create([
-        'scope_type' => 'branch', 'branch_id' => $branch->id, 'title' => 'Objective para firma de carta',
+        'scope_type' => 'branch', 'branch_id' => $branch->id, 'title' => 'Objective para firma de carta', 'accountable_employee_id' => okrLetterTitular()->id,
         'responsible_user_id' => $admin->id, 'created_by' => $admin->id,
         'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(), 'duration_weeks' => 4,
         'lifecycle_status' => OkrObjective::STATUS_ACTIVE, 'activated_at' => now(),
@@ -165,7 +175,7 @@ it('never issues the definitive letter while an indispensable field is missing �
     $branch = okrBranch('Atlixco');
     $kpi = okrManualKpi('cc_missing_fields_kpi');
     $objective = OkrObjective::query()->create([
-        'scope_type' => 'branch', 'branch_id' => $branch->id, 'title' => 'Objective de sucursal sin jefe inmediato capturado',
+        'scope_type' => 'branch', 'branch_id' => $branch->id, 'title' => 'Objective de sucursal sin jefe inmediato capturado', 'accountable_employee_id' => okrLetterTitular()->id,
         'responsible_user_id' => $admin->id, 'created_by' => $admin->id, 'start_date' => now()->toDateString(), 'end_date' => now()->addWeeks(4)->toDateString(),
         'duration_weeks' => 4, 'lifecycle_status' => OkrObjective::STATUS_ACTIVE, 'activated_at' => now(),
     ]);

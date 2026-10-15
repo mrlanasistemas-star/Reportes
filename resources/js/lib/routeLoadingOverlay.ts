@@ -58,10 +58,22 @@ const BACKGROUND_ENQUEUE_PATH_PATTERNS: RegExp[] = [
 // otra navegación.
 const UPLOAD_SAVE_PATH_PATTERNS: RegExp[] = [/^\/historico-general\/?$/];
 
+// Corrección 15-oct-2026 — "al activar un OKR incompleto aparece el error y además
+// el modal morado, que se queda abierto". El módulo OKR NUNCA usa la pantalla
+// completa: cada acción (activar, guardar KR, filtros, check-in, evidencias,
+// documentos) tiene su propio indicador local (spinner en el botón + mensaje al
+// terminar). La pantalla completa queda solo para los procesos extensos ya
+// autorizados (Reportería / Histórico General).
+const LOCAL_FEEDBACK_MODULE_PATTERNS: RegExp[] = [/^\/okr(\/|$)/];
+
 type OverlayVisit = { url: URL; method?: string };
 
 function isExcludedFromGlobalOverlay(visit: OverlayVisit): boolean {
     if (BACKGROUND_ENQUEUE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
+        return true;
+    }
+
+    if (LOCAL_FEEDBACK_MODULE_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
         return true;
     }
 

@@ -54,15 +54,22 @@ Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEna
     Route::post('/commitment-letters/{letter}/signed', [CommitmentLetterController::class, 'uploadSigned'])->name('commitment-letters.signed');
     Route::get('/warnings/{warning}/download', [WarningController::class, 'download'])->name('warnings.download');
     Route::post('/warnings/{warning}/signed', [WarningController::class, 'uploadSigned'])->name('warnings.signed');
+    // 15-oct-2026 — anulación auditada de documentos (el PDF y el folio se conservan).
+    Route::post('/warnings/{warning}/void', [WarningController::class, 'void'])->name('warnings.void');
+    Route::post('/commitment-letters/{letter}/void', [CommitmentLetterController::class, 'void'])->name('commitment-letters.void');
 
     Route::get('/{objective}', [ObjectiveController::class, 'show'])->name('show');
+    Route::get('/{objective}/activation-check', [ObjectiveController::class, 'activationCheck'])->name('activation-check');
     Route::post('/{objective}/activate', [ObjectiveController::class, 'activate'])->name('activate');
+    Route::put('/{objective}/accountable', [CommitmentLetterController::class, 'assignAccountable'])->name('accountable.update');
+    Route::get('/{objective}/placement-weeks/{week}', [PlacementUploadController::class, 'breakdown'])->whereNumber('week')->name('placement-weeks.breakdown');
     Route::post('/{objective}/refresh', [ObjectiveController::class, 'refresh'])->name('refresh');
     Route::put('/{objective}/goal', [ObjectiveController::class, 'updateGoal'])->name('goal.update');
     Route::put('/{objective}/weights', [ObjectiveController::class, 'updateWeights'])->name('weights.update');
     Route::delete('/{objective}', [ObjectiveController::class, 'destroy'])->name('destroy');
 
     Route::post('/{objective}/key-results', [KeyResultController::class, 'store'])->name('key-results.store');
+    Route::post('/{objective}/key-results/complete', [KeyResultController::class, 'complete'])->name('key-results.complete');
     Route::put('/{objective}/key-results/{keyResult}', [KeyResultController::class, 'update'])->name('key-results.update');
     Route::delete('/{objective}/key-results/{keyResult}', [KeyResultController::class, 'destroy'])->name('key-results.destroy');
 
@@ -72,5 +79,6 @@ Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEna
     Route::get('/{objective}/commitment-letter/preview', [CommitmentLetterController::class, 'preview'])->name('commitment-letter.preview');
     Route::get('/{objective}/commitment-letter/review', [CommitmentLetterController::class, 'review'])->name('commitment-letter.review');
     Route::post('/{objective}/commitment-letter', [CommitmentLetterController::class, 'generate'])->name('commitment-letter.generate');
+    Route::get('/{objective}/warnings/eligibility', [WarningController::class, 'eligibility'])->name('warnings.eligibility');
     Route::post('/{objective}/warnings', [WarningController::class, 'store'])->name('warnings.store');
 });
