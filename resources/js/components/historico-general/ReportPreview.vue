@@ -185,10 +185,10 @@ return `${base}?scope=employee&employee_id=${props.config.employee_id}`
 
         <div v-else class="mt-6 space-y-5">
             <!-- Header band -->
-            <div class="overflow-hidden rounded-2xl bg-slate-950 p-5 text-white">
-                <p class="text-xs font-black uppercase tracking-widest text-indigo-200">Radiografía generada</p>
+            <div class="overflow-hidden rounded-2xl border border-primary/20 bg-accent/60 p-5 text-foreground">
+                <p class="text-xs font-black uppercase tracking-widest text-primary">Radiografía generada</p>
                 <h3 class="mt-1 text-xl font-black">{{ period.label }}</h3>
-                <p v-if="scopeLabel || period.preview_summary?.generated_at" class="mt-1 text-xs text-slate-400">
+                <p v-if="scopeLabel || period.preview_summary?.generated_at" class="mt-1 text-xs text-muted-foreground">
                     <span v-if="scopeLabel">{{ scopeLabel }}</span>
                     <span v-if="scopeLabel && period.preview_summary?.generated_at">&nbsp;·&nbsp;</span>
                     <span v-if="period.preview_summary?.generated_at">{{ period.preview_summary.generated_at }}</span>
@@ -244,7 +244,7 @@ return `${base}?scope=employee&employee_id=${props.config.employee_id}`
             <div v-if="previewUrl" class="flex justify-end">
                 <a
                     :href="previewUrl"
-                    class="inline-flex h-11 items-center gap-2 rounded-2xl bg-indigo-600 px-5 text-sm font-black text-white shadow transition hover:bg-primary/90"
+                    class="inline-flex h-11 items-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-soft-xs transition hover:bg-primary/90"
                 >
                     <ExternalLink class="size-4" />
                     Ver reporte completo

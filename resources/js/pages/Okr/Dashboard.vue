@@ -95,22 +95,22 @@ const assignOpen = ref(false)
 <template>
     <div class="w-full space-y-4 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
         <!-- Hero compacto -->
-        <section class="overflow-hidden rounded-2xl bg-slate-950 px-5 py-5 text-white shadow-md sm:px-7">
+        <section class="rounded-2xl border bg-card px-5 py-5 shadow-soft-xs sm:px-6">
             <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                    <p class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">
-                        <Target class="size-3.5" /> Sistema Reportes
+                    <p class="app-kicker flex items-center gap-2">
+                        <Target class="size-3.5 text-primary" aria-hidden="true" /> Análisis
                     </p>
-                    <h1 class="mt-1 text-2xl font-bold tracking-tight">OKR (Objective Key Result)</h1>
-                    <p class="mt-1 text-sm text-slate-300">Gestiona objetivos, resultados clave y seguimiento por sucursal y colaborador.</p>
+                    <h1 class="app-title mt-1">OKR (Objective Key Result)</h1>
+                    <p class="app-subtitle mt-1">Gestiona objetivos, resultados clave y seguimiento por sucursal y colaborador.</p>
                 </div>
                 <div class="flex shrink-0 flex-wrap gap-2">
-                    <Button class="h-10 gap-2 rounded-xl bg-emerald-500 text-white hover:bg-emerald-400" @click="assignOpen = true">
-                        <UserPlus class="size-4" /> Asignar OKR
+                    <Button class="h-10 gap-2 rounded-lg" data-tour="okr-assign" @click="assignOpen = true">
+                        <UserPlus class="size-4" aria-hidden="true" /> Asignar OKR
                     </Button>
                     <Link href="/okr/history">
-                        <Button variant="outline" class="h-10 gap-2 rounded-xl border-white/20 bg-white/5 text-white hover:bg-white/10">
-                            <History class="size-4" /> Histórico
+                        <Button variant="outline" class="h-10 gap-2 rounded-lg">
+                            <History class="size-4" aria-hidden="true" /> Histórico
                         </Button>
                     </Link>
                 </div>
@@ -142,7 +142,7 @@ const assignOpen = ref(false)
         <!-- Grid inferior 67/33 -->
         <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
             <!-- Izquierda: Objetivos y Key Results -->
-            <div class="app-card p-4">
+            <div class="app-card p-4" data-tour="okr-table">
                 <p class="mb-3 text-sm font-bold text-foreground">Objetivos y Key Results</p>
                 <div v-if="sortedObjectives.length" class="overflow-x-auto">
                     <table class="w-full min-w-[720px] text-sm">

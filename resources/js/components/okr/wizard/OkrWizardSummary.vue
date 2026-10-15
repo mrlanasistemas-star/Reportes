@@ -61,10 +61,9 @@ const distribution = computed(() => props.branchRows
 
 <template>
     <div class="space-y-4">
-        <div class="relative overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-indigo-500/10 via-background to-emerald-500/10 p-4">
-            <div class="pointer-events-none absolute -right-10 -top-10 size-40 rounded-full bg-indigo-500/10 blur-2xl" />
+        <div class="relative rounded-2xl border border-border bg-accent/40 p-4">
             <div class="relative flex items-start gap-3">
-                <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/30"><Sparkles class="size-5" /></span>
+                <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground" aria-hidden="true"><Sparkles class="size-5" /></span>
                 <div class="min-w-0">
                     <p class="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Objetivo general — {{ branchName }}</p>
                     <p class="text-sm font-semibold text-foreground">{{ title }}</p>

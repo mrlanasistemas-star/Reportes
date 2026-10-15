@@ -27,7 +27,9 @@ const current = computed(() => {
 const hidden = computed(() => pathname.value.startsWith('/guia-sistema') || activeTourId.value !== null || !page.props.auth?.user)
 
 function openGuide(): void {
-    router.visit(current.value ? `/guia-sistema?modulo=${current.value.id}` : '/guia-sistema')
+    // «desde»: el recorrido del módulo vuelve a la pantalla exacta de la que vienes
+    // (p. ej. el detalle de un OKR) en vez de a la portada del módulo.
+    router.visit(current.value ? `/guia-sistema?modulo=${current.value.id}&desde=${encodeURIComponent(pathname.value)}` : '/guia-sistema')
 }
 </script>
 

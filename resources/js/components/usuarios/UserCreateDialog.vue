@@ -72,9 +72,9 @@ function submit() {
 <template>
     <Dialog v-model:open="open">
         <DialogContent class="max-h-[92vh] w-[96vw] max-w-2xl overflow-y-auto p-0 sm:max-w-2xl">
-            <div class="bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 py-5 text-white">
-                <DialogTitle class="flex items-center gap-2 text-lg font-black"><UserPlus class="size-5" /> Nuevo usuario</DialogTitle>
-                <DialogDescription class="mt-1 text-sm text-white/80">Crea la cuenta con su rol. Puedes activar su acceso ahora o después, desde la tabla.</DialogDescription>
+            <div class="border-b border-border bg-card px-6 py-5">
+                <DialogTitle class="flex items-center gap-2 text-lg font-semibold text-foreground"><UserPlus class="size-5 text-primary" aria-hidden="true" /> Nuevo usuario</DialogTitle>
+                <DialogDescription class="mt-1 text-sm text-muted-foreground">Crea la cuenta con su rol. Puedes activar su acceso ahora o después, desde la tabla.</DialogDescription>
             </div>
 
             <div class="space-y-5 p-6">
@@ -82,12 +82,12 @@ function submit() {
                     <label class="space-y-1">
                         <span class="text-xs font-bold text-foreground">Nombre completo</span>
                         <input v-model="form.name" maxlength="191" placeholder="Ej. Ana López" class="app-input h-10 text-sm">
-                        <span v-if="form.errors.name" class="text-xs font-semibold text-rose-600">{{ form.errors.name }}</span>
+                        <span v-if="form.errors.name" class="app-field-error" role="alert">{{ form.errors.name }}</span>
                     </label>
                     <label class="space-y-1">
                         <span class="text-xs font-bold text-foreground">Correo</span>
                         <input v-model="form.email" type="email" maxlength="191" placeholder="ana@empresa.com" class="app-input h-10 text-sm">
-                        <span v-if="form.errors.email" class="text-xs font-semibold text-rose-600">{{ form.errors.email }}</span>
+                        <span v-if="form.errors.email" class="app-field-error" role="alert">{{ form.errors.email }}</span>
                     </label>
                 </div>
 
@@ -107,7 +107,7 @@ function submit() {
                             </span>
                         </button>
                     </div>
-                    <p v-if="form.errors.role" class="text-xs font-semibold text-rose-600">{{ form.errors.role }}</p>
+                    <p v-if="form.errors.role" class="app-field-error" role="alert">{{ form.errors.role }}</p>
                     <p class="text-[11px] text-muted-foreground">
                         Administrador no se asigna aquí: se cambia después desde la tabla.
                         <a v-if="rolesUrl" :href="rolesUrl" class="font-semibold text-primary hover:underline">¿Falta un rol? Créalo en Roles y permisos.</a>
@@ -149,13 +149,13 @@ function submit() {
                     </div>
                     <PasswordFields v-if="form.password_mode === 'manual'" v-model:password="form.password" v-model:confirmation="form.password_confirmation" :error="form.errors.password" />
                     <label v-if="form.password_mode !== 'invite' && canInvite" class="flex cursor-pointer items-center gap-2 text-xs text-foreground">
-                        <input v-model="form.send_invitation" type="checkbox" class="accent-indigo-600">
+                        <input v-model="form.send_invitation" type="checkbox" class="accent-primary">
                         Enviar también el correo de bienvenida con el enlace para establecer su propia contraseña
                     </label>
                 </div>
 
                 <label v-if="canManageAccess" class="flex cursor-pointer items-start gap-2 rounded-xl border border-border p-3 text-xs text-foreground">
-                    <input v-model="form.enable_access" type="checkbox" class="mt-0.5 accent-indigo-600">
+                    <input v-model="form.enable_access" type="checkbox" class="mt-0.5 accent-primary">
                     <span><strong>Activar su acceso de inmediato.</strong> Hazlo solo si ya confirmaste la identidad de la persona; si no, quedará como «pendiente de activación».</span>
                 </label>
             </div>

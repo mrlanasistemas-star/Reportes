@@ -1,5 +1,14 @@
 # Despliegue — workers, scheduler y requisitos de runtime
 
+> **Histórico (actualizado el 15-oct-2026).** La configuración vigente del worker, la agenda y
+> las variables está en **`docs/despliegue-vps-limpio.md`** (secciones 4, 11 y 12). Diferencias
+> con lo que sigue: la agenda ya no incluye `efectividad:recover-stalled` ni
+> `efectividad:retry-notifications`, e incluye `efectividad:limpiar-temporales` cada 10 min.
+> El worker usa `--timeout=3600`, `DB_QUEUE_RETRY_AFTER=3700` y `stopwaitsecs=3700`, porque
+> `ReprocessPeriodUploadsJob` tiene `$timeout = 3600`. Los jobs de Efectividad V4 ya no se
+> lanzan desde ninguna ruta, y en Nginx se bloquea todo `/storage/`, no solo
+> `/storage/reports/`.
+
 Documenta lo que este trabajo requiere para correr en el VPS. No se modificó ninguna
 configuración de producción desde este entorno de desarrollo — esto es documentación, no un
 cambio de infraestructura.

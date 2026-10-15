@@ -25,6 +25,12 @@ abstract class TestCase extends BaseTestCase
         }
         $_ENV['LARAVEL_STORAGE_PATH'] = $_SERVER['LARAVEL_STORAGE_PATH'] = $sandbox;
 
+        // Controladores como DashboardController llaman set_time_limit(120/180) para
+        // las peticiones web; en la suite todo corre en UN proceso CLI y ese límite
+        // se heredaba a las pruebas siguientes (Fatal "Maximum execution time of 120
+        // seconds exceeded" en exportaciones largas). Cada prueba parte sin límite.
+        @set_time_limit(0);
+
         return parent::createApplication();
     }
 

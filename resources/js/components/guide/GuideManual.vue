@@ -79,7 +79,7 @@ watch(() => props.focus, (id) => {
             <div class="mb-2 space-y-1.5 px-2">
                 <div class="flex items-center justify-between text-xs font-black tracking-wider text-slate-400 uppercase"><span>Pasos</span><span class="tabular-nums">{{ progressPct }}%</span></div>
                 <div class="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-                    <div class="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all duration-500" :style="{ width: `${progressPct}%` }" />
+                    <div class="h-full rounded-full bg-primary transition-all duration-500" :style="{ width: `${progressPct}%` }" />
                 </div>
             </div>
             <button
@@ -138,7 +138,7 @@ watch(() => props.focus, (id) => {
                                 { icon: Upload, t: 'Cargar archivos', d: 'Subes los archivos fuente de ese periodo.' },
                                 { icon: Sliders, t: 'Configurar y generar', d: 'Eliges tipo y alcance, y generas el reporte.' },
                                 { icon: Eye, t: 'Revisar y descargar', d: 'Consultas la vista previa y descargas Excel/PDF.' },
-                            ]" :key="i" class="rounded-2xl border border-slate-200 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md dark:border-slate-800 dark:hover:border-indigo-800">
+                            ]" :key="i" class="rounded-2xl border border-slate-200 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md dark:border-slate-800">
                                 <div class="flex size-9 items-center justify-center rounded-xl bg-accent text-primary dark:bg-accent dark:text-accent-foreground">
                                     <component :is="step.icon" class="size-4.5" />
                                 </div>
@@ -175,7 +175,7 @@ watch(() => props.focus, (id) => {
                                     <span class="rounded-lg bg-primary px-3 py-1.5 text-[11px] font-black text-white">+ Crear periodo</span>
                                 </div>
                                 <div class="mt-3 flex gap-2">
-                                    <span class="rounded-full bg-indigo-100 px-2.5 py-1 text-[10px] font-black text-indigo-700">Mensual</span>
+                                    <span class="rounded-full bg-accent px-2.5 py-1 text-[11px] font-bold text-accent-foreground">Mensual</span>
                                     <span class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">Bimestral</span>
                                     <span class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">Trimestral</span>
                                 </div>
@@ -244,7 +244,7 @@ watch(() => props.focus, (id) => {
                                         <Clock class="size-4 text-amber-500" /><span class="text-[11px] font-bold text-slate-600">Pendiente</span>
                                     </div>
                                     <div class="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                        <RefreshCw class="size-4 text-indigo-500" /><span class="text-[11px] font-bold text-slate-600">Procesando…</span>
+                                        <RefreshCw class="size-4 text-primary" /><span class="text-[11px] font-bold text-slate-600">Procesando…</span>
                                     </div>
                                     <div class="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
                                         <CheckCircle2 class="size-4 text-emerald-500" /><span class="text-[11px] font-bold text-slate-600">Completado</span>
@@ -428,7 +428,7 @@ watch(() => props.focus, (id) => {
                         <p class="text-sm leading-7 text-slate-600 dark:text-slate-300">
                             El reporte resultante muestra el rango completo del periodo, incluyendo qué meses abarca:
                         </p>
-                        <div class="rounded-2xl border border-indigo-200 bg-accent p-4 font-mono text-xs leading-6 text-indigo-800 dark:border-indigo-500/20 dark:bg-accent dark:text-accent-foreground">
+                        <div class="rounded-2xl border border-primary/20 bg-accent p-4 font-mono text-xs leading-6 text-accent-foreground">
                             Trimestre 2 - 2026<br>
                             Abril 2026 + Mayo 2026 + Junio 2026<br>
                             Rango: 2026-03-30 → 2026-06-21
@@ -494,7 +494,7 @@ watch(() => props.focus, (id) => {
                                 { icon: Users, t: 'Deducciones', d: 'Descuentos aplicados a la nómina, solo informativos.' },
                                 { icon: PiggyBank, t: 'Neto pagado', d: 'Lo que efectivamente recibió el personal.' },
                                 { icon: UserRound, t: 'Rotación de personal', d: 'Qué tanto entra y sale personal de la empresa en el periodo.' },
-                            ]" :key="i" class="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 transition hover:border-indigo-200 hover:shadow-sm dark:border-slate-800 dark:hover:border-indigo-800">
+                            ]" :key="i" class="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 transition hover:border-primary/30 hover:shadow-sm dark:border-slate-800">
                                 <div class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
                                     <component :is="k.icon" class="size-4.5" />
                                 </div>

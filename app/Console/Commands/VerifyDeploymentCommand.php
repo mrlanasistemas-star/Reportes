@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Throwable;
 
@@ -46,6 +47,7 @@ class VerifyDeploymentCommand extends Command
         $this->checkSidebar();
         $this->checkCaches();
         $this->checkMigrations($migrator);
+        $this->checkEngine();
         $this->checkBuild();
         $this->checkStorage();
         $this->checkFonts();
@@ -117,6 +119,30 @@ class VerifyDeploymentCommand extends Command
         }
     }
 
+    /**
+     * MyISAM no tiene transacciones, bloqueos de fila ni llaves foráneas: los
+     * candados de folios OKR y la integridad referencial dependen de InnoDB.
+     */
+    private function checkEngine(): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            return;
+        }
+        try {
+            $tables = DB::table('information_schema.TABLES')
+                ->where('TABLE_SCHEMA', DB::connection()->getDatabaseName())
+                ->where('TABLE_TYPE', 'BASE TABLE')
+                ->whereRaw('UPPER(ENGINE) <> ?', ['INNODB'])
+                ->pluck('TABLE_NAME')
+                ->all();
+            $this->report('Motor InnoDB', $tables === [], $tables === []
+                ? 'Todas las tablas son InnoDB.'
+                : count($tables).' tablas no son InnoDB (p. ej. '.implode(', ', array_slice($tables, 0, 5)).'): define DB_ENGINE=InnoDB antes de migrar o conviértelas con ALTER TABLE … ENGINE=InnoDB.');
+        } catch (\Throwable) {
+            $this->report('Motor InnoDB', false, 'No se pudo consultar information_schema.');
+        }
+    }
+
     private function checkBuild(): void
     {
         $manifest = public_path('build/manifest.json');
@@ -165,7 +191,7 @@ class VerifyDeploymentCommand extends Command
         $this->report('Cola', ! $prod || $queue !== 'sync', "QUEUE_CONNECTION={$queue}".($prod && $queue === 'sync' ? ': en producción usa database/redis con Supervisor.' : '.'), warn: true);
         $mailer = (string) config('mail.default');
         $this->report('Correo', ! in_array($mailer, ['log', 'array'], true) || ! $prod, "MAIL_MAILER={$mailer}".($prod && in_array($mailer, ['log', 'array'], true) ? ': las invitaciones no saldrían.' : '.'), warn: true);
-        $chrome = (string) config('services.browsershot.chrome_path', env('BROWSERSHOT_CHROME_PATH', ''));
+        $chrome = (string) config('pdf.browsershot.chrome_path', '');
         $this->report('Chrome para PDF', true, $chrome !== '' ? "Configurado: {$chrome}. Prueba completa: `php artisan reports:pdf-health`." : 'Sin ruta explícita; prueba con `php artisan reports:pdf-health`.', warn: true);
     }
 

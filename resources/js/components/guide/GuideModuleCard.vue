@@ -4,6 +4,7 @@
 // fluorescente distinto por módulo.
 import { BookOpen, PlayCircle } from 'lucide-vue-next'
 import type { GuideModule } from '@/tour/modules'
+import GuideModuleFacts from './GuideModuleFacts.vue'
 
 defineProps<{ module: GuideModule; highlighted?: boolean }>()
 const emit = defineEmits<{ tour: [id: string]; manual: [step: string] }>()
@@ -23,6 +24,7 @@ const emit = defineEmits<{ tour: [id: string]; manual: [step: string] }>()
                 <p class="mt-0.5 text-sm leading-relaxed text-muted-foreground">{{ module.description }}</p>
             </div>
         </div>
+        <GuideModuleFacts class="mt-3" :module="module" />
         <div class="mt-3 flex flex-wrap gap-1.5">
             <span v-for="t in module.topics" :key="t" class="app-pill app-pill-muted">{{ t }}</span>
         </div>

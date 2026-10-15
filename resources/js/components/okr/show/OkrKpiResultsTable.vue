@@ -71,7 +71,7 @@ function explain(kr: any): string {
                     <td class="w-40 px-3 py-3">
                         <div class="flex items-center gap-2">
                             <div class="relative h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                                <div class="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-700" :style="{ width: `${Math.max(0, Math.min(100, kr.actual_progress_percentage ?? 0))}%` }" />
+                                <div class="absolute inset-y-0 left-0 rounded-full bg-primary transition-all duration-700" :style="{ width: `${Math.max(0, Math.min(100, kr.actual_progress_percentage ?? 0))}%` }" />
                                 <div v-if="kr.expected_progress_percentage !== null" class="absolute inset-y-0 w-0.5 bg-foreground/60" :style="{ left: `${Math.max(0, Math.min(100, kr.expected_progress_percentage))}%` }" title="Esperado a la fecha" />
                             </div>
                             <span class="w-12 text-right font-bold tabular-nums">{{ kr.actual_progress_percentage === null ? '—' : `${kr.actual_progress_percentage}%` }}</span>

@@ -21,6 +21,7 @@ const props = withDefaults(
         periods: PeriodOption[]
         selected_period_id?: number | null
         selected_period_label?: string | null
+        selected_branch_id?: number | null
         summary?: {
             total: number
             matched: number
@@ -54,6 +55,7 @@ const props = withDefaults(
         periods: () => [],
         selected_period_id: null,
         selected_period_label: null,
+        selected_branch_id: null,
         summary: () => ({
             total: 0,
             matched: 0,
@@ -94,16 +96,24 @@ defineOptions({
 const filters = reactive({
     query: '',
     status: 'all',
-    branch: '',
 })
 
-const branchFilterOptions = computed(() => {
-    const names = new Set(props.assignments.map((a) => a.branch_name).filter((n): n is string => !!n))
+// Filtro de sucursal en el SERVIDOR (`branch_id`): conteos, plantilla, movimientos e
+// historial se recalculan para la sucursal elegida, no solo la tabla.
+const branchFilterOptions = computed(() => [
+    { value: '', label: 'Todas las sucursales' },
+    ...props.branches.map((b) => ({ value: String(b.id), label: b.name })),
+])
 
-    return [
-        { value: '', label: 'Todas las sucursales' },
-        ...Array.from(names).sort().map((n) => ({ value: n, label: n })),
-    ]
+const selectedBranchId = computed({
+    get: () => (props.selected_branch_id ? String(props.selected_branch_id) : ''),
+    set: (value: string) => {
+        router.get(
+            '/asignaciones-empleado-sucursal',
+            { period_id: props.selected_period_id || undefined, branch_id: value || undefined },
+            { preserveScroll: true, preserveState: true, replace: true },
+        )
+    },
 })
 
 // Distribución EXACTA por sucursal — cuenta PERSONAS de la plantilla NOI (una
@@ -151,7 +161,7 @@ const selectedPeriodId = computed({
     set: (value: string) => {
         router.get(
             '/asignaciones-empleado-sucursal',
-            { period_id: value || undefined },
+            { period_id: value || undefined, branch_id: props.selected_branch_id || undefined },
             { preserveScroll: true, preserveState: true, replace: true },
         )
     },
@@ -264,9 +274,8 @@ const filteredAssignments = computed(() => {
             aliasNames.includes(query)
 
         const matchesStatus = filters.status === 'all' || item.ui_status === filters.status
-        const matchesBranch = !filters.branch || item.branch_name === filters.branch
 
-        return matchesQuery && matchesStatus && matchesBranch
+        return matchesQuery && matchesStatus
     })
 })
 
@@ -276,7 +285,7 @@ const filteredAssignments = computed(() => {
 const PAGE_SIZE = 12
 const page = ref(1)
 
-watch([() => filters.query, () => filters.status, () => filters.branch, () => props.assignments], () => {
+watch([() => filters.query, () => filters.status, () => props.assignments], () => {
     page.value = 1
 })
 
@@ -388,7 +397,7 @@ const hasNoAssignments = computed(() => props.assignments.length === 0)
                             </div>
 
                             <div class="w-full sm:w-[200px]">
-                                <SelectField v-model="filters.branch" :options="branchFilterOptions" placeholder="Todas las sucursales" />
+                                <SelectField v-model="selectedBranchId" :options="branchFilterOptions" placeholder="Todas las sucursales" />
                             </div>
                         </div>
                     </div>

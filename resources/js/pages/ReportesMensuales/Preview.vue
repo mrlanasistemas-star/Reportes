@@ -1061,7 +1061,23 @@ const prestamoActivoKpi = computed(() => {
 })
 
 // ── Productos ──────────────────────────────────────────────────────────────────
-const productosRows = computed(() => snap.value?.sections?.products ?? [])
+// Bajo alcance sucursal/colaborador el backend entrega el desglose de ESE alcance (o un
+// objeto {not_attributable, reason} si no reconcilia / no existe) — nunca el global.
+const productosRaw = computed(() => snap.value?.sections?.products)
+const productosRows = computed<any[]>(() => (Array.isArray(productosRaw.value) ? productosRaw.value : []))
+const productosNoDisponible = computed<string | null>(() => {
+    const p = productosRaw.value as any
+
+    return p && !Array.isArray(p) && p.not_attributable ? (p.reason || 'Desglose por producto no disponible para este alcance.') : null
+})
+// Recuperación por producto: si el backend la marcó no atribuible a este alcance, se explica
+// en vez de un vacío genérico.
+const recuperacionProductoNoDisponible = computed<string | null>(() => {
+    const r = snap.value?.sections?.recovery_by_product as any
+
+    return r && r.not_attributable ? 'Recuperación por producto no disponible para este alcance.' : null
+})
+const moneyOrDash = (v: unknown) => (v === null || v === undefined ? '—' : money(Number(v) || 0))
 
 // ── Fondeos / Excedentes ───────────────────────────────────────────────────────
 const fondeoDetalleSection = computed(() => snap.value?.sections?.fondeo_detalle ?? { total: 0, detalle: [] })
@@ -1093,6 +1109,19 @@ const rotacionData        = computed(() => {
     const r = snap.value?.sections?.rotation
 
     return r && !r.not_attributable ? r : null
+})
+// Alcance sucursal sin fila de rotación propia: el backend marca not_attributable con
+// motivo (nunca el total de la empresa) — se explica en vez de "sin datos" genérico.
+const rotacionNoAtribuibleMotivo = computed<string | null>(() => {
+    const r = snap.value?.sections?.rotation
+
+    return r?.not_attributable ? String(r.reason ?? 'No se puede atribuir a este alcance.') : null
+})
+const rotacionEsSucursal = computed(() => activeScope.value.type === 'branch')
+const rotacionBajasPendientes = computed<number | null>(() => {
+    const v = rotacionData.value?.bajas_pendientes
+
+    return typeof v === 'number' ? v : null
 })
 // Contexto individual de rotación bajo scope=employee: activo/alta/baja este periodo,
 // desde rotation_detail (ya filtrado por nombre en applyEmployeeScope()) — nunca la
@@ -1928,12 +1957,12 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
         </div>
 
         <!-- Sin snapshot -->
-        <div v-if="!snap" class="mx-auto max-w-screen-2xl px-6 py-20">
+        <div v-if="!snap" class="mx-auto max-w-screen-2xl px-4 py-12 sm:px-6 sm:py-20">
             <EmptyState title="Sin radiografía generada" description="Genérala en «Carga de archivos», etapa «Generar reporte», para ver el tablero completo." />
         </div>
 
         <template v-else>
-            <div class="mx-auto max-w-screen-2xl space-y-5 px-6 py-5">
+            <div class="mx-auto max-w-screen-2xl space-y-5 px-4 py-5 sm:px-6">
 
                 <!-- ALCANCE ACTIVO — chips + limpiar filtros. Seleccionar sucursal o gestor
                      transforma las tarjetas KPI y las pestañas directamente (mismo dataset que
@@ -1945,10 +1974,11 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         {{ chip.label }}
                     </span>
                     <button v-for="chip in scopeChips.filter(c => c.removable)" :key="chip.label" type="button" @click="chip.clear()"
-                            class="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-white transition hover:bg-primary/90">
-                        {{ chip.label }} <span class="text-primary">×</span>
+                            class="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition hover:bg-primary/90"
+                            :aria-label="'Quitar filtro ' + chip.label">
+                        {{ chip.label }} <span class="text-primary-foreground/80" aria-hidden="true">×</span>
                     </button>
-                    <button type="button" @click="vfClearAll" class="text-xs font-bold text-muted-foreground underline hover:text-slate-800">Limpiar filtros</button>
+                    <button type="button" @click="vfClearAll" class="text-xs font-semibold text-muted-foreground underline underline-offset-2 hover:text-foreground">Limpiar filtros</button>
                 </div>
 
                 <!-- DASHBOARD — overlay de carga cubre KPI + pestañas al cambiar de alcance,
@@ -1992,13 +2022,13 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 />
 
                 <!-- Ficha producto seleccionado (el gestor ya se refleja arriba en las tarjetas KPI) -->
-                <div v-if="vfProduct" class="rounded-2xl border bg-card p-4 shadow-sm">
+                <div v-if="vfProduct" class="rounded-2xl border bg-card p-4 shadow-soft-xs">
                     <div class="mt-3 border-t pt-3" :class="!vfGestor ? 'mt-0 border-t-0 pt-0' : ''">
                         <div v-if="vfProductRow" class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
                             <div><p class="text-xs text-muted-foreground">Producto</p><p class="font-semibold text-foreground truncate">{{ vfProductRow.producto }}</p></div>
                             <div><p class="text-xs text-muted-foreground">Colocación</p><p class="font-bold text-primary">{{ money(vfProductRow.colocacion) }}</p></div>
                             <div><p class="text-xs text-muted-foreground">Operaciones</p><p class="font-bold">{{ num(vfProductRow.operaciones) }}</p></div>
-                            <div><p class="text-xs text-muted-foreground">Cartera</p><p class="font-bold">{{ money(vfProductRow.cartera ?? 0) }}</p></div>
+                            <div><p class="text-xs text-muted-foreground">Cartera</p><p class="font-bold">{{ moneyOrDash(vfProductRow.cartera) }}</p></div>
                         </div>
                         <p v-else class="text-sm text-muted-foreground italic">Sin información disponible para este producto.</p>
                     </div>
@@ -2007,10 +2037,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 <!-- EXPORTACIÓN — Excel/PDF SIEMPRE respetan el alcance activo arriba (chips).
                      Comparativos (mes/bimestre/trimestre vs X) tienen su propio alcance
                      independiente, porque comparan un periodo distinto al que se ve en pantalla. -->
-                <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
-                    <button @click="showFilteredPanel = !showFilteredPanel"
+                <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
+                    <button type="button" :aria-expanded="showFilteredPanel" @click="showFilteredPanel = !showFilteredPanel"
                             class="flex w-full items-center justify-between px-5 py-3.5 text-sm font-bold text-foreground/80 hover:bg-muted transition">
-                        <span class="flex items-center gap-2"><Download class="size-4 text-primary" /> Descargar / Comparativos</span>
+                        <span class="flex items-center gap-2"><Download class="size-4 text-primary" aria-hidden="true" /> Descargar / Comparativos</span>
                         <ChevronDown v-if="!showFilteredPanel" class="size-4 text-muted-foreground" />
                         <ChevronUp v-else class="size-4 text-muted-foreground" />
                     </button>
@@ -2090,7 +2120,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                class="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted">
                                 <FileSpreadsheet class="size-4" /> Descargar Excel de colaboradores
                             </a>
-                            <p v-if="!canDownloadFiltered" class="self-center text-xs text-amber-600 dark:text-amber-400 font-semibold">
+                            <p v-if="!canDownloadFiltered" class="self-center text-xs font-semibold text-warning">
                                 <span v-if="isComparative && !filteredComparePeriodId">Selecciona un periodo a comparar.</span>
                                 <span v-else-if="isComparative && filteredScope === 'branch'">Selecciona una sucursal.</span>
                                 <span v-else-if="isComparative && filteredScope === 'employee'">Selecciona un gestor.</span>
@@ -2106,7 +2136,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      $0.00. DRAFT (mientras se escribe, no dispara nada) → APPLIED (solo al
                      pulsar "Aplicar ajuste", UNA request). Un solo panel visible a la vez,
                      según el alcance activo — A10. -->
-                <div v-if="activeScope.type === 'employee' && activeScope.employee_id" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-sm">
+                <div v-if="activeScope.type === 'employee' && activeScope.employee_id" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-soft-xs">
                     <template v-if="showManualDraftForm">
                         <p class="font-semibold text-foreground">Ajuste temporal del gestor</p>
                         <p class="mt-1 text-sm text-muted-foreground">Monto aproximado de gastos operativos de {{ activeScope.employee_name }} este periodo. Se suma al OPEX automático — nunca lo reemplaza.</p>
@@ -2127,15 +2157,15 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                        class="mt-1 h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                             </label>
                         </div>
-                        <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600 dark:text-rose-400">{{ manualDraftError }}</p>
+                        <p v-if="manualDraftError" class="app-field-error mt-2" role="alert">{{ manualDraftError }}</p>
 
                         <div class="mt-4 flex items-center gap-3">
                             <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
-                                    class="h-9 rounded-2xl bg-primary px-4 text-xs font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
                             <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
-                                    class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
                         </div>
@@ -2150,11 +2180,11 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
-                                        class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                     Modificar
                                 </button>
                                 <button type="button" :disabled="adjustmentLoading" @click="removeManualAdjustment"
-                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-lg border border-danger-border bg-card px-4 text-sm font-semibold text-danger transition hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-50">
                                     {{ adjustmentLoading ? 'Quitando…' : 'Quitar ajuste' }}
                                 </button>
                             </div>
@@ -2166,7 +2196,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 <!-- Ajuste temporal de SUCURSAL (A5 Caso 2, nuevo en esta ronda) — el monto es
                      POR colaborador; el total que sube el OPEX de la sucursal es
                      monto × colaboradores canónicos de esa sucursal este periodo. -->
-                <div v-if="activeScope.type === 'branch' && activeScope.branch_id" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-sm">
+                <div v-if="activeScope.type === 'branch' && activeScope.branch_id" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-soft-xs">
                     <template v-if="showManualDraftForm">
                         <p class="font-semibold text-foreground">Ajuste temporal de la sucursal</p>
                         <p class="mt-1 text-sm text-muted-foreground">Este importe se agregará al OPEX de CADA colaborador de {{ activeScope.branch_name }}.</p>
@@ -2187,20 +2217,20 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                        class="mt-1 h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                             </label>
                         </div>
-                        <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600 dark:text-rose-400">{{ manualDraftError }}</p>
+                        <p v-if="manualDraftError" class="app-field-error mt-2" role="alert">{{ manualDraftError }}</p>
 
-                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 px-4 py-2.5 text-xs">
+                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-card/70 px-4 py-2.5 text-xs">
                             <span class="font-bold text-muted-foreground">Gestores afectados: <span class="text-foreground">{{ affectedEmployeeCountEstimate }}</span></span>
                             <span class="font-bold text-muted-foreground">Impacto total estimado: <span class="text-primary">{{ money(estimatedTotalImpact) }}</span></span>
                         </div>
 
                         <div class="mt-4 flex items-center gap-3">
                             <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
-                                    class="h-9 rounded-2xl bg-primary px-4 text-xs font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
                             <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
-                                    class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
                         </div>
@@ -2215,11 +2245,11 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
-                                        class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                     Modificar
                                 </button>
                                 <button type="button" :disabled="adjustmentLoading" @click="removeManualAdjustment"
-                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-lg border border-danger-border bg-card px-4 text-sm font-semibold text-danger transition hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-50">
                                     {{ adjustmentLoading ? 'Quitando…' : 'Quitar ajuste' }}
                                 </button>
                             </div>
@@ -2232,7 +2262,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      que sube el OPEX general es monto × colaboradores canónicos del periodo
                      completo. Reemplaza al viejo "aplicar a TODOS los colaboradores" (antes
                      solo tocaba el Excel de colaboradores, nunca Web/Excel/PDF general). -->
-                <div v-if="activeScope.type === 'general'" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-sm">
+                <div v-if="activeScope.type === 'general'" class="rounded-2xl border border-primary/30 bg-accent p-5 shadow-soft-xs">
                     <template v-if="showManualDraftForm">
                         <p class="font-semibold text-foreground">Ajuste temporal general</p>
                         <p class="mt-1 text-sm text-muted-foreground">Este importe se agregará al OPEX de CADA colaborador del periodo.</p>
@@ -2253,20 +2283,20 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                        class="mt-1 h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30" />
                             </label>
                         </div>
-                        <p v-if="manualDraftError" class="mt-2 text-xs font-bold text-rose-600 dark:text-rose-400">{{ manualDraftError }}</p>
+                        <p v-if="manualDraftError" class="app-field-error mt-2" role="alert">{{ manualDraftError }}</p>
 
-                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-white/70 px-4 py-2.5 text-xs">
+                        <div class="mt-3 flex flex-wrap items-center gap-4 rounded-xl bg-card/70 px-4 py-2.5 text-xs">
                             <span class="font-bold text-muted-foreground">Colaboradores afectados: <span class="text-foreground">{{ affectedEmployeeCountEstimate }}</span></span>
                             <span class="font-bold text-muted-foreground">Impacto total estimado: <span class="text-primary">{{ money(estimatedTotalImpact) }}</span></span>
                         </div>
 
                         <div class="mt-4 flex items-center gap-3">
                             <button type="button" :disabled="adjustmentLoading" @click="applyManualAdjustment"
-                                    class="h-9 rounded-2xl bg-primary px-4 text-xs font-bold text-white transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50">
                                 {{ adjustmentLoading ? 'Aplicando ajuste…' : 'Aplicar ajuste' }}
                             </button>
                             <button v-if="appliedAdjustment" type="button" :disabled="adjustmentLoading" @click="cancelEditManualDraft"
-                                    class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+                                    class="h-9 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancelar
                             </button>
                         </div>
@@ -2281,11 +2311,11 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </div>
                             <div class="flex shrink-0 gap-2">
                                 <button type="button" :disabled="adjustmentLoading" @click="editManualAdjustment"
-                                        class="h-9 rounded-2xl border border-border bg-card px-4 text-xs font-bold text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
                                     Modificar
                                 </button>
                                 <button type="button" :disabled="adjustmentLoading" @click="removeManualAdjustment"
-                                        class="h-9 rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-card px-4 text-xs font-bold text-rose-600 dark:text-rose-400 transition hover:bg-rose-50 dark:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                                        class="h-9 rounded-lg border border-danger-border bg-card px-4 text-sm font-semibold text-danger transition hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-50">
                                     {{ adjustmentLoading ? 'Quitando…' : 'Quitar ajuste' }}
                                 </button>
                             </div>
@@ -2299,19 +2329,20 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      Rotación de Personal / Categoría EBITDA) sin necesitar pantalla completa. -->
                 <div class="relative border-b border-border">
                     <button v-if="canScrollTabsLeft" type="button" @click="scrollTabs('left')"
-                        class="absolute left-0 top-0 z-10 flex h-full items-center bg-gradient-to-r from-white via-white/90 to-transparent pl-1 pr-4 text-muted-foreground hover:text-primary"
+                        class="absolute left-0 top-0 z-10 flex h-full items-center bg-gradient-to-r from-background via-background/90 to-transparent pl-1 pr-4 text-muted-foreground hover:text-primary"
                         aria-label="Ver pestañas anteriores">
                         <ChevronLeft class="size-4" />
                     </button>
                     <div ref="tabsScrollEl" class="flex overflow-x-auto gap-1 scroll-smooth">
                         <button v-for="t in tabs" :key="t.key" :data-tab-key="t.key" @click="activeTab = t.key"
                             class="relative shrink-0 px-3.5 py-2.5 text-xs font-bold transition border-b-2 whitespace-nowrap"
-                            :class="activeTab === t.key ? 'border-primary/30 text-primary ' : 'border-transparent text-muted-foreground hover:text-slate-800 '">
+                            :class="activeTab === t.key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'"
+                            :aria-current="activeTab === t.key ? 'page' : undefined">
                             {{ t.label }}
                         </button>
                     </div>
                     <button v-if="canScrollTabsRight" type="button" @click="scrollTabs('right')"
-                        class="absolute right-0 top-0 z-10 flex h-full items-center bg-gradient-to-l from-white via-white/90 to-transparent pr-1 pl-4 text-muted-foreground hover:text-primary"
+                        class="absolute right-0 top-0 z-10 flex h-full items-center bg-gradient-to-l from-background via-background/90 to-transparent pr-1 pl-4 text-muted-foreground hover:text-primary"
                         aria-label="Ver más pestañas">
                         <ChevronRight class="size-4" />
                     </button>
@@ -2320,16 +2351,16 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 <!-- ══════════ RESUMEN ══════════ -->
                 <div v-show="activeTab === 'resumen'" class="space-y-5">
                     <div v-if="alertas.length" class="space-y-2">
-                        <div v-for="(a, i) in alertas" :key="i" class="flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm font-bold"
-                             :class="a.tone === 'red' ? 'border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300' : 'border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300'">
-                            <AlertTriangle class="size-4 shrink-0" /> {{ a.text }}
+                        <div v-for="(a, i) in alertas" :key="i" class="app-banner font-medium"
+                             :class="a.tone === 'red' ? 'app-banner-danger' : 'app-banner-warning'">
+                            <AlertTriangle aria-hidden="true" /> <span>{{ a.text }}</span>
                         </div>
                     </div>
 
                     <!-- RESUMEN FINANCIERO GENERAL -->
-                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                    <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                         <div class="border-b bg-muted/50 px-5 py-3">
-                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Resumen ejecutivo</h3>
+                            <h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Resumen ejecutivo</h3>
                         </div>
                         <table class="w-full text-sm">
                             <tbody>
@@ -2352,9 +2383,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <!-- ── DESGLOSES DETALLADOS ─────────────────────────────────── -->
                     <div class="grid gap-4 lg:grid-cols-2">
                         <!-- A) Ingresos / Recuperación -->
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                             <div class="border-b bg-emerald-50 dark:bg-emerald-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Ingresos / Recuperación</h3>
+                                <h3 class="text-sm font-semibold tracking-tight text-emerald-700 dark:text-emerald-300">Ingresos / Recuperación</h3>
                                 <span class="font-semibold text-emerald-800 dark:text-emerald-300">{{ money(recGlobal) }}</span>
                             </div>
                             <table class="w-full text-sm">
@@ -2378,9 +2409,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                         </div>
                         <!-- B) Colocación -->
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                             <div class="border-b bg-blue-50 dark:bg-blue-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-300">Colocación por producto</h3>
+                                <h3 class="text-sm font-semibold tracking-tight text-blue-700 dark:text-blue-300">Colocación por producto</h3>
                                 <span class="font-semibold text-blue-800 dark:text-blue-300">{{ money(colGlobal) }}</span>
                             </div>
                             <table class="w-full text-sm">
@@ -2390,7 +2421,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                         <td class="px-5 py-2 text-muted-foreground">{{ p.producto }}</td>
                                         <td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(p.colocacion ?? 0) }}</td>
                                     </tr>
-                                    <tr v-if="!productosSorted.length"><td colspan="2" class="px-5 py-3 text-xs text-muted-foreground italic">Sin desglose por producto disponible.</td></tr>
+                                    <tr v-if="!productosSorted.length"><td colspan="2" class="px-5 py-3 text-xs text-muted-foreground italic">{{ productosNoDisponible ?? 'Sin desglose por producto disponible.' }}</td></tr>
                                     <tr class="border-t-2 border-blue-200 dark:border-blue-500/20 bg-blue-50 dark:bg-blue-500/10"><td class="px-5 py-2.5 font-semibold text-blue-900 dark:text-blue-200">Total colocación</td><td class="px-5 py-2.5 text-right font-semibold text-blue-900 dark:text-blue-200">{{ money(colGlobal) }}</td></tr>
                                 </tbody>
                             </table>
@@ -2399,8 +2430,8 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                     <div class="grid gap-4 lg:grid-cols-2">
                         <!-- C) Cartera / Mora -->
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-red-50 dark:bg-red-500/10 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-red-700 dark:text-red-300">Valor Cartera / Mora</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
+                            <div class="border-b bg-red-50 dark:bg-red-500/10 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-red-700 dark:text-red-300">Valor Cartera / Mora</h3></div>
                             <table class="w-full text-sm">
                                 <tbody>
                                     <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Valor cartera total</td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(carteraGlobal) }}</td></tr>
@@ -2416,9 +2447,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                         </div>
                         <!-- D) OPEX -->
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                             <div class="border-b bg-amber-50 dark:bg-amber-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">OPEX</h3>
+                                <h3 class="text-sm font-semibold tracking-tight text-amber-700 dark:text-amber-300">OPEX</h3>
                                 <span class="font-semibold text-amber-800 dark:text-amber-300">{{ money(brGlobalGastosTotal) }}</span>
                             </div>
                             <table class="w-full text-sm">
@@ -2437,9 +2468,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                     <div class="grid gap-4 lg:grid-cols-2">
                         <!-- E) Nómina y Capital Humano -->
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                             <div class="border-b bg-blue-50 dark:bg-blue-500/10 px-5 py-3 flex items-center justify-between">
-                                <h3 class="text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-300">Nómina y Capital Humano</h3>
+                                <h3 class="text-sm font-semibold tracking-tight text-blue-700 dark:text-blue-300">Nómina y Capital Humano</h3>
                                 <span class="font-semibold text-blue-800 dark:text-blue-300">{{ money(nomTotal) }}</span>
                             </div>
                             <table class="w-full text-sm">
@@ -2469,8 +2500,8 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                         </div>
                         <!-- F) EBITDA -->
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-accent px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-primary">EBITDA — desglose</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
+                            <div class="border-b bg-accent px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-primary">EBITDA — desglose</h3></div>
                             <table class="w-full text-sm">
                                 <tbody>
                                     <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Utilidad bruta</td><td class="px-5 py-2 text-right font-semibold text-emerald-700 dark:text-emerald-300">{{ money(ingresoEbitdaBaseGlobal) }}</td></tr>
@@ -2479,7 +2510,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     <tr class="border-b bg-muted/50"><td class="px-5 py-2 pl-8 text-muted-foreground text-xs">Nómina y Capital Humano</td><td class="px-5 py-2 text-right text-xs text-foreground/80">{{ money(nomTotal) }}</td></tr>
                                     <tr class="border-b-2 border-primary/30 bg-accent"><td class="px-5 py-2.5 font-semibold text-primary">EBITDA</td><td class="px-5 py-2.5 text-right font-semibold text-lg" :class="utilidadGlobal < 0 ? 'text-red-700 dark:text-red-300' : 'text-primary '">{{ money(utilidadGlobal) }}</td></tr>
                                     <tr class="border-b bg-muted/50"><td class="px-5 py-2 text-muted-foreground font-medium">Margen EBITDA</td><td class="px-5 py-2 text-right font-semibold" :class="margenEbitdaPct < 0 ? 'text-red-700 dark:text-red-300' : 'text-foreground '">{{ pct(margenEbitdaPct) }}</td></tr>
-                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Excedente enviado a corporativo <span class="text-[10px] uppercase tracking-wide text-muted-foreground">(informativo)</span></td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(excGlobal) }}</td></tr>
+                                    <tr class="border-b"><td class="px-5 py-2 text-muted-foreground font-medium">Excedente enviado a corporativo <span class="text-[11px] uppercase tracking-wide text-muted-foreground">(informativo)</span></td><td class="px-5 py-2 text-right font-semibold text-foreground">{{ money(excGlobal) }}</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -2503,8 +2534,8 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <ChartCard title="Mora por bucket" :series="moraBucketSeries" :options="moraBucketOptions" type="donut" :height="260" />
 
                     <div class="grid gap-4 lg:grid-cols-2">
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Top sucursales por cartera</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
+                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Top sucursales por cartera</h3></div>
                             <table v-if="branchesFull.length" class="w-full text-sm">
                                 <tbody>
                                     <tr v-for="b in [...branchesFull].sort((a,b)=>b.cartera-a.cartera).slice(0,6)" :key="b.nombre" class="border-b last:border-0 hover:bg-muted">
@@ -2515,10 +2546,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                             <EmptyState v-else class="m-4" title="Sin datos de sucursales" />
                         </div>
-                        <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
-                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Categoría por EBITDA</h3></div>
+                        <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
+                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Categoría por EBITDA</h3></div>
                             <table v-if="branchesFull.length" class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-2 text-left">Sucursal</th>
                                         <th class="px-4 py-2 text-right">EBITDA</th>
@@ -2546,9 +2577,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             <ChartCard title="Ranking por cartera" :series="rankingCarteraSeries" :options="rankingCarteraOptions" type="donut" :height="320" />
                             <ChartCard title="EBITDA por sucursal" :series="rankingEbitdaSeries" :options="rankingEbitdaOptions" type="donut" :height="320" />
                         </div>
-                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Sucursal</th>
                                         <th class="px-4 py-3 text-right">Valor cartera</th>
@@ -2580,7 +2611,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                         </div>
                     </template>
-                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-sm">
+                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-soft-xs">
                         <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Sucursal histórica del colaborador en este periodo</p>
                         <p class="mt-1 text-2xl font-semibold text-foreground">{{ activeScope.branch_name ?? 'Sin sucursal' }}</p>
                         <p class="mt-3 text-xs text-muted-foreground">No se muestra el ranking general de sucursales bajo alcance de colaborador — solo su sucursal de asignación en este periodo. Para ver el detalle completo de esa sucursal, selecciónala directamente en el filtro.</p>
@@ -2600,10 +2631,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         <ChartCard title="Colocación por producto" :series="colocacionProductoSeries" :options="colocacionProductoOptions" type="donut" :height="280" />
                         <ChartCard title="Colocación por sucursal" :series="colocacionSucursalSeries" :options="colocacionSucursalOptions" type="donut" :height="280" />
                     </div>
-                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
-                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Ranking por producto (colocación)</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Ranking por producto (colocación)</h3></div>
                         <table v-if="productosSorted.length" class="w-full text-sm">
-                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Producto</th><th class="px-4 py-3 text-right">Operaciones</th><th class="px-4 py-3 text-right">Colocación</th><th class="px-4 py-3 text-right">Recuperación</th></tr>
                             </thead>
                             <tbody>
@@ -2612,18 +2643,18 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                     <td class="px-4 py-2.5 font-bold">{{ p.producto }}</td>
                                     <td class="px-4 py-2.5 text-right">{{ num(p.operaciones) }}</td>
                                     <td class="px-4 py-2.5 text-right font-semibold">{{ money(p.colocacion) }}</td>
-                                    <td class="px-4 py-2.5 text-right">{{ money(p.recuperacion ?? 0) }}</td>
+                                    <td class="px-4 py-2.5 text-right">{{ moneyOrDash(p.recuperacion) }}</td>
                                 </tr>
                             </tbody>
                         </table>
-                        <EmptyState v-else class="m-4" title="Sin datos de producto" description="Verifica que el archivo de ministraciones incluya la columna de producto financiero." />
+                        <EmptyState v-else class="m-4" title="Sin datos de producto" :description="productosNoDisponible ?? 'Verifica que el archivo de ministraciones incluya la columna de producto financiero.'" />
                     </div>
 
                     <!-- A) Recuperación por componente -->
-                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
-                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">A) Recuperación por componente</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">A) Recuperación por componente</h3></div>
                         <table class="w-full text-sm">
-                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Componente</th><th class="px-4 py-3 text-right">Monto</th><th class="px-4 py-3 text-right">% del total</th></tr>
                             </thead>
                             <tbody>
@@ -2651,10 +2682,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- B) Recuperación por sucursal -->
-                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
-                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">B) Recuperación por sucursal</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">B) Recuperación por sucursal</h3></div>
                         <table class="w-full text-sm">
-                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                 <tr>
                                     <th class="px-4 py-3 text-left">Sucursal</th><th class="px-4 py-3 text-right">Capital</th><th class="px-4 py-3 text-right">Intereses</th>
                                     <th class="px-4 py-3 text-right">Impuestos</th><th class="px-4 py-3 text-right">Moratorios</th><th class="px-4 py-3 text-right">Cargos adic.</th>
@@ -2686,10 +2717,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- C) Recuperación por producto -->
-                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
-                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">C) Recuperación por producto</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">C) Recuperación por producto</h3></div>
                         <table v-if="recuperacionPorProducto.length" class="w-full text-sm">
-                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                 <tr>
                                     <th class="px-4 py-3 text-left">Producto</th><th class="px-4 py-3 text-right">Capital</th><th class="px-4 py-3 text-right">Intereses</th>
                                     <th class="px-4 py-3 text-right">Impuestos</th><th class="px-4 py-3 text-right">Moratorios</th><th class="px-4 py-3 text-right">Cargos adic.</th>
@@ -2716,7 +2747,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                 <tr><td class="px-4 py-2.5 uppercase tracking-wider">Total</td><td colspan="9"></td><td class="px-4 py-2.5 text-right">{{ money(recGlobal) }}</td></tr>
                             </tfoot>
                         </table>
-                        <EmptyState v-else class="m-4" title="Sin datos de recuperación por producto" />
+                        <EmptyState v-else class="m-4" title="Sin datos de recuperación por producto" :description="recuperacionProductoNoDisponible ?? undefined" />
                     </div>
                 </div>
 
@@ -2730,9 +2761,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                          atribuido por Observación/Justificación) + manual ("Gasto general por
                          gestor" de Etapa 4) — DOS FUENTES QUE SE SUMAN, nunca una reemplaza a la
                          otra. Ver RadiographySnapshotBuilder::buildEmployeeExpenseDetail(). -->
-                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                         <div class="border-b bg-muted/50 px-5 py-3">
-                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Gastos operativos / OPEX del colaborador</h3>
+                            <h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Gastos operativos / OPEX del colaborador</h3>
                         </div>
                         <div class="overflow-x-auto">
                             <table class="w-full text-xs">
@@ -2777,9 +2808,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         <ChartCard title="Top categorías de gasto" :series="gastosPorCategoriaSeries" :options="gastosPorCategoriaOptions" type="donut" :height="300" />
                     </div>
 
-                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                    <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                         <div class="flex items-center justify-between border-b bg-muted/50 px-5 py-3">
-                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Gastos por sucursal — detalle</h3>
+                            <h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Gastos por sucursal — detalle</h3>
                             <div class="relative">
                                 <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                                 <input v-model="gastosSearch" type="text" placeholder="Buscar sucursal o concepto…"
@@ -2811,10 +2842,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- ── Fondeos entre sucursales operativas ── -->
-                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                    <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                         <div class="border-b bg-muted/50 px-5 py-3 flex items-center justify-between">
                             <div>
-                                <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Fondeos entre sucursales operativas</h3>
+                                <h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Fondeos entre sucursales operativas</h3>
                             </div>
                             <span class="text-xs font-semibold text-foreground/80">{{ money(fondeoOperTotal) }}</span>
                         </div>
@@ -2844,10 +2875,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- ── Excedentes / envío a CORPORATIVO ── -->
-                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden" v-if="excedentesTotal > 0 || excedentesDetalle.length">
+                    <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden" v-if="excedentesTotal > 0 || excedentesDetalle.length">
                         <div class="border-b bg-amber-50 dark:bg-amber-500/10 px-5 py-3 flex items-center justify-between">
                             <div>
-                                <h3 class="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">Excedente enviado a corporativo</h3>
+                                <h3 class="text-sm font-semibold tracking-tight text-amber-700 dark:text-amber-300">Excedente enviado a corporativo</h3>
                                 <p class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Movimientos de efectivo enviados a corporativo — no afectan EBITDA ni OPEX</p>
                             </div>
                             <span class="text-xs font-semibold text-amber-800 dark:text-amber-300">{{ money(excedentesTotal) }}</span>
@@ -2876,9 +2907,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </div>
                     </div>
 
-                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
+                    <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
                         <div class="border-b bg-muted/50 px-5 py-3">
-                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Seguros y coberturas canalizadas</h3>
+                            <h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Seguros y coberturas canalizadas</h3>
                         </div>
                         <table class="w-full text-sm">
                             <tbody>
@@ -2908,8 +2939,8 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
                     <ChartCard title="Nómina por sucursal" :series="nominaPorSucursalSeries" :options="nominaPorSucursalOptions" type="donut" :height="320" />
 
-                    <div class="rounded-2xl border bg-card shadow-sm overflow-hidden">
-                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Nómina por sucursal — detalle</h3></div>
+                    <div class="rounded-2xl border bg-card shadow-soft-xs overflow-hidden">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Nómina por sucursal — detalle</h3></div>
                         <div v-if="nominaTree.length">
                             <div v-for="n in nominaTree" :key="n.sucursal" class="border-b last:border-0">
                                 <button @click="expandedNominaBranch = expandedNominaBranch === n.sucursal ? null : n.sucursal"
@@ -2927,7 +2958,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                         <tr v-for="c in n.conceptos" :key="c.concepto" class="border-t bg-muted/50">
                                             <td class="px-8 py-1.5 text-muted-foreground">
                                                 {{ c.concepto }}
-                                                <span v-if="NOI_DEDUCTION_LABELS.has(c.concepto)" class="ml-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">(informativo, no afecta)</span>
+                                                <span v-if="NOI_DEDUCTION_LABELS.has(c.concepto)" class="ml-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">(informativo, no afecta)</span>
                                             </td>
                                             <td class="px-5 py-1.5 text-right font-semibold" :class="NOI_DEDUCTION_LABELS.has(c.concepto) ? 'text-muted-foreground ' : 'text-foreground/80 '">
                                                 {{ money(c.total) }}
@@ -2955,10 +2986,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
                     <ChartCard title="Top sucursales con más cartera vencida" :series="topVencidaSeries" :options="topVencidaOptions" type="donut" :height="300" />
 
-                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
-                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Distribución por días vencidos</h3></div>
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
+                        <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Distribución por días vencidos</h3></div>
                         <table v-if="snap.sections?.portfolio_buckets?.length" class="w-full text-sm">
-                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Bucket</th><th class="px-4 py-3 text-right">Contratos</th><th class="px-4 py-3 text-right">Balance</th><th class="px-4 py-3 text-right">Vencido</th></tr>
                             </thead>
                             <tbody>
@@ -2974,14 +3005,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
 
                     <!-- Desglose por componente -->
-                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                    <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                         <div class="border-b bg-muted/50 px-5 py-3 flex items-center justify-between">
-                            <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Desglose por componente / bucket</h3>
+                            <h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Desglose por componente / bucket</h3>
                             <span class="text-xs font-bold text-foreground/80">Total vencida: {{ money(kpiMora) }}</span>
                         </div>
                         <template v-if="hasMoraComponents">
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Bucket</th>
                                         <th class="px-4 py-3 text-right">Capital atrasado</th>
@@ -3054,10 +3085,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </p>
                         </div>
 
-                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
-                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cobranza por estatus del crédito</h3></div>
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
+                            <div class="border-b bg-muted/50 px-5 py-3"><h3 class="text-sm font-semibold tracking-tight text-muted-foreground">Cobranza por estatus del crédito</h3></div>
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Estatus</th>
                                         <th class="px-4 py-3 text-right">Contratos</th>
@@ -3108,9 +3139,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                 <div v-show="activeTab === 'productos'" class="space-y-5">
                     <template v-if="productosRows.length">
                         <ChartCard title="Colocación por producto" :series="colocacionProductoSeries" :options="colocacionProductoOptions" type="donut" :height="300" />
-                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr><th class="px-4 py-3 text-left">Producto</th><th class="px-4 py-3 text-right">Operaciones</th><th class="px-4 py-3 text-right">Colocación</th><th class="px-4 py-3 text-right">Recuperación</th><th class="px-4 py-3 text-right">Cartera</th></tr>
                                 </thead>
                                 <tbody>
@@ -3119,14 +3150,14 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                                         <td class="px-4 py-2.5 font-bold">{{ p.producto }}</td>
                                         <td class="px-4 py-2.5 text-right">{{ num(p.operaciones) }}</td>
                                         <td class="px-4 py-2.5 text-right font-semibold">{{ money(p.colocacion) }}</td>
-                                        <td class="px-4 py-2.5 text-right">{{ money(p.recuperacion ?? 0) }}</td>
-                                        <td class="px-4 py-2.5 text-right">{{ money(p.cartera ?? 0) }}</td>
+                                        <td class="px-4 py-2.5 text-right">{{ moneyOrDash(p.recuperacion) }}</td>
+                                        <td class="px-4 py-2.5 text-right">{{ moneyOrDash(p.cartera) }}</td>
                                     </tr>
                                 </tbody>
                             </table>
                         </div>
                     </template>
-                    <EmptyState v-else title="Sin datos de producto" description="Verifica que el archivo de ministraciones incluya la columna de producto financiero." />
+                    <EmptyState v-else title="Sin datos de producto" :description="productosNoDisponible ?? 'Verifica que el archivo de ministraciones incluya la columna de producto financiero.'" />
                 </div>
 
                 <!-- ══════════ FONDEOS / EXCEDENTES ══════════ -->
@@ -3146,9 +3177,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     <!-- Gráfica fondeos por origen -->
                     <div v-if="fondeosPorOrigen.length" class="grid gap-4 lg:grid-cols-2">
                         <ChartCard title="Fondeos por sucursal origen" :series="fondeosPorOrigenSeries" :options="fondeosPorOrigenOptions" type="donut" :height="280" />
-                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr><th class="px-4 py-3 text-left">Sucursal origen</th><th class="px-4 py-3 text-right">Total fondeado</th></tr>
                                 </thead>
                                 <tbody>
@@ -3161,13 +3192,13 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </div>
                     </div>
                     <!-- Excedentes por sucursal -->
-                    <div v-if="corpFundingRows.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                    <div v-if="corpFundingRows.length" class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                         <div class="flex items-center justify-between px-5 py-3 border-b bg-amber-50/60 dark:bg-amber-500/10">
                             <span class="font-bold text-sm text-amber-800 dark:text-amber-300">Excedente enviado a corporativo por sucursal</span>
                             <span class="font-semibold text-sm text-amber-900 dark:text-amber-200">{{ money(excGlobal) }}</span>
                         </div>
                         <table class="w-full text-sm">
-                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                 <tr><th class="px-4 py-3 text-left">Sucursal</th><th class="px-4 py-3 text-right">Total enviado</th></tr>
                             </thead>
                             <tbody>
@@ -3179,13 +3210,13 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </table>
                     </div>
                     <!-- Detalle completo fondeos -->
-                    <div v-if="fondeoDetalleRows.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                    <div v-if="fondeoDetalleRows.length" class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                         <div class="flex items-center justify-between px-5 py-3 border-b">
                             <span class="font-bold text-sm">Detalle de fondeos entre sucursales</span>
                             <span class="font-semibold text-sm">{{ money(fondeoDetalleTotal) }}</span>
                         </div>
                         <table class="w-full text-sm">
-                            <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                            <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                 <tr>
                                     <th class="px-4 py-3 text-left">Fecha</th>
                                     <th class="px-4 py-3 text-left">Origen</th>
@@ -3211,9 +3242,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                 <!-- ══════════ ROTACIÓN DE PERSONAL ══════════ -->
                 <div v-show="activeTab === 'rotacion'" class="space-y-5">
-                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-sm">
+                    <div v-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-soft-xs">
                         <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Rotación — no aplica a un alcance individual</p>
-                        <p class="mt-2 text-sm text-muted-foreground">La plantilla y el índice de rotación son cifras de toda la empresa; no tiene sentido mostrarlas para un solo colaborador. Su estado en este periodo:</p>
+                        <p class="mt-2 text-sm text-muted-foreground">La plantilla y el índice de rotación son cifras de sucursal o de toda la empresa; no tiene sentido mostrarlas para un solo colaborador. Su estado en este periodo:</p>
                         <div v-if="rotacionIndividual" class="mt-4 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
                             <div><p class="text-xs text-muted-foreground">Estado</p><p class="font-semibold text-foreground">{{ rotacionIndividual.estado }}</p></div>
                             <div v-if="rotacionIndividual.sucursal"><p class="text-xs text-muted-foreground">Sucursal</p><p class="font-bold text-foreground/80">{{ rotacionIndividual.sucursal }}</p></div>
@@ -3222,8 +3253,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                     </div>
                     <template v-else-if="rotacionData">
                         <div class="flex items-center justify-between">
-                            <h3 class="text-lg font-bold text-foreground">Rotación de personal</h3>
+                            <h3 class="text-lg font-bold text-foreground">Rotación de personal<template v-if="rotacionEsSucursal && activeScope.branch_name"> — {{ activeScope.branch_name }}</template></h3>
                         </div>
+                        <p v-if="rotacionEsSucursal" class="-mt-3 text-xs text-muted-foreground">Cifras solo de esta sucursal (plantilla NOI del periodo); no incluyen al resto de la empresa.</p>
                         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                             <KpiCard :label="`Plantilla ${rotacionMesAnteriorLabel || 'anterior'}`" :value="num(rotacionPrevCount)" :icon="Building2" tone="neutral" />
                             <KpiCard :label="`Plantilla ${rotacionMesActualLabel || 'actual'}`" :value="num(rotacionCurrCount)" :icon="Building2" tone="blue" />
@@ -3232,18 +3264,21 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             <KpiCard label="Bajas del periodo" :value="num(rotacionBajas)" :icon="AlertTriangle" tone="red" />
                             <KpiCard label="Índice de rotación" :value="fmtPercent(rotacionIndice)" :icon="Percent" :tone="rotacionIndice > 5 ? 'red' : rotacionIndice > 2 ? 'amber' : 'teal'" />
                         </div>
+                        <p v-if="rotacionBajasPendientes !== null" class="text-xs text-muted-foreground">
+                            Bajas pendientes de conciliación: <span class="font-semibold text-foreground">{{ num(rotacionBajasPendientes) }}</span> — ausencias sin baja confirmada; no cuentan en el índice.
+                        </p>
 
                         <div v-if="rotacionPorSucursal.length" class="grid gap-4 md:grid-cols-2">
                             <ChartCard title="Plantilla por sucursal — anterior vs actual" :series="rotacionPlantillaSeries" :options="rotacionPlantillaOptions" type="bar" :height="280" />
                             <ChartCard title="Altas vs Bajas del periodo" :series="rotacionAltasBajasSeries" :options="rotacionAltasBajasOptions" type="donut" :height="280" />
                         </div>
 
-                        <div v-if="rotacionPorSucursal.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div v-if="rotacionPorSucursal.length" class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                             <div class="px-5 py-3 border-b">
                                 <span class="font-bold text-sm">Rotación de personal por sucursal</span>
                             </div>
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Sucursal</th>
                                         <th class="px-4 py-3 text-right">Plantilla anterior</th>
@@ -3274,12 +3309,12 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </div>
                         <p v-else class="text-sm text-muted-foreground italic text-center py-4">Sin desglose por sucursal disponible para este periodo.</p>
 
-                        <div v-if="rotacionDetalleMensual.length" class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div v-if="rotacionDetalleMensual.length" class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                             <div class="px-5 py-3 border-b">
                                 <span class="font-bold text-sm">Detalle mensual del periodo consolidado</span>
                             </div>
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Mes</th>
                                         <th class="px-4 py-3 text-right">Altas</th>
@@ -3300,7 +3335,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </table>
                         </div>
 
-                        <div v-if="rotacionDetalle" class="rounded-2xl border bg-card shadow-sm">
+                        <div v-if="rotacionDetalle" class="rounded-2xl border bg-card shadow-soft-xs">
                             <button
                                 type="button"
                                 class="flex w-full items-center justify-between px-5 py-3.5"
@@ -3382,6 +3417,10 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </div>
                         </div>
                     </template>
+                    <div v-else-if="rotacionNoAtribuibleMotivo" class="rounded-2xl border bg-card p-6 shadow-soft-xs">
+                        <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Rotación — no disponible para este alcance</p>
+                        <p class="mt-2 text-sm text-muted-foreground">{{ rotacionNoAtribuibleMotivo }}</p>
+                    </div>
                     <EmptyState v-else title="Sin datos de rotación" description="Aún no hay información de rotación para este periodo." />
                 </div>
 
@@ -3392,9 +3431,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             <ChartCard title="Distribución por categoría" :series="categoriaDonutSeries" :options="categoriaDonutOptions" type="donut" :height="280" class="lg:col-span-1" />
                             <ChartCard title="EBITDA por sucursal" :series="ebitdaPorSucursalSeries" :options="ebitdaPorSucursalOptions" type="donut" :height="280" class="lg:col-span-2" />
                         </div>
-                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                             <table class="w-full text-sm">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-4 py-3 text-left">Sucursal</th>
                                         <th class="px-4 py-3 text-right">Recuperación</th>
@@ -3421,7 +3460,7 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                         </div>
                         <p class="text-xs italic text-muted-foreground">EBITDA = Utilidad bruta (intereses + impuestos + moratorios + comisión por apertura + cargos adicionales + excedentes + 30% Seguro CRECE) − Gastos Totales (OPEX + Nómina y Capital Humano). No incluye capital recuperado.</p>
                     </template>
-                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-sm">
+                    <div v-else-if="activeScope.type === 'employee'" class="rounded-2xl border bg-card p-6 shadow-soft-xs">
                         <p class="text-xs font-bold uppercase tracking-wider text-muted-foreground">Categoría EBITDA del colaborador</p>
                         <div class="mt-3 flex flex-wrap items-center gap-4">
                             <p class="text-2xl font-semibold" :class="kpiUtil < 0 ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-300'">{{ money(kpiUtil) }}</p>
@@ -3449,9 +3488,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                             </select>
                         </div>
 
-                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-sm">
+                        <div class="overflow-x-auto rounded-2xl border bg-card shadow-soft-xs">
                             <table class="w-full text-xs">
-                                <thead class="bg-muted/50 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                <thead class="bg-muted/60 text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-muted-foreground">
                                     <tr>
                                         <th class="px-3 py-3 text-left sticky left-0 bg-muted/50">Gestor</th>
                                         <th class="px-3 py-3 text-left">Sucursal</th>
@@ -3498,9 +3537,9 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
                      importar el scroll, la pestaña activa ni si algún ancestro define un
                      transform/filter que convertiría "fixed" en relativo a ese ancestro. -->
                 <Teleport to="body">
-                    <div v-if="scopedLoading" class="fixed inset-0 z-[9999] flex items-center justify-center bg-card/60 backdrop-blur-sm">
+                    <div v-if="scopedLoading" class="fixed inset-0 z-[9999] flex items-center justify-center bg-background/60 backdrop-blur-sm" role="status" aria-live="polite">
                         <div class="flex flex-col items-center gap-3 rounded-2xl border border-border bg-card px-8 py-6 shadow-soft-sm">
-                            <span class="size-10 animate-spin rounded-full border-4 border-primary/30 border-t-primary"></span>
+                            <span class="size-10 animate-spin rounded-full border-4 border-primary/30 border-t-primary" aria-hidden="true"></span>
                             <p class="text-sm font-semibold text-foreground">{{ vfGestor || vfBranch ? 'Actualizando radiografía' : 'Limpiando filtros' }}</p>
                             <p class="max-w-xs text-center text-xs text-muted-foreground">
                                 <template v-if="vfGestor || vfBranch">
@@ -3515,12 +3554,12 @@ const rankingGestoresSeries = computed(() => topGestoresColocacion.value.map((e:
 
                 <!-- ERROR AL FILTRAR — conserva el dataset anterior internamente, pero jamás
                      lo presenta como si correspondiera al nuevo filtro. -->
-                <div v-if="scopedError" class="rounded-2xl border border-rose-200 dark:border-rose-500/20 bg-rose-50 dark:bg-rose-500/10 px-5 py-4 text-sm text-rose-800 dark:text-rose-300">
-                    <p class="font-bold">No se pudo actualizar la radiografía para este filtro.</p>
-                    <p class="mt-1 text-rose-700 dark:text-rose-300">{{ scopedError }}</p>
-                    <div class="mt-3 flex gap-2">
-                        <button type="button" @click="retryScopedFetch" class="rounded-xl bg-rose-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-rose-500">Reintentar</button>
-                        <button type="button" @click="vfClearAll" class="rounded-xl border border-rose-300 dark:border-rose-500/25 bg-card px-4 py-1.5 text-xs font-bold text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:bg-rose-500/15">Volver al reporte general</button>
+                <div v-if="scopedError" class="rounded-2xl border border-danger-border bg-danger-soft px-5 py-4 text-sm text-foreground" role="alert">
+                    <p class="font-semibold text-danger">No se pudo actualizar la radiografía para este filtro.</p>
+                    <p class="mt-1 text-muted-foreground">{{ scopedError }}</p>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                        <button type="button" @click="retryScopedFetch" class="h-9 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90">Reintentar</button>
+                        <button type="button" @click="vfClearAll" class="h-9 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground hover:bg-muted">Volver al reporte general</button>
                     </div>
                 </div>
 

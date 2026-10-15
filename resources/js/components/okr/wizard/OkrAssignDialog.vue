@@ -361,17 +361,16 @@ const primaryBranchKr = computed(() => branchRows.value[0] ?? null)
         >
             <DialogTitle class="sr-only">Asignar OKR</DialogTitle>
 
-            <div class="relative overflow-hidden border-b border-border bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 px-6 py-4 text-white">
-                <div class="pointer-events-none absolute -right-16 -top-16 size-48 rounded-full bg-indigo-500/20 blur-3xl" />
+            <div class="relative border-b border-border bg-card px-6 py-4">
                 <div class="relative flex items-center justify-between">
                     <div class="flex items-center gap-3">
-                        <span class="flex size-10 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur"><Sparkles class="size-5 text-indigo-200" /></span>
+                        <span class="flex size-10 items-center justify-center rounded-xl bg-accent text-primary" aria-hidden="true"><Sparkles class="size-5" /></span>
                         <div>
-                            <p class="text-base font-bold">Asignar OKR</p>
-                            <p class="text-xs text-indigo-200/80">Paso {{ step }} de {{ STEPS.length }} · {{ STEPS[step - 1] }}</p>
+                            <p class="text-base font-semibold text-foreground">Asignar OKR</p>
+                            <p class="text-xs text-muted-foreground">Paso {{ step }} de {{ STEPS.length }} · {{ STEPS[step - 1] }}</p>
                         </div>
                     </div>
-                    <button type="button" class="rounded-full p-1.5 text-white/70 transition hover:rotate-90 hover:bg-white/10 hover:text-white" aria-label="Cerrar" @click="open = false"><X class="size-4" /></button>
+                    <button type="button" class="rounded-full p-1.5 text-muted-foreground transition hover:bg-muted hover:text-foreground" aria-label="Cerrar" @click="open = false"><X class="size-4" /></button>
                 </div>
             </div>
 

@@ -59,7 +59,7 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
             <div class="mt-5 flex flex-wrap items-center gap-3">
                 <button
                     type="button"
-                    class="inline-flex h-10 items-center gap-2 rounded-2xl bg-indigo-600 px-5 text-sm font-black text-white shadow transition hover:bg-primary/90"
+                    class="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-soft-xs transition hover:bg-primary/90"
                     @click="emit('retry')"
                 >
                     <RefreshCw class="size-4" />
@@ -92,7 +92,7 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
                         <Clock3 class="size-6" />
                     </div>
                     <div>
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-indigo-600 dark:text-indigo-400">Estado de generación</p>
+                        <p class="text-xs font-black uppercase tracking-[0.22em] text-primary">Estado de generación</p>
                         <h3 class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50">{{ publicLog || 'Sin generación en curso' }}</h3>
                         <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Cuando el job termine, el usuario recibirá un correo y el reporte quedará en Reportes mensuales.</p>
                     </div>

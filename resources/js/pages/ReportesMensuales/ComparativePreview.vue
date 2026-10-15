@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { usePage } from '@inertiajs/vue3'
+import { AlertTriangle, Loader2 } from 'lucide-vue-next'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ComparativeHero from '@/components/comparative/ComparativeHero.vue'
 import ComparativeKpiCard from '@/components/comparative/ComparativeKpiCard.vue'
@@ -174,7 +175,7 @@ return
 }
 
         if (!resp.ok) {
- error.value = json.error ?? `Error ${resp.status} al construir el comparativo.`;
+ error.value = json.error ?? json.message ?? `Error ${resp.status} al construir el comparativo.`;
 
  return 
 }
@@ -229,7 +230,8 @@ onUnmounted(() => {
 const rows = computed<Row[]>(() => data.value?.rows ?? [])
 const labelA = computed(() => data.value?.periodA?.label ?? props.periods.find(p => p.id === periodA.value)?.label ?? 'Periodo A')
 const labelB = computed(() => data.value?.periodB?.label ?? props.periods.find(p => p.id === periodB.value)?.label ?? 'Periodo B')
-const scopeLabel = computed(() => data.value?.scopeLabel ?? 'General')
+// Mientras llega el dataset, nunca se rotula «General» a quien no tiene ese alcance.
+const scopeLabel = computed(() => data.value?.scopeLabel ?? ({ general: 'General', branch: 'Sucursal', employee: 'Gestor' } as const)[scope.value])
 
 const headlineRows = computed(() => HEADLINE_METRICS.map(label => rows.value.find(r => r.label === label)).filter((r): r is Row => !!r))
 
@@ -297,14 +299,15 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
             :allow-general="isGeneralUser" @swap="swapPeriods"
         />
 
-        <div v-if="error" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-            {{ error }}
+        <div v-if="error" class="app-banner app-banner-warning" role="alert">
+            <AlertTriangle aria-hidden="true" />
+            <span class="font-medium">{{ error }}</span>
         </div>
 
         <ComparativeLoadingPanel v-if="loading && !data" :label-a="labelA" :label-b="labelB" />
 
         <template v-else-if="data">
-            <p v-if="loading" class="inline-flex items-center gap-2 rounded-full bg-accent px-3 py-1 text-xs font-bold text-primary"><span class="size-2 animate-ping rounded-full bg-primary" /> Actualizando comparativo… la primera consulta de un periodo puede tardar unos segundos.</p>
+            <p v-if="loading" class="inline-flex items-center gap-2 rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground" role="status"><Loader2 class="size-3.5 animate-spin" aria-hidden="true" /> Actualizando comparativo… la primera consulta de un periodo puede tardar unos segundos.</p>
 
             <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <ComparativeKpiCard v-for="row in headlineRows" :key="row.label"
@@ -323,9 +326,9 @@ const moraRadialSeries = computed(() => [moraRow.value?.curr ?? 0, moraRow.value
                 <ChartCard title="Mora %" subtitle="Comparativo en el mismo anillo" type="radialBar" :height="260" :series="moraRadialSeries" :options="moraRadialOptions" class="sm:col-span-2 xl:col-span-2" />
             </div>
 
-            <div class="rounded-2xl border bg-card p-5 shadow-sm">
-                <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Mayores variaciones</h3>
-                <p class="mt-0.5 text-[11px] text-muted-foreground">Ordenadas por magnitud relativa — sin interpretación automática, solo orden determinista.</p>
+            <div class="app-section p-5">
+                <h3 class="app-section-title">Mayores variaciones</h3>
+                <p class="app-help mt-0.5">Ordenadas por magnitud relativa — sin interpretación automática, solo orden determinista.</p>
                 <ul class="mt-3 divide-y divide-border">
                     <li v-for="row in topVariations" :key="row.label" class="flex items-center justify-between gap-3 py-2.5 text-sm">
                         <span class="font-semibold text-foreground/80">{{ row.label }}</span>

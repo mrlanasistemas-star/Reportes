@@ -12,6 +12,10 @@ import type { TourStep } from '@/tour/types'
 const activeTourId = ref<string | null>(null)
 const stepIndex = ref(0)
 const pendingNavigation = ref(false)
+/** Sentido del último movimiento: el overlay salta en esa dirección si el paso no tiene elemento. */
+const lastDirection = ref<1 | -1>(1)
+/** Pantalla preferida para el primer paso (la de origen, si es del mismo módulo). */
+let preferredStartPath: string | null = null
 
 const STORAGE_KEY = 'reportes_tours_completed_v1'
 
@@ -24,7 +28,11 @@ function readCompleted(): string[] {
 }
 
 function writeCompleted(ids: string[]): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(ids))
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(ids))
+    } catch {
+        // Almacenamiento bloqueado (ventana privada): el recorrido sigue funcionando.
+    }
 }
 
 const completedTours = ref<string[]>(readCompleted())
@@ -91,11 +99,18 @@ export function useTour() {
         }
 
         const step = tour.steps[clamped]
+        lastDirection.value = direction
         stepIndex.value = clamped
 
-        if (step.href && step.href !== window.location.pathname) {
+        // Si ya estás dentro del mismo módulo (p. ej. el detalle /okr/5 y el paso
+        // apunta a /okr), no se te saca de la pantalla en la que estás.
+        const preferred = preferredStartPath
+        preferredStartPath = null
+        const destination = step.href && preferred && firstSegment(preferred) === firstSegment(step.href) ? preferred : step.href
+
+        if (destination && firstSegment(destination) !== firstSegment(window.location.pathname)) {
             pendingNavigation.value = true
-            router.visit(step.href, {
+            router.visit(destination, {
                 onFinish: () => {
                     pendingNavigation.value = false
                 },
@@ -103,13 +118,16 @@ export function useTour() {
         }
     }
 
-    function startTour(id: string): void {
+    function startTour(id: string, fromPath: string | null = null): void {
         if (!TOURS[id]) {
             return
         }
 
+        preferredStartPath = fromPath
+
         activeTourId.value = id
         stepIndex.value = 0
+        lastDirection.value = 1
         void goToStep(0)
     }
 
@@ -162,6 +180,7 @@ export function useTour() {
         isFirstStep,
         isLastStep,
         pendingNavigation,
+        lastDirection,
         startTour,
         next,
         prev,

@@ -57,6 +57,9 @@ test('email verification status is unchanged when the email address is unchanged
 
 test('user can delete their account', function () {
     $user = User::factory()->create();
+    // Otro administrador habilitado: el único administrador no puede eliminarse
+    // (ver AccessHardeningTest — candado del último administrador).
+    User::factory()->create();
 
     $response = $this
         ->actingAs($user)

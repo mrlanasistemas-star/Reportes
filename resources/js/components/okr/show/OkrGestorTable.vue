@@ -95,7 +95,7 @@ function goTo(row: any, panel?: string) {
                                 <td class="px-2 py-3">
                                     <div class="flex items-center gap-2">
                                         <div class="relative h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                                            <div class="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-700" :style="{ width: `${Math.max(0, Math.min(100, g.compliance ?? 0))}%` }" />
+                                            <div class="absolute inset-y-0 left-0 rounded-full bg-primary transition-all duration-700" :style="{ width: `${Math.max(0, Math.min(100, g.compliance ?? 0))}%` }" />
                                         </div>
                                         <span class="w-10 text-right font-bold tabular-nums">{{ g.lifecycle_status === 'draft' ? '—' : `${Math.round(g.compliance ?? 0)}%` }}</span>
                                     </div>

@@ -159,8 +159,8 @@ class ResponsibleController extends Controller
                 'manage_access' => $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso'),
             ],
             // Se muestran UNA SOLA VEZ (session()->pull() las lee y las borra).
-            'temp_password' => session()->pull('temp_password'),
-            'reset_password' => session()->pull('reset_password'),
+            'temp_password' => self::revealSecret(session()->pull('temp_password')),
+            'reset_password' => self::revealSecret(session()->pull('reset_password')),
             'invitation_result' => session()->pull('invitation_result'),
         ]);
     }
@@ -207,6 +207,13 @@ class ResponsibleController extends Controller
         if ($scopeMode === null && $dataScope->isRestricted($actor)) {
             $scopeMode = DataScopeService::MODE_BRANCHES;
             $scopeIds = $dataScope->allowedBranchIds($actor) ?? [];
+        }
+        // Un usuario NUEVO de nivel gerencial sin alcance elegido quedaría con la regla
+        // de usuarios previos a la Fase 6.4 (NULL → todas las sucursales): acceso general
+        // por omisión. Se exige la elección explícita. (Nivel colaborador sin elección
+        // conserva «solo lo propio», que nunca amplía su acceso.)
+        if ($scopeMode === null && $this->isManagerialRole($role)) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['branch_scope' => 'Elige el alcance por sucursal del usuario: «Todas las sucursales» o «Sucursales específicas».']);
         }
         if ($scopeMode === DataScopeService::MODE_BRANCHES && $scopeIds === []) {
             throw \Illuminate\Validation\ValidationException::withMessages(['branch_ids' => 'Elige al menos una sucursal o marca «Todas las sucursales».']);
@@ -258,7 +265,7 @@ class ResponsibleController extends Controller
         }
 
         return $tempPassword !== null
-            ? $response->with('temp_password', ['name' => $user->name, 'email' => $user->email, 'password' => $tempPassword])
+            ? $response->with('temp_password', self::sealSecret(['name' => $user->name, 'email' => $user->email, 'password' => $tempPassword]))
             : $response;
     }
 
@@ -353,7 +360,7 @@ class ResponsibleController extends Controller
             return back()->with('success', "Contraseña de {$user->name} actualizada. Sus sesiones abiertas se cerraron.");
         }
 
-        return back()->with('reset_password', ['name' => $user->name, 'email' => $user->email, 'password' => $password]);
+        return back()->with('reset_password', self::sealSecret(['name' => $user->name, 'email' => $user->email, 'password' => $password]));
     }
 
     /**
@@ -416,16 +423,25 @@ class ResponsibleController extends Controller
         // alcance por defecto del NIVEL de su rol: subirlo a gerencial lo dejaría con
         // «todas». Si quien cambia el rol tiene alcance restringido, se congela antes
         // el alcance actual del usuario (que ya cabe en el suyo): nunca se escala.
+        // Lo mismo aplica aunque quien lo cambie sea un administrador: subir de nivel a un
+        // usuario sin alcance explícito NUNCA le concede «todas» por arrastre; su alcance
+        // actual (restringido) se congela y el administrador lo amplía de forma explícita.
         $dataScope = app(DataScopeService::class);
-        if ($dataScope->isRestricted($request->user()) && $dataScope->modeOf($user) === null) {
-            $dataScope->save($user, DataScopeService::MODE_BRANCHES, $dataScope->allowedBranchIds($user) ?? [], $request->user());
+        $frozenEmpty = false;
+        if ($dataScope->modeOf($user) === null && $dataScope->isRestricted($user)
+            && ($dataScope->isRestricted($request->user()) || $this->isManagerialRole($data['role']))) {
+            $frozen = $dataScope->allowedBranchIds($user) ?? [];
+            $dataScope->save($user, DataScopeService::MODE_BRANCHES, $frozen, $request->user());
+            $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'branch_scope_changed', 'branch_scope', null, $dataScope->label($user->fresh()));
+            $frozenEmpty = $frozen === [];
         }
 
         $old = $user->role;
         $user->forceFill(['role' => $data['role']])->save();
         $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'role_changed', 'role', $catalog->label($old), $catalog->label($data['role']));
 
-        return back()->with('success', "Rol de {$user->name} actualizado a {$catalog->label($data['role'])}.");
+        return back()->with('success', "Rol de {$user->name} actualizado a {$catalog->label($data['role'])}."
+            . ($frozenEmpty ? ' Todavía no tiene sucursales autorizadas: asígnaselas en «Alcance por sucursal».' : ''));
     }
 
     /**
@@ -493,6 +509,38 @@ class ResponsibleController extends Controller
         $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'branch_scope_changed', 'branch_scope', $old, $new);
 
         return back()->with('success', "Alcance de {$user->name} actualizado: {$new}.");
+    }
+
+    /**
+     * Contraseña generada que se muestra UNA vez: viaja cifrada en la sesión (el
+     * driver es `database` sin SESSION_ENCRYPT), así nunca queda en texto plano en
+     * la tabla `sessions` entre la redirección y la pantalla que la muestra.
+     */
+    public static function sealSecret(array $secret): string
+    {
+        return \Illuminate\Support\Facades\Crypt::encrypt($secret);
+    }
+
+    /** @return array<string, string>|null */
+    public static function revealSecret(mixed $sealed): ?array
+    {
+        if (! is_string($sealed) || $sealed === '') {
+            return null;
+        }
+        try {
+            $value = \Illuminate\Support\Facades\Crypt::decrypt($sealed);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return is_array($value) ? $value : null;
+    }
+
+    /** Rol (del sistema o personalizado) de nivel gerencial — sin alcance explícito vería todas las sucursales. */
+    private function isManagerialRole(string $role): bool
+    {
+        return $role === User::ROLE_GERENCIAL
+            || ($role !== User::ROLE_ADMIN && app(RoleCatalogService::class)->baseLevel($role) === User::ROLE_GERENCIAL);
     }
 
     private function assertManageable(Request $request, User $user): void

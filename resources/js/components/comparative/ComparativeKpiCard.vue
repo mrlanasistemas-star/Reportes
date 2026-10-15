@@ -18,7 +18,7 @@ const fmtValue = computed(() => (v: number) => props.fmt === 'percent' ? percent
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-card p-5 shadow-sm transition hover:shadow-md">
+    <div class="rounded-2xl border bg-card p-5 shadow-soft-xs">
         <p class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{{ label }}</p>
         <div class="mt-3 flex flex-wrap items-end justify-between gap-x-3 gap-y-1">
             <div>

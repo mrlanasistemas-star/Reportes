@@ -211,15 +211,15 @@ return 'Diseño filtrado por gestor'
                 :href="previewUrl ?? '#'"
                 class="flex items-center justify-between rounded-2xl border p-5 transition hover:-translate-y-0.5 hover:shadow-lg"
                 :class="previewUrl
-                    ? 'border-indigo-200 bg-indigo-50 cursor-pointer dark:border-indigo-500/20 dark:bg-indigo-500/10'
+                    ? 'border-primary/30 bg-accent cursor-pointer'
                     : 'border-slate-200 bg-slate-50 pointer-events-none opacity-50 dark:border-slate-800 dark:bg-slate-800/40'"
             >
                 <span>
-                    <ExternalLink class="mb-3 size-7 text-indigo-700 dark:text-indigo-400" />
+                    <ExternalLink class="mb-3 size-7 text-primary" />
                     <span class="block font-black text-slate-950 dark:text-slate-50">Ver reporte completo</span>
                     <span class="text-xs text-slate-600 dark:text-slate-300">Vista previa web con todas las secciones</span>
                 </span>
-                <ExternalLink class="size-5 text-indigo-700 dark:text-indigo-400" />
+                <ExternalLink class="size-5 text-primary" />
             </a>
         </div>
 

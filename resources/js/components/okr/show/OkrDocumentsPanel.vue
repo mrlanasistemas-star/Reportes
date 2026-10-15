@@ -111,7 +111,7 @@ const subjectLabel = () => props.objective.subject?.full_name ?? (props.objectiv
     <section class="rounded-2xl border border-border bg-card shadow-sm">
         <header class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
             <div class="flex items-center gap-2">
-                <span class="flex size-9 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-300"><FileText class="size-4" /></span>
+                <span class="flex size-9 items-center justify-center rounded-xl bg-brand-accent/10 text-brand-accent"><FileText class="size-4" /></span>
                 <div>
                     <p class="text-sm font-bold text-foreground">Documentos</p>
                     <p class="text-[11px] text-muted-foreground">Carta Compromiso, Warnings y firmas de {{ subjectLabel() }}.</p>
