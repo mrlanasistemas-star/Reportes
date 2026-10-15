@@ -34,12 +34,16 @@ export type Assignment = {
 // deduplicado por persona real, misma fuente que el Índice de Rotación de OKR),
 // nunca de `Assignment` — forma más chica a propósito, no confundir con una
 // asignación real.
+export type RosterReconciliationStatus = 'sin_contradiccion' | 'posible_coincidencia_nombre' | 'pendiente_conciliacion'
+
 export type RosterMovementItem = {
     id: number
     employee_id: number
     employee_name: string
     branch_name?: string | null
     period_label?: string | null
+    reconciliation_status?: RosterReconciliationStatus | null
+    reconciliation_note?: string | null
 }
 
 export type Branch = {

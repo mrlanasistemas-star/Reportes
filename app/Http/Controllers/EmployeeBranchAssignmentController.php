@@ -59,6 +59,13 @@ class EmployeeBranchAssignmentController extends Controller
             'needs_review' => 0,
             'hires' => 0,
             'leavers' => 0,
+            'leavers_confirmadas' => 0,
+            'leavers_posible_coincidencia' => 0,
+            'leavers_pendientes' => 0,
+            'plantilla' => 0,
+            'roster_calculado' => false,
+            'mass_drop_detected' => false,
+            'drop_ratio' => 0.0,
         ];
 
         $hires = collect();
@@ -144,23 +151,47 @@ class EmployeeBranchAssignmentController extends Controller
             $rosterRows = $selectedPeriod->isMonthly()
                 ? DB::table('period_employee_rosters')
                     ->where('period_id', $selectedPeriod->id)
-                    ->get(['employee_id', 'nombre_original', 'branch_name', 'is_active_for_period', 'movement_type'])
+                    ->get(['employee_id', 'nombre_original', 'branch_name', 'is_active_for_period', 'movement_type', 'reconciliation_status', 'reconciliation_note'])
                 : collect();
 
             $lastKnownPeriod = $selectedPeriod->isMonthly() ? $selectedPeriod->previousMonthly($periods) : null;
 
             $toRosterItem = fn ($r, ?string $periodLabel = null) => [
-                'id'            => (int) $r->employee_id,
-                'employee_id'   => (int) $r->employee_id,
-                'employee_name' => $r->nombre_original,
-                'branch_name'   => $r->branch_name,
-                'period_label'  => $periodLabel,
+                'id'                     => (int) $r->employee_id,
+                'employee_id'            => (int) $r->employee_id,
+                'employee_name'          => $r->nombre_original,
+                'branch_name'            => $r->branch_name,
+                'period_label'           => $periodLabel,
+                'reconciliation_status'  => $r->reconciliation_status ?? null,
+                'reconciliation_note'    => $r->reconciliation_note ?? null,
             ];
 
             $hires = $rosterRows->where('movement_type', 'alta')->map(fn ($r) => $toRosterItem($r, $selectedPeriod->label))->values();
-            $leavers = $rosterRows->where('movement_type', 'baja')->map(fn ($r) => $toRosterItem($r, $lastKnownPeriod?->label))->values();
+            $leaverRows = $rosterRows->where('movement_type', 'baja');
+            $leavers = $leaverRows->map(fn ($r) => $toRosterItem($r, $lastKnownPeriod?->label))->values();
             $plantillaActual = $rosterRows->where('is_active_for_period', true)->count();
             $rosterCalculado = $rosterRows->isNotEmpty();
+
+            // Sección 6 de la auditoría (15-oct-2026): no toda ausencia de nómina es una
+            // baja laboral confirmada. "sin_contradiccion" es lo más cercano a una baja
+            // real que el sistema puede afirmar (nadie reapareció con nombre similar y no
+            // hubo caída masiva de archivo) — las otras dos categorías son explícitamente
+            // NO confirmadas y se muestran aparte para que la pantalla nunca las presente
+            // como un hecho consumado.
+            $leaversConfirmadas       = $leaverRows->where('reconciliation_status', 'sin_contradiccion')->count();
+            $leaversPosibleCoincidencia = $leaverRows->where('reconciliation_status', 'posible_coincidencia_nombre')->count();
+            $leaversPendientes        = $leaverRows->where('reconciliation_status', 'pendiente_conciliacion')->count();
+            // Filas antiguas (creadas antes de esta migración) no tienen reconciliation_status
+            // — se cuentan como confirmadas para no perder el dato histórico que ya existía,
+            // nunca se reclasifican solas.
+            $leaversSinClasificar = $leaverRows->whereNull('reconciliation_status')->count();
+            $leaversConfirmadas += $leaversSinClasificar;
+
+            $prevActiveCount = $lastKnownPeriod
+                ? DB::table('period_employee_rosters')->where('period_id', $lastKnownPeriod->id)->where('is_active_for_period', true)->count()
+                : 0;
+            $dropRatio = $prevActiveCount > 0 ? max(0.0, ($prevActiveCount - $plantillaActual) / $prevActiveCount) : 0.0;
+            $massDropDetected = $leaversPendientes > 0;
 
             $incidences = $assignments
                 ->filter(function (array $item) {
@@ -182,8 +213,13 @@ class EmployeeBranchAssignmentController extends Controller
                 'needs_review' => $incidences->count(),
                 'hires' => $hires->count(),
                 'leavers' => $leavers->count(),
+                'leavers_confirmadas' => $leaversConfirmadas,
+                'leavers_posible_coincidencia' => $leaversPosibleCoincidencia,
+                'leavers_pendientes' => $leaversPendientes,
                 'plantilla' => $plantillaActual,
                 'roster_calculado' => $rosterCalculado,
+                'mass_drop_detected' => $massDropDetected,
+                'drop_ratio' => round($dropRatio, 4),
             ];
         }
 
