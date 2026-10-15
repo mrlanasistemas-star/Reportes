@@ -83,6 +83,7 @@ class User extends Authenticatable
             'access_enabled_at' => 'datetime',
             // Cuenta deshabilitada (14-oct-2026): bloquea el login en todo el sistema.
             'disabled_at' => 'datetime',
+            'welcome_email_sent_at' => 'datetime',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
         ];

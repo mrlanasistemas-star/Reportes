@@ -178,15 +178,67 @@ class PeriodEmployeeRosterService
                 'appears_in_nomina_fiscal' => $data['fiscal'],
                 'is_active_for_period'     => true,
                 'movement_type'            => $movement,
+                // Un activo no necesita reconciliación — null explícito para que las
+                // columnas calcen con $bajaRows en el insert() masivo (mismo set de
+                // columnas en todas las filas, exigido por el query builder).
+                'reconciliation_status'    => null,
+                'reconciliation_note'      => null,
                 'created_at'               => $now,
                 'updated_at'               => $now,
             ];
         }
 
         // ── 6. Bajas: activos el periodo anterior, ausentes este periodo ──
+        // Sección 6 de la auditoría (15-oct-2026): "no aparecer en la nómina de un
+        // periodo no demuestra por sí solo una baja laboral". Antes de dar una baja
+        // por confirmada se buscan dos señales objetivas, SIN inventar nada y SIN
+        // tocar is_active_for_period/movement_type (eso lo sigue leyendo igual
+        // RotacionDerivedFromNoiService — cero riesgo de romper el índice de
+        // rotación ya correcto):
+        //   a) ¿Hay un "alta" de ESTE periodo cuyo nombre normalizado es muy
+        //      parecido al de la baja? Puede ser la misma persona con el nombre
+        //      capturado distinto entre archivos (típico en NOI) — se marca como
+        //      posible coincidencia, nunca se fusiona sola.
+        //   b) ¿La plantilla total cayó de forma anómala vs el periodo anterior?
+        //      Una caída masiva (>20%) es evidencia de un archivo incompleto ese
+        //      mes, no de que todos esos colaboradores renunciaron el mismo día.
+        $altaCandidates = [];
+        foreach ($byIdentity as $normalizedName => $data) {
+            if (!$prevRosterByIdentity->has($normalizedName)) {
+                $altaCandidates[$normalizedName] = $data['nombre_original'];
+            }
+        }
+
+        $bajaCandidates = [];
+        foreach ($prevRosterByIdentity as $normalizedName => $prevRow) {
+            if (!isset($byIdentity[$normalizedName])) {
+                $bajaCandidates[$normalizedName] = $prevRow->nombre_original;
+            }
+        }
+
+        // Emparejamiento de MEJOR MUTUO, no "cualquiera por encima del umbral":
+        // nombres con plantilla compartida ("Empleado Prueba 8/9/10...") hacían que
+        // UNA sola alta pareciera parecida a VARIAS bajas distintas a la vez — un
+        // falso positivo real detectado al probar este cambio con datos sintéticos.
+        // Una baja solo se sugiere emparejada si ES el mejor candidato para esa
+        // alta Y esa alta ES el mejor candidato para esa baja, en ambos sentidos.
+        $nameMatches = $this->bestMutualNameMatches($bajaCandidates, $altaCandidates);
+
+        $prevActiveCount = $prevRosterByIdentity->count();
+        $dropRatio = $prevActiveCount > 0 ? (($prevActiveCount - count($activeRows)) / $prevActiveCount) : 0.0;
+        $massDropDetected = $prevActiveCount >= 10 && $dropRatio >= 0.20;
+
         $bajaRows = [];
+        $posiblesCoincidencias = 0;
         foreach ($prevRosterByIdentity as $normalizedName => $prevRow) {
             if (isset($byIdentity[$normalizedName])) continue; // sigue activo
+
+            [$reconciliationStatus, $reconciliationNote] = $this->classifyBaja(
+                $prevRow->nombre_original, $nameMatches[$normalizedName] ?? null, $massDropDetected, $dropRatio
+            );
+            if ($reconciliationStatus === 'posible_coincidencia_nombre') {
+                $posiblesCoincidencias++;
+            }
 
             $bajaRows[] = [
                 'period_id'                => $period->id,
@@ -202,6 +254,8 @@ class PeriodEmployeeRosterService
                 'appears_in_nomina_fiscal' => false,
                 'is_active_for_period'     => false,
                 'movement_type'            => 'baja',
+                'reconciliation_status'    => $reconciliationStatus,
+                'reconciliation_note'      => $reconciliationNote,
                 'created_at'               => $now,
                 'updated_at'               => $now,
             ];
@@ -221,7 +275,89 @@ class PeriodEmployeeRosterService
             'sin_sucursal'          => $sinSucursal,
             'prev_period_id'        => $prevPeriod?->id,
             'duplicados_fusionados' => $duplicadosFusionados,
+            // Sección 6 de la auditoría (15-oct-2026) — nunca se presentan las bajas
+            // como un hecho consumado sin que la pantalla pueda explicar el motivo.
+            'mass_drop_detected'          => $massDropDetected,
+            'drop_ratio'                  => round($dropRatio, 4),
+            'posibles_coincidencias_nombre' => $posiblesCoincidencias,
         ];
+    }
+
+    /**
+     * Empareja cada baja candidata con, a lo mucho, UNA alta candidata del mismo
+     * periodo — solo cuando cada una es el MEJOR candidato de la otra (mutuo), no
+     * simplemente "por encima de un umbral". Nombres con plantilla compartida
+     * (ej. varios "Empleado Prueba N") pueden superar el umbral de similitud
+     * contra la MISMA alta sin ser en realidad la misma persona — exigir que
+     * también sea el mejor candidato EN SENTIDO INVERSO filtra esos falsos
+     * positivos (confirmado al probar este cambio con datos sintéticos).
+     *
+     * @param array<string,string> $bajaCandidates normalizedName => nombreOriginal
+     * @param array<string,string> $altaCandidates normalizedName => nombreOriginal
+     * @return array<string,array{nombre:string,percent:float}> bajaNormalizedName => mejor alta
+     */
+    private function bestMutualNameMatches(array $bajaCandidates, array $altaCandidates): array
+    {
+        if (empty($bajaCandidates) || empty($altaCandidates)) {
+            return [];
+        }
+
+        $bestAltaForBaja = []; // bajaKey => [altaKey, percent]
+        $bestBajaForAlta = []; // altaKey => [bajaKey, percent]
+
+        foreach ($bajaCandidates as $bajaKey => $bajaNombre) {
+            foreach ($altaCandidates as $altaKey => $altaNombre) {
+                similar_text($bajaKey, $altaKey, $percent);
+
+                if (!isset($bestAltaForBaja[$bajaKey]) || $percent > $bestAltaForBaja[$bajaKey][1]) {
+                    $bestAltaForBaja[$bajaKey] = [$altaKey, $percent];
+                }
+                if (!isset($bestBajaForAlta[$altaKey]) || $percent > $bestBajaForAlta[$altaKey][1]) {
+                    $bestBajaForAlta[$altaKey] = [$bajaKey, $percent];
+                }
+            }
+        }
+
+        $matches = [];
+        foreach ($bestAltaForBaja as $bajaKey => [$altaKey, $percent]) {
+            $isMutualBest = ($bestBajaForAlta[$altaKey][0] ?? null) === $bajaKey;
+            if ($isMutualBest && $percent >= 85.0) {
+                $matches[$bajaKey] = ['nombre' => $altaCandidates[$altaKey], 'percent' => $percent];
+            }
+        }
+
+        return $matches;
+    }
+
+    /**
+     * Clasifica UNA baja candidata — nunca decide por sí sola, solo documenta la
+     * confianza para que un humano reconcilie. Dos señales, en orden de prioridad:
+     * nombre muy parecido (mutuamente) a un alta del mismo periodo (posible
+     * mismatch), o caída masiva de plantilla (posible archivo incompleto). Si
+     * ninguna aplica, se deja como "sin_contradiccion" — no hay evidencia de lo
+     * contrario, pero tampoco es una confirmación positiva (no existe tal cosa en
+     * un roster de nómina sin cruzarlo contra RH).
+     *
+     * @param array{nombre:string,percent:float}|null $nameMatch
+     * @return array{0:string,1:string}
+     */
+    private function classifyBaja(string $nombreOriginal, ?array $nameMatch, bool $massDropDetected, float $dropRatio): array
+    {
+        if ($nameMatch !== null) {
+            return ['posible_coincidencia_nombre', sprintf(
+                '%s dejó de aparecer, pero "%s" es un alta nueva este periodo con un nombre %.0f%% similar — revisar si es la misma persona capturada distinto.',
+                $nombreOriginal, $nameMatch['nombre'], $nameMatch['percent']
+            )];
+        }
+
+        if ($massDropDetected) {
+            return ['pendiente_conciliacion', sprintf(
+                'La plantilla de este periodo cayó %.0f%% respecto al anterior — una caída así de grande sugiere un archivo NOI incompleto ese mes, no bajas reales simultáneas. Verificar la carga antes de confirmar esta baja.',
+                $dropRatio * 100
+            )];
+        }
+
+        return ['sin_contradiccion', 'No aparece en la nómina de este periodo y no hay una alta similar ni una caída masiva que lo explique — probable baja real, pero verifica con RH antes de tratarla como definitiva.'];
     }
 
     /**

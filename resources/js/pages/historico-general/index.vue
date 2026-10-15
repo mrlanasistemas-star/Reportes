@@ -950,7 +950,7 @@ return
 
                 <!-- ③ Contenido de la etapa actual -->
                 <transition name="fade" mode="out-in">
-                    <div v-if="currentStep === 'files'" :key="`files-${selectedPeriodId}`" class="space-y-4">
+                    <div v-if="currentStep === 'files'" :key="`files-${selectedPeriodId}`" data-tour="carga-upload-zone" class="space-y-4">
                         <UploadSourcesStep
                             :period="period"
                             :sources="sources"

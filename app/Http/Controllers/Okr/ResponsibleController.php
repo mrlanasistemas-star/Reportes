@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Okr;
 
 use App\Http\Controllers\Controller;
+use App\Mail\UserAccessGrantedMail;
 use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\OkrObjective;
@@ -14,6 +15,9 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
@@ -55,7 +59,7 @@ class ResponsibleController extends Controller
 {
     use AuthorizesRequests;
 
-    public function index(Request $request, OkrEmployeeBranchResolver $branchResolver, ModuleAccessService $moduleAccess): Response
+    public function index(Request $request, OkrEmployeeBranchResolver $branchResolver, ModuleAccessService $moduleAccess, \App\Services\Access\ActionPermissionService $actionPermissions): Response
     {
         $this->authorize('okr.admin');
 
@@ -66,7 +70,7 @@ class ResponsibleController extends Controller
             ->pluck('total', 'responsible_user_id');
 
         $responsibles = User::query()->with('employee:id,full_name,is_active')->orderBy('name')
-            ->get(['id', 'name', 'email', 'role', 'access_enabled_at', 'disabled_at', 'employee_id'])
+            ->get(['id', 'name', 'email', 'role', 'access_enabled_at', 'disabled_at', 'employee_id', 'welcome_email_sent_at', 'welcome_email_error'])
             ->map(function ($u) use ($usageCounts, $branchResolver) {
                 $currentBranchId = $u->employee_id ? $branchResolver->currentBranchIdFor($u->employee_id) : null;
 
@@ -84,6 +88,10 @@ class ResponsibleController extends Controller
                     'employee_name' => $u->employee?->full_name,
                     'employee_is_active' => $u->employee?->is_active,
                     'current_branch' => $currentBranchId ? Branch::find($currentBranchId)?->name : null,
+                    // Estado REAL del correo de bienvenida (sección 11 de la auditoría) —
+                    // nunca se afirma "enviado" si el servidor no lo confirmó.
+                    'welcome_email_sent_at' => $u->welcome_email_sent_at?->toDateTimeString(),
+                    'welcome_email_error' => $u->welcome_email_error,
                 ];
             });
 
@@ -122,6 +130,9 @@ class ResponsibleController extends Controller
             // Módulos por rol (14-oct-2026) — ver RoleModuleAccessController.
             'module_catalog' => $moduleAccess->catalog(),
             'module_access' => $moduleAccess->matrix(),
+            // Permisos por acción (Fase 7 de la auditoría, 15-oct-2026) — eliminar/exportar.
+            'action_catalog' => $actionPermissions->catalog(),
+            'action_permissions' => $actionPermissions->matrix(),
         ]);
     }
 
@@ -130,28 +141,80 @@ class ResponsibleController extends Controller
         $this->authorize('okr.admin');
 
         $data = $request->validate([
-            'name'  => ['required', 'string', 'max:191'],
-            'email' => ['required', 'email', 'max:191', Rule::unique('users', 'email')],
+            'name'          => ['required', 'string', 'max:191'],
+            'email'         => ['required', 'email', 'max:191', Rule::unique('users', 'email')],
+            // Contraseña manual u automática (sección 10 de la auditoría, 15-oct-2026):
+            // antes SIEMPRE se generaba una al azar. Si el admin prefiere entregarla él
+            // mismo (ej. en persona), puede escribirla; si no, se genera como antes.
+            'password_mode' => ['nullable', Rule::in(['auto', 'manual'])],
+            'password'      => ['required_if:password_mode,manual', 'nullable', 'string', 'min:8', 'max:72', 'confirmed'],
         ]);
 
-        $tempPassword = Str::password(16);
+        $isManual     = ($data['password_mode'] ?? 'auto') === 'manual';
+        $tempPassword = $isManual ? null : Str::password(16);
+        $finalPassword = $isManual ? $data['password'] : $tempPassword;
 
         // D7 del cierre (17-sep-2026): esta pantalla NUNCA puede crear un admin —
         // antes aceptaba 'role' del request (Rule::in(['admin','colaborador'])),
         // así que cualquiera con acceso a "Responsables OKR" podía elevarse a
         // administrador desde aquí. El rol siempre es 'colaborador'; los admins se
         // administran fuera de OKR.
-        User::query()->create([
+        $user = User::query()->create([
             'name'              => $data['name'],
             'email'             => $data['email'],
-            'password'          => Hash::make($tempPassword),
+            'password'          => Hash::make($finalPassword),
             'role'              => 'colaborador',
             'email_verified_at' => null, // real: nadie ha verificado nada todavía
         ]);
 
-        return back()
-            ->with('success', 'Responsable agregado — sin acceso todavía.')
-            ->with('temp_password', $tempPassword);
+        $emailResult = $this->sendWelcomeEmail($user);
+
+        $response = back()->with('success', 'Responsable agregado — sin acceso todavía.')->with('welcome_email', $emailResult);
+
+        // La contraseña temporal (auto-generada) se muestra UNA SOLA VEZ para que el
+        // admin pueda copiarla si prefiere entregarla él mismo además del correo. Si
+        // fue manual, el propio admin ya la sabe — no hay nada que mostrar de vuelta.
+        return $tempPassword !== null ? $response->with('temp_password', $tempPassword) : $response;
+    }
+
+    /**
+     * Envía el correo de bienvenida con un enlace de un solo uso (mismo mecanismo de
+     * "¿Olvidaste tu contraseña?" de Fortify) — nunca la contraseña en texto plano.
+     * Síncrono a propósito: el admin necesita saber AHORA si de verdad se envió, no
+     * depender de que el worker de colas esté corriendo (ver docblock de la clase).
+     * Nunca afirma éxito si el servidor no lo confirmó.
+     *
+     * @return array{sent:bool,error:?string}
+     */
+    private function sendWelcomeEmail(User $user): array
+    {
+        try {
+            $token = Password::broker()->createToken($user);
+            $url   = route('password.reset', ['token' => $token, 'email' => $user->email]);
+
+            Mail::to($user->email)->send(new UserAccessGrantedMail($user, $url));
+
+            $user->forceFill(['welcome_email_sent_at' => now(), 'welcome_email_error' => null])->save();
+
+            return ['sent' => true, 'error' => null];
+        } catch (\Throwable $e) {
+            Log::error('No se pudo enviar el correo de bienvenida.', ['user_id' => $user->id, 'error' => $e->getMessage()]);
+            $user->forceFill(['welcome_email_sent_at' => null, 'welcome_email_error' => $e->getMessage()])->save();
+
+            return ['sent' => false, 'error' => 'No se pudo enviar el correo. Puedes reintentarlo desde esta pantalla.'];
+        }
+    }
+
+    /** Reintenta el envío del correo de bienvenida sin recrear al usuario ni su contraseña. */
+    public function resendWelcomeEmail(User $user): RedirectResponse
+    {
+        $this->authorize('okr.admin');
+
+        $result = $this->sendWelcomeEmail($user);
+
+        return back()->with($result['sent'] ? 'success' : 'error', $result['sent']
+            ? "Correo reenviado a {$user->email}."
+            : $result['error']);
     }
 
     /**

@@ -102,7 +102,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->group(function () {
             Route::get('/', [ReportUploadController::class, 'index'])->name('index');
             Route::post('/', [ReportUploadController::class, 'store'])->name('store');
-            Route::delete('/{reportUpload}', [ReportUploadController::class, 'destroy'])->name('destroy');
+            Route::delete('/{reportUpload}', [ReportUploadController::class, 'destroy'])->middleware('permission:carga,eliminar')->name('destroy');
             Route::get('/{reportUpload}/descargar', [ReportUploadController::class, 'download'])->name('download');
             Route::post('/{reportUpload}/analizar', [ReportUploadController::class, 'analyze'])->name('analyze');
             Route::post('/{period}/actualizar-bd', [ReportUploadController::class, 'updateDatabase'])->name('update-database');
@@ -134,7 +134,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->group(function () {
             Route::get('/', [PeriodController::class, 'index'])->name('index');
             Route::post('/', [PeriodController::class, 'store'])->name('store');
-            Route::delete('/{period}', [PeriodController::class, 'destroy'])->name('destroy');
+            Route::delete('/{period}', [PeriodController::class, 'destroy'])->middleware('permission:periodos,eliminar')->name('destroy');
             Route::post('/{period}/close', [PeriodController::class, 'close'])->name('close');
             Route::post('/{period}/open', [PeriodController::class, 'open'])->name('open');
         });
@@ -184,12 +184,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/{period}/preview', [MonthlyReportController::class, 'previewPage'])->name('preview');
             Route::get('/{period}/scoped-data', [MonthlyReportController::class, 'scopedData'])->name('scoped-data');
             Route::post('/{period}/saldo-inicial', [MonthlyReportController::class, 'updateSaldoInicial'])->name('update-saldo-inicial');
-            Route::get('/{period}/radiografia.xlsx', [MonthlyReportController::class, 'exportRadiography'])->name('export-radiography');
-            Route::get('/{period}/radiografia.pdf', [MonthlyReportController::class, 'exportRadiographyPdf'])->name('export-radiography-pdf');
-            Route::get('/{period}/export-filtrado.xlsx', [MonthlyReportController::class, 'exportFilteredRadiography'])->name('export-filtered-radiography');
-            Route::get('/{period}/export-filtrado.pdf', [MonthlyReportController::class, 'exportFilteredRadiographyPdf'])->name('export-filtered-radiography-pdf');
-            Route::get('/{period}/colaboradores.xlsx', [MonthlyReportController::class, 'exportEmployeesHistorico'])->name('export-employees-historico');
-            Route::get('/{period}/consolidado.csv', [MonthlyReportController::class, 'exportSummary'])->name('export-summary');
+            Route::get('/{period}/radiografia.xlsx', [MonthlyReportController::class, 'exportRadiography'])->middleware('permission:reportes,exportar')->name('export-radiography');
+            Route::get('/{period}/radiografia.pdf', [MonthlyReportController::class, 'exportRadiographyPdf'])->middleware('permission:reportes,exportar')->name('export-radiography-pdf');
+            Route::get('/{period}/export-filtrado.xlsx', [MonthlyReportController::class, 'exportFilteredRadiography'])->middleware('permission:reportes,exportar')->name('export-filtered-radiography');
+            Route::get('/{period}/export-filtrado.pdf', [MonthlyReportController::class, 'exportFilteredRadiographyPdf'])->middleware('permission:reportes,exportar')->name('export-filtered-radiography-pdf');
+            Route::get('/{period}/colaboradores.xlsx', [MonthlyReportController::class, 'exportEmployeesHistorico'])->middleware('permission:colaboradores,exportar')->name('export-employees-historico');
+            Route::get('/{period}/consolidado.csv', [MonthlyReportController::class, 'exportSummary'])->middleware('permission:reportes,exportar')->name('export-summary');
             // Descargas/"Ver" ligadas a un run específico (identidad real: simple vs
             // comparativo vs por sucursal/gestor) — nunca caen al reporte simple del
             // periodo aunque el run pedido sea un comparativo.

@@ -6,13 +6,20 @@ import {
     Layers3, TrendingUp, TrendingDown, PiggyBank, Users, Percent,
     HelpCircle, Lightbulb, GitCompareArrows, ChevronRight, ChevronLeft, CalendarPlus,
     FolderOpen, ListChecks, Sliders, Building2, UserRound,
-    Sparkles, FileCheck2, Filter, Search, Ban, Check,
+    Sparkles, FileCheck2, Filter, Search, Ban, Check, Compass,
 } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import GuideButtonChip from '@/components/guide/GuideButtonChip.vue'
 import GuideMockup from '@/components/guide/GuideMockup.vue'
 import GuideStepList from '@/components/guide/GuideStepList.vue'
+import { useTour } from '@/composables/useTour'
 import AppLayout from '@/layouts/AppLayout.vue'
+import { TOURS } from '@/tour/registry'
+
+defineOptions({ layout: AppLayout })
+
+const { startTour } = useTour()
+const guidedTours = Object.values(TOURS).map((t) => ({ id: t.id, label: t.label }))
 
 defineOptions({ layout: AppLayout })
 
@@ -100,6 +107,23 @@ goTo(currentIndex.value - 1)
                 <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                     <div class="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-400 transition-all duration-500 ease-out" :style="{ width: `${progressPct}%` }" />
                 </div>
+            </div>
+        </section>
+
+        <!-- Recorridos guiados interactivos (Fase 2 de la auditoría, 15-oct-2026):
+             esta guía ilustrada explica cada módulo con capturas; los botones de
+             abajo inician un recorrido REAL sobre la pantalla, resaltando los
+             controles verdaderos — puedes reiniciarlos cuando quieras. -->
+        <section class="app-card space-y-3 p-5">
+            <div class="flex items-center gap-2">
+                <Compass class="size-4 text-primary" />
+                <h2 class="text-sm font-bold text-foreground">Recorridos guiados sobre la pantalla</h2>
+            </div>
+            <p class="text-xs text-muted-foreground">A diferencia de esta guía ilustrada, estos recorridos resaltan los controles reales de cada módulo mientras los usas. Reinícialos cuando quieras.</p>
+            <div class="flex flex-wrap gap-2">
+                <button v-for="tour in guidedTours" :key="tour.id" type="button" class="rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-foreground transition hover:border-primary/40 hover:text-primary" @click="startTour(tour.id)">
+                    {{ tour.label }}
+                </button>
             </div>
         </section>
 

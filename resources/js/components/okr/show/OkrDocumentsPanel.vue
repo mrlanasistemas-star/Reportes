@@ -4,7 +4,7 @@
 // además, los documentos de cada gestor (cada uno en su propio OKR — nunca se
 // generan desde el objetivo general a nombre de otra persona).
 import { router } from '@inertiajs/vue3'
-import { Ban, ClipboardCheck, Download, FileSignature, FileText, ShieldAlert, Upload } from 'lucide-vue-next'
+import { Ban, ClipboardCheck, Download, Eye, FileSignature, FileText, ShieldAlert, Upload } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { avatarTone, initialsOf } from '@/components/okr/wizard/okrWizard'
 import { Button } from '@/components/ui/button'
@@ -85,13 +85,14 @@ async function voidWarning(w: any) {
             <div class="space-y-2 rounded-xl border border-border p-3 transition hover:shadow-md">
                 <div class="flex items-center justify-between">
                     <p class="flex items-center gap-1.5 text-xs font-bold text-foreground"><FileSignature class="size-4 text-primary" /> Carta Compromiso</p>
-                    <Button size="sm" class="h-8 rounded-lg text-xs" @click="emit('letter')">{{ objective.commitment_letter ? 'Ver / gestionar' : 'Revisar y emitir' }}</Button>
+                    <Button size="sm" data-tour="okr-letter-button" class="h-8 rounded-lg text-xs" @click="emit('letter')">{{ objective.commitment_letter ? 'Ver / gestionar' : 'Revisar y emitir' }}</Button>
                 </div>
                 <div v-if="objective.commitment_letter" class="flex flex-wrap items-center gap-2 rounded-lg bg-emerald-500/5 px-2.5 py-2 text-xs">
                     <span class="font-bold text-foreground">{{ objective.commitment_letter.folio }}</span>
                     <span class="text-muted-foreground">{{ objective.commitment_letter.collaborator }} · {{ formatFriendlyDate(objective.commitment_letter.generated_at?.slice(0, 10)) }}</span>
                     <span class="ml-auto flex items-center gap-2">
-                        <a :href="objective.commitment_letter.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> PDF</a>
+                        <a :href="objective.commitment_letter.view_url" target="_blank" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Eye class="size-3.5" /> Ver</a>
+                        <a :href="objective.commitment_letter.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> Descargar</a>
                         <span v-if="objective.commitment_letter.is_signed" class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">Firmada</span>
                         <label v-else-if="canUpdate" class="cursor-pointer font-bold text-primary hover:underline">Subir firmada<input type="file" accept=".pdf" class="hidden" @change="(e) => uploadSigned('letter', objective.commitment_letter.id, e)"></label>
                     </span>
@@ -104,14 +105,15 @@ async function voidWarning(w: any) {
             <div class="space-y-2 rounded-xl border border-border p-3 transition hover:shadow-md">
                 <div class="flex items-center justify-between">
                     <p class="flex items-center gap-1.5 text-xs font-bold text-foreground"><ShieldAlert class="size-4 text-rose-600" /> Warnings</p>
-                    <Button size="sm" variant="outline" class="h-8 rounded-lg text-xs" @click="emit('warning')">Evaluar incumplimiento</Button>
+                    <Button size="sm" variant="outline" data-tour="okr-warning-button" class="h-8 rounded-lg text-xs" @click="emit('warning')">Evaluar incumplimiento</Button>
                 </div>
                 <div v-for="w in warnings" :key="w.id" class="flex flex-wrap items-center gap-2 rounded-lg px-2.5 py-2 text-xs" :class="w.status === 'voided' ? 'bg-muted/40 opacity-75' : 'bg-rose-500/5'">
                     <span class="font-bold text-foreground" :class="w.status === 'voided' ? 'line-through' : ''">{{ w.folio }}</span>
                     <span class="text-muted-foreground">S{{ w.week_number }} · {{ w.collaborator }}</span>
                     <span v-if="w.status === 'voided'" class="rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-bold text-destructive" :title="w.void_reason">Anulado</span>
                     <span class="ml-auto flex items-center gap-2">
-                        <a :href="w.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> PDF</a>
+                        <a :href="w.view_url" target="_blank" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Eye class="size-3.5" /> Ver</a>
+                        <a :href="w.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> Descargar</a>
                         <template v-if="w.status !== 'voided'">
                             <span v-if="w.is_signed" class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">Firmado</span>
                             <label v-else-if="canUpdate" class="cursor-pointer font-bold text-primary hover:underline">Subir firmado<input type="file" accept=".pdf" class="hidden" @change="(e) => uploadSigned('warning', w.id, e)"></label>

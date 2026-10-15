@@ -6,9 +6,10 @@
 //   → resultados por KPI → documentos y compromisos → histórico → bitácora.
 // Ninguna acción usa pantalla de carga global: cada botón tiene su spinner.
 import { router, usePage } from '@inertiajs/vue3'
-import { AlertTriangle, Bell, CalendarRange, LineChart, Target, Upload } from 'lucide-vue-next'
+import { AlertTriangle, Bell, CalendarRange, CircleHelp, LineChart, Target, Upload } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useTour } from '@/composables/useTour'
 import OkrActivationDialog from '@/components/okr/OkrActivationDialog.vue'
 import OkrCheckInDialog from '@/components/okr/OkrCheckInDialog.vue'
 import OkrCommitmentLetterDialog from '@/components/okr/OkrCommitmentLetterDialog.vue'
@@ -57,6 +58,8 @@ type CompleteTarget = { id: number; title: string; employee: string | null; scop
 const isBranch = computed(() => props.objective.scope_type === 'branch')
 const hasPlacement = computed(() => (props.objective.placement_weeks ?? []).length > 0)
 const canUploadPlacement = computed(() => hasPlacement.value && !props.objective.is_read_only && props.canUploadEvidence && isBranch.value)
+
+const { startTour } = useTour()
 
 const activationOpen = ref(false)
 const letterOpen = ref(false)
@@ -204,6 +207,10 @@ onMounted(async () => {
             @edit="onEdit" @weights="weightsOpen = true" @refresh="refresh" @destroy="destroyObjective"
         />
 
+        <button type="button" class="inline-flex items-center gap-1.5 text-xs font-bold text-primary hover:underline" @click="startTour('okr')">
+            <CircleHelp class="size-3.5" /> ¿Cómo funciona este OKR?
+        </button>
+
         <a v-if="objective.parent" :href="`/okr/${objective.parent.id}`" class="group flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-xs shadow-sm transition hover:border-primary/40 hover:shadow-md">
             <Target class="size-4 text-primary" />
             <span class="text-muted-foreground">OKR individual ligado al objetivo general de <strong class="text-foreground">{{ objective.parent.branch ?? 'la sucursal' }}</strong>:</span>
@@ -246,7 +253,7 @@ onMounted(async () => {
                         <p class="text-[11px] text-muted-foreground">{{ isBranch ? 'Un solo archivo por semana alimenta a la sucursal y a cada gestor; los movimientos repetidos se cuentan una vez.' : 'Se toma del archivo semanal de la sucursal: solo los movimientos de este gestor.' }}</p>
                     </div>
                 </div>
-                <Button v-if="canUploadPlacement" class="h-9 gap-1.5 rounded-xl shadow-md transition hover:-translate-y-0.5" @click="openUpload()"><Upload class="size-4" /> Cargar colocación</Button>
+                <Button v-if="canUploadPlacement" data-tour="okr-placement-upload" class="h-9 gap-1.5 rounded-xl shadow-md transition hover:-translate-y-0.5" @click="openUpload()"><Upload class="size-4" /> Cargar colocación</Button>
             </header>
             <div class="p-4">
                 <OkrPlacementWeeksTable :objective-id="objective.id" :weeks="objective.placement_weeks" :current-week="objective.current_week" :can-upload="canUploadPlacement" :is-child="!isBranch" @upload="openUpload" />

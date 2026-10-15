@@ -6,7 +6,9 @@ import {
     Banknote,
     Building2,
     CalendarRange,
+    Download,
     FileSpreadsheet,
+    FileText,
     FolderOpen,
     Landmark,
     PiggyBank,
@@ -51,19 +53,28 @@ type ChartsData = {
 
 type TrendPoint = { label: string; ebitda: number | null; opex: number | null }
 
+type ScopeInfo = { type: 'general' | 'branch'; branch_id: number | null; branch_name: string | null; available: boolean }
+
 const props = defineProps<{
     hasData: boolean
     periods?: { id: number; label: string }[]
-    kpis?: Kpis
+    branches?: { id: number; name: string }[]
+    kpis?: Kpis | null
     charts?: ChartsData | null
+    scope?: ScopeInfo
+    scopeUnavailable?: boolean
 }>()
 
-const kpis = ref<Kpis | undefined>(props.kpis)
+const kpis = ref<Kpis | null | undefined>(props.kpis)
 const charts = ref<ChartsData | null | undefined>(props.charts)
+const scope = ref<ScopeInfo | undefined>(props.scope)
+const scopeUnavailable = ref(props.scopeUnavailable ?? false)
 const trend = ref<TrendPoint[]>([])
 const trendLoading = ref(true)
 const trendError = ref(false)
 const selectedPeriodId = ref<string | number>(props.kpis?.period_id ?? '')
+// Fase 10 de la auditoría (15-oct-2026) — filtro por sucursal. '' = Todas las sucursales.
+const selectedBranchId = ref<string | number>(props.scope?.branch_id ?? '')
 const loading = ref(false)
 
 // Rendimiento (cierre 17-sep-2026, ronda 5 — "el dashboard tarda muchísimo en
@@ -115,7 +126,7 @@ onMounted(() => {
 // — el usuario pidió experiencia consistente entre "entrar al sistema" y "cambiar
 // de periodo", ninguna de las dos corre en segundo plano como generar un reporte.
 let controller: AbortController | null = null
-async function loadPeriod(periodId: number) {
+async function loadPeriod(periodId: number, branchId: number | null) {
     controller?.abort()
     const myController = new AbortController()
     controller = myController
@@ -123,7 +134,11 @@ async function loadPeriod(periodId: number) {
     showRouteLoading()
 
     try {
-        const resp = await fetch(`/dashboard-data?period_id=${periodId}`, {
+        const params = new URLSearchParams({ period_id: String(periodId) })
+        if (branchId) {
+            params.set('branch_id', String(branchId))
+        }
+        const resp = await fetch(`/dashboard-data?${params.toString()}`, {
             signal: myController.signal,
             cache: 'no-store',
             headers: { Accept: 'application/json' },
@@ -135,8 +150,10 @@ return
 }
 
         if (json.hasData) {
-            kpis.value = json.kpis
-            charts.value = json.charts
+            kpis.value = json.kpis ?? null
+            charts.value = json.charts ?? null
+            scope.value = json.scope
+            scopeUnavailable.value = !!json.scopeUnavailable
         }
     } catch (e: unknown) {
         if ((e as { name?: string })?.name !== 'AbortError') {
@@ -152,13 +169,42 @@ loading.value = false
 }
 
 const periodOptions = computed(() => (props.periods ?? []).map((p) => ({ value: p.id, label: p.label })))
+const branchOptions = computed(() => [{ value: '', label: 'Todas las sucursales' }, ...(props.branches ?? []).map((b) => ({ value: b.id, label: b.name }))])
 
-watch(selectedPeriodId, (id) => {
-    if (!id) {
-return
+function reload() {
+    if (!selectedPeriodId.value) {
+        return
+    }
+
+    loadPeriod(Number(selectedPeriodId.value), selectedBranchId.value ? Number(selectedBranchId.value) : null)
 }
 
-    loadPeriod(Number(id))
+watch(selectedPeriodId, reload)
+watch(selectedBranchId, reload)
+
+// Exportar Excel/PDF (Fase 10 de la auditoría, 15-oct-2026): MISMOS endpoints ya
+// existentes de Reportes mensuales (scope general o branch) — nunca un motor de
+// exportación nuevo, así que el documento SIEMPRE coincide con lo que se ve aquí.
+const exportUrls = computed(() => {
+    const periodId = kpis.value?.period_id
+    if (!periodId) {
+        return null
+    }
+
+    const branchId = selectedBranchId.value ? Number(selectedBranchId.value) : null
+    if (!branchId) {
+        return {
+            excel: `/reportes-mensuales/${periodId}/radiografia.xlsx`,
+            pdf: `/reportes-mensuales/${periodId}/radiografia.pdf`,
+        }
+    }
+
+    const qs = `scope=branch&branch_id=${branchId}`
+
+    return {
+        excel: `/reportes-mensuales/${periodId}/export-filtrado.xlsx?${qs}`,
+        pdf: `/reportes-mensuales/${periodId}/export-filtrado.pdf?${qs}`,
+    }
 })
 
 const money = (v: number) => '$' + Number(v || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })
@@ -268,8 +314,21 @@ const quickLinks = [
                 </div>
             </div>
 
-            <div v-if="hasData && periods?.length" class="w-56">
-                <SelectField v-model="selectedPeriodId" :options="periodOptions" :disabled="loading" placeholder="Selecciona un periodo" />
+            <div v-if="hasData" class="flex flex-wrap items-center gap-2">
+                <div v-if="periods?.length" data-tour="dashboard-period" class="w-52">
+                    <SelectField v-model="selectedPeriodId" :options="periodOptions" :disabled="loading" placeholder="Selecciona un periodo" />
+                </div>
+                <div v-if="branches?.length" data-tour="dashboard-branch" class="w-56">
+                    <SelectField v-model="selectedBranchId" :options="branchOptions" :disabled="loading" placeholder="Todas las sucursales" />
+                </div>
+                <div v-if="exportUrls" data-tour="dashboard-export" class="flex items-center gap-2">
+                    <a :href="exportUrls.excel" class="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-emerald-300 hover:text-emerald-700 dark:border-slate-800 dark:bg-card dark:text-slate-300">
+                        <FileSpreadsheet class="size-4" /> Exportar Excel
+                    </a>
+                    <a :href="exportUrls.pdf" class="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-rose-300 hover:text-rose-700 dark:border-slate-800 dark:bg-card dark:text-slate-300">
+                        <FileText class="size-4" /> Exportar PDF
+                    </a>
+                </div>
             </div>
         </section>
 
@@ -278,6 +337,18 @@ const quickLinks = [
             <Link href="/historico-general" class="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-300 dark:hover:bg-indigo-500/20">
                 Ir a Carga de archivos →
             </Link>
+        </div>
+
+        <!-- Sección 5 de la auditoría (15-oct-2026): sucursal sin radiografía en este
+             periodo — nunca una pantalla vacía sin explicar por qué. -->
+        <div v-else-if="scopeUnavailable" class="rounded-[1.75rem] border border-dashed border-amber-300 bg-amber-50/60 p-10 text-center dark:border-amber-500/30 dark:bg-amber-500/5">
+            <p class="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                Sin datos de radiografía para {{ scope?.branch_name ?? 'esta sucursal' }} en {{ periods?.find((p) => p.id === Number(selectedPeriodId))?.label ?? 'este periodo' }}.
+            </p>
+            <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">Elige otra sucursal o revisa que la radiografía de este periodo ya haya sido generada.</p>
+            <button type="button" class="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-amber-100 px-3 py-2 text-xs font-bold text-amber-800 transition hover:bg-amber-200 dark:bg-amber-500/10 dark:text-amber-300" @click="selectedBranchId = ''">
+                Ver todas las sucursales
+            </button>
         </div>
 
         <template v-else>
@@ -320,18 +391,23 @@ const quickLinks = [
                         </button>
                     </div>
                 </div>
-                <ChartCard :key="`categoria-${kpis?.period_id}`" title="Categoría EBITDA por sucursal" subtitle="Sucursales según su desempeño" type="donut" :series="categoriaSeries" :options="categoriaOptions" />
-                <ChartCard :key="`mora-${kpis?.period_id}`" title="Cartera vencida por antigüedad" subtitle="Mora por bucket" type="bar" :series="moraSeries" :options="moraOptions" />
-                <ChartCard
-                    :key="`sucursal-${kpis?.period_id}`"
-                    title="Colocación vs. recuperación"
-                    subtitle="Por sucursal"
-                    type="bar"
-                    :series="sucursalSeries"
-                    :options="sucursalOptions"
-                    class="lg:col-span-2"
-                    :height="320"
-                />
+                <template v-if="charts">
+                    <ChartCard :key="`categoria-${kpis?.period_id}`" title="Categoría EBITDA por sucursal" subtitle="Sucursales según su desempeño" type="donut" :series="categoriaSeries" :options="categoriaOptions" />
+                    <ChartCard :key="`mora-${kpis?.period_id}`" title="Cartera vencida por antigüedad" subtitle="Mora por bucket" type="bar" :series="moraSeries" :options="moraOptions" />
+                    <ChartCard
+                        :key="`sucursal-${kpis?.period_id}`"
+                        title="Colocación vs. recuperación"
+                        subtitle="Por sucursal"
+                        type="bar"
+                        :series="sucursalSeries"
+                        :options="sucursalOptions"
+                        class="lg:col-span-2"
+                        :height="320"
+                    />
+                </template>
+                <div v-else-if="scope?.type === 'branch'" class="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-xs text-slate-500 lg:col-span-2 dark:border-slate-700 dark:bg-card dark:text-slate-400">
+                    Las gráficas comparativas entre sucursales no aplican con una sola sucursal seleccionada. Elige "Todas las sucursales" para verlas.
+                </div>
             </section>
         </template>
 

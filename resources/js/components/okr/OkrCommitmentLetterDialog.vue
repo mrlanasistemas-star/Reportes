@@ -7,7 +7,7 @@
 // son capturables; identidad y metas congeladas no. Incluye el historial de
 // cartas (vigente/anuladas) con anulación auditada.
 import { router } from '@inertiajs/vue3'
-import { AlertTriangle, Ban, CheckCircle2, Download, Eye, FileSignature, Lightbulb, Loader2, UserCheck } from 'lucide-vue-next'
+import { AlertTriangle, Ban, CheckCircle2, Download, ExternalLink, Eye, FileSignature, Lightbulb, Loader2, UserCheck } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, reactive, ref, watch } from 'vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
@@ -64,6 +64,7 @@ watch(open, (v) => {
         fields.immediate_boss = ''
         fields.observations = ''
         accountableId.value = null
+        showInlinePreview.value = false
         loadReview()
         loadBranchEmployees()
     }
@@ -79,6 +80,13 @@ watch(fields, () => {
 const snap = computed(() => review.value?.snapshot ?? null)
 const ctx = computed(() => review.value?.context ?? null)
 const missing = computed<Record<string, string>>(() => review.value?.missing ?? {})
+
+// Tres acciones independientes sobre la vista previa (sección 6 de la
+// auditoría): previsualizar dentro del sistema, abrir en otra pestaña o
+// descargar. La vista previa nunca emite documento ni folio definitivo.
+const previewUrl = computed(() => `/okr/${props.objectiveId}/commitment-letter/preview?${query()}`)
+const previewDownloadUrl = computed(() => `${previewUrl.value}&download=1`)
+const showInlinePreview = ref(false)
 
 async function assignAccountable(id: number | null) {
     if (!id) {
@@ -223,8 +231,19 @@ async function voidLetter(letter: any) {
                     <CheckCircle2 class="size-4" /> Datos completos.
                 </div>
 
+                <div class="flex flex-wrap items-center gap-2">
+                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition hover:-translate-y-0.5 hover:shadow-sm" :class="showInlinePreview ? 'border-primary/50 bg-primary/5 text-primary' : 'border-border text-foreground hover:border-primary/40'" @click="showInlinePreview = !showInlinePreview">
+                        <Eye class="size-4" /> {{ showInlinePreview ? 'Ocultar vista previa' : 'Previsualizar aquí' }}
+                    </button>
+                    <a :href="previewUrl" target="_blank" class="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-semibold text-foreground transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-sm"><ExternalLink class="size-4" /> Abrir en otra pestaña</a>
+                    <a :href="previewDownloadUrl" class="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-semibold text-foreground transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-sm"><Download class="size-4" /> Descargar PDF</a>
+                </div>
+                <div v-if="showInlinePreview" class="overflow-hidden rounded-xl border border-border" style="height: 70vh">
+                    <iframe :src="previewUrl" class="h-full w-full" title="Vista previa de la Carta Compromiso" />
+                </div>
+
                 <div class="flex flex-wrap items-center justify-between gap-2">
-                    <a :href="`/okr/${objectiveId}/commitment-letter/preview?${query()}`" target="_blank" class="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-semibold text-foreground transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-sm"><Eye class="size-4" /> Vista previa PDF</a>
+                    <span />
                     <Button
                         v-if="canIssue && !review.has_current_letter && !confirmingIssue" class="h-10 gap-1.5 rounded-xl bg-emerald-600 text-white shadow-md hover:bg-emerald-500"
                         :disabled="!review.can_generate || loading" @click="confirmingIssue = true"
@@ -250,7 +269,8 @@ async function voidLetter(letter: any) {
                         <span v-if="l.status === 'voided'" class="rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-bold text-destructive" :title="l.void_reason">Anulada · {{ l.void_reason }}</span>
                         <span v-else class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">Vigente{{ l.is_signed ? ' · firmada' : '' }}</span>
                         <span class="ml-auto flex gap-2">
-                            <a :href="l.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> PDF</a>
+                            <a :href="l.view_url" target="_blank" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Eye class="size-3.5" /> Ver</a>
+                            <a :href="l.download_url" class="inline-flex items-center gap-1 font-bold text-primary hover:underline"><Download class="size-3.5" /> Descargar</a>
                             <button v-if="canIssue && l.status !== 'voided'" type="button" class="inline-flex items-center gap-1 font-bold text-destructive hover:underline" @click="voidingId = voidingId === l.id ? null : l.id"><Ban class="size-3.5" /> Anular</button>
                         </span>
                         <div v-if="voidingId === l.id" class="w-full space-y-2 pt-2 animate-in fade-in">

@@ -16,7 +16,11 @@ class HandleAppearance
      */
     public function handle(Request $request, Closure $next): Response
     {
-        View::share('appearance', $request->cookie('appearance') ?? 'system');
+        // Fase 9 de la auditoría (15-oct-2026): por defecto modo claro, nunca
+        // "system" — un usuario que jamás tocó esta preferencia no debe heredar
+        // el modo oscuro del sistema operativo. Si YA eligió algo (claro, oscuro
+        // o explícitamente "seguir sistema"), esa cookie sigue mandando siempre.
+        View::share('appearance', $request->cookie('appearance') ?? 'light');
 
         return $next($request);
     }
