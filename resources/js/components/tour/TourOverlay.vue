@@ -8,7 +8,7 @@ import { ArrowLeft, ArrowRight, Lightbulb, X } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useTour } from '@/composables/useTour'
 
-const { currentStep, stepIndex, totalSteps, isFirstStep, isLastStep, activeTourId, pendingNavigation, next, prev, skip } = useTour()
+const { currentStep, stepIndex, totalSteps, isFirstStep, isLastStep, activeTourId, pendingNavigation, lastDirection, next, prev, skip } = useTour()
 
 const targetRect = ref<{ top: number; left: number; width: number; height: number } | null>(null)
 const searching = ref(false)
@@ -44,11 +44,20 @@ function locateTarget(): void {
         // pantalla/rol — nunca se traba el recorrido esperando algo que no va a aparecer.
         if (!searching.value) {
             searching.value = true
+            targetRect.value = null // no se muestra una tarjeta «fantasma» mientras se busca
             searchTimer = setTimeout(() => {
                 searching.value = false
 
-                if (!document.querySelector(`[data-tour="${step.target}"]`)) {
-                    next()
+                if (currentStep.value !== step) {
+                    locateTarget()
+                } else if (!document.querySelector(`[data-tour="${step.target}"]`)) {
+                    // Al retroceder se salta hacia atrás (antes siempre avanzaba y
+                    // «Anterior» regresaba al mismo paso).
+                    if (lastDirection.value < 0 && !isFirstStep.value) {
+                        prev()
+                    } else {
+                        next()
+                    }
                 } else {
                     locateTarget()
                 }
@@ -137,6 +146,7 @@ const cardStyle = computed(() => {
 
             <!-- Tarjeta informativa -->
             <div
+                v-if="!searching"
                 role="dialog"
                 aria-live="polite"
                 :aria-label="currentStep.title"
@@ -144,7 +154,7 @@ const cardStyle = computed(() => {
                 :style="cardStyle ?? { top: '50%', left: '50%', width: 'min(360px, calc(100vw - 28px))', transform: 'translate(-50%, -50%)' }"
             >
                 <div class="flex items-start justify-between gap-2">
-                    <p class="flex items-center gap-1.5 text-sm font-bold text-foreground"><Lightbulb class="size-4 text-primary" /> {{ currentStep.title }}</p>
+                    <p class="flex items-center gap-1.5 text-sm font-bold text-foreground"><Lightbulb class="size-4 text-primary" aria-hidden="true" /> {{ currentStep.title }}</p>
                     <button type="button" class="text-muted-foreground transition hover:text-foreground" aria-label="Cerrar recorrido (Esc)" @click="skip">
                         <X class="size-4" />
                     </button>
@@ -153,7 +163,7 @@ const cardStyle = computed(() => {
                 <p v-if="currentStep.example" class="mt-1.5 text-xs italic leading-relaxed text-muted-foreground/80">{{ currentStep.example }}</p>
 
                 <div class="mt-3 flex items-center justify-between gap-2">
-                    <span class="text-[11px] font-semibold text-muted-foreground">Paso {{ stepIndex + 1 }} de {{ totalSteps }}</span>
+                    <span class="whitespace-nowrap text-[11px] font-semibold text-muted-foreground">Paso {{ stepIndex + 1 }} de {{ totalSteps }}</span>
                     <div class="flex items-center gap-1.5">
                         <button type="button" class="rounded-lg px-2 py-1 text-xs font-bold text-muted-foreground transition hover:bg-muted" @click="skip">Saltar</button>
                         <button v-if="!isFirstStep" type="button" class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-foreground transition hover:bg-muted" @click="prev">

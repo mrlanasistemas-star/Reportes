@@ -243,7 +243,7 @@ class ReportsAuditScopesCommand extends Command
         // ── PLACEMENT ─────────────────────────────────────────────────────
         $placementTotal = round((float) ($summary['placement_total'] ?? 0), 2);
         $modules['PLACEMENT'] = 'OK';
-        if ($scopeType === 'employee') {
+        if ($scopeType === 'employee' || $scopeType === 'branch') {
             $products = $sections['products'] ?? null;
             if (is_array($products) && !($products['not_attributable'] ?? false) && !empty($products)) {
                 $sum = round(array_sum(array_column($products, 'colocacion')), 2);
@@ -254,8 +254,9 @@ class ReportsAuditScopesCommand extends Command
                 }
             }
         }
-        // Nota: branch/general no exponen un desglose de colocación por producto acotado a
-        // ese alcance en este snapshot — no se inventa una comparación sin esa fuente.
+        // Sucursal (fix 15-oct-2026): products sale de placement_by_branch_product de ESA
+        // sucursal (ver applyBranchScope()) — se verifica igual que colaborador. General usa
+        // el catálogo de productos de toda la empresa (otra regla), no se compara aquí.
 
         // ── PORTFOLIO / MORA ──────────────────────────────────────────────
         $overdue = round((float) ($summary['overdue_portfolio'] ?? 0), 2);

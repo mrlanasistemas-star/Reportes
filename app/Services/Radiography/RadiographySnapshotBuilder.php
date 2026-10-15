@@ -791,6 +791,154 @@ class RadiographySnapshotBuilder
     }
 
     /**
+     * Secciones agregadas a nivel EMPRESA (todas las sucursales/colaboradores/productos)
+     * sin equivalente acotado en el snapshot con alcance. Ningún consumidor del snapshot
+     * con alcance las lee (Preview, Dashboard, API/OKR usan summary/rotation/efectividad;
+     * Excel/PDF de sucursal/gestor parten del snapshot GENERAL), así que se marcan
+     * no atribuibles en vez de viajar completas en el JSON de un usuario restringido.
+     */
+    private function scrubCompanyWideSections(array $s, string $scopeLabel): array
+    {
+        foreach (['branches', 'employees', 'promoters', 'payroll', 'expenses_matrix', 'recovery_detail', 'mora_by_product', 'incidents'] as $k) {
+            if (array_key_exists($k, $s)) {
+                $s[$k] = $this->notAttributable("Dato agregado a nivel empresa — no disponible para este alcance ({$scopeLabel}).");
+            }
+        }
+
+        return $s;
+    }
+
+    /**
+     * Colocación por producto de UNA sucursal — a partir de placement_by_branch_product YA
+     * filtrado a la sucursal (misma regla que accumulateColocacion(): credit_origin
+     * DESEMBOLSO/REFINANCIAMIENTO + mapa operativo de rutas). Mismo shape que
+     * buildProducts() (producto/tipo/operaciones/colocacion/recuperacion/cartera/contratos/pct)
+     * para que Web lo pinte igual; 'recuperacion' = null porque no existe un desglose de
+     * recuperación por producto por sucursal reconciliado en este snapshot (nunca $0 falso).
+     * Guardia: SUM(colocacion) debe igualar la colocación de la sucursal ($0.01).
+     */
+    private function buildBranchScopedProducts(array $placementRows, mixed $portfolioRows, array $branchRow, int $branchId): array
+    {
+        $byProduct = [];
+        foreach ($placementRows as $r) {
+            $p = (string) ($r['product'] ?? 'Sin producto');
+            $byProduct[$p] ??= ['operaciones' => 0, 'colocacion' => 0.0];
+            $byProduct[$p]['operaciones'] += (int) ($r['creditos'] ?? 0);
+            $byProduct[$p]['colocacion']  += (float) ($r['monto'] ?? 0);
+        }
+
+        $carteraByProduct = [];
+        if (is_array($portfolioRows) && array_is_list($portfolioRows)) {
+            foreach ($portfolioRows as $r) {
+                $p = (string) ($r['product'] ?? 'Sin producto');
+                $carteraByProduct[$p] ??= ['cartera' => 0.0, 'contratos' => 0];
+                $carteraByProduct[$p]['cartera']   += (float) ($r['cartera'] ?? 0);
+                $carteraByProduct[$p]['contratos'] += (int) ($r['contratos'] ?? 0);
+            }
+        }
+
+        $colocacionRow = round((float) ($branchRow['colocacion'] ?? 0), 2);
+        $productSum    = round(array_sum(array_column($byProduct, 'colocacion')), 2);
+
+        if (abs($productSum - $colocacionRow) > 0.01) {
+            Log::warning('RadiographySnapshotBuilder::applyBranchScope — colocación por producto no reconcilia contra el total de la sucursal.', [
+                'branch_id' => $branchId, 'product_sum' => $productSum, 'colocacion_total' => $colocacionRow,
+            ]);
+
+            return $this->notAttributable("Desglose por producto no disponible para esta sucursal: no reconcilia contra el total de colocación (\${$productSum} vs \${$colocacionRow}). Ver logs.");
+        }
+
+        $total = $productSum > 0 ? $productSum : 1;
+        $rows  = [];
+        foreach ($byProduct as $producto => $d) {
+            $rows[] = [
+                'producto'     => $producto,
+                'tipo'         => 'operativo',
+                'operaciones'  => $d['operaciones'],
+                'colocacion'   => round($d['colocacion'], 2),
+                'recuperacion' => null,
+                'cartera'      => isset($carteraByProduct[$producto]) ? round($carteraByProduct[$producto]['cartera'], 2) : null,
+                'contratos'    => isset($carteraByProduct[$producto]) ? $carteraByProduct[$producto]['contratos'] : null,
+                'pct'          => round($d['colocacion'] / $total * 100, 1),
+            ];
+        }
+        usort($rows, fn ($a, $b) => $b['colocacion'] <=> $a['colocacion']);
+
+        return $rows;
+    }
+
+    /**
+     * Rotación de UNA sucursal a partir de la sección general ya construida por
+     * buildRotationData(). Los totales SON la fila de la sucursal en por_sucursal (mismos
+     * campos/fórmula: índice = bajas confirmadas / plantilla × 100), nunca recalculados;
+     * por_sucursal conserva SOLO esa fila sin modificar (API/OKR con alcance sucursal la
+     * buscan ahí por nombre → mismo valor). bajas_pendientes = ausencias sin baja
+     * confirmada de esta sucursal (rotation_detail ya filtrado; informativo, no entra al
+     * índice). Sin fila para la sucursal → not_attributable (nunca el total global).
+     */
+    private function scopeRotationToBranch(mixed $rotation, mixed $rotationDetail, string $branchName, Period $period): array
+    {
+        if (!is_array($rotation) || !empty($rotation['not_attributable'])) {
+            return is_array($rotation) ? $rotation : $this->notAttributable('Sin datos de rotación para esta sucursal en el periodo.');
+        }
+
+        $eq  = $this->eqName($branchName);
+        $row = collect($rotation['por_sucursal'] ?? [])->first(fn ($r) => $this->eqName($r['sucursal'] ?? '') === $eq);
+
+        if (!$row) {
+            return $this->notAttributable("Sin registros de rotación (plantilla NOI) para {$branchName} en este periodo — no se muestra el total de la empresa.");
+        }
+
+        $plantilla = round((float) ($row['promedio_personal'] ?? 0), 2);
+        $anterior  = round((float) ($row['plantilla_anterior'] ?? 0), 2);
+        $pendientes = is_array($rotationDetail) && is_array($rotationDetail['bajas_pendientes'] ?? null)
+            ? count($rotationDetail['bajas_pendientes'])
+            : null;
+
+        // Detalle mensual (solo periodos automáticos, igual que el general): mismas filas de
+        // fact_rotacion, acotadas a esta sucursal.
+        $detalleMensual = [];
+        if (!empty($rotation['detalle_mensual']) && $period->isAutoGenerated()) {
+            $rows = DB::table('fact_rotacion')
+                ->whereIn('period_id', $this->dataIds)
+                ->where('source', 'derived_noi')
+                ->orderBy('period_id')
+                ->get(['period_id', 'sucursal_nombre', 'mes', 'altas', 'bajas', 'promedio_personal'])
+                ->filter(fn ($r) => $this->eqName($r->sucursal_nombre) === $eq);
+            foreach ($rows->groupBy('period_id')->sortKeys() as $group) {
+                $altasMes     = (int) $group->sum('altas');
+                $bajasMes     = (int) $group->sum('bajas');
+                $plantillaMes = (float) $group->sum('promedio_personal');
+                $detalleMensual[] = [
+                    'mes'       => $group->first()->mes,
+                    'altas'     => $altasMes,
+                    'bajas'     => $bajasMes,
+                    'plantilla' => $plantillaMes,
+                    'indice'    => $plantillaMes > 0 ? round($bajasMes / $plantillaMes * 100, 2) : 0.0,
+                ];
+            }
+        }
+
+        return [
+            'fuente'            => $rotation['fuente'] ?? null,
+            'mes'               => $row['mes'] ?? ($rotation['mes'] ?? ''),
+            'altas'             => (int) ($row['altas'] ?? 0),
+            'bajas'             => (int) ($row['bajas'] ?? 0),
+            'bajas_confirmadas' => (int) ($row['bajas'] ?? 0),
+            'bajas_pendientes'  => $pendientes,
+            'promedio'          => $plantilla,
+            'indice'            => (float) ($row['indice_rotacion'] ?? 0),
+            'current_count'     => $plantilla,
+            'prev_count'        => $anterior,
+            'prev_mes'          => $rotation['prev_mes'] ?? null,
+            'variacion_neta'    => round((float) ($row['variacion_plantilla'] ?? ($plantilla - $anterior)), 2),
+            'por_sucursal'      => [$row],
+            'detalle_mensual'   => $detalleMensual,
+            'scope'             => ['type' => 'branch', 'sucursal' => $row['sucursal'] ?? $branchName],
+        ];
+    }
+
+    /**
      * Alcance sin datos (sucursal/colaborador sin ningún movimiento este periodo). NUNCA se
      * deja pasar el summary/secciones generales — eso sería exactamente el "fallback
      * silencioso a total general" que la spec prohíbe. `scope.available=false` es la señal
@@ -855,6 +1003,22 @@ class RadiographySnapshotBuilder
         $s['mora_by_branch_product']     = $this->filterRowsByField($s['mora_by_branch_product'] ?? [], ['branch'], $name);
         $s['mora_by_branch']             = $this->filterRowsByField($s['mora_by_branch'] ?? [], ['sucursal', 'branch'], $name);
 
+        // Colocación por producto (fix 15-oct-2026): antes 'products' quedaba SIN TOCAR bajo
+        // alcance sucursal — la tabla "Colocación por producto" del Preview mostraba el
+        // desglose de TODA la empresa (ej. Junio 2026 CUERNAVACA: s12 = $6,458,000 global
+        // contra un total de sucursal de $410,390) — fuga para usuarios restringidos e
+        // incoherencia con el KPI. Ahora sale de placement_by_branch_product (ya filtrado
+        // arriba; MISMA regla credit_origin/mapa operativo que accumulateColocacion(), y
+        // MISMA fuente que ya usan el Excel y el PDF de sucursal). Guardia: si no reconcilia
+        // contra la colocación de la sucursal, no se inventa un desglose.
+        $s['products'] = $this->buildBranchScopedProducts($s['placement_by_branch_product'], $s['portfolio_by_branch_product'], $row, $branchId);
+
+        // Secciones a nivel EMPRESA que ningún consumidor del snapshot con alcance usa
+        // (Web/Excel/PDF de sucursal leen el snapshot general, no este) pero que viajaban
+        // completas en el JSON de scoped-data — fuga de datos de otras sucursales para
+        // usuarios restringidos.
+        $s = $this->scrubCompanyWideSections($s, 'sucursal');
+
         // Componentes de Recuperación — YA vienen en $row (accumulateRecuperacion() los
         // calcula por sucursal); no es un cálculo nuevo, solo se expone lo que ya existe.
         $s['recovery_components'] = [
@@ -909,6 +1073,18 @@ class RadiographySnapshotBuilder
                     $s['rotation_detail'][$k] = $this->filterRowsByField($s['rotation_detail'][$k], ['sucursal'], $name);
                 }
             }
+            // Colaboradores sin sucursal resuelta: por definición ajenos a esta sucursal.
+            if (isset($s['rotation_detail']['sin_sucursal'])) {
+                $s['rotation_detail']['sin_sucursal'] = [];
+            }
+        }
+
+        // Rotación (fix 15-oct-2026): antes 'rotation' quedaba SIN TOCAR bajo alcance
+        // sucursal — el Preview de un restringido mostraba plantilla/altas/bajas/índice de
+        // TODA la empresa y la fila de cada sucursal en por_sucursal. Ahora los totales son
+        // la fila de ESTA sucursal (misma fila que ya leen API/OKR, sin recalcular).
+        if (isset($s['rotation'])) {
+            $s['rotation'] = $this->scopeRotationToBranch($s['rotation'], $s['rotation_detail'] ?? null, $name, $period);
         }
 
         foreach (['interbranch_loans', 'corporate_funding', 'fondeo_detalle'] as $k) {
@@ -1211,7 +1387,16 @@ class RadiographySnapshotBuilder
                     $s['rotation_detail'][$k] = $this->filterRowsByField($s['rotation_detail'][$k], ['nombre'], $employee->full_name);
                 }
             }
+            if (isset($s['rotation_detail']['sin_sucursal'])) {
+                $s['rotation_detail']['sin_sucursal'] = [];
+            }
             $s['rotation_detail']['operational_status'] = $this->buildOperationalStatus($period, $employeeId, $row, $expenseDetail);
+        }
+
+        // Rotación agregada (plantilla/altas/bajas/índice) no existe por colaborador —
+        // motivo explícito; el estado individual sigue en rotation_detail.
+        if (isset($s['rotation'])) {
+            $s['rotation'] = $this->notAttributable('La rotación (plantilla, altas, bajas e índice) se mide por sucursal o empresa; no aplica a un colaborador individual. Su estado en el periodo está en el detalle de rotación.');
         }
 
         foreach ([
@@ -1223,7 +1408,8 @@ class RadiographySnapshotBuilder
             // Rotación/IMSS agregados (plantilla, altas/bajas de TODA la empresa) no aplican a
             // un individuo — el contexto personal (alta/baja/sucursal este periodo) sigue
             // disponible vía sections.rotation_detail (ya filtrado arriba) e imss.colaboradores.
-            'rotation', 'imss_meta',
+            // ('rotation' ya se marcó arriba con su motivo específico.)
+            'imss_meta',
             // 'recovery_by_product' (buildRecoveryByProduct()) es un desglose a nivel EMPRESA
             // completa — antes quedaba sin tocar bajo alcance colaborador (fuga: mostraba el
             // desglose de TODOS los promotores). El equivalente por-colaborador reconciliado
@@ -1234,6 +1420,7 @@ class RadiographySnapshotBuilder
                 $s[$k] = $this->notAttributable('No existe desglose por colaborador para este dato en el snapshot del periodo.');
             }
         }
+        $s = $this->scrubCompanyWideSections($s, 'colaborador');
 
         $snapshot['sections'] = $s;
         $snapshot['charts']   = $this->scopeChartsByLabel($snapshot['charts'], $row['name']);

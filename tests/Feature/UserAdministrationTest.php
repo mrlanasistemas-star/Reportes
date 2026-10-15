@@ -88,9 +88,9 @@ it('creates a user with a GENERATED password shown once, and resets access with 
     Mail::fake();
 
     $response = $this->actingAs($admin)->post(route('usuarios.store'), [
-        'name' => 'Raúl', 'email' => 'raul@example.test', 'role' => 'gerencial', 'password_mode' => 'auto', 'send_invitation' => false,
+        'name' => 'Raúl', 'email' => 'raul@example.test', 'role' => 'gerencial', 'password_mode' => 'auto', 'send_invitation' => false, 'branch_scope' => 'all',
     ])->assertSessionHasNoErrors();
-    $generated = session('temp_password');
+    $generated = \App\Http\Controllers\Okr\ResponsibleController::revealSecret(session('temp_password'));
     $user = User::query()->where('email', 'raul@example.test')->firstOrFail();
     expect($generated['email'])->toBe('raul@example.test')
         ->and(Hash::check($generated['password'], $user->password))->toBeTrue();
@@ -103,7 +103,7 @@ it('creates a user with a GENERATED password shown once, and resets access with 
 
     // Restablecer generada: se muestra una vez.
     $this->actingAs($admin)->post(route('usuarios.reset-password', $user), ['password_mode' => 'auto'])->assertSessionHas('reset_password');
-    expect(Hash::check(session('reset_password')['password'], $user->fresh()->password))->toBeTrue();
+    expect(Hash::check(\App\Http\Controllers\Okr\ResponsibleController::revealSecret(session('reset_password'))['password'], $user->fresh()->password))->toBeTrue();
 });
 
 it('creates a user by INVITATION: the mail transport accepts it and the state is persisted (never "received")', function () {
@@ -210,8 +210,11 @@ it('records every administrative action in the history and the last login', func
         ->where('audit.0.label', 'Cambió el rol')
         ->where('audit.0.old_value', 'Colaborador')
         ->where('audit.0.new_value', 'Gerencial')
-        ->where('audit.1.label', 'Activó el acceso')
-        ->where('audit.1.target', $user->name));
+        // Subir a gerencial a un usuario sin alcance explícito congela su alcance
+        // (nunca «todas» por omisión) y queda auditado.
+        ->where('audit.1.label', 'Cambió el alcance por sucursal')
+        ->where('audit.2.label', 'Activó el acceso')
+        ->where('audit.2.target', $user->name));
 });
 
 it('a user without the Users module gets 403 on every user-admin URL', function () {

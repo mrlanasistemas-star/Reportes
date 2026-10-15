@@ -38,10 +38,21 @@ yarn-error.log
 
 # Datos reales de nómina, clientes, gastos e IMSS (15-oct-2026): nunca versionar.
 # Ya rastreados antes de esta regla: sacarlos del índice requiere autorización
-# (ver docs/despliegue-vps-limpio.md, "Datos sensibles en el repositorio").
+# (ver docs/seguridad-archivos-versionados.md).
 /documentosEjemplo/
 /documentosJunio/
 /documentosMayo/
 /documentosColumnas/
 /docRadios/
 /docs/efectividad/MR_LANA_EFECTIVIDAD PRUEBA TULA.xlsm
+
+# Salidas de auditoría con nombres de colaboradores y cifras por persona
+# (15-oct-2026). También ya rastreadas: ver docs/seguridad-archivos-versionados.md.
+/storage/audit/
+/storage/audit_before/
+
+# Respaldos de base de datos y archivos de bloqueo de Office (~$Libro.xlsx).
+*.sql
+*.sql.gz
+*.dump
+~$*

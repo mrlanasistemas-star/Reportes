@@ -66,7 +66,7 @@ it('a user with the new role can do what is allowed and gets 403 (with a clear m
 
     Mail::fake();
     $this->actingAs($admin)->post(route('usuarios.store'), [
-        'name' => 'Gerente Uno', 'email' => 'gerente1@example.test', 'role' => 'gerente_de_sucursal', 'password_mode' => 'auto', 'enable_access' => true,
+        'name' => 'Gerente Uno', 'email' => 'gerente1@example.test', 'role' => 'gerente_de_sucursal', 'password_mode' => 'auto', 'enable_access' => true, 'branch_scope' => 'all',
     ])->assertSessionHasNoErrors();
     $user = User::query()->where('email', 'gerente1@example.test')->firstOrFail();
     $period = rpPeriod();
@@ -198,7 +198,7 @@ it('a delegated role manager can never grant more than their own role has', func
 
     // Sí puede crear un rol contenido en el suyo y dar de alta usuarios con él.
     rpCreateRole($this, $jefe, ['name' => 'Solo reportes', 'modules' => ['reportes'], 'actions' => ['reportes' => ['exportar']]])->assertSessionHasNoErrors();
-    $this->actingAs($jefe)->post(route('usuarios.store'), ['name' => 'Ana', 'email' => 'ana@example.test', 'role' => 'solo_reportes', 'password_mode' => 'auto'])
+    $this->actingAs($jefe)->post(route('usuarios.store'), ['name' => 'Ana', 'email' => 'ana@example.test', 'role' => 'solo_reportes', 'password_mode' => 'auto', 'branch_scope' => 'all'])
         ->assertSessionHasNoErrors();
 
     // Nunca un rol con más permisos (gerencial), nunca Administrador, nunca su propio rol.

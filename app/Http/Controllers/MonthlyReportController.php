@@ -658,6 +658,9 @@ class MonthlyReportController extends Controller {
             $operativeBranches = collect($dataScope->filterBranchOptions($request->user(), $operativeBranches));
             if ($scope === 'employee' && $employeeId) {
                 $dataScope->authorizeEmployee($request->user(), $employeeId, $periodAId);
+                if ($periodBId && $periodBId !== $periodAId) {
+                    $this->authorizeEmployeeInComparePeriod($request->user(), $employeeId, $periodBId);
+                }
             } elseif ($scope !== 'employee') {
                 $scope = 'branch';
                 $branchId = $dataScope->resolveBranch($request->user(), $branchId);
@@ -716,7 +719,7 @@ class MonthlyReportController extends Controller {
 
         $config = ['scope' => $scope, 'report_type' => $reportType, 'compare_period_id' => $periodB->id];
 
-        $this->authorizeReportScope($request, $scope, (int) $request->query('employee_id', 0), $periodA->id, 'El comparativo general');
+        $this->authorizeReportScope($request, $scope, (int) $request->query('employee_id', 0), $periodA->id, 'El comparativo general', $periodB->id);
 
         if ($scope === 'branch') {
             $branchId = (int) $request->query('branch_id', 0);
@@ -1009,7 +1012,7 @@ class MonthlyReportController extends Controller {
     public function exportFilteredRadiography(Period $period, Request $request, RadiografiaExportService $service, PeriodDerivedDataCleaner $cleaner)
     {
         // Fase 6.4 — alcance ANTES que cualquier otra respuesta (general/gestor/sucursal ajena → 403).
-        $this->authorizeReportScope($request, $request->input('scope'), (int) $request->input('employee_id', 0), $period->id, 'La radiografía general');
+        $this->authorizeReportScope($request, $request->input('scope'), (int) $request->input('employee_id', 0), $period->id, 'La radiografía general', (int) $request->input('compare_period_id', 0) ?: null);
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
             ->where('status', 'generated')
@@ -1068,7 +1071,7 @@ class MonthlyReportController extends Controller {
     public function exportFilteredRadiographyPdf(Period $period, Request $request, RadiografiaExportService $service, PeriodDerivedDataCleaner $cleaner)
     {
         // Fase 6.4 — alcance ANTES que cualquier otra respuesta (general/gestor/sucursal ajena → 403).
-        $this->authorizeReportScope($request, $request->input('scope'), (int) $request->input('employee_id', 0), $period->id, 'La radiografía general');
+        $this->authorizeReportScope($request, $request->input('scope'), (int) $request->input('employee_id', 0), $period->id, 'La radiografía general', (int) $request->input('compare_period_id', 0) ?: null);
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
             ->where('status', 'generated')
@@ -1325,7 +1328,7 @@ class MonthlyReportController extends Controller {
      * alcance general; gestor → debe pertenecer a sus sucursales; sucursal → la
      * valida EnsureBranchScope (y aquí otra vez, por defensa en profundidad).
      */
-    private function authorizeReportScope(Request $request, ?string $scope, int $employeeId, ?int $periodId, string $what): void
+    private function authorizeReportScope(Request $request, ?string $scope, int $employeeId, ?int $periodId, string $what, ?int $comparePeriodId = null): void
     {
         $dataScope = app(DataScopeService::class);
         $user = $request->user();
@@ -1334,6 +1337,11 @@ class MonthlyReportController extends Controller {
         // reporte general: para alcance restringido se trata como general (403).
         if ($scope === 'employee' && $employeeId > 0) {
             $dataScope->authorizeEmployee($user, $employeeId, $periodId);
+            // Comparativo: el colaborador también debe pertenecer a sus sucursales en
+            // el periodo B — nunca mostrar datos de B de otra sucursal.
+            if ($comparePeriodId && $comparePeriodId !== $periodId) {
+                $this->authorizeEmployeeInComparePeriod($user, $employeeId, $comparePeriodId);
+            }
 
             return;
         }
@@ -1345,6 +1353,20 @@ class MonthlyReportController extends Controller {
         }
 
         $dataScope->requireGeneral($user, $what);
+    }
+
+    /** 403 en español si el colaborador no pertenece al alcance del usuario en el periodo de comparación. */
+    private function authorizeEmployeeInComparePeriod(\App\Models\User $user, int $employeeId, int $comparePeriodId): void
+    {
+        $dataScope = app(DataScopeService::class);
+        if ($dataScope->allowsEmployee($user, $employeeId, $comparePeriodId)) {
+            return;
+        }
+
+        $label = Period::query()->whereKey($comparePeriodId)->first()?->label ?? 'el periodo de comparación';
+
+        abort(403, "En {$label} (periodo de comparación) ese colaborador no pertenece a tus sucursales autorizadas ({$dataScope->label($user)}), "
+            . 'así que no podemos mostrar el comparativo. Elige otro periodo o pide a un administrador que amplíe tu alcance en Usuarios.');
     }
 
     private function runWithinScope(\App\Models\User $user, PeriodRadiographyRun $run): bool

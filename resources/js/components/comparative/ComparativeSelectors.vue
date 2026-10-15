@@ -45,15 +45,15 @@ const employeeOptions = computed(() => props.employees)
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-card p-5 shadow-sm">
+    <div class="app-section p-5">
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_auto_1fr]">
             <SearchableSelect v-model="periodA" :options="periodAOptions" label="Periodo A" label-key="label" secondary-key="code"
                                placeholder="Selecciona el periodo actual" />
             <div class="flex items-end justify-center pb-2 lg:pb-0 lg:items-center">
                 <button type="button" @click="emit('swap')"
-                        title="Intercambiar periodos"
+                        title="Intercambiar periodos" aria-label="Intercambiar periodos"
                         class="flex size-10 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition hover:border-primary/30 hover:text-primary">
-                    <ArrowLeftRight class="size-4" />
+                    <ArrowLeftRight class="size-4" aria-hidden="true" />
                 </button>
             </div>
             <SearchableSelect v-model="periodB" :options="periodBOptions" label="Periodo B (comparado)" label-key="label" secondary-key="code"
@@ -67,7 +67,7 @@ const employeeOptions = computed(() => props.employees)
                     <button v-for="opt in scopeOptions" :key="opt.v"
                             type="button" @click="scope = opt.v as any"
                             class="h-full flex-1 rounded-xl text-xs font-bold transition"
-                            :class="scope === opt.v ? 'bg-card text-primary shadow-sm ' : 'text-muted-foreground hover:text-slate-700 '">
+                            :class="scope === opt.v ? 'bg-card text-primary shadow-sm ' : 'text-muted-foreground hover:text-foreground'">
                         {{ opt.l }}
                     </button>
                 </div>

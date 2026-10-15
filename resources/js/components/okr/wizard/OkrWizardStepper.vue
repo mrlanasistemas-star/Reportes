@@ -13,7 +13,7 @@ const progress = computed(() => (props.steps.length <= 1 ? 100 : ((props.current
 <template>
     <div class="relative px-6 pb-3 pt-4">
         <div class="absolute left-[calc(1.5rem+14px)] right-[calc(1.5rem+14px)] top-[30px] h-1 rounded-full bg-muted">
-            <div class="h-full rounded-full bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-500 transition-all duration-700 ease-out" :style="{ width: `${progress}%` }" />
+            <div class="h-full rounded-full bg-primary transition-all duration-700 ease-out" :style="{ width: `${progress}%` }" />
         </div>
         <ol class="relative flex items-start justify-between">
             <li v-for="(label, i) in steps" :key="label" class="flex w-24 flex-col items-center gap-1.5 text-center sm:w-36">
@@ -21,15 +21,14 @@ const progress = computed(() => (props.steps.length <= 1 ? 100 : ((props.current
                     type="button"
                     class="group relative flex size-7 items-center justify-center rounded-full text-[11px] font-bold transition-all duration-300"
                     :class="[
-                        i + 1 < current ? 'cursor-pointer bg-emerald-500 text-white shadow-md shadow-emerald-500/30 hover:scale-110' : '',
-                        i + 1 === current ? 'scale-110 bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/40' : '',
+                        i + 1 < current ? 'cursor-pointer bg-primary/15 text-primary ring-1 ring-primary/30 hover:bg-primary/25' : '',
+                        i + 1 === current ? 'bg-primary text-primary-foreground shadow-soft-xs ring-4 ring-primary/15' : '',
                         i + 1 > current ? 'cursor-default bg-background text-muted-foreground ring-1 ring-border' : '',
                     ]"
                     :disabled="i + 1 >= current"
                     :aria-label="`Ir al paso ${i + 1}: ${label}`"
                     @click="emit('go', i + 1)"
                 >
-                    <span v-if="i + 1 === current" class="absolute inset-0 animate-ping rounded-full bg-indigo-500/30" />
                     <Check v-if="i + 1 < current" class="size-3.5" />
                     <span v-else class="relative">{{ i + 1 }}</span>
                 </button>

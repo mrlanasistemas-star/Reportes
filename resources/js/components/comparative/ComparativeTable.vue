@@ -21,14 +21,14 @@ function fmtValue(v: number, fmt: Row['fmt']): string {
 </script>
 
 <template>
-    <div class="rounded-2xl border bg-card shadow-sm">
-        <div class="flex items-center justify-between border-b p-4">
-            <div>
-                <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Comparativo de métricas</h3>
-                <p class="mt-0.5 text-[11px] text-muted-foreground">Todas las métricas disponibles para este alcance — nunca se ocultan de forma permanente.</p>
+    <div class="app-table-wrap">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b p-4">
+            <div class="min-w-0">
+                <h3 class="app-section-title">Comparativo de métricas</h3>
+                <p class="app-help mt-0.5">Todas las métricas disponibles para este alcance — nunca se ocultan de forma permanente.</p>
             </div>
             <button type="button" @click="showAll = !showAll"
-                    class="h-8 shrink-0 rounded-xl border border-border bg-card px-3 text-xs font-bold text-muted-foreground transition hover:bg-muted">
+                    class="h-9 shrink-0 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-foreground transition hover:bg-muted">
                 {{ showAll ? 'Mostrar principales' : 'Mostrar todas' }}
             </button>
         </div>
@@ -36,22 +36,22 @@ function fmtValue(v: number, fmt: Row['fmt']): string {
             <table class="w-full text-sm">
                 <thead class="sticky top-0 z-10 bg-muted text-muted-foreground">
                     <tr>
-                        <th class="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wide">Métrica</th>
-                        <th class="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide">{{ labelA }}</th>
-                        <th class="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide">{{ labelB }}</th>
-                        <th class="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide">Diferencia</th>
-                        <th class="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wide">Var %</th>
+                        <th class="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">Métrica</th>
+                        <th class="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">{{ labelA }}</th>
+                        <th class="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">{{ labelB }}</th>
+                        <th class="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">Diferencia</th>
+                        <th class="px-4 py-2.5 text-right text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap">Var %</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr v-for="(row, i) in visibleRows" :key="row.label" :class="i % 2 === 1 ? 'bg-muted/50 ' : ''" class="border-b border-border">
+                    <tr v-for="(row, i) in visibleRows" :key="row.label" :class="i % 2 === 1 ? 'bg-muted/40' : ''" class="border-b border-border transition-colors hover:bg-muted/60">
                         <td class="px-4 py-2.5 font-semibold text-foreground">{{ row.label }}</td>
-                        <td class="px-4 py-2.5 text-right text-foreground/80">{{ fmtValue(row.curr, row.fmt) }}</td>
-                        <td class="px-4 py-2.5 text-right text-muted-foreground">{{ fmtValue(row.prev, row.fmt) }}</td>
-                        <td class="px-4 py-2.5 text-right font-semibold text-foreground/80">
+                        <td class="px-4 py-2.5 text-right tabular-nums whitespace-nowrap text-foreground/80">{{ fmtValue(row.curr, row.fmt) }}</td>
+                        <td class="px-4 py-2.5 text-right tabular-nums whitespace-nowrap text-muted-foreground">{{ fmtValue(row.prev, row.fmt) }}</td>
+                        <td class="px-4 py-2.5 text-right tabular-nums whitespace-nowrap font-semibold text-foreground/80">
                             {{ row.diff >= 0 ? '+' : '−' }}{{ fmtValue(Math.abs(row.diff), row.fmt) }}
                         </td>
-                        <td class="px-4 py-2.5 text-right">
+                        <td class="px-4 py-2.5 text-right tabular-nums whitespace-nowrap">
                             <span class="font-bold" :class="{
                                 'text-emerald-700 dark:text-emerald-400': toneFor(row.label, row.var_pct) === 'good',
                                 'text-rose-700 dark:text-rose-400': toneFor(row.label, row.var_pct) === 'bad',

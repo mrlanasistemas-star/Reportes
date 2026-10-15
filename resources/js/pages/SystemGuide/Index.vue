@@ -8,6 +8,7 @@ import { ArrowRight, BookOpen, Compass, Download, LifeBuoy, PlayCircle, Search, 
 import { computed, nextTick, onMounted, ref } from 'vue'
 import GuideManual from '@/components/guide/GuideManual.vue'
 import GuideModuleCard from '@/components/guide/GuideModuleCard.vue'
+import GuideModuleFacts from '@/components/guide/GuideModuleFacts.vue'
 import { useTour } from '@/composables/useTour'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { guideModulesFor, moduleById, welcomeTourFor } from '@/tour/modules'
@@ -20,6 +21,12 @@ const search = ref('')
 const manualFocus = ref<string | null>(null)
 
 const focusedId = ref<string | null>(new URL(page.url, window.location.origin).searchParams.get('modulo'))
+// Pantalla desde la que se abrió la ayuda (solo rutas internas).
+const fromPath = (() => {
+    const raw = new URL(page.url, window.location.origin).searchParams.get('desde')
+
+    return raw && raw.startsWith('/') && !raw.startsWith('//') ? raw : null
+})()
 // Fase 8.13: solo los módulos que el rol puede abrir (mismo criterio que el menú).
 const allowedModules = computed(() => guideModulesFor(page.props.auth?.modules))
 const focused = computed(() => {
@@ -94,9 +101,10 @@ onMounted(() => {
                     <p class="app-kicker inline-flex items-center gap-1.5 text-primary"><Sparkles class="size-3.5" /> Estás en este módulo</p>
                     <h2 class="mt-1 text-xl font-semibold tracking-tight text-foreground">{{ focused.label }}</h2>
                     <p class="mt-0.5 text-sm text-muted-foreground">{{ focused.description }}</p>
+                    <GuideModuleFacts class="mt-3 max-w-3xl" :module="focused" />
                 </div>
                 <div class="flex flex-wrap gap-2">
-                    <button v-if="focused.tourId" type="button" class="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90" @click="startTour(focused.tourId)">
+                    <button v-if="focused.tourId" type="button" class="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90" @click="startTour(focused.tourId, fromPath)">
                         <PlayCircle class="size-4" /> Iniciar recorrido <ArrowRight class="size-4" />
                     </button>
                     <button v-if="focused.manualStep && showManual" type="button" class="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground transition hover:bg-muted" @click="openManual(focused.manualStep)">

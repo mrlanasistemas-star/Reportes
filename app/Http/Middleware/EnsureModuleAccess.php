@@ -29,6 +29,14 @@ class EnsureModuleAccess
                 return redirect($this->access->landingUrlFor($user));
             }
 
+            // Fase 6.4 — su rol sí tiene el módulo, pero opera sobre todas las
+            // sucursales y su alcance es restringido: mensaje propio, no "tu rol".
+            if ($this->access->blockedByScope($user, $module)) {
+                $label = ModuleAccessService::MODULES[$module]['label'] ?? 'Este módulo';
+                abort(403, "{$label} opera sobre todas las sucursales y solo está disponible para usuarios con alcance general. "
+                    . 'Tu alcance autorizado: ' . app(\App\Services\Access\DataScopeService::class)->label($user) . '. Si lo necesitas, pide a un administrador que amplíe tu alcance en Usuarios.');
+            }
+
             abort(403, 'Tu rol no tiene acceso a este módulo. Pide a un administrador que lo habilite en Roles y permisos.');
         }
 

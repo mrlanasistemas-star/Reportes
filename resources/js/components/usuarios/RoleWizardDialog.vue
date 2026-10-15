@@ -97,16 +97,16 @@ function submit() {
 <template>
     <Dialog v-model:open="open">
         <DialogContent class="max-h-[92vh] w-[96vw] max-w-4xl overflow-y-auto p-0 sm:max-w-4xl">
-            <div class="bg-gradient-to-br from-indigo-600 via-violet-600 to-fuchsia-600 px-6 py-5 text-white">
-                <DialogTitle class="flex items-center gap-2 text-lg font-black"><ShieldPlus class="size-5" /> {{ isEdit ? `Editar rol «${role?.name}»` : 'Nuevo rol' }}</DialogTitle>
-                <DialogDescription class="mt-1 text-sm text-white/80">Los cambios aplican de inmediato a todos los usuarios con este rol.</DialogDescription>
+            <div class="border-b border-border bg-card px-6 py-5">
+                <DialogTitle class="flex items-center gap-2 text-lg font-semibold text-foreground"><ShieldPlus class="size-5 text-primary" aria-hidden="true" /> {{ isEdit ? `Editar rol «${role?.name}»` : 'Nuevo rol' }}</DialogTitle>
+                <DialogDescription class="mt-1 text-sm text-muted-foreground">Los cambios aplican de inmediato a todos los usuarios con este rol.</DialogDescription>
                 <ol class="mt-4 flex gap-2">
-                    <li v-for="(label, i) in STEPS" :key="label" class="flex items-center gap-2 text-xs font-bold" :class="i <= step ? 'text-white' : 'text-white/50'">
-                        <span class="flex size-6 items-center justify-center rounded-full border" :class="i < step ? 'border-white bg-white text-violet-700' : i === step ? 'border-white' : 'border-white/40'">
+                    <li v-for="(label, i) in STEPS" :key="label" class="flex items-center gap-2 text-xs font-bold" :class="i <= step ? 'text-foreground' : 'text-muted-foreground'">
+                        <span class="flex size-6 items-center justify-center rounded-full border" :class="i < step ? 'border-primary bg-primary text-primary-foreground' : i === step ? 'border-primary text-primary' : 'border-border'">
                             <Check v-if="i < step" class="size-3.5" /><template v-else>{{ i + 1 }}</template>
                         </span>
                         {{ label }}
-                        <span v-if="i < STEPS.length - 1" class="mx-1 h-px w-6 bg-white/40" />
+                        <span v-if="i < STEPS.length - 1" class="mx-1 h-px w-6 bg-border" />
                     </li>
                 </ol>
             </div>
@@ -130,10 +130,10 @@ function submit() {
                             <button
                                 v-for="lvl in BASE_LEVELS" :key="lvl.key" type="button" :disabled="isSystem"
                                 class="rounded-2xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60"
-                                :class="form.base_level === lvl.key ? 'border-violet-400 bg-violet-500/5 ring-2 ring-violet-400/30' : 'border-border hover:border-violet-300'"
+                                :class="form.base_level === lvl.key ? 'border-primary bg-accent/60 ring-2 ring-primary/20' : 'border-border hover:border-primary/40'"
                                 @click="form.base_level = lvl.key"
                             >
-                                <span class="flex items-center justify-between text-sm font-bold text-foreground">{{ lvl.label }} <Check v-if="form.base_level === lvl.key" class="size-4 text-violet-600" /></span>
+                                <span class="flex items-center justify-between text-sm font-bold text-foreground">{{ lvl.label }} <Check v-if="form.base_level === lvl.key" class="size-4 text-primary" aria-hidden="true" /></span>
                                 <span class="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{{ lvl.hint }}</span>
                             </button>
                         </div>
@@ -182,7 +182,7 @@ function submit() {
                     <p v-else class="text-sm text-muted-foreground">No elegiste módulos en el paso 2.</p>
                 </template>
 
-                <p class="rounded-xl bg-violet-500/5 px-3 py-2 text-sm font-semibold text-violet-800 dark:text-violet-200">{{ summary }}</p>
+                <p class="rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground">{{ summary }}</p>
             </div>
 
             <div class="flex items-center justify-between gap-2 border-t border-border px-6 py-4">

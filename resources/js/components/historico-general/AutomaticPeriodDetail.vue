@@ -59,7 +59,7 @@ const runError = computed(() => props.period?.radiography_run_error ?? null)
     <div class="space-y-5">
 
         <!-- ── Cabecera informativa ── -->
-        <section class="overflow-hidden rounded-[2rem] border border-violet-100 bg-gradient-to-br from-violet-50 via-white to-indigo-50 p-6 shadow-xl shadow-slate-200/70 dark:border-violet-500/20 dark:from-violet-500/10 dark:via-card dark:to-indigo-500/10 dark:shadow-black/20">
+        <section class="overflow-hidden rounded-[2rem] border border-violet-100 bg-violet-50/50 p-6 shadow-soft-xs dark:border-violet-500/20 dark:bg-violet-500/10">
             <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                 <div class="flex gap-4">
                     <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-violet-600 text-white shadow-lg shadow-violet-200 dark:shadow-violet-950/40">
@@ -197,19 +197,19 @@ const runError = computed(() => props.period?.radiography_run_error ?? null)
             </div>
 
             <!-- Estado de generación activa -->
-            <div v-if="isRunning" class="mb-5 rounded-2xl border p-4" :class="isQueued ? 'border-violet-200 bg-violet-50 dark:border-violet-500/20 dark:bg-violet-500/10' : 'border-indigo-200 bg-indigo-50 dark:border-indigo-500/20 dark:bg-indigo-500/10'">
+            <div v-if="isRunning" class="mb-5 rounded-2xl border p-4" :class="isQueued ? 'border-violet-200 bg-violet-50 dark:border-violet-500/20 dark:bg-violet-500/10' : 'border-info-border bg-info-soft'">
                 <div class="flex items-center gap-2.5">
-                    <LoaderCircle class="size-4 shrink-0 animate-spin" :class="isQueued ? 'text-violet-600 dark:text-violet-400' : 'text-indigo-600 dark:text-indigo-400'" />
+                    <LoaderCircle class="size-4 shrink-0 animate-spin" :class="isQueued ? 'text-violet-600 dark:text-violet-400' : 'text-info'" />
                     <div>
-                        <p class="text-sm font-bold" :class="isQueued ? 'text-violet-800 dark:text-violet-300' : 'text-indigo-800 dark:text-indigo-300'">
+                        <p class="text-sm font-bold" :class="isQueued ? 'text-violet-800 dark:text-violet-300' : 'text-foreground'">
                             {{ isQueued ? 'En cola — esperando worker' : 'Generando consolidado…' }}
                         </p>
-                        <p v-if="runLog" class="mt-0.5 truncate text-xs" :class="isQueued ? 'text-violet-600 dark:text-violet-400' : 'text-indigo-600 dark:text-indigo-400'">
+                        <p v-if="runLog" class="mt-0.5 truncate text-xs" :class="isQueued ? 'text-violet-600 dark:text-violet-400' : 'text-info'">
                             {{ runLog }}
                         </p>
                     </div>
                 </div>
-                <p class="mt-2 text-xs" :class="isQueued ? 'text-violet-600 dark:text-violet-400' : 'text-indigo-600 dark:text-indigo-400'">
+                <p class="mt-2 text-xs" :class="isQueued ? 'text-violet-600 dark:text-violet-400' : 'text-info'">
                     Puedes cerrar esta ventana. Recibirás un correo cuando el reporte esté listo.
                 </p>
             </div>

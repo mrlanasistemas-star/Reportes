@@ -39,6 +39,15 @@ class ModuleAccessService
 
     private const CACHE_KEY = 'role_module_access.v1';
 
+    /**
+     * Módulos que operan sobre TODAS las sucursales a la vez (cargar fuentes de
+     * la empresa, incidencias/colaboradores de todo el periodo, generar la
+     * radiografía general, abrir/cerrar/eliminar periodos). Un usuario con
+     * alcance RESTRINGIDO por sucursal (DataScopeService) no los recibe aunque
+     * su rol los tenga: si no, vería y modificaría datos de sucursales ajenas.
+     */
+    public const GENERAL_SCOPE_MODULES = ['carga', 'periodos'];
+
     /** @return array<string, list<string>> rol => módulos permitidos (solo roles configurables). */
     public function matrix(): array
     {
@@ -97,7 +106,27 @@ class ModuleAccessService
             return array_keys(self::MODULES);
         }
 
-        return $this->matrix()[$this->permissionKeyFor($user)] ?? [];
+        $modules = $this->roleModulesFor($user);
+        if (array_intersect($modules, self::GENERAL_SCOPE_MODULES) !== [] && app(DataScopeService::class)->isRestricted($user)) {
+            $modules = array_values(array_diff($modules, self::GENERAL_SCOPE_MODULES));
+        }
+
+        return $modules;
+    }
+
+    /** Módulos del ROL del usuario, antes de aplicar su alcance por sucursal. @return list<string> */
+    public function roleModulesFor(User $user): array
+    {
+        return $user->isAdmin() ? array_keys(self::MODULES) : ($this->matrix()[$this->permissionKeyFor($user)] ?? []);
+    }
+
+    /** ¿Su rol tiene el módulo, pero su alcance restringido por sucursal se lo impide? */
+    public function blockedByScope(?User $user, string $module): bool
+    {
+        return $user !== null
+            && in_array($module, self::GENERAL_SCOPE_MODULES, true)
+            && in_array($module, $this->roleModulesFor($user), true)
+            && ! $this->allows($user, $module);
     }
 
     public function allows(?User $user, string $module): bool

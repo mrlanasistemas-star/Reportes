@@ -48,6 +48,14 @@ class ProfileController extends Controller
     {
         $user = $request->user();
 
+        // El único administrador habilitado no puede eliminar su propia cuenta: el
+        // sistema se quedaría sin nadie que administre usuarios y roles (mismo
+        // candado que bloquear/degradar al último administrador en Usuarios).
+        if ($user->isAdmin() && $user->disabled_at === null
+            && \App\Models\User::query()->where('role', \App\Models\User::ROLE_ADMIN)->whereNull('disabled_at')->whereKeyNot($user->id)->doesntExist()) {
+            return back()->withErrors(['password' => 'No puedes eliminar tu cuenta: eres el único administrador habilitado. Asigna antes a otro administrador.']);
+        }
+
         Auth::logout();
 
         $user->delete();

@@ -85,7 +85,7 @@ const pending = computed<Pending[]>(() => {
             <!-- Quién y qué se evalúa -->
             <div class="space-y-3 p-4 sm:p-5">
                 <div class="flex flex-wrap items-center gap-2">
-                    <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold" :class="isBranch ? 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'">
+                    <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold" :class="isBranch ? 'bg-brand-accent/10 text-brand-accent' : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'">
                         <component :is="isBranch ? Building2 : UserRound" class="size-3.5" /> {{ isBranch ? 'OKR de sucursal' : 'OKR individual' }}
                     </span>
                     <span class="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[11px] font-semibold text-muted-foreground"><CalendarClock class="size-3.5" /> Semana {{ elapsed }} de {{ objective.duration_weeks }} · {{ formatFriendlyDate(objective.start_date) }} – {{ formatFriendlyDate(objective.end_date) }}</span>

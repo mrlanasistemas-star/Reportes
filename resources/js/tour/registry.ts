@@ -44,12 +44,28 @@ export const TOURS: Record<string, TourDefinition> = {
         label: 'OKR',
         steps: [
             {
+                href: '/okr',
                 title: '¿Qué es un OKR?',
-                body: 'Es un objetivo que quieres alcanzar en un plazo definido.',
+                body: 'Es un objetivo que quieres alcanzar en un plazo definido, por sucursal o por gestor. Usa la reportería del periodo y la colocación semanal que subes para medir el avance.',
             },
             {
                 title: '¿Qué es un Key Result?',
                 body: 'Es la medida que utilizarás para saber si estás cumpliendo ese objetivo.',
+            },
+            {
+                target: 'okr-assign',
+                title: 'Asignar OKR',
+                body: 'Abre el asistente: eliges sucursal, indicador, línea base, meta y, si quieres, metas individuales por gestor. Nada se activa hasta que lo confirmas.',
+            },
+            {
+                target: 'okr-table',
+                title: 'Objetivos y Key Results',
+                body: 'Aquí aparecen los OKR con su estado y semáforo. Abre uno para ver su detalle: línea base, metas por gestor, colocación semanal y documentos.',
+            },
+            {
+                title: 'Detalle de un OKR',
+                body: 'Los siguientes pasos se señalan dentro del detalle de un OKR. Si no estás en uno, se saltan solos: abre un OKR de la tabla y vuelve a iniciar este recorrido desde el botón de ayuda.',
+                example: 'Si un avance aparece en cero o «sin dato», sube la colocación de la semana o usa «Recalcular con Reportería» en el detalle.',
             },
             {
                 target: 'okr-baseline',

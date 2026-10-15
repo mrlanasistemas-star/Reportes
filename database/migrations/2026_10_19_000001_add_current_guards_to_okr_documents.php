@@ -24,16 +24,15 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::table('okr_commitment_letters', function (Blueprint $table) {
-            $table->unsignedTinyInteger('current_guard')->nullable()->after('status');
-        });
-        Schema::table('okr_warnings', function (Blueprint $table) {
-            $table->unsignedTinyInteger('current_guard')->nullable()->after('status');
-        });
-        Schema::table('okr_placement_uploads', function (Blueprint $table) {
-            $table->unsignedTinyInteger('current_guard')->nullable()->after('status');
-            $table->boolean('declared_complete')->nullable()->after('coverage_status');
-        });
+        // Guardas hasColumn/hasIndex: re-ejecutable tras un fallo parcial (MySQL no revierte DDL).
+        foreach (['okr_commitment_letters', 'okr_warnings', 'okr_placement_uploads'] as $name) {
+            if (! Schema::hasColumn($name, 'current_guard')) {
+                Schema::table($name, fn (Blueprint $table) => $table->unsignedTinyInteger('current_guard')->nullable()->after('status'));
+            }
+        }
+        if (! Schema::hasColumn('okr_placement_uploads', 'declared_complete')) {
+            Schema::table('okr_placement_uploads', fn (Blueprint $table) => $table->boolean('declared_complete')->nullable()->after('coverage_status'));
+        }
 
         // Backfill: solo el MÁS RECIENTE vigente de cada clase queda marcado.
         $latest = fn (string $table, array $group, string $status) => DB::table($table)
@@ -53,15 +52,16 @@ return new class extends Migration
             DB::table('okr_placement_uploads')->whereIn('id', $ids)->update(['current_guard' => 1]);
         }
 
-        Schema::table('okr_commitment_letters', function (Blueprint $table) {
-            $table->unique(['okr_objective_id', 'current_guard'], 'okr_letters_one_current');
-        });
-        Schema::table('okr_warnings', function (Blueprint $table) {
-            $table->unique(['okr_objective_id', 'week_number', 'current_guard'], 'okr_warnings_one_current');
-        });
-        Schema::table('okr_placement_uploads', function (Blueprint $table) {
-            $table->unique(['okr_objective_id', 'week_number', 'current_guard'], 'okr_uploads_one_current');
-        });
+        $uniques = [
+            'okr_commitment_letters' => [['okr_objective_id', 'current_guard'], 'okr_letters_one_current'],
+            'okr_warnings' => [['okr_objective_id', 'week_number', 'current_guard'], 'okr_warnings_one_current'],
+            'okr_placement_uploads' => [['okr_objective_id', 'week_number', 'current_guard'], 'okr_uploads_one_current'],
+        ];
+        foreach ($uniques as $name => [$columns, $index]) {
+            if (! Schema::hasIndex($name, $index)) {
+                Schema::table($name, fn (Blueprint $table) => $table->unique($columns, $index));
+            }
+        }
     }
 
     public function down(): void

@@ -5,6 +5,13 @@
 > (copiar `storage/`, reprocesar originales, invalidar proyecciones) solo aplicarían a una
 > migración con datos y **no** se usan en esta instalación. No borres el servidor anterior
 > hasta validar el nuevo.
+>
+> **Contradicciones resueltas (15-oct-2026):** en la instalación limpia **no** se ejecuta
+> `php artisan storage:link` (sección 1 de este documento): ningún archivo se sirve por
+> `/storage`, y el enlace solo expondría los originales. Los PDF de OKR ya no viven en
+> `storage/app/public` sino en el disco privado `local` (`storage/app/private`). La sección 5
+> (V4 desde la web) quedó reemplazada por la calculadora temporal de Efectividad. Cuando este
+> documento y `docs/despliegue-vps-limpio.md` no coincidan, manda este último.
 
 No se ejecutó ninguna migración de infraestructura real desde esta sesión (sin acceso al
 VPS). Este documento son las notas que un futuro traslado debe considerar, en relación

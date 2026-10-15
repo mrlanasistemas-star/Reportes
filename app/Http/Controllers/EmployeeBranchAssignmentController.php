@@ -59,6 +59,16 @@ class EmployeeBranchAssignmentController extends Controller
             $branches = $branches->whereIn('id', $allowedBranchIds)->values();
         }
 
+        // Filtro de sucursal elegido en pantalla (`branch_id`): aplica a conteos, listas,
+        // plantilla e historial — también para alcance general (antes un admin con
+        // ATLIXCO elegido recibía la plantilla de toda la empresa). Una sucursal fuera
+        // del alcance → 403 con mensaje claro.
+        $selectedBranchId = $request->integer('branch_id') ?: null;
+        if ($selectedBranchId !== null) {
+            $dataScope->authorizeBranch($request->user(), $selectedBranchId);
+        }
+        $scopeBranchIds = $selectedBranchId !== null ? [$selectedBranchId] : $allowedBranchIds;
+
         $summary = [
             'total' => 0,
             'matched' => 0,
@@ -94,7 +104,7 @@ class EmployeeBranchAssignmentController extends Controller
                     'period:id,name,code,type,year,month,sequence,start_date,end_date',
                 ])
                 ->where('period_id', $selectedPeriod->id)
-                ->when($allowedBranchIds !== null, fn ($q) => $q->whereIn('branch_id', $allowedBranchIds))
+                ->when($scopeBranchIds !== null, fn ($q) => $q->whereIn('branch_id', $scopeBranchIds))
                 ->orderByDesc('updated_at')
                 ->get();
 
@@ -164,8 +174,8 @@ class EmployeeBranchAssignmentController extends Controller
                 $presenter = app(RosterMovementsPresenter::class);
                 // Fase 6.4 — alcance restringido: personas, conteos, plantilla e historial
                 // solo de SUS sucursales (null = todas, sin cambios para alcance general).
-                $labor = $presenter->forPeriod($selectedPeriod, $periods, $allowedBranchIds);
-                $laborHistory = $presenter->history($periods, $allowedBranchIds);
+                $labor = $presenter->forPeriod($selectedPeriod, $periods, $scopeBranchIds);
+                $laborHistory = $presenter->history($periods, $scopeBranchIds);
             }
 
             $hires = collect($labor['movements']['altas'] ?? [])->merge($labor['movements']['reingresos'] ?? [])->values();
@@ -214,6 +224,7 @@ class EmployeeBranchAssignmentController extends Controller
             ])->values(),
             'selected_period_id' => $selectedPeriod?->id,
             'selected_period_label' => $selectedPeriod?->label,
+            'selected_branch_id' => $selectedBranchId,
             'summary' => $summary,
             'incidences' => $incidences,
             'hires' => $hires,

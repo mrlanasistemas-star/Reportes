@@ -102,8 +102,8 @@ document.removeEventListener('mousedown', onOutsideClick)
     <div ref="containerRef" class="relative" @keydown="onKeydown">
         <button
             type="button"
-            class="flex h-11 w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm transition focus:outline-none focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-800 dark:focus:ring-indigo-500/20"
-            :class="disabled ? 'cursor-not-allowed opacity-50' : 'hover:border-indigo-200 hover:bg-indigo-50/30 dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10'"
+            class="flex h-11 w-full items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm transition focus:outline-none focus:ring-4 focus:ring-ring/30 dark:border-slate-700 dark:bg-slate-800"
+            :class="disabled ? 'cursor-not-allowed opacity-50' : 'hover:border-primary/30 hover:bg-accent/40'"
             :disabled="disabled"
             @click.stop="toggle"
         >
@@ -135,11 +135,11 @@ document.removeEventListener('mousedown', onOutsideClick)
                     <li
                         v-for="item in filtered"
                         :key="item.id"
-                        class="flex cursor-pointer items-center gap-3 px-4 py-2.5 transition hover:bg-indigo-50 dark:hover:bg-indigo-500/10"
-                        :class="modelValue === item.id ? 'bg-indigo-50/60 dark:bg-indigo-500/10' : ''"
+                        class="flex cursor-pointer items-center gap-3 px-4 py-2.5 transition hover:bg-accent/60"
+                        :class="modelValue === item.id ? 'bg-accent' : ''"
                         @mousedown.prevent="pick(item.id)"
                     >
-                        <Check class="size-4 shrink-0 text-indigo-600 dark:text-indigo-400 transition" :class="modelValue === item.id ? 'opacity-100' : 'opacity-0'" />
+                        <Check class="size-4 shrink-0 text-primary transition" :class="modelValue === item.id ? 'opacity-100' : 'opacity-0'" />
                         <div class="min-w-0">
                             <p class="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{{ item.label }}</p>
                             <p v-if="item.sublabel" class="truncate text-xs text-slate-500 dark:text-slate-400">{{ item.sublabel }}</p>

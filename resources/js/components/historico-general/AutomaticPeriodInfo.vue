@@ -6,7 +6,7 @@ defineProps<{ period: any }>()
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-violet-100 bg-gradient-to-br from-violet-50 via-white to-indigo-50 p-6 shadow-xl shadow-slate-200/70 dark:border-violet-500/20 dark:from-violet-500/10 dark:via-card dark:to-indigo-500/10 dark:shadow-black/20">
+    <section class="rounded-[2rem] border border-violet-100 bg-violet-50/50 p-6 shadow-soft-xs dark:border-violet-500/20 dark:bg-violet-500/10">
         <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
             <div class="flex gap-4">
                 <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-violet-600 text-white shadow-lg shadow-violet-200 dark:shadow-violet-950/40">

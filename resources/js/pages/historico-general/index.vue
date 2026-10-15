@@ -673,15 +673,15 @@ const confirmCoincidenciaFromDuplicates = async ({ a_id, b_id, a_name, b_name, p
             <p class="text-sm text-gray-600 dark:text-slate-400 mb-4">Estas dos entradas serán unificadas como <strong>una sola persona</strong>. Elige qué nombre queda como definitivo:</p>
             <div class="flex flex-col gap-3 text-left">
                 <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-                    <input type="radio" name="swal_canon" value="a" class="mt-0.5 accent-indigo-600">
+                    <input type="radio" name="swal_canon" value="a" class="mt-0.5 accent-primary">
                     <span class="text-sm font-bold text-slate-900 dark:text-slate-100">${a_name}</span>
                 </label>
                 <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-                    <input type="radio" name="swal_canon" value="b" class="mt-0.5 accent-indigo-600">
+                    <input type="radio" name="swal_canon" value="b" class="mt-0.5 accent-primary">
                     <span class="text-sm font-bold text-slate-900 dark:text-slate-100">${b_name}</span>
                 </label>
                 <label class="flex items-start gap-3 cursor-pointer rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-                    <input type="radio" name="swal_canon" value="custom" class="mt-0.5 accent-indigo-600">
+                    <input type="radio" name="swal_canon" value="custom" class="mt-0.5 accent-primary">
                     <span class="text-sm text-slate-600 dark:text-slate-400">Escribir nombre personalizado…</span>
                 </label>
             </div>

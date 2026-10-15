@@ -425,3 +425,93 @@ it('Colaboradores: plantilla, conteos e historial de altas/bajas de un usuario r
                 && collect($rows)->firstWhere('period_id', $junio->id)['altas'] === 1)
             ->etc());
 });
+
+it('Colaboradores: un admin que elige ATLIXCO recibe plantilla, conteos, listas e historial SOLO de ATLIXCO (igual que el usuario restringido); sin elegir, el total', function () {
+    Mail::fake();
+    $admin = bscAdmin();
+    $atlixco = bscBranch('ATLIXCO');
+    $tula = bscBranch('TULA');
+    $user = bscAtlixcoManager($this, $admin, $atlixco);
+    $junio = bscMonthly(6);
+    $roster = function (string $name, Branch $branch, bool $active, string $movement) use ($junio) {
+        $e = Employee::query()->create(['employee_code' => 'R-' . $name, 'full_name' => $name, 'normalized_name' => mb_strtolower($name), 'is_active' => true]);
+        EmployeeBranchAssignment::query()->create(['period_id' => $junio->id, 'employee_id' => $e->id, 'branch_id' => $branch->id]);
+        DB::table('period_employee_rosters')->insert([
+            'period_id' => $junio->id, 'employee_id' => $e->id, 'employee_key' => mb_strtolower($name), 'nombre_normalizado' => mb_strtolower($name),
+            'nombre_original' => $name, 'branch_id' => $branch->id, 'branch_name' => $branch->name, 'is_branch_operativa' => true,
+            'source' => 'noi_nomina', 'is_active_for_period' => $active, 'movement_type' => $movement, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+    };
+    $roster('ALTA ATLIXCO', $atlixco, true, 'alta');
+    $roster('ALTA TULA', $tula, true, 'alta');
+    $roster('ACTIVO TULA', $tula, true, 'activo');
+
+    $atlixcoOnly = fn ($page) => $page
+        ->where('labor.roster.plantilla', 1)
+        ->where('summary.plantilla', 1)
+        ->where('summary.total', 1)
+        ->where('labor.counts.altas', 1)
+        ->where('assignments', fn ($rows) => collect($rows)->pluck('employee_name')->all() === ['ALTA ATLIXCO'])
+        ->where('hires', fn ($rows) => collect($rows)->pluck('employee_name')->all() === ['ALTA ATLIXCO'])
+        ->where('labor_history', fn ($rows) => collect($rows)->firstWhere('period_id', $junio->id)['plantilla'] === 1)
+        ->etc();
+
+    // Admin sin filtro: toda la empresa.
+    $this->actingAs($admin)->get(route('asignaciones-empleado-sucursal.index', ['period_id' => $junio->id]))->assertOk()
+        ->assertInertia(fn ($page) => $page->where('summary.plantilla', 3)->where('summary.total', 3)->where('selected_branch_id', null)->etc());
+
+    // Admin con ATLIXCO elegido: mismas cifras que el usuario solo-ATLIXCO.
+    $this->actingAs($admin)->get(route('asignaciones-empleado-sucursal.index', ['period_id' => $junio->id, 'branch_id' => $atlixco->id]))->assertOk()
+        ->assertInertia(fn ($page) => $atlixcoOnly($page)->where('selected_branch_id', $atlixco->id));
+    $this->actingAs($user)->get(route('asignaciones-empleado-sucursal.index', ['period_id' => $junio->id]))->assertOk()
+        ->assertInertia($atlixcoOnly);
+    $this->actingAs($user)->get(route('asignaciones-empleado-sucursal.index', ['period_id' => $junio->id, 'branch_id' => $atlixco->id]))->assertOk()
+        ->assertInertia($atlixcoOnly);
+
+    // El restringido no puede elegir otra sucursal.
+    $this->actingAs($user)->get(route('asignaciones-empleado-sucursal.index', ['period_id' => $junio->id, 'branch_id' => $tula->id]))->assertForbidden();
+});
+
+it('Comparativo por gestor: el colaborador también se autoriza en el periodo B — si en B pertenecía a otra sucursal, 403 en español y nunca datos de B', function () {
+    Mail::fake();
+    $admin = bscAdmin();
+    $atlixco = bscBranch('ATLIXCO');
+    $tula = bscBranch('TULA');
+    $user = bscAtlixcoManager($this, $admin, $atlixco);
+    $mayo = bscMonthly(5);
+    $junio = bscMonthly(6);
+    $julio = bscMonthly(7);
+
+    // Junio y julio en ATLIXCO; mayo en TULA (cambio de sucursal).
+    $e = Employee::query()->create(['employee_code' => 'CMP-1', 'full_name' => 'GESTOR MOVIDO', 'normalized_name' => 'gestor movido', 'is_active' => true]);
+    foreach ([[$mayo, $tula], [$junio, $atlixco], [$julio, $atlixco]] as [$p, $b]) {
+        EmployeeBranchAssignment::query()->create(['period_id' => $p->id, 'employee_id' => $e->id, 'branch_id' => $b->id]);
+    }
+
+    $calls = new ArrayObject();
+    $export = Mockery::mock(\App\Services\RadiografiaExportService::class);
+    $export->shouldReceive('comparativeViewData')->andReturnUsing(function ($period, array $config) use ($calls) {
+        $calls[] = $config;
+
+        return ['rows' => [], 'scopeLabel' => 'x', 'currentComposite' => null, 'compareComposite' => null];
+    });
+    app()->instance(\App\Services\RadiografiaExportService::class, $export);
+
+    // A = junio (ATLIXCO) vs B = mayo (TULA) → 403, sin construir el comparativo.
+    $denied = $this->actingAs($user)->getJson(route('reportes-mensuales.comparativo-data', ['period_a' => $junio->id, 'period_b' => $mayo->id, 'scope' => 'employee', 'employee_id' => $e->id]));
+    $denied->assertForbidden();
+    expect($denied->json('message'))->toContain('periodo de comparación')->toContain('ATLIXCO');
+    expect($calls)->toHaveCount(0);
+
+    // Lo mismo en la pantalla (deep-link) y en los exportes con compare_period_id.
+    $this->actingAs($user)->get(route('reportes-mensuales.comparativo', ['period_a' => $junio->id, 'period_b' => $mayo->id, 'scope' => 'employee', 'employee_id' => $e->id]))->assertForbidden();
+    $this->actingAs($user)->get(route('reportes-mensuales.export-filtered-radiography', ['period' => $junio->id, 'scope' => 'employee', 'employee_id' => $e->id, 'compare_period_id' => $mayo->id, 'report_type' => 'comparative_monthly']))->assertForbidden();
+    $this->actingAs($user)->get(route('reportes-mensuales.export-filtered-radiography-pdf', ['period' => $junio->id, 'scope' => 'employee', 'employee_id' => $e->id, 'compare_period_id' => $mayo->id, 'report_type' => 'comparative_monthly']))->assertForbidden();
+
+    // A = junio vs B = julio (ambos ATLIXCO) → permitido.
+    $this->actingAs($user)->getJson(route('reportes-mensuales.comparativo-data', ['period_a' => $junio->id, 'period_b' => $julio->id, 'scope' => 'employee', 'employee_id' => $e->id]))->assertOk();
+    expect($calls)->toHaveCount(1);
+
+    // Admin (alcance general) sí puede comparar contra mayo.
+    $this->actingAs($admin)->getJson(route('reportes-mensuales.comparativo-data', ['period_a' => $junio->id, 'period_b' => $mayo->id, 'scope' => 'employee', 'employee_id' => $e->id]))->assertOk();
+});

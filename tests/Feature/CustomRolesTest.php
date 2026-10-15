@@ -35,7 +35,7 @@ it('creates a custom role with its modules and actions, and a user created with 
 
     Mail::fake();
     $this->actingAs($admin)->post(route('okr.responsibles.store'), [
-        'name' => 'Ana Supervisora', 'email' => 'ana@example.test', 'role' => 'supervisor_de_zona', 'password_mode' => 'auto',
+        'name' => 'Ana Supervisora', 'email' => 'ana@example.test', 'role' => 'supervisor_de_zona', 'password_mode' => 'auto', 'branch_scope' => 'all',
     ])->assertSessionHasNoErrors();
 
     $ana = User::query()->where('email', 'ana@example.test')->firstOrFail();
