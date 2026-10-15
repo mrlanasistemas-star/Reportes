@@ -35,6 +35,7 @@ export type GestorPlan = {
     client_key: string
     employee_id: number
     employee_name: string
+    position: string | null
     title: string
     key_results: KrRow[]
 }

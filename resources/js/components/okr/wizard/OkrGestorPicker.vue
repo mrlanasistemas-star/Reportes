@@ -9,13 +9,14 @@ import { avatarTone, initialsOf } from './okrWizard'
 import type { GestorPlan } from './okrWizard'
 
 const props = defineProps<{
-    employees: { id: number; full_name: string }[]
+    employees: { id: number; full_name: string; position?: string | null }[]
+    branchName?: string | null
     selected: GestorPlan[]
     loading: boolean
     rosterPeriod: string | null
     branchSelected: boolean
 }>()
-const emit = defineEmits<{ toggle: [employee: { id: number; full_name: string }]; remove: [index: number]; search: [term: string] }>()
+const emit = defineEmits<{ toggle: [employee: { id: number; full_name: string; position?: string | null }]; remove: [index: number]; search: [term: string] }>()
 
 const term = ref('')
 const selectedIds = computed(() => new Set(props.selected.map((g) => g.employee_id)))
@@ -59,7 +60,8 @@ function onSearch(value: string) {
                 </span>
                 <span class="min-w-0 flex-1">
                     <span class="block truncate text-xs font-semibold text-foreground">{{ e.full_name }}</span>
-                    <span class="block text-[10px] text-muted-foreground">{{ selectedIds.has(e.id) ? 'Con OKR individual' : 'Clic para asignar meta propia' }}</span>
+                    <span class="block truncate text-[10px] text-muted-foreground">{{ e.position ?? 'Puesto no registrado' }} · {{ branchName ?? '' }}</span>
+                    <span class="block text-[10px] font-semibold" :class="selectedIds.has(e.id) ? 'text-primary' : 'text-muted-foreground/70'">{{ selectedIds.has(e.id) ? 'Con OKR individual' : 'Clic para asignar meta propia' }}</span>
                 </span>
                 <CheckCircle2 v-if="selectedIds.has(e.id)" class="size-5 shrink-0 text-primary animate-in zoom-in duration-200" />
                 <UserPlus v-else class="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />

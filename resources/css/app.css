@@ -169,6 +169,13 @@
     }
 
     /* SWEETALERT2 */
+    /* 15-oct-2026: los Dialog de reka-ui ponen pointer-events:none en <body>
+       mientras están abiertos; un SweetAlert lanzado encima (error, aviso)
+       quedaba visible pero sin poder pulsarse. Se le devuelven los clics. */
+    .swal2-container {
+        pointer-events: auto !important;
+    }
+
     .swal2-container.swal2-backdrop-show {
         backdrop-filter: blur(8px);
         background: rgba(15, 23, 42, 0.26) !important;

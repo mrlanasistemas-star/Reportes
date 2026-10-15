@@ -65,7 +65,31 @@ class ObjectiveController extends Controller
         }
 
         $branchId = $request->filled('branch_id') ? $request->integer('branch_id') : null;
+        $personnel = app(\App\Services\Okr\OkrPersonnelResolver::class);
+
+        // 15-oct-2026 — dos listas distintas: 'assign' (default) solo
+        // colaboradores VIGENTES de la sucursal para NUEVAS asignaciones;
+        // 'history' = personas que participan o participaron en un OKR (aunque
+        // hoy sean baja) para filtros de seguimiento/histórico.
+        if ($request->input('mode') === 'history') {
+            $search = trim($request->string('search')->toString());
+            $ids = OkrObjective::query()
+                ->when($branchId, fn ($q) => $q->where('branch_id', $branchId))
+                ->get(['employee_id', 'accountable_employee_id'])
+                ->flatMap(fn ($o) => [$o->employee_id, $o->accountable_employee_id])
+                ->filter()->unique()->values()->all();
+            $active = $resolver->activeMap($ids);
+            $participants = Employee::query()->whereIn('id', $ids)
+                ->when($search !== '', fn ($q) => $q->where('full_name', 'like', "%{$search}%"))
+                ->orderBy('full_name')->limit(50)->get(['id', 'full_name'])
+                ->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name . (($active[$e->id] ?? false) ? '' : ' (baja)'), 'is_active' => $active[$e->id] ?? false]);
+
+            return response()->json(['employees' => $participants, 'mode' => 'history'], 200, self::NO_STORE_HEADERS);
+        }
+
         $employees = $resolver->employeesForBranch($branchId, $request->string('search')->toString());
+        $positions = $personnel->positionsFor($employees->pluck('id')->all());
+        $employees = $employees->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name, 'position' => $positions[$e->id] ?? null])->values();
 
         // Nunca cacheable (Parte C4 del cierre, 17-sep-2026) — resultado sensible
         // a búsqueda/sucursal, un cache compartido/proxy podría servir la lista de
@@ -78,6 +102,7 @@ class ObjectiveController extends Controller
             'total_in_branch' => $branchId !== null ? $resolver->countForBranch($branchId) : null,
             // Nómina vigente usada para decidir quién está activo (14-oct-2026).
             'roster_period' => $resolver->currentRosterPeriodLabel(),
+            'roster' => $resolver->rosterStatus(),
         ], 200, self::NO_STORE_HEADERS);
     }
 
@@ -108,7 +133,8 @@ class ObjectiveController extends Controller
             $query->where(fn ($q) => $q->where('branch_id', $branchId)->orWhereHas('parent', fn ($p) => $p->where('branch_id', $branchId)));
         }
         if ($employeeId = $request->integer('employee_id')) {
-            $query->where('employee_id', $employeeId);
+            // 15-oct-2026: OKR donde la persona realmente participa (su OKR individual o como titular de sucursal).
+            $query->where(fn ($q) => $q->where('employee_id', $employeeId)->orWhere('accountable_employee_id', $employeeId));
         }
         if ($periodId = $request->integer('period_id')) {
             $period = Period::find($periodId);
@@ -121,7 +147,13 @@ class ObjectiveController extends Controller
             $query->where('title', 'like', "%{$search}%");
         }
 
-        $objectives = $query->orderByDesc('id')->limit(30)->get(['id', 'title']);
+        $objectives = $query->with(['branch:id,name', 'employee:id,full_name'])->orderByDesc('id')->limit(30)->get(['id', 'title', 'scope_type', 'branch_id', 'employee_id', 'lifecycle_status'])
+            ->map(fn ($o) => [
+                'id' => $o->id,
+                'title' => $o->title,
+                'label' => ($o->scope_type === OkrObjective::SCOPE_BRANCH ? 'Sucursal ' . ($o->branch?->name ?? '') : 'Gestor ' . ($o->employee?->full_name ?? '')) . ' — ' . $o->title,
+                'scope_type' => $o->scope_type,
+            ]);
 
         return response()->json(['objectives' => $objectives], 200, self::NO_STORE_HEADERS);
     }
@@ -278,7 +310,7 @@ class ObjectiveController extends Controller
     {
         $this->authorize('view', $objective);
 
-        $objective->load(['branch', 'employee', 'responsibleUser', 'creator', 'parent', 'children.branch', 'children.employee', 'children.keyResults.kpi', 'children.keyResults.snapshots' => fn ($q) => $q->orderBy('week_number'), 'children.evidences',
+        $objective->load(['branch', 'employee', 'responsibleUser', 'creator', 'parent', 'children.branch', 'children.employee', 'children.keyResults.kpi', 'children.keyResults.snapshots' => fn ($q) => $q->orderBy('week_number'), 'children.evidences', 'children.commitmentLetter', 'children.warnings', 'accountableEmployee', 'commitmentLetters.voidedByUser', 'commitmentLetters.generatedByUser',
             'keyResults.kpi', 'keyResults.snapshots' => fn ($q) => $q->orderBy('week_number'),
             'checkIns.user', 'correctiveActions.responsibleUser', 'evidences.uploader', 'alerts' => fn ($q) => $q->whereNull('read_at')->latest(),
             'commitmentLetter', 'warnings' => fn ($q) => $q->latest('week_number')]);
@@ -287,7 +319,7 @@ class ObjectiveController extends Controller
         $krPayload = $objective->keyResults->map(fn ($kr) => [
             'id' => $kr->id, 'description' => $kr->description,
             'kpi' => $kr->kpi->only(['id', 'code', 'name', 'unit', 'type', 'direction', 'automation', 'provider_key']),
-            'baseline_value' => $kr->baseline_value, 'target_value' => $kr->target_value, 'weight' => $kr->weight,
+            'baseline_value' => $kr->baseline_value, 'baseline_source' => $kr->baseline_source, 'target_value' => $kr->target_value, 'weight' => $kr->weight,
             'current_value' => $kr->current_value, 'expected_value' => $kr->expected_value,
             'actual_progress_percentage' => $kr->actual_progress_percentage, 'expected_progress_percentage' => $kr->expected_progress_percentage,
             'deviation_pp' => $kr->deviation_pp, 'projected_value' => $kr->projected_value,
@@ -374,6 +406,7 @@ class ObjectiveController extends Controller
 
                     $childRows[] = [
                         'employee' => $child->employee?->full_name ?? $child->title,
+                'employee_id' => $child->employee_id,
                         'employee_active' => $child->employee?->is_active ?? true,
                         'target_value' => (float) $childKr->target_value,
                         'current_value' => $childKr->current_value !== null ? (float) $childKr->current_value : null,
@@ -425,6 +458,9 @@ class ObjectiveController extends Controller
                 $source = $upload ?? $fromParent;
                 $placementWeeks[] = [
                     'week_number' => $w,
+                    'week_start' => app(OkrCalendarService::class)->weekStart($objective->start_date, $w)->toDateString(),
+                    'week_end' => app(OkrCalendarService::class)->weekEnd($objective->start_date, $w)->toDateString(),
+                    'gestores_count' => $source ? $source->movements()->whereNotNull('employee_id')->distinct()->count('employee_id') : 0,
                     'uploaded' => $source !== null,
                     'from_branch_file' => $fromParent !== null,
                     'total_amount' => $upload?->total_amount,
@@ -464,14 +500,27 @@ class ObjectiveController extends Controller
                 'activated_at' => $objective->activated_at?->toDateTimeString(),
                 'commitment_letter' => $objective->commitmentLetter ? [
                     'id' => $objective->commitmentLetter->id, 'folio' => $objective->commitmentLetter->folio,
+                    'collaborator' => $objective->commitmentLetter->snapshot['collaborator_name'] ?? $objective->commitmentLetter->snapshot['employee_name'] ?? null,
                     'generated_at' => $objective->commitmentLetter->generated_at->toDateTimeString(),
                     'is_signed' => $objective->commitmentLetter->isSigned(),
                     'download_url' => route('okr.commitment-letters.download', $objective->commitmentLetter),
                 ] : null,
+                // 15-oct-2026: historial de cartas (vigente y anuladas) y persona evaluada.
+                'commitment_letters' => $objective->commitmentLetters->sortByDesc('id')->values()->map(fn ($l) => [
+                    'id' => $l->id, 'folio' => $l->folio, 'status' => $l->status,
+                    'collaborator' => $l->snapshot['collaborator_name'] ?? $l->snapshot['employee_name'] ?? null,
+                    'generated_at' => $l->generated_at?->toDateTimeString(), 'generated_by' => $l->generatedByUser?->name,
+                    'is_signed' => $l->isSigned(), 'voided_at' => $l->voided_at?->toDateTimeString(), 'void_reason' => $l->void_reason,
+                    'voided_by' => $l->voidedByUser?->name, 'download_url' => route('okr.commitment-letters.download', $l),
+                ]),
+                'accountable' => $objective->accountableEmployee ? ['id' => $objective->accountableEmployee->id, 'full_name' => $objective->accountableEmployee->full_name] : null,
+                'subject' => $this->subjectPayload($objective),
             ],
             'warnings' => $objective->warnings->map(fn ($w) => [
-                'id' => $w->id, 'folio' => $w->folio, 'week_number' => $w->week_number,
+                'id' => $w->id, 'folio' => $w->folio, 'week_number' => $w->week_number, 'status' => $w->status ?? 'issued',
+                'collaborator' => $w->snapshot['collaborator_name'] ?? $w->snapshot['employee_name'] ?? null,
                 'generated_at' => $w->generated_at->toDateTimeString(), 'is_signed' => $w->isSigned(),
+                'voided_at' => $w->voided_at?->toDateTimeString(), 'void_reason' => $w->void_reason,
                 'download_url' => route('okr.warnings.download', $w),
             ]),
             // Parte 5/7 del cierre (04-oct-2026) — catálogo de KPI para el
@@ -522,12 +571,14 @@ class ObjectiveController extends Controller
         }
 
         $activeMap = $employeeResolver->activeMap($objective->children->pluck('employee_id')->filter()->all());
+        $positions = app(\App\Services\Okr\OkrPersonnelResolver::class)->positionsFor($objective->children->pluck('employee_id')->filter()->values()->all());
+        $activation = app(OkrActivationService::class);
 
-        return $objective->children->map(function (OkrObjective $child) use ($calc, $activeMap, $weeklyByChild) {
+        return $objective->children->map(function (OkrObjective $child) use ($calc, $activeMap, $weeklyByChild, $positions, $activation) {
             $krs = $child->keyResults->map(fn ($kr) => [
                 'id' => $kr->id,
                 'description' => $kr->description,
-                'kpi' => $kr->kpi->only(['id', 'name', 'unit', 'type', 'direction', 'provider_key']),
+                'kpi' => $kr->kpi->only(['id', 'name', 'unit', 'type', 'direction', 'automation', 'provider_key']),
                 'baseline_value' => $kr->baseline_value,
                 'baseline_source' => $kr->baseline_source,
                 'baseline_locked' => $kr->baseline_locked_at !== null,
@@ -554,15 +605,49 @@ class ObjectiveController extends Controller
                 'id' => $child->id,
                 'title' => $child->title,
                 'employee' => $child->employee?->full_name ?? $child->title,
+                'employee_id' => $child->employee_id,
                 'employee_active' => $child->employee_id ? ($activeMap[(int) $child->employee_id] ?? false) : false,
                 'lifecycle_status' => $child->lifecycle_status,
                 'health_status' => $child->health_status,
                 'compliance' => $compliance,
                 'key_results' => $krs,
                 'evidences_count' => $child->evidences->count(),
+                'position' => $child->employee_id ? ($positions[$child->employee_id] ?? null) : null,
+                // Qué falta para activarlo (solo borradores) — nunca un mensaje genérico.
+                'issues' => $child->lifecycle_status === OkrObjective::STATUS_DRAFT ? $activation->readiness($child)['issues'] : [],
+                'letter' => $child->commitmentLetter ? ['folio' => $child->commitmentLetter->folio, 'is_signed' => $child->commitmentLetter->isSigned(), 'download_url' => route('okr.commitment-letters.download', $child->commitmentLetter)] : null,
+                'warnings_count' => $child->warnings->where('status', 'issued')->count(),
                 'url' => route('okr.show', $child),
             ];
         })->values()->all();
+    }
+
+    /** Revisión previa a activar (sucursal + cada OKR individual) — sin efectos. */
+    public function activationCheck(OkrObjective $objective, OkrActivationService $activation): JsonResponse
+    {
+        $this->authorize('assign', $objective);
+
+        return response()->json([
+            'objective' => $activation->readiness($objective),
+            'children' => $objective->scope_type === OkrObjective::SCOPE_BRANCH
+                ? $objective->children()->with(['employee', 'branch', 'keyResults.kpi'])->get()->map(fn ($c) => $activation->readiness($c))->values()
+                : [],
+        ], 200, self::NO_STORE_HEADERS);
+    }
+
+    /** Persona evaluada por este OKR (gestor o titular de sucursal) con su puesto vigente. */
+    private function subjectPayload(OkrObjective $objective): ?array
+    {
+        $employee = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE ? $objective->employee : $objective->accountableEmployee;
+        if (!$employee) {
+            return null;
+        }
+
+        return [
+            'id' => $employee->id, 'full_name' => $employee->full_name,
+            'position' => app(\App\Services\Okr\OkrPersonnelResolver::class)->profileFor($employee->id)['position'],
+            'is_active' => app(OkrEmployeeBranchResolver::class)->employeeIsActive($employee->id),
+        ];
     }
 
     public function activate(Request $request, OkrObjective $objective, OkrActivationService $activation): RedirectResponse

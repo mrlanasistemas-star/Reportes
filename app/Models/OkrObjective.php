@@ -36,7 +36,7 @@ class OkrObjective extends Model
     public const FINAL_NOT_COMPLETED       = 'not_completed';
 
     protected $fillable = [
-        'parent_id', 'scope_type', 'branch_id', 'employee_id', 'title',
+        'parent_id', 'scope_type', 'branch_id', 'employee_id', 'accountable_employee_id', 'title',
         'responsible_user_id', 'created_by', 'start_date', 'end_date',
         'duration_weeks', 'lifecycle_status', 'health_status', 'final_status',
         'activated_at', 'closed_at',
@@ -109,9 +109,31 @@ class OkrObjective extends Model
         return $this->hasMany(OkrPlacementUpload::class, 'okr_objective_id');
     }
 
+    /** Carta VIGENTE (no anulada) — 15-oct-2026: una anulada se conserva en commitmentLetters(). */
     public function commitmentLetter(): HasOne
     {
-        return $this->hasOne(OkrCommitmentLetter::class, 'okr_objective_id');
+        return $this->hasOne(OkrCommitmentLetter::class, 'okr_objective_id')->ofMany(['id' => 'max'], fn ($q) => $q->where('status', OkrCommitmentLetter::STATUS_ISSUED));
+    }
+
+    public function commitmentLetters(): HasMany
+    {
+        return $this->hasMany(OkrCommitmentLetter::class, 'okr_objective_id');
+    }
+
+    /** Titular real de un OKR de sucursal (colaborador que acepta la responsabilidad general). */
+    public function accountableEmployee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'accountable_employee_id');
+    }
+
+    /**
+     * Colaborador EVALUADO por este OKR: el gestor de un OKR individual o el
+     * titular de un OKR de sucursal. Nunca el creador ni el responsable
+     * administrativo (15-oct-2026).
+     */
+    public function subjectEmployeeId(): ?int
+    {
+        return $this->scope_type === self::SCOPE_EMPLOYEE ? $this->employee_id : $this->accountable_employee_id;
     }
 
     public function warnings(): HasMany

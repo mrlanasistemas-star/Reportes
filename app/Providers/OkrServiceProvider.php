@@ -46,6 +46,12 @@ class OkrServiceProvider extends ServiceProvider
      */
     private const MANAGERIAL_PERMISSIONS = ['okr.create'];
 
+    public function register(): void
+    {
+        // Una sola lectura del directorio vigente por petición/job (15-oct-2026).
+        $this->app->scoped(\App\Services\Okr\OkrPersonnelResolver::class);
+    }
+
     public function boot(): void
     {
         foreach (self::PERMISSIONS as $permission) {

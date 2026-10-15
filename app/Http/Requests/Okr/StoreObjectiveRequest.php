@@ -63,7 +63,10 @@ class StoreObjectiveRequest extends FormRequest
             // SUS PROPIOS Key Results capturados en el asistente (KPI, línea
             // base individual, meta individual, peso) — antes nacía vacío y el
             // gestor quedaba sin meta. Nunca se copian los de la sucursal.
-            'individual_objectives.*.key_results'                         => ['required_with:individual_objectives', 'array', 'min:1'],
+            // save_incomplete (15-oct-2026): el usuario decide A PROPÓSITO guardar el borrador
+            // sin terminar las metas de algún gestor — la UI y la activación marcan qué falta.
+            'individual_objectives.*.key_results'                         => $this->boolean('save_incomplete') ? ['nullable', 'array'] : ['required_with:individual_objectives', 'array', 'min:1'],
+            'save_incomplete'                                             => ['nullable', 'boolean'],
             'individual_objectives.*.key_results.*.kpi_id'                => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
             'individual_objectives.*.key_results.*.description'           => ['required', 'string', 'max:191'],
             'individual_objectives.*.key_results.*.baseline_value'        => ['nullable', 'numeric'],
@@ -289,34 +292,11 @@ class StoreObjectiveRequest extends FormRequest
      */
     private function validateBaselineRow(Validator $validator, string $prefix, array $kr, string $scopeType, ?int $branchId, ?int $employeeId): void
     {
-        if (($kr['baseline_value'] ?? null) === null || !isset($kr['kpi_id'])) {
-            return;
-        }
-
-        $kpi = OkrKpi::query()->find($kr['kpi_id']);
-        if (!$kpi || !$kpi->isAutomatic()) {
-            return;
-        }
-
-        $reason = trim((string) ($kr['baseline_manual_reason'] ?? ''));
-        if ($reason === '') {
-            $validator->errors()->add("{$prefix}.baseline_value", 'Este KPI es automático — no se puede capturar una línea base manual, se obtiene sola al activar.');
-
-            return;
-        }
-        if (mb_strlen($reason) < 10) {
-            $validator->errors()->add("{$prefix}.baseline_manual_reason", 'Explica el motivo de la línea base manual (mínimo 10 caracteres).');
-
-            return;
-        }
-
-        $period = app(\App\Services\Okr\OkrTrackingPeriodResolver::class)->getPeriodForDate((string) $this->input('start_date'));
-        $available = $period ? app(\App\Services\Okr\OkrKpiValueResolver::class)->getValue($kpi, $scopeType, $branchId, $employeeId, $period) : null;
-        if ($available !== null) {
-            $validator->errors()->add("{$prefix}.baseline_value", 'Reportería sí tiene una línea base verificable para este alcance — no se puede sustituir por una manual.');
+        $error = app(\App\Services\Okr\OkrBaselineGuard::class)->check($kr, $scopeType, $branchId, $employeeId, (string) $this->input('start_date'));
+        if ($error !== null) {
+            $validator->errors()->add("{$prefix}.{$error['field']}", $error['message']);
         }
     }
-
     /** Ponderación de CADA OKR individual = 100% (nunca sumando gestores entre sí). */
     private function validateIndividualWeights(Validator $validator): void
     {

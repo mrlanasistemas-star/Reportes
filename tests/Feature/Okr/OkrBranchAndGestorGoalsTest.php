@@ -341,6 +341,8 @@ it('generates distinct commitment letters for the branch, gestor A and gestor B 
     $this->actingAs($s['admin'])->post(route('okr.activate', $parent), ['include_children' => true]);
 
     $fields = ['position' => 'Gestor', 'immediate_boss' => 'Gerente de Atlixco'];
+    // Titular real del OKR de sucursal (15-oct-2026) — nunca el usuario que lo creó.
+    $this->actingAs($s['admin'])->putJson(route('okr.accountable.update', $parent), ['employee_id' => $s['c']->id])->assertOk();
     $targets = [];
     foreach ([$parent, ...$parent->children()->get()] as $objective) {
         $id = $this->actingAs($s['admin'])->postJson(route('okr.commitment-letter.generate', $objective), $fields)->assertOk()->json('letter.id');
@@ -348,4 +350,61 @@ it('generates distinct commitment letters for the branch, gestor A and gestor B 
     }
 
     expect(array_values($targets))->toBe([1000000.0, 130000.0, 230000.0]);
+    $names = \App\Models\OkrCommitmentLetter::query()->orderBy('id')->get()->map(fn ($l) => $l->snapshot['collaborator_name'])->all();
+    expect($names)->toBe(['GESTOR C ATLIXCO', 'GESTOR A ATLIXCO', 'GESTOR B ATLIXCO']);
+    expect($names)->not->toContain($s['admin']->name);
+});
+
+it('15-oct — an INTENTIONAL incomplete draft keeps the pending gestor flagged (no KR), and "Editar metas" replaces a draft KR with audit', function () {
+    $s = bgSetup();
+    $kpi = bgManualKpi();
+
+    // Sin save_incomplete, un gestor sin KR se rechaza.
+    $this->actingAs($s['admin'])->post(route('okr.store'), bgPayload($s, [
+        ['employee_id' => $s['a']->id, 'title' => 'Colocación individual del gestor A', 'key_results' => []],
+    ]))->assertSessionHasErrors('individual_objectives.0.key_results');
+
+    // Con save_incomplete (decisión explícita), se guarda y queda pendiente.
+    $this->actingAs($s['admin'])->post(route('okr.store'), bgPayload($s, [
+        ['employee_id' => $s['a']->id, 'title' => 'Colocación individual del gestor A', 'key_results' => []],
+        ['employee_id' => $s['b']->id, 'title' => 'Colocación individual del gestor B', 'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR B', 'baseline_value' => 180000, 'target_value' => 230000, 'weight' => 100]]],
+    ]) + ['save_incomplete' => true])->assertSessionHasNoErrors();
+
+    $parent = OkrObjective::query()->where('scope_type', 'branch')->firstOrFail();
+    $childA = $parent->children()->where('employee_id', $s['a']->id)->firstOrFail();
+    $childB = $parent->children()->where('employee_id', $s['b']->id)->firstOrFail();
+    expect($childA->keyResults()->count())->toBe(0);
+    $check = $this->actingAs($s['admin'])->getJson(route('okr.activation-check', $parent))->json('children');
+    expect(collect($check)->firstWhere('id', $childA->id)['ready'])->toBeFalse();
+    expect(collect($check)->firstWhere('id', $childB->id)['ready'])->toBeTrue();
+
+    // "Editar metas" del gestor B en borrador.
+    $this->actingAs($s['admin'])->postJson(route('okr.key-results.complete', $childB), ['key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR B corregido', 'baseline_value' => 180000, 'target_value' => 250000, 'weight' => 100]]])->assertStatus(422);
+    $this->actingAs($s['admin'])->postJson(route('okr.key-results.complete', $childB), ['replace' => true, 'key_results' => [['kpi_id' => $kpi->id, 'description' => 'KR B corregido', 'baseline_value' => 180000, 'target_value' => 250000, 'weight' => 100]]])->assertOk();
+    expect($childB->keyResults()->count())->toBe(1);
+    expect((float) $childB->keyResults()->first()->target_value)->toBe(250000.0);
+    expect(\App\Models\OkrAuditLog::query()->where('action', 'key_result_removed')->exists())->toBeTrue();
+});
+
+it('15-oct — a Lendus ROUTE (ATLIX-GTE) belongs to ATLIXCO; an unknown route is never attributed; Oficina = Sucursal', function () {
+    $s = bgSetup();
+    $kpi = bgPlacementKpi();
+    $start = now()->subWeek()->startOfDay();
+    $parent = OkrObjective::query()->create([
+        'scope_type' => 'branch', 'branch_id' => $s['branch']->id, 'title' => 'Colocación Atlixco', 'responsible_user_id' => $s['admin']->id, 'created_by' => $s['admin']->id,
+        'start_date' => $start, 'end_date' => $start->copy()->addWeeks(4)->subDay(), 'duration_weeks' => 4, 'lifecycle_status' => OkrObjective::STATUS_ACTIVE,
+    ]);
+    $parent->keyResults()->create(['kpi_id' => $kpi->id, 'description' => 'Colocación', 'baseline_value' => 0, 'target_value' => 1, 'weight' => 100]);
+
+    $byRoute = app(OkrPlacementImportService::class)->import($parent, 1, bgXlsx([
+        ['GESTOR A ATLIXCO', 10000, 'ATLIX-GTE'], ['GESTOR B ATLIXCO', 20000, 'ATLIX-NOR'], ['GESTOR C ATLIXCO', 5000, 'RUTA DESCONOCIDA'], ['GESTOR DE TLAXCALA', 9000, 'TLAXCALA'],
+    ], ['Gestor', 'Monto', 'Ruta']), $s['admin']);
+    expect((float) $byRoute->total_amount)->toBe(30000.0);
+    expect($byRoute->rows_other_branch)->toBe(2);
+
+    $byOffice = app(OkrPlacementImportService::class)->import($parent, 2, bgXlsx([
+        ['GESTOR A ATLIXCO', 7000, 'ATLIXCO'], ['GESTOR DE TLAXCALA', 9000, 'TLAXCALA'],
+    ], ['Gestor', 'Monto', 'Oficina']), $s['admin']);
+    expect((float) $byOffice->total_amount)->toBe(7000.0);
+    \Illuminate\Support\Facades\Storage::disk('local')->deleteDirectory('okr-placement-uploads/' . $parent->id);
 });

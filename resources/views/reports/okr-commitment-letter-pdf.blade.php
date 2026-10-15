@@ -44,7 +44,9 @@ if ($others === []) {
 }
 
 $collaborator = $snapshot['collaborator_name'] ?? $snapshot['employee_name'] ?? null;
-$boss = $snapshot['immediate_boss'] ?? $snapshot['responsible_name'] ?? null;
+// 15-oct-2026: el jefe inmediato es el CONFIRMADO en la revisión — nunca el
+// responsable administrativo del OKR como respaldo silencioso.
+$boss = $snapshot['immediate_boss'] ?? null;
 $field = function (?string $value) {
     $value = $value !== null ? trim($value) : null;
 
@@ -160,8 +162,8 @@ $field = function (?string $value) {
     </table>
   </div>
 
-  <div class="keep">
   <p class="body">Con la firma de la presente, el colaborador deja constancia de que recibió explicación del objetivo, los indicadores, las metas y el periodo de medición; que comprende los resultados esperados de su función; y que <b>asume formalmente el compromiso de desarrollar las acciones necesarias para procurar su cumplimiento</b>, sujeto a las políticas y procedimientos internos aplicables.</p>
+  <div class="keep">
   <p class="body muted">La presente carta constituye un instrumento interno de planeación, seguimiento y gestión del desempeño y deberá conservarse como evidencia del objetivo comunicado y aceptado para el periodo correspondiente.</p>
 
   <div class="signatures">

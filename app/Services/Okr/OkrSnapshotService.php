@@ -50,6 +50,22 @@ class OkrSnapshotService
             return $kr;
         }
 
+        // 15-oct-2026 — semana en CURSO sin archivo todavía (es normal: el
+        // reporte se carga al cerrar la semana): se evalúa al cierre de la
+        // última semana con información completa, en vez de mostrar "sin dato"
+        // y un semáforo neutro. Una semana YA cerrada sin archivo sigue siendo
+        // "faltante" (nunca se finge el acumulado).
+        if ($kpi->provider_key === 'reporteria.placement' && $weekNumber > 1 && $this->placementResolver->hasAnyUpload($objective)) {
+            $weekIsOpen = now()->startOfDay()->lte($this->calendar->weekEnd($objective->start_date, $weekNumber));
+            $current = $this->placementResolver->resolve($objective, $weekNumber);
+            if ($weekIsOpen && $current['cumulative'] === null && $current['missing_weeks'] === [$weekNumber]) {
+                // Un marcador "sin dato" de la semana abierta no es histórico real.
+                $kr->snapshots()->where('week_number', $weekNumber)->whereNull('actual_value')->delete();
+                $weekNumber--;
+                $period = null;
+            }
+        }
+
         // El periodo se resuelve para ESTA semana concreta (según su fecha
         // calendario), nunca "el último mensual generado" sin relación con la
         // semana que se está evaluando — ver OkrTrackingPeriodResolver.
@@ -63,13 +79,11 @@ class OkrSnapshotService
         $baseline   = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
         $target     = (float) $kr->target_value;
 
-        $expectedValue    = $baseline !== null ? $this->trajectory->expectedValue($baseline, $target, $weekNumber, $totalWeeks) : null;
-        $expectedProgress = $this->trajectory->expectedProgressPercentage($weekNumber, $totalWeeks);
-        $actualProgress   = $this->calculator->rawProgress($baseline, $target, $currentValue, $kpi->direction);
+        [$expectedValue, $expectedProgress, $actualProgress] = $this->progressFor($kpi, $sourceMeta, $baseline, $target, $currentValue, $weekNumber, $totalWeeks);
         $deviation        = $this->calculator->deviationPp($actualProgress, $expectedProgress);
         $healthStatus     = $this->health->classify($deviation);
 
-        [$projectedValue, $projectedCompliance] = $this->project($kr, $kpi, $currentValue, $baseline, $target, $weekNumber, $totalWeeks);
+        [$projectedValue, $projectedCompliance] = $this->project($kr, $kpi, $sourceMeta, $currentValue, $baseline, $target, $weekNumber, $totalWeeks);
 
         $kr->update([
             'current_value'                    => $currentValue,
@@ -189,33 +203,82 @@ class OkrSnapshotService
         return [$currentValue, $this->resolveSourceMetadata($kpi, $period, $weekEndDate, $checkInId)];
     }
 
-    private function project(OkrKeyResult $kr, OkrKpi $kpi, ?float $currentValue, ?float $baseline, float $target, int $weekNumber, int $totalWeeks): array
+    /**
+     * Corrección 15-oct-2026 — ¿el valor es un FLUJO acumulado semana a semana
+     * dentro del OKR (colocación con carga semanal real)? En ese caso el real
+     * arranca en 0 al inicio del periodo y la meta es el TOTAL a lograr en el
+     * periodo; la línea base (periodo de referencia) solo sirve para medir el
+     * incremento. Antes la trayectoria esperada partía de la base mensual
+     * (p. ej. $638,576) y el real semanal acumulado aparecía como
+     * incumplimiento desde la semana 1 aunque faltara tiempo para la meta.
+     */
+    private function isWeeklyFlow(OkrKpi $kpi, array $sourceMeta): bool
+    {
+        return $kpi->type === OkrKpi::TYPE_CUMULATIVE && ($sourceMeta['source_granularity'] ?? null) === 'weekly';
+    }
+
+    /**
+     * @return array{0: ?float, 1: float, 2: ?float} [expectedValue, expectedProgress%, actualProgress%]
+     */
+    private function progressFor(OkrKpi $kpi, array $sourceMeta, ?float $baseline, float $target, ?float $currentValue, int $weekNumber, int $totalWeeks): array
+    {
+        $expectedProgress = $this->trajectory->expectedProgressPercentage($weekNumber, $totalWeeks);
+
+        if ($this->isWeeklyFlow($kpi, $sourceMeta)) {
+            // Esperado acumulado a la semana N = meta del periodo × N/total.
+            $expectedValue = round($target * $this->trajectory->elapsedFraction($weekNumber, $totalWeeks), 4);
+            $actualProgress = $currentValue === null || $target <= 0 ? null : round(($currentValue / $target) * 100, 2);
+
+            return [$expectedValue, $expectedProgress, $actualProgress];
+        }
+
+        $expectedValue  = $baseline !== null ? $this->trajectory->expectedValue($baseline, $target, $weekNumber, $totalWeeks) : null;
+        $actualProgress = $this->calculator->rawProgress($baseline, $target, $currentValue, $kpi->direction);
+
+        return [$expectedValue, $expectedProgress, $actualProgress];
+    }
+
+    /**
+     * Proyección al cierre — solo con información que la sustente (15-oct-2026):
+     *  - Flujo semanal real: ritmo acumulado ÷ semanas × total.
+     *  - KPI acumulativo leído del TOTAL MENSUAL de Reportería (proxy): NO se
+     *    proyecta. Antes se multiplicaba ese total mensual por las semanas del
+     *    OKR (p. ej. $638,576 × 12 = $7,662,912) como si fuera colocación nueva.
+     *  - Saldo/porcentaje: tendencia lineal solo con al menos 2 lecturas reales.
+     * Sin datos suficientes → null ("Sin datos suficientes" en la UI).
+     */
+    private function project(OkrKeyResult $kr, OkrKpi $kpi, array $sourceMeta, ?float $currentValue, ?float $baseline, float $target, int $weekNumber, int $totalWeeks): array
     {
         if ($currentValue === null) {
             return [null, null];
         }
 
-        $remainingWeeks = max(0, $totalWeeks - $weekNumber);
-
-        if ($kpi->type === OkrKpi::TYPE_CUMULATIVE) {
+        if ($this->isWeeklyFlow($kpi, $sourceMeta)) {
             $projectedValue = $this->projection->projectCumulative($currentValue, $weekNumber, $totalWeeks);
-        } else {
-            $history = $kr->snapshots()
-                ->orderBy('week_number')
-                ->pluck('actual_value')
-                ->filter(fn ($v) => $v !== null)
-                ->map(fn ($v) => (float) $v)
-                ->values()
-                ->all();
-            $history[] = $currentValue;
-            $projectedValue = $this->projection->projectTrend($history, $currentValue, $remainingWeeks);
+
+            return [$projectedValue, $target > 0 ? round(($projectedValue / $target) * 100, 2) : null];
         }
 
-        $projectedCompliance = $this->projection->projectedCompliancePercentage($projectedValue, $baseline, $target, $kpi->direction, $this->calculator);
+        if ($kpi->type === OkrKpi::TYPE_CUMULATIVE) {
+            return [null, null];
+        }
 
-        return [$projectedValue, $projectedCompliance];
+        $history = $kr->snapshots()
+            ->where('week_number', '<', $weekNumber)
+            ->orderBy('week_number')
+            ->pluck('actual_value')
+            ->filter(fn ($v) => $v !== null)
+            ->map(fn ($v) => (float) $v)
+            ->values()
+            ->all();
+        if (count($history) < 1) {
+            return [null, null];
+        }
+        $history[] = $currentValue;
+        $projectedValue = $this->projection->projectTrend($history, $currentValue, max(0, $totalWeeks - $weekNumber));
+
+        return [$projectedValue, $this->projection->projectedCompliancePercentage($projectedValue, $baseline, $target, $kpi->direction, $this->calculator)];
     }
-
     /**
      * Punto 4 de la auditoría 09-sep-2026 — "hueco histórico" cuando el cron
      * no corrió una semana: recorre 1..semanaActual y crea el snapshot que
@@ -271,9 +334,7 @@ class OkrSnapshotService
         $baseline   = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
         $target     = (float) $kr->target_value;
 
-        $expectedValue    = $baseline !== null ? $this->trajectory->expectedValue($baseline, $target, $weekNumber, $totalWeeks) : null;
-        $expectedProgress = $this->trajectory->expectedProgressPercentage($weekNumber, $totalWeeks);
-        $actualProgress   = $this->calculator->rawProgress($baseline, $target, $currentValue, $kpi->direction);
+        [$expectedValue, $expectedProgress, $actualProgress] = $this->progressFor($kpi, $sourceMeta, $baseline, $target, $currentValue, $weekNumber, $totalWeeks);
         $deviation        = $this->calculator->deviationPp($actualProgress, $expectedProgress);
         $healthStatus     = $this->health->classify($deviation);
 

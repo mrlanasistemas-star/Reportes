@@ -123,6 +123,13 @@ class OkrEmployeeBranchResolver
                 ->select('employee_id'));
         }
 
+        // Segunda señal de baja (15-oct-2026): en el directorio Lendus vigente
+        // la persona solo aparece como INACTIVO.
+        $inactiveOnly = app(OkrPersonnelResolver::class)->inactiveOnlyNames();
+        if ($inactiveOnly !== []) {
+            $query->where(fn ($q) => $q->whereNull('normalized_name')->orWhereNotIn('normalized_name', $inactiveOnly));
+        }
+
         return $query;
     }
 
@@ -163,9 +170,36 @@ class OkrEmployeeBranchResolver
     /** Último periodo con nómina (roster) procesada, o null si no hay ninguna. */
     public function currentRosterPeriodId(): ?int
     {
-        $id = DB::table('period_employee_rosters')->max('period_id');
+        // 15-oct-2026: el periodo vigente es el de FECHA más reciente con nómina
+        // procesada — nunca el mayor id (un periodo puede crearse después de
+        // otro más nuevo, como ya ocurre con las cargas de Mayo/Junio).
+        $id = DB::table('period_employee_rosters as r')
+            ->join('periods as p', 'p.id', '=', 'r.period_id')
+            ->orderByDesc('p.end_date')
+            ->orderByDesc('p.id')
+            ->value('r.period_id');
 
         return $id !== null ? (int) $id : null;
+    }
+
+    /**
+     * Estado de la nómina vigente para la UI: si su periodo terminó hace más de
+     * 45 días se advierte que las altas/bajas recientes pueden no reflejarse.
+     *
+     * @return array{label:?string, end_date:?string, is_stale:bool, days_old:?int}
+     */
+    public function rosterStatus(): array
+    {
+        $periodId = $this->currentRosterPeriodId();
+        $period = $periodId ? \App\Models\Period::query()->find($periodId) : null;
+        $daysOld = $period?->end_date ? (int) $period->end_date->diffInDays(now()) : null;
+
+        return [
+            'label' => $period?->label,
+            'end_date' => $period?->end_date?->toDateString(),
+            'is_stale' => $daysOld !== null && $daysOld > 45,
+            'days_old' => $daysOld,
+        ];
     }
 
     /** Etiqueta del periodo de nómina vigente — la UI la muestra para explicar por qué alguien no aparece. */

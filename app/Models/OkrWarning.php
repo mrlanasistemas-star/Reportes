@@ -11,6 +11,7 @@ class OkrWarning extends Model
         'folio', 'okr_objective_id', 'week_number', 'week_start', 'week_end', 'snapshot',
         'corrective_actions', 'observations', 'generated_by', 'generated_at',
         'stored_path', 'disk', 'signed_stored_path', 'signed_disk', 'signed_uploaded_by', 'signed_uploaded_at',
+        'subject_employee_id', 'status', 'voided_at', 'voided_by', 'void_reason',
     ];
 
     protected $casts = [
@@ -19,7 +20,27 @@ class OkrWarning extends Model
         'snapshot' => 'array',
         'generated_at' => 'datetime',
         'signed_uploaded_at' => 'datetime',
+        'voided_at' => 'datetime',
     ];
+
+    public const STATUS_ISSUED = 'issued';
+    public const STATUS_VOIDED = 'voided';
+
+    public function subjectEmployee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class, 'subject_employee_id');
+    }
+
+    public function voidedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'voided_by');
+    }
+
+    /** 15-oct-2026: un documento anulado conserva su PDF y folio — solo deja de ser vigente. */
+    public function isVoided(): bool
+    {
+        return $this->status === self::STATUS_VOIDED;
+    }
 
     public function objective(): BelongsTo
     {

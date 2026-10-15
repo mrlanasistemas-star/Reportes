@@ -169,7 +169,12 @@ it('PARTE 20 — real end-to-end scenario: branch with 3 individualized gestores
 
     // ── Carta Compromiso — Juan y la sucursal, cada uno con SU propia meta ──
     $letterJuan = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $children['JUAN REAL GESTOR']), ['place' => 'Cuernavaca', 'position' => 'Gestor', 'immediate_boss' => 'Director Regional'])->json('letter');
-    $letterBranch = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $branchObjective), ['place' => 'Cuernavaca', 'position' => 'Gestor', 'immediate_boss' => 'Director Regional'])->json('letter');
+    // 15-oct-2026: la carta de SUCURSAL es del titular real (gerente), nunca del usuario que creó el OKR.
+    $gerente = Employee::query()->create(['full_name' => 'GERENTE REAL SUCURSAL', 'normalized_name' => 'gerente real sucursal', 'is_active' => true]);
+    EmployeeBranchAssignment::query()->create(['period_id' => $period->id, 'employee_id' => $gerente->id, 'branch_id' => $branch->id]);
+    $this->actingAs($admin)->putJson(route('okr.accountable.update', $branchObjective), ['employee_id' => $gerente->id])->assertOk();
+    $letterBranch = $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $branchObjective), ['place' => 'Cuernavaca', 'position' => 'Gerente', 'immediate_boss' => 'Director Regional'])->json('letter');
+    expect(OkrCommitmentLetter::query()->findOrFail($letterBranch['id'])->snapshot['collaborator_name'])->toBe('GERENTE REAL SUCURSAL');
     expect($letterJuan['id'])->not->toBe($letterBranch['id']); // cartas DISTINTAS, nunca mezcladas
 
     $juanLetter = OkrCommitmentLetter::query()->findOrFail($letterJuan['id']);
@@ -184,11 +189,13 @@ it('PARTE 20 — real end-to-end scenario: branch with 3 individualized gestores
     expect((float) $week3Snapshot->actual_value)->toBe(700000.0); // 300k+300k+100k acumulado a la semana 3
     expect((float) $week3Snapshot->deviation_pp)->toBeLessThan(0); // incumplimiento REAL (12/13) — no solo datos
 
+    $this->actingAs($admin)->postJson(route('okr.commitment-letter.generate', $children['PEDRO REAL GESTOR']), ['position' => 'Gestor de crédito', 'immediate_boss' => 'Subgerente Real'])->assertOk();
     $warningResponse = $this->actingAs($admin)->postJson(route('okr.warnings.store', $children['PEDRO REAL GESTOR']), [
-        'week_number' => 3, 'corrective_actions' => 'Reunión de seguimiento con Pedro — reforzar colocación semanal.',
+        'week_number' => 3, 'corrective_actions' => 'Reunión de seguimiento con Pedro — reforzar colocación semanal.', 'authorized' => true,
     ]);
     $warningResponse->assertOk();
     $warning = OkrWarning::query()->findOrFail($warningResponse->json('warning.id'));
+    expect($warning->snapshot['collaborator_name'])->toBe('PEDRO REAL GESTOR'); // el gestor que incumplió, nunca el gerente
     expect((float) $warning->snapshot['rows'][0]['actual_value'])->toBe(700000.0)
         ->and((float) $warning->snapshot['rows'][0]['actual_value'])->not->toBe(1000000.0); // nunca el acumulado final de hoy
     expect(file_exists(Storage::disk($warning->disk)->path($warning->stored_path)))->toBeTrue();

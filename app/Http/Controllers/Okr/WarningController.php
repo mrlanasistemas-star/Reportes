@@ -13,24 +13,39 @@ use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
- * Parte 3/10/11 del cierre (04-oct-2026) — Warning Rojo: el sistema NUNCA
- * sanciona solo (3.1) — esta es la acción EXPLÍCITA de admin/gerencial que
- * el botón "Generar Warning" dispara. Basado en el snapshot de la semana
- * evaluada (ver OkrWarningService), nunca en el dato de hoy.
+ * Warning Rojo — el sistema NUNCA sanciona solo: muestra la elegibilidad
+ * REAL de una semana (eligibility) y un usuario admin/gerencial decide
+ * emitirlo (store). Se emite a la persona evaluada por ESTE OKR, sobre una
+ * semana cerrada con dato real e incumplimiento contra lo esperado.
  */
 class WarningController extends Controller
 {
     use AuthorizesRequests;
 
+    /** Elegibilidad de cada semana transcurrida (o de una sola con ?week=). */
+    public function eligibility(Request $request, OkrObjective $objective, OkrWarningService $service): JsonResponse
+    {
+        $this->authorize('view', $objective);
+
+        $weeks = $request->filled('week')
+            ? [$request->integer('week')]
+            : range(1, max(1, min((int) $objective->duration_weeks, max(1, $objective->currentWeekNumber()))));
+
+        return response()->json([
+            'weeks' => array_map(fn ($w) => $service->eligibility($objective, $w), $weeks),
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
     public function store(Request $request, OkrObjective $objective, OkrWarningService $service): JsonResponse
     {
-        $this->authorize('assign', $objective); // 3.1: emitir un Warning es decisión admin/gerencial, igual que asignar
+        $this->authorize('assign', $objective); // emitir un Warning es decisión admin/gerencial, igual que asignar
 
         $data = $request->validate([
             'week_number' => ['required', 'integer', 'min:1', 'max:' . $objective->duration_weeks],
             'corrective_actions' => ['required', 'string', 'min:5', 'max:2000'],
             'observations' => ['nullable', 'string', 'max:2000'],
-        ]);
+            'authorized' => ['accepted'],
+        ], ['authorized.accepted' => 'Confirma que revisaste los datos y autorizas la emisión del Warning.']);
 
         try {
             $warning = $service->generate($objective, $data['week_number'], $data['corrective_actions'], $data['observations'] ?? null, $request->user());
@@ -38,14 +53,21 @@ class WarningController extends Controller
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
-        return response()->json([
-            'warning' => [
-                'id' => $warning->id, 'folio' => $warning->folio, 'week_number' => $warning->week_number,
-                'generated_at' => $warning->generated_at->toDateTimeString(),
-                'is_signed' => $warning->isSigned(),
-                'download_url' => route('okr.warnings.download', $warning),
-            ],
-        ]);
+        return response()->json(['warning' => $this->payload($warning)]);
+    }
+
+    public function void(Request $request, OkrWarning $warning, OkrWarningService $service): JsonResponse
+    {
+        $this->authorize('assign', $warning->objective);
+        $data = $request->validate(['reason' => ['required', 'string', 'min:10', 'max:500']]);
+
+        try {
+            $warning = $service->void($warning, $request->user(), $data['reason']);
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        return response()->json(['warning' => $this->payload($warning)]);
     }
 
     public function download(OkrWarning $warning): StreamedResponse
@@ -59,6 +81,7 @@ class WarningController extends Controller
     public function uploadSigned(Request $request, OkrWarning $warning): JsonResponse
     {
         $this->authorize('update', $warning->objective);
+        abort_if($warning->isVoided(), 422, 'Este Warning está anulado — no admite copia firmada.');
         $request->validate(['file' => ['required', 'file', 'max:10240', 'mimes:pdf']]);
 
         $disk = 'local';
@@ -70,5 +93,17 @@ class WarningController extends Controller
         ]);
 
         return response()->json(['success' => true]);
+    }
+
+    private function payload(OkrWarning $warning): array
+    {
+        return [
+            'id' => $warning->id, 'folio' => $warning->folio, 'week_number' => $warning->week_number, 'status' => $warning->status,
+            'collaborator' => $warning->snapshot['collaborator_name'] ?? $warning->snapshot['employee_name'] ?? null,
+            'generated_at' => $warning->generated_at->toDateTimeString(),
+            'is_signed' => $warning->isSigned(),
+            'voided_at' => $warning->voided_at?->toDateTimeString(), 'void_reason' => $warning->void_reason,
+            'download_url' => route('okr.warnings.download', $warning),
+        ];
     }
 }

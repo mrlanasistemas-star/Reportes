@@ -65,18 +65,19 @@ $letterDate = $snapshot['letter_date'] ?? null;
   <div class="section">
     <div class="section-title keep-next" style="border-bottom: none; font-size: 11pt;">Resultado del periodo</div>
     <table class="data wr">
-      <thead><tr><th style="width: 24%;">KPI</th><th>Meta comprometida</th><th>Resultado alcanzado</th><th style="width: 15%;">Cumplimiento</th><th>Brecha</th></tr></thead>
+      <thead><tr><th style="width: 22%;">KPI</th><th>Meta comprometida</th><th>Esperado a la semana</th><th>Resultado alcanzado</th><th style="width: 13%;">Cumplimiento</th><th>Brecha vs. esperado</th></tr></thead>
       <tbody>
         @forelse($rows as $row)
           <tr>
             <td class="kpi">{{ $row['kpi_name'] ?? '' }}@if(!empty($row['description']))<div style="font-weight: 500; font-size: 7.4pt; color: #4b5563;">{{ $row['description'] }}</div>@endif</td>
             <td class="num">{{ Fmt::byUnit($row['target_value'] ?? null, $row['unit'] ?? null) }}</td>
+            <td class="num">{{ Fmt::byUnit($row['expected_value'] ?? null, $row['unit'] ?? null) }}</td>
             <td class="num">{{ ($row['has_data'] ?? false) ? Fmt::byUnit($row['actual_value'] ?? null, $row['unit'] ?? null) : 'Sin datos' }}</td>
             <td class="num {{ ($row['has_breach'] ?? false) ? 'wr-red' : '' }}">{{ ($row['has_data'] ?? false) ? Fmt::percentage($row['compliance_percentage'] ?? null, 1) : '—' }}</td>
             <td class="num {{ (($row['gap'] ?? 0) > 0) ? 'gap-positive' : '' }}">{{ ($row['has_data'] ?? false) ? Fmt::byUnit($row['gap'] ?? null, ($row['unit'] ?? null) === 'percentage' ? 'decimal' : ($row['unit'] ?? null)) . (($row['unit'] ?? null) === 'percentage' && ($row['gap'] ?? null) !== null ? ' pp' : '') : '—' }}</td>
           </tr>
         @empty
-          <tr><td colspan="5" class="center">Sin Key Results registrados.</td></tr>
+          <tr><td colspan="6" class="center">Sin Key Results registrados.</td></tr>
         @endforelse
       </tbody>
     </table>
