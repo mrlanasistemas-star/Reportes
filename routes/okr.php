@@ -43,8 +43,10 @@ Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEna
     Route::post('/responsibles/{user}/enable-access', [ResponsibleController::class, 'enableAccess'])->name('responsibles.enable-access');
     Route::post('/responsibles/{user}/disable-access', [ResponsibleController::class, 'disableAccess'])->name('responsibles.disable-access');
     Route::post('/responsibles/{user}/reset-password', [ResponsibleController::class, 'resetPassword'])->middleware('throttle:10,1')->name('responsibles.reset-password');
+    Route::post('/responsibles/{user}/resend-welcome-email', [ResponsibleController::class, 'resendWelcomeEmail'])->middleware('throttle:10,1')->name('responsibles.resend-welcome-email');
     Route::post('/responsibles/{user}/toggle-disabled', [ResponsibleController::class, 'toggleDisabled'])->name('responsibles.toggle-disabled');
     Route::put('/responsibles/module-access', [RoleModuleAccessController::class, 'update'])->name('responsibles.module-access');
+    Route::put('/responsibles/action-permissions', [RoleModuleAccessController::class, 'updateActions'])->name('responsibles.action-permissions');
     Route::put('/responsibles/{user}/role',[ResponsibleController::class, 'updateRole'])->name('responsibles.update-role');
     Route::put('/responsibles/{user}/employee', [ResponsibleController::class, 'linkEmployee'])->name('responsibles.link-employee');
     Route::get('/alerts', [AlertController::class, 'index'])->name('alerts.index');

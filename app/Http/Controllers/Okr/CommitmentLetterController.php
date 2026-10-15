@@ -52,10 +52,18 @@ class CommitmentLetterController extends Controller
 
         $path = $service->renderPreviewPdf($objective, config('company.document_place'), $this->authorizedOverrides($request));
 
+        // Previsualización en el sistema y "abrir en otra pestaña" (15-oct-2026,
+        // sección 6 de la auditoría) necesitan Content-Disposition: inline para
+        // que el navegador renderice el PDF en vez de forzar la descarga; el
+        // botón "Descargar PDF" pide explícitamente ?download=1. OJO:
+        // streamDownload() SIEMPRE sobreescribe el header Content-Disposition
+        // con su propio 4º argumento — pasarlo como header no tiene efecto.
+        $disposition = $request->boolean('download') ? 'attachment' : 'inline';
+
         return response()->streamDownload(function () use ($path) {
             echo File::get($path);
             @unlink($path);
-        }, 'carta-compromiso-vista-previa.pdf', ['Content-Type' => 'application/pdf']);
+        }, 'carta-compromiso-vista-previa.pdf', ['Content-Type' => 'application/pdf'], $disposition);
     }
 
     public function generate(Request $request, OkrObjective $objective, OkrCommitmentLetterService $service): JsonResponse
@@ -112,12 +120,19 @@ class CommitmentLetterController extends Controller
         return response()->json(['success' => true]);
     }
 
-    public function download(OkrCommitmentLetter $letter): StreamedResponse
+    public function download(Request $request, OkrCommitmentLetter $letter): StreamedResponse
     {
         $this->authorize('view', $letter->objective);
         abort_unless(Storage::disk($letter->disk)->exists($letter->stored_path), 404, 'El documento ya no está disponible.');
 
-        return Storage::disk($letter->disk)->download($letter->stored_path, "{$letter->folio}.pdf");
+        $filename = "{$letter->folio}.pdf";
+
+        // ?view=1 (15-oct-2026): mismo archivo ya emitido, pero con disposición
+        // "inline" para previsualizarlo en el sistema o en otra pestaña sin
+        // forzar la descarga — la descarga normal no cambia.
+        return $request->boolean('view')
+            ? Storage::disk($letter->disk)->response($letter->stored_path, $filename)
+            : Storage::disk($letter->disk)->download($letter->stored_path, $filename);
     }
 
     public function uploadSigned(Request $request, OkrCommitmentLetter $letter): JsonResponse
@@ -159,6 +174,7 @@ class CommitmentLetterController extends Controller
             'is_signed' => $letter->isSigned(),
             'voided_at' => $letter->voided_at?->toDateTimeString(), 'void_reason' => $letter->void_reason, 'voided_by' => $letter->voidedByUser?->name,
             'download_url' => route('okr.commitment-letters.download', $letter),
+            'view_url' => route('okr.commitment-letters.download', $letter) . '?view=1',
         ];
     }
 }

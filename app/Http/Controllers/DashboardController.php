@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Branch;
 use App\Models\Period;
 use App\Models\PeriodSummary;
 use App\Services\DashboardTrendService;
 use App\Services\RadiografiaExportService;
+use App\Services\Reporting\OperativeBranchService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -42,10 +44,11 @@ class DashboardController extends Controller
     public function __construct(
         private readonly RadiografiaExportService $exportService,
         private readonly DashboardTrendService $trendService,
+        private readonly OperativeBranchService $operativeBranches,
     ) {
     }
 
-    public function index(): Response
+    public function index(Request $request): Response
     {
         // buildSnapshot() es una operación pesada (agregaciones financieras completas) —
         // mismo ajuste que ya usa RadiografiaExportService::exportPdfWithConfig().
@@ -56,16 +59,21 @@ class DashboardController extends Controller
         $latestPeriod = $periods->first();
 
         if (!$latestPeriod) {
-            return Inertia::render('Dashboard', ['hasData' => false, 'periods' => []]);
+            return Inertia::render('Dashboard', ['hasData' => false, 'periods' => [], 'branches' => $this->branchOptions()]);
         }
 
+        $branchId = $request->integer('branch_id') ?: null;
+
         return Inertia::render('Dashboard', array_merge(
-            ['periods' => $periods->map(fn (Period $p) => ['id' => $p->id, 'label' => $p->label])->values()],
-            $this->payloadForPeriod($latestPeriod)
+            [
+                'periods' => $periods->map(fn (Period $p) => ['id' => $p->id, 'label' => $p->label])->values(),
+                'branches' => $this->branchOptions(),
+            ],
+            $this->payloadForPeriod($latestPeriod, $branchId)
         ));
     }
 
-    /** JSON para el selector de periodo en vivo — nunca recarga la página. Un solo snapshot, rápido. */
+    /** JSON para el selector de periodo/sucursal en vivo — nunca recarga la página. Un solo snapshot, rápido. */
     public function data(Request $request): JsonResponse
     {
         @ini_set('memory_limit', '512M');
@@ -78,11 +86,30 @@ class DashboardController extends Controller
             return response()->json(['hasData' => false], 200, ['Cache-Control' => 'no-store, no-cache, must-revalidate']);
         }
 
+        $branchId = $request->integer('branch_id') ?: null;
+
         return response()->json(
-            $this->payloadForPeriod($period),
+            $this->payloadForPeriod($period, $branchId),
             200,
             ['Cache-Control' => 'no-store, no-cache, must-revalidate']
         );
+    }
+
+    /**
+     * Catálogo de sucursales para el filtro del Dashboard (Fase 10 de la
+     * auditoría, 15-oct-2026) — SOLO las 13 operativas, misma fuente que ya usa
+     * Reportes mensuales/OKR (OperativeBranchService). Nunca una lista inventada
+     * aparte.
+     */
+    private function branchOptions(): array
+    {
+        return Branch::query()
+            ->whereIn('name', $this->operativeBranches->names())
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn (Branch $b) => ['id' => $b->id, 'name' => $b->name])
+            ->values()
+            ->all();
     }
 
     /**
@@ -123,15 +150,43 @@ class DashboardController extends Controller
             ->get();
     }
 
-    private function payloadForPeriod(Period $period): array
+    /**
+     * Fase 10 de la auditoría (15-oct-2026) — filtro por sucursal: MISMO
+     * mecanismo que ya usa Reportes mensuales (scope=branch, ver
+     * MonthlyReportController::scopedData()) — nunca un cálculo nuevo ni
+     * asignaciones inventadas. Con sucursal seleccionada, `$snapshot['summary']`
+     * trae EXACTAMENTE las mismas claves que en alcance general (ver
+     * RadiographySnapshotBuilder) — los KPIs de abajo no cambian de forma.
+     */
+    private function payloadForPeriod(Period $period, ?int $branchId = null): array
     {
-        $snapshot = $this->exportService->buildSnapshot($period, ['scope' => 'general']);
+        $config = $branchId ? ['scope' => 'branch', 'branch_id' => $branchId] : ['scope' => 'general'];
+        $snapshot = $this->exportService->buildSnapshot($period, $config);
+
+        $scope = $snapshot['scope'] ?? ['type' => 'general', 'branch_id' => null, 'branch_name' => null, 'available' => true];
+
+        // Sucursal sin radiografía en este periodo — nunca una pantalla vacía sin
+        // explicación (sección 5 de la auditoría): se distingue de "sin datos en
+        // absoluto" (hasData=false, cuando no hay NINGÚN periodo generado).
+        if ($branchId && !($scope['available'] ?? true)) {
+            return [
+                'hasData' => true,
+                'scopeUnavailable' => true,
+                'scope' => $scope,
+                'kpis' => null,
+                'charts' => null,
+            ];
+        }
+
         $sum = $snapshot['summary'];
 
-        $activeCollaborators = (int) DB::table('period_employee_rosters')
+        $rosterQuery = DB::table('period_employee_rosters')
             ->where('period_id', $period->id)
-            ->where('is_active_for_period', true)
-            ->count();
+            ->where('is_active_for_period', true);
+        if ($branchId) {
+            $rosterQuery->where('branch_id', $branchId);
+        }
+        $activeCollaborators = (int) $rosterQuery->count();
 
         $kpis = [
             'period_label'  => $period->label,
@@ -148,7 +203,13 @@ class DashboardController extends Controller
 
         return [
             'hasData' => true,
+            'scopeUnavailable' => false,
+            'scope'   => $scope,
             'kpis'    => $kpis,
+            // Comparativo entre sucursales no aplica con una sola sucursal
+            // seleccionada — buildExecutiveChartsData() regresa null en ese caso
+            // (requiere branch_radiography.branches con más de una fila); el
+            // frontend oculta esas gráficas en vez de mostrarlas vacías.
             'charts'  => $this->exportService->buildExecutiveChartsData($snapshot),
         ];
     }

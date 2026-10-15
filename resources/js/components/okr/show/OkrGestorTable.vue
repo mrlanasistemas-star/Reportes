@@ -42,7 +42,7 @@ function goTo(row: any, panel?: string) {
 </script>
 
 <template>
-    <section class="rounded-2xl border border-border bg-card shadow-sm">
+    <section data-tour="okr-gestores" class="rounded-2xl border border-border bg-card shadow-sm">
         <header class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
             <div class="flex items-center gap-2">
                 <span class="flex size-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"><Users class="size-4" /></span>

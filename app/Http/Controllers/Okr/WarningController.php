@@ -70,12 +70,18 @@ class WarningController extends Controller
         return response()->json(['warning' => $this->payload($warning)]);
     }
 
-    public function download(OkrWarning $warning): StreamedResponse
+    public function download(Request $request, OkrWarning $warning): StreamedResponse
     {
         $this->authorize('view', $warning->objective);
         abort_unless(Storage::disk($warning->disk)->exists($warning->stored_path), 404, 'El documento ya no está disponible.');
 
-        return Storage::disk($warning->disk)->download($warning->stored_path, "{$warning->folio}.pdf");
+        $filename = "{$warning->folio}.pdf";
+
+        // ?view=1: misma lógica que Carta Compromiso — disposición "inline"
+        // para previsualizar en el sistema o en otra pestaña sin forzar descarga.
+        return $request->boolean('view')
+            ? Storage::disk($warning->disk)->response($warning->stored_path, $filename)
+            : Storage::disk($warning->disk)->download($warning->stored_path, $filename);
     }
 
     public function uploadSigned(Request $request, OkrWarning $warning): JsonResponse
@@ -104,6 +110,7 @@ class WarningController extends Controller
             'is_signed' => $warning->isSigned(),
             'voided_at' => $warning->voided_at?->toDateTimeString(), 'void_reason' => $warning->void_reason,
             'download_url' => route('okr.warnings.download', $warning),
+            'view_url' => route('okr.warnings.download', $warning) . '?view=1',
         ];
     }
 }

@@ -30,6 +30,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'ensure.ability' => EnsureApiAbility::class,
             'log.api-query'  => LogApiQuery::class,
             'module'         => \App\Http\Middleware\EnsureModuleAccess::class,
+            'permission'     => \App\Http\Middleware\EnsureActionPermission::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

@@ -5,6 +5,8 @@ import { computed } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
 import NavUser from '@/components/NavUser.vue';
+import TourOverlay from '@/components/tour/TourOverlay.vue';
+import WelcomeTourModal from '@/components/tour/WelcomeTourModal.vue';
 import {
     Sidebar,
     SidebarContent,
@@ -44,6 +46,9 @@ const navItems = computed(() => visibleMainNavItems(page.props.auth));
             <NavUser />
         </SidebarFooter>
     </Sidebar>
+
+    <TourOverlay />
+    <WelcomeTourModal />
 
     <slot />
 </template>

@@ -71,7 +71,10 @@ function activate(includeChildren: boolean) {
             <div v-if="loading" class="space-y-2 py-2">
                 <div v-for="n in 3" :key="n" class="h-14 animate-pulse rounded-xl bg-muted" />
             </div>
-            <p v-else-if="error" class="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{{ error }}</p>
+            <div v-else-if="error" class="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                <p>{{ error }}</p>
+                <Button size="sm" variant="outline" class="rounded-lg" @click="load">Reintentar</Button>
+            </div>
 
             <div v-else-if="main" class="space-y-3">
                 <div v-for="item in [main, ...draftChildren]" :key="item.id" class="rounded-xl border p-3 transition" :class="item.ready ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/40 bg-amber-500/5'">

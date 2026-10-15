@@ -41,14 +41,14 @@ function explain(kr: any): string {
             <thead class="bg-muted/40 text-muted-foreground">
                 <tr>
                     <th class="px-3 py-2 text-left font-semibold">KPI</th>
-                    <th class="px-3 py-2 text-right font-semibold">Línea base</th>
+                    <th class="px-3 py-2 text-right font-semibold"><span class="inline-flex items-center gap-1 justify-end">Línea base<OkrHelpTooltip text="Es el valor inicial que se conservará al activar este objetivo. A partir de ahí se mide todo el avance." /></span></th>
                     <th class="px-3 py-2 text-right font-semibold">Meta</th>
                     <th class="px-3 py-2 text-right font-semibold">Actual</th>
-                    <th class="px-3 py-2 text-right font-semibold">Esperado a la fecha</th>
-                    <th class="px-3 py-2 text-right font-semibold">Desviación</th>
-                    <th class="px-3 py-2 text-left font-semibold">Cumplimiento</th>
-                    <th class="px-3 py-2 text-right font-semibold">Proyección</th>
-                    <th class="px-3 py-2 text-left font-semibold">Semáforo</th>
+                    <th class="px-3 py-2 text-right font-semibold"><span class="inline-flex items-center gap-1 justify-end">Esperado a la fecha<OkrHelpTooltip text="Muestra cuánto deberías haber avanzado hasta hoy de acuerdo con tu meta y el plazo del objetivo." /></span></th>
+                    <th class="px-3 py-2 text-right font-semibold"><span class="inline-flex items-center gap-1 justify-end">Desviación<OkrHelpTooltip text="Es la diferencia entre tu progreso real y el esperado a la fecha. Positiva = vas adelantado; negativa = vas atrasado." /></span></th>
+                    <th class="px-3 py-2 text-left font-semibold"><span class="inline-flex items-center gap-1">Cumplimiento<OkrHelpTooltip text="Qué porcentaje de la meta ya alcanzaste, comparado contra tu línea base." /></span></th>
+                    <th class="px-3 py-2 text-right font-semibold"><span class="inline-flex items-center gap-1 justify-end">Proyección<OkrHelpTooltip text="Con el ritmo de las últimas semanas, dónde terminarías al final del plazo si todo sigue igual." /></span></th>
+                    <th class="px-3 py-2 text-left font-semibold"><span class="inline-flex items-center gap-1">Semáforo<OkrHelpTooltip text="Indica visualmente si estás cumpliendo la meta: verde vas bien, amarillo alerta, rojo necesitas corregir." /></span></th>
                     <th class="px-3 py-2"></th>
                 </tr>
             </thead>

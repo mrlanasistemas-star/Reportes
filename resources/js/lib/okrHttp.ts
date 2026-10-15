@@ -25,7 +25,19 @@ export async function okrRequest<T = any>(url: string, init: RequestInit & { jso
         }
 
         const firstError = data?.errors ? (Object.values(data.errors).flat()[0] as string | undefined) : undefined
-        const message = firstError ?? data?.message ?? (res.status === 403 ? 'No tienes permiso para esta acción.' : res.status >= 500 ? 'Ocurrió un error en el servidor. Intenta de nuevo.' : 'No se pudo completar la acción.')
+        // 404/405 nunca muestran el mensaje crudo del framework (p.ej. "The route
+        // X could not be found.") — ese texto no dice nada útil al usuario final.
+        // Para 422 (validación) y errores de negocio sí usamos data.message,
+        // porque esos SÍ están escritos para el usuario (ver controllers Okr\*).
+        const friendlyByStatus: Record<number, string> = {
+            403: 'No tienes permiso para esta acción.',
+            404: 'No se encontró la información solicitada. Intenta de nuevo o recarga la página.',
+            405: 'No se pudo completar la acción. Recarga la página e intenta de nuevo.',
+            419: 'Tu sesión expiró. Recarga la página e inicia sesión de nuevo.',
+        }
+        const message = firstError
+            ?? (res.status in friendlyByStatus ? friendlyByStatus[res.status] : data?.message)
+            ?? (res.status >= 500 ? 'Ocurrió un error en el servidor. Intenta de nuevo.' : 'No se pudo completar la acción.')
 
         return { ok: false, status: res.status, message, data }
     } catch {

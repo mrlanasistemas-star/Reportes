@@ -54,9 +54,14 @@ class HandleInertiaRequests extends Middleware
             ],
             // Mensajes de sesión (14-oct-2026, módulo OKR): resultado de acciones
             // como la activación en cascada de OKR individuales.
+            // 'error' agregado (15-oct-2026): varios controladores (Responsibles,
+            // ReportUpload, MonthlyReport, Period) ya hacían back()->with('error', ...)
+            // para bloquear una acción con un motivo real (ej. "no puedes deshabilitar
+            // al único administrador") — esa clave nunca se compartía aquí, así que el
+            // usuario hacía clic y no pasaba NADA visible, sin saber si funcionó o no.
             'flash' => fn () => $request->hasSession()
-                ? ['success' => $request->session()->get('success'), 'warning' => $request->session()->get('warning')]
-                : ['success' => null, 'warning' => null],
+                ? ['success' => $request->session()->get('success'), 'warning' => $request->session()->get('warning'), 'error' => $request->session()->get('error')]
+                : ['success' => null, 'warning' => null, 'error' => null],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
             // Indicador de trabajos en segundo plano + notificaciones internas (campana
             // de la cabecera). Dos COUNT por página; el detalle se pide bajo demanda a

@@ -504,6 +504,7 @@ class ObjectiveController extends Controller
                     'generated_at' => $objective->commitmentLetter->generated_at->toDateTimeString(),
                     'is_signed' => $objective->commitmentLetter->isSigned(),
                     'download_url' => route('okr.commitment-letters.download', $objective->commitmentLetter),
+                    'view_url' => route('okr.commitment-letters.download', $objective->commitmentLetter) . '?view=1',
                 ] : null,
                 // 15-oct-2026: historial de cartas (vigente y anuladas) y persona evaluada.
                 'commitment_letters' => $objective->commitmentLetters->sortByDesc('id')->values()->map(fn ($l) => [
@@ -512,6 +513,7 @@ class ObjectiveController extends Controller
                     'generated_at' => $l->generated_at?->toDateTimeString(), 'generated_by' => $l->generatedByUser?->name,
                     'is_signed' => $l->isSigned(), 'voided_at' => $l->voided_at?->toDateTimeString(), 'void_reason' => $l->void_reason,
                     'voided_by' => $l->voidedByUser?->name, 'download_url' => route('okr.commitment-letters.download', $l),
+                    'view_url' => route('okr.commitment-letters.download', $l) . '?view=1',
                 ]),
                 'accountable' => $objective->accountableEmployee ? ['id' => $objective->accountableEmployee->id, 'full_name' => $objective->accountableEmployee->full_name] : null,
                 'subject' => $this->subjectPayload($objective),
@@ -522,6 +524,7 @@ class ObjectiveController extends Controller
                 'generated_at' => $w->generated_at->toDateTimeString(), 'is_signed' => $w->isSigned(),
                 'voided_at' => $w->voided_at?->toDateTimeString(), 'void_reason' => $w->void_reason,
                 'download_url' => route('okr.warnings.download', $w),
+                'view_url' => route('okr.warnings.download', $w) . '?view=1',
             ]),
             // Parte 5/7 del cierre (04-oct-2026) — catálogo de KPI para el
             // editor de Key Results en DRAFT (ver Show.vue): un Objective
