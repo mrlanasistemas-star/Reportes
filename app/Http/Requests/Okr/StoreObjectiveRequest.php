@@ -80,6 +80,7 @@ class StoreObjectiveRequest extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {
+            $this->validateOperativeBranch($validator);
             $this->validateEmployeeBelongsToBranch($validator);
             $this->validateParent($validator);
             $this->validateAutomaticBaselines($validator);
@@ -87,6 +88,19 @@ class StoreObjectiveRequest extends FormRequest
             $this->validateIndividualWeights($validator);
             $this->validateResponsibleIsEnabled($validator);
         });
+    }
+
+    /**
+     * 16-oct-2026 — una asignación NUEVA solo puede hacerse sobre una de las
+     * once sucursales operativas del catálogo oficial (nunca una ruta, MATRIZ,
+     * REGIÓN Q*, AGUASCALIENTES ni TENANGO). Los OKR históricos no cambian.
+     */
+    private function validateOperativeBranch(Validator $validator): void
+    {
+        $branchName = \App\Models\Branch::query()->whereKey($this->integer('branch_id'))->value('name');
+        if ($branchName !== null && !\App\Services\Catalog\BranchRouteCatalog::isOkrOperative($branchName)) {
+            $validator->errors()->add('branch_id', "{$branchName} no es una de las sucursales operativas para OKR.");
+        }
     }
 
     /**

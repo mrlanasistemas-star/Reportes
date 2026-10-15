@@ -125,7 +125,7 @@ $field = function (?string $value) {
               @if($kr)
                 @if(!empty($kr['description']))<div style="font-weight: 600; color: #1f2933;">{{ $kr['description'] }}</div>@endif
                 <div>
-                  Línea base: <b>{{ ($kr['baseline_value'] ?? null) !== null ? Fmt::byUnit($kr['baseline_value'], $kr['unit'] ?? null) : 'se congela al activar' }}</b>
+                  {{ $kr['baseline_label'] ?? 'Línea base' }}: <b>{{ ($kr['baseline_value'] ?? null) !== null ? Fmt::byUnit($kr['baseline_value'], $kr['unit'] ?? null) : 'se congela al activar' }}</b>
                   @if(($kr['baseline_value'] ?? null) !== null)
                     · Incremento: <b>{{ Fmt::incrementByUnit((float) $kr['target_value'] - (float) $kr['baseline_value'], $kr['unit'] ?? null) }}</b>
                   @endif

@@ -18,7 +18,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Catálogo de roles: una instancia por petición/job (se consulta en cada
+        // User::isGerencial()) — 16-oct-2026.
+        $this->app->scoped(\App\Services\Access\RoleCatalogService::class);
     }
 
     /**

@@ -6,6 +6,9 @@ import { Hash, Percent, Wallet } from 'lucide-vue-next'
 
 export type BaselineMode = 'auto' | 'manual' | 'manual_authorized'
 
+/** Alcance de una fila de metas: la sucursal (base de Reportería) o un gestor (base MANUAL). */
+export type GoalScope = 'branch' | 'employee'
+
 export type BaselinePreview = {
     available: boolean
     value: number | null
@@ -122,10 +125,15 @@ export function isAutomatic(kpi: any): boolean {
  * ¿La fila tiene lo indispensable para guardarse? KPI, descripción, peso y
  * meta; y una línea base resoluble: manual capturada, automática verificada
  * por Reportería, o manual AUTORIZADA (con motivo) cuando no hay dato.
+ * OKR individual (16-oct-2026): la base del gestor SIEMPRE es manual.
  */
-export function krGoalIsComplete(kr: KrRow, kpi: any): boolean {
+export function krGoalIsComplete(kr: KrRow, kpi: any, scope: GoalScope = 'branch'): boolean {
     if (!kr.kpi_id || !kr.description.trim() || kr.weight === '' || kr.target_value === '') {
         return false
+    }
+
+    if (scope === 'employee') {
+        return kr.baseline_value !== ''
     }
 
     if (!isAutomatic(kpi)) {
@@ -143,15 +151,16 @@ export function krStructureIsComplete(rows: KrRow[]): boolean {
     return rows.length > 0 && rows.every((kr) => kr.kpi_id && kr.description.trim() && kr.weight !== '') && weightIsValid(rows)
 }
 
-export function serializeKr(kr: KrRow, kpi: any) {
-    const authorized = isAutomatic(kpi) && kr.baseline_mode === 'manual_authorized'
+export function serializeKr(kr: KrRow, kpi: any, scope: GoalScope = 'branch') {
+    const authorized = scope === 'branch' && isAutomatic(kpi) && kr.baseline_mode === 'manual_authorized'
+    const sendsBaseline = scope === 'employee' || !isAutomatic(kpi) || authorized
 
     return {
         kpi_id: kr.kpi_id,
         description: kr.description,
-        // KPI automático: la base la congela Reportería al ACTIVAR (lo consultado
-        // aquí es la vista previa). Solo viaja si es manual o manual autorizada.
-        baseline_value: !isAutomatic(kpi) || authorized ? (kr.baseline_value === '' ? null : Number(kr.baseline_value)) : null,
+        // Sucursal + KPI automático: la base la congela Reportería al ACTIVAR (lo
+        // consultado aquí es la vista previa). Gestor: base MANUAL, siempre viaja.
+        baseline_value: sendsBaseline ? (kr.baseline_value === '' ? null : Number(kr.baseline_value)) : null,
         baseline_manual_reason: authorized ? kr.baseline_manual_reason.trim() : null,
         target_value: Number(kr.target_value),
         weight: Number(kr.weight),

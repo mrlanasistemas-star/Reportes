@@ -13,6 +13,9 @@ use App\Models\OkrKpi;
  */
 class OkrBaselineGuard
 {
+    /** Origen de la línea base capturada para un OKR individual (gestor). */
+    public const SOURCE_MANUAL_INDIVIDUAL = 'manual_individual';
+
     public function __construct(
         private readonly OkrTrackingPeriodResolver $periodResolver,
         private readonly OkrKpiValueResolver $valueResolver,
@@ -24,6 +27,16 @@ class OkrBaselineGuard
      */
     public function check(array $kr, string $scopeType, ?int $branchId, ?int $employeeId, string $startDate): ?array
     {
+        // Regla definitiva (16-oct-2026): el OKR INDIVIDUAL usa una línea base
+        // MANUAL definida para cada gestor — nunca se consulta en Reportería,
+        // nunca se toma la de la sucursal y su ausencia de dato automático no
+        // bloquea. Solo se exige que esté capturada.
+        if ($scopeType === \App\Models\OkrObjective::SCOPE_EMPLOYEE) {
+            return isset($kr['kpi_id']) && ($kr['baseline_value'] ?? null) === null
+                ? ['field' => 'baseline_value', 'message' => 'Captura la línea base del gestor: es el valor inicial desde el cual se medirá su incremento.']
+                : null;
+        }
+
         if (($kr['baseline_value'] ?? null) === null || !isset($kr['kpi_id'])) {
             return null;
         }

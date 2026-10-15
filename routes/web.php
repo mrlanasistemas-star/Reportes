@@ -68,6 +68,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // deliberadamente fuera del sidebar (ver ApiDocumentationController).
     Route::get('/documentacion-api', [ApiDocumentationController::class, 'index'])->name('api-docs.index');
 
+    // 16-oct-2026 — bienvenida al recorrido vista POR USUARIO (antes solo en
+    // localStorage y reaparecía en cada inicio de sesión). Sin módulo: aplica a todos.
+    Route::post('/guia-sistema/bienvenida-vista', [SystemGuideController::class, 'markWelcomeSeen'])->name('guia-sistema.welcome-seen');
+
     Route::prefix('guia-sistema')
         ->name('guia-sistema.')
         ->group(function () {

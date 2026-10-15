@@ -96,7 +96,10 @@ class OkrCommitmentLetterService
             // Número de empleado (15-oct-2026, cierre de errores OKR) — requerido
             // en la revisión y en el documento; identificador estable aunque el
             // nombre o la sucursal cambien de representación.
-            'employee_code' => $subject?->employee_code,
+            // 16-oct-2026: el número de empleado es el del directorio Lendus
+            // (p. ej. ATLX12513); la clave NOI se conserva aparte.
+            'employee_code' => ($profile['code'] ?? null) ?: $subject?->employee_code,
+            'noi_code' => $subject?->employee_code,
             'position' => $position,
             'position_source' => $positionSource,
             'branch_name' => $objective->branch?->name,
@@ -117,6 +120,14 @@ class OkrCommitmentLetterService
                 'description' => $kr->description,
                 'unit' => $kr->kpi->unit,
                 'baseline_value' => $kr->baseline_value,
+                'baseline_source' => $kr->baseline_source,
+                'baseline_locked' => $kr->baseline_locked_at !== null,
+                'baseline_label' => match (true) {
+                    $kr->baseline_source === OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL => 'Línea base manual del gestor' . ($kr->baseline_locked_at ? ' (congelada)' : ''),
+                    $kr->baseline_source === 'manual_authorized' => 'Línea base manual autorizada' . ($kr->baseline_locked_at ? ' (congelada)' : ''),
+                    default => 'Línea base' . ($kr->baseline_locked_at ? ' congelada (Reportería)' : ''),
+                },
+                'increment_value' => $kr->baseline_value !== null ? round((float) $kr->target_value - (float) $kr->baseline_value, 2) : null,
                 'target_value' => $kr->target_value,
                 'weight' => $kr->weight,
             ])->all(),

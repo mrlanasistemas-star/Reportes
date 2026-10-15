@@ -118,7 +118,7 @@ const distribution = computed(() => props.branchRows
                         <p class="font-semibold text-foreground">{{ kpiOf(kr.kpi_id)?.name }} <span class="font-normal text-muted-foreground">· {{ kr.weight }}%</span></p>
                         <p class="flex flex-wrap items-center gap-1.5 tabular-nums text-muted-foreground">
                             Base <strong class="text-foreground">{{ baselineText(kr) }}</strong>
-                            <span v-if="kr.baseline_mode === 'manual_authorized'" class="rounded bg-amber-500/10 px-1 text-[9px] font-bold text-amber-700 dark:text-amber-300">MANUAL AUTORIZADA</span>
+                            <span class="rounded bg-sky-500/10 px-1 text-[9px] font-bold text-sky-700 dark:text-sky-300">MANUAL DEL GESTOR</span>
                             <ArrowRight class="size-3" />
                             Meta <strong class="text-primary">{{ formatByUnit(kr.target_value, kpiOf(kr.kpi_id)?.unit) }}</strong>
                             <span v-if="incrementText(kr)" class="text-emerald-600 dark:text-emerald-400">({{ incrementText(kr) }})</span>
@@ -138,7 +138,7 @@ const distribution = computed(() => props.branchRows
         </div>
 
         <p class="flex items-center gap-2 rounded-xl bg-primary/5 px-3 py-2.5 text-xs font-medium text-primary">
-            <Info class="size-4 shrink-0" /> Todo se guardará en BORRADOR. Las líneas base automáticas se congelan al activar (puedes activar la sucursal y sus individuales en un solo paso).
+            <Info class="size-4 shrink-0" /> Todo se guardará en BORRADOR. La línea base de la sucursal (Reportería) y las capturadas de cada gestor se congelan al activar (puedes activar la sucursal y sus individuales en un solo paso).
         </p>
     </div>
 </template>

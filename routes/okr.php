@@ -11,6 +11,7 @@ use App\Http\Controllers\Okr\KpiController;
 use App\Http\Controllers\Okr\ObjectiveController;
 use App\Http\Controllers\Okr\PlacementUploadController;
 use App\Http\Controllers\Okr\ResponsibleController;
+use App\Http\Controllers\Okr\RoleController;
 use App\Http\Controllers\Okr\RoleModuleAccessController;
 use App\Http\Controllers\Okr\WarningController;
 use App\Http\Middleware\EnsureOkrAccessEnabled;
@@ -45,6 +46,10 @@ Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEna
     Route::post('/responsibles/{user}/reset-password', [ResponsibleController::class, 'resetPassword'])->middleware('throttle:10,1')->name('responsibles.reset-password');
     Route::post('/responsibles/{user}/resend-welcome-email', [ResponsibleController::class, 'resendWelcomeEmail'])->middleware('throttle:10,1')->name('responsibles.resend-welcome-email');
     Route::post('/responsibles/{user}/toggle-disabled', [ResponsibleController::class, 'toggleDisabled'])->name('responsibles.toggle-disabled');
+    // Roles personalizados (16-oct-2026).
+    Route::post('/responsibles/roles', [RoleController::class, 'store'])->name('responsibles.roles.store');
+    Route::put('/responsibles/roles/{role}', [RoleController::class, 'update'])->name('responsibles.roles.update');
+    Route::delete('/responsibles/roles/{role}', [RoleController::class, 'destroy'])->name('responsibles.roles.destroy');
     Route::put('/responsibles/module-access', [RoleModuleAccessController::class, 'update'])->name('responsibles.module-access');
     Route::put('/responsibles/action-permissions', [RoleModuleAccessController::class, 'updateActions'])->name('responsibles.action-permissions');
     Route::put('/responsibles/{user}/role',[ResponsibleController::class, 'updateRole'])->name('responsibles.update-role');

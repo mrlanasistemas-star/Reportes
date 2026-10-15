@@ -35,23 +35,29 @@ const dirty = computed(() => JSON.stringify(normalize(draft.value)) !== JSON.str
 
 function clone(m: Matrix): Matrix {
     const out: Matrix = {}
+
     for (const r of roles) {
         out[r.key] = {}
+
         for (const a of props.actions) {
             out[r.key][a.module] = [...(m[r.key]?.[a.module] ?? [])]
         }
     }
+
     return out
 }
 
 function normalize(m: Matrix): Matrix {
     const out: Matrix = {}
+
     for (const r of roles) {
         out[r.key] = {}
+
         for (const a of props.actions) {
             out[r.key][a.module] = [...(m[r.key]?.[a.module] ?? [])].sort()
         }
     }
+
     return out
 }
 

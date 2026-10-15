@@ -41,6 +41,9 @@ class OkrPlacementImportService
         'branch'        => ['sucursal', 'oficina'],
         'route'         => ['ruta', 'nombre ruta', 'ruta lendus'],
         'movement_type' => ['tipo', 'tipo de movimiento', 'tipo movimiento', 'movimiento', 'estatus', 'status', 'estado'],
+        // 16-oct-2026 — número de empleado / código de promotor Lendus (p. ej.
+        // ATLX12513): si viene, identifica al gestor ANTES que el nombre.
+        'employee_code' => ['codigo', 'código', 'codigo gestor', 'código gestor', 'codigo promotor', 'código promotor', 'numero de empleado', 'número de empleado', 'no. empleado', 'clave promotor'],
     ];
 
     public function __construct(
@@ -183,7 +186,9 @@ class OkrPlacementImportService
 
             $employeeNameRaw = $this->str($row[$colMap['employee']] ?? null);
             $amount = $this->toDecimal($row[$colMap['amount']] ?? null);
-            $employee = $employeeNameRaw ? $this->resolveEmployee($employeeNameRaw) : null;
+            $employeeCode = isset($colMap['employee_code']) ? $this->str($row[$colMap['employee_code']] ?? null) : null;
+            $employee = ($employeeCode ? $this->resolveEmployeeByCode($employeeCode) : null)
+                ?? ($employeeNameRaw ? $this->resolveEmployee($employeeNameRaw) : null);
             $contract = isset($colMap['contract']) ? $this->str($row[$colMap['contract']] ?? null) : null;
             $branchRaw = isset($colMap['branch']) ? $this->str($row[$colMap['branch']] ?? null) : null;
             $routeRaw = isset($colMap['route']) ? $this->str($row[$colMap['route']] ?? null) : null;
@@ -192,7 +197,11 @@ class OkrPlacementImportService
             // Sucursal de la fila: la columna Sucursal/Oficina manda; si el archivo
             // solo trae Ruta, se traduce a su sucursal con las equivalencias
             // verificadas (una ruta sin equivalencia nunca se atribuye).
-            $rowBranch = $branchRaw ?? ($routeRaw !== null ? ($this->officialBranchForRoute($routeRaw) ?? '__ruta_sin_equivalencia__') : null);
+            // La columna Oficina/Sucursal también pasa por el catálogo oficial
+            // (acentos, o una ruta capturada ahí) — 16-oct-2026.
+            $rowBranch = $branchRaw !== null
+                ? (\App\Services\Catalog\BranchRouteCatalog::officialBranchFor($branchRaw) ?? $branchRaw)
+                : ($routeRaw !== null ? ($this->officialBranchForRoute($routeRaw) ?? '__ruta_sin_equivalencia__') : null);
 
             // Fila de OTRA sucursal (solo si el archivo trae la columna): nunca se
             // mezcla colocación de otras sucursales en este OKR.
@@ -408,6 +417,14 @@ class OkrPlacementImportService
         }
 
         return $map;
+    }
+
+    /** Gestor por número de empleado Lendus (directorio de colaboradores, cualquier carga). */
+    private function resolveEmployeeByCode(string $code): ?Employee
+    {
+        $norm = DB::table('lendus_employee_directory')->whereRaw('UPPER(TRIM(codigo)) = ?', [mb_strtoupper(trim($code))])->value('normalized_name');
+
+        return $norm ? Employee::query()->where('normalized_name', $norm)->orderBy('id')->first() : null;
     }
 
     private function resolveEmployee(string $name): ?Employee

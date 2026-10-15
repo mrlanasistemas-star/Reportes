@@ -3,13 +3,23 @@
 // muestra colaboradores VIGENTES de la sucursal (nómina procesada, ver
 // OkrEmployeeBranchResolver). No obliga a elegir a todos: solo quien se
 // marque recibe un OKR individual; el resto sigue aportando a la sucursal.
-import { CheckCircle2, Info, Search, UserPlus, X } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, Info, MapPin, Search, UserPlus, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { avatarTone, initialsOf } from './okrWizard'
 import type { GestorPlan } from './okrWizard'
 
+type Candidate = {
+    id: number
+    full_name: string
+    position?: string | null
+    employee_code?: string | null
+    route?: string | null
+    membership_source?: string | null
+    flags?: { code: string; label: string }[]
+}
+
 const props = defineProps<{
-    employees: { id: number; full_name: string; position?: string | null }[]
+    employees: Candidate[]
     branchName?: string | null
     selected: GestorPlan[]
     loading: boolean
@@ -60,7 +70,11 @@ function onSearch(value: string) {
                 </span>
                 <span class="min-w-0 flex-1">
                     <span class="block truncate text-xs font-semibold text-foreground">{{ e.full_name }}</span>
-                    <span class="block truncate text-[10px] text-muted-foreground">{{ e.position ?? 'Puesto no registrado' }} · {{ branchName ?? '' }}</span>
+                    <span class="block truncate text-[10px] text-muted-foreground">{{ e.position ?? 'Puesto no registrado' }}<template v-if="e.employee_code"> · {{ e.employee_code }}</template></span>
+                    <span class="flex items-center gap-1 truncate text-[10px] text-muted-foreground" :title="e.membership_source ?? ''">
+                        <MapPin class="size-3 shrink-0" /> <template v-if="e.route">Ruta {{ e.route }} → </template>{{ branchName ?? '' }}
+                    </span>
+                    <span v-for="f in e.flags ?? []" :key="f.code" class="mt-0.5 flex items-center gap-1 truncate text-[10px] font-semibold text-amber-700 dark:text-amber-300"><AlertTriangle class="size-3 shrink-0" /> {{ f.label }}</span>
                     <span class="block text-[10px] font-semibold" :class="selectedIds.has(e.id) ? 'text-primary' : 'text-muted-foreground/70'">{{ selectedIds.has(e.id) ? 'Con OKR individual' : 'Clic para asignar meta propia' }}</span>
                 </span>
                 <CheckCircle2 v-if="selectedIds.has(e.id)" class="size-5 shrink-0 text-primary animate-in zoom-in duration-200" />
@@ -73,7 +87,7 @@ function onSearch(value: string) {
 
         <p class="flex items-start gap-1.5 text-[11px] text-muted-foreground">
             <Info class="mt-0.5 size-3.5 shrink-0" />
-            <span>Solo aparecen colaboradores activos en la nómina vigente<template v-if="rosterPeriod"> ({{ rosterPeriod }})</template> asignados a esta sucursal. Las bajas conservan su histórico, pero no reciben nuevas asignaciones.</span>
+            <span>Aparecen los colaboradores vigentes de esta sucursal (nómina<template v-if="rosterPeriod"> {{ rosterPeriod }}</template>, directorio y cartera Lendus; rutas traducidas con el catálogo oficial). No aparecen vacantes, inactivos ni bajas confirmadas; quien no figura en la nómina del periodo se muestra con aviso, no como baja.</span>
         </p>
 
         <TransitionGroup v-if="selected.length" tag="div" class="space-y-2" enter-active-class="transition duration-300" enter-from-class="opacity-0 -translate-y-1" leave-active-class="transition duration-200" leave-to-class="opacity-0 translate-x-2">

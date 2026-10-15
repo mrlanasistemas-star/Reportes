@@ -115,7 +115,7 @@ it('rejects an INACTIVE employee inside "individual_objectives" (branch individu
  */
 it('never deletes or hides a historical objective after the employee is later marked inactive (baja)', function () {
     $admin = User::factory()->create();
-    $branch = okrBranch('Toluca');
+    $branch = okrBranch('Tula'); // 16-oct-2026: una de las once sucursales operativas OKR
     $employee = Employee::query()->create(['full_name' => 'Gestor historico de prueba', 'normalized_name' => 'gestor historico de prueba', 'is_active' => true]);
     EmployeeBranchAssignment::query()->create(['period_id' => okrPeriodForAssignment()->id, 'employee_id' => $employee->id, 'branch_id' => $branch->id]);
     $kpi = okrManualKpi('eba_test_kpi_historic');

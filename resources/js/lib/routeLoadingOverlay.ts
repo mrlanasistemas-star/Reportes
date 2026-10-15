@@ -98,30 +98,76 @@ let refCount = 0;
 // veces la misma visita, nunca se decrementa una que no se contó.
 const activeInertiaVisits = new WeakSet<object>();
 
-// Watchdog de seguridad: ninguna carga real de este sitio debería tardar más de
-// esto. Si el overlay lleva encendido más tiempo, es evidencia de un evento de
-// Inertia perdido (no de que la operación siga viva) — se libera la interfaz y SE
-// AVISA al usuario; nunca se finge que algo terminó bien.
-const WATCHDOG_MS = 45_000;
+// 16-oct-2026 — "la pantalla de carga no aguanta: dice tiempo de espera, intenta
+// de nuevo, pero si lo dejo sí carga". Antes un watchdog de 45 s cerraba el
+// overlay con un aviso de reintento aunque la petición SEGUÍA viva (módulos con
+// mucha información tardan más). Ahora la pantalla espera mientras la carga
+// siga en curso: a los 12 s muestra un contador tranquilo, a los 60 s ofrece
+// "Seguir usando la aplicación" (sin cancelar nada) y solo a los 10 min se
+// libera sola, como red de seguridad ante un evento perdido de Inertia.
+const SLOW_NOTICE_MS = 12_000;
+const OFFER_DISMISS_MS = 60_000;
+const HARD_SAFETY_MS = 600_000;
 let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+let tickTimer: ReturnType<typeof setInterval> | undefined;
+let startedAt = 0;
+
+function setSlowState(elapsedMs: number): void {
+    const el = ensureOverlay();
+    const title = el.querySelector<HTMLElement>('.fv-route-loading-title');
+    const text = el.querySelector<HTMLElement>('.fv-route-loading-text');
+    const action = el.querySelector<HTMLElement>('.fv-route-loading-action');
+
+    if (elapsedMs < SLOW_NOTICE_MS) {
+        if (title) {
+title.textContent = 'Espera un momento';
+}
+
+        if (text) {
+text.textContent = 'Estamos cargando toda la información que necesitas, esto puede tardar unos segundos.';
+}
+
+        action?.setAttribute('hidden', '');
+
+        return;
+    }
+
+    const seconds = Math.round(elapsedMs / 1000);
+
+    if (title) {
+title.textContent = `Sigue cargando… ${seconds} s`;
+}
+
+    if (text) {
+text.textContent = 'Este módulo reúne mucha información y puede tardar un poco más. No cierres ni recargues la ventana: se abrirá en cuanto termine.';
+}
+
+    if (elapsedMs >= OFFER_DISMISS_MS) {
+        action?.removeAttribute('hidden');
+    }
+}
 
 function armWatchdog(): void {
     clearTimeout(watchdogTimer);
+    clearInterval(tickTimer);
+    startedAt = Date.now();
+    setSlowState(0);
+    tickTimer = setInterval(() => setSlowState(Date.now() - startedAt), 1000);
     watchdogTimer = setTimeout(() => {
         if (refCount <= 0) {
             return;
         }
 
-        console.warn(
-            `[routeLoadingOverlay] La pantalla de carga llevaba más de ${WATCHDOG_MS / 1000}s activa sin confirmación de Inertia — se liberó por seguridad.`,
-        );
+        console.warn('[routeLoadingOverlay] 10 min sin confirmación de Inertia — se libera la pantalla por seguridad.');
         refCount = 0;
         forceHideOverlay();
-        void toast.fire({
-            icon: 'warning',
-            title: 'Esto está tardando más de lo normal. Puedes seguir usando la aplicación; si la operación no se completó, inténtala de nuevo.',
-        });
-    }, WATCHDOG_MS);
+        void toast.fire({ icon: 'warning', title: 'La carga no respondió después de 10 minutos. Revisa tu conexión y vuelve a intentarlo.' });
+    }, HARD_SAFETY_MS);
+}
+
+function stopWatchdog(): void {
+    clearTimeout(watchdogTimer);
+    clearInterval(tickTimer);
 }
 
 function ensureOverlay(): HTMLDivElement {
@@ -144,8 +190,14 @@ function ensureOverlay(): HTMLDivElement {
             <div class="fv-route-loading-dots" aria-hidden="true">
                 <span></span><span></span><span></span>
             </div>
+            <button type="button" class="fv-route-loading-action" hidden>Seguir usando la aplicación</button>
         </div>
     `;
+    // Ocultar NO cancela la carga: Inertia abrirá la pantalla cuando termine.
+    el.querySelector('.fv-route-loading-action')?.addEventListener('click', () => {
+        stopWatchdog();
+        forceHideOverlay();
+    });
     document.body.appendChild(el);
     overlayEl = el;
 
@@ -174,7 +226,7 @@ export function hideRouteLoading(): void {
         return;
     }
 
-    clearTimeout(watchdogTimer);
+    stopWatchdog();
     forceHideOverlay();
 }
 

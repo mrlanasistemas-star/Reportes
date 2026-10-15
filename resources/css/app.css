@@ -514,6 +514,29 @@
     animation-delay: 0.3s;
 }
 
+/* 16-oct-2026 — salida opcional tras 60 s (no cancela la carga). */
+.fv-route-loading-action {
+    margin-top: 1rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(255 255 255 / 0.35);
+    background: rgb(255 255 255 / 0.12);
+    padding: 0.5rem 1.1rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: inherit;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.fv-route-loading-action:hover {
+    background: rgb(255 255 255 / 0.22);
+    transform: translateY(-1px);
+}
+
+.fv-route-loading-action[hidden] {
+    display: none;
+}
+
 @keyframes fv-bar-indeterminate {
     0% {
         transform: translateX(-100%);

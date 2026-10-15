@@ -109,6 +109,10 @@ class OkrWarningService
     {
         $objective->loadMissing(['employee', 'accountableEmployee', 'branch', 'commitmentLetter']);
         $blockers = [];
+        // Motivo CLASIFICADO de cada bloqueo (16-oct-2026) — la UI distingue
+        // "OKR no activado", "semana no cerrada", "falta evidencia", "sin
+        // incumplimiento", etc., en vez de un error genérico.
+        $reasons = [];
 
         $weekStart = $this->calendar->weekStart($objective->start_date, $weekNumber);
         $weekEnd = $this->calendar->weekEnd($objective->start_date, $weekNumber);
@@ -119,28 +123,36 @@ class OkrWarningService
             $blockers[] = $objective->scope_type === OkrObjective::SCOPE_BRANCH
                 ? 'Este OKR de sucursal no tiene un titular formalmente asignado — un Warning solo puede emitirse a la persona evaluada (para gestores, usa su OKR individual).'
                 : 'El OKR individual no tiene colaborador asignado.';
+            $reasons[] = 'no_subject';
         }
         if ($weekNumber < 1 || $weekNumber > (int) $objective->duration_weeks) {
             $blockers[] = 'La semana indicada está fuera del rango del OKR.';
+            $reasons[] = 'out_of_range';
         }
         if (!in_array($objective->lifecycle_status, [OkrObjective::STATUS_ACTIVE, OkrObjective::STATUS_CLOSED], true)) {
             $blockers[] = 'El OKR no está activo — solo se evalúan OKR activados con línea base congelada.';
+            $reasons[] = 'not_active';
         }
         if (!$weekClosed) {
             $blockers[] = 'La semana ' . $weekNumber . ' sigue abierta (termina el ' . $weekEnd->format('d/m/Y') . ') — pendiente de evaluación.';
+            $reasons[] = 'week_open';
         }
         if ($objective->commitmentLetter === null) {
             $blockers[] = 'No existe una Carta Compromiso vigente para este OKR — el Warning se emite con base en ella.';
+            $reasons[] = 'no_letter';
         }
         if (OkrWarning::query()->where('okr_objective_id', $objective->id)->where('week_number', $weekNumber)->where('status', OkrWarning::STATUS_ISSUED)->exists()) {
             $blockers[] = 'Ya existe un Warning vigente para esta semana.';
+            $reasons[] = 'duplicate';
         }
 
         $week = $this->buildWeekSnapshot($objective, $weekNumber);
         if (!$week['has_any_data']) {
-            $blockers[] = 'La semana no tiene información real suficiente — no se convierte la falta de datos en incumplimiento.';
+            $blockers[] = 'Falta evidencia: la semana no tiene información real suficiente — no se convierte la falta de datos en incumplimiento.';
+            $reasons[] = 'no_evidence';
         } elseif (!$week['has_breach']) {
             $blockers[] = 'No existe incumplimiento en la semana seleccionada: el resultado está en o por encima de lo esperado a esa semana.';
+            $reasons[] = 'no_breach';
         }
 
         $status = $blockers === [] ? 'eligible' : (!$weekClosed || !$week['has_any_data'] ? 'pending' : 'not_eligible');
@@ -150,6 +162,7 @@ class OkrWarningService
             // Hay incumplimiento real aunque otro motivo (p. ej. sin carta) impida emitir.
             'has_breach' => $week['has_breach'],
             'blockers' => $blockers,
+            'reasons' => $reasons,
             'week' => ['number' => $weekNumber, 'start' => $weekStart->toDateString(), 'end' => $weekEnd->toDateString(), 'closed' => $weekClosed],
             'subject' => $subject ? ['id' => $subject->id, 'full_name' => $subject->full_name] : null,
             'rows' => $week['rows'],

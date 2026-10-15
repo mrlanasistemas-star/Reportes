@@ -2,20 +2,39 @@
 
 namespace App\Http\Controllers\Okr\Concerns;
 
-use App\Services\Reporting\OperativeBranchService;
+use App\Models\Branch;
+use App\Models\OkrObjective;
+use App\Services\Catalog\BranchRouteCatalog;
 
 /**
- * Módulo OKR (08-sep-2026) — reutiliza la MISMA lista de 13 sucursales
- * operativas que ya usa Reportería. Antes se leía por ReflectionClass sobre
- * la constante privada de MonthlyReportController (frágil — corregido en la
- * auditoría del 08-sep-2026): ahora ambos leen de
- * App\Services\Reporting\OperativeBranchService::NAMES, la fuente única.
+ * Módulo OKR — sucursales operativas. 16-oct-2026: el alcance OKR son las
+ * ONCE sucursales del catálogo oficial (BranchRouteCatalog::OKR_BRANCHES);
+ * Reportería conserva su propia lista de 13 (OperativeBranchService) para la
+ * radiografía. Los filtros de seguimiento/histórico agregan cualquier otra
+ * sucursal que ya tenga OKR registrados, para no ocultar históricos.
  */
 trait ResolvesOperativeBranches
 {
     /** @return array<int, string> */
     protected function operativeBranchNames(): array
     {
-        return OperativeBranchService::NAMES;
+        return BranchRouteCatalog::OKR_BRANCHES;
+    }
+
+    /** Sucursales para NUEVAS asignaciones (solo las once operativas). */
+    protected function assignableBranches(): \Illuminate\Support\Collection
+    {
+        return Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']);
+    }
+
+    /** Sucursales para filtros: las once + las que ya tienen OKR históricos. */
+    protected function filterBranches(): \Illuminate\Support\Collection
+    {
+        $historic = OkrObjective::withTrashed()->whereNotNull('branch_id')->distinct()->pluck('branch_id');
+
+        return Branch::query()
+            ->where(fn ($q) => $q->whereIn('name', $this->operativeBranchNames())->orWhereIn('id', $historic))
+            ->orderBy('name')
+            ->get(['id', 'name']);
     }
 }

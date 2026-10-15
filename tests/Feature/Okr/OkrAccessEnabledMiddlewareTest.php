@@ -78,10 +78,16 @@ it('accepts an enabled user as responsible_user_id', function () {
 it('the "Responsables OKR" screen can NEVER create an admin, even if role=admin is sent in the request (D7)', function () {
     $admin = User::factory()->create();
 
+    // 16-oct-2026: el formulario ya acepta el rol (roles personalizados), pero
+    // Administrador NO es asignable desde aquí — se rechaza y no se crea nadie.
     $this->actingAs($admin)->post('/okr/responsibles', [
         'name' => 'Intento De Elevación', 'email' => 'intento.elevacion@example.com', 'role' => 'admin',
-    ])->assertSessionHasNoErrors();
+    ])->assertSessionHasErrors('role');
 
-    $created = User::query()->where('email', 'intento.elevacion@example.com')->firstOrFail();
-    expect($created->role)->toBe('colaborador');
+    expect(User::query()->where('email', 'intento.elevacion@example.com')->exists())->toBeFalse();
+
+    // Sin rol explícito sigue naciendo como colaborador.
+    \Illuminate\Support\Facades\Mail::fake();
+    $this->actingAs($admin)->post('/okr/responsibles', ['name' => 'Alta Normal', 'email' => 'alta.normal@example.com'])->assertSessionHasNoErrors();
+    expect(User::query()->where('email', 'alta.normal@example.com')->value('role'))->toBe('colaborador');
 });

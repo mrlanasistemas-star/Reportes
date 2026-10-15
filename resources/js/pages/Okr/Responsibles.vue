@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { Link, useForm, router, usePage } from '@inertiajs/vue3'
-import { ArrowLeft, Ban, KeyRound, Mail, MailWarning, Plus, RotateCw, UserCheck, UserPlus, Users } from 'lucide-vue-next'
+import { ArrowLeft, Ban, KeyRound, Loader2, Mail, MailWarning, Plus, RotateCw, ShieldCheck, UserCheck, UserPlus, Users } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, ref, watch } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import TextField from '@/components/forms/TextField.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
-import RoleActionPermissionCard from '@/components/okr/RoleActionPermissionCard.vue'
-import RoleModuleAccessCard from '@/components/okr/RoleModuleAccessCard.vue'
 import { Button } from '@/components/ui/button'
+import RoleManager from '@/components/usuarios/RoleManager.vue'
+import { roleTone } from '@/components/usuarios/roles'
+import type { RoleInfo } from '@/components/usuarios/roles'
 import AppLayout from '@/layouts/AppLayout.vue'
+import { okrRequest } from '@/lib/okrHttp'
 
 defineOptions({ layout: AppLayout })
 
@@ -32,10 +34,41 @@ const props = defineProps<{
     module_access: Record<string, string[]>
     action_catalog: { module: string; action: string; label: string }[]
     action_permissions: Record<string, Record<string, string[]>>
+    roles: RoleInfo[]
 }>()
 
-function resendWelcomeEmail(r: Responsible) {
-    router.post(`/okr/responsibles/${r.id}/resend-welcome-email`, {}, { preserveScroll: true })
+// Pestañas (16-oct-2026): usuarios por un lado, roles y permisos por otro.
+const tab = ref<'users' | 'roles'>(new URLSearchParams(window.location.search).get('tab') === 'roles' ? 'roles' : 'users')
+
+function setTab(value: 'users' | 'roles') {
+    tab.value = value
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', value)
+    window.history.replaceState({}, '', url)
+}
+
+// 16-oct-2026 — por fetch con spinner en el propio botón y mensaje claro (antes
+// un error del servidor terminaba en una página 404/500 cruda).
+const resending = ref<number | null>(null)
+
+async function resendWelcomeEmail(r: Responsible) {
+    resending.value = r.id
+    const res = await okrRequest<{ message: string }>(`/okr/responsibles/${r.id}/resend-welcome-email`, { method: 'POST' })
+    resending.value = null
+
+    if (!res.ok) {
+        Swal.fire({
+            icon: 'error', title: 'No se reenvió el correo',
+            text: res.status === 404
+                ? 'El servidor no reconoce esta acción. Si acaban de actualizar el sistema, hay que limpiar la caché de rutas (php artisan optimize:clear) e intentarlo de nuevo.'
+                : res.message,
+        })
+
+        return
+    }
+
+    Swal.fire({ toast: true, position: 'top-end', icon: 'success', title: res.data.message, timer: 3000, showConfirmButton: false })
+    router.reload({ only: ['responsibles'] })
 }
 
 // Esta pantalla no tenía NINGÚN consumidor de flash (success/warning/error) —
@@ -150,7 +183,8 @@ const showPassword = ref(false)
 // siempre es 'colaborador' (el backend también lo fuerza, ver ResponsibleController::store()).
 // password_mode (15-oct-2026, sección 10): 'auto' conserva el botón de generar
 // contraseña automática que ya existía; 'manual' permite escribirla a mano.
-const form = useForm({ name: '', email: '', password_mode: 'auto' as 'auto' | 'manual', password: '', password_confirmation: '' })
+const form = useForm({ name: '', email: '', role: 'colaborador', password_mode: 'auto' as 'auto' | 'manual', password: '', password_confirmation: '' })
+const assignableRoles = computed(() => props.roles.filter((r) => r.key !== 'admin'))
 
 function submit() {
     form.post('/okr/responsibles', {
@@ -239,8 +273,8 @@ function editEmployeeLink(responsible: Responsible) {
     })
 }
 
-const roleLabels: Record<string, string> = { admin: 'Administrador', gerencial: 'Gerencial', colaborador: 'Colaborador' }
-const roleOptions = ['admin', 'gerencial', 'colaborador'] as const
+const roleLabels = computed<Record<string, string>>(() => Object.fromEntries(props.roles.map((r) => [r.key, r.name])))
+const roleOptions = computed(() => props.roles.map((r) => r.key))
 
 function changeRole(responsible: { id: number; name: string; role: string }, newRole: string) {
     if (newRole === responsible.role) {
@@ -248,7 +282,7 @@ return
 }
 
     Swal.fire({
-        icon: 'question', title: `¿Cambiar a ${responsible.name} a ${roleLabels[newRole]}?`,
+        icon: 'question', title: `¿Cambiar a ${responsible.name} a ${roleLabels.value[newRole] ?? newRole}?`,
         showCancelButton: true, confirmButtonText: 'Cambiar rol', cancelButtonText: 'Cancelar', confirmButtonColor: '#4f46e5',
     }).then((r) => {
         if (r.isConfirmed) {
@@ -262,15 +296,27 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
     <div class="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <div class="flex items-center gap-3">
             <Link href="/okr" class="text-muted-foreground transition hover:text-foreground"><ArrowLeft class="size-5" /></Link>
-            <AppPageHeader title="Usuarios y accesos" subtitle="Roles y acceso de cada persona en el sistema: Administrador, Gerencial o Colaborador. Agrega nuevas o revisa cuántos objetivos OKR tiene cada quien.">
+            <AppPageHeader title="Usuarios y accesos" subtitle="Crea roles con sus propios permisos y da de alta usuarios con el rol que les corresponde.">
                 <template #actions>
-                    <Button type="button" data-tour="usuarios-add" class="app-btn app-btn-primary h-11 gap-2" @click="showForm = !showForm">
+                    <Button type="button" data-tour="usuarios-add" class="app-btn app-btn-primary h-11 gap-2" @click="setTab('users'); showForm = !showForm">
                         <Plus class="size-4" /> Agregar usuario
                     </Button>
                 </template>
             </AppPageHeader>
         </div>
 
+        <div class="inline-flex rounded-2xl border border-border bg-muted/40 p-1">
+            <button type="button" class="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition" :class="tab === 'users' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'" @click="setTab('users')">
+                <Users class="size-4" /> Usuarios <span class="rounded-full bg-muted px-1.5 text-[10px] tabular-nums">{{ responsibles.length }}</span>
+            </button>
+            <button type="button" class="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition" :class="tab === 'roles' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'" @click="setTab('roles')">
+                <ShieldCheck class="size-4" /> Roles y permisos <span class="rounded-full bg-muted px-1.5 text-[10px] tabular-nums">{{ roles.length }}</span>
+            </button>
+        </div>
+
+        <RoleManager v-if="tab === 'roles'" :roles="roles" :modules="module_catalog" :actions="action_catalog" />
+
+        <template v-else>
         <div v-if="showForm" class="app-card animate-in fade-in slide-in-from-top-2 space-y-4 p-5 duration-200">
             <p class="flex items-center gap-1.5 text-sm font-bold text-foreground">
                 <UserPlus class="size-4 text-primary" /> Nuevo usuario
@@ -279,6 +325,26 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
             <div class="grid gap-4 sm:grid-cols-2">
                 <TextField v-model="form.name" label="Nombre completo" placeholder="Ej. Ana López" :error="form.errors.name" />
                 <TextField v-model="form.email" type="email" label="Correo" placeholder="ana@empresa.com" :error="form.errors.email" />
+            </div>
+
+            <div class="space-y-2">
+                <p class="text-xs font-bold uppercase tracking-wide text-muted-foreground">Rol</p>
+                <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    <button
+                        v-for="r in assignableRoles" :key="r.key" type="button"
+                        class="flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition"
+                        :class="form.role === r.key ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/30' : 'border-border hover:border-primary/30'"
+                        @click="form.role = r.key"
+                    >
+                        <span class="mt-1 size-3 shrink-0 rounded-full bg-gradient-to-br" :class="roleTone(r)" />
+                        <span class="min-w-0">
+                            <span class="block text-xs font-bold text-foreground">{{ r.name }}</span>
+                            <span class="block truncate text-[11px] text-muted-foreground">{{ r.modules.length }} módulo(s) · nivel {{ r.base_level }}</span>
+                        </span>
+                    </button>
+                </div>
+                <p v-if="form.errors.role" class="text-xs font-semibold text-rose-600">{{ form.errors.role }}</p>
+                <button type="button" class="text-[11px] font-semibold text-primary hover:underline" @click="setTab('roles')">¿No está el rol que necesitas? Créalo en «Roles y permisos».</button>
             </div>
 
             <div class="space-y-2">
@@ -303,7 +369,7 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
             </div>
 
             <p class="text-xs text-muted-foreground">
-                Se crea como Colaborador. Para Administrador o Gerencial, cambia el rol después de crearlo.
+                Se crea con el rol elegido (Administrador solo se asigna después, desde la tabla).
                 Independientemente de la contraseña, se le envía un correo con un enlace propio para entrar la primera vez.
             </p>
             <div class="flex justify-end gap-2">
@@ -343,7 +409,7 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                                 <select
                                     class="rounded-full border-0 px-2.5 py-1 text-xs font-semibold transition focus:outline-none focus:ring-2 focus:ring-primary/30"
                                     :class="[
-                                        r.role === 'admin' ? 'bg-primary/10 text-primary' : r.role === 'gerencial' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'bg-muted text-muted-foreground',
+                                        r.role === 'admin' ? 'bg-primary/10 text-primary' : r.role === 'gerencial' ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300' : r.role === 'colaborador' ? 'bg-muted text-muted-foreground' : 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
                                         canChangeRole(r) ? 'cursor-pointer' : 'cursor-default opacity-80',
                                     ]"
                                     :disabled="!canChangeRole(r)"
@@ -364,8 +430,9 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
                                 <span v-if="r.welcome_email_sent_at" class="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300" :title="r.welcome_email_sent_at"><Mail class="size-3.5" /> Enviado</span>
                                 <span v-else-if="r.welcome_email_error" class="inline-flex items-center gap-1 rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-700 dark:text-rose-300" :title="r.welcome_email_error"><MailWarning class="size-3.5" /> No se pudo enviar</span>
                                 <span v-else class="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs font-semibold text-muted-foreground">Pendiente</span>
-                                <button type="button" class="ml-1.5 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground" title="Reenviar correo de bienvenida" :aria-label="`Reenviar correo de bienvenida a ${r.name}`" @click="resendWelcomeEmail(r)">
-                                    <RotateCw class="size-3.5" />
+                                <button type="button" class="ml-1.5 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground" title="Reenviar correo de bienvenida" :aria-label="`Reenviar correo de bienvenida a ${r.name}`" :disabled="resending === r.id" @click="resendWelcomeEmail(r)">
+                                    <Loader2 v-if="resending === r.id" class="size-3.5 animate-spin" />
+                                    <RotateCw v-else class="size-3.5" />
                                 </button>
                             </td>
                             <td class="px-4 py-3">
@@ -405,7 +472,6 @@ router.put(`/okr/responsibles/${responsible.id}/role`, { role: newRole })
             </div>
         </div>
 
-        <RoleModuleAccessCard :modules="module_catalog" :access="module_access" />
-        <RoleActionPermissionCard :actions="action_catalog" :permissions="action_permissions" />
+        </template>
     </div>
 </template>

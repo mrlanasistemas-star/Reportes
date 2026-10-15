@@ -9,6 +9,7 @@ use App\Models\Employee;
 use App\Models\OkrObjective;
 use App\Models\User;
 use App\Services\Access\ModuleAccessService;
+use App\Services\Access\RoleCatalogService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\RedirectResponse;
@@ -133,7 +134,22 @@ class ResponsibleController extends Controller
             // Permisos por acción (Fase 7 de la auditoría, 15-oct-2026) — eliminar/exportar.
             'action_catalog' => $actionPermissions->catalog(),
             'action_permissions' => $actionPermissions->matrix(),
+            // Roles (sistema + personalizados) con su configuración y cuántos usuarios los usan — 16-oct-2026.
+            'roles' => $this->rolesPayload($responsibles, $moduleAccess, $actionPermissions),
         ]);
+    }
+
+    private function rolesPayload(\Illuminate\Support\Collection $responsibles, ModuleAccessService $moduleAccess, \App\Services\Access\ActionPermissionService $actionPermissions): array
+    {
+        $modules = $moduleAccess->matrix();
+        $actions = $actionPermissions->matrix();
+        $counts = $responsibles->countBy('role');
+
+        return collect(app(RoleCatalogService::class)->all())->map(fn ($r) => $r + [
+            'users_count' => (int) ($counts[$r['key']] ?? 0),
+            'modules' => $r['key'] === User::ROLE_ADMIN ? array_keys(ModuleAccessService::MODULES) : ($modules[$r['key']] ?? []),
+            'actions' => $r['key'] === User::ROLE_ADMIN ? null : (object) ($actions[$r['key']] ?? []),
+        ])->values()->all();
     }
 
     public function store(Request $request): RedirectResponse
@@ -148,22 +164,23 @@ class ResponsibleController extends Controller
             // mismo (ej. en persona), puede escribirla; si no, se genera como antes.
             'password_mode' => ['nullable', Rule::in(['auto', 'manual'])],
             'password'      => ['required_if:password_mode,manual', 'nullable', 'string', 'min:8', 'max:72', 'confirmed'],
-        ]);
+            // 16-oct-2026 — el usuario nace con el rol elegido (sistema o
+            // personalizado). Nunca Administrador desde aquí (ver D7 abajo).
+            'role'          => ['nullable', 'string', Rule::in(app(RoleCatalogService::class)->configurableKeys())],
+        ], ['role.in' => 'Elige un rol válido.']);
 
         $isManual     = ($data['password_mode'] ?? 'auto') === 'manual';
         $tempPassword = $isManual ? null : Str::password(16);
         $finalPassword = $isManual ? $data['password'] : $tempPassword;
 
-        // D7 del cierre (17-sep-2026): esta pantalla NUNCA puede crear un admin —
-        // antes aceptaba 'role' del request (Rule::in(['admin','colaborador'])),
-        // así que cualquiera con acceso a "Responsables OKR" podía elevarse a
-        // administrador desde aquí. El rol siempre es 'colaborador'; los admins se
-        // administran fuera de OKR.
+        // D7 del cierre (17-sep-2026): esta pantalla NUNCA crea un admin — el rol
+        // se valida contra los roles configurables (todos menos Administrador);
+        // para hacer a alguien administrador se cambia su rol después.
         $user = User::query()->create([
             'name'              => $data['name'],
             'email'             => $data['email'],
             'password'          => Hash::make($finalPassword),
-            'role'              => 'colaborador',
+            'role'              => $data['role'] ?? User::ROLE_COLABORADOR,
             'email_verified_at' => null, // real: nadie ha verificado nada todavía
         ]);
 
@@ -206,11 +223,21 @@ class ResponsibleController extends Controller
     }
 
     /** Reintenta el envío del correo de bienvenida sin recrear al usuario ni su contraseña. */
-    public function resendWelcomeEmail(User $user): RedirectResponse
+    public function resendWelcomeEmail(Request $request, User $user): RedirectResponse|\Illuminate\Http\JsonResponse
     {
         $this->authorize('okr.admin');
 
         $result = $this->sendWelcomeEmail($user);
+
+        // 16-oct-2026 — la UI lo llama por fetch (spinner en el botón + mensaje
+        // claro); nunca deja al usuario frente a una página de error cruda.
+        if ($request->expectsJson()) {
+            return response()->json([
+                'sent' => $result['sent'],
+                'message' => $result['sent'] ? "Correo reenviado a {$user->email}." : $result['error'],
+                'welcome_email_sent_at' => $user->fresh()->welcome_email_sent_at?->toDateTimeString(),
+            ], $result['sent'] ? 200 : 422);
+        }
 
         return back()->with($result['sent'] ? 'success' : 'error', $result['sent']
             ? "Correo reenviado a {$user->email}."
@@ -335,7 +362,7 @@ class ResponsibleController extends Controller
         $this->authorize('okr.admin');
 
         $data = $request->validate([
-            'role' => ['required', Rule::in(User::ROLES)],
+            'role' => ['required', Rule::in(app(RoleCatalogService::class)->keys())], // sistema + personalizados (16-oct-2026)
         ]);
 
         if ($user->id === $request->user()->id) {

@@ -137,6 +137,22 @@ export const TOURS: Record<string, TourDefinition> = {
             },
         ],
     },
+    efectividad: {
+        id: 'efectividad',
+        label: 'Efectividad de cobranza',
+        steps: [
+            {
+                href: '/efectividad-cobranza',
+                title: 'Efectividad de cobranza',
+                body: 'Sube el archivo de cobranza de Lendus del periodo y el sistema calcula la efectividad por ruta y por gestor.',
+                example: 'Ejemplo: una ruta que cobró $90 de $100 esperados tiene 90% de efectividad.',
+            },
+            {
+                title: 'Resultados',
+                body: 'Revisa el detalle por ruta y gestor y descárgalo en Excel. Solo se consideran las rutas con cartera sana del periodo.',
+            },
+        ],
+    },
     usuarios: {
         id: 'usuarios',
         label: 'Usuarios y accesos',

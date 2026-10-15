@@ -405,6 +405,14 @@ class BranchResolverService
             return null;
         }
 
+        // 2a. Catálogo OFICIAL de sucursales y rutas (16-oct-2026) — fuente única
+        //     proporcionada por la empresa; prevalece sobre las equivalencias
+        //     heredadas de abajo (que en varias rutas la contradecían).
+        $official = \App\Services\Catalog\BranchRouteCatalog::officialBranchFor($routeName);
+        if ($official !== null) {
+            return $official;
+        }
+
         // Normalize: uppercase + strip accents so DB values like "Fortín" match "FORTIN"
         $upper = $this->normalizeRouteKey($routeName);
 

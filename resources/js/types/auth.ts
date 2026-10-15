@@ -4,7 +4,7 @@ export type User = {
     email: string;
     avatar?: string;
     email_verified_at: string | null;
-    role?: 'admin' | 'gerencial' | 'colaborador';
+    role?: string; // clave del rol (sistema o personalizado, 16-oct-2026)
     created_at: string;
     updated_at: string;
     [key: string]: unknown;

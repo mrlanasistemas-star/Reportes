@@ -48,6 +48,7 @@ export function useTour() {
     /** Navega al href del paso si hace falta (Inertia), luego deja que el overlay busque el target. */
     async function goToStep(index: number): Promise<void> {
         const tour = activeTour.value
+
         if (!tour) {
             return
         }
@@ -102,6 +103,7 @@ export function useTour() {
         if (activeTourId.value) {
             markSeen(activeTourId.value)
         }
+
         activeTourId.value = null
         stepIndex.value = 0
     }
@@ -110,6 +112,7 @@ export function useTour() {
         if (activeTourId.value) {
             markSeen(activeTourId.value)
         }
+
         activeTourId.value = null
         stepIndex.value = 0
     }

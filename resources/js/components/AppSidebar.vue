@@ -5,6 +5,7 @@ import { computed } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
 import NavUser from '@/components/NavUser.vue';
+import GuideHelpFab from '@/components/tour/GuideHelpFab.vue';
 import TourOverlay from '@/components/tour/TourOverlay.vue';
 import WelcomeTourModal from '@/components/tour/WelcomeTourModal.vue';
 import {
@@ -49,6 +50,7 @@ const navItems = computed(() => visibleMainNavItems(page.props.auth));
 
     <TourOverlay />
     <WelcomeTourModal />
+    <GuideHelpFab />
 
     <slot />
 </template>

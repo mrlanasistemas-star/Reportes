@@ -81,6 +81,8 @@ class OkrActivationService
                 if (isset($resolvedBaselines[$kr->id])) {
                     $kr->baseline_value = $resolvedBaselines[$kr->id];
                     $kr->baseline_source = $kr->kpi->provider_key;
+                } elseif ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE) {
+                    $kr->baseline_source = OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL; // capturada para el gestor
                 } elseif ($kr->baseline_source === null) {
                     $kr->baseline_source = $kr->kpi->isAutomatic() ? $kr->kpi->provider_key : 'manual';
                 }
@@ -131,7 +133,10 @@ class OkrActivationService
                 $issues[] = "La ponderación de sus KR suma {$total}% (debe ser 100%).";
             }
             foreach ($krs as $kr) {
-                if ($kr->baseline_value === null && !$kr->kpi->isAutomatic()) {
+                if ($kr->baseline_value === null && $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE) {
+                    // Regla definitiva (16-oct-2026): base del gestor = captura manual.
+                    $issues[] = "{$kr->kpi->name}: captura la línea base del gestor (valor inicial desde el cual se medirá su incremento).";
+                } elseif ($kr->baseline_value === null && !$kr->kpi->isAutomatic()) {
                     $issues[] = "{$kr->kpi->name}: falta capturar la línea base (KPI manual).";
                 } elseif ($kr->baseline_value === null) {
                     $notes[] = "{$kr->kpi->name}: la línea base se consulta y congela en Reportería al activar.";
@@ -151,7 +156,10 @@ class OkrActivationService
             if (!$resolver->employeeIsActive((int) $objective->employee_id)) {
                 $issues[] = 'El colaborador ya no está vigente en la nómina — no se activa una asignación nueva.';
             } elseif ($objective->branch_id && !$resolver->employeeBelongsToBranch((int) $objective->employee_id, (int) $objective->branch_id)) {
-                $issues[] = 'El colaborador ya no pertenece a la sucursal del OKR.';
+                $membership = $resolver->membershipFor((int) $objective->employee_id);
+                $issues[] = $membership['branch_id'] === null
+                    ? 'No hay una fuente vigente (cartera, nómina o directorio) que ubique al colaborador en una sucursal — verifica su registro.'
+                    : "El colaborador está vigente en {$membership['branch_name']} ({$membership['source_label']}), no en la sucursal del OKR.";
             }
         }
 

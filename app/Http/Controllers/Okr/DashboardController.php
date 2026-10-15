@@ -122,7 +122,7 @@ class DashboardController extends Controller
             // severidad de semáforo, con proyección de cierre ponderada.
             'risk_projection' => $this->riskProjection($activeOnly),
             'filters' => [
-                'branches'      => Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']),
+                'branches'      => $this->filterBranches(),
                 'statuses'      => [OkrObjective::STATUS_DRAFT, OkrObjective::STATUS_ACTIVE, OkrObjective::STATUS_CLOSED, OkrObjective::STATUS_CANCELLED],
                 'kpis'          => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(['id', 'name']),
                 'responsibles'  => User::query()->orderBy('name')->get(['id', 'name']),
@@ -133,7 +133,7 @@ class DashboardController extends Controller
             'query' => $request->only(['branch_id', 'employee_id', 'status', 'search', 'period_id', 'start_date', 'end_date', 'kpi_id', 'responsible_user_id']),
             // "Asignar OKR" (docs/imagenesOKR/3-8.png) — Dialog embebido aquí,
             // ya NO una página aparte (ver auditoría 10-sep-2026, sección 6).
-            'wizardBranches'    => Branch::whereIn('name', $this->operativeBranchNames())->orderBy('name')->get(['id', 'name']),
+            'wizardBranches'    => $this->assignableBranches(),
             'wizardKpis'        => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(),
             'wizardCurrentUser' => ['id' => auth()->id(), 'full_name' => auth()->user()->name],
             // Normalizado a {id, full_name} — bug corregido punto 12 de la

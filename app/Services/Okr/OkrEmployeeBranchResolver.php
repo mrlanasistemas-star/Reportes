@@ -3,8 +3,8 @@
 namespace App\Services\Okr;
 
 use App\Models\Employee;
-use App\Models\EmployeeBranchAssignment;
 use App\Services\CanonicalEmployeeResolver;
+use App\Services\Catalog\BranchRouteCatalog;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -119,10 +119,25 @@ class OkrEmployeeBranchResolver
         $rosterPeriodId = $this->currentRosterPeriodId();
 
         if ($rosterPeriodId !== null) {
-            $query->whereIn('id', DB::table('period_employee_rosters')
+            // 16-oct-2026 — no aparecer en la nómina del periodo NO es una baja
+            // confirmada (vacaciones, incapacidad, alta reciente, importación
+            // incompleta). Se excluye: (a) la baja CONFIRMADA en la nómina vigente
+            // (is_active_for_period = 0) y (b) quien no tiene ninguna fuente
+            // vigente (ni nómina activa ni directorio ACTIVO — "posible baja").
+            // Quien solo falta en NOI pero sigue ACTIVO en el directorio vigente
+            // permanece elegible y se marca "Sin registro NOI del periodo".
+            $query->whereNotIn('id', DB::table('period_employee_rosters')
                 ->where('period_id', $rosterPeriodId)
-                ->where('is_active_for_period', true)
+                ->where('is_active_for_period', false)
                 ->select('employee_id'));
+
+            $activeInDirectory = $this->personnelResolver->activeDirectoryNames();
+            $query->where(fn ($q) => $q
+                ->whereIn('id', DB::table('period_employee_rosters')
+                    ->where('period_id', $rosterPeriodId)
+                    ->where('is_active_for_period', true)
+                    ->select('employee_id'))
+                ->when($activeInDirectory !== [], fn ($qq) => $qq->orWhereIn('normalized_name', $activeInDirectory)));
         }
 
         // Segunda señal de baja (15-oct-2026): en el directorio Lendus vigente
@@ -254,56 +269,272 @@ class OkrEmployeeBranchResolver
     }
 
     /**
-     * IDs de empleados cuya asignación más reciente apunta a $branchId, MÁS
-     * los que todavía no tienen ninguna fila en `employee_branch_assignments`
-     * pero el directorio de personal Lendus vigente ya resuelve a esa
-     * sucursal (fallback, ver currentBranchIdFor()).
+     * IDs de colaboradores ELEGIBLES cuya sucursal VIGENTE (membershipMap) es
+     * $branchId — 16-oct-2026: una sola regla para el buscador, el conteo y
+     * la validación de pertenencia.
      */
     private function employeeIdsForBranch(int $branchId): \Illuminate\Support\Collection
     {
-        $assignedBranchByEmployee = EmployeeBranchAssignment::query()
-            ->whereIn('id', $this->latestAssignmentIdsSubquery())
-            ->pluck('branch_id', 'employee_id');
+        $ids = $this->eligibleEmployeesQuery()->pluck('id')->map(fn ($id) => (int) $id)->all();
 
-        $fromAssignment = $assignedBranchByEmployee->filter(fn ($b) => (int) $b === $branchId)->keys();
-
-        $fromDirectory = collect($this->personnelResolver->employeeIdsByInferredBranch($branchId))
-            ->reject(fn ($id) => $assignedBranchByEmployee->has($id));
-
-        return $fromAssignment->merge($fromDirectory)->unique()->values();
+        return collect($this->membershipMap($ids))
+            ->filter(fn ($m) => $m['branch_id'] === $branchId)
+            ->keys()
+            ->values();
     }
 
     /**
-     * Branch_id de la asignación MÁS RECIENTE del empleado (fuente
-     * transaccional, `employee_branch_assignments`), o — si todavía no tiene
-     * ninguna fila ahí (alta reciente, sin cobranza/colocación/nómina
-     * procesada todavía) — el que ya resuelve el directorio de personal
-     * Lendus vigente para esa persona (BranchResolverService: mismo catálogo
-     * de equivalencias ruta/oficina → sucursal oficial que usa el resto de
-     * Reportería). Corrección 15-oct-2026 (cierre de errores OKR): antes esta
-     * ausencia de fila se interpretaba como "no pertenece a ninguna
-     * sucursal" — rechazaba a colaboradores activos y correctamente
-     * clasificados en el directorio (p. ej. oficina CHOL/TOCH → ATLIXCO)
-     * solo porque aún no generaban movimientos transaccionales. Null = de
-     * verdad no hay ninguna fuente con la que resolver su sucursal.
+     * Sucursal VIGENTE de una persona (16-oct-2026, corrección definitiva del
+     * caso DAVID GAMBOA CANO / CHOL y RAFAEL PEREZ CHAO / TOCH → ATLIXCO).
+     *
+     * Antes se tomaba la asignación de mayor `period_id` (los ids de periodo no
+     * son cronológicos) con su `branch_id` tal cual: si esa fila apuntaba a un
+     * registro de RUTA (CHOL/TOCH existen en `branches`) o a un periodo viejo,
+     * el gestor se rechazaba con "no pertenece a la sucursal seleccionada".
+     *
+     * Ahora se reúnen las fuentes vigentes, se traduce cada una con el
+     * catálogo oficial (ruta → sucursal) y gana la del PERIODO más reciente por
+     * fecha; a igual fecha, en este orden de prioridad:
+     *   1. Ruta en la cartera Lendus identificada por NÚMERO DE EMPLEADO
+     *      (promoter_code = código del directorio, p. ej. ATLX12513). Una ruta
+     *      INACTIVA no respalda una asignación nueva (se informa, no se usa).
+     *   2. Nómina NOI del periodo (period_employee_rosters, activo).
+     *   3. Asignación de Reportería (employee_branch_assignments).
+     *   4. Directorio de colaboradores Lendus vigente (fila ACTIVO) — su
+     *      sucursal se infiere solo del PREFIJO del código, que no basta por sí
+     *      solo (empleados transferidos), por eso es el último recurso.
+     * Nunca se exigen pagos ni colocación para pertenecer, ni se reescriben
+     * periodos anteriores: un cambio de sucursal posterior simplemente es la
+     * fuente más reciente.
      */
     public function currentBranchIdFor(int $employeeId): ?int
     {
-        $branchId = EmployeeBranchAssignment::query()
-            ->whereIn('employee_id', $this->canonicalIdsFor($employeeId))
-            ->orderByDesc('period_id')
-            ->value('branch_id');
-
-        if ($branchId !== null) {
-            return (int) $branchId;
-        }
-
-        return $this->personnelResolver->profileFor($employeeId)['branch_id'];
+        return $this->membershipFor($employeeId)['branch_id'];
     }
 
     public function employeeBelongsToBranch(int $employeeId, int $branchId): bool
     {
         return $this->currentBranchIdFor($employeeId) === $branchId;
+    }
+
+    /**
+     * @return array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string}
+     */
+    public function membershipFor(int $employeeId): array
+    {
+        return $this->membershipMap([$employeeId])[$employeeId];
+    }
+
+    /** @var array<int, array> */
+    private array $membershipCache = [];
+
+    /**
+     * Versión en lote de membershipFor() — número fijo de consultas.
+     *
+     * @param  int[]  $employeeIds
+     * @return array<int, array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string}>
+     */
+    public function membershipMap(array $employeeIds): array
+    {
+        $employeeIds = array_values(array_unique(array_map('intval', $employeeIds)));
+        $pending = array_values(array_filter($employeeIds, fn ($id) => !isset($this->membershipCache[$id])));
+
+        if ($pending !== []) {
+            $this->computeMemberships($pending);
+        }
+
+        return collect($employeeIds)->mapWithKeys(fn ($id) => [$id => $this->membershipCache[$id]])->all();
+    }
+
+    private function computeMemberships(array $employeeIds): void
+    {
+        $employees = Employee::query()->whereIn('id', $employeeIds)->get(['id', 'normalized_name'])->keyBy('id');
+        $norms = $employees->pluck('normalized_name')->filter(fn ($n) => $n !== null && trim($n) !== '')->unique()->values()->all();
+
+        // Grupo canónico (mismo normalized_name): la evidencia puede estar ligada a otro id histórico.
+        $byNorm = $norms === [] ? collect() : Employee::query()->whereIn('normalized_name', $norms)->get(['id', 'normalized_name'])->groupBy('normalized_name');
+        $groupOf = [];
+        foreach ($employeeIds as $id) {
+            $norm = $employees->get($id)?->normalized_name;
+            $groupOf[$id] = $norm && isset($byNorm[$norm]) ? $byNorm[$norm]->pluck('id')->map(fn ($v) => (int) $v)->all() : [$id];
+        }
+        $allIds = array_values(array_unique(array_merge([], ...array_values($groupOf))));
+
+        $officialId = $this->officialBranchIdResolver();
+        $candidates = []; // employee_id => list<[prioridad, fecha_fin, branch_id, fuente, etiqueta, ruta]>
+        $inactiveRoute = [];
+
+        // 1. Ruta vigente en la cartera Lendus, por número de empleado.
+        $codesByNorm = $this->personnelResolver->directoryCodesByName($norms);
+        $allCodes = array_values(array_unique(array_merge([], ...array_values($codesByNorm))));
+        $routesByCode = [];
+        if ($allCodes !== []) {
+            DB::table('fact_portfolios as f')
+                ->join('periods as p', 'p.id', '=', 'f.period_id')
+                ->whereIn('f.promoter_code', $allCodes)
+                ->whereNotNull('f.route_name')
+                ->select('f.promoter_code', 'f.route_name', 'f.branch_id', 'p.end_date', 'p.name as period_name', DB::raw('count(*) as n'))
+                ->groupBy('f.promoter_code', 'f.route_name', 'f.branch_id', 'p.end_date', 'p.name')
+                ->get()
+                ->each(function ($r) use (&$routesByCode) {
+                    $routesByCode[mb_strtoupper(trim((string) $r->promoter_code))][] = $r;
+                });
+        }
+
+        foreach ($employeeIds as $id) {
+            $norm = $employees->get($id)?->normalized_name;
+            $rows = collect($codesByNorm[$norm] ?? [])->flatMap(fn ($code) => $routesByCode[$code] ?? []);
+            if ($rows->isEmpty()) {
+                continue;
+            }
+            $latestDate = $rows->max('end_date');
+            $top = $rows->where('end_date', $latestDate)->sortByDesc('n')->first();
+            $catalogRoute = BranchRouteCatalog::route($top->route_name);
+            if ($catalogRoute !== null && !$catalogRoute['active']) {
+                $inactiveRoute[$id] = $catalogRoute['route'];
+
+                continue;
+            }
+            $branchId = $officialId($top->branch_id ? (int) $top->branch_id : null, BranchRouteCatalog::branchForRoute($top->route_name));
+            if ($branchId !== null) {
+                $candidates[$id][] = [1, (string) $latestDate, $branchId, 'portfolio_route', "Ruta {$top->route_name} · cartera Lendus {$top->period_name}", $top->route_name];
+            }
+        }
+
+        // 2. Nómina NOI (activo en el periodo más reciente con registro).
+        $rosters = DB::table('period_employee_rosters as r')
+            ->join('periods as p', 'p.id', '=', 'r.period_id')
+            ->whereIn('r.employee_id', $allIds)
+            ->where('r.is_active_for_period', true)
+            ->orderByDesc('p.end_date')
+            ->get(['r.employee_id', 'r.branch_id', 'r.branch_name', 'p.end_date', 'p.name as period_name']);
+
+        // 3. Asignación de Reportería — la más reciente POR FECHA, nunca por mayor id.
+        $assignments = DB::table('employee_branch_assignments as a')
+            ->join('periods as p', 'p.id', '=', 'a.period_id')
+            ->whereIn('a.employee_id', $allIds)
+            ->orderByDesc('p.end_date')
+            ->get(['a.employee_id', 'a.branch_id', 'p.end_date', 'p.name as period_name']);
+
+        // 4. Directorio Lendus vigente (fila ACTIVO; sucursal inferida por prefijo).
+        $directory = $this->personnelResolver->currentDirectory();
+        $dirRows = $this->personnelResolver->currentDirectoryRows($norms);
+
+        foreach ($employeeIds as $id) {
+            $group = $groupOf[$id];
+            $r = $rosters->first(fn ($row) => in_array((int) $row->employee_id, $group, true));
+            if ($r && ($b = $officialId($r->branch_id ? (int) $r->branch_id : null, $r->branch_name))) {
+                $candidates[$id][] = [2, (string) $r->end_date, $b, 'noi_roster', "Nómina NOI {$r->period_name}", null];
+            }
+
+            $norm = $employees->get($id)?->normalized_name;
+            $d = $norm ? ($dirRows[$norm] ?? null) : null;
+            if ($d && $directory && mb_strtoupper((string) $d->estatus) === 'ACTIVO'
+                && ($b = $officialId($d->inferred_branch_id ? (int) $d->inferred_branch_id : null, $d->inferred_branch_name))) {
+                $candidates[$id][] = [4, (string) ($directory['period_end'] ?? ''), $b, 'lendus_directory', 'Directorio Lendus ' . ($directory['period_label'] ?? 'vigente'), null];
+            }
+
+            $a = $assignments->first(fn ($row) => in_array((int) $row->employee_id, $group, true));
+            if ($a && ($b = $officialId((int) $a->branch_id, null))) {
+                $candidates[$id][] = [3, (string) $a->end_date, $b, 'reporting_assignment', "Asignación de Reportería {$a->period_name}", null];
+            }
+        }
+
+        $branchNames = \App\Models\Branch::query()->pluck('name', 'id');
+        foreach ($employeeIds as $id) {
+            // Fecha más reciente primero; a igual fecha, menor número de prioridad.
+            $best = collect($candidates[$id] ?? [])->sort(fn ($x, $y) => [$y[1], $x[0]] <=> [$x[1], $y[0]])->first();
+
+            $this->membershipCache[$id] = [
+                'branch_id' => $best[2] ?? null,
+                'branch_name' => $best ? ($branchNames[$best[2]] ?? null) : null,
+                'route' => $best[5] ?? null,
+                'inactive_route' => $inactiveRoute[$id] ?? null,
+                'source' => $best[3] ?? null,
+                'source_label' => $best[4] ?? null,
+            ];
+        }
+    }
+
+    /**
+     * Traduce un branch_id/nombre (que puede ser una RUTA registrada como fila
+     * de `branches`, p. ej. CHOL) a la sucursal OFICIAL. El nombre explícito
+     * (p. ej. la sucursal de la ruta según catálogo) prevalece sobre el id.
+     * Un registro de `branches` que no es ruta conocida se conserva tal cual
+     * (nunca se descarta evidencia por no estar en el catálogo).
+     *
+     * @return \Closure(?int, ?string): ?int
+     */
+    private function officialBranchIdResolver(): \Closure
+    {
+        $branches = \App\Models\Branch::query()->get(['id', 'name']);
+        $idByKey = $branches->mapWithKeys(fn ($b) => [BranchRouteCatalog::normalize($b->name) => (int) $b->id])->all();
+        $nameById = $branches->pluck('name', 'id')->all();
+        $routeResolver = app(\App\Services\BranchResolverService::class);
+
+        return function (?int $branchId, ?string $name) use ($idByKey, $nameById, $routeResolver): ?int {
+            $raw = $name ?? ($branchId !== null ? ($nameById[$branchId] ?? null) : null);
+            if ($raw === null) {
+                return null;
+            }
+            $official = BranchRouteCatalog::officialBranchFor($raw) ?? $routeResolver->resolveRealBranchFromRoute($raw);
+            $officialId = $official !== null ? ($idByKey[BranchRouteCatalog::normalize($official)] ?? null) : null;
+
+            return $officialId ?? ($branchId !== null && isset($nameById[$branchId]) ? $branchId : ($idByKey[BranchRouteCatalog::normalize($raw)] ?? null));
+        };
+    }
+
+    /**
+     * Señales laborales/operativas para la UI (16-oct-2026) — nunca una baja
+     * inventada: "Sin registro NOI" o "Sin cartera en el periodo" no son una
+     * baja confirmada; solo distinguen a quien no está produciendo.
+     *
+     * @param  int[]  $employeeIds
+     * @return array<int, array<int, array{code:string, label:string}>>
+     */
+    public function statusFlags(array $employeeIds): array
+    {
+        $employeeIds = array_values(array_unique(array_map('intval', $employeeIds)));
+        if ($employeeIds === []) {
+            return [];
+        }
+
+        $rosterPeriodId = $this->currentRosterPeriodId();
+        $rosterLabel = $this->currentRosterPeriodLabel();
+        $inRoster = $rosterPeriodId === null ? [] : array_flip(DB::table('period_employee_rosters')
+            ->where('period_id', $rosterPeriodId)->where('is_active_for_period', true)
+            ->pluck('employee_id')->map(fn ($v) => (int) $v)->all());
+
+        $employees = Employee::query()->whereIn('id', $employeeIds)->get(['id', 'normalized_name'])->keyBy('id');
+        $norms = $employees->pluck('normalized_name')->filter()->unique()->values()->all();
+        $codesByNorm = $this->personnelResolver->directoryCodesByName($norms);
+        $latestPortfolio = DB::table('fact_portfolios as f')->join('periods as p', 'p.id', '=', 'f.period_id')
+            ->orderByDesc('p.end_date')->first(['f.period_id', 'p.name']);
+        $producing = $latestPortfolio === null ? [] : array_flip(DB::table('fact_portfolios')
+            ->where('period_id', $latestPortfolio->period_id)->whereNotNull('promoter_code')->distinct()
+            ->pluck('promoter_code')->map(fn ($c) => mb_strtoupper(trim((string) $c)))->all());
+        $memberships = $this->membershipMap($employeeIds);
+
+        $flags = [];
+        foreach ($employeeIds as $id) {
+            $list = [];
+            if ($rosterPeriodId !== null && !collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($inRoster[$g]))) {
+                $list[] = ['code' => 'no_noi', 'label' => 'Sin registro NOI ' . ($rosterLabel ?? 'del periodo') . ' · vigencia por verificar'];
+            }
+            $codes = $codesByNorm[$employees->get($id)?->normalized_name] ?? [];
+            if ($latestPortfolio && $codes !== [] && !collect($codes)->contains(fn ($c) => isset($producing[$c]))) {
+                $list[] = ['code' => 'no_activity', 'label' => "Sin actividad en cartera ({$latestPortfolio->name})"];
+            }
+            if ($memberships[$id]['inactive_route']) {
+                $list[] = ['code' => 'inactive_route', 'label' => "Ruta {$memberships[$id]['inactive_route']} inactiva (solo histórico)"];
+            }
+            if ($memberships[$id]['branch_id'] === null) {
+                $list[] = ['code' => 'branch_pending', 'label' => 'Sucursal vigente pendiente de verificar'];
+            }
+            $flags[$id] = $list;
+        }
+
+        return $flags;
     }
 
     /**
@@ -323,14 +554,5 @@ class OkrEmployeeBranchResolver
         }
 
         return $this->eligibleEmployeesQuery()->whereIn('id', $this->canonicalIdsFor($employeeId))->exists();
-    }
-
-    /** IDs de la fila más reciente (mayor period_id) por employee_id. */
-    private function latestAssignmentIdsSubquery(): \Illuminate\Support\Collection|array
-    {
-        return DB::table('employee_branch_assignments as eba')
-            ->select(DB::raw('eba.id'))
-            ->whereRaw('eba.period_id = (select max(eba2.period_id) from employee_branch_assignments eba2 where eba2.employee_id = eba.employee_id)')
-            ->pluck('id');
     }
 }

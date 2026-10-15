@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Paso 3 — metas de UN alcance (sucursal o un gestor). Cada fila: línea base
-// (consultada a Reportería para ESE alcance, o manual), incremento esperado,
+// (sucursal: consultada a Reportería; gestor: SIEMPRE capturada manualmente —
+// regla definitiva 16-oct-2026), incremento esperado,
 // meta final = base + incremento, y peso. Todo valor capturado muestra su
 // lectura formateada ($638,576.00) sin alterar el número que se guarda.
 import { AlertTriangle, CheckCircle2, Loader2, PenLine, RefreshCw, Search, Undo2 } from 'lucide-vue-next'
@@ -79,23 +80,32 @@ function cancelManual(kr: KrRow) {
 
                     <!-- LÍNEA BASE -->
                     <td class="px-2.5 py-3">
-                        <template v-if="isAutomatic(kpiOf(kr.kpi_id)) && kr.baseline_mode !== 'manual_authorized'">
+                        <!-- Gestor: captura manual (nunca consulta automática) -->
+                        <div v-if="scope.scope_type === 'employee'" class="space-y-1 rounded-lg border p-2 transition" :class="kr.baseline_value === '' ? 'border-primary/40 bg-primary/5' : 'border-emerald-500/30 bg-emerald-500/5'">
+                            <label :for="`baseline-${kr.client_key}`" class="block text-[10px] font-bold uppercase tracking-wide text-foreground">Captura la línea base del gestor</label>
+                            <input :id="`baseline-${kr.client_key}`" :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="app-input h-8 text-xs" @input="(e) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }">
+                            <p v-if="kr.baseline_value !== ''" class="text-[10px] font-semibold tabular-nums text-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }} · se congela al activar</p>
+                            <p class="text-[10px] leading-snug text-muted-foreground">Es el valor inicial desde el cual se medirá su incremento durante este objetivo.</p>
+                        </div>
+
+                        <template v-else-if="isAutomatic(kpiOf(kr.kpi_id)) && kr.baseline_mode !== 'manual_authorized'">
                             <div v-if="kr.loading" class="space-y-1.5 rounded-lg border border-border p-2">
                                 <div class="h-4 w-28 animate-pulse rounded bg-muted" />
                                 <div class="flex items-center gap-1 text-[10px] text-muted-foreground"><Loader2 class="size-3 animate-spin" /> Consultando Reportería…</div>
+                                <p class="text-[10px] text-muted-foreground/80">La primera consulta del periodo puede tardar hasta ~30 s; no cierres la ventana.</p>
                             </div>
                             <div v-else-if="kr.preview?.available" class="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2 animate-in fade-in duration-300">
                                 <p class="flex items-center gap-1 text-sm font-bold tabular-nums text-foreground"><CheckCircle2 class="size-3.5 text-emerald-600" /> {{ formatByUnit(kr.preview.value, kpiOf(kr.kpi_id)?.unit) }}</p>
-                                <p class="text-[10px] text-muted-foreground">Reportería · {{ kr.preview.period?.label ?? '—' }} · {{ scope.scope_type === 'employee' ? 'solo este gestor' : 'toda la sucursal' }}</p>
+                                <p class="text-[10px] text-muted-foreground">Reportería · {{ kr.preview.period?.label ?? '—' }} · toda la sucursal</p>
                                 <p class="text-[10px] text-muted-foreground">Se congela al activar el OKR.</p>
                                 <button type="button" class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline" @click="consult(kr, scope)"><RefreshCw class="size-3" /> Volver a consultar</button>
                             </div>
                             <div v-else-if="kr.preview" class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 animate-in fade-in duration-300">
                                 <p class="flex items-start gap-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
                                     <AlertTriangle class="mt-0.5 size-3.5 shrink-0" />
-                                    {{ kr.preview.error ?? (scope.scope_type === 'employee' ? 'Sin colocación histórica verificable para este gestor.' : 'Reportería aún no tiene dato para esta sucursal.') }}
+                                    {{ kr.preview.error ?? 'Reportería aún no tiene dato para esta sucursal.' }}
                                 </p>
-                                <p class="mt-0.5 text-[10px] text-muted-foreground">Nunca se usa la base de la sucursal como sustituto.</p>
+                                <p class="mt-0.5 text-[10px] text-muted-foreground">Puedes reintentar o capturar una base manual con motivo.</p>
                                 <div class="mt-1.5 flex flex-wrap gap-2">
                                     <button type="button" class="inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline" @click="consult(kr, scope)"><RefreshCw class="size-3" /> Reintentar</button>
                                     <button type="button" class="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 hover:underline dark:text-amber-300" @click="useManual(kr)"><PenLine class="size-3" /> Capturar base manual</button>
@@ -134,7 +144,7 @@ function cancelManual(kr: KrRow) {
                     <td class="px-2.5 py-3">
                         <div class="flex items-center gap-1.5">
                             <span class="font-semibold tabular-nums text-foreground">{{ kr.weight }}%</span>
-                            <CheckCircle2 v-if="krGoalIsComplete(kr, kpiOf(kr.kpi_id))" class="size-3.5 text-emerald-500 animate-in zoom-in duration-200" />
+                            <CheckCircle2 v-if="krGoalIsComplete(kr, kpiOf(kr.kpi_id), scope.scope_type)" class="size-3.5 text-emerald-500 animate-in zoom-in duration-200" />
                         </div>
                     </td>
                 </tr>

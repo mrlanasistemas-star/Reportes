@@ -28,6 +28,11 @@ class WarmDashboardTrendCacheJob implements ShouldQueue
     public int $timeout = 300;
     public int $tries = 1;
 
+    /** 16-oct-2026 — periodo recién generado cuya radiografía general se precalienta (comparativo/OKR). */
+    public function __construct(public ?int $periodId = null)
+    {
+    }
+
     public function handle(DashboardTrendService $trendService): void
     {
         @ini_set('memory_limit', '512M');
@@ -35,6 +40,13 @@ class WarmDashboardTrendCacheJob implements ShouldQueue
 
         try {
             $trendService->build();
+
+            // El comparativo y la línea base OKR leen el snapshot GENERAL del
+            // periodo (cacheado por summary): construirlo aquí evita que el primer
+            // usuario espere ~10-25 s en pantalla.
+            if ($this->periodId !== null && ($period = \App\Models\Period::query()->find($this->periodId))) {
+                app(\App\Services\RadiografiaExportService::class)->buildSnapshot($period);
+            }
         } catch (\Throwable $exception) {
             // No crítico: el dashboard sigue funcionando, solo pierde el
             // precalentamiento — nunca debe reintentar ni fallar el job padre.
