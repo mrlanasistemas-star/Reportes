@@ -67,6 +67,7 @@ específica vía middleware `ensure.ability:<ability>`:
 | `financial.read` | `/financial/*` |
 | `employees.read` **Y** `financial.read` (ambas) | `/employees/{id}/financial-summary` — corrección Fase 2.1: tener acceso al catálogo de empleados nunca basta por sí solo para leer su ficha financiera |
 | `collections.read` | `/collections/effectiveness` |
+| `collections.export` | `/collections/effectiveness/export` — ability **propia** de exportación: leer (`collections.read`) nunca basta para descargar el archivo. No se concede por defecto. |
 | `okr.read` | `/okr/*` |
 
 `/health` no requiere autenticación ni ability (no expone datos sensibles).
@@ -97,10 +98,20 @@ a Tula puede leer sus datos de junio (403 para octubre); uno restringido a Cuern
 leer octubre (403 para junio). Si la sucursal de ese periodo es desconocida (sin asignación
 registrada), se niega el acceso por defecto — nunca se concede por una coincidencia insegura.
 
+**Corrección OKR `summary` (2026-10-15) — alcance EFECTIVO, no histórico**: `GET /okr/summary`
+y `GET /okr/employees/{id}` autorizan y cuentan cada objetivo por su **sucursal efectiva**
+(`branch_id` del objetivo, o la de su objetivo padre si es individual), **nunca** por la
+asignación histórica del colaborador. Antes, `summary` admitía un objetivo cuando el
+colaborador había estado *alguna vez* asignado a una sucursal autorizada, filtrando objetivos
+cuya sucursal efectiva pertenece a otra sucursal (p. ej. tras una transferencia). Se eliminó
+ese criterio: un consumidor restringido solo cuenta/ve objetivos cuya sucursal efectiva está
+en su `allowed_branch_ids`.
+
 ## 5. Rate limiting
 
 Limiter `api-v1`: 60 peticiones/minuto por consumidor (no por IP — varios consumidores
-pueden compartir salida NAT). Definido en `App\Providers\AppServiceProvider`.
+pueden compartir salida NAT). Las exportaciones usan además `api-exports`: 20/minuto por
+consumidor (archivos pesados). Ambos definidos en `App\Providers\AppServiceProvider`.
 
 ## 6. Auditoría de consultas
 
@@ -126,12 +137,39 @@ respuesta ni valores financieros — solo metadata de QUIÉN pidió QUÉ.
 | GET | `/api/v1/financial/metrics` | `financial.read` |
 | GET | `/api/v1/financial/metric-values?period_id=&scope=&metrics=a,b,c` | `financial.read` |
 | GET | `/api/v1/collections/effectiveness?period_id=&scope=` | `collections.read` |
+| GET | `/api/v1/collections/effectiveness/export?period_id=&scope=` | `collections.export` |
 | GET | `/api/v1/okr/summary` | `okr.read` |
 | GET | `/api/v1/okr/employees/{id}` | `okr.read` |
 
 Parámetros comunes: `scope` = `general`\|`branch`\|`employee` (default `general`), `branch_id`,
 `employee_id`, `period_id` (obligatorio en todos los endpoints financieros — la API nunca
 adivina "el periodo más reciente").
+
+### 7.1 Exportación (`GET /collections/effectiveness/export`)
+
+Descarga el **Excel de Efectividad de Cobranza V4 ya generado** desde el módulo web — el mismo
+archivo que produce la web, la API **no recalcula** en el GET. `scope` = `general` o `branch`
+(no `employee`; `period_id` obligatorio y semanal). Requisitos y garantías:
+
+- Ability **propia** `collections.export` (además de Sanctum) — leer no basta.
+- Alcance por sucursal del consumidor (`ApiScopeResolver`): no puedes exportar una sucursal
+  fuera de tu alcance (403).
+- Solo ejecuciones del **motor y la metodología vigentes** (`V7`): un snapshot V6 o de la
+  calculadora anterior responde `404` pidiendo regenerar — nunca se exporta como vigente.
+- Límite más estricto: `throttle:api-exports` (20/min por consumidor) **además** de `api-v1`.
+- El archivo vive en el disco **privado** `local` (nunca público); la descarga queda
+  **auditada** por `log.api-query`.
+- Si el cálculo existe pero falta el archivo en disco → `409` (regenerar desde la web).
+
+Respuestas: `200` (descarga `.xlsx`, `Content-Disposition: attachment`), `404` (sin ejecución
+vigente), `409` (archivo ausente), `422` (`scope=employee` o periodo no semanal), `403`
+(sin ability o fuera de alcance). Ejemplo:
+
+```bash
+curl -L -H "Authorization: Bearer <token>" \
+  "https://<host>/api/v1/collections/effectiveness/export?period_id=42&scope=branch&branch_id=7" \
+  -o efectividad-cobranza.xlsx
+```
 
 ## 8. Catálogo de métricas (`GET /financial/metrics`)
 
@@ -188,6 +226,36 @@ Cada valor de `/financial/*` tiene esta forma (Fase 1.5):
   colaborador: asignación de sucursal verificada en ese periodo **y exactamente una** fila de
   promotor con su nombre; dos homónimos en la sucursal dan `not_attributable`. Requiere la
   ability `collections.read`. Detalle en `docs/efectividad/nueva-version/README.md`.
+
+### 9.1 Cuatro versiones distintas — no confundirlas
+
+El resultado de Efectividad lleva **cuatro** identificadores de versión, cada uno con un
+propósito distinto. La API los expone por separado y **nunca** presenta uno como otro:
+
+| Versión | Dónde | Valor actual | Qué significa |
+|---|---|---|---|
+| **Contrato API** | `api_version` | `v1` | Forma del endpoint/JSON. |
+| **Catálogo de métricas** | `definition_version` | `FinancialMetricRegistry::DEFINITION_VERSION` | Definiciones/códigos de métricas. |
+| **Motor técnico** | `engine_version` | `mrlana-v4-2026-10` | La macro/implementación que calculó (`EfectividadV4Calculator::ENGINE_VERSION`). |
+| **Metodología financiera** | `methodology` | `V7` | La regla financiera vigente (`EfectividadV4Calculator::METODOLOGIA`), **independiente** del motor. |
+
+**Por qué importa `methodology`.** La metodología evolucionó **V6 → V7** *dentro de la misma
+clase de motor* sin cambiar `engine_version` (V7: el pago puntual de la cuota vigente cuenta
+como SANO aunque el contrato tenga atrasos anteriores). Antes, una ejecución calculada con V6
+era **indistinguible** de una V7 a nivel de base de datos/API y podía servirse como vigente.
+
+Corrección: cada ejecución ahora **sella** su metodología (columna `metodologia` de
+`efectividad_cobranza_runs`). La identidad vigente (`scopeForV4Identity`) exige
+`engine_version` **y** `methodology` actuales. En consecuencia:
+
+- La API **nunca** entrega un resultado V6 como si fuera V7.
+- Una ejecución del motor vigente pero con metodología anterior (o sin sello, anterior a
+  esta columna) devuelve `status: not_available` con un `reason` que pide **regenerarla**
+  desde el módulo web. **No se borra** ningún histórico: el run anterior sigue en la base,
+  simplemente no se sirve como vigente.
+- Los campos `engine_version` y `methodology` viajan en `versions.approved` (en `ok`,
+  `stale` y `not_available`) y en `capabilities.resources.collections_effectiveness_approved`.
+- **No** se modificó la fórmula V7 para resolver esto: es solo identificación de versión.
 
 ## 10. Errores
 

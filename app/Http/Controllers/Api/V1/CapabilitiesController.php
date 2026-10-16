@@ -29,6 +29,7 @@ class CapabilitiesController extends Controller
         'financial_metrics_catalog' => 'financial.read',
         'collections_effectiveness_legacy' => 'collections.read',
         'collections_effectiveness_approved' => 'collections.read',
+        'collections_effectiveness_export' => 'collections.export',
         'okr_summary' => 'okr.read',
     ];
 
@@ -67,6 +68,9 @@ class CapabilitiesController extends Controller
             if ($resource === 'collections_effectiveness_approved') {
                 // Versión del motor que respalda `versions.approved` (nunca la calculadora anterior).
                 $resources[$resource]['engine_version'] = \App\Models\EfectividadCobranzaRun::currentEngineVersion();
+                // Metodología financiera vigente (p. ej. V7), independiente de la versión
+                // técnica del motor: un snapshot con metodología anterior no se sirve como vigente.
+                $resources[$resource]['methodology'] = \App\Models\EfectividadCobranzaRun::currentMethodology();
                 $resources[$resource]['period_type'] = 'weekly';
             }
         }

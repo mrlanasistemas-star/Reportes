@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Link, router } from '@inertiajs/vue3';
-import { LogOut, Settings } from 'lucide-vue-next';
+import { LogOut, Settings, ShieldCheck } from 'lucide-vue-next';
 import Swal from 'sweetalert2';
 import {
     DropdownMenuGroup,
@@ -11,6 +11,7 @@ import {
 import UserInfo from '@/components/UserInfo.vue';
 import { logout } from '@/routes';
 import { edit } from '@/routes/profile';
+import { edit as editSecurity } from '@/routes/security';
 import type { User } from '@/types';
 
 type Props = {
@@ -78,6 +79,12 @@ return;
             <Link class="block w-full cursor-pointer" :href="edit()" prefetch>
                 <Settings class="mr-2 h-4 w-4" />
                 Configuración
+            </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem :as-child="true">
+            <Link class="block w-full cursor-pointer" :href="editSecurity()" prefetch>
+                <ShieldCheck class="mr-2 h-4 w-4" />
+                Seguridad y contraseña
             </Link>
         </DropdownMenuItem>
     </DropdownMenuGroup>

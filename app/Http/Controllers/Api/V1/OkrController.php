@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\ApiConsumer;
 use App\Models\Employee;
-use App\Models\EmployeeBranchAssignment;
 use App\Models\OkrObjective;
 use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Okr\OkrProgressCalculator;
@@ -20,24 +19,46 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  */
 class OkrController extends Controller
 {
+    /**
+     * CORRECCIÓN seguridad por sucursal (igual que employeeSummary): la
+     * autorización es por la sucursal EFECTIVA del objetivo —su propia
+     * `branch_id` o la de su Objective padre si es individual— NUNCA por la
+     * asignación histórica del colaborador. Antes se admitía un objetivo vía
+     * `employee_id ∈ (empleados que ALGUNA VEZ estuvieron en una sucursal
+     * autorizada)`, lo que filtraba objetivos cuya sucursal efectiva pertenece
+     * a otra sucursal no autorizada (p. ej. tras una transferencia). El
+     * pre-filtro SQL solo acota el volumen; el conteo final se filtra en PHP
+     * por `canAccessBranch(sucursal efectiva)`, que es la única fuente de verdad.
+     */
     public function summary(Request $request): JsonResponse
     {
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
 
-        $query = OkrObjective::query()->where('lifecycle_status', OkrObjective::STATUS_ACTIVE);
-
         if ($consumer->hasNoBranchAccess()) {
-            $query->whereRaw('1 = 0');
-        } elseif ($consumer->isRestrictedToBranches()) {
+            return response()->json([
+                'active_count' => 0, 'at_risk_count' => 0,
+                'branches_with_okr' => 0, 'employees_with_okr' => 0,
+            ]);
+        }
+
+        $query = OkrObjective::query()
+            ->where('lifecycle_status', OkrObjective::STATUS_ACTIVE)
+            ->with('parent:id,branch_id');
+
+        if ($consumer->isRestrictedToBranches()) {
+            // Pre-filtro amplio (solo para no traer toda la tabla): objetivos cuya
+            // sucursal propia o la del padre está autorizada. La autorización real
+            // se aplica abajo con canAccessBranch sobre la sucursal EFECTIVA.
             $query->where(function ($q) use ($consumer) {
                 $q->whereIn('branch_id', $consumer->allowed_branch_ids)
-                    ->orWhereIn('employee_id', $this->employeeIdsForAllowedBranches($consumer))
                     ->orWhereHas('parent', fn ($p) => $p->whereIn('branch_id', $consumer->allowed_branch_ids));
             });
         }
 
-        $active = $query->get(['id', 'branch_id', 'employee_id', 'health_status']);
+        $active = $query->get(['id', 'parent_id', 'branch_id', 'employee_id', 'health_status'])
+            ->filter(fn (OkrObjective $o) => $consumer->canAccessBranch($o->branch_id ?? $o->parent?->branch_id))
+            ->values();
 
         return response()->json([
             'active_count'      => $active->count(),
@@ -92,15 +113,5 @@ class OkrController extends Controller
                 ),
             ])->values(),
         ]);
-    }
-
-    private function employeeIdsForAllowedBranches(ApiConsumer $consumer): array
-    {
-        return EmployeeBranchAssignment::query()
-            ->whereIn('branch_id', $consumer->allowed_branch_ids ?? [])
-            ->pluck('employee_id')
-            ->unique()
-            ->values()
-            ->all();
     }
 }

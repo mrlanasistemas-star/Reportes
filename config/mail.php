@@ -1,5 +1,27 @@
 <?php
 
+/*
+ * Deriva el `scheme` SMTP que Laravel 13 / Symfony Mailer realmente lee a partir
+ * del antiguo `MAIL_ENCRYPTION` (que este framework ya ignora). Así una config
+ * compartida con `MAIL_ENCRYPTION=ssl` sobre el puerto 465 sigue cifrando bien.
+ *   - ssl            => 'smtps' (TLS implícito)
+ *   - tls + 465      => 'smtps'
+ *   - tls + otro     => null  (STARTTLS automático; p. ej. Gmail 587)
+ *   - sin encryption => null  (lo resuelve el framework por el puerto)
+ */
+$resolveSmtpScheme = static function (?string $encryption, int $port): ?string {
+    $encryption = $encryption !== null ? strtolower(trim($encryption)) : null;
+
+    if ($encryption === 'ssl') {
+        return 'smtps';
+    }
+    if ($encryption === 'tls' && $port === 465) {
+        return 'smtps';
+    }
+
+    return null;
+};
+
 return [
 
     /*
@@ -39,7 +61,16 @@ return [
 
         'smtp' => [
             'transport' => 'smtp',
-            'scheme' => env('MAIL_SCHEME'),
+            // Laravel 13 (Symfony Mailer) decide el cifrado SOLO por el `scheme`:
+            //   - 'smtps' => TLS implícito (puerto 465)
+            //   - 'smtp'  => STARTTLS automático si el servidor lo ofrece (puerto 587)
+            // Este framework YA NO lee `MAIL_ENCRYPTION`. Para no romper configuraciones
+            // compartidas que solo traen `MAIL_ENCRYPTION=tls|ssl`, derivamos aquí el
+            // scheme equivalente. `MAIL_SCHEME` (si se define) siempre tiene prioridad.
+            'scheme' => env('MAIL_SCHEME', $resolveSmtpScheme(
+                env('MAIL_ENCRYPTION'),
+                (int) env('MAIL_PORT', 2525),
+            )),
             'url' => env('MAIL_URL'),
             'host' => env('MAIL_HOST', '127.0.0.1'),
             'port' => env('MAIL_PORT', 2525),
@@ -114,5 +145,21 @@ return [
         'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
         'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Dirección de soporte
+    |--------------------------------------------------------------------------
+    |
+    | Mostrada al usuario en el correo de invitación (UserAccessGrantedMail).
+    | Si no se define, se usa la dirección global "from".
+    |
+    | NOTA Gmail: `MAIL_FROM_ADDRESS` debe ser la MISMA cuenta de `MAIL_USERNAME`
+    | o un alias "Enviar como" verificado en esa cuenta; de lo contrario Gmail
+    | rechaza el envío ("sender address rejected" / reescritura del remitente).
+    |
+    */
+
+    'support_address' => env('MAIL_SUPPORT_ADDRESS'),
 
 ];

@@ -15,6 +15,8 @@ use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use App\Services\Efectividad\V4\EfectividadV4FingerprintService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * GET /api/v1/collections/effectiveness — Fase 1.3 exige "distinguiendo
@@ -93,6 +95,71 @@ class CollectionsController extends Controller
     }
 
     /**
+     * GET /collections/effectiveness/export — descarga el Excel de Efectividad de
+     * Cobranza V4 YA generado desde el módulo web (misma fuente que la web, el
+     * mismo archivo). NUNCA recalcula en el GET. Requiere la ability PROPIA
+     * `collections.export` (leer no basta) y respeta el alcance por sucursal del
+     * consumidor. Solo entrega ejecuciones del motor Y la metodología vigentes
+     * (`latestV4Success` → `forV4Identity`): un snapshot V6 o de la calculadora
+     * anterior nunca se exporta como vigente. El archivo vive en el disco privado
+     * `local` (nunca público); la descarga queda auditada por `log.api-query`.
+     */
+    public function exportEffectiveness(Request $request, ApiScopeResolver $scopeResolver): StreamedResponse|JsonResponse
+    {
+        /** @var ApiConsumer $consumer */
+        $consumer = $request->user();
+
+        $periodId = ApiValidation::requiredId($request, 'period_id');
+        $period = Period::query()->findOrFail($periodId);
+        $scope = $scopeResolver->resolve($request, $consumer, $period);
+
+        // La exportación es del snapshot completo: general o de UNA sucursal.
+        if ($scope['type'] === 'employee') {
+            return response()->json([
+                'message' => 'La exportación de Efectividad de Cobranza es por alcance general o por sucursal, no por colaborador.',
+            ], 422);
+        }
+
+        if ($period->type !== 'weekly') {
+            return response()->json([
+                'message' => 'La Efectividad de Cobranza (motor V4) solo existe por semana operativa; elige un period_id semanal.',
+                'methodology' => EfectividadCobranzaRun::currentMethodology(),
+            ], 422);
+        }
+
+        $branchId = $scope['branch_id'];
+        $run = $this->latestV4Success($period->id, $branchId);
+
+        if (! $run) {
+            return response()->json([
+                'message' => 'Aún no se ha generado la Efectividad de Cobranza (motor V4, metodología '
+                    .EfectividadCobranzaRun::currentMethodology().') para este periodo/alcance. Genérala desde el módulo web antes de exportarla por API.',
+                'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+                'methodology' => EfectividadCobranzaRun::currentMethodology(),
+            ], 404);
+        }
+
+        $path = $run->output_excel_path;
+
+        if (! $path || ! Storage::disk('local')->exists($path)) {
+            return response()->json([
+                'message' => 'El cálculo existe pero su archivo Excel no está disponible en el servidor. Regenera la Efectividad de Cobranza desde el módulo web.',
+                'run_id' => $run->id,
+            ], 409);
+        }
+
+        $filename = sprintf(
+            'efectividad-cobranza-%s-%s.xlsx',
+            $period->code ?: ('periodo-'.$period->id),
+            $branchId ? ('sucursal-'.$branchId) : 'general',
+        );
+
+        return Storage::disk('local')->download($path, $filename, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ]);
+    }
+
+    /**
      * Lee (nunca recalcula) el último snapshot exitoso para period_id+branchId
      * exactos. `branchId=null` = alcance general (snapshot generado sin
      * sucursal específica) — nunca se suman snapshots de sucursales para
@@ -127,6 +194,7 @@ class CollectionsController extends Controller
             'parameters'    => $run->metadata['parametros'] ?? null,
             'incidents'     => ['count' => (int) $run->incidents_count, 'by_code' => array_values($run->metadata['incidencias_resumen'] ?? [])],
             'engine_version' => $run->engine_version,
+            'methodology'   => $run->metodologia,
             'version'       => self::VERSION,
         ];
     }
@@ -204,6 +272,7 @@ class CollectionsController extends Controller
             'row'          => $row,
             'coverage'     => $run->coverage,
             'engine_version' => $run->engine_version,
+            'methodology'  => $run->metodologia,
             'version'      => self::VERSION,
         ];
     }
@@ -231,6 +300,7 @@ class CollectionsController extends Controller
             'status' => 'not_supported_period',
             'reason' => 'La Efectividad de Cobranza (motor V4) se calcula por semana operativa lunes-domingo. Consulta un period_id semanal; no se agregan semanas para simular meses.',
             'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+            'methodology' => EfectividadCobranzaRun::currentMethodology(),
             'version' => self::VERSION,
         ];
     }
@@ -239,13 +309,24 @@ class CollectionsController extends Controller
     {
         $previous = EfectividadCobranzaRun::latestSuccessFor($periodId, $branchId);
 
+        // Se distingue explícitamente POR QUÉ no hay un resultado vigente:
+        //  - motor anterior (otra macro aprobada), o
+        //  - mismo motor pero metodología anterior / sin sellar (p. ej. V6): hay
+        //    un resultado real pero NO se entrega como V7; debe regenerarse.
+        if ($previous && ! $previous->isCurrentEngine()) {
+            $reason .= ' Existe un resultado de la calculadora anterior (run '.$previous->id.'), pero no se entrega como versión vigente.';
+        } elseif ($previous && ! $previous->isCurrentMethodology()) {
+            $reason .= ' Existe un resultado del motor vigente pero con una metodología anterior ('
+                .($previous->metodologia ?? 'sin registrar').'); no se entrega como '
+                .EfectividadCobranzaRun::currentMethodology().'. Regenera la Efectividad de Cobranza desde el módulo web.';
+        }
+
         return [
             'available' => false,
             'status' => 'not_available',
-            'reason' => $previous && ! $previous->isCurrentEngine()
-                ? $reason.' Existe un resultado de la calculadora anterior (run '.$previous->id.'), pero no se entrega como versión vigente.'
-                : $reason,
+            'reason' => $reason,
             'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+            'methodology' => EfectividadCobranzaRun::currentMethodology(),
             'version' => self::VERSION,
         ];
     }

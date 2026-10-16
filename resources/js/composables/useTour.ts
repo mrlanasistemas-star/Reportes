@@ -46,13 +46,19 @@ export function useTour() {
     // puede abrir esa pantalla (mismo filtro que el menú). Si no, se salta:
     // la guía nunca lleva a un 403 ni explica un botón que el usuario no tiene.
     function stepAllowed(step: TourStep): boolean {
-        if (!step.href) {
+        if (!step.href && !step.module) {
             return true
         }
 
         const allowed = visibleMainNavItems(page.props.auth).map((item) => firstSegment(toUrl(item.href)))
 
-        return allowed.includes(firstSegment(step.href))
+        // Un paso que declara `module` (aunque no tenga href) solo se muestra si el
+        // rol ve ese módulo: así un recorrido nunca describe un módulo ajeno al alcance.
+        if (step.module && !allowed.includes(step.module)) {
+            return false
+        }
+
+        return step.href ? allowed.includes(firstSegment(step.href)) : true
     }
 
     const activeTour = computed(() => (activeTourId.value ? TOURS[activeTourId.value] : null))

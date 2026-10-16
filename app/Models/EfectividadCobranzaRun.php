@@ -59,6 +59,7 @@ class EfectividadCobranzaRun extends Model
         'period_id',
         'branch_id',
         'engine_version',
+        'metodologia',
         'mode',
         'base_date',
         'cutoff_date',
@@ -143,6 +144,27 @@ class EfectividadCobranzaRun extends Model
     public static function currentEngineVersion(): string
     {
         return EfectividadV4Calculator::ENGINE_VERSION;
+    }
+
+    /**
+     * Metodología financiera vigente (p. ej. V7), INDEPENDIENTE de la versión
+     * técnica del motor. La metodología puede cambiar (V6→V7) sin que cambie
+     * `engine_version`; por eso se sella y se filtra por separado: así la API
+     * nunca entrega un resultado V6 como si fuera V7.
+     */
+    public static function currentMethodology(): string
+    {
+        return EfectividadV4Calculator::METODOLOGIA;
+    }
+
+    /**
+     * ¿Esta ejecución se calculó con la metodología vigente? Las ejecuciones sin
+     * sello (`metodologia` NULL, anteriores a esta columna) se consideran NO
+     * vigentes: deben regenerarse, nunca se asumen V7.
+     */
+    public function isCurrentMethodology(): bool
+    {
+        return $this->metodologia === self::currentMethodology();
     }
 
     /** Motores que el sistema sigue generando activamente hoy (ninguno es "obsoleto" por sí mismo). */
@@ -294,12 +316,15 @@ class EfectividadCobranzaRun extends Model
 
     /**
      * Identidad V4: periodo semanal + sucursal + modo (+ fecha de corte en DIARIO).
-     * Solo considera ejecuciones del motor vigente.
+     * Solo considera ejecuciones del motor vigente Y de la metodología vigente
+     * (V7): una ejecución con el mismo `engine_version` pero metodología anterior
+     * (o sin sello) NO es parte de la identidad vigente — debe regenerarse.
      */
     public function scopeForV4Identity(Builder $query, int $periodId, ?int $branchId, string $mode, ?string $cutoff): Builder
     {
         return $query->forIdentity($periodId, $branchId)
             ->where('engine_version', self::currentEngineVersion())
+            ->where('metodologia', self::currentMethodology())
             ->where('mode', $mode)
             ->when($mode === self::MODE_DIARIO, fn ($q) => $q->whereDate('cutoff_date', $cutoff));
     }

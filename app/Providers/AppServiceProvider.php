@@ -45,6 +45,14 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(60)->by('api-v1:' . $consumerId);
         });
+
+        // Límite más estricto para descargas/exportaciones (archivos pesados): 20/min
+        // por consumidor, además del límite general 'api-v1' que también aplica.
+        RateLimiter::for('api-exports', function (\Illuminate\Http\Request $request) {
+            $consumerId = $request->user()?->getKey() ?? $request->ip();
+
+            return Limit::perMinute(20)->by('api-exports:' . $consumerId);
+        });
     }
 
     /**

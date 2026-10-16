@@ -33,9 +33,12 @@ export const TOURS: Record<string, TourDefinition> = {
                 body: 'Descarga exactamente lo que estás viendo — mismo periodo, misma sucursal — en Excel o en un reporte PDF con gráficas.',
             },
             {
-                target: 'nav-okr',
-                title: 'Módulo OKR',
-                body: 'Desde aquí administras los objetivos de cada sucursal y colaborador: metas, seguimiento, Cartas Compromiso y Warnings.',
+                // Cierre del recorrido DENTRO de Dashboard (16-oct-2026): antes el último
+                // paso resaltaba el módulo OKR, así que el recorrido de Dashboard "terminaba"
+                // en otro módulo. Ahora cierra en su propio contexto e invita a la guía
+                // completa, que ya solo muestra los módulos que el rol tiene permitidos.
+                title: 'Listo: este es tu Dashboard',
+                body: 'Cada módulo tiene su propio recorrido. Abre la Guía del sistema (botón de ayuda, abajo a la derecha) para ver los recorridos disponibles para tu rol.',
             },
         ],
     },

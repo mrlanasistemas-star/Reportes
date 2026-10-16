@@ -9,6 +9,7 @@ use App\Models\Period;
 use App\Models\Portfolio;
 use App\Services\Efectividad\V4\EfectividadV4FingerprintService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
@@ -34,7 +35,8 @@ function makeApiPeriod(): Period
 function v4RunAttrs(Period $period): array
 {
     return [
-        'engine_version' => EfectividadCobranzaRun::currentEngineVersion(), 'mode' => 'SEMANAL',
+        'engine_version' => EfectividadCobranzaRun::currentEngineVersion(),
+        'metodologia' => EfectividadCobranzaRun::currentMethodology(), 'mode' => 'SEMANAL',
         'base_date' => $period->start_date->copy()->subDay()->format('Y-m-d'), 'cutoff_date' => $period->end_date->format('Y-m-d'),
     ];
 }
@@ -142,6 +144,33 @@ it('marks the approved collections effectiveness as available with real numbers 
     expect($response->json('versions.approved.status'))->toBe('stale');
     expect($response->json('versions.approved.is_stale'))->toBeTrue();
     expect((float) $response->json('versions.approved.summary.sano_cob'))->toBe(100.0);
+});
+
+it('never serves a run computed with a prior methodology (e.g. V6) as the current V7 result — it reports not_available and asks to regenerate, without deleting history', function () {
+    $token = makeApiToken('collections-consumer-v6', ['collections.read']);
+    $period = makeApiPeriod();
+    $branch = Branch::query()->create(['code' => 'COR', 'name' => 'CORDOBA', 'normalized_name' => 'cordoba', 'is_active' => true]);
+
+    // Mismo motor vigente, pero metodología ANTERIOR: no debe entregarse como V7.
+    // array_merge (no `+`) para que el override 'V6' gane sobre el 'V7' por defecto.
+    $run = EfectividadCobranzaRun::query()->create(array_merge(v4RunAttrs($period), [
+        'period_id' => $period->id, 'branch_id' => $branch->id, 'status' => 'success',
+        'metodologia' => 'V6',
+        'finished_at' => now(), 'coverage' => ['status' => 'ok'],
+        'result_rows' => [['promotor' => 'GRAN TOTAL', 'sano_cob' => 100, 'es_total' => true]],
+        'source_fingerprint' => 'stub',
+    ]));
+
+    $response = $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson("/api/v1/collections/effectiveness?period_id={$period->id}&scope=branch&branch_id={$branch->id}");
+
+    $response->assertOk();
+    expect($response->json('versions.approved.available'))->toBeFalse();
+    expect($response->json('versions.approved.status'))->toBe('not_available');
+    expect($response->json('versions.approved.methodology'))->toBe(EfectividadCobranzaRun::currentMethodology());
+    expect($response->json('versions.approved.reason'))->toContain('metodología anterior');
+    // El histórico NO se borra: el run V6 sigue existiendo en la base.
+    expect(EfectividadCobranzaRun::query()->whereKey($run->id)->exists())->toBeTrue();
 });
 
 it('marks the approved collections effectiveness as status=ok (not stale) when the stored fingerprint still matches the current state of the sources', function () {
@@ -331,4 +360,56 @@ it('V4: un periodo mensual no tiene resultado V4 (no se agregan semanas) — not
     $response->assertOk();
     expect($response->json('versions.approved.status'))->toBe('not_supported_period')
         ->and($response->json('versions.legacy.version'))->toBe('legacy_vigente_atrasado_vencido');
+});
+
+// ---- §5.5: exportación por API (Excel V4 ya generado, nunca recalcula) ----
+
+it('export requires the dedicated collections.export ability — collections.read alone is 403', function () {
+    $token = makeApiToken('export-noperm', ['collections.read']);
+    $period = makeApiPeriod();
+
+    $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson("/api/v1/collections/effectiveness/export?period_id={$period->id}&scope=general")
+        ->assertStatus(403);
+});
+
+it('exports the already-generated V4 Excel file (never recalculated) for a consumer with collections.export', function () {
+    Storage::fake('local');
+    $token = makeApiToken('export-ok', ['collections.read', 'collections.export']);
+    $period = makeApiPeriod();
+    $relativePath = 'efectividad/run-export-test.xlsx';
+    Storage::disk('local')->put($relativePath, 'binary-xlsx-stub');
+
+    EfectividadCobranzaRun::query()->create(v4RunAttrs($period) + [
+        'period_id' => $period->id, 'branch_id' => null, 'status' => 'success',
+        'finished_at' => now(), 'coverage' => ['status' => 'ok'],
+        'result_rows' => [['promotor' => 'GRAN TOTAL', 'es_total' => true]],
+        'output_excel_path' => $relativePath, 'source_fingerprint' => 'stub',
+    ]);
+
+    $response = $this->withHeader('Authorization', "Bearer {$token}")
+        ->get("/api/v1/collections/effectiveness/export?period_id={$period->id}&scope=general");
+
+    $response->assertOk();
+    expect($response->headers->get('content-disposition'))->toContain('attachment');
+});
+
+it('export returns 404 (regenerate) when only a prior-methodology V6 run exists — never exports V6 as V7', function () {
+    Storage::fake('local');
+    $token = makeApiToken('export-v6', ['collections.read', 'collections.export']);
+    $period = makeApiPeriod();
+    $relativePath = 'efectividad/run-v6.xlsx';
+    Storage::disk('local')->put($relativePath, 'binary-xlsx-stub');
+
+    EfectividadCobranzaRun::query()->create(array_merge(v4RunAttrs($period), [
+        'period_id' => $period->id, 'branch_id' => null, 'status' => 'success',
+        'metodologia' => 'V6', 'finished_at' => now(), 'coverage' => ['status' => 'ok'],
+        'result_rows' => [['promotor' => 'GRAN TOTAL', 'es_total' => true]],
+        'output_excel_path' => $relativePath, 'source_fingerprint' => 'stub',
+    ]));
+
+    $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson("/api/v1/collections/effectiveness/export?period_id={$period->id}&scope=general")
+        ->assertStatus(404)
+        ->assertJsonPath('methodology', EfectividadCobranzaRun::currentMethodology());
 });
