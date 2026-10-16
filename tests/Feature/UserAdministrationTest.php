@@ -116,19 +116,23 @@ it('creates a user by INVITATION: the mail transport accepts it and the state is
         ->assertSessionMissing('temp_password');
 
     $user = User::query()->where('email', 'ines@example.test')->firstOrFail();
-    Mail::assertSent(UserAccessGrantedMail::class, fn ($mail) => $mail->hasTo('ines@example.test') && str_contains($mail->setPasswordUrl, '/reset-password/'));
+    // El correo entrega la contraseña temporal real (no un enlace de reset).
+    Mail::assertSent(UserAccessGrantedMail::class, fn ($mail) => $mail->hasTo('ines@example.test')
+        && is_string($mail->temporaryPassword) && $mail->temporaryPassword !== ''
+        && str_contains($mail->render(), $mail->temporaryPassword)
+        && ! str_contains($mail->render(), '/reset-password/'));
     expect($user->welcome_email_status)->toBe(UserInvitationService::STATUS_ACCEPTED)
         ->and($user->welcome_email_attempts)->toBe(1)
         ->and($user->welcome_email_sent_at)->not->toBeNull();
 });
 
-it('renders the business invitation template with name, button, link validity and support', function () {
+it('renders the business access email with name and temporary credentials, without any reset link', function () {
     $user = User::factory()->make(['name' => 'Inés Pérez', 'email' => 'ines@example.test']);
-    $html = (new UserAccessGrantedMail($user, 'https://reportes.test/reset-password/tok?email=ines', 60))->render();
+    $html = (new UserAccessGrantedMail($user, 'Temp0ralClave99'))->render();
 
-    expect($html)->toContain('MR LANA')->toContain('Inés Pérez')->toContain('Establecer mi contraseña')
-        ->toContain('https://reportes.test/reset-password/tok?email=ines')->toContain('1 hora')->toContain('soporte')
-        ->not->toContain('Segura-');
+    expect($html)->toContain('MR LANA')->toContain('Inés Pérez')
+        ->toContain('Contraseña temporal')->toContain('Temp0ralClave99')->toContain('ines@example.test')
+        ->not->toContain('/reset-password/')->not->toContain('Establecer mi contraseña');
 });
 
 it('a mail transport failure keeps the user, records the error and shows the exact retry message', function () {

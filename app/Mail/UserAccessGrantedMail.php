@@ -10,10 +10,14 @@ use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * Invitación / correo de bienvenida al crear un usuario. NUNCA viaja una
- * contraseña en texto plano: el enlace usa el mismo mecanismo de Fortify que
- * "¿Olvidaste tu contraseña?" (Password::broker()->createToken()), de un solo
- * uso y con la vigencia de config/auth.php (passwords.users.expire).
+ * Correo de bienvenida / entrega de accesos al crear (o reenviar) un usuario.
+ *
+ * Entrega las credenciales de primer acceso (usuario + contraseña temporal) en
+ * un formato formal, sin enlaces de expiración ni metadatos técnicos. La
+ * contraseña temporal es de un solo uso práctico: se le pide a la persona
+ * cambiarla en Configuración › Seguridad en cuanto ingresa. El valor en claro
+ * NUNCA se persiste (en `users` solo vive el hash); solo viaja en este correo
+ * en el momento del alta/reenvío.
  *
  * Enviado SÍNCRONO (no implementa ShouldQueue) — ver UserInvitationService.
  */
@@ -23,13 +27,12 @@ class UserAccessGrantedMail extends Mailable
 
     public function __construct(
         public User $user,
-        public string $setPasswordUrl,
-        public int $expiresInMinutes = 60,
+        public ?string $temporaryPassword = null,
     ) {}
 
     public function envelope(): Envelope
     {
-        return new Envelope(subject: 'Invitación a Reportes MR LANA — establece tu contraseña');
+        return new Envelope(subject: 'Tus accesos a Reportes MR LANA');
     }
 
     public function content(): Content
@@ -38,28 +41,9 @@ class UserAccessGrantedMail extends Mailable
             view: 'emails.users.acceso-creado',
             with: [
                 'user' => $this->user,
-                'setPasswordUrl' => $this->setPasswordUrl,
-                'expiresLabel' => $this->expiresLabel(),
+                'temporaryPassword' => $this->temporaryPassword,
                 'loginUrl' => route('login'),
-                'supportEmail' => config('mail.support_address') ?: config('mail.from.address'),
             ],
         );
-    }
-
-    private function expiresLabel(): string
-    {
-        $m = $this->expiresInMinutes;
-        if ($m % 1440 === 0) {
-            $d = intdiv($m, 1440);
-
-            return $d === 1 ? '24 horas' : "{$d} días";
-        }
-        if ($m % 60 === 0) {
-            $h = intdiv($m, 60);
-
-            return $h === 1 ? '1 hora' : "{$h} horas";
-        }
-
-        return "{$m} minutos";
     }
 }

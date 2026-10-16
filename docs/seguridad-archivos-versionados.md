@@ -179,8 +179,10 @@ llaves privadas PEM, `Hash::make`/`bcrypt` con texto fijo en seeders y migracion
   contraseñas. Las únicas contraseñas fijas están en `database/factories/UserFactory.php`
   (`'password'`) y en `tests/`: solo se usan en pruebas.
 - `resources/views/docs/api.blade.php` usa el texto `pega_aqui_el_token`.
-- Los correos de invitación (`UserAccessGrantedMail`) **nunca** envían la contraseña: mandan
-  un enlace de un solo uso.
+- Los correos de bienvenida (`UserAccessGrantedMail`) entregan una **contraseña temporal** de
+  primer acceso (no un enlace). Esa contraseña es de un solo uso práctico: se pide cambiarla en
+  Configuración › Seguridad al entrar. En `users` **solo** vive el hash; el valor en claro nunca
+  se persiste ni se registra en logs/auditoría (solo viaja en ese correo y, una vez, en pantalla).
 
 **Rotación de secretos: no hace falta**, porque no se filtró ninguno. Si en algún momento se
 confirma que un `.env` real se copió a otro lugar público, hay que cambiar `APP_KEY` (esto

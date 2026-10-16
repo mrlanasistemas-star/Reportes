@@ -3,7 +3,7 @@
 // diálogos viven en components/usuarios/*. Las acciones usan las URLs que
 // genera el backend y el backend vuelve a autorizar cada una.
 import { Head, router } from '@inertiajs/vue3'
-import { Plus, ShieldCheck } from 'lucide-vue-next'
+import { FileSpreadsheet, Plus, ShieldCheck } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, ref, watch } from 'vue'
 import AppPageHeader from '@/components/app/AppPageHeader.vue'
@@ -14,6 +14,7 @@ import { useAdminFlash } from '@/components/usuarios/useAdminFlash'
 import UserAuditLog from '@/components/usuarios/UserAuditLog.vue'
 import UserCreateDialog from '@/components/usuarios/UserCreateDialog.vue'
 import UserFilters from '@/components/usuarios/UserFilters.vue'
+import UserImportDialog from '@/components/usuarios/UserImportDialog.vue'
 import type { AccessState, AuditEntry, BranchOption, LinkableEmployee, UserDataScope, UserRoleOption, UserRow } from '@/components/usuarios/users'
 import UsersTable from '@/components/usuarios/UsersTable.vue'
 import UserSummaryCards from '@/components/usuarios/UserSummaryCards.vue'
@@ -34,11 +35,20 @@ const props = defineProps<{
     roles_url: string | null
     scope_branches: BranchOption[]
     actor_scope: UserDataScope
-    can: { create: boolean; invite: boolean; manage_access: boolean }
+    environment: string
+    import_urls: { preview: string; confirm: string; credentials: string } | null
+    can: { create: boolean; invite: boolean; manage_access: boolean; import: boolean }
     temp_password?: { name: string; email: string; password: string } | null
     reset_password?: { name: string; email: string; password: string } | null
     invitation_result?: { sent: boolean; message: string; email: string } | null
+    import_preview?: ImportPreview | null
+    import_result?: ImportResult | null
 }>()
+
+type ImportPreviewRow = { noi: string | null; name: string; branch_name: string; branch_id: number | null; position: string; email: string; role: string; status: 'create' | 'needs_review' | 'exists' | 'error'; observations: string[] }
+type ImportPreview = { environment: string; original_name: string; summary: Record<string, number>; rows: ImportPreviewRow[] }
+type ImportResultRow = { name: string; branch: string; position: string; email: string; creation: string; access: string; invitation: string; observations: string }
+type ImportResult = { summary: Record<string, number>; rows: ImportResultRow[]; has_credentials: boolean }
 
 type Section = 'resumen' | 'activos' | 'pendientes' | 'invitaciones' | 'administracion' | 'historial'
 const SECTIONS: { key: Section; label: string }[] = [
@@ -101,6 +111,15 @@ const sectionCount = (key: Section) => (key === 'historial' ? props.audit.length
 
 const actions = useUserActions()
 const createOpen = ref(false)
+const importOpen = ref(false)
+
+// La vista previa o el resultado llegan como props (flash de sesión): abrir el
+// diálogo de importación cuando aparezcan, para continuar el flujo en su paso.
+watch(() => [props.import_preview, props.import_result] as const, ([p, r]) => {
+    if (p || r) {
+        importOpen.value = true
+    }
+}, { immediate: true })
 const resetOpen = ref(false)
 const resetTarget = ref<UserRow | null>(null)
 const scopeOpen = ref(false)
@@ -159,6 +178,9 @@ watch(() => props.reset_password, (data) => {
                 <a v-if="roles_url" :href="roles_url" class="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold text-foreground shadow-soft-xs transition hover:bg-muted">
                     <ShieldCheck class="size-4" /> Roles y permisos
                 </a>
+                <Button v-if="can.import && import_urls" type="button" variant="outline" class="h-10 gap-2 px-4" @click="importOpen = true">
+                    <FileSpreadsheet class="size-4" /> Importar usuarios
+                </Button>
                 <Button v-if="can.create" type="button" data-tour="usuarios-add" class="h-10 gap-2 px-4" @click="createOpen = true">
                     <Plus class="size-4" /> Nuevo usuario
                 </Button>
@@ -190,7 +212,7 @@ watch(() => props.reset_password, (data) => {
             />
             <p class="app-help">
                 «Aceptada por el servidor de correo» significa que el servidor tomó el mensaje para enviarlo; no confirma que la persona lo haya recibido.
-                El enlace de la invitación vence en {{ invitation_expires_minutes }} minutos; si venció, reenvíala.
+                El correo de bienvenida entrega una contraseña temporal; si no llegó, puedes reenviarla (se genera una nueva).
             </p>
         </template>
 
@@ -201,5 +223,10 @@ watch(() => props.reset_password, (data) => {
         />
         <BranchScopeDialog v-model:open="scopeOpen" :user="scopeTarget" :branches="scope_branches" :can-grant-all="actor_scope.general" />
         <ResetPasswordDialog v-model:open="resetOpen" :user="resetTarget" />
+        <UserImportDialog
+            v-if="can.import && import_urls"
+            v-model:open="importOpen" :urls="import_urls" :environment="environment"
+            :preview="import_preview ?? null" :result="import_result ?? null" :can-invite="can.invite"
+        />
     </div>
 </template>

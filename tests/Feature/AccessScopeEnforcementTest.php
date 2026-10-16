@@ -550,7 +550,7 @@ it('invitación: con transporte aceptado el mensaje dice «aceptó el servidor»
     expect($ok['sent'])->toBeTrue()
         ->and($ok['message'])->toContain('servidor de correo aceptó')
         ->and(mb_strtolower($ok['message']))->not->toContain('entreg')->not->toContain('recib');
-    Mail::assertSent(UserAccessGrantedMail::class, fn ($m) => ! str_contains($m->render(), 'Contraseña temporal'));
+    Mail::assertSent(UserAccessGrantedMail::class, fn ($m) => str_contains($m->render(), 'Contraseña temporal'));
 
     Mail::shouldReceive('to')->andThrow(new TransportException('Connection could not be established with host "smtp.test:587"'));
     $this->actingAs($admin)->post(route('usuarios.store'), ['name' => 'Inv2', 'email' => 'inv2@example.test', 'role' => 'colaborador', 'password_mode' => 'invite']);
@@ -560,7 +560,7 @@ it('invitación: con transporte aceptado el mensaje dice «aceptó el servidor»
         ->and(User::query()->where('email', 'inv2@example.test')->value('welcome_email_status'))->toBe('failed');
 });
 
-it('no se guardan secretos en texto plano: contraseña temporal cifrada en la sesión, hash en BD, token de invitación con hash y nada en la auditoría', function () {
+it('no se guardan secretos en texto plano: contraseña temporal cifrada en la sesión, hash en BD, sin tokens de reset y nada en la auditoría', function () {
     $admin = aseAdmin();
     Mail::fake();
     $atl = aseBranch('ATLIXCO');
@@ -582,23 +582,25 @@ it('no se guardan secretos en texto plano: contraseña temporal cifrada en la se
         ->assertInertia(fn ($page) => $page->where('temp_password.password', $secret['password'])->etc());
     $this->actingAs($admin)->get(route('usuarios.index'))->assertInertia(fn ($page) => $page->where('temp_password', null)->etc());
 
-    // Token de la invitación: en BD solo su hash.
-    $url = null;
-    Mail::assertSent(UserAccessGrantedMail::class, function ($m) use (&$url) {
-        $url = $m->setPasswordUrl;
+    // La invitación entrega la contraseña temporal por correo (no un enlace):
+    // es exactamente la que se cifró en sesión, en BD solo vive su hash y no se
+    // crea ningún token de restablecimiento.
+    $plainTemp = null;
+    Mail::assertSent(UserAccessGrantedMail::class, function ($m) use (&$plainTemp) {
+        $plainTemp = $m->temporaryPassword;
 
         return true;
     });
-    $plainToken = basename(parse_url($url, PHP_URL_PATH));
-    $storedToken = DB::table('password_reset_tokens')->where('email', $user->email)->value('token');
-    expect($storedToken)->not->toBe($plainToken)->and(Hash::check($plainToken, $storedToken))->toBeTrue();
+    expect($plainTemp)->toBe($secret['password']);
+    expect(DB::table('users')->where('id', $user->id)->value('password'))->not->toBe($plainTemp);
+    expect(DB::table('password_reset_tokens')->where('email', $user->email)->exists())->toBeFalse();
 
     // Restablecer generado: también cifrado en la sesión.
     $this->actingAs($admin)->post(route('usuarios.reset-password', $user), ['password_mode' => 'auto']);
     $reset = ResponsibleController::revealSecret(session('reset_password'));
     expect(session('reset_password'))->not->toContain($reset['password']);
 
-    // Ninguna bitácora guarda la contraseña ni el token.
+    // Ninguna bitácora guarda la contraseña temporal ni la de restablecimiento.
     $audit = DB::table('okr_audit_logs')->get()->map(fn ($r) => json_encode($r))->implode(' ');
-    expect($audit)->not->toContain($secret['password'])->not->toContain($reset['password'])->not->toContain($plainToken);
+    expect($audit)->not->toContain($secret['password'])->not->toContain($reset['password']);
 });
