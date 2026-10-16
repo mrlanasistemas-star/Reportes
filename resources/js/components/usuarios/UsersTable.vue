@@ -3,16 +3,34 @@
 // último acceso y menú de acciones (solo las que el rol del actor permite;
 // el backend vuelve a validar cada una).
 import { Ban, KeyRound, Link2, Loader2, MailWarning, MapPinned, MoreHorizontal, RotateCw, ShieldCheck, ShieldOff, UserCheck, UserCog } from 'lucide-vue-next'
+import { computed } from 'vue'
 import AppEmptyState from '@/components/app/AppEmptyState.vue'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ACCESS_META, INVITATION_META, formatDateTime } from './users'
 import type { UserRow } from './users'
 
-defineProps<{ users: UserRow[]; resendingId: number | null }>()
+const props = defineProps<{ users: UserRow[]; resendingId: number | null; selectable?: boolean }>()
 const emit = defineEmits<{
     enable: [UserRow]; revoke: [UserRow]; toggleBlocked: [UserRow]; reset: [UserRow]
     resend: [UserRow]; changeRole: [UserRow]; linkEmployee: [UserRow]; editScope: [UserRow]
 }>()
+// Ids seleccionados para acciones masivas (solo filas cuya contraseña se puede restablecer).
+const selected = defineModel<number[]>('selected', { default: () => [] })
+
+const selectableIds = computed(() => props.users.filter((u) => u.can.reset_password).map((u) => u.id))
+const allSelected = computed(() => selectableIds.value.length > 0 && selectableIds.value.every((id) => selected.value.includes(id)))
+const someSelected = computed(() => !allSelected.value && selectableIds.value.some((id) => selected.value.includes(id)))
+
+function toggleAll() {
+    const visible = new Set(selectableIds.value)
+    selected.value = allSelected.value
+        ? selected.value.filter((id) => !visible.has(id))
+        : [...new Set([...selected.value, ...selectableIds.value])]
+}
+
+function toggleOne(id: number) {
+    selected.value = selected.value.includes(id) ? selected.value.filter((x) => x !== id) : [...selected.value, id]
+}
 
 function hasActions(u: UserRow): boolean {
     return u.can.manage_access || u.can.reset_password || u.can.change_role || u.can.link_employee || u.can.invite || u.can.change_branch_scope
@@ -25,6 +43,12 @@ function hasActions(u: UserRow): boolean {
             <table class="w-full min-w-[880px] text-sm">
                 <thead class="border-b border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                     <tr>
+                        <th v-if="selectable" class="w-10 py-3 pl-4">
+                            <input
+                                type="checkbox" class="size-4 accent-primary" :checked="allSelected" :indeterminate="someSelected"
+                                :disabled="selectableIds.length === 0" aria-label="Seleccionar todos los usuarios visibles" @change="toggleAll"
+                            >
+                        </th>
                         <th class="px-4 py-3 text-left font-semibold">Usuario</th>
                         <th class="px-4 py-3 text-left font-semibold">Rol</th>
                         <th class="px-4 py-3 text-left font-semibold">Acceso</th>
@@ -35,7 +59,13 @@ function hasActions(u: UserRow): boolean {
                     </tr>
                 </thead>
                 <tbody>
-                    <tr v-for="u in users" :key="u.id" class="border-t border-border transition hover:bg-muted/30">
+                    <tr v-for="u in users" :key="u.id" class="border-t border-border transition hover:bg-muted/30" :class="selected.includes(u.id) ? 'bg-primary/5' : ''">
+                        <td v-if="selectable" class="py-3 pl-4">
+                            <input
+                                type="checkbox" class="size-4 accent-primary" :checked="selected.includes(u.id)" :disabled="!u.can.reset_password"
+                                :title="u.can.reset_password ? '' : 'No puedes cambiar la contraseña de este usuario.'" :aria-label="`Seleccionar a ${u.name}`" @change="toggleOne(u.id)"
+                            >
+                        </td>
                         <td class="px-4 py-3">
                             <p class="font-semibold text-foreground">{{ u.name }} <span v-if="u.is_self" class="ml-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">Tú</span></p>
                             <p class="text-xs text-muted-foreground">{{ u.email }}</p>

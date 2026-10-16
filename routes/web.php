@@ -241,6 +241,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('/{user}/activar-acceso', 'enableAccess')->middleware('permission:usuarios,gestionar_acceso')->name('enable-access');
             Route::post('/{user}/revocar-acceso', 'disableAccess')->middleware('permission:usuarios,gestionar_acceso')->name('disable-access');
             Route::post('/{user}/bloqueo', 'toggleDisabled')->middleware('permission:usuarios,gestionar_acceso')->name('toggle-disabled');
+            // Asignación masiva de contraseñas + descarga ÚNICA del Excel (Nombre, Usuario, Contraseña, Correo, Sucursal).
+            Route::post('/contrasenas-masivas', 'bulkResetPasswords')->middleware(['throttle:10,1', 'permission:usuarios,restablecer'])->name('bulk-reset-passwords');
+            Route::get('/contrasenas-masivas/descargar', 'downloadBulkPasswords')->middleware('permission:usuarios,restablecer')->name('bulk-passwords-download');
             Route::post('/{user}/restablecer-contrasena', 'resetPassword')->middleware(['throttle:10,1', 'permission:usuarios,restablecer'])->name('reset-password');
             Route::post('/{user}/reenviar-invitacion', 'resendWelcomeEmail')->middleware(['throttle:10,1', 'permission:usuarios,invitar'])->name('resend-invitation');
             Route::put('/{user}/rol', 'updateRole')->middleware('permission:usuarios,asignar_rol')->name('update-role');

@@ -119,7 +119,8 @@ it('creates a user by INVITATION: the mail transport accepts it and the state is
     // El correo entrega la contraseña temporal real (no un enlace de reset).
     Mail::assertSent(UserAccessGrantedMail::class, fn ($mail) => $mail->hasTo('ines@example.test')
         && is_string($mail->temporaryPassword) && $mail->temporaryPassword !== ''
-        && str_contains($mail->render(), $mail->temporaryPassword)
+        // e(): la contraseña puede traer & < > " y en el HTML del correo va escapada.
+        && str_contains($mail->render(), e($mail->temporaryPassword))
         && ! str_contains($mail->render(), '/reset-password/'));
     expect($user->welcome_email_status)->toBe(UserInvitationService::STATUS_ACCEPTED)
         ->and($user->welcome_email_attempts)->toBe(1)
