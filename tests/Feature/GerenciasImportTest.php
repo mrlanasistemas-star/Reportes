@@ -77,8 +77,15 @@ it('crea las 25 cuentas con rol gerencial y alcance = su sucursal, sin contrase�
     // En BD solo vive un hash, nunca el claro.
     expect($u->password)->toStartWith('$')->and(mb_strlen($u->password))->toBeGreaterThan(50);
 
-    // El reporte de credenciales quedó sellado para descarga única.
+    // El reporte de credenciales quedó sellado para descarga única y CADA cuenta
+    // creada trae su contraseña temporal, que realmente abre la cuenta.
     expect(session('import_credentials'))->toBeString();
+    $report = \App\Http\Controllers\Okr\ResponsibleController::revealSecret(session('import_credentials'));
+    $created = collect($report)->where('creation', 'Creada');
+    expect($created)->toHaveCount(25);
+    $created->each(fn ($row) => expect($row['temporary_password'])->toBeString()->not->toBeEmpty());
+    $eliot = $created->firstWhere('email', 'eliot.serrano@mr-lana.com');
+    expect(\Illuminate\Support\Facades\Hash::check($eliot['temporary_password'], $u->password))->toBeTrue();
 });
 
 it('es idempotente: subir y confirmar el mismo archivo otra vez no crea cuentas ni toca las existentes', function () {

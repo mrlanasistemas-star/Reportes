@@ -9,6 +9,7 @@ import { computed, ref, watch } from 'vue'
 import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import { Button } from '@/components/ui/button'
 import BranchScopeDialog from '@/components/usuarios/BranchScopeDialog.vue'
+import BulkPasswordBar from '@/components/usuarios/BulkPasswordBar.vue'
 import ResetPasswordDialog from '@/components/usuarios/ResetPasswordDialog.vue'
 import { useAdminFlash } from '@/components/usuarios/useAdminFlash'
 import UserAuditLog from '@/components/usuarios/UserAuditLog.vue'
@@ -37,7 +38,9 @@ const props = defineProps<{
     actor_scope: UserDataScope
     environment: string
     import_urls: { preview: string; confirm: string; credentials: string } | null
-    can: { create: boolean; invite: boolean; manage_access: boolean; import: boolean }
+    can: { create: boolean; invite: boolean; manage_access: boolean; import: boolean; bulk_reset_password: boolean }
+    bulk_password_urls: { assign: string; download: string }
+    bulk_password_result?: { updated: number; skipped: number } | null
     temp_password?: { name: string; email: string; password: string } | null
     reset_password?: { name: string; email: string; password: string } | null
     invitation_result?: { sent: boolean; message: string; email: string } | null
@@ -143,7 +146,7 @@ async function resend(u: UserRow) {
     }
 }
 
-useAdminFlash(() => !!props.temp_password || !!props.reset_password || !!props.invitation_result)
+useAdminFlash(() => !!props.temp_password || !!props.reset_password || !!props.invitation_result || !!props.bulk_password_result)
 
 // Resultado del alta: contraseña generada (una sola vez) y/o estado REAL de la invitación.
 watch(() => [props.temp_password, props.invitation_result] as const, ([pwd, inv]) => {
@@ -161,6 +164,33 @@ watch(() => [props.temp_password, props.invitation_result] as const, ([pwd, inv]
     if (inv) {
         Swal.fire({ icon: inv.sent ? 'success' : 'warning', title: 'Usuario creado', text: inv.message, confirmButtonColor: '#4f46e5' })
     }
+}, { immediate: true })
+
+// Selección para la asignación masiva: se depuran ids que ya no existen tras recargar.
+const selectedIds = ref<number[]>([])
+watch(() => props.users, (users) => {
+    const ids = new Set(users.filter((u) => u.can.reset_password).map((u) => u.id))
+    selectedIds.value = selectedIds.value.filter((id) => ids.has(id))
+})
+
+// Resultado de la asignación masiva: el Excel se descarga UNA sola vez.
+watch(() => props.bulk_password_result, (result) => {
+    if (!result) {
+        return
+    }
+
+    const skippedNote = result.skipped > 0 ? `<p style="margin-top:.5rem;font-size:.9em;color:#475569">${result.skipped} seleccionado(s) se omitieron (tu propia cuenta o usuarios que tu rol no administra).</p>` : ''
+    Swal.fire({
+        icon: 'success',
+        title: `Contraseñas asignadas: ${result.updated}`,
+        html: `<p>Descarga ahora el Excel con nombre, usuario, contraseña, correo y sucursal.</p>
+<p style="margin-top:.5rem;color:#b45309">Solo se puede descargar una vez; si lo pierdes, tendrás que volver a asignarlas.</p>${skippedNote}`,
+        confirmButtonText: 'Descargar Excel', showCancelButton: true, cancelButtonText: 'Cerrar', confirmButtonColor: '#4f46e5', allowOutsideClick: false,
+    }).then((r) => {
+        if (r.isConfirmed) {
+            window.location.href = props.bulk_password_urls.download
+        }
+    })
 }, { immediate: true })
 
 watch(() => props.reset_password, (data) => {
@@ -204,7 +234,9 @@ watch(() => props.reset_password, (data) => {
         <template v-else>
             <UserSummaryCards v-if="section === 'resumen'" :users="users" />
             <UserFilters v-model:search="search" v-model:role="roleFilter" v-model:access="accessFilter" v-model:branch="branchFilter" :roles="roles" :branches="branches" />
+            <BulkPasswordBar v-if="can.bulk_reset_password" v-model:selected="selectedIds" :assign-url="bulk_password_urls.assign" />
             <UsersTable
+                v-model:selected="selectedIds" :selectable="can.bulk_reset_password"
                 :users="visibleUsers" :resending-id="actions.resendingId.value"
                 @enable="actions.enableAccess" @revoke="actions.revokeAccess" @toggle-blocked="actions.toggleBlocked"
                 @reset="openReset" @resend="resend" @edit-scope="openScope"

@@ -205,7 +205,14 @@ class ResponsibleController extends Controller
                 'invite' => $this->actions->canAction($actor, 'usuarios', 'invitar'),
                 'manage_access' => $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso'),
                 'import' => $actor->isAdmin() && $this->actions->canAction($actor, 'usuarios', 'crear'),
+                'bulk_reset_password' => $this->actions->canAction($actor, 'usuarios', 'restablecer'),
             ],
+            'bulk_password_urls' => [
+                'assign' => route('usuarios.bulk-reset-passwords'),
+                'download' => route('usuarios.bulk-passwords-download'),
+            ],
+            // Solo el resumen (cuántas se asignaron); las contraseñas viajan selladas para la descarga.
+            'bulk_password_result' => session()->pull('bulk_password_result'),
             // Se muestran UNA SOLA VEZ (session()->pull() las lee y las borra).
             'temp_password' => self::revealSecret(session()->pull('temp_password')),
             'reset_password' => self::revealSecret(session()->pull('reset_password')),
@@ -433,6 +440,132 @@ class ResponsibleController extends Controller
         }
 
         return back()->with('reset_password', self::sealSecret(['name' => $user->name, 'email' => $user->email, 'password' => $password]));
+    }
+
+    /**
+     * Asignación MASIVA de contraseñas a los usuarios seleccionados: a cada uno se
+     * le genera una contraseña nueva (la anterior deja de funcionar y se cierran
+     * sus sesiones). Se omiten tu propia cuenta y las que tu rol no puede
+     * administrar. El listado con las contraseñas se sella cifrado en la sesión
+     * para UNA sola descarga en Excel (nunca va a la pantalla ni a los logs).
+     */
+    public function bulkResetPasswords(Request $request, OkrEmployeeBranchResolver $branchResolver, DataScopeService $dataScope): RedirectResponse
+    {
+        $actor = $request->user();
+        $data = $request->validate([
+            'user_ids' => ['required', 'array', 'min:1', 'max:500'],
+            'user_ids.*' => ['integer'],
+        ], [
+            'user_ids.required' => 'Selecciona al menos un usuario.',
+        ]);
+
+        $branchNames = Branch::query()->pluck('name', 'id');
+        $rows = [];
+        $skipped = 0;
+
+        $users = User::query()->whereIn('id', array_unique($data['user_ids']))->orderBy('name')->get();
+        foreach ($users as $user) {
+            if ($user->id === $actor->id || ! $this->guard->canManageUser($actor, $user)) {
+                $skipped++;
+
+                continue;
+            }
+
+            $password = Str::password(14, symbols: false);
+            $user->forceFill(['password' => Hash::make($password), 'remember_token' => Str::random(60)])->save();
+            $this->closeSessions($user);
+            $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, 'password_reset', null, null, null, 'Contraseña generada (asignación masiva)');
+
+            $rows[] = [
+                'name' => $user->name,
+                'username' => $user->email,
+                'password' => $password,
+                'email' => $user->email,
+                'branch' => $this->branchLabelFor($user, $branchResolver, $branchNames, $dataScope),
+            ];
+        }
+        $skipped += count(array_unique($data['user_ids'])) - $users->count();
+
+        if ($rows === []) {
+            return back()->with('error', 'No se asignó ninguna contraseña: los usuarios seleccionados no se pueden administrar con tu rol.');
+        }
+
+        session()->put('bulk_password_credentials', self::sealSecret($rows));
+
+        return back()->with('bulk_password_result', ['updated' => count($rows), 'skipped' => $skipped]);
+    }
+
+    /** Descarga ÚNICA del Excel de la última asignación masiva (Nombre, Usuario, Contraseña, Correo, Sucursal). */
+    public function downloadBulkPasswords(Request $request): \Symfony\Component\HttpFoundation\BinaryFileResponse|RedirectResponse
+    {
+        $rows = self::revealSecret(session()->pull('bulk_password_credentials'));
+        if (! is_array($rows) || $rows === []) {
+            return back()->with('error', 'No hay contraseñas disponibles para descargar (ya se descargaron o expiraron). Vuelve a asignarlas si las necesitas.');
+        }
+
+        return $this->downloadSpreadsheet(
+            ['Nombre', 'Usuario', 'Contraseña', 'Correo', 'Sucursal'],
+            array_map(fn ($r) => [$r['name'], $r['username'], $r['password'], $r['email'], $r['branch']], $rows),
+            'Contraseñas',
+            'contrasenas_usuarios',
+        );
+    }
+
+    /** Sucursal para el Excel: la laboral del colaborador vinculado; si no, la(s) de su alcance. */
+    private function branchLabelFor(User $user, OkrEmployeeBranchResolver $branchResolver, $branchNames, DataScopeService $dataScope): string
+    {
+        $branchId = $user->employee_id ? $branchResolver->currentBranchIdFor($user->employee_id) : null;
+        if ($branchId && isset($branchNames[$branchId])) {
+            return $branchNames[$branchId];
+        }
+
+        $scope = $dataScope->describe($user);
+        if ($scope['general']) {
+            return 'Todas las sucursales';
+        }
+        $names = collect($scope['branch_ids'])->map(fn ($id) => $branchNames[$id] ?? null)->filter()->sort()->values();
+
+        return $names->isEmpty() ? '—' : $names->implode(', ');
+    }
+
+    /**
+     * Arma y envía un .xlsx temporal (encabezados en negritas, columnas autoajustadas)
+     * y lo elimina tras enviarlo.
+     *
+     * @param  list<string>  $headers
+     * @param  list<list<mixed>>  $rows
+     */
+    private function downloadSpreadsheet(array $headers, array $rows, string $sheetTitle, string $fileBase): \Symfony\Component\HttpFoundation\BinaryFileResponse
+    {
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle($sheetTitle);
+        $sheet->fromArray($headers, null, 'A1');
+        $r = 2;
+        foreach ($rows as $row) {
+            // Como texto explícito: una contraseña o un correo nunca se reinterpretan como número/fórmula.
+            foreach (array_values($row) as $i => $value) {
+                $sheet->setCellValueExplicit([$i + 1, $r], (string) ($value ?? ''), \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            }
+            $r++;
+        }
+        $lastCol = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($headers));
+        foreach (range(1, count($headers)) as $i) {
+            $sheet->getColumnDimensionByColumn($i)->setAutoSize(true);
+        }
+        $sheet->getStyle("A1:{$lastCol}1")->getFont()->setBold(true);
+
+        $dir = storage_path('app/user-imports');
+        \Illuminate\Support\Facades\File::ensureDirectoryExists($dir);
+        $outputPath = $dir . '/' . $fileBase . '_' . now()->format('Ymd_His') . '_' . Str::random(6) . '.xlsx';
+        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet))->save($outputPath);
+        $spreadsheet->disconnectWorksheets();
+
+        return response()->download($outputPath, $fileBase . '.xlsx', [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma' => 'no-cache',
+        ])->deleteFileAfterSend(true);
     }
 
     /**
@@ -681,11 +814,13 @@ class ResponsibleController extends Controller
             }
 
             try {
-                $report[] = $base + $this->createImportedUser($row, $actor, $dataScope, $sendInvitations);
+                // array_merge (no `+`): `+` conserva la clave de $base y descartaba la
+                // contraseña temporal generada (el reporte salía con la columna vacía).
+                $report[] = array_merge($base, $this->createImportedUser($row, $actor, $dataScope, $sendInvitations));
                 $created++;
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::error('Importación de gerencias: fallo al crear una cuenta.', ['email' => $row['email'], 'error' => $e->getMessage()]);
-                $report[] = $base + ['creation' => 'Error al crear', 'access' => '—', 'invitation' => '—', 'observations' => trim($base['observations'] . ' ' . 'No se pudo crear; intenta de nuevo.')];
+                $report[] = array_merge($base, ['creation' => 'Error al crear', 'access' => '—', 'invitation' => '—', 'observations' => trim($base['observations'] . ' ' . 'No se pudo crear; intenta de nuevo.')]);
             }
         }
 
@@ -772,34 +907,15 @@ class ResponsibleController extends Controller
             return back()->with('error', 'No hay un reporte de credenciales disponible (ya se descargó o expiró).');
         }
 
-        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
-        $sheet = $spreadsheet->getActiveSheet();
-        $sheet->setTitle('Credenciales');
-        $headers = ['Nombre completo', 'Sucursal', 'Puesto laboral', 'Rol asignado', 'Correo / usuario', 'Contraseña temporal', 'Estado de creación', 'Estado de acceso', 'Estado de invitación', 'Observaciones'];
-        $sheet->fromArray($headers, null, 'A1');
-        $r = 2;
-        foreach ($report as $row) {
-            $sheet->fromArray([
+        return $this->downloadSpreadsheet(
+            ['Nombre completo', 'Sucursal', 'Puesto laboral', 'Rol asignado', 'Correo / usuario', 'Contraseña temporal', 'Estado de creación', 'Estado de acceso', 'Estado de invitación', 'Observaciones'],
+            array_map(fn ($row) => [
                 $row['name'], $row['branch'], $row['position'], $row['role'], $row['email'],
                 $row['temporary_password'] ?? '', $row['creation'], $row['access'], $row['invitation'], $row['observations'],
-            ], null, 'A' . $r++);
-        }
-        foreach (range('A', 'J') as $col) {
-            $sheet->getColumnDimension($col)->setAutoSize(true);
-        }
-        $sheet->getStyle('A1:J1')->getFont()->setBold(true);
-
-        $dir = storage_path('app/user-imports');
-        \Illuminate\Support\Facades\File::ensureDirectoryExists($dir);
-        $outputPath = $dir . '/credenciales_gerencias_' . now()->format('Ymd_His') . '.xlsx';
-        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet))->save($outputPath);
-        $spreadsheet->disconnectWorksheets();
-
-        return response()->download($outputPath, 'credenciales_gerencias.xlsx', [
-            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
-            'Pragma' => 'no-cache',
-        ])->deleteFileAfterSend(true);
+            ], $report),
+            'Credenciales',
+            'credenciales_gerencias',
+        );
     }
 
     /**
