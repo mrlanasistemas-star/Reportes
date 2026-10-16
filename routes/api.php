@@ -57,6 +57,13 @@ Route::prefix('v1')
             Route::get('/collections/effectiveness', [CollectionsController::class, 'effectiveness']);
         });
 
+        // Exportación: ability PROPIA (`collections.export`, nunca basta con leer) +
+        // límite más estricto. Entrega el Excel V4 YA generado desde el módulo web
+        // (motor + metodología vigentes); NUNCA recalcula en el GET.
+        Route::middleware(['ensure.ability:collections.export', 'throttle:api-exports'])->group(function () {
+            Route::get('/collections/effectiveness/export', [CollectionsController::class, 'exportEffectiveness']);
+        });
+
         Route::middleware('ensure.ability:okr.read')->group(function () {
             Route::get('/okr/summary', [OkrController::class, 'summary']);
             Route::get('/okr/employees/{employeeId}', [OkrController::class, 'employeeSummary']);

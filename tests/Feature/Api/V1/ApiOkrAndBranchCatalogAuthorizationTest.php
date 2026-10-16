@@ -3,8 +3,10 @@
 use App\Models\ApiConsumer;
 use App\Models\Branch;
 use App\Models\Employee;
+use App\Models\EmployeeBranchAssignment;
 use App\Models\OkrKpi;
 use App\Models\OkrObjective;
+use App\Models\Period;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
@@ -120,6 +122,53 @@ it('returns 200 with an empty list when the employee genuinely has no objectives
         ->getJson("/api/v1/okr/employees/{$employee->id}")
         ->assertOk()
         ->assertJsonPath('objectives', []);
+});
+
+it('okr/summary counts objectives by their EFFECTIVE branch, never by the employee historical assignment (no cross-branch leak)', function () {
+    $tula = Branch::query()->create(['code' => 'TUL', 'name' => 'Tula', 'is_active' => true]);
+    $cuernavaca = Branch::query()->create(['code' => 'CUE', 'name' => 'Cuernavaca', 'is_active' => true]);
+    $employee = Employee::query()->create(['employee_code' => 'EMP-SUM', 'full_name' => 'Gestor Transferido', 'normalized_name' => 'gestor transferido', 'is_active' => true]);
+    $user = User::factory()->create();
+    $period = Period::query()->create([
+        'name' => 'Semana OKR', 'code' => 'W-OKR-'.uniqid(), 'type' => 'weekly',
+        'year' => 2026, 'month' => 6, 'sequence' => 1,
+        'start_date' => '2026-06-01', 'end_date' => '2026-06-07', 'is_closed' => false,
+    ]);
+
+    // El colaborador estuvo asignado históricamente a Tula (sucursal autorizada)...
+    EmployeeBranchAssignment::query()->create([
+        'period_id' => $period->id, 'employee_id' => $employee->id, 'branch_id' => $tula->id,
+        'source_type' => 'lendus', 'match_type' => 'normalized', 'confidence' => '0.90', 'was_manual_reviewed' => false,
+    ]);
+
+    // ...pero este objetivo activo pertenece a Cuernavaca (NO autorizada). Antes se
+    // colaba en el conteo vía employee_id ∈ (empleados alguna vez en Tula).
+    OkrObjective::query()->create([
+        'scope_type' => OkrObjective::SCOPE_EMPLOYEE, 'branch_id' => $cuernavaca->id, 'employee_id' => $employee->id,
+        'title' => 'Objetivo en Cuernavaca', 'responsible_user_id' => $user->id, 'created_by' => $user->id,
+        'start_date' => '2026-06-01', 'end_date' => '2026-07-26', 'duration_weeks' => 8,
+        'lifecycle_status' => OkrObjective::STATUS_ACTIVE,
+    ]);
+
+    // Un objetivo legítimo de Tula (sí debe contarse).
+    OkrObjective::query()->create([
+        'scope_type' => OkrObjective::SCOPE_BRANCH, 'branch_id' => $tula->id, 'employee_id' => $employee->id,
+        'title' => 'Objetivo en Tula', 'responsible_user_id' => $user->id, 'created_by' => $user->id,
+        'start_date' => '2026-06-01', 'end_date' => '2026-07-26', 'duration_weeks' => 8,
+        'lifecycle_status' => OkrObjective::STATUS_ACTIVE,
+    ]);
+
+    $token = apiTokenFor([
+        'system_code' => 'auditoria-okr-summary-tula', 'allowed_branch_ids' => [$tula->id],
+        'branch_access_mode' => ApiConsumer::BRANCH_ACCESS_RESTRICTED,
+    ], ['okr.read']);
+
+    $response = $this->withHeader('Authorization', "Bearer {$token}")
+        ->getJson('/api/v1/okr/summary')->assertOk();
+
+    // Solo el objetivo de Tula: el de Cuernavaca NO se cuenta pese al historial del colaborador.
+    expect($response->json('active_count'))->toBe(1);
+    expect($response->json('branches_with_okr'))->toBe(1);
 });
 
 // ---- Fase 2.4: catálogo de sucursales respeta allowed_branch_ids ----

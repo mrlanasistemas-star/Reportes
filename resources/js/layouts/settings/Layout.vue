@@ -24,16 +24,16 @@ const { isCurrentOrParentUrl } = useCurrentUrl();
 </script>
 
 <template>
-    <div class="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:py-8">
+    <div class="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <header class="mb-6 lg:mb-8">
             <p class="app-kicker">Tu cuenta</p>
             <h1 class="app-title mt-1">Configuración</h1>
-            <p class="app-subtitle mt-1 max-w-2xl">
+            <p class="app-subtitle mt-1 max-w-3xl">
                 Administra tu información, la seguridad de tu acceso y cómo se ve el sistema. Estos cambios solo afectan a tu usuario.
             </p>
         </header>
 
-        <div class="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[260px_minmax(0,1fr)] lg:items-start">
+        <div class="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[280px_minmax(0,1fr)] lg:items-start lg:gap-10">
             <nav aria-label="Secciones de configuración" class="min-w-0 lg:sticky lg:top-6">
                 <ul class="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:flex-col lg:gap-1 lg:overflow-visible lg:px-0 lg:pb-0">
                     <li v-for="item in sidebarNavItems" :key="toUrl(item.href)" class="shrink-0">

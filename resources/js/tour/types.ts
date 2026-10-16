@@ -12,6 +12,13 @@ export type TourStep = {
     example?: string
     /** Si el siguiente paso vive en otra pantalla, se navega aquí (Inertia) antes de buscar el target. */
     href?: string
+    /**
+     * Primer segmento de URL del módulo al que pertenece este paso (p. ej. 'okr',
+     * 'usuarios'). Sirve para que un paso SIN `href` (p. ej. uno que resalta algo de
+     * otro módulo) también respete permisos: si el rol no ve ese módulo en el menú,
+     * el paso se salta. Omitir para pasos del propio módulo del recorrido.
+     */
+    module?: string
 }
 
 export type TourDefinition = {

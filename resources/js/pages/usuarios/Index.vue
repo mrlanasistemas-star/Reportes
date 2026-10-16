@@ -76,8 +76,11 @@ function inSection(u: UserRow, key: Section): boolean {
     switch (key) {
         case 'activos': return u.access === 'enabled'
         case 'pendientes': return u.access === 'pending'
-        // Invitación sin confirmar por el servidor de correo, o que nunca se usó para entrar.
-        case 'invitaciones': return u.invitation.status !== 'accepted' || !u.last_login_at
+        // Estado de ENTREGA de la invitación únicamente (pendiente o fallida). No se
+        // mezcla con `last_login_at`: que el correo fuera aceptado por el servidor y que
+        // la persona haya entrado alguna vez son cosas distintas (una invitación aceptada
+        // de alguien que aún no inicia sesión NO es un problema de envío).
+        case 'invitaciones': return u.invitation.status !== 'accepted'
         case 'administracion': return u.role === 'admin' || u.access === 'blocked'
         default: return true
     }

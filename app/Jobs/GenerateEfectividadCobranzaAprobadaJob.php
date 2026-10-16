@@ -327,6 +327,9 @@ class GenerateEfectividadCobranzaAprobadaJob implements ShouldQueue
                 ->whereNull('cancel_requested_at')
                 ->update([
                     'status' => EfectividadCobranzaRun::STATUS_SUCCESS,
+                    // Sello de metodología financiera (p. ej. V7) emitido por el motor.
+                    // Si el motor no la declara, queda NULL (no se asume V7).
+                    'metodologia' => $result['metodologia'] ?? null,
                     'coverage' => json_encode($cob + ['estadisticas' => $result['estadisticas'], 'sin_movimientos' => $result['sin_movimientos']]),
                     'result_rows' => json_encode($result['filas']),
                     'output_excel_path' => $relativePath,

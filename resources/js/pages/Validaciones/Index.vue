@@ -80,7 +80,7 @@ const {
                                 </div>
                             </div>
 
-                            <div class="grid grid-cols-2 gap-3 lg:w-[420px]">
+                            <div class="grid grid-cols-2 gap-3 lg:max-w-[420px]">
                                 <div class="app-card-soft px-4 py-3">
                                     <div class="flex items-center gap-2 text-xs text-muted-foreground">
                                         <CircleAlert class="size-4" />

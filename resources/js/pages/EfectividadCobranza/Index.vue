@@ -622,7 +622,7 @@ onBeforeUnmount(() => {
                 <div
                     class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between"
                 >
-                    <div class="grid gap-3 sm:grid-cols-3 lg:w-[48rem]">
+                    <div class="grid gap-3 sm:grid-cols-3 lg:w-full lg:max-w-3xl">
                         <SelectField
                             v-model="sucursal"
                             label="Sucursal"
