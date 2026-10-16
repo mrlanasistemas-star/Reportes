@@ -247,6 +247,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::put('/{user}/colaborador', 'linkEmployee')->middleware('permission:usuarios,editar')->name('link-employee');
             // Fase 6.4 — alcance por sucursal (mismo permiso que asignar rol: define qué datos ve).
             Route::put('/{user}/sucursales', 'updateBranchScope')->middleware('permission:usuarios,asignar_rol')->name('update-branch-scope');
+            // Importación masiva del directorio de gerencias (solo administradores,
+            // validado también en el controlador). Previsualizar → confirmar →
+            // descargar el reporte de credenciales (una sola vez).
+            Route::post('/importar/preview', 'importPreview')->middleware('permission:usuarios,crear')->name('import-preview');
+            Route::post('/importar', 'importConfirm')->middleware('permission:usuarios,crear')->name('import');
+            Route::get('/importar/credenciales', 'downloadImportCredentials')->middleware('permission:usuarios,crear')->name('import-credentials');
         });
 
     Route::prefix('roles')

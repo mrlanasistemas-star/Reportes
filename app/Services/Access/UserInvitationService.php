@@ -4,13 +4,23 @@ namespace App\Services\Access;
 
 use App\Mail\UserAccessGrantedMail;
 use App\Models\User;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Str;
 
 /**
- * Invitación / correo de bienvenida (prioridad 10). Enlace de un solo uso del
- * broker de contraseñas de Fortify — nunca la contraseña por correo.
+ * Correo de bienvenida / entrega de accesos (prioridad 10). Entrega las
+ * credenciales de primer acceso (usuario + contraseña temporal) dentro del
+ * propio correo, con formato formal — sin enlaces de expiración.
+ *
+ * La contraseña en claro NUNCA se persiste: en `users` solo vive el hash. El
+ * valor en claro solo viaja en este correo en el momento del envío:
+ *   - En el alta (store) se nos pasa la contraseña temporal recién generada.
+ *   - En un reenvío no existe el claro (solo el hash), así que se genera una
+ *     NUEVA contraseña temporal y se asigna al usuario. El cambio del hash solo
+ *     se persiste si el correo se aceptó, para no dejar a la persona sin acceso
+ *     si el transporte falla.
  *
  * Síncrono a propósito: el administrador necesita saber AHORA si el servidor
  * de correo aceptó el mensaje. "Aceptado" significa solo eso: el transporte
@@ -25,16 +35,32 @@ class UserInvitationService
     public const MSG_ACCEPTED = 'El servidor de correo aceptó la invitación para su envío.';
     public const MSG_FAILED = 'No se pudo enviar la invitación. El usuario fue creado y puedes intentar enviarla nuevamente.';
 
-    /** @return array{sent:bool, message:string} */
-    public function send(User $user): array
+    /**
+     * Envía el correo con las credenciales de acceso.
+     *
+     * @param  string|null  $plainPassword  Contraseña temporal en claro ya asignada
+     *                                       al usuario (alta). Si es null, se genera
+     *                                       una nueva y se asigna solo si el envío
+     *                                       se acepta (reenvío).
+     * @return array{sent:bool, message:string, regenerated:bool, temporary_password:?string}
+     */
+    public function send(User $user, ?string $plainPassword = null): array
     {
         $attempts = (int) ($user->welcome_email_attempts ?? 0) + 1;
 
-        try {
-            $token = Password::broker()->createToken($user);
-            $url = route('password.reset', ['token' => $token, 'email' => $user->email]);
+        // Si no conocemos el claro (reenvío), se prepara una contraseña temporal
+        // nueva, pero el nuevo hash NO se guarda hasta confirmar que el correo
+        // fue aceptado: así un fallo de transporte nunca deja sin acceso a la
+        // persona (su contraseña anterior sigue válida).
+        $regenerated = $plainPassword === null || $plainPassword === '';
+        $temporary = $regenerated ? Str::password(16) : $plainPassword;
 
-            Mail::to($user->email)->send(new UserAccessGrantedMail($user, $url, $this->expiresInMinutes()));
+        try {
+            Mail::to($user->email)->send(new UserAccessGrantedMail($user, $temporary));
+
+            if ($regenerated) {
+                $user->forceFill(['password' => Hash::make($temporary), 'remember_token' => Str::random(60)])->save();
+            }
 
             $user->forceFill([
                 'welcome_email_sent_at' => now(), 'welcome_email_error' => null,
@@ -42,7 +68,7 @@ class UserInvitationService
                 'welcome_email_last_attempt_at' => now(),
             ])->save();
 
-            return ['sent' => true, 'message' => self::MSG_ACCEPTED];
+            return ['sent' => true, 'message' => self::MSG_ACCEPTED, 'regenerated' => $regenerated, 'temporary_password' => $temporary];
         } catch (\Throwable $e) {
             // El detalle técnico solo va al log del servidor, nunca a la pantalla.
             // `cause` es la causa normalizada para que Sistemas la pueda filtrar;
@@ -55,13 +81,15 @@ class UserInvitationService
                 'error' => $e->getMessage(),
             ]);
 
+            // No se cambió la contraseña: si era un reenvío, el hash anterior sigue
+            // intacto (nunca se guardó el nuevo), así la persona no queda sin acceso.
             $user->forceFill([
                 'welcome_email_sent_at' => null, 'welcome_email_error' => $this->friendlyReason($e),
                 'welcome_email_status' => self::STATUS_FAILED, 'welcome_email_attempts' => $attempts,
                 'welcome_email_last_attempt_at' => now(),
             ])->save();
 
-            return ['sent' => false, 'message' => self::MSG_FAILED];
+            return ['sent' => false, 'message' => self::MSG_FAILED, 'regenerated' => false, 'temporary_password' => null];
         }
     }
 

@@ -59,7 +59,18 @@ export type UserRoleOption = {
     grantable: boolean
 }
 
-export type LinkableEmployee = { id: number; full_name: string; is_active: boolean; linked_user_id: number | null }
+export type LinkableEmployee = {
+    id: number
+    full_name: string
+    /** Número de empleado / clave (NOI o código de directorio). */
+    employee_code: string | null
+    position: string | null
+    is_active: boolean
+    current_branch: string | null
+    linked_user_id: number | null
+    /** Nº de registros históricos que esta identidad canónica consolida. */
+    records: number
+}
 
 export type AuditEntry = {
     id: number

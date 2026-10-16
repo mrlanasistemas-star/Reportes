@@ -35,12 +35,21 @@ const form = useForm({
 })
 
 const assignable = computed(() => props.roles.filter((r) => r.assignable))
-const freeEmployees = computed(() => props.employees.filter((e) => e.linked_user_id === null).map((e) => ({ id: e.id, nombre: e.full_name, codigo: e.is_active ? '' : 'inactivo' })))
+// Una entrada por PERSONA (ya viene deduplicada del backend por identidad
+// canónica). El secundario muestra y permite buscar por NOI · sucursal · puesto.
+const freeEmployees = computed(() => props.employees
+    .filter((e) => e.linked_user_id === null)
+    .map((e) => ({
+        id: e.id,
+        nombre: e.full_name,
+        codigo: [e.employee_code ? `NOI ${e.employee_code}` : null, e.current_branch, e.position, e.is_active ? null : 'inactivo']
+            .filter(Boolean)
+            .join(' · '),
+    })))
 const selectedRole = computed(() => props.roles.find((r) => r.key === form.role))
-const expiresLabel = computed(() => (props.invitationExpiresMinutes % 60 === 0 ? `${props.invitationExpiresMinutes / 60} hora(s)` : `${props.invitationExpiresMinutes} minutos`))
 
 const modes = computed(() => [
-    { key: 'invite' as Mode, icon: Mail, title: 'Enviar invitación', hint: `La persona establece su contraseña con un enlace (vence en ${expiresLabel.value}).`, disabled: !props.canInvite },
+    { key: 'invite' as Mode, icon: Mail, title: 'Enviar por correo', hint: 'Recibe sus credenciales (contraseña temporal) por correo; también la verás aquí una vez.', disabled: !props.canInvite },
     { key: 'auto' as Mode, icon: Sparkles, title: 'Generar contraseña', hint: 'Se te muestra una sola vez para que la entregues.', disabled: false },
     { key: 'manual' as Mode, icon: KeyRound, title: 'Escribir contraseña', hint: 'Tú la defines (con confirmación) y la entregas.', disabled: false },
 ])
@@ -150,7 +159,7 @@ function submit() {
                     <PasswordFields v-if="form.password_mode === 'manual'" v-model:password="form.password" v-model:confirmation="form.password_confirmation" :error="form.errors.password" />
                     <label v-if="form.password_mode !== 'invite' && canInvite" class="flex cursor-pointer items-center gap-2 text-xs text-foreground">
                         <input v-model="form.send_invitation" type="checkbox" class="accent-primary">
-                        Enviar también el correo de bienvenida con el enlace para establecer su propia contraseña
+                        Enviar también el correo de bienvenida con sus credenciales (contraseña temporal)
                     </label>
                 </div>
 

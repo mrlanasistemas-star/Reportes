@@ -151,8 +151,10 @@ return [
     | Dirección de soporte
     |--------------------------------------------------------------------------
     |
-    | Mostrada al usuario en el correo de invitación (UserAccessGrantedMail).
-    | Si no se define, se usa la dirección global "from".
+    | Dirección de soporte del sistema. El correo de bienvenida
+    | (UserAccessGrantedMail) ya NO la muestra (se quitó la metadata/soporte del
+    | mensaje); queda disponible por si otro flujo la necesita. Si no se define,
+    | se usa la dirección global "from".
     |
     | NOTA Gmail: `MAIL_FROM_ADDRESS` debe ser la MISMA cuenta de `MAIL_USERNAME`
     | o un alias "Enviar como" verificado en esa cuenta; de lo contrario Gmail

@@ -13,13 +13,16 @@ use App\Services\Access\ActionPermissionService;
 use App\Services\Access\ModuleAccessService;
 use App\Services\Access\RoleCatalogService;
 use App\Services\Access\UserAccessAuditLogger;
+use App\Services\Access\GerenciasDirectoryImportService;
 use App\Services\Access\UserInvitationService;
+use App\Services\CanonicalEmployeeResolver;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
@@ -124,14 +127,51 @@ class ResponsibleController extends Controller
                 ];
             });
 
-        // Colaboradores vinculables: activos, más cualquiera ya vinculado (aunque esté
-        // inactivo) para no ocultar un vínculo histórico existente.
-        $employees = Employee::query()
+        // Colaboradores vinculables: UNA entrada por PERSONA (identidad canónica),
+        // no una fila por cada registro histórico de `employees`. El mismo
+        // colaborador tiene varios `Employee.id` (NOI vs NOI Fiscal, varios
+        // periodos) que nunca se unificaron y hacían aparecer el mismo nombre
+        // repetido muchas veces en el selector (p. ej. ADRIAN DIAZ MENA). Se
+        // colapsa por `normalized_name` con la MISMA regla que ya usa Reportería
+        // y OKR (CanonicalEmployeeResolver), respetando homónimos reales distintos
+        // (employee_match_rejections). NO se borra ni modifica ningún registro
+        // histórico: solo se consolida la VISTA del buscador. El id expuesto es el
+        // canónico (menor del grupo), estable entre llamadas.
+        $employeeRows = Employee::query()
             ->where(fn ($q) => $q->where('is_active', true)->orWhereHas('user'))
             ->with('user:id,employee_id')
             ->orderBy('full_name')
-            ->get(['id', 'full_name', 'is_active'])
-            ->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name, 'is_active' => $e->is_active, 'linked_user_id' => $e->user?->id]);
+            ->get(['id', 'full_name', 'normalized_name', 'position', 'employee_code', 'is_active']);
+
+        $rowsById = $employeeRows->keyBy('id');
+        $linkedUserByEmployeeId = $employeeRows->filter(fn ($e) => $e->user)->mapWithKeys(fn ($e) => [$e->id => $e->user->id]);
+
+        $employees = app(CanonicalEmployeeResolver::class)->canonicalize($employeeRows)
+            ->map(function ($person) use ($rowsById, $linkedUserByEmployeeId, $branchResolver, $branchNames) {
+                // Representante del grupo: se prefiere un registro activo; si no, el canónico.
+                $rep = collect($person->employee_ids)
+                    ->map(fn ($id) => $rowsById->get($id))->filter()
+                    ->sortByDesc(fn ($e) => $e->is_active ? 1 : 0)->first() ?? $rowsById->get($person->id);
+                // Si CUALQUIER registro del grupo ya tiene cuenta, la persona está vinculada:
+                // así una identidad laboral nunca se ofrece para una segunda cuenta activa.
+                $linkedUserId = collect($person->employee_ids)
+                    ->map(fn ($id) => $linkedUserByEmployeeId->get($id))->filter()->first();
+                $branchId = $branchResolver->currentBranchIdFor($person->id);
+
+                return [
+                    'id' => $person->id,
+                    'full_name' => $rep?->full_name ?? $person->full_name,
+                    'employee_code' => $rep?->employee_code,
+                    'position' => $rep?->position,
+                    'is_active' => (bool) ($rep?->is_active ?? false),
+                    'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
+                    'linked_user_id' => $linkedUserId ? (int) $linkedUserId : null,
+                    // Nº de registros históricos que representa (para señalar consolidaciones).
+                    'records' => count($person->employee_ids),
+                ];
+            })
+            ->sortBy('full_name', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values();
 
         $roles = collect($catalog->all())->map(fn ($r) => [
             'key' => $r['key'], 'name' => $r['name'], 'description' => $r['description'], 'base_level' => $r['base_level'], 'is_system' => $r['is_system'],
@@ -153,15 +193,25 @@ class ResponsibleController extends Controller
             'scope_branches' => app(DataScopeService::class)->filterBranchOptions($actor, app(DataScopeService::class)->assignableBranches()),
             'actor_scope' => app(DataScopeService::class)->describe($actor),
             'roles_url' => $moduleAccess->allows($actor, 'roles') ? route('roles.index') : null,
+            'environment' => app()->environment(),
+            // Importación masiva del directorio de gerencias (solo administradores).
+            'import_urls' => $actor->isAdmin() ? [
+                'preview' => route('usuarios.import-preview'),
+                'confirm' => route('usuarios.import'),
+                'credentials' => route('usuarios.import-credentials'),
+            ] : null,
             'can' => [
                 'create' => $this->actions->canAction($actor, 'usuarios', 'crear'),
                 'invite' => $this->actions->canAction($actor, 'usuarios', 'invitar'),
                 'manage_access' => $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso'),
+                'import' => $actor->isAdmin() && $this->actions->canAction($actor, 'usuarios', 'crear'),
             ],
             // Se muestran UNA SOLA VEZ (session()->pull() las lee y las borra).
             'temp_password' => self::revealSecret(session()->pull('temp_password')),
             'reset_password' => self::revealSecret(session()->pull('reset_password')),
             'invitation_result' => session()->pull('invitation_result'),
+            'import_preview' => session()->pull('import_preview'),
+            'import_result' => session()->pull('import_result'),
         ]);
     }
 
@@ -199,6 +249,14 @@ class ResponsibleController extends Controller
         $role = $data['role'] ?? User::ROLE_COLABORADOR;
         abort_unless($this->guard->canGrantRole($actor, $role), 403, 'No puedes asignar un rol con más permisos que el tuyo.');
 
+        // Una identidad laboral (persona) no puede quedar ligada a dos cuentas:
+        // se revisa el grupo canónico completo, no solo el employee_id exacto.
+        if (($data['employee_id'] ?? null) !== null && $this->employeeIdentityLinkedUserId((int) $data['employee_id']) !== null) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'employee_id' => 'Esa identidad de colaborador ya está vinculada a otra cuenta.',
+            ]);
+        }
+
         // Fase 6.4 — alcance: el elegido; si no se eligió y quien da el alta tiene alcance
         // restringido, hereda SUS sucursales (nunca queda con «todas» por omisión).
         $dataScope = app(DataScopeService::class);
@@ -221,13 +279,11 @@ class ResponsibleController extends Controller
         abort_if($scopeMode !== null && ! $dataScope->canGrant($actor, $scopeMode, $scopeIds), 403, 'No puedes conceder un alcance mayor al tuyo: solo puedes asignar sucursales que tú mismo tienes autorizadas.');
 
         $mode = $data['password_mode'] ?? 'auto';
-        $tempPassword = $mode === 'auto' ? Str::password(16) : null;
-        // invite: contraseña aleatoria que nadie conoce — la persona fija la suya con el enlace.
-        $finalPassword = match ($mode) {
-            'manual' => $data['password'],
-            'auto' => $tempPassword,
-            default => Str::password(40),
-        };
+        // 'invite' y 'auto' generan una contraseña temporal legible (16 caracteres);
+        // 'manual' la escribe quien da el alta. En todos los casos se guarda SOLO su
+        // hash; el claro solo viaja (una vez) en el correo y/o en la pantalla.
+        $tempPassword = $mode === 'manual' ? null : Str::password(16);
+        $finalPassword = $mode === 'manual' ? $data['password'] : $tempPassword;
         $sendInvitation = $mode === 'invite' || ($data['send_invitation'] ?? true);
         if ($sendInvitation && ! $this->actions->canAction($actor, 'usuarios', 'invitar')) {
             abort_if($mode === 'invite', 403, 'Tu rol no permite enviar invitaciones.');
@@ -258,24 +314,40 @@ class ResponsibleController extends Controller
 
         $response = back()->with('success', "Usuario {$user->name} creado.");
 
+        $invitationSent = null;
         if ($sendInvitation) {
-            $result = $this->invitations->send($user);
+            // Se le entrega al correo la contraseña temporal real recién generada
+            // (nunca un enlace): el usuario entra con ella y la cambia en Seguridad.
+            $result = $this->invitations->send($user, $finalPassword);
+            $invitationSent = $result['sent'];
             $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, $result['sent'] ? 'invitation_accepted' : 'invitation_failed');
-            $response->with('invitation_result', $result + ['email' => $user->email]);
+            $response->with('invitation_result', ['sent' => $result['sent'], 'message' => $result['message'], 'email' => $user->email]);
         }
 
-        return $tempPassword !== null
+        // La contraseña temporal se muestra en pantalla (una sola vez) cuando:
+        //  - modo 'auto': el administrador la entrega él mismo; o
+        //  - modo 'invite' pero el correo NO se pudo enviar: así Sistemas puede
+        //    entregarla por un canal seguro (spec §5) sin dar por enviada la
+        //    invitación. Si el correo se aceptó, la credencial ya viajó en él.
+        $reveal = $tempPassword !== null && ($mode === 'auto' || ($mode === 'invite' && $invitationSent === false));
+
+        return $reveal
             ? $response->with('temp_password', self::sealSecret(['name' => $user->name, 'email' => $user->email, 'password' => $tempPassword]))
             : $response;
     }
 
-    /** Reintenta la invitación sin recrear al usuario ni cambiar su contraseña. */
+    /**
+     * Reenvía el correo de accesos sin recrear al usuario. Como nunca guardamos
+     * la contraseña en claro, el reenvío entrega una contraseña temporal NUEVA
+     * (solo se aplica si el correo se acepta; si el envío falla, la contraseña
+     * anterior sigue intacta — ver UserInvitationService::send()).
+     */
     public function resendWelcomeEmail(Request $request, User $user): RedirectResponse|JsonResponse
     {
         abort_unless($this->guard->canManageUser($request->user(), $user), 403, 'Solo un administrador puede reenviar la invitación de otro administrador.');
 
         $result = $this->invitations->send($user);
-        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, $result['sent'] ? 'invitation_accepted' : 'invitation_failed');
+        $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, $result['sent'] ? 'invitation_accepted' : 'invitation_failed', null, null, null, $result['sent'] ? 'Correo con nueva contraseña temporal' : null);
 
         if ($request->expectsJson()) {
             $fresh = $user->fresh();
@@ -457,9 +529,9 @@ class ResponsibleController extends Controller
         abort_unless($this->guard->canManageUser($request->user(), $user), 403, 'Solo un administrador puede modificar a otro administrador.');
 
         if ($data['employee_id'] !== null) {
-            $alreadyLinked = User::query()->where('employee_id', $data['employee_id'])->where('id', '!=', $user->id)->exists();
-            if ($alreadyLinked) {
-                return back()->with('error', 'Ese colaborador ya está vinculado a otro usuario.');
+            $linkedTo = $this->employeeIdentityLinkedUserId((int) $data['employee_id'], $user->id);
+            if ($linkedTo !== null) {
+                return back()->with('error', 'Esa identidad de colaborador ya está vinculada a otra cuenta: una persona no puede quedar ligada a dos cuentas.');
             }
         }
 
@@ -512,6 +584,225 @@ class ResponsibleController extends Controller
     }
 
     /**
+     * Usuarios → Importar usuarios (paso 1): sube el directorio de gerencias,
+     * lo valida y devuelve la VISTA PREVIA. No crea nada. El archivo se guarda
+     * temporalmente para re-leerlo al confirmar (idempotencia autoritativa).
+     */
+    public function importPreview(Request $request, GerenciasDirectoryImportService $service): RedirectResponse
+    {
+        $actor = $request->user();
+        abort_unless($actor->isAdmin(), 403, 'La importación masiva es exclusiva de administradores.');
+
+        $request->validate(
+            ['file' => ['required', 'file', 'max:10240', 'mimes:xlsx,xls']],
+            ['file.required' => 'Selecciona el archivo del directorio.', 'file.mimes' => 'El archivo debe ser .xlsx o .xls.', 'file.max' => 'El archivo no debe superar 10 MB.'],
+        );
+
+        $path = Storage::disk('local')->putFile('user-imports', $request->file('file'));
+        $preview = $service->preview(Storage::disk('local')->path($path));
+
+        if (! $preview['sheet_found'] || $preview['summary']['total'] === 0) {
+            Storage::disk('local')->delete($path);
+
+            return back()->with('error', 'No se encontró la hoja «Directorio» o no tiene filas de colaboradores. Revisa el archivo.');
+        }
+
+        // El archivo se conserva (no flash) hasta confirmar o cancelar.
+        session()->put('import_file_path', $path);
+
+        return back()->with('import_preview', [
+            'environment' => app()->environment(),
+            'original_name' => $request->file('file')->getClientOriginalName(),
+            'summary' => $preview['summary'],
+            'rows' => $preview['rows'],
+        ]);
+    }
+
+    /**
+     * Usuarios → Importar usuarios (paso 2): crea SOLO las cuentas seleccionadas
+     * y válidas. Idempotente: una cuenta existente (por correo) nunca se recrea
+     * ni se le toca contraseña/permisos. Cada cuenta nueva recibe su propia
+     * contraseña temporal (hash en BD; el claro solo va al reporte de entrega).
+     * Por omisión NO envía invitaciones por correo (SMTP puede no estar
+     * verificado); se puede activar explícitamente con `send_invitations`.
+     */
+    public function importConfirm(Request $request, GerenciasDirectoryImportService $service, DataScopeService $dataScope): RedirectResponse
+    {
+        $actor = $request->user();
+        abort_unless($actor->isAdmin(), 403, 'La importación masiva es exclusiva de administradores.');
+
+        $data = $request->validate([
+            'emails' => ['required', 'array', 'min:1'],
+            'emails.*' => ['string'],
+            'confirmed' => ['accepted'],
+            'send_invitations' => ['nullable', 'boolean'],
+        ], [
+            'emails.required' => 'Selecciona al menos una cuenta para crear.',
+            'confirmed.accepted' => 'Debes confirmar el lote antes de crear las cuentas.',
+        ]);
+
+        $path = session('import_file_path');
+        abort_unless(is_string($path) && Storage::disk('local')->exists($path), 422, 'La sesión de importación expiró. Vuelve a subir el archivo.');
+
+        // Se re-lee el archivo (fuente autoritativa) y se re-evalúa contra la BD
+        // actual: así la idempotencia se verifica EN VIVO al momento de crear.
+        $preview = $service->preview(Storage::disk('local')->path($path));
+        $wanted = collect($data['emails'])->map(fn ($e) => mb_strtolower(trim($e)))->flip();
+        $sendInvitations = ($data['send_invitations'] ?? false) && $this->actions->canAction($actor, 'usuarios', 'invitar');
+
+        $report = [];
+        $created = 0;
+        $skippedExisting = 0;
+        $skippedInvalid = 0;
+
+        foreach ($preview['rows'] as $row) {
+            if (! $wanted->has(mb_strtolower(trim($row['email'])))) {
+                continue;
+            }
+
+            $base = [
+                'name' => $row['name'], 'branch' => $row['branch_name'], 'position' => $row['position'],
+                'role' => 'Gerencial', 'email' => $row['email'], 'temporary_password' => null,
+                'observations' => implode(' ', $row['observations']),
+            ];
+
+            // No creamos filas con error, ni las que ya existen (idempotencia).
+            if ($row['status'] === GerenciasDirectoryImportService::STATUS_ERROR || $row['branch_id'] === null) {
+                $skippedInvalid++;
+                $report[] = $base + ['creation' => 'No creada (datos inválidos)', 'access' => '—', 'invitation' => '—'];
+
+                continue;
+            }
+            if ($row['existing_user_id'] || User::query()->whereRaw('LOWER(email) = ?', [mb_strtolower(trim($row['email']))])->exists()) {
+                $skippedExisting++;
+                $report[] = $base + ['creation' => 'Ya existía (sin cambios)', 'access' => 'Sin cambios', 'invitation' => 'Sin cambios'];
+
+                continue;
+            }
+
+            try {
+                $report[] = $base + $this->createImportedUser($row, $actor, $dataScope, $sendInvitations);
+                $created++;
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error('Importación de gerencias: fallo al crear una cuenta.', ['email' => $row['email'], 'error' => $e->getMessage()]);
+                $report[] = $base + ['creation' => 'Error al crear', 'access' => '—', 'invitation' => '—', 'observations' => trim($base['observations'] . ' ' . 'No se pudo crear; intenta de nuevo.')];
+            }
+        }
+
+        // Limpieza: el archivo temporal no se conserva.
+        Storage::disk('local')->delete($path);
+        session()->forget('import_file_path');
+
+        $summary = ['created' => $created, 'existing' => $skippedExisting, 'invalid' => $skippedInvalid, 'processed' => count($report)];
+        $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $actor->id, 'user_created', 'role', null, 'gerencial', "Importación de gerencias: {$created} creadas, {$skippedExisting} existentes");
+
+        $response = back()->with('import_result', [
+            'summary' => $summary,
+            // En pantalla NUNCA van las contraseñas: solo estados y observaciones.
+            'rows' => array_map(fn ($r) => ['name' => $r['name'], 'branch' => $r['branch'], 'position' => $r['position'], 'email' => $r['email'], 'creation' => $r['creation'], 'access' => $r['access'], 'invitation' => $r['invitation'], 'observations' => $r['observations']], $report),
+            'has_credentials' => $created > 0,
+        ]);
+
+        // El reporte CON contraseñas temporales se sella cifrado en la sesión para
+        // una ÚNICA descarga protegida; nunca se escribe en logs ni props de pantalla.
+        if ($created > 0) {
+            session()->put('import_credentials', self::sealSecret($report));
+        }
+
+        return $response;
+    }
+
+    /** Crea una cuenta importada (rol gerencial, alcance = su sucursal). */
+    private function createImportedUser(array $row, User $actor, DataScopeService $dataScope, bool $sendInvitations): array
+    {
+        $tempPassword = Str::password(16);
+
+        // Vínculo laboral solo si la identidad está libre (nunca dos cuentas por persona).
+        $employeeId = null;
+        if ($row['employee_id'] && $this->employeeIdentityLinkedUserId((int) $row['employee_id']) === null) {
+            $employeeId = (int) $row['employee_id'];
+        }
+
+        $user = User::query()->create([
+            'name' => $row['name'],
+            'email' => $row['email'],
+            'password' => Hash::make($tempPassword),
+            'role' => GerenciasDirectoryImportService::ROLE,
+            'employee_id' => $employeeId,
+        ]);
+        $user->forceFill([
+            'email_verified_at' => null,
+            'access_enabled_at' => null, // queda "pendiente de activación" hasta confirmar identidad
+            'welcome_email_status' => $sendInvitations ? UserInvitationService::STATUS_PENDING : null,
+        ])->save();
+
+        // Alcance = SU sucursal (nunca «todas» por ser gerencial).
+        $dataScope->save($user, DataScopeService::MODE_BRANCHES, [(int) $row['branch_id']], $actor);
+        $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, 'user_created', 'role', null, GerenciasDirectoryImportService::ROLE, 'Importación de gerencias');
+
+        $invitation = 'No enviada (entrega por reporte de credenciales)';
+        if ($sendInvitations) {
+            $result = $this->invitations->send($user, $tempPassword);
+            $this->audit->log($actor, UserAccessAuditLogger::TYPE_USER, $user->id, $result['sent'] ? 'invitation_accepted' : 'invitation_failed');
+            $invitation = $result['sent'] ? 'Correo aceptado por el servidor' : 'Falló el envío (usa el reporte de credenciales)';
+        }
+
+        return [
+            'temporary_password' => $tempPassword,
+            'creation' => 'Creada',
+            'access' => 'Pendiente de activación',
+            'invitation' => $invitation,
+        ];
+    }
+
+    /**
+     * Descarga ÚNICA y protegida del reporte de entrega de credenciales de la
+     * última importación (incluye las contraseñas temporales de las cuentas
+     * realmente creadas). El sellado vive en la sesión y se CONSUME aquí
+     * (session()->pull): una sola descarga. El archivo temporal se elimina tras
+     * enviarse; nada se persiste en logs ni exportaciones ordinarias. Si se
+     * pierde, hay que restablecer la contraseña (nunca se recupera el valor).
+     */
+    public function downloadImportCredentials(Request $request): \Symfony\Component\HttpFoundation\BinaryFileResponse|RedirectResponse
+    {
+        abort_unless($request->user()->isAdmin(), 403, 'Solo un administrador puede descargar las credenciales.');
+
+        $report = self::revealSecret(session()->pull('import_credentials'));
+        if (! is_array($report) || $report === []) {
+            return back()->with('error', 'No hay un reporte de credenciales disponible (ya se descargó o expiró).');
+        }
+
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Credenciales');
+        $headers = ['Nombre completo', 'Sucursal', 'Puesto laboral', 'Rol asignado', 'Correo / usuario', 'Contraseña temporal', 'Estado de creación', 'Estado de acceso', 'Estado de invitación', 'Observaciones'];
+        $sheet->fromArray($headers, null, 'A1');
+        $r = 2;
+        foreach ($report as $row) {
+            $sheet->fromArray([
+                $row['name'], $row['branch'], $row['position'], $row['role'], $row['email'],
+                $row['temporary_password'] ?? '', $row['creation'], $row['access'], $row['invitation'], $row['observations'],
+            ], null, 'A' . $r++);
+        }
+        foreach (range('A', 'J') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
+        $sheet->getStyle('A1:J1')->getFont()->setBold(true);
+
+        $dir = storage_path('app/user-imports');
+        \Illuminate\Support\Facades\File::ensureDirectoryExists($dir);
+        $outputPath = $dir . '/credenciales_gerencias_' . now()->format('Ymd_His') . '.xlsx';
+        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet))->save($outputPath);
+        $spreadsheet->disconnectWorksheets();
+
+        return response()->download($outputPath, 'credenciales_gerencias.xlsx', [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma' => 'no-cache',
+        ])->deleteFileAfterSend(true);
+    }
+
+    /**
      * Contraseña generada que se muestra UNA vez: viaja cifrada en la sesión (el
      * driver es `database` sin SESSION_ENCRYPT), así nunca queda en texto plano en
      * la tabla `sessions` entre la redirección y la pantalla que la muestra.
@@ -546,6 +837,38 @@ class ResponsibleController extends Controller
     private function assertManageable(Request $request, User $user): void
     {
         abort_unless($this->guard->canManageUser($request->user(), $user), 403, 'Solo un administrador puede modificar a otro administrador.');
+    }
+
+    /**
+     * ¿La IDENTIDAD canónica de este colaborador ya está vinculada a una cuenta?
+     * No basta con revisar el `employee_id` exacto: la misma persona tiene varios
+     * registros históricos (NOI vs NOI Fiscal, periodos) y un vínculo pudo
+     * hacerse sobre otro de sus ids. Se resuelve el grupo canónico (mismo
+     * normalized_name, respetando homónimos reales) y se revisa TODO el grupo,
+     * así una identidad laboral nunca queda ligada a dos cuentas distintas.
+     *
+     * @return int|null id del usuario que ya tiene vinculada esa identidad (o null).
+     */
+    private function employeeIdentityLinkedUserId(int $employeeId, ?int $exceptUserId = null): ?int
+    {
+        $target = Employee::query()->find($employeeId, ['id', 'normalized_name']);
+        $norm = trim((string) ($target?->normalized_name ?? ''));
+
+        if ($target === null || $norm === '') {
+            $groupIds = [$employeeId];
+        } else {
+            $rows = Employee::query()->where('normalized_name', $norm)->get(['id', 'normalized_name', 'full_name']);
+            $group = app(CanonicalEmployeeResolver::class)->canonicalize($rows)
+                ->first(fn ($p) => in_array($employeeId, $p->employee_ids, true));
+            $groupIds = $group?->employee_ids ?? [$employeeId];
+        }
+
+        $query = User::query()->whereIn('employee_id', $groupIds);
+        if ($exceptUserId !== null) {
+            $query->whereKeyNot($exceptUserId);
+        }
+
+        return $query->value('id');
     }
 
     private function closeSessions(User $user): void
