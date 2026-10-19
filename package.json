@@ -13,7 +13,8 @@
         "format:check": "prettier --check resources/",
         "lint": "eslint . --fix",
         "lint:check": "eslint .",
-        "types:check": "vue-tsc --noEmit"
+        "types:check": "vue-tsc --noEmit",
+        "test:browser:okr": "node tests/browser/okr-inputs/run.mjs"
     },
     "devDependencies": {
         "@eslint/js": "^9.19.0",

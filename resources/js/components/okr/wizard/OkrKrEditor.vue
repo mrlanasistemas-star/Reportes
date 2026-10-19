@@ -4,6 +4,7 @@
 // Tipo/Dirección son filtros de UI sobre el catálogo (nunca columnas nuevas).
 import { GripVertical, Plus, Trash2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
+import OkrNumberInput from '@/components/okr/OkrNumberInput.vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -48,8 +49,10 @@ function onWeightInput(kr: KrRow, i: number, value: string) {
         return
     }
 
-    const clamped = Math.min(Math.max(Number(value) || 0, 0), maxWeightForRow(i))
-    kr.weight = value.endsWith('.') && clamped === Number(value.slice(0, -1)) ? value : String(clamped)
+    // OkrNumberInput solo entrega números válidos ('' mientras el texto está a medias).
+    const n = Number(value)
+    const clamped = Math.min(Math.max(n, 0), maxWeightForRow(i))
+    kr.weight = clamped === n ? value : String(clamped)
 }
 
 function typeFilterOf(kr: KrRow): string | null {
@@ -176,10 +179,11 @@ function onDropRow(i: number) {
                         </td>
                         <td class="px-2 py-2.5">
                             <div class="relative">
-                                <Input
-                                    :value="kr.weight" type="number" step="0.01" min="0" :max="maxWeightForRow(i)" :disabled="rows.length === 1"
+                                <OkrNumberInput
+                                    :model-value="kr.weight" step="0.01" min="0" :max="maxWeightForRow(i)" :disabled="rows.length === 1"
                                     placeholder="0" class="h-9 rounded-lg pr-6 text-xs disabled:cursor-not-allowed disabled:opacity-70"
-                                    @input="(e: Event) => onWeightInput(kr, i, (e.target as HTMLInputElement).value)"
+                                    :aria-label="`Peso del Key Result ${i + 1}`"
+                                    @update:model-value="(v) => onWeightInput(kr, i, v)"
                                 />
                                 <span class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">%</span>
                             </div>

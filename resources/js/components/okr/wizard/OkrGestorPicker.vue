@@ -54,7 +54,7 @@ function onSearch(value: string) {
 
         <div class="relative">
             <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input :value="term" :disabled="!branchSelected" placeholder="Buscar gestor por nombre..." class="h-10 rounded-lg pl-9 text-sm" @input="onSearch(($event.target as HTMLInputElement).value)" />
+            <Input :model-value="term" :disabled="!branchSelected" placeholder="Buscar gestor por nombre..." class="h-10 rounded-lg pl-9 text-sm" @update:model-value="(v) => onSearch(String(v))" />
         </div>
 
         <div v-if="!branchSelected" class="rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">Primero elige la sucursal.</div>
