@@ -691,9 +691,13 @@ class OkrEmployeeBranchResolver
     }
 
     /**
-     * Señales laborales/operativas para la UI (16-oct-2026) — nunca una baja
-     * inventada: "Sin registro NOI" o "Sin cartera en el periodo" no son una
-     * baja confirmada; solo distinguen a quien no está produciendo.
+     * Señales laborales/operativas para la UI. Regla de negocio (19-oct-2026):
+     * a falta de pago de nómina NOI en el periodo vigente el gestor se marca
+     * como "Baja {mes}" (code `baja_sin_noi`) en el selector de OKR — pero sigue
+     * siendo SELECCIONABLE. Es una señal de presentación: no es una baja
+     * CONFIRMADA (esa exige evidencia dura y es la única que excluye de verdad,
+     * ver confirmedBajaQuery/employeeIsActive). "Sin cartera en el periodo"
+     * (`no_activity`) sigue siendo solo informativo.
      *
      * @param  int[]  $employeeIds
      * @return array<int, array<int, array{code:string, label:string}>>
@@ -747,7 +751,13 @@ class OkrEmployeeBranchResolver
                 $list[] = ['code' => 'labor_contradiction', 'label' => 'Cobra en la nómina ' . ($rosterLabel ?? 'vigente') . ' pero un directorio anterior lo marca INACTIVO · concilia en Colaboradores'];
             }
             if ($rosterPeriodId !== null && !collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($inRoster[$g]))) {
-                $list[] = ['code' => 'no_noi', 'label' => 'Sin registro NOI ' . ($rosterLabel ?? 'del periodo') . ' · vigencia por verificar'];
+                // Regla de negocio (19-oct-2026): a falta de pago de nómina NOI en
+                // el periodo vigente, el gestor se MARCA como baja (con el mes) en
+                // el selector de OKR. Es solo una señal de presentación: NO cambia
+                // su elegibilidad (sigue siendo seleccionable, ver más abajo) ni la
+                // baja CONFIRMADA del roster, que exige evidencia dura y es la única
+                // que excluye de verdad (confirmedBajaQuery / employeeIsActive).
+                $list[] = ['code' => 'baja_sin_noi', 'label' => 'Baja ' . ($rosterLabel ?? 'del periodo vigente') . ' · sin pago de nómina NOI'];
             }
             $pendingLabel = collect($this->canonicalIdsFor($id))->map(fn ($g) => $pendingAbsence[$g] ?? null)->filter()->first();
             if ($pendingLabel !== null) {

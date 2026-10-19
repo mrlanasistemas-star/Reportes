@@ -11,6 +11,7 @@
 //    PRECARGADA y EDITABLE; si no hay dato, se captura manual sin bloquear.
 import { AlertTriangle, CheckCircle2, Loader2, PenLine, RefreshCw, Search, Sparkles, Undo2 } from 'lucide-vue-next'
 import { onMounted, watch } from 'vue'
+import { Input } from '@/components/ui/input'
 import { useOkrBaselinePreview } from '@/composables/useOkrBaselinePreview'
 import { formatByUnit } from '@/lib/okrFormat'
 import { applyBaseline, applyIncrement, applyTarget, isAutomatic, kpiDirectionLabel, kpiIconFor, kpiTypeLabel, krGoalIsComplete } from './okrWizard'
@@ -39,15 +40,47 @@ function autoSuggestEmployeeBaselines() {
     }
 
     rows.value.forEach((kr) => {
-        if (isAutomatic(kpiOf(kr.kpi_id)) && kr.baseline_value === '' && !kr.preview && !kr.loading) {
+        // Solo filas automáticas que NO están bajo control manual (manual /
+        // manual_authorized). Las editadas a mano nunca se re-sugieren, así se
+        // conserva el valor capturado al reabrir "Editar metas".
+        const manuallyControlled = kr.baseline_mode === 'manual' || kr.baseline_mode === 'manual_authorized'
+
+        if (isAutomatic(kpiOf(kr.kpi_id)) && !manuallyControlled && !kr.loading) {
             consult(kr, props.scope)
         }
     })
 }
 
 onMounted(autoSuggestEmployeeBaselines)
-// Si el KPI de una fila cambia en este paso, se reintenta la sugerencia.
-watch(() => rows.value.map((kr) => kr.kpi_id).join(','), autoSuggestEmployeeBaselines)
+// Reintenta la sugerencia si cambia el KPI de una fila o el alcance (gestor,
+// sucursal, periodo): la nueva consulta invalida cualquier respuesta obsoleta
+// en vuelo (token monotónico en useOkrBaselinePreview).
+watch(
+    () => [rows.value.map((kr) => kr.kpi_id).join(','), props.scope.employee_id, props.scope.branch_id, props.scope.start_date].join('|'),
+    autoSuggestEmployeeBaselines,
+)
+
+// Adopta explícitamente la base sugerida por Reportería SOBRE un valor escrito a
+// mano — único camino para reemplazar una base manual (nunca en silencio).
+function useSuggestion(kr: KrRow) {
+    if (kr.preview?.available && kr.preview.value !== null && kr.preview.value !== undefined) {
+        kr.baseline_mode = 'auto'
+        applyBaseline(kr, String(kr.preview.value))
+    }
+}
+
+// ¿Hay una sugerencia de Reportería distinta del valor manual actual del gestor?
+function hasDifferentSuggestion(kr: KrRow): boolean {
+    return (
+        props.scope.scope_type === 'employee'
+        && kr.baseline_mode === 'manual'
+        && kr.baseline_value !== ''
+        && !!kr.preview?.available
+        && kr.preview.value !== null
+        && kr.preview.value !== undefined
+        && String(kr.preview.value) !== String(kr.baseline_value)
+    )
+}
 
 function incrementLabel(kr: KrRow): string {
     if (kr.increment === '') {
@@ -114,7 +147,7 @@ function cancelManual(kr: KrRow) {
 
                             <div v-if="kr.loading" class="flex items-center gap-1 text-[10px] text-muted-foreground"><Loader2 class="size-3 animate-spin" /> Buscando la base del gestor en Reportería…</div>
 
-                            <input :id="`baseline-${kr.client_key}`" :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="app-input h-8 text-xs" @input="(e) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }">
+                            <Input :id="`baseline-${kr.client_key}`" :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="h-8 rounded-lg text-xs" @input="(e: Event) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }" />
 
                             <p v-if="kr.baseline_value !== ''" class="text-[10px] font-semibold tabular-nums text-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }} · se congela al activar</p>
 
@@ -127,6 +160,14 @@ function cancelManual(kr: KrRow) {
                             <p v-else-if="!kr.loading && kr.preview && !kr.preview.available" class="flex items-start gap-1 text-[10px] text-amber-700 dark:text-amber-300">
                                 <AlertTriangle class="mt-0.5 size-3 shrink-0" /> {{ kr.preview.message ?? kr.preview.error ?? 'No se encontró base automática para este gestor. Captúrala manualmente.' }}
                             </p>
+
+                            <!-- Base manual capturada pero Reportería sugiere OTRA: se adopta solo con
+                                 un clic explícito, nunca se reemplaza en silencio el valor del usuario. -->
+                            <div v-if="!kr.loading && hasDifferentSuggestion(kr)" class="flex flex-wrap items-center gap-1.5 rounded-md bg-sky-500/10 px-2 py-1 text-[10px] text-sky-700 dark:text-sky-300">
+                                <Sparkles class="size-3 shrink-0" />
+                                <span>Reportería sugiere {{ formatByUnit(kr.preview?.value, kpiOf(kr.kpi_id)?.unit) }} para este gestor.</span>
+                                <button type="button" class="font-semibold underline hover:no-underline" @click="useSuggestion(kr)">Usar base sugerida</button>
+                            </div>
 
                             <p class="text-[10px] leading-snug text-muted-foreground">Es el valor inicial desde el cual se medirá su incremento durante este objetivo.</p>
 
@@ -166,7 +207,7 @@ function cancelManual(kr: KrRow) {
                         <!-- Manual autorizada (KPI automático sin dato) -->
                         <div v-else-if="isAutomatic(kpiOf(kr.kpi_id))" class="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 animate-in fade-in duration-300">
                             <p class="text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300">Línea base manual autorizada</p>
-                            <input :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="app-input h-8 text-xs" @input="(e) => applyBaseline(kr, (e.target as HTMLInputElement).value)">
+                            <Input :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="h-8 rounded-lg text-xs" @input="(e: Event) => applyBaseline(kr, (e.target as HTMLInputElement).value)" />
                             <p v-if="kr.baseline_value !== ''" class="text-[10px] font-semibold tabular-nums text-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }}</p>
                             <textarea v-model="kr.baseline_manual_reason" rows="2" maxlength="500" placeholder="Motivo (obligatorio, queda en bitácora)" class="app-textarea text-[11px]" />
                             <p v-if="kr.baseline_manual_reason.trim().length < 10" class="text-[10px] text-amber-700 dark:text-amber-300">Mínimo 10 caracteres.</p>
@@ -175,17 +216,17 @@ function cancelManual(kr: KrRow) {
 
                         <!-- KPI manual -->
                         <div v-else>
-                            <input :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="app-input h-9 text-xs" @input="(e) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }">
+                            <Input :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="h-9 rounded-lg text-xs" @input="(e: Event) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }" />
                             <p v-if="kr.baseline_value !== ''" class="mt-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }}</p>
                         </div>
                     </td>
 
                     <td class="px-2.5 py-3">
-                        <input :value="kr.increment" type="number" step="0.01" placeholder="+0.00" class="app-input h-9 text-xs" @input="(e) => applyIncrement(kr, (e.target as HTMLInputElement).value)">
+                        <Input :value="kr.increment" type="number" step="0.01" placeholder="+0.00" class="h-9 rounded-lg text-xs" @input="(e: Event) => applyIncrement(kr, (e.target as HTMLInputElement).value)" />
                         <p v-if="kr.increment !== ''" class="mt-0.5 text-[10px] font-semibold tabular-nums" :class="Number(kr.increment) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'">{{ incrementLabel(kr) }}</p>
                     </td>
                     <td class="px-2.5 py-3">
-                        <input :value="kr.target_value" type="number" step="0.01" placeholder="0.00" class="app-input h-9 text-xs" @input="(e) => applyTarget(kr, (e.target as HTMLInputElement).value)">
+                        <Input :value="kr.target_value" type="number" step="0.01" placeholder="0.00" class="h-9 rounded-lg text-xs" @input="(e: Event) => applyTarget(kr, (e.target as HTMLInputElement).value)" />
                         <p v-if="kr.target_value !== ''" class="mt-0.5 text-[11px] font-bold tabular-nums text-primary">{{ formatByUnit(kr.target_value, kpiOf(kr.kpi_id)?.unit) }}</p>
                     </td>
                     <td class="px-2.5 py-3">

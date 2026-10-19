@@ -356,7 +356,7 @@ it('OKR eligibility excludes confirmed bajas but keeps a posible baja visible wi
         ->and($resolver->employeeIsActive($doubt))->toBeTrue();
 
     $codes = collect($resolver->statusFlags([$doubt])[$doubt])->pluck('code')->all();
-    expect($codes)->toContain('pending_reconciliation')->toContain('no_noi');
+    expect($codes)->toContain('pending_reconciliation')->toContain('baja_sin_noi');
 });
 
 it('keeps previous periods visible in the labor history and never shows unconfirmed absences as bajas', function () {

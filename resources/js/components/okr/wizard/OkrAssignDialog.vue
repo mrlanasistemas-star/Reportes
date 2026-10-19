@@ -10,10 +10,12 @@ import { useForm } from '@inertiajs/vue3'
 import { AlertTriangle, ArrowLeft, ArrowRight, Building2, CalendarDays, CheckCircle2, Info, Loader2, Save, Sparkles, Users, X } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { computed, reactive, ref, watch } from 'vue'
+import DatePickerField from '@/components/forms/DatePickerField.vue'
 import SearchableSelect from '@/components/forms/SearchableSelect.vue'
 import OkrHelpTooltip from '@/components/okr/OkrHelpTooltip.vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useOkrBaselinePreview } from '@/composables/useOkrBaselinePreview'
 import { formatFriendlyDate } from '@/lib/okrFormat'
@@ -274,7 +276,7 @@ const blocker = computed<string | null>(() => {
 
             const noTitle = gestores.find((g) => g.title.trim().length < 10)
 
-            return noTitle ? `Escribe el objective individual de ${noTitle.employee_name}.` : null
+            return noTitle ? `Escribe el objetivo individual de ${noTitle.employee_name}.` : null
         }
         case 3:
             return krStructureIsComplete(branchRows.value) ? null : `Completa los KR generales (KPI, descripción y pesos al 100% — hoy ${totalWeight(branchRows.value)}%).`
@@ -397,13 +399,18 @@ const primaryBranchKr = computed(() => branchRows.value[0] ?? null)
                             <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                 <div class="space-y-1.5">
                                     <label class="text-sm font-semibold text-foreground">Fecha de inicio</label>
-                                    <input v-model="form.start_date" type="date" class="app-input h-10">
+                                    <DatePickerField v-model="form.start_date" placeholder="Selecciona la fecha" />
                                 </div>
                                 <div class="space-y-1.5">
                                     <label class="text-sm font-semibold text-foreground">Duración</label>
-                                    <select v-model.number="form.duration_weeks" class="app-input h-10">
-                                        <option v-for="w in weekOptions" :key="w" :value="w">{{ w }} semanas</option>
-                                    </select>
+                                    <Select :model-value="String(form.duration_weeks)" @update:model-value="(v) => form.duration_weeks = Number(v)">
+                                        <SelectTrigger class="h-10 w-full rounded-lg">
+                                            <SelectValue placeholder="Selecciona la duración" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem v-for="w in weekOptions" :key="w" :value="String(w)">{{ w }} semanas</SelectItem>
+                                        </SelectContent>
+                                    </Select>
                                 </div>
                                 <div class="space-y-1.5">
                                     <label class="text-sm font-semibold text-foreground">Fecha de término</label>

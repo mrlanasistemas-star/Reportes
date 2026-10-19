@@ -267,8 +267,14 @@ it('excludes vacancies, explicit INACTIVO and confirmed bajas, but keeps (flagge
 
     $flags = $resolver->statusFlags([$producing->id, $noNoi->id]);
     expect($flags[$producing->id])->toBe([])
-        ->and(collect($flags[$noNoi->id])->pluck('code')->all())->toContain('no_noi')
+        ->and(collect($flags[$noNoi->id])->pluck('code')->all())->toContain('baja_sin_noi')
         ->and(collect($flags[$noNoi->id])->pluck('code')->all())->toContain('no_activity');
+
+    // Regla de negocio (19-oct-2026): sin pago NOI se marca como "Baja" con el
+    // mes del periodo vigente, pero el gestor SIGUE siendo elegible/seleccionable
+    // ($ids ya lo incluye arriba) — nunca se excluye como una baja confirmada.
+    $bajaLabel = collect($flags[$noNoi->id])->firstWhere('code', 'baja_sin_noi')['label'];
+    expect($bajaLabel)->toContain('Baja')->toContain('Junio')->toContain('NOI');
 });
 
 it('rejects a new OKR on a non-operative branch (TENANGO, AGUASCALIENTES)', function () {
