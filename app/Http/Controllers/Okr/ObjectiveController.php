@@ -205,20 +205,28 @@ class ObjectiveController extends Controller
         }
 
         $kpi = OkrKpi::query()->findOrFail($data['kpi_id']);
+        $isEmployee = $data['scope_type'] === OkrObjective::SCOPE_EMPLOYEE;
 
-        // Regla definitiva (16-oct-2026): la línea base de un OKR INDIVIDUAL se
-        // captura manualmente — nunca se consulta en Reportería ni se sustituye
-        // por la de la sucursal. Se responde sin consultar y sin bloquear.
-        if ($data['scope_type'] === OkrObjective::SCOPE_EMPLOYEE) {
+        // Regla (18-oct-2026): el OKR INDIVIDUAL ahora SÍ sugiere la línea base
+        // del gestor desde Reportería, filtrada por SU employee_id — nunca por la
+        // base de la sucursal (OkrKpiValueResolver devuelve null si el alcance del
+        // colaborador no tiene dato, jamás cae al general). Es solo una SUGERENCIA
+        // editable: si falta el colaborador o no hay dato verificable, se captura
+        // manualmente sin bloquear el flujo.
+        if ($isEmployee && empty($data['employee_id'])) {
             return response()->json([
                 'available' => false, 'value' => null, 'period' => null, 'source' => 'manual_individual',
-                'scope_type' => $data['scope_type'], 'manual_required' => true,
-                'message' => 'Captura la línea base del gestor.',
+                'scope_type' => $data['scope_type'],
+                'message' => 'No se encontró base automática para este gestor. Captúrala manualmente.',
             ], 200, self::NO_STORE_HEADERS);
         }
 
         if (!$kpi->isAutomatic()) {
-            return response()->json(['available' => false, 'value' => null, 'period' => null, 'source' => 'manual']);
+            return response()->json([
+                'available' => false, 'value' => null, 'period' => null, 'source' => 'manual',
+                'scope_type' => $data['scope_type'],
+                'message' => $isEmployee ? 'Este KPI no se calcula en Reportería; captura la línea base del gestor manualmente.' : null,
+            ], 200, self::NO_STORE_HEADERS);
         }
 
         $period = $periodResolver->getPeriodForDate($data['start_date']);
@@ -230,8 +238,9 @@ class ObjectiveController extends Controller
             'available' => $value !== null,
             'value'     => $value,
             'period'    => $period ? ['id' => $period->id, 'label' => $period->label, 'start_date' => $period->start_date?->toDateString(), 'end_date' => $period->end_date?->toDateString()] : null,
-            'source'    => $kpi->provider_key,
+            'source'    => $value !== null ? $kpi->provider_key : ($isEmployee ? 'manual_individual' : $kpi->provider_key),
             'scope_type' => $data['scope_type'],
+            'message'   => $value === null && $isEmployee ? 'No se encontró base automática para este gestor. Captúrala manualmente.' : null,
         ], 200, self::NO_STORE_HEADERS);
     }
 

@@ -56,7 +56,9 @@ const scope = computed(() => ({
 function toGoals() {
     step.value = 2
 
-    // Solo el OKR de sucursal consulta su base en Reportería; la del gestor se captura (16-oct-2026).
+    // Sucursal: consulta aquí su base congelada en Reportería. Gestor (18-oct-2026):
+    // la base individual se SUGIERE sola desde OkrGoalsTable al montarse (precargada
+    // y editable), por eso no se dispara aquí.
     if (scope.value.scope_type === 'branch') {
         rows.value.filter((kr) => isAutomatic(kpiOf(kr.kpi_id)) && !kr.preview && !kr.loading).forEach((kr) => consult(kr, scope.value))
     }

@@ -185,7 +185,7 @@ it('prevents a duplicated individual assignment overlapping an existing draft/ac
     $this->actingAs($s['admin'])->post(route('okr.store'), bgPayload($s, [$row]))->assertSessionHasErrors('individual_objectives.0.employee_id');
 });
 
-it('uses a MANUAL baseline for each gestor (16-oct-2026 rule): required, no reason needed, never looked up in Reportería, and logged', function () {
+it('suggests each gestor baseline from Reportería (18-oct-2026) yet still accepts a manual one: required on store, no reason needed, source manual_individual, logged', function () {
     $s = bgSetup();
     $kpi = bgPlacementKpi();
     $kr = fn (array $extra) => [['kpi_id' => $kpi->id, 'description' => 'Colocación gestor A', 'target_value' => 130000, 'weight' => 100] + $extra];
@@ -206,10 +206,16 @@ it('uses a MANUAL baseline for each gestor (16-oct-2026 rule): required, no reas
     expect($savedKr->baseline_source)->toBe(\App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL);
     expect(\App\Models\OkrAuditLog::query()->where('auditable_type', 'key_result')->where('auditable_id', $savedKr->id)->where('action', 'baseline_manual_individual')->exists())->toBeTrue();
 
-    // La consulta de línea base por gestor ya no consulta ni bloquea.
+    // 18-oct-2026: la consulta de línea base por gestor ahora SÍ sugiere la base
+    // propia del colaborador desde Reportería (filtrada por employee_id, nunca la
+    // de la sucursal). Sin radiografía generada para el periodo responde
+    // "sin dato" con un mensaje claro y sin bloquear la captura manual.
     $this->actingAs($s['admin'])->getJson(route('okr.baseline-preview', [
         'kpi_id' => $kpi->id, 'scope_type' => 'employee', 'branch_id' => $s['branch']->id, 'employee_id' => $s['a']->id, 'start_date' => now()->toDateString(),
-    ]))->assertOk()->assertJson(['available' => false, 'manual_required' => true, 'message' => 'Captura la línea base del gestor.']);
+    ]))->assertOk()->assertJson([
+        'available' => false, 'scope_type' => 'employee',
+        'message' => 'No se encontró base automática para este gestor. Captúrala manualmente.',
+    ])->assertJsonMissing(['manual_required' => true]);
 });
 
 it('one single Lendus file feeds the branch total and each gestor, excludes other branches/cancelled rows and never double counts a movement repeated the next week', function () {
