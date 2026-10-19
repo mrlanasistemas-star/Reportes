@@ -3,8 +3,9 @@
 // muestra colaboradores VIGENTES de la sucursal (nómina procesada, ver
 // OkrEmployeeBranchResolver). No obliga a elegir a todos: solo quien se
 // marque recibe un OKR individual; el resto sigue aportando a la sucursal.
-import { AlertTriangle, CheckCircle2, Info, MapPin, Search, UserPlus, X } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, Info, MapPin, Search, UserPlus, UserX, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
+import { Input } from '@/components/ui/input'
 import OkrBranchConflictNotice from './OkrBranchConflictNotice.vue'
 import type { BranchConflict } from './OkrBranchConflictNotice.vue'
 import { avatarTone, initialsOf } from './okrWizard'
@@ -53,7 +54,7 @@ function onSearch(value: string) {
 
         <div class="relative">
             <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input :value="term" :disabled="!branchSelected" placeholder="Buscar gestor por nombre..." class="app-input h-10 pl-9 text-sm" @input="onSearch(($event.target as HTMLInputElement).value)">
+            <Input :value="term" :disabled="!branchSelected" placeholder="Buscar gestor por nombre..." class="h-10 rounded-lg pl-9 text-sm" @input="onSearch(($event.target as HTMLInputElement).value)" />
         </div>
 
         <div v-if="!branchSelected" class="rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">Primero elige la sucursal.</div>
@@ -79,7 +80,15 @@ function onSearch(value: string) {
                     <span class="flex items-center gap-1 truncate text-[10px] text-muted-foreground" :title="e.membership_source ?? ''">
                         <MapPin class="size-3 shrink-0" /> <template v-if="e.route">Ruta {{ e.route }} → </template>{{ branchName ?? '' }}
                     </span>
-                    <span v-for="f in (e.flags ?? []).filter((x) => x.code !== 'branch_conflict')" :key="f.code" class="mt-0.5 flex items-center gap-1 truncate text-[10px] font-semibold text-amber-700 dark:text-amber-300"><AlertTriangle class="size-3 shrink-0" /> {{ f.label }}</span>
+                    <span
+                        v-for="f in (e.flags ?? []).filter((x) => x.code !== 'branch_conflict')" :key="f.code"
+                        class="mt-0.5 flex items-center gap-1 truncate text-[10px] font-semibold"
+                        :class="f.code === 'baja_sin_noi' ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'"
+                    >
+                        <UserX v-if="f.code === 'baja_sin_noi'" class="size-3 shrink-0" />
+                        <AlertTriangle v-else class="size-3 shrink-0" />
+                        {{ f.label }}
+                    </span>
                     <span class="block text-[10px] font-semibold" :class="selectedIds.has(e.id) ? 'text-primary' : 'text-muted-foreground/70'">{{ e.branch_conflict ? 'Sucursal por conciliar' : selectedIds.has(e.id) ? 'Con OKR individual' : 'Clic para asignar meta propia' }}</span>
                 </span>
                 <CheckCircle2 v-if="selectedIds.has(e.id)" class="size-5 shrink-0 text-primary animate-in zoom-in duration-200" />
@@ -97,7 +106,7 @@ function onSearch(value: string) {
 
         <p class="flex items-start gap-1.5 text-[11px] text-muted-foreground">
             <Info class="mt-0.5 size-3.5 shrink-0" />
-            <span>Aparecen los colaboradores vigentes de esta sucursal (nómina<template v-if="rosterPeriod"> {{ rosterPeriod }}</template>, directorio y cartera Lendus; rutas traducidas con el catálogo oficial). No aparecen vacantes, inactivos ni bajas confirmadas; quien no figura en la nómina del periodo se muestra con aviso, no como baja.</span>
+            <span>Aparecen los colaboradores vigentes de esta sucursal (nómina<template v-if="rosterPeriod"> {{ rosterPeriod }}</template>, directorio y cartera Lendus; rutas traducidas con el catálogo oficial). No aparecen vacantes ni bajas confirmadas. Quien no recibió pago de nómina NOI en el periodo se marca en rojo como <strong>Baja</strong> del mes, pero puedes seleccionarlo igual.</span>
         </p>
 
         <TransitionGroup v-if="selected.length" tag="div" class="space-y-2" enter-active-class="transition duration-300" enter-from-class="opacity-0 -translate-y-1" leave-active-class="transition duration-200" leave-to-class="opacity-0 translate-x-2">
@@ -105,7 +114,7 @@ function onSearch(value: string) {
                 <span class="mt-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-[10px] font-bold text-white" :class="avatarTone(row.employee_id)">{{ initialsOf(row.employee_name) }}</span>
                 <div class="min-w-0 flex-1">
                     <p class="mb-1 truncate text-xs font-semibold text-foreground">{{ row.employee_name }}</p>
-                    <input v-model="row.title" maxlength="500" placeholder="Objective individual (mín. 10 caracteres)" class="app-input h-9 text-xs">
+                    <Input v-model="row.title" maxlength="500" placeholder="Objetivo individual (mín. 10 caracteres)" class="h-9 rounded-lg text-xs" />
                     <p v-if="row.title.trim().length > 0 && row.title.trim().length < 10" class="mt-0.5 text-[10px] font-semibold text-amber-600">Mínimo 10 caracteres.</p>
                 </div>
                 <button type="button" class="mt-1 shrink-0 rounded-full p-1 text-muted-foreground transition hover:rotate-90 hover:bg-destructive/10 hover:text-destructive" :aria-label="`Quitar a ${row.employee_name}`" @click="emit('remove', i)"><X class="size-4" /></button>

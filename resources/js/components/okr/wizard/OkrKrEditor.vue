@@ -5,6 +5,7 @@
 import { GripVertical, Plus, Trash2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ALL_FILTER, newKrRow, round2, totalWeight } from './okrWizard'
 import type { KrRow } from './okrWizard'
@@ -132,7 +133,7 @@ function onDropRow(i: number) {
                             <span class="inline-flex items-center gap-1"><GripVertical class="size-3.5 cursor-grab text-muted-foreground/70 hover:text-foreground" />{{ i + 1 }}</span>
                         </td>
                         <td class="min-w-[180px] px-2 py-2.5">
-                            <input v-model="kr.description" maxlength="191" :placeholder="placeholder ?? 'Incrementar colocación de cartera'" class="app-input h-9 text-xs">
+                            <Input v-model="kr.description" maxlength="191" :placeholder="placeholder ?? 'Incrementar colocación de cartera'" class="h-9 rounded-lg text-xs" />
                         </td>
                         <td class="px-2 py-2.5">
                             <Select :model-value="kr.kpi_id !== null ? String(kr.kpi_id) : undefined" @update:model-value="(v) => onKpiPick(kr, v ? Number(v) : null)">
@@ -175,11 +176,11 @@ function onDropRow(i: number) {
                         </td>
                         <td class="px-2 py-2.5">
                             <div class="relative">
-                                <input
+                                <Input
                                     :value="kr.weight" type="number" step="0.01" min="0" :max="maxWeightForRow(i)" :disabled="rows.length === 1"
-                                    placeholder="0" class="app-input h-9 pr-6 text-xs disabled:cursor-not-allowed disabled:opacity-70"
-                                    @input="(e) => onWeightInput(kr, i, (e.target as HTMLInputElement).value)"
-                                >
+                                    placeholder="0" class="h-9 rounded-lg pr-6 text-xs disabled:cursor-not-allowed disabled:opacity-70"
+                                    @input="(e: Event) => onWeightInput(kr, i, (e.target as HTMLInputElement).value)"
+                                />
                                 <span class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">%</span>
                             </div>
                         </td>
