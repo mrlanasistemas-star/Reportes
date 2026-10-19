@@ -30,6 +30,11 @@ $alcance = collect([
     'Ruta' => $f['oficina'] ?? null,
     'Promotor' => $f['promotor'] ?? null,
 ])->filter()->map(fn ($v, $k) => "$k: $v")->implode(' · ') ?: 'Todas las sucursales';
+// Logo embebido en base64 (mismo criterio que okr-document.blade.php): Chrome headless
+// imprime sin depender de red/servidor, así el logo sale igual en PNG y PDF. Si el archivo
+// no existe, el encabezado cae con elegancia a la marca de texto.
+$logoPath = public_path('logo-mr-lana.png');
+$logo = is_file($logoPath) ? 'data:image/png;base64,'.base64_encode(file_get_contents($logoPath)) : null;
 @endphp
 <!DOCTYPE html>
 <html lang="es">
@@ -47,6 +52,8 @@ $alcance = collect([
     body { font-family: 'Montserrat', "Segoe UI", Helvetica, Arial, sans-serif; color: #0f172a; font-size: 8.4pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .page { padding: {{ $imagen ? '28px 32px' : '0' }}; background: #fff; {{ $imagen ? 'width: 1400px;' : '' }} }
     .brand { display: flex; gap: 18px; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #0f766e; padding-bottom: 10px; margin-bottom: 12px; }
+    .brand .brand-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .brand .logo { height: {{ $imagen ? '60px' : '48px' }}; width: auto; display: block; flex-shrink: 0; object-fit: contain; }
     .brand .co { font-size: 9pt; font-weight: 700; letter-spacing: .14em; color: #0f766e; }
     .brand h1 { margin: 2px 0 0; font-size: 17pt; font-weight: 700; }
     .brand .sub { color: #475569; font-size: 9pt; margin-top: 2px; }
@@ -95,10 +102,13 @@ $alcance = collect([
 <body>
 <div class="page">
     <div class="brand">
-        <div>
-            <div class="co">MR LANA</div>
-            <h1>Efectividad de Cobranza</h1>
-            <div class="sub">{{ $r['titulo'] }} · {{ $r['leyenda'] }}@if(!empty($r['metodologia'])) · Metodología {{ $r['metodologia'] }}@endif</div>
+        <div class="brand-left">
+            @if($logo)<img class="logo" src="{{ $logo }}" alt="MR LANA">@endif
+            <div>
+                <div class="co">MR LANA</div>
+                <h1>Efectividad de Cobranza</h1>
+                <div class="sub">{{ $r['titulo'] }} · {{ $r['leyenda'] }}@if(!empty($r['metodologia'])) · Metodología {{ $r['metodologia'] }}@endif</div>
+            </div>
         </div>
         <div class="meta">
             <div>Modalidad: <b>{{ $modos[$r['modo']] ?? $r['modo'] }}</b></div>

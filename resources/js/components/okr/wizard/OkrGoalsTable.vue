@@ -1,10 +1,16 @@
 <script setup lang="ts">
-// Paso 3 — metas de UN alcance (sucursal o un gestor). Cada fila: línea base
-// (sucursal: consultada a Reportería; gestor: SIEMPRE capturada manualmente —
-// regla definitiva 16-oct-2026), incremento esperado,
-// meta final = base + incremento, y peso. Todo valor capturado muestra su
-// lectura formateada ($638,576.00) sin alterar el número que se guarda.
-import { AlertTriangle, CheckCircle2, Loader2, PenLine, RefreshCw, Search, Undo2 } from 'lucide-vue-next'
+// Paso 3 — metas de UN alcance (sucursal o un gestor). Cada fila: línea base,
+// incremento esperado, meta final = base + incremento, y peso. Todo valor
+// capturado muestra su lectura formateada ($638,576.00) sin alterar el número
+// que se guarda.
+//
+// Línea base (18-oct-2026):
+//  · Sucursal → se consulta a Reportería (su base congelada).
+//  · Gestor   → se SUGIERE automáticamente la base propia del colaborador desde
+//    Reportería (filtrada por su employee_id, nunca la de la sucursal) y queda
+//    PRECARGADA y EDITABLE; si no hay dato, se captura manual sin bloquear.
+import { AlertTriangle, CheckCircle2, Loader2, PenLine, RefreshCw, Search, Sparkles, Undo2 } from 'lucide-vue-next'
+import { onMounted, watch } from 'vue'
 import { useOkrBaselinePreview } from '@/composables/useOkrBaselinePreview'
 import { formatByUnit } from '@/lib/okrFormat'
 import { applyBaseline, applyIncrement, applyTarget, isAutomatic, kpiDirectionLabel, kpiIconFor, kpiTypeLabel, krGoalIsComplete } from './okrWizard'
@@ -21,6 +27,27 @@ const { consult } = useOkrBaselinePreview()
 function kpiOf(id: number | null) {
     return props.kpis.find((k) => k.id === id) ?? null
 }
+
+// Autosugerencia de la línea base del GESTOR (18-oct-2026): en cuanto la tabla
+// aparece se busca la base propia del colaborador en Reportería, sin que el
+// usuario pulse nada. Solo filas de gestor con KPI automático aún VACÍAS: nunca
+// pisa una base ya capturada/editada (baseline_value distinto de '') ni toca el
+// alcance de sucursal (ese lo dispara el contenedor). Idempotente.
+function autoSuggestEmployeeBaselines() {
+    if (props.scope.scope_type !== 'employee') {
+        return
+    }
+
+    rows.value.forEach((kr) => {
+        if (isAutomatic(kpiOf(kr.kpi_id)) && kr.baseline_value === '' && !kr.preview && !kr.loading) {
+            consult(kr, props.scope)
+        }
+    })
+}
+
+onMounted(autoSuggestEmployeeBaselines)
+// Si el KPI de una fila cambia en este paso, se reintenta la sugerencia.
+watch(() => rows.value.map((kr) => kr.kpi_id).join(','), autoSuggestEmployeeBaselines)
 
 function incrementLabel(kr: KrRow): string {
     if (kr.increment === '') {
@@ -80,12 +107,32 @@ function cancelManual(kr: KrRow) {
 
                     <!-- LÍNEA BASE -->
                     <td class="px-2.5 py-3">
-                        <!-- Gestor: captura manual (nunca consulta automática) -->
+                        <!-- Gestor: base PRECARGADA automáticamente desde Reportería (su base
+                             individual) y EDITABLE; si no hay dato, captura manual sin bloquear. -->
                         <div v-if="scope.scope_type === 'employee'" class="space-y-1 rounded-lg border p-2 transition" :class="kr.baseline_value === '' ? 'border-primary/40 bg-primary/5' : 'border-emerald-500/30 bg-emerald-500/5'">
-                            <label :for="`baseline-${kr.client_key}`" class="block text-[10px] font-bold uppercase tracking-wide text-foreground">Captura la línea base del gestor</label>
+                            <label :for="`baseline-${kr.client_key}`" class="block text-[10px] font-bold uppercase tracking-wide text-foreground">Línea base del gestor</label>
+
+                            <div v-if="kr.loading" class="flex items-center gap-1 text-[10px] text-muted-foreground"><Loader2 class="size-3 animate-spin" /> Buscando la base del gestor en Reportería…</div>
+
                             <input :id="`baseline-${kr.client_key}`" :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="app-input h-8 text-xs" @input="(e) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }">
+
                             <p v-if="kr.baseline_value !== ''" class="text-[10px] font-semibold tabular-nums text-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }} · se congela al activar</p>
+
+                            <!-- Ayuda discreta cuando la base se sugirió sola (y aún no se editó a mano). -->
+                            <p v-if="!kr.loading && kr.preview?.available && kr.baseline_mode !== 'manual'" class="flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                <Sparkles class="size-3 shrink-0" /> Base sugerida automáticamente · se obtuvo desde Reportería<template v-if="kr.preview.period?.label"> · {{ kr.preview.period.label }}</template>
+                            </p>
+
+                            <!-- Sin dato automático: mensaje claro, captura manual sin bloquear. -->
+                            <p v-else-if="!kr.loading && kr.preview && !kr.preview.available" class="flex items-start gap-1 text-[10px] text-amber-700 dark:text-amber-300">
+                                <AlertTriangle class="mt-0.5 size-3 shrink-0" /> {{ kr.preview.message ?? kr.preview.error ?? 'No se encontró base automática para este gestor. Captúrala manualmente.' }}
+                            </p>
+
                             <p class="text-[10px] leading-snug text-muted-foreground">Es el valor inicial desde el cual se medirá su incremento durante este objetivo.</p>
+
+                            <button v-if="!kr.loading && isAutomatic(kpiOf(kr.kpi_id)) && scope.branch_id" type="button" class="inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline" @click="consult(kr, scope)">
+                                <RefreshCw class="size-3" /> Volver a consultar
+                            </button>
                         </div>
 
                         <template v-else-if="isAutomatic(kpiOf(kr.kpi_id)) && kr.baseline_mode !== 'manual_authorized'">

@@ -14,7 +14,10 @@ export type BaselinePreview = {
     value: number | null
     period: { id: number; label: string; start_date?: string | null; end_date?: string | null } | null
     scope_type?: string
+    source?: string | null
     error?: string | null
+    // Mensaje de ayuda del backend (ej. "No se encontró base automática para este gestor").
+    message?: string | null
 }
 
 export type KrRow = {
