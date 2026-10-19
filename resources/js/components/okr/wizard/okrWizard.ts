@@ -71,8 +71,29 @@ export function kpiIconFor(kpi: any): { icon: any; class: string } {
     return { icon: Hash, class: kpi ? 'bg-violet-500/10 text-violet-600 dark:text-violet-300' : 'bg-muted text-muted-foreground' }
 }
 
+/**
+ * Redondeo decimal sin el error binario de Math.round(n * 100) / 100
+ * (1.005 → 1.01, 30000.005 → 30000.01). Desplaza el exponente en texto.
+ */
+export function roundTo(n: number, decimals: number): number {
+    // Fuera del rango con decimales representables no hay nada que redondear.
+    if (!Number.isFinite(n) || Math.abs(n) >= 1e15) {
+        return n
+    }
+
+    const abs = String(Math.abs(n))
+
+    if (abs.includes('e')) {
+        return Math.round(n * 10 ** decimals) / 10 ** decimals
+    }
+
+    const shifted = Math.round(Number(`${abs}e${decimals}`))
+
+    return Math.sign(n) * Number(`${shifted}e-${decimals}`) || 0
+}
+
 export function round2(n: number): number {
-    return Math.round(n * 100) / 100
+    return roundTo(n, 2)
 }
 
 export function newKrRow(partial: Partial<KrRow> = {}): KrRow {

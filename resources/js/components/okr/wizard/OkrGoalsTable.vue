@@ -11,7 +11,7 @@
 //    PRECARGADA y EDITABLE; si no hay dato, se captura manual sin bloquear.
 import { AlertTriangle, CheckCircle2, Loader2, PenLine, RefreshCw, Search, Sparkles, Undo2 } from 'lucide-vue-next'
 import { onMounted, watch } from 'vue'
-import { Input } from '@/components/ui/input'
+import OkrNumberInput from '@/components/okr/OkrNumberInput.vue'
 import { useOkrBaselinePreview } from '@/composables/useOkrBaselinePreview'
 import { formatByUnit } from '@/lib/okrFormat'
 import { applyBaseline, applyIncrement, applyTarget, isAutomatic, kpiDirectionLabel, kpiIconFor, kpiTypeLabel, krGoalIsComplete } from './okrWizard'
@@ -66,6 +66,13 @@ watch(
     },
 )
 
+// Captura manual de la base: queda bajo control del usuario desde la primera
+// tecla, así ninguna respuesta de Reportería en vuelo la reemplaza.
+function onManualBaseline(kr: KrRow, value: string) {
+    kr.baseline_mode = 'manual'
+    applyBaseline(kr, value)
+}
+
 // Adopta explícitamente la base sugerida por Reportería SOBRE un valor escrito a
 // mano — único camino para reemplazar una base manual (nunca en silencio).
 function useSuggestion(kr: KrRow) {
@@ -76,11 +83,11 @@ function useSuggestion(kr: KrRow) {
 }
 
 // ¿Hay una sugerencia de Reportería distinta del valor manual actual del gestor?
+// También si el usuario vació el campo: la sugerencia sigue a un clic.
 function hasDifferentSuggestion(kr: KrRow): boolean {
     return (
         props.scope.scope_type === 'employee'
         && kr.baseline_mode === 'manual'
-        && kr.baseline_value !== ''
         && !!kr.preview?.available
         && kr.preview.value !== null
         && kr.preview.value !== undefined
@@ -153,7 +160,7 @@ function cancelManual(kr: KrRow) {
 
                             <div v-if="kr.loading" class="flex items-center gap-1 text-[10px] text-muted-foreground"><Loader2 class="size-3 animate-spin" /> Buscando la base del gestor en Reportería…</div>
 
-                            <Input :id="`baseline-${kr.client_key}`" :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="h-8 rounded-lg text-xs" @input="(e: Event) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }" />
+                            <OkrNumberInput :id="`baseline-${kr.client_key}`" :model-value="kr.baseline_value" step="0.01" placeholder="0.00" class="h-8 rounded-lg text-xs" @update:model-value="(v) => onManualBaseline(kr, v)" />
 
                             <p v-if="kr.baseline_value !== ''" class="text-[10px] font-semibold tabular-nums text-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }} · se congela al activar</p>
 
@@ -213,7 +220,7 @@ function cancelManual(kr: KrRow) {
                         <!-- Manual autorizada (KPI automático sin dato) -->
                         <div v-else-if="isAutomatic(kpiOf(kr.kpi_id))" class="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 animate-in fade-in duration-300">
                             <p class="text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300">Línea base manual autorizada</p>
-                            <Input :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="h-8 rounded-lg text-xs" @input="(e: Event) => applyBaseline(kr, (e.target as HTMLInputElement).value)" />
+                            <OkrNumberInput :model-value="kr.baseline_value" step="0.01" placeholder="0.00" class="h-8 rounded-lg text-xs" :aria-label="`Línea base manual autorizada · ${kpiOf(kr.kpi_id)?.name ?? 'KPI'}`" @update:model-value="(v) => applyBaseline(kr, v)" />
                             <p v-if="kr.baseline_value !== ''" class="text-[10px] font-semibold tabular-nums text-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }}</p>
                             <textarea v-model="kr.baseline_manual_reason" rows="2" maxlength="500" placeholder="Motivo (obligatorio, queda en bitácora)" class="app-textarea text-[11px]" />
                             <p v-if="kr.baseline_manual_reason.trim().length < 10" class="text-[10px] text-amber-700 dark:text-amber-300">Mínimo 10 caracteres.</p>
@@ -222,17 +229,17 @@ function cancelManual(kr: KrRow) {
 
                         <!-- KPI manual -->
                         <div v-else>
-                            <Input :value="kr.baseline_value" type="number" step="0.01" placeholder="0.00" class="h-9 rounded-lg text-xs" @input="(e: Event) => { kr.baseline_mode = 'manual'; applyBaseline(kr, (e.target as HTMLInputElement).value) }" />
+                            <OkrNumberInput :model-value="kr.baseline_value" step="0.01" placeholder="0.00" class="h-9 rounded-lg text-xs" :aria-label="`Línea base ${scopeLabel} · ${kpiOf(kr.kpi_id)?.name ?? 'KPI'}`" @update:model-value="(v) => onManualBaseline(kr, v)" />
                             <p v-if="kr.baseline_value !== ''" class="mt-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">= {{ formatByUnit(kr.baseline_value, kpiOf(kr.kpi_id)?.unit) }}</p>
                         </div>
                     </td>
 
                     <td class="px-2.5 py-3">
-                        <Input :value="kr.increment" type="number" step="0.01" placeholder="+0.00" class="h-9 rounded-lg text-xs" @input="(e: Event) => applyIncrement(kr, (e.target as HTMLInputElement).value)" />
+                        <OkrNumberInput :model-value="kr.increment" step="0.01" placeholder="+0.00" class="h-9 rounded-lg text-xs" :aria-label="`Incremento esperado · ${kpiOf(kr.kpi_id)?.name ?? 'KPI'}`" @update:model-value="(v) => applyIncrement(kr, v)" />
                         <p v-if="kr.increment !== ''" class="mt-0.5 text-[10px] font-semibold tabular-nums" :class="Number(kr.increment) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'">{{ incrementLabel(kr) }}</p>
                     </td>
                     <td class="px-2.5 py-3">
-                        <Input :value="kr.target_value" type="number" step="0.01" placeholder="0.00" class="h-9 rounded-lg text-xs" @input="(e: Event) => applyTarget(kr, (e.target as HTMLInputElement).value)" />
+                        <OkrNumberInput :model-value="kr.target_value" step="0.01" placeholder="0.00" class="h-9 rounded-lg text-xs" :aria-label="`Meta final · ${kpiOf(kr.kpi_id)?.name ?? 'KPI'}`" @update:model-value="(v) => applyTarget(kr, v)" />
                         <p v-if="kr.target_value !== ''" class="mt-0.5 text-[11px] font-bold tabular-nums text-primary">{{ formatByUnit(kr.target_value, kpiOf(kr.kpi_id)?.unit) }}</p>
                     </td>
                     <td class="px-2.5 py-3">
