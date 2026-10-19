@@ -27,6 +27,26 @@ function deferredFetch() {
     return { resolve }
 }
 
+/**
+ * Cola de fetch diferidos: cada llamada a fetch encola un resolver. Permite
+ * resolver las respuestas en CUALQUIER orden (out-of-order) para simular
+ * respuestas HTTP que llegan desordenadas tras cambios rápidos de contexto.
+ */
+function deferredQueue() {
+    const resolvers: ((r: Response) => void)[] = []
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((res) => {
+        resolvers.push(res)
+    })))
+
+    return {
+        resolve(index: number, body: unknown, status = 200) {
+            resolvers[index](jsonResponse(body, status))
+        },
+    }
+}
+
+const emp = (employee_id: number, over: Partial<typeof scope> = {}) => ({ ...scope, employee_id, ...over })
+
 afterEach(() => vi.unstubAllGlobals())
 
 describe('useOkrBaselinePreview', () => {
@@ -138,5 +158,126 @@ describe('useOkrBaselinePreview', () => {
 
         expect(kr.baseline_value).toBe('5000') // nunca se borra lo capturado
         expect(kr.preview?.available).toBe(false)
+    })
+
+    // --- Cambios rápidos de contexto con respuestas HTTP fuera de orden (req. 6) ---
+    // Simulan lo que hace el contenedor (OkrGoalsTable) al cambiar el contexto:
+    // invalidate(fila, nuevoScope) + consult(fila, nuevoScope), AUNQUE la anterior
+    // siga en vuelo. En todos, solo el gestor/sucursal/periodo VIGENTE puede
+    // aplicarse o mostrarse en el preview.
+
+    it('cambio rápido de GESTOR (respuesta nueva antes que la vieja): solo aplica el gestor vigente', async () => {
+        const q = deferredQueue()
+        const { consult, invalidate } = useOkrBaselinePreview()
+        const kr = newKrRow({ kpi_id: 3 })
+
+        const p21 = consult(kr, emp(21)) // fetch idx 0
+        invalidate(kr, emp(22)) // el contenedor invalida al cambiar de gestor…
+        const p22 = consult(kr, emp(22)) // …y relanza. fetch idx 1
+
+        q.resolve(1, { available: true, value: 22000, period: { id: 14, label: 'Octubre 2026' } }) // llega primero la del 22
+        await p22
+        q.resolve(0, { available: true, value: 21000, period: { id: 14, label: 'Octubre 2026' } }) // luego la obsoleta del 21
+        await p21
+
+        expect(kr.baseline_value).toBe('22000') // solo el gestor vigente
+        expect(kr.preview?.value).toBe(22000) // preview nunca contaminado por el 21
+        expect(kr.loading).toBe(false)
+    })
+
+    it('cambio rápido de GESTOR (la vieja llega primero): la del gestor anterior se descarta', async () => {
+        const q = deferredQueue()
+        const { consult, invalidate } = useOkrBaselinePreview()
+        const kr = newKrRow({ kpi_id: 3 })
+
+        const p21 = consult(kr, emp(21)) // idx 0
+        invalidate(kr, emp(22))
+        const p22 = consult(kr, emp(22)) // idx 1
+
+        q.resolve(0, { available: true, value: 21000, period: null }) // obsoleta llega primero
+        await p21
+        expect(kr.baseline_value).toBe('') // nunca aplicó la del 21
+        q.resolve(1, { available: true, value: 22000, period: null })
+        await p22
+
+        expect(kr.baseline_value).toBe('22000')
+        expect(kr.preview?.value).toBe(22000)
+    })
+
+    it('cambio rápido de SUCURSAL con respuestas fuera de orden: solo aplica la sucursal vigente', async () => {
+        const q = deferredQueue()
+        const { consult, invalidate } = useOkrBaselinePreview()
+        const kr = newKrRow({ kpi_id: 3 })
+
+        const pA = consult(kr, emp(21, { branch_id: 2 })) // idx 0
+        invalidate(kr, emp(21, { branch_id: 5 }))
+        const pB = consult(kr, emp(21, { branch_id: 5 })) // idx 1
+
+        q.resolve(1, { available: true, value: 5000, period: null }) // sucursal 5 (vigente)
+        await pB
+        q.resolve(0, { available: true, value: 2000, period: null }) // sucursal 2 (obsoleta)
+        await pA
+
+        expect(kr.baseline_value).toBe('5000')
+        expect(kr.preview?.value).toBe(5000)
+    })
+
+    it('cambio rápido de PERIODO con respuestas fuera de orden: solo aplica el periodo vigente', async () => {
+        const q = deferredQueue()
+        const { consult, invalidate } = useOkrBaselinePreview()
+        const kr = newKrRow({ kpi_id: 3 })
+
+        const pOld = consult(kr, emp(21, { start_date: '2026-09-01' })) // idx 0
+        invalidate(kr, emp(21, { start_date: '2026-10-01' }))
+        const pNew = consult(kr, emp(21, { start_date: '2026-10-01' })) // idx 1
+
+        q.resolve(0, { available: true, value: 900, period: { id: 13, label: 'Septiembre 2026' } }) // obsoleto primero
+        await pOld
+        expect(kr.baseline_value).toBe('')
+        q.resolve(1, { available: true, value: 1000, period: { id: 14, label: 'Octubre 2026' } })
+        await pNew
+
+        expect(kr.baseline_value).toBe('1000')
+        expect(kr.preview?.period?.label).toBe('Octubre 2026') // nunca el periodo anterior
+    })
+
+    it('cambio de gestor con base MANUAL en curso: conserva el valor, no muestra el preview anterior ni deja spinner pegado', async () => {
+        const q = deferredQueue()
+        const { consult, invalidate } = useOkrBaselinePreview()
+        const kr = newKrRow({ kpi_id: 3 })
+
+        const p21 = consult(kr, emp(21)) // idx 0, en vuelo
+        // El usuario captura su propia base para el gestor actual.
+        kr.baseline_mode = 'manual'
+        kr.baseline_value = '999'
+        // Cambia de gestor: el contenedor invalida (la fila manual NO se re-consulta).
+        invalidate(kr, emp(22))
+
+        q.resolve(0, { available: true, value: 21000, period: { id: 14, label: 'Octubre 2026' } }) // respuesta del gestor 21
+        await p21
+
+        expect(kr.baseline_value).toBe('999') // base manual conservada
+        expect(kr.preview).toBeNull() // jamás se mostró el dato del gestor 21
+        expect(kr.loading).toBe(false) // spinner no queda pegado
+    })
+
+    it('invalidate deja la fila lista para una nueva sugerencia vigente', async () => {
+        const q = deferredQueue()
+        const { consult, invalidate } = useOkrBaselinePreview()
+        const kr = newKrRow({ kpi_id: 3 })
+
+        const p21 = consult(kr, emp(21)) // idx 0
+        invalidate(kr, emp(22))
+        expect(kr.loading).toBe(false) // invalidate abandona el spinner de inmediato
+        const p22 = consult(kr, emp(22)) // idx 1
+        expect(kr.loading).toBe(true) // la nueva consulta lo vuelve a encender
+
+        q.resolve(0, { available: true, value: 21000, period: null }) // obsoleta
+        await p21
+        q.resolve(1, { available: true, value: 22000, period: null })
+        await p22
+
+        expect(kr.baseline_value).toBe('22000')
+        expect(kr.loading).toBe(false)
     })
 })

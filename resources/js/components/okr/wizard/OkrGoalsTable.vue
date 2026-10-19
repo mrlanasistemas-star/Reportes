@@ -23,7 +23,7 @@ const props = defineProps<{
     scopeLabel: string
 }>()
 const rows = defineModel<KrRow[]>('rows', { required: true })
-const { consult } = useOkrBaselinePreview()
+const { consult, invalidate } = useOkrBaselinePreview()
 
 function kpiOf(id: number | null) {
     return props.kpis.find((k) => k.id === id) ?? null
@@ -31,33 +31,39 @@ function kpiOf(id: number | null) {
 
 // Autosugerencia de la línea base del GESTOR (18-oct-2026): en cuanto la tabla
 // aparece se busca la base propia del colaborador en Reportería, sin que el
-// usuario pulse nada. Solo filas de gestor con KPI automático aún VACÍAS: nunca
-// pisa una base ya capturada/editada (baseline_value distinto de '') ni toca el
-// alcance de sucursal (ese lo dispara el contenedor). Idempotente.
+// usuario pulse nada. Solo filas de gestor con KPI automático que NO estén bajo
+// control manual: nunca pisa una base capturada/editada (así se conserva al
+// reabrir "Editar metas") ni toca el alcance de sucursal (lo dispara el
+// contenedor). Idempotente.
 function autoSuggestEmployeeBaselines() {
     if (props.scope.scope_type !== 'employee') {
         return
     }
 
     rows.value.forEach((kr) => {
-        // Solo filas automáticas que NO están bajo control manual (manual /
-        // manual_authorized). Las editadas a mano nunca se re-sugieren, así se
-        // conserva el valor capturado al reabrir "Editar metas".
         const manuallyControlled = kr.baseline_mode === 'manual' || kr.baseline_mode === 'manual_authorized'
 
-        if (isAutomatic(kpiOf(kr.kpi_id)) && !manuallyControlled && !kr.loading) {
+        // Nota: NO se condiciona a !kr.loading — al cambiar el contexto hay que
+        // arrancar una consulta nueva aunque una anterior siga en vuelo; la
+        // previa ya quedó invalidada (ver watch) y su respuesta se descarta.
+        if (isAutomatic(kpiOf(kr.kpi_id)) && !manuallyControlled) {
             consult(kr, props.scope)
         }
     })
 }
 
 onMounted(autoSuggestEmployeeBaselines)
-// Reintenta la sugerencia si cambia el KPI de una fila o el alcance (gestor,
-// sucursal, periodo): la nueva consulta invalida cualquier respuesta obsoleta
-// en vuelo (token monotónico en useOkrBaselinePreview).
+// Al cambiar el KPI de una fila o el alcance (gestor, sucursal, periodo):
+// 1) INVALIDA de inmediato cualquier consulta en vuelo de TODAS las filas
+//    —incluidas las manuales—, aunque kr.loading sea verdadero, para que una
+//    respuesta del gestor/periodo anterior nunca se muestre ni se aplique;
+// 2) relanza la sugerencia para las filas elegibles con el contexto nuevo.
 watch(
-    () => [rows.value.map((kr) => kr.kpi_id).join(','), props.scope.employee_id, props.scope.branch_id, props.scope.start_date].join('|'),
-    autoSuggestEmployeeBaselines,
+    () => [rows.value.map((kr) => kr.kpi_id).join(','), props.scope.scope_type, props.scope.employee_id, props.scope.branch_id, props.scope.start_date].join('|'),
+    () => {
+        rows.value.forEach((kr) => invalidate(kr, props.scope))
+        autoSuggestEmployeeBaselines()
+    },
 )
 
 // Adopta explícitamente la base sugerida por Reportería SOBRE un valor escrito a
