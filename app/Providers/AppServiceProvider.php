@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\View;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -31,6 +32,10 @@ class AppServiceProvider extends ServiceProvider
         $this->configureDefaults();
         Schema::defaultStringLength(191);
         $this->configureApiRateLimiting();
+
+        // SEO por página (27-oct-2026): título, descripción, robots, canonical,
+        // Open Graph y JSON-LD que app.blade.php pinta EN EL SERVIDOR.
+        View::composer('app', fn (\Illuminate\View\View $view) => $view->with('seo', \App\Support\Seo::forRequest(request())));
     }
 
     /**

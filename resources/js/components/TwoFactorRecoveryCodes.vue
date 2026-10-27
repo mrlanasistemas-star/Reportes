@@ -98,7 +98,7 @@ onMounted(async () => {
                             <div
                                 v-for="n in 8"
                                 :key="n"
-                                class="h-4 animate-pulse rounded bg-muted-foreground/20"
+                                class="h-4 app-skeleton rounded bg-muted-foreground/20"
                             ></div>
                         </div>
                         <div

@@ -17,6 +17,10 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // SEO (27-oct-2026): X-Robots-Tag en toda respuesta — noindex salvo las
+        // páginas públicas de config/seo.php (ver App\Support\Seo).
+        $middleware->append(\App\Http\Middleware\AddRobotsHeader::class);
+
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
 
         $middleware->web(append: [

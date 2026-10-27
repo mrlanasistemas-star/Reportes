@@ -98,7 +98,7 @@ function activate(includeChildren: boolean) {
             <p class="-mt-1 text-xs text-muted-foreground">Al activar se congela la línea base de cada OKR con Reportería. Revisa qué está listo antes de continuar.</p>
 
             <div v-if="loading" class="space-y-2 py-2">
-                <div v-for="n in 3" :key="n" class="h-14 animate-pulse rounded-xl bg-muted" />
+                <div v-for="n in 3" :key="n" class="h-14 app-skeleton rounded-xl bg-muted" />
             </div>
             <div v-else-if="error" class="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                 <p>{{ error }}</p>

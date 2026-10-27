@@ -10,7 +10,11 @@ import AuthLayout from '@/layouts/AuthLayout.vue';
 import SettingsLayout from '@/layouts/settings/Layout.vue';
 import { attachInertiaRouteLoading } from '@/lib/routeLoadingOverlay';
 
-const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
+const appName = import.meta.env.VITE_APP_NAME || 'Reportes';
+// SEO (27-oct-2026): el título siempre lleva la marca — misma regla que
+// App\Support\Seo::appTitle() en PHP, para que el <title> que pinta el servidor
+// y el que pone Inertia al montar sean idénticos ("Reportes" → "Reportes Mr Lana").
+const brandTitle = /mr\s*lana/i.test(appName) ? appName : `${appName} Mr Lana`;
 
 // Pantalla de carga global (cierre 17-sep-2026, ronda 6 — "tarda muchísimo entrar,
 // no sé si está haciendo algo") — cubre CUALQUIER navegación Inertia del sitio,
@@ -100,7 +104,7 @@ window.fetch = async (...args: Parameters<typeof fetch>) => {
 };
 
 createInertiaApp({
-    title: (title) => (title ? `${title} - ${appName}` : appName),
+    title: (title) => (!title ? brandTitle : title.includes(brandTitle) ? title : `${title} — ${brandTitle}`),
     layout: (name) => {
         switch (true) {
             // auth/Login y auth/ForgotPassword traen su propio layout de pantalla
@@ -118,8 +122,11 @@ createInertiaApp({
                 return AppLayout;
         }
     },
+    // Barra de navegación con el verde de la marca (--primary del modo claro);
+    // sin spinner: para cargas largas ya está el overlay global.
     progress: {
-        color: '#4B5563',
+        color: '#047857',
+        showSpinner: false,
     },
 });
 

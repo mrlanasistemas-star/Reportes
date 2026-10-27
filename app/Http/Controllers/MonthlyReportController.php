@@ -13,6 +13,7 @@ use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
 use App\Models\ReportUpload;
 use App\Services\Access\DataScopeService;
+use App\Services\Access\ReportVisibilityService;
 use App\Services\PeriodDerivedDataCleaner;
 use App\Services\PeriodRadiographyService;
 use App\Services\RadiografiaExportService;
@@ -59,6 +60,8 @@ class MonthlyReportController extends Controller {
         // identidad (mismo period_id/report_type/scope/...). Para esos casos, la
         // lista solo debe mostrar el más reciente de cada identidad, nunca todos
         // los duplicados históricos.
+        $visibility = app(ReportVisibilityService::class);
+        $visibilityMode = $visibility->mode($request->user());
         $runs = PeriodRadiographyRun::query()
             ->with([
                 'period:id,name,code,type,year,month,sequence,start_date,end_date',
@@ -67,6 +70,12 @@ class MonthlyReportController extends Controller {
                 'employee:id,full_name',
             ])
             ->where('status', 'success')
+            // 27-oct-2026 — alcance por AUTOR: "Ver reportes propios" solo lista
+            // los runs que generó este usuario (antes de deduplicar por identidad,
+            // para que un run propio no lo tape uno más reciente de otro usuario);
+            // sin permiso de ver, la lista sale vacía.
+            ->when($visibilityMode === ReportVisibilityService::OWN, fn ($q) => $q->where('created_by', $request->user()->id))
+            ->when($visibilityMode === ReportVisibilityService::NONE, fn ($q) => $q->whereRaw('1 = 0'))
             ->latest('finished_at')
             ->get()
             ->unique(fn (PeriodRadiographyRun $run) => implode('|', $run->identity()))
@@ -74,6 +83,7 @@ class MonthlyReportController extends Controller {
 
         // Fase 6.4 — alcance restringido: solo reportes por sucursal/gestor de SUS
         // sucursales; los generales (y los consolidados heredados) no se listan.
+        // Se aplica ENCIMA del alcance por autor ("de todos" = de todos, en sus sucursales).
         $restricted = app(DataScopeService::class)->isRestricted($request->user());
         if ($restricted) {
             $runs = $runs->filter(fn (PeriodRadiographyRun $run) => $this->runWithinScope($request->user(), $run))->values();
@@ -151,6 +161,8 @@ class MonthlyReportController extends Controller {
             ->where('status', 'generated')
             ->whereNotIn('period_id', $periodIdsWithSimpleGeneralRun)
             ->when($restricted, fn ($q) => $q->whereRaw('1 = 0'))
+            ->when($visibilityMode === ReportVisibilityService::OWN, fn ($q) => $q->where('generated_by', $request->user()->id))
+            ->when($visibilityMode === ReportVisibilityService::NONE, fn ($q) => $q->whereRaw('1 = 0'))
             ->latest('generated_at')
             ->get()
             ->map(fn (PeriodSummary $summary) => [
@@ -185,6 +197,7 @@ class MonthlyReportController extends Controller {
         return Inertia::render('ReportesMensuales/Index', [
             'message' => 'Consulta, previsualiza y descarga los reportes ya generados.',
             'generatedReports' => $generatedReports,
+            'visibility' => $visibility->describe($request->user()),
         ]);
     }
 
@@ -436,6 +449,12 @@ class MonthlyReportController extends Controller {
                 ]);
             }
         }
+        // 27-oct-2026 — alcance por AUTOR (después del de sucursal).
+        $visibility = app(ReportVisibilityService::class);
+        $previewScope = in_array($request->query('scope'), ['branch', 'employee'], true) ? $request->query('scope') : 'general';
+        $visibility->authorizePeriodReport($request->user(), $period->id, $previewScope,
+            (int) $request->query('branch_id', 0) ?: null, (int) $request->query('employee_id', 0) ?: null);
+
         $summary = PeriodSummary::query()
             ->with(['branchSummaries', 'incidents'])
             ->where('period_id', $period->id)
@@ -555,7 +574,7 @@ class MonthlyReportController extends Controller {
         }
 
         // All available periods for compare selectors (with snapshot flag for comparativo protection)
-        $allPeriods = $this->allPeriodsForSelector();
+        $allPeriods = $this->allPeriodsForSelector($request->user());
 
         return Inertia::render('ReportesMensuales/Preview', [
             'period' => [
@@ -588,11 +607,14 @@ class MonthlyReportController extends Controller {
     }
 
     /** Compartido por previewPage()/comparativoPage() — lista de periodos para selectores. */
-    private function allPeriodsForSelector(): \Illuminate\Support\Collection
+    private function allPeriodsForSelector(?\App\Models\User $user = null): \Illuminate\Support\Collection
     {
         $periodsWithSnap = PeriodSummary::where('status', 'generated')->pluck('period_id')->flip();
+        // 27-oct-2026 — con "Ver reportes propios" solo se ofrecen los periodos de los que generó algún reporte.
+        $visibleIds = $user ? app(ReportVisibilityService::class)->visiblePeriodIds($user) : null;
 
         return Period::query()
+            ->when($visibleIds !== null, fn ($q) => $q->whereIn('id', $visibleIds))
             ->orderByDesc('year')->orderByDesc('month')->orderByDesc('sequence')
             ->get(['id', 'name', 'code', 'type', 'year', 'month'])
             ->map(fn ($p) => [
@@ -630,7 +652,7 @@ class MonthlyReportController extends Controller {
      */
     public function comparativoPage(Request $request): Response
     {
-        $allPeriods = $this->allPeriodsForSelector();
+        $allPeriods = $this->allPeriodsForSelector($request->user());
 
         $periodAId  = (int) $request->query('period_a', 0) ?: null;
         $periodBId  = (int) $request->query('period_b', 0) ?: null;
@@ -665,6 +687,13 @@ class MonthlyReportController extends Controller {
                 $scope = 'branch';
                 $branchId = $dataScope->resolveBranch($request->user(), $branchId);
             }
+        }
+
+        // 27-oct-2026 — alcance por AUTOR: un enlace directo a un comparativo ajeno → 403.
+        $visibility = app(ReportVisibilityService::class);
+        abort_unless($visibility->canViewAny($request->user()), 403, $visibility->deniedMessage($request->user()));
+        if ($request->query('period_a') && $request->query('period_b') && $periodAId && $periodBId) {
+            $visibility->authorizePeriodReport($request->user(), $periodAId, $scope, $branchId, $employeeId, $periodBId);
         }
 
         return Inertia::render('ReportesMensuales/ComparativePreview', [
@@ -798,6 +827,12 @@ class MonthlyReportController extends Controller {
             return response()->json(['employees' => []], 200, self::NO_STORE_HEADERS);
         }
 
+        // 27-oct-2026 — sin permiso de ver reportes de ese periodo, no se expone su roster.
+        $visibleIds = app(ReportVisibilityService::class)->visiblePeriodIds($request->user());
+        if ($visibleIds !== null && ! in_array($period->id, $visibleIds, true)) {
+            return response()->json(['employees' => []], 200, self::NO_STORE_HEADERS);
+        }
+
         $rows = $rosterService->rosterRowsForSelector($period)['rows'] ?? [];
 
         // Fase 6.4 — solo colaboradores de las sucursales del usuario.
@@ -837,6 +872,7 @@ class MonthlyReportController extends Controller {
     public function updateSaldoInicial(Period $period, Request $request): JsonResponse|RedirectResponse
     {
         app(DataScopeService::class)->requireGeneral($request->user(), 'El saldo inicial en caja del periodo');
+        app(ReportVisibilityService::class)->authorizePeriodReport($request->user(), $period->id);
         $validated = $request->validate([
             'saldo_inicial_caja' => ['required', 'numeric'],
         ]);
@@ -853,6 +889,7 @@ class MonthlyReportController extends Controller {
     public function exportSummary(Period $period): StreamedResponse
     {
         app(DataScopeService::class)->requireGeneral(request()->user(), 'El consolidado del periodo');
+        app(ReportVisibilityService::class)->authorizePeriodReport(request()->user(), $period->id);
         $rows = MonthlyEmployeeSummary::query()->with(['employee:id,full_name','branch:id,name'])->where('period_id', $period->id)->orderByDesc('included_in_report')->orderBy('employee_id')->get();
         $filename = sprintf('consolidado_%s.csv', $period->code ?: $period->id);
         return response()->streamDownload(function () use ($rows, $period) {
@@ -868,6 +905,7 @@ class MonthlyReportController extends Controller {
     public function exportRadiography(Period $period, RadiografiaExportService $service)
     {
         app(DataScopeService::class)->requireGeneral(request()->user(), 'La radiografía general');
+        app(ReportVisibilityService::class)->authorizePeriodReport(request()->user(), $period->id);
         // Check summary FIRST — a pending old job must NOT block an already-generated report
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
@@ -969,6 +1007,7 @@ class MonthlyReportController extends Controller {
     public function exportRadiographyPdf(Period $period, RadiografiaExportService $service)
     {
         app(DataScopeService::class)->requireGeneral(request()->user(), 'La radiografía general');
+        app(ReportVisibilityService::class)->authorizePeriodReport(request()->user(), $period->id);
         $summary = PeriodSummary::query()
             ->where('period_id', $period->id)
             ->where('status', 'generated')
@@ -1335,6 +1374,7 @@ class MonthlyReportController extends Controller {
 
         // Sin el ID correspondiente, un alcance branch/employee podría terminar en el
         // reporte general: para alcance restringido se trata como general (403).
+        $branchId = (int) $request->input('branch_id', 0);
         if ($scope === 'employee' && $employeeId > 0) {
             $dataScope->authorizeEmployee($user, $employeeId, $periodId);
             // Comparativo: el colaborador también debe pertenecer a sus sucursales en
@@ -1342,17 +1382,17 @@ class MonthlyReportController extends Controller {
             if ($comparePeriodId && $comparePeriodId !== $periodId) {
                 $this->authorizeEmployeeInComparePeriod($user, $employeeId, $comparePeriodId);
             }
-
-            return;
-        }
-        $branchId = (int) $request->input('branch_id', 0);
-        if ($scope === 'branch' && $branchId > 0) {
+        } elseif ($scope === 'branch' && $branchId > 0) {
             $dataScope->authorizeBranch($user, $branchId);
-
-            return;
+        } else {
+            $dataScope->requireGeneral($user, $what);
+            $scope = 'general';
         }
 
-        $dataScope->requireGeneral($user, $what);
+        // 27-oct-2026 — alcance por AUTOR, después del de sucursal (sus mensajes mandan).
+        if ($periodId) {
+            app(ReportVisibilityService::class)->authorizePeriodReport($user, $periodId, $scope, $branchId ?: null, $employeeId ?: null, $comparePeriodId);
+        }
     }
 
     /** 403 en español si el colaborador no pertenece al alcance del usuario en el periodo de comparación. */
@@ -1385,6 +1425,11 @@ class MonthlyReportController extends Controller {
     {
         $user = request()->user();
         if ($this->runWithinScope($user, $run)) {
+            // 27-oct-2026 — además del alcance por sucursal, el alcance por autor:
+            // con solo "Ver reportes propios", un run ajeno por URL directa → 403.
+            $visibility = app(ReportVisibilityService::class);
+            abort_unless($visibility->canViewRun($user, $run), 403, $visibility->deniedMessage($user));
+
             return;
         }
 

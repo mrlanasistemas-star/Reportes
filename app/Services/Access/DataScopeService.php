@@ -41,6 +41,9 @@ class DataScopeService
     /** @var array<int, ?list<int>> memo por instancia (una petición). */
     private array $memo = [];
 
+    /** @var array<string, list<string>> nombres por conjunto de ids (una petición). */
+    private array $namesMemo = [];
+
     public function __construct(private readonly OperativeBranchService $operative)
     {
     }
@@ -63,6 +66,56 @@ class DataScopeService
         }
 
         return $this->memo[$user->id] = $this->computeAllowed($user);
+    }
+
+    /**
+     * Precalcula en LOTE el alcance de varios usuarios (tabla del módulo
+     * Usuarios) con un número fijo de consultas, en vez de 1–N consultas por
+     * fila. Mismas reglas que computeAllowed(); solo llena el memo de ESTA
+     * instancia (sigue sin haber caché entre peticiones).
+     *
+     * @param iterable<User> $users
+     */
+    public function preload(iterable $users, ?OkrEmployeeBranchResolver $resolver = null): void
+    {
+        $pending = collect($users)->filter(fn ($u) => $u instanceof User && ! array_key_exists($u->id, $this->memo))->values();
+        if ($pending->isEmpty()) {
+            return;
+        }
+
+        $modes = $pending->mapWithKeys(fn (User $u) => [$u->id => $u->isAdmin() ? null : $this->modeOf($u)])->all();
+
+        $stored = [];
+        $branchModeIds = $pending->filter(fn (User $u) => ! $u->isAdmin() && $modes[$u->id] === self::MODE_BRANCHES)->pluck('id')->all();
+        if ($branchModeIds !== []) {
+            foreach (array_chunk($branchModeIds, 500) as $chunk) {
+                DB::table('user_branch_scopes')->whereIn('user_id', $chunk)->orderBy('branch_id')->get(['user_id', 'branch_id'])
+                    ->each(function ($r) use (&$stored) {
+                        $stored[(int) $r->user_id][] = (int) $r->branch_id;
+                    });
+            }
+        }
+
+        // Colaboradores previos a la Fase 6.4: su sucursal vigente, resuelta en una sola pasada.
+        $legacy = $pending->filter(fn (User $u) => ! $u->isAdmin() && $modes[$u->id] === null && ! $u->isGerencial() && $u->employee_id);
+        $ownBranch = [];
+        $employeeIds = $legacy->pluck('employee_id')->map(fn ($id) => (int) $id)->unique()->values()->all();
+        if ($employeeIds !== []) {
+            foreach (($resolver ?? app(OkrEmployeeBranchResolver::class))->membershipMap($employeeIds) as $employeeId => $membership) {
+                $ownBranch[(int) $employeeId] = $membership['branch_id'] ?? null;
+            }
+        }
+
+        foreach ($pending as $u) {
+            $mode = $modes[$u->id];
+            $this->memo[$u->id] = match (true) {
+                $u->isAdmin(), $mode === self::MODE_ALL => null,
+                $mode === self::MODE_BRANCHES => $stored[$u->id] ?? [],
+                $u->isGerencial() => null,
+                (bool) $u->employee_id => ($own = $ownBranch[(int) $u->employee_id] ?? null) ? [(int) $own] : [],
+                default => [],
+            };
+        }
     }
 
     /** @return list<int>|null */
@@ -216,7 +269,11 @@ class DataScopeService
             return null;
         }
 
-        return Branch::query()->whereIn('id', $allowed)->orderBy('name')->pluck('name')->all();
+        // Memo por conjunto de sucursales: la tabla de Usuarios repite los mismos
+        // conjuntos en muchas filas (una consulta por conjunto distinto, no por fila).
+        $key = implode(',', $allowed);
+
+        return $this->namesMemo[$key] ??= Branch::query()->whereIn('id', $allowed)->orderBy('name')->pluck('name')->all();
     }
 
     public function allowsBranchName(User $user, ?string $name): bool

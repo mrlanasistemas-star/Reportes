@@ -20,6 +20,8 @@ tags:
   - name: financial
   - name: collections
   - name: okr
+  - name: exports
+    description: Exportación de KPIs por periodo (colaboradores, sucursales, corporativo, consolidado)
 
 paths:
   /health:
@@ -182,6 +184,155 @@ paths:
       responses:
         "200": { description: OK }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /periods/{periodId}/employees:
+    get:
+      tags: [exports]
+      summary: Colaboradores del periodo con sucursal, rutas, estado laboral y KPIs
+      description: >
+        Una fila por colaborador CANÓNICO (registros Employee duplicados fusionados, igual que el
+        reporte). Misma fuente que el "Excel de colaboradores" del reporte mensual
+        (EmployeesHistoricoExportService): mismas cifras de recuperación, colocación, cartera,
+        vencida, mora, OPEX, Nómina y Capital Humano, percepciones/deducciones NOI, ingreso base,
+        EBITDA y margen. La sucursal es la asignación HISTÓRICA del periodo; la sucursal
+        institucional sale de branches.sucursal_id. Requiere `employees.read` Y `financial.read`.
+        Sin radiografía vigente → `status: not_available` y `data: []` (nunca ceros).
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdPath"
+        - $ref: "#/components/parameters/PerPage"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/BranchIdQuery"
+        - $ref: "#/components/parameters/SucursalIdQuery"
+        - $ref: "#/components/parameters/Format"
+      responses:
+        "200":
+          description: OK (JSON paginado, o CSV con todas las filas si format=csv)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PeriodEmployeesResponse" }
+            text/csv:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /employees/{employeeId}/periods:
+    get:
+      tags: [exports]
+      summary: Un colaborador a lo largo de varios periodos (con su sucursal/ruta de cada periodo)
+      description: >
+        Cada elemento de `data` es un periodo con `status` ok | not_available (sin radiografía) |
+        not_found (sin actividad ese periodo) | forbidden (fuera del alcance de sucursal del
+        consumidor para ESE periodo). Incluye `kpis.collections_effectiveness` (misma función que
+        la vista de colaborador del reporte) salvo `include_effectiveness=0`. Máximo 24 periodos.
+        403 si un consumidor restringido no tiene acceso en ninguno de los periodos.
+      parameters:
+        - $ref: "#/components/parameters/EmployeeIdPath"
+        - $ref: "#/components/parameters/PeriodIds"
+        - $ref: "#/components/parameters/FromPeriodId"
+        - $ref: "#/components/parameters/ToPeriodId"
+        - in: query
+          name: include_effectiveness
+          schema: { type: string, enum: ["0", "1"], default: "1" }
+        - $ref: "#/components/parameters/Format"
+      responses:
+        "200": { description: OK }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /periods/{periodId}/branches:
+    get:
+      tags: [exports]
+      summary: Sucursales + CORPORATIVO + CONSOLIDADO del periodo, con todos sus KPIs
+      description: >
+        Lee el snapshot GENERAL del reporte (RadiografiaExportService::buildSnapshot) — nunca
+        recalcula. `data` = sucursales financieras del reporte (BranchRadiographyCalculator) con
+        colocación, recuperación (componentes y exclusiones), cartera/mora por bucket, gastos ERP/
+        Lendus/OPEX, Nómina y Capital Humano (desglose), comisiones, fondeo, excedentes, seguros,
+        EBITDA/margen/categoría y rotación. `corporate` = nómina sin sucursal operativa
+        (Corporativo/sin asignar) + excedentes recibidos; `consolidated` = cifras de portada del
+        reporte. `reconciliation` comprueba Σ sucursales + corporativo = consolidado. Un consumidor
+        restringido solo ve sus sucursales; `corporate`/`consolidated` → `status: not_authorized`.
+        Requiere `financial.read`.
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdPath"
+        - $ref: "#/components/parameters/Format"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PeriodBranchesResponse" }
+            text/csv:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /periods/{periodId}/export:
+    get:
+      tags: [exports]
+      summary: Todo el periodo en una sola llamada (sucursales + corporativo + consolidado + colaboradores)
+      description: >
+        `financial.read` + límite `api-exports`. El bloque `employees` exige además
+        `employees.read` (403 si falta; usa `include=branches`). `employees.unidentified` lista las
+        filas del reporte sin identidad de colaborador (solo alcance global).
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdPath"
+        - $ref: "#/components/parameters/Include"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PeriodExport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /periods/export:
+    get:
+      tags: [exports]
+      summary: Exportación de un RANGO de periodos (máx. 12)
+      description: >
+        `periods[]` con la misma forma que /periods/{id}/export. `format=csv` exige
+        `dataset=employees|branches` y devuelve filas planas con `period_id`/`period_label`.
+      parameters:
+        - $ref: "#/components/parameters/PeriodIds"
+        - $ref: "#/components/parameters/FromPeriodId"
+        - $ref: "#/components/parameters/ToPeriodId"
+        - $ref: "#/components/parameters/Include"
+        - $ref: "#/components/parameters/Format"
+        - in: query
+          name: dataset
+          schema: { type: string, enum: [employees, branches] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  periods:
+                    type: array
+                    items: { $ref: "#/components/schemas/PeriodExport" }
+                  meta:
+                    type: object
+                    properties:
+                      periods_count: { type: integer }
+                      include: { type: array, items: { type: string } }
+                      definition_version: { type: string }
+            text/csv:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
   /financial/summary:
     get:
@@ -376,6 +527,40 @@ components:
       name: branchId
       required: true
       schema: { type: integer }
+    Page:
+      in: query
+      name: page
+      schema: { type: integer, minimum: 1, default: 1 }
+    SucursalIdQuery:
+      in: query
+      name: sucursal_id
+      description: Filtra por sucursal institucional (una de las 11) de la asignación del periodo.
+      schema: { type: integer }
+    Format:
+      in: query
+      name: format
+      schema: { type: string, enum: [json, csv], default: json }
+      description: >
+        csv = UTF-8 con BOM, columnas con ruta "a.b.c"; listas anidadas como JSON en una celda.
+        Se omiten las listas de detalle voluminosas (opex.items, placement.by_product).
+    PeriodIds:
+      in: query
+      name: period_ids
+      description: Lista explícita de periodos (excluyente con from/to).
+      schema: { type: string, example: "19,20,21" }
+    FromPeriodId:
+      in: query
+      name: from_period_id
+      description: Inicio del rango (mismo tipo que to_period_id).
+      schema: { type: integer }
+    ToPeriodId:
+      in: query
+      name: to_period_id
+      schema: { type: integer }
+    Include:
+      in: query
+      name: include
+      schema: { type: string, default: "branches,employees", example: branches }
 
   schemas:
     Scope:
@@ -493,6 +678,143 @@ components:
             per_page: { type: integer }
             total: { type: integer }
             last_page: { type: integer }
+    PeriodRef:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        type: { type: string }
+        label: { type: string, example: Junio 2026 }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date }
+        is_closed: { type: boolean }
+    EmployeeRoute:
+      type: object
+      properties:
+        route: { type: string, description: Nombre tal como viene en la fuente }
+        catalog_route: { type: string, nullable: true, description: Ruta del catálogo oficial (BranchRouteCatalog) o null si es desconocida }
+        catalog_branch: { type: string, nullable: true, description: Sucursal oficial a la que pertenece la ruta }
+        active: { type: boolean, nullable: true }
+        sources:
+          type: array
+          items: { type: string, enum: [assignment, portfolio] }
+        contracts: { type: integer, nullable: true, description: Contratos de cartera del gestor en esa ruta (periodo) }
+        balance: { type: number, nullable: true }
+    EmployeePeriodKpis:
+      type: object
+      description: Fila colaborador × periodo. Montos en MXN, porcentajes en %.
+      properties:
+        employee:
+          type: object
+          properties:
+            id: { type: integer, description: Id canónico (el menor del grupo fusionado) }
+            employee_ids: { type: array, items: { type: integer } }
+            full_name: { type: string }
+            report_name: { type: string, description: Nombre exacto con el que aparece en el reporte }
+            employee_code: { type: string, nullable: true, description: Clave NOI del id canónico }
+            employee_codes: { type: array, items: { type: string } }
+            promoter_code: { type: string, nullable: true, description: Código de promotor Lendus }
+            position: { type: string, nullable: true }
+            is_active: { type: boolean, nullable: true }
+        branch_id: { type: integer, nullable: true }
+        branch: { allOf: [{ $ref: "#/components/schemas/BranchRef" }], nullable: true }
+        branch_status: { type: string, enum: [known, unknown], description: known = existe asignación para ESE periodo }
+        branch_source: { type: string, nullable: true, enum: [assignment, report_row] }
+        assigned_branch_id: { type: integer, nullable: true, description: Fuente de autorización (asignación del periodo) }
+        sucursal: { allOf: [{ $ref: "#/components/schemas/SucursalRef" }], nullable: true }
+        region: { type: string, nullable: true }
+        report_branch_name: { type: string, nullable: true, description: Sucursal que muestra el reporte para la fila }
+        routes: { type: array, items: { $ref: "#/components/schemas/EmployeeRoute" } }
+        employment:
+          type: object
+          properties:
+            operational_status: { type: string, enum: [ACTIVO, BAJA], description: Misma regla que el Excel (ingreso real u OPEX automático > 0) }
+            roster_status: { type: string, nullable: true, description: "RosterMovementStatus (alta_confirmada, activo_confirmado, baja_confirmada, posible_baja, ...)" }
+            roster_status_label: { type: string, nullable: true }
+            movement_type: { type: string, nullable: true, enum: [alta, activo, baja, ausencia, sin_cambio] }
+            is_active_for_period: { type: boolean, nullable: true }
+            requires_review: { type: boolean, nullable: true }
+            roster_available: { type: boolean }
+        kpis:
+          type: object
+          properties:
+            placement: { type: object, description: "amount, operations, by_product[]" }
+            recovery: { type: object, description: "total (con exclusiones del reporte) y components{capital, interest, tax, late_charges, ...}" }
+            portfolio: { type: object, description: "total, overdue, current, mora_pct, buckets{al_corriente, mora_1_30, ...}" }
+            payroll: { type: object, description: "human_capital_total (usado en EBITDA), payments, bonuses, discounts, noi_perceptions, noi_deductions, noi_net_paid, concepts{sueldo, comisiones, bonos, ...}, deductions_detail[]" }
+            commissions: { type: number, description: Percepciones NOI de comisiones (P002/P119) }
+            opex: { type: object, description: "automatic_total, opex_pure, employee_payroll_expenses, manual (=0, la API es oficial), total, items[]" }
+            ebitda: { type: object, description: "income_base, total_expenses, ebitda, margin_pct, category" }
+            collections_effectiveness: { type: object, nullable: true, description: "Solo en /employees/{id}/periods" }
+        availability: { type: object, description: Explicación de cada dato null }
+    PeriodEmployeesResponse:
+      type: object
+      properties:
+        period: { $ref: "#/components/schemas/PeriodRef" }
+        status: { type: string, enum: [ok, not_available] }
+        message: { type: string, nullable: true }
+        source: { type: string, example: reporteria.employees_period_kpis }
+        definition_version: { type: string }
+        calculated_at: { type: string, nullable: true }
+        radiography_version: { type: integer, nullable: true, description: id del PeriodSummary vigente usado }
+        data: { type: array, items: { $ref: "#/components/schemas/EmployeePeriodKpis" } }
+        meta:
+          type: object
+          properties:
+            current_page: { type: integer }
+            per_page: { type: integer }
+            total: { type: integer }
+            last_page: { type: integer }
+            unidentified_count: { type: integer, nullable: true }
+    BranchPeriodKpis:
+      type: object
+      properties:
+        name: { type: string, example: TULA }
+        branch_id: { type: integer, nullable: true }
+        branch: { allOf: [{ $ref: "#/components/schemas/BranchRef" }], nullable: true }
+        sucursal: { allOf: [{ $ref: "#/components/schemas/SucursalRef" }], nullable: true }
+        region: { type: string, nullable: true }
+        routes: { type: array, items: { type: object, properties: { route: { type: string }, active: { type: boolean } } } }
+        kpis:
+          type: object
+          description: >
+            placement{amount, credits}, recovery{total, gross, components, excluded}, portfolio{total,
+            contracts, overdue, current, mora_pct, buckets}, expenses{opex_total, erp, lendus, *_loaded,
+            *_excluded_*, by_concept}, payroll{human_capital_total, breakdown, imss_employer,
+            employee_expenses, deductions_informative, noi_*}, commissions, funding{interbranch_loans,
+            surplus_sent_to_corporate}, insurance{lendus_bridge, crece_policies_30,
+            crece_comadres_informative}, ebitda{income_base, total_expenses, ebitda, margin_pct,
+            category}, turnover_pct, collections_effectiveness (null por sucursal: usar
+            /financial/branches/{id}).
+    PeriodBranchesResponse:
+      type: object
+      properties:
+        period: { $ref: "#/components/schemas/PeriodRef" }
+        status: { type: string, enum: [ok, not_available] }
+        message: { type: string, nullable: true }
+        source: { type: string, example: reporteria.radiography_snapshot }
+        calculated_at: { type: string, nullable: true }
+        data: { type: array, items: { $ref: "#/components/schemas/BranchPeriodKpis" } }
+        corporate: { type: object, nullable: true, description: "payroll{human_capital_total, breakdown, employees[]}, expenses, imss_excluded_informative, surplus_received, ebitda_contribution, availability — o {status: not_authorized}" }
+        consolidated: { type: object, nullable: true, description: "name, cash{opening_balance, closing_balance}, kpis (mismas claves que una sucursal + turnover_pct, collections_effectiveness) — o {status: not_authorized}" }
+        reconciliation: { type: object, nullable: true }
+    PeriodExport:
+      type: object
+      properties:
+        period: { $ref: "#/components/schemas/PeriodRef" }
+        branches:
+          type: object
+          description: Misma forma que PeriodBranchesResponse (sin `period`)
+        employees:
+          type: object
+          properties:
+            status: { type: string }
+            message: { type: string, nullable: true }
+            calculated_at: { type: string, nullable: true }
+            radiography_version: { type: integer, nullable: true }
+            total: { type: integer }
+            data: { type: array, items: { $ref: "#/components/schemas/EmployeePeriodKpis" } }
+            unidentified: { type: array, nullable: true, items: { type: object } }
     Error:
       type: object
       properties:

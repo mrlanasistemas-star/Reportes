@@ -5,11 +5,12 @@
 // quedan privilegios residuales).
 import { useForm } from '@inertiajs/vue3'
 import { ArrowLeft, ArrowRight, Check, Loader2, ShieldPlus } from 'lucide-vue-next'
+import Swal from 'sweetalert2'
 import { computed, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import RolePermissionMatrix from './RolePermissionMatrix.vue'
-import { BASE_LEVELS, actionsIn, summaryText } from './roles'
+import { BASE_LEVELS, DEFAULT_ON_ENABLE, actionLabel, actionsIn, requiredBy, summaryText, toggleWithDependencies } from './roles'
 import type { ActionOption, Grantable, ModuleOption, RoleInfo } from './roles'
 
 const props = defineProps<{ role: RoleInfo | null; storeUrl: string; modules: ModuleOption[]; actions: ActionOption[]; grantable: Grantable }>()
@@ -55,18 +56,51 @@ function toggleModule(key: string) {
         form.actions = next
     } else if (canGrantModule(key)) {
         form.modules = [...form.modules, key]
+        const defaults = (DEFAULT_ON_ENABLE[key] ?? []).filter((a) => props.grantable.actions[key]?.includes(a))
+
+        if (defaults.length && !(form.actions[key]?.length)) {
+            form.actions = { ...form.actions, [key]: defaults }
+        }
     }
 }
 
+function canGrantAction(module: string, action: string): boolean {
+    return props.grantable.actions[module]?.includes(action) || form.actions[module]?.includes(action) || false
+}
+
+const labelsOf = (module: string, list: string[]) => list.map((a) => `«${actionLabel(props.actions, module, a)}»`).join(', ')
+
+// Dependencias entre acciones (ActionPermissionService::REQUIRES): al marcar una
+// se marcan las que requiere; al desmarcar una requerida se desmarcan las que
+// dependen de ella. Siempre con un aviso breve de lo que cambió además.
 function toggleAction(module: string, action: string) {
-    const current = form.actions[module] ?? []
-    form.actions = { ...form.actions, [module]: current.includes(action) ? current.filter((a) => a !== action) : [...current, action] }
+    const { next, added, removed } = toggleWithDependencies(props.actions, module, form.actions[module] ?? [], action)
+    const blocked = added.filter((a) => !canGrantAction(module, a))
+
+    if (blocked.length) {
+        // Toast (sin botones): el diálogo del asistente mantiene el foco.
+        Swal.fire({ toast: true, position: 'bottom-end', icon: 'warning', text: `«${actionLabel(props.actions, module, action)}» requiere ${labelsOf(module, blocked)}, y tu propio rol no lo tiene.`, timer: 5000, showConfirmButton: false, timerProgressBar: true })
+
+        return
+    }
+
+    form.actions = { ...form.actions, [module]: next }
+
+    const label = `«${actionLabel(props.actions, module, action)}»`
+    const text = added.length
+        ? `${label} requiere ${labelsOf(module, added)}: se marcó también.`
+        : removed.length ? `Sin ${label} no aplica ${labelsOf(module, removed)}: se desmarcó también.` : null
+
+    if (text) {
+        Swal.fire({ toast: true, position: 'bottom-end', icon: 'info', text, timer: 4000, showConfirmButton: false, timerProgressBar: true })
+    }
 }
 
 function setAll(module: string, on: boolean) {
-    const allowed = actionsIn(props.actions, module).map((a) => a.action)
-        .filter((a) => props.grantable.actions[module]?.includes(a) || form.actions[module]?.includes(a))
-    form.actions = { ...form.actions, [module]: on ? allowed : [] }
+    const allowed = actionsIn(props.actions, module).map((a) => a.action).filter((a) => canGrantAction(module, a))
+    // Nunca deja una acción sin sus requeridas (si falta alguna que no puede otorgar, se omite).
+    const consistent = allowed.filter((a) => requiredBy(props.actions, module, a).every((r) => allowed.includes(r)))
+    form.actions = { ...form.actions, [module]: on ? consistent : [] }
 }
 
 const summary = computed(() => summaryText(form.name.trim(), form.modules, form.actions))

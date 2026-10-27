@@ -130,7 +130,7 @@ const assignOpen = ref(false)
         />
 
         <!-- 6 cards en una sola fila -->
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <div class="app-stagger grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <OkrStatCard :icon="Target" label="OKR activos" :value="cards.active" tone="primary" />
             <OkrStatCard :icon="AlertTriangle" label="OKR en riesgo" :value="cards.risk" tone="warning" />
             <OkrStatCard :icon="XCircle" label="No cumplidos" :value="cards.not_met" tone="danger" />

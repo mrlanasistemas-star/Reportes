@@ -26,6 +26,9 @@ use Illuminate\Support\Facades\DB;
 class ActionPermissionService
 {
     public const COLUMNS = [
+        // 27-oct-2026 — alcance de CONSULTA dentro del módulo (p. ej. reportes
+        // propios vs de todos). Distinto de "Ver" (= acceso al módulo).
+        'consultar' => 'Consultar',
         'crear' => 'Crear',
         'editar' => 'Editar',
         'eliminar' => 'Eliminar',
@@ -58,8 +61,13 @@ class ActionPermissionService
             'conciliar' => ['label' => 'Conciliar altas y bajas', 'column' => 'autorizar', 'description' => 'Confirmar o descartar posibles bajas del periodo (queda en la bitácora).'],
         ],
         'reportes' => [
+            // 27-oct-2026 — alcance por AUTOR del reporte. El alcance por sucursal
+            // (Usuarios → alcance) se aplica ENCIMA: "de todos" = de cualquier
+            // usuario, pero solo de las sucursales que el usuario puede consultar.
+            'ver_propios' => ['label' => 'Ver reportes propios', 'column' => 'consultar', 'description' => 'Consultar y abrir solo los reportes mensuales que generó este mismo usuario.'],
+            'ver_todos' => ['label' => 'Ver reportes de todos', 'column' => 'consultar', 'description' => 'Consultar los reportes generados por cualquier usuario, dentro de las sucursales de su alcance (alcance general = todas).'],
             'editar' => ['label' => 'Consolidar y ajustar saldo inicial', 'column' => 'editar', 'description' => 'Consolidar el periodo y capturar el saldo inicial.'],
-            'exportar' => ['label' => 'Exportar Excel/PDF', 'column' => 'exportar', 'description' => 'Descargar radiografía, comparativos y consolidados.'],
+            'exportar' => ['label' => 'Exportar Excel/PDF', 'column' => 'exportar', 'description' => 'Descargar radiografía, comparativos y consolidados que puede ver.'],
         ],
         'efectividad' => [
             'calcular' => ['label' => 'Subir archivos y calcular', 'column' => 'crear', 'description' => 'Usar la calculadora de efectividad.'],
@@ -96,6 +104,19 @@ class ActionPermissionService
         ],
     ];
 
+    /**
+     * 27-oct-2026 — dependencias entre acciones del MISMO módulo:
+     * módulo => acción => acciones que requiere. Al guardar un rol se agregan
+     * siempre las requeridas (sanitize()) y la UI las marca/desmarca juntas.
+     */
+    public const REQUIRES = [
+        'reportes' => [
+            'ver_todos' => ['ver_propios'],
+            'editar' => ['ver_propios'],
+            'exportar' => ['ver_propios'],
+        ],
+    ];
+
     /** Acciones que existían antes de ampliar el catálogo — sus filas guardadas se respetan tal cual. */
     public const LEGACY_ACTIONS = [
         'carga' => ['eliminar'], 'periodos' => ['eliminar'], 'reportes' => ['exportar'], 'colaboradores' => ['exportar'],
@@ -114,7 +135,7 @@ class ActionPermissionService
             'carga' => ['subir', 'generar', 'procesar', 'eliminar', 'descargar'],
             'periodos' => ['crear', 'eliminar', 'cerrar'],
             'colaboradores' => ['editar', 'exportar'],
-            'reportes' => ['editar', 'exportar'],
+            'reportes' => ['ver_propios', 'ver_todos', 'editar', 'exportar'],
             'efectividad' => ['calcular', 'exportar'],
             'okr' => ['crear', 'cargar_colocacion', 'cargar_evidencia', 'registrar_seguimiento', 'configurar_kr', 'editar_borradores',
                 'anular_documentos', 'exportar', 'activar', 'revisar_carta', 'emitir_carta', 'generar_warning', 'autorizar_warning'],
@@ -126,7 +147,8 @@ class ActionPermissionService
             'carga' => ['subir', 'generar', 'procesar', 'descargar'],
             'periodos' => ['crear', 'cerrar'],
             'colaboradores' => ['editar'],
-            'reportes' => ['editar'],
+            // Hasta hoy, con el módulo habilitado se listaban los reportes de todos (dentro de su alcance).
+            'reportes' => ['ver_propios', 'ver_todos', 'editar'],
             'efectividad' => ['calcular', 'exportar'],
             'okr' => ['cargar_colocacion', 'cargar_evidencia', 'registrar_seguimiento', 'configurar_kr', 'editar_borradores', 'exportar', 'revisar_carta'],
         ],
@@ -256,7 +278,7 @@ class ActionPermissionService
                 DB::table('role_action_permissions')->where('role', $role)->whereIn('module', $modules)->delete();
                 $rows = [];
                 foreach ($modules as $module) {
-                    foreach (array_intersect(array_keys(self::ACTIONS[$module]), $matrix[$role][$module] ?? []) as $action) {
+                    foreach (self::withRequired($module, array_values(array_intersect(array_keys(self::ACTIONS[$module]), (array) ($matrix[$role][$module] ?? [])))) as $action) {
                         $rows[] = ['role' => $role, 'module' => $module, 'action' => $action, 'created_at' => $now, 'updated_at' => $now];
                     }
                 }
@@ -275,7 +297,7 @@ class ActionPermissionService
         $out = [];
         foreach (self::ACTIONS as $module => $actions) {
             foreach ($actions as $action => $meta) {
-                $out[] = ['module' => $module, 'action' => $action] + $meta;
+                $out[] = ['module' => $module, 'action' => $action] + $meta + ['requires' => self::REQUIRES[$module][$action] ?? []];
             }
         }
 
@@ -287,10 +309,34 @@ class ActionPermissionService
     {
         $clean = [];
         foreach (self::ACTIONS as $module => $defs) {
-            $clean[$module] = array_values(array_intersect(array_keys($defs), (array) ($actions[$module] ?? [])));
+            $clean[$module] = self::withRequired($module, array_values(array_intersect(array_keys($defs), (array) ($actions[$module] ?? []))));
         }
 
         return $clean;
+    }
+
+    /**
+     * Agrega las acciones requeridas (REQUIRES, transitivo) y devuelve la lista
+     * en el orden del catálogo. Nunca quita nada.
+     *
+     * @param list<string> $actions
+     * @return list<string>
+     */
+    public static function withRequired(string $module, array $actions): array
+    {
+        $set = array_fill_keys($actions, true);
+        $pending = $actions;
+        while ($pending !== []) {
+            $action = array_pop($pending);
+            foreach (self::REQUIRES[$module][$action] ?? [] as $required) {
+                if (! isset($set[$required])) {
+                    $set[$required] = true;
+                    $pending[] = $required;
+                }
+            }
+        }
+
+        return array_values(array_filter(array_keys(self::ACTIONS[$module] ?? []), fn ($a) => isset($set[$a])));
     }
 
     public static function exists(string $module, string $action): bool

@@ -10,23 +10,27 @@ import AppPageHeader from '@/components/app/AppPageHeader.vue'
 import { Button } from '@/components/ui/button'
 import BranchScopeDialog from '@/components/usuarios/BranchScopeDialog.vue'
 import BulkPasswordBar from '@/components/usuarios/BulkPasswordBar.vue'
+import LinkEmployeeDialog from '@/components/usuarios/LinkEmployeeDialog.vue'
 import ResetPasswordDialog from '@/components/usuarios/ResetPasswordDialog.vue'
+import RoleChangeDialog from '@/components/usuarios/RoleChangeDialog.vue'
 import { useAdminFlash } from '@/components/usuarios/useAdminFlash'
 import UserAuditLog from '@/components/usuarios/UserAuditLog.vue'
 import UserCreateDialog from '@/components/usuarios/UserCreateDialog.vue'
 import UserFilters from '@/components/usuarios/UserFilters.vue'
 import UserImportDialog from '@/components/usuarios/UserImportDialog.vue'
 import type { AccessState, AuditEntry, BranchOption, LinkableEmployee, UserDataScope, UserRoleOption, UserRow } from '@/components/usuarios/users'
-import UsersTable from '@/components/usuarios/UsersTable.vue'
+import UsersGrid from '@/components/usuarios/UsersGrid.vue'
 import UserSummaryCards from '@/components/usuarios/UserSummaryCards.vue'
 import { useUserActions } from '@/components/usuarios/useUserActions'
+import { useTabIndicator } from '@/composables/useTabIndicator'
 import AppLayout from '@/layouts/AppLayout.vue'
 
 defineOptions({ layout: AppLayout })
 
 const props = defineProps<{
     users: UserRow[]
-    employees: LinkableEmployee[]
+    /** Prop DIFERIDA (Inertia::defer): llega en una segunda petición; undefined mientras carga. */
+    employees?: LinkableEmployee[]
     roles: UserRoleOption[]
     audit: AuditEntry[]
     current_user_id: number
@@ -112,6 +116,12 @@ const visibleUsers = computed(() => {
 
 const sectionCount = (key: Section) => (key === 'historial' ? props.audit.length : props.users.filter((u) => inSection(u, key)).length)
 
+// Indicador deslizante bajo la pestaña activa (declarado después de section y
+// sectionCount: watch() evalúa su fuente de inmediato). Se re-mide también
+// cuando cambian los contadores, porque cambian el ancho de las pestañas.
+const tabsRef = ref<HTMLElement | null>(null)
+const { indicatorStyle, indicatorReady } = useTabIndicator(tabsRef, () => `${section.value}|${SECTIONS.map((s) => sectionCount(s.key)).join()}`)
+
 const actions = useUserActions()
 const createOpen = ref(false)
 const importOpen = ref(false)
@@ -136,6 +146,21 @@ function openScope(u: UserRow) {
 function openReset(u: UserRow) {
     resetTarget.value = u
     resetOpen.value = true
+}
+
+const roleOpen = ref(false)
+const roleTarget = ref<UserRow | null>(null)
+const linkOpen = ref(false)
+const linkTarget = ref<UserRow | null>(null)
+
+function openRole(u: UserRow) {
+    roleTarget.value = u
+    roleOpen.value = true
+}
+
+function openLink(u: UserRow) {
+    linkTarget.value = u
+    linkOpen.value = true
 }
 
 async function resend(u: UserRow) {
@@ -217,16 +242,17 @@ watch(() => props.reset_password, (data) => {
             </template>
         </AppPageHeader>
 
-        <nav class="scrollbar-none flex gap-1 overflow-x-auto border-b border-border" aria-label="Secciones de usuarios" role="tablist">
+        <nav ref="tabsRef" class="scrollbar-none relative flex gap-1 overflow-x-auto border-b border-border" aria-label="Secciones de usuarios" role="tablist">
             <button
                 v-for="s in SECTIONS" :key="s.key" type="button"
                 role="tab" :aria-selected="section === s.key"
                 class="-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-semibold transition-colors"
-                :class="section === s.key ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'"
+                :class="section === s.key ? 'border-transparent text-foreground' : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'"
                 @click="setSection(s.key)"
             >
                 {{ s.label }} <span class="rounded-full px-1.5 py-0.5 text-[11px] tabular-nums" :class="section === s.key ? 'bg-primary/10 text-primary' : 'bg-muted'">{{ sectionCount(s.key) }}</span>
             </button>
+            <span class="app-tab-indicator" :style="indicatorStyle" :data-ready="indicatorReady" aria-hidden="true" />
         </nav>
 
         <UserAuditLog v-if="section === 'historial'" :entries="audit" />
@@ -235,12 +261,12 @@ watch(() => props.reset_password, (data) => {
             <UserSummaryCards v-if="section === 'resumen'" :users="users" />
             <UserFilters v-model:search="search" v-model:role="roleFilter" v-model:access="accessFilter" v-model:branch="branchFilter" :roles="roles" :branches="branches" />
             <BulkPasswordBar v-if="can.bulk_reset_password" v-model:selected="selectedIds" :assign-url="bulk_password_urls.assign" />
-            <UsersTable
+            <UsersGrid
                 v-model:selected="selectedIds" :selectable="can.bulk_reset_password"
                 :users="visibleUsers" :resending-id="actions.resendingId.value"
                 @enable="actions.enableAccess" @revoke="actions.revokeAccess" @toggle-blocked="actions.toggleBlocked"
                 @reset="openReset" @resend="resend" @edit-scope="openScope"
-                @change-role="(u) => actions.changeRole(u, roles)" @link-employee="(u) => actions.linkEmployee(u, employees)"
+                @change-role="openRole" @link-employee="openLink"
             />
             <p class="app-help">
                 «Aceptada por el servidor de correo» significa que el servidor tomó el mensaje para enviarlo; no confirma que la persona lo haya recibido.
@@ -255,6 +281,8 @@ watch(() => props.reset_password, (data) => {
         />
         <BranchScopeDialog v-model:open="scopeOpen" :user="scopeTarget" :branches="scope_branches" :can-grant-all="actor_scope.general" />
         <ResetPasswordDialog v-model:open="resetOpen" :user="resetTarget" />
+        <RoleChangeDialog v-model:open="roleOpen" :user="roleTarget" :roles="roles" />
+        <LinkEmployeeDialog v-model:open="linkOpen" :user="linkTarget" :employees="employees" />
         <UserImportDialog
             v-if="can.import && import_urls"
             v-model:open="importOpen" :urls="import_urls" :environment="environment"

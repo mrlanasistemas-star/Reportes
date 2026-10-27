@@ -474,10 +474,10 @@ const chartKey = computed(() => `${kpis.value?.period_id ?? 'x'}-${scope.value?.
         <template v-else>
             <!-- KPIs: EBITDA y margen destacados; el resto en tarjetas compactas -->
             <section aria-label="Indicadores clave" class="space-y-3">
-                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div class="app-stagger grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <DashboardKpiCard v-for="card in heroCards" :key="card.label" v-bind="card" hero :loading="loading" />
                 </div>
-                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                <div class="app-stagger grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" style="--stagger-offset: 90ms">
                     <DashboardKpiCard v-for="card in kpiCards" :key="card.label" v-bind="card" :loading="loading" />
                 </div>
             </section>

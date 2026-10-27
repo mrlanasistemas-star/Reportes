@@ -124,7 +124,7 @@ async function submit() {
             <DialogTitle class="flex items-center gap-2 text-base font-bold"><ShieldAlert class="size-5 text-rose-600" /> Evaluar incumplimiento</DialogTitle>
             <p class="-mt-1 text-xs text-muted-foreground">El sistema solo detecta; emitir un Warning requiere revisar los datos y autorizarlo. Se evalúan semanas cerradas contra lo esperado a esa semana, nunca contra la meta final.</p>
 
-            <div v-if="loading" class="space-y-2"><div v-for="n in 3" :key="n" class="h-10 animate-pulse rounded-lg bg-muted" /></div>
+            <div v-if="loading" class="space-y-2"><div v-for="n in 3" :key="n" class="h-10 app-skeleton rounded-lg bg-muted" /></div>
 
             <div v-else-if="loadError" class="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                 <p class="text-[10px] font-bold uppercase tracking-wide">Error técnico</p>

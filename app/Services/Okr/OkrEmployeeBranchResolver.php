@@ -493,9 +493,16 @@ class OkrEmployeeBranchResolver
         $directory = $this->personnelResolver->currentDirectory();
         $dirRows = $this->personnelResolver->currentDirectoryRows($norms);
 
+        // Índice «primera fila (la más reciente) por employee_id»: evita recorrer
+        // todas las filas por cada colaborador (O(n·m)) al resolver en lote
+        // (módulo Usuarios con cientos de colaboradores). Mismo resultado que
+        // first() sobre la lista ordenada: gana la fila de menor posición del grupo.
+        $rosterIdx = self::firstIndexByEmployee($rosters);
+        $assignmentIdx = self::firstIndexByEmployee($assignments);
+
         foreach ($employeeIds as $id) {
             $group = $groupOf[$id];
-            $r = $rosters->first(fn ($row) => in_array((int) $row->employee_id, $group, true));
+            $r = self::firstOfGroup($rosterIdx, $rosters, $group);
             if ($r && ($b = $officialId($r->branch_id ? (int) $r->branch_id : null, $r->branch_name))) {
                 $candidates[$id][] = [2, (string) $r->end_date, $b, 'noi_roster', "Nómina NOI {$r->period_name}", null];
             }
@@ -507,7 +514,7 @@ class OkrEmployeeBranchResolver
                 $candidates[$id][] = [4, (string) ($directory['period_end'] ?? ''), $b, 'lendus_directory', 'Directorio Lendus ' . ($directory['period_label'] ?? 'vigente'), null];
             }
 
-            $a = $assignments->first(fn ($row) => in_array((int) $row->employee_id, $group, true));
+            $a = self::firstOfGroup($assignmentIdx, $assignments, $group);
             if ($a && ($b = $officialId((int) $a->branch_id, null))) {
                 $candidates[$id][] = [3, (string) $a->end_date, $b, 'reporting_assignment', "Asignación de Reportería {$a->period_name}", null];
             }
@@ -582,6 +589,31 @@ class OkrEmployeeBranchResolver
                 'conflict' => null,
             ];
         }
+    }
+
+    /** @return array<int, int> employee_id => posición de su primera fila. */
+    private static function firstIndexByEmployee(\Illuminate\Support\Collection $rows): array
+    {
+        $idx = [];
+        foreach ($rows as $i => $row) {
+            $idx[(int) $row->employee_id] ??= $i;
+        }
+
+        return $idx;
+    }
+
+    /** Primera fila (en el orden original) de cualquier id del grupo, o null. */
+    private static function firstOfGroup(array $idx, \Illuminate\Support\Collection $rows, array $group): ?object
+    {
+        $best = null;
+        foreach ($group as $employeeId) {
+            $pos = $idx[(int) $employeeId] ?? null;
+            if ($pos !== null && ($best === null || $pos < $best)) {
+                $best = $pos;
+            }
+        }
+
+        return $best === null ? null : $rows->get($best);
     }
 
     public const CONFLICT_MESSAGE = 'Encontramos información diferente sobre la sucursal de este colaborador.';

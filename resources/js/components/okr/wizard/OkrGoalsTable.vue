@@ -191,7 +191,7 @@ function cancelManual(kr: KrRow) {
 
                         <template v-else-if="isAutomatic(kpiOf(kr.kpi_id)) && kr.baseline_mode !== 'manual_authorized'">
                             <div v-if="kr.loading" class="space-y-1.5 rounded-lg border border-border p-2">
-                                <div class="h-4 w-28 animate-pulse rounded bg-muted" />
+                                <div class="h-4 w-28 app-skeleton rounded bg-muted" />
                                 <div class="flex items-center gap-1 text-[10px] text-muted-foreground"><Loader2 class="size-3 animate-spin" /> Consultando Reportería…</div>
                                 <p class="text-[10px] text-muted-foreground/80">La primera consulta del periodo puede tardar hasta ~30 s; no cierres la ventana.</p>
                             </div>

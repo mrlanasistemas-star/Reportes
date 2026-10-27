@@ -163,7 +163,7 @@ it('usuario restringido a CUERNAVACA: scoped-data entrega el desglose por produc
 
     $admin = User::factory()->create(['role' => 'admin']);
     if (! DB::table('roles')->where('key', 'gerente_sucursal_bpp')->exists()) {
-        $this->actingAs($admin)->post(route('roles.store'), ['name' => 'Gerente Sucursal BPP', 'description' => 'Prueba', 'base_level' => 'gerencial', 'modules' => ['reportes'], 'actions' => []])->assertSessionHasNoErrors();
+        $this->actingAs($admin)->post(route('roles.store'), ['name' => 'Gerente Sucursal BPP', 'description' => 'Prueba', 'base_level' => 'gerencial', 'modules' => ['reportes'], 'actions' => ['reportes' => ['ver_todos']]])->assertSessionHasNoErrors();
     }
     $this->actingAs($admin)->post(route('usuarios.store'), [
         'name' => 'Gerente Cuernavaca', 'email' => 'bpp-gerente@example.test', 'role' => 'gerente_sucursal_bpp', 'password_mode' => 'auto',

@@ -14,7 +14,7 @@ withDefaults(defineProps<{ inverted?: boolean; size?: 'sm' | 'md' }>(), { invert
                 inverted ? 'ring-white/20 shadow-lg shadow-black/30' : 'ring-slate-200 shadow-sm dark:ring-white/10',
             ]"
         >
-            <img src="/logoMrLana.png" alt="MR LANA" draggable="false" class="size-full object-contain" />
+            <img src="/logoMrLana.png" alt="Logo Mr Lana" width="256" height="256" decoding="async" draggable="false" class="size-full object-contain" />
         </span>
         <span class="leading-tight">
             <span :class="['block text-base font-bold tracking-tight', inverted ? 'text-white' : 'text-foreground']">MR LANA</span>

@@ -122,7 +122,7 @@ it('usuario con VARIAS sucursales: ve exactamente esas (ATLIXCO y TULA) y recibe
     Mail::fake();
     $admin = aseAdmin();
     [$atl, $tula, $cor] = [aseBranch('ATLIXCO'), aseBranch('TULA'), aseBranch('CORDOBA')];
-    $user = aseScopedUser($this, $admin, 'dos@example.test', [$atl->id, $tula->id], ['dashboard', 'reportes', 'colaboradores', 'okr'], ['reportes' => ['exportar'], 'okr' => ['exportar']]);
+    $user = aseScopedUser($this, $admin, 'dos@example.test', [$atl->id, $tula->id], ['dashboard', 'reportes', 'colaboradores', 'okr'], ['reportes' => ['ver_todos', 'exportar'], 'okr' => ['exportar']]);
 
     expect(app(DataScopeService::class)->allowedBranchIds($user))->toBe(collect([$atl->id, $tula->id])->sort()->values()->all());
 
@@ -187,7 +187,7 @@ it('Dashboard (pantalla, datos, Excel y PDF) de un usuario restringido sin sucur
     $admin = aseAdmin();
     $atl = aseBranch('ATLIXCO');
     aseBranch('TULA');
-    $user = aseScopedUser($this, $admin, 'solo-atl@example.test', [$atl->id], ['dashboard', 'reportes'], ['reportes' => ['exportar']]);
+    $user = aseScopedUser($this, $admin, 'solo-atl@example.test', [$atl->id], ['dashboard', 'reportes'], ['reportes' => ['ver_todos', 'exportar']]);
     $period = aseMonthly(6, withSummary: true);
     $configs = aseCaptureSnapshots();
     $renderer = Mockery::mock(\App\Services\Pdf\BrowsershotPdfRenderer::class);

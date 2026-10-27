@@ -34,7 +34,7 @@ const toneClasses: Record<Tone, { icon: string; value: string }> = {
 <template>
     <article
         :class="[
-            'relative flex flex-col rounded-2xl border border-border bg-card shadow-soft-xs transition duration-200 hover:shadow-soft-sm',
+            'app-hover-lift relative flex flex-col rounded-2xl border border-border bg-card shadow-soft-xs',
             hero ? 'p-5 sm:p-6' : 'p-4',
         ]"
         :aria-busy="loading"
