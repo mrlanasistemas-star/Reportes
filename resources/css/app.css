@@ -83,6 +83,20 @@
 }
 
 @layer base {
+    /* Movimiento (27-oct-2026) — tokens únicos para TODA transición/animación de
+       la app. Van en base (no en @theme) para ganarle a la capa theme de
+       Tailwind: así la utilidad `ease-out` también usa la curva de la marca.
+       Regla: solo se anima transform/opacity, 150-300 ms. */
+    :root {
+        --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+        --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+        --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+        --duration-fast: 150ms;
+        --duration-base: 220ms;
+        --duration-slow: 300ms;
+        --stagger-step: 45ms;
+    }
+
     *,
     ::before,
     ::after,
@@ -516,6 +530,255 @@
         .fv-orbit {
             animation: none !important;
         }
+    }
+
+    /* ── Movimiento reutilizable (27-oct-2026) ─────────────────────────────
+       .app-enter         entrada fade + slide-up (al montarse). Retraso opcional
+                          con style="--app-delay: 120ms".
+       .app-stagger       igual, pero para los HIJOS directos de un grid/lista,
+                          escalonados (máx. 10 pasos para no hacer esperar).
+       .app-page-enter    entrada del contenido al cambiar de página (layout).
+       .app-hover-lift    elevación al pasar el ratón (sombra en ::after por
+                          opacidad + translateY: nunca se anima box-shadow).
+       .app-skeleton      placeholder con brillo que recorre (shimmer).
+       .app-list-*        clases de <TransitionGroup name="app-list">.
+       Todas usan backwards (no forwards): al terminar no queda ningún transform
+       aplicado, así que no alteran position:fixed/sticky de los hijos. */
+    .app-enter,
+    .app-stagger > * {
+        animation: app-fade-up var(--duration-slow) var(--ease-out) backwards;
+        animation-delay: var(--app-delay, 0ms);
+    }
+
+    /* style="--stagger-offset: 120ms" en el contenedor retrasa toda la serie
+       (p. ej. campos de un formulario que entran después de su tarjeta). */
+    .app-stagger > * {
+        animation-delay: calc(var(--stagger-offset, 0ms) + var(--app-delay, 0ms));
+    }
+
+    .app-stagger > :nth-child(2) { --app-delay: calc(var(--stagger-step) * 1); }
+    .app-stagger > :nth-child(3) { --app-delay: calc(var(--stagger-step) * 2); }
+    .app-stagger > :nth-child(4) { --app-delay: calc(var(--stagger-step) * 3); }
+    .app-stagger > :nth-child(5) { --app-delay: calc(var(--stagger-step) * 4); }
+    .app-stagger > :nth-child(6) { --app-delay: calc(var(--stagger-step) * 5); }
+    .app-stagger > :nth-child(7) { --app-delay: calc(var(--stagger-step) * 6); }
+    .app-stagger > :nth-child(8) { --app-delay: calc(var(--stagger-step) * 7); }
+    .app-stagger > :nth-child(9) { --app-delay: calc(var(--stagger-step) * 8); }
+    .app-stagger > :nth-child(n + 10) { --app-delay: calc(var(--stagger-step) * 9); }
+
+    .app-page-enter {
+        animation: app-page-in var(--duration-base) var(--ease-out) backwards;
+    }
+
+    @media (hover: hover) {
+        .app-hover-lift {
+            position: relative;
+            transition:
+                transform var(--duration-base) var(--ease-out),
+                border-color var(--duration-base) var(--ease-out);
+        }
+
+        .app-hover-lift::after {
+            content: '';
+            position: absolute;
+            inset: -1px;
+            border-radius: inherit;
+            box-shadow: var(--shadow-md);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity var(--duration-base) var(--ease-out);
+        }
+
+        .app-hover-lift:hover {
+            transform: translateY(-2px);
+        }
+
+        .app-hover-lift:hover::after {
+            opacity: 1;
+        }
+    }
+
+    .app-skeleton {
+        position: relative;
+        overflow: hidden;
+    }
+
+    .app-skeleton::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.55), transparent);
+        transform: translateX(-100%);
+        animation: app-shimmer 1.4s var(--ease-in-out) infinite;
+    }
+
+    .dark .app-skeleton::after {
+        background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.07), transparent);
+    }
+
+    /* <TransitionGroup name="app-list">: entra con fade/escala, sale al
+       instante (sin position:absolute que rompa el grid) y el resto se
+       reacomoda con FLIP (.app-list-move, solo transform). */
+    .app-list-enter-active {
+        transition:
+            opacity var(--duration-base) var(--ease-out),
+            transform var(--duration-base) var(--ease-out);
+    }
+
+    .app-list-enter-from {
+        opacity: 0;
+        transform: translateY(6px) scale(0.98);
+    }
+
+    .app-list-move {
+        transition: transform var(--duration-slow) var(--ease-out);
+    }
+
+    /* Indicador deslizante de pestañas (ver composables/useTabIndicator.ts):
+       elemento de 1px escalado con scaleX = ancho de la pestaña activa. */
+    .app-tab-indicator {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 1px;
+        height: 2px;
+        border-radius: 999px;
+        background: var(--primary);
+        transform-origin: left center;
+        pointer-events: none;
+    }
+
+    .app-tab-indicator[data-ready='true'] {
+        transition:
+            transform var(--duration-slow) var(--ease-out),
+            opacity var(--duration-fast) var(--ease-out);
+    }
+
+    /* Fondo animado de las pantallas de acceso (AuthBackdrop.vue): manchas
+       difusas en verde de la marca que derivan muy lento (solo transform). */
+    .app-auth-blob {
+        position: absolute;
+        border-radius: 9999px;
+        filter: blur(64px);
+        will-change: transform;
+        animation: app-blob-drift 22s var(--ease-in-out) infinite alternate;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .app-enter,
+        .app-stagger > *,
+        .app-page-enter,
+        .app-auth-blob,
+        .app-skeleton::after {
+            animation: none !important;
+        }
+
+        .app-hover-lift:hover {
+            transform: none;
+        }
+
+        .app-list-enter-active,
+        .app-list-move,
+        .app-tab-indicator[data-ready='true'] {
+            transition: none !important;
+        }
+    }
+}
+
+@keyframes app-fade-up {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes app-page-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes app-shimmer {
+    to {
+        transform: translateX(100%);
+    }
+}
+
+@keyframes app-blob-drift {
+    0% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(6%, -8%, 0) scale(1.08);
+    }
+    100% {
+        transform: translate3d(-6%, 6%, 0) scale(0.96);
+    }
+}
+
+/* SweetAlert2 — entrada/salida con la misma curva y duración que Dialog
+   (fade + zoom 95 %). SweetAlert declara estas variables en :root e inyecta su
+   CSS DESPUÉS de este archivo; definirlas en .swal2-container (ancestro del
+   popup) gana por herencia sin pelear especificidad ni !important. SweetAlert
+   espera el animationend de estas keyframes antes de quitar el popup, así que
+   el cierre sigue funcionando igual (también con movimiento reducido). */
+.swal2-container {
+    --swal2-show-animation: app-swal-in var(--duration-base) var(--ease-out);
+    --swal2-hide-animation: app-swal-out var(--duration-fast) var(--ease-in) forwards;
+    --swal2-toast-show-animation: app-toast-in var(--duration-slow) var(--ease-out);
+    --swal2-toast-hide-animation: app-toast-out var(--duration-fast) var(--ease-in) forwards;
+    --swal2-backdrop-transition: background-color var(--duration-base) var(--ease-out);
+}
+
+@keyframes app-swal-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes app-swal-out {
+    from {
+        opacity: 1;
+        transform: none;
+    }
+    to {
+        opacity: 0;
+        transform: scale(0.96);
+    }
+}
+
+@keyframes app-toast-in {
+    from {
+        opacity: 0;
+        transform: translateX(16px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes app-toast-out {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+        transform: translateX(8px);
     }
 }
 

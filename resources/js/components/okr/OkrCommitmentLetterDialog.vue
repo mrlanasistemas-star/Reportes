@@ -205,7 +205,7 @@ async function voidLetter(letter: any) {
         <DialogContent class="max-h-[92vh] w-[96vw] max-w-3xl overflow-y-auto sm:max-w-3xl">
             <DialogTitle class="flex items-center gap-2 text-base font-bold"><FileSignature class="size-5 text-primary" /> Carta Compromiso — revisión</DialogTitle>
 
-            <div v-if="!review && loading" class="space-y-2 py-2"><div v-for="n in 4" :key="n" class="h-10 animate-pulse rounded-lg bg-muted" /></div>
+            <div v-if="!review && loading" class="space-y-2 py-2"><div v-for="n in 4" :key="n" class="h-10 app-skeleton rounded-lg bg-muted" /></div>
 
             <div v-else-if="loadError" class="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                 <p>{{ loadError }}</p>

@@ -8,7 +8,7 @@
 // editable cada acción es una casilla; si no se puede marcar se explica por qué.
 import { Check, Eye, EyeOff, Info, Lock, Minus } from 'lucide-vue-next'
 import { computed } from 'vue'
-import { MATRIX_COLUMNS, actionsIn } from './roles'
+import { MATRIX_COLUMNS, MODULE_NOTES, actionLabel, actionsIn, dependentsOf, requiredBy } from './roles'
 import type { ActionColumn, ActionOption, Grantable, ModuleOption } from './roles'
 
 const props = defineProps<{
@@ -45,6 +45,24 @@ const cards = computed(() => {
         return { module: m, enabled, groups, total, granted }
     })
 })
+
+/** "Incluye también …" / "Necesaria para …" — dependencias entre acciones (ActionPermissionService::REQUIRES). */
+function dependencyText(module: string, action: string): string | null {
+    const quote = (list: string[]) => list.map((a) => `«${actionLabel(props.actionCatalog, module, a)}»`).join(', ')
+    const req = requiredBy(props.actionCatalog, module, action)
+    const deps = dependentsOf(props.actionCatalog, module, action)
+    const parts: string[] = []
+
+    if (req.length) {
+        parts.push(`Incluye también ${quote(req)} (se marca sola).`)
+    }
+
+    if (deps.length) {
+        parts.push(`Necesaria para ${quote(deps)}: si la quitas, se quitan también.`)
+    }
+
+    return parts.length ? parts.join(' ') : null
+}
 
 function disabledReason(module: string, action: string, enabled: boolean): string | null {
     if (!enabled) {
@@ -94,6 +112,10 @@ function disabledReason(module: string, action: string, enabled: boolean): strin
                 </header>
 
                 <div class="flex-1 px-4 py-3">
+                    <p v-if="MODULE_NOTES[card.module.key] && (card.enabled || editable)" class="mb-3 flex items-start gap-1.5 rounded-lg bg-info-soft px-2.5 py-2 text-[11px] leading-relaxed text-foreground">
+                        <Info class="mt-0.5 size-3 shrink-0 text-info" aria-hidden="true" />
+                        <span>{{ MODULE_NOTES[card.module.key] }}</span>
+                    </p>
                     <p v-if="card.groups.length === 0" class="text-xs text-muted-foreground">
                         Solo consulta: este módulo no tiene acciones adicionales.
                     </p>
@@ -126,6 +148,7 @@ function disabledReason(module: string, action: string, enabled: boolean): strin
                                             <span class="min-w-0">
                                                 <span class="block text-sm font-medium text-foreground">{{ a.label }}</span>
                                                 <span v-if="a.description" class="block text-xs leading-relaxed text-muted-foreground">{{ a.description }}</span>
+                                                <span v-if="dependencyText(card.module.key, a.action)" class="mt-0.5 block text-[11px] leading-relaxed font-medium text-info">{{ dependencyText(card.module.key, a.action) }}</span>
                                                 <span v-if="disabledReason(card.module.key, a.action, card.enabled)" class="mt-0.5 flex items-center gap-1 text-[11px] font-medium text-warning">
                                                     <Lock class="size-3" aria-hidden="true" /> {{ disabledReason(card.module.key, a.action, card.enabled) }}
                                                 </span>
@@ -137,7 +160,7 @@ function disabledReason(module: string, action: string, enabled: boolean): strin
                                             v-else
                                             class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs"
                                             :class="has(card.module.key, a.action) ? 'border-success-border bg-success-soft font-medium text-foreground' : 'border-border text-muted-foreground'"
-                                            :title="a.description"
+                                            :title="[a.description, dependencyText(card.module.key, a.action)].filter(Boolean).join(' ')"
                                         >
                                             <Check v-if="has(card.module.key, a.action)" class="size-3 shrink-0 text-success" aria-hidden="true" />
                                             <Minus v-else class="size-3 shrink-0" aria-hidden="true" />

@@ -151,7 +151,7 @@ it('usuario restringido a CUERNAVACA: scoped-data no trae filas de rotación de 
 
     $admin = User::factory()->create(['role' => 'admin']);
     if (! DB::table('roles')->where('key', 'gerente_sucursal_brs')->exists()) {
-        $this->actingAs($admin)->post(route('roles.store'), ['name' => 'Gerente Sucursal BRS', 'description' => 'Prueba', 'base_level' => 'gerencial', 'modules' => ['reportes'], 'actions' => []])->assertSessionHasNoErrors();
+        $this->actingAs($admin)->post(route('roles.store'), ['name' => 'Gerente Sucursal BRS', 'description' => 'Prueba', 'base_level' => 'gerencial', 'modules' => ['reportes'], 'actions' => ['reportes' => ['ver_todos']]])->assertSessionHasNoErrors();
     }
     $this->actingAs($admin)->post(route('usuarios.store'), [
         'name' => 'Gerente Cuernavaca Rot', 'email' => 'brs-gerente@example.test', 'role' => 'gerente_sucursal_brs', 'password_mode' => 'auto',

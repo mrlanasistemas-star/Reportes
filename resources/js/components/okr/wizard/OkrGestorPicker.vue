@@ -60,7 +60,7 @@ function onSearch(value: string) {
         <div v-if="!branchSelected" class="rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">Primero elige la sucursal.</div>
 
         <div v-else-if="loading" class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <div v-for="n in 4" :key="n" class="h-14 animate-pulse rounded-xl bg-muted/60" />
+            <div v-for="n in 4" :key="n" class="h-14 app-skeleton rounded-xl bg-muted/60" />
         </div>
 
         <div v-else class="grid max-h-64 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">

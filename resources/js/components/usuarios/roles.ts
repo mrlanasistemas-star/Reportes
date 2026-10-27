@@ -18,13 +18,15 @@ export type RoleInfo = {
 }
 
 export type ModuleOption = { key: string; label: string; description: string }
-export type ActionColumn = 'crear' | 'editar' | 'eliminar' | 'exportar' | 'autorizar'
-export type ActionOption = { module: string; action: string; label: string; column: ActionColumn; description: string }
+export type ActionColumn = 'consultar' | 'crear' | 'editar' | 'eliminar' | 'exportar' | 'autorizar'
+/** `requires`: acciones del mismo módulo que esta necesita (ActionPermissionService::REQUIRES). */
+export type ActionOption = { module: string; action: string; label: string; column: ActionColumn; description: string; requires?: string[] }
 export type Grantable = { modules: string[]; actions: Record<string, string[]> }
 
 /** Columnas de la matriz: "Ver" es el acceso al módulo; el resto son acciones. */
 export const MATRIX_COLUMNS: { key: 'ver' | ActionColumn; label: string }[] = [
     { key: 'ver', label: 'Ver' },
+    { key: 'consultar', label: 'Consultar' },
     { key: 'crear', label: 'Crear' },
     { key: 'editar', label: 'Editar' },
     { key: 'eliminar', label: 'Eliminar' },
@@ -34,8 +36,68 @@ export const MATRIX_COLUMNS: { key: 'ver' | ActionColumn; label: string }[] = [
 
 export const BASE_LEVELS = [
     { key: 'gerencial', label: 'Gerencial', hint: 'Ve y gestiona los OKR de toda la operación; opera los módulos que le habilites.' },
-    { key: 'colaborador', label: 'Colaborador', hint: 'Solo ve y da seguimiento a lo propio (su OKR, sus documentos).' },
+    { key: 'colaborador', label: 'Colaborador', hint: 'Solo ve y da seguimiento a lo propio (su OKR, sus documentos). Si en Usuarios no se le asigna un alcance por sucursal, solo consulta la sucursal de su colaborador.' },
 ] as const
+
+/** Aclaraciones por módulo que se muestran en su tarjeta de permisos. */
+export const MODULE_NOTES: Record<string, string> = {
+    reportes: '«Ver reportes de todos» muestra los reportes generados por cualquier usuario, pero siempre dentro del alcance por sucursal de cada usuario (se asigna en Usuarios): con alcance general ve todos, incluidos los generales/consolidados; con sucursales específicas, solo los de esas sucursales.',
+}
+
+/** Acciones que se pre-marcan al dar acceso a un módulo (sin ellas el módulo abre vacío). */
+export const DEFAULT_ON_ENABLE: Record<string, string[]> = {
+    reportes: ['ver_propios'],
+}
+
+/** Acciones que `action` requiere, transitivas (sin incluirla). */
+export function requiredBy(catalog: ActionOption[], module: string, action: string): string[] {
+    const out = new Set<string>()
+    const pending = [action]
+
+    while (pending.length) {
+        const current = pending.pop() as string
+        const def = catalog.find((a) => a.module === module && a.action === current)
+
+        for (const req of def?.requires ?? []) {
+            if (!out.has(req)) {
+                out.add(req)
+                pending.push(req)
+            }
+        }
+    }
+
+    return [...out]
+}
+
+/** Acciones que dependen (directa o indirectamente) de `action`. */
+export function dependentsOf(catalog: ActionOption[], module: string, action: string): string[] {
+    return actionsIn(catalog, module).filter((a) => requiredBy(catalog, module, a.action).includes(action)).map((a) => a.action)
+}
+
+export function actionLabel(catalog: ActionOption[], module: string, action: string): string {
+    return catalog.find((a) => a.module === module && a.action === action)?.label ?? action
+}
+
+/**
+ * Marca/desmarca una acción respetando dependencias: al marcar se agregan las
+ * requeridas; al desmarcar se quitan las que dependen de ella. Devuelve la
+ * lista nueva y lo que se agregó/quitó además de la acción pedida (para avisar).
+ */
+export function toggleWithDependencies(catalog: ActionOption[], module: string, current: string[], action: string): { next: string[]; added: string[]; removed: string[] } {
+    const order = actionsIn(catalog, module).map((a) => a.action)
+    const sort = (list: Iterable<string>) => order.filter((a) => new Set(list).has(a))
+
+    if (current.includes(action)) {
+        const removed = dependentsOf(catalog, module, action).filter((a) => current.includes(a))
+        const drop = new Set([action, ...removed])
+
+        return { next: sort(current.filter((a) => !drop.has(a))), added: [], removed }
+    }
+
+    const added = requiredBy(catalog, module, action).filter((a) => !current.includes(a))
+
+    return { next: sort([...current, action, ...added]), added, removed: [] }
+}
 
 export function actionsIn(catalog: ActionOption[], module: string, column?: ActionColumn): ActionOption[] {
     return catalog.filter((a) => a.module === module && (!column || a.column === column))

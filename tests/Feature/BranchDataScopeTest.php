@@ -59,7 +59,7 @@ function bscAtlixcoManager($test, User $admin, Branch $atlixco, array $extraModu
     $test->actingAs($admin)->post(route('roles.store'), [
         'name' => 'Gerente Atlixco', 'description' => 'Opera solo su sucursal', 'base_level' => 'gerencial',
         'modules' => array_merge(['dashboard', 'reportes', 'colaboradores', 'okr'], $extraModules),
-        'actions' => array_merge(['reportes' => ['exportar'], 'colaboradores' => ['editar', 'exportar'], 'okr' => ['exportar', 'activar']], $extraActions),
+        'actions' => array_merge(['reportes' => ['ver_todos', 'exportar'], 'colaboradores' => ['editar', 'exportar'], 'okr' => ['exportar', 'activar']], $extraActions),
     ])->assertSessionHasNoErrors();
 
     $test->actingAs($admin)->post(route('usuarios.store'), [

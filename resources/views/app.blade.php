@@ -1,5 +1,9 @@
 <!DOCTYPE html>
-<html lang="{{ str_replace('_', '-', app()->getLocale()) }}"  @class(['dark' => ($appearance ?? 'light') == 'dark'])>
+@php
+    // Datos SEO por página: view composer en AppServiceProvider (respaldo aquí).
+    $seo ??= \App\Support\Seo::forRequest(request());
+@endphp
+<html lang="{{ $seo['html_lang'] }}" @class(['dark' => ($appearance ?? 'light') == 'dark'])>
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -58,66 +62,91 @@
         <meta name="mobile-web-app-capable" content="yes">
         <meta name="apple-mobile-web-app-capable" content="yes">
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-        <meta name="apple-mobile-web-app-title" content="Reportes">
-
-        @php
-            // SEO — el único destino público real del sitio es /login (todo lo demás
-            // exige sesión iniciada y redirige ahí, ver routes/web.php). Decidido AQUÍ,
-            // en el HTML servido por PHP — nunca en el <Head> de Login.vue — porque esa
-            // parte solo corre después de que el navegador ejecuta JavaScript: un
-            // crawler que no la ejecute (la mayoría de los que solo arman la vista
-            // previa de un link, y potencialmente el primer paso de indexación de
-            // Google) seguiría viendo "noindex" en el HTML crudo pase lo que pase en Vue.
-            $isPubliclyIndexable = request()->routeIs('login');
-            $description = $isPubliclyIndexable
-                ? 'Inicia sesión en tu panel de Reportes LANA — radiografía financiera, reportes y seguimiento de metas de tu operación.'
-                : 'Accede a tu panel de Reportes LANA — radiografía financiera, reportes y seguimiento de metas de tu operación.';
-        @endphp
-        <meta name="robots" content="{{ $isPubliclyIndexable ? 'index, follow' : 'noindex, nofollow' }}">
-        <meta name="description" content="{{ $description }}">
-        <link rel="canonical" href="{{ url()->current() }}">
-
-        <meta property="og:type" content="website">
-        <meta property="og:site_name" content="{{ config('app.name', 'Reportes') }}">
-        <meta property="og:title" content="{{ config('app.name', 'Reportes') }} LANA">
-        <meta property="og:description" content="Accede a tu panel de Reportes LANA.">
-        <meta property="og:url" content="{{ url()->current() }}">
-        <meta property="og:image" content="{{ asset('og-image.png' . $assetV('og-image.png')) }}">
-        <meta property="og:image:width" content="1200">
-        <meta property="og:image:height" content="630">
-        <meta property="og:locale" content="es_MX">
-
-        <meta name="twitter:card" content="summary_large_image">
-        <meta name="twitter:title" content="{{ config('app.name', 'Reportes') }} LANA">
-        <meta name="twitter:description" content="Accede a tu panel de Reportes LANA.">
-        <meta name="twitter:image" content="{{ asset('og-image.png' . $assetV('og-image.png')) }}">
+        <meta name="apple-mobile-web-app-title" content="{{ $seo['app_title'] }}">
+        <meta name="application-name" content="{{ $seo['app_title'] }}">
 
         {{--
-            La clave '@context' se arma por concatenación a propósito: escrita
-            literal ('@context' => ...) Blade la confunde con SU PROPIA directiva
-            @context (Illuminate\View\Compilers — comparte el token, no tiene nada
-            que ver con JSON-LD) y la reemplaza por PHP roto antes de que
-            json_encode() vea nada.
+            SEO por página (27-oct-2026) — TODO se decide aquí, en el HTML que sirve
+            PHP, porque es lo que leen los buscadores antes de ejecutar JavaScript.
+            Los datos salen de App\Support\Seo (view composer en AppServiceProvider);
+            qué páginas son públicas está en config/seo.php. Lo privado lleva
+            además la cabecera X-Robots-Tag (App\Http\Middleware\AddRobotsHeader).
         --}}
-        <script type="application/ld+json">
-            {!! json_encode([
-                ('@' . 'context') => 'https://schema.org',
-                '@type' => 'Organization',
-                'name' => config('app.name', 'Reportes') . ' LANA',
-                'url' => url('/'),
-                'logo' => asset('logoMrLana.png'),
-            ], JSON_UNESCAPED_SLASHES) !!}
-        </script>
+        <meta name="robots" content="{{ $seo['robots'] }}">
+        <meta name="googlebot" content="{{ $seo['robots'] }}">
+        <meta name="description" content="{{ $seo['description'] }}">
+        @if ($seo['canonical'])
+            <link rel="canonical" href="{{ $seo['canonical'] }}">
+        @endif
+        @if ($seo['google_site_verification'])
+            <meta name="google-site-verification" content="{{ $seo['google_site_verification'] }}">
+        @endif
 
-        <link rel="preconnect" href="https://fonts.bunny.net">
-        <link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600" rel="stylesheet" />
+        <meta property="og:type" content="website">
+        <meta property="og:site_name" content="{{ $seo['site_name'] }}">
+        <meta property="og:title" content="{{ $seo['title'] }}">
+        <meta property="og:description" content="{{ $seo['description'] }}">
+        <meta property="og:url" content="{{ $seo['url'] }}">
+        <meta property="og:image" content="{{ $seo['image'] . $assetV('og-image.png') }}">
+        <meta property="og:image:secure_url" content="{{ $seo['image'] . $assetV('og-image.png') }}">
+        <meta property="og:image:type" content="image/png">
+        <meta property="og:image:width" content="{{ $seo['image_width'] }}">
+        <meta property="og:image:height" content="{{ $seo['image_height'] }}">
+        <meta property="og:image:alt" content="{{ $seo['image_alt'] }}">
+        <meta property="og:locale" content="{{ $seo['og_locale'] }}">
+
+        <meta name="twitter:card" content="summary_large_image">
+        <meta name="twitter:title" content="{{ $seo['title'] }}">
+        <meta name="twitter:description" content="{{ $seo['description'] }}">
+        <meta name="twitter:image" content="{{ $seo['image'] . $assetV('og-image.png') }}">
+        <meta name="twitter:image:alt" content="{{ $seo['image_alt'] }}">
+
+        @if ($seo['json_ld'])
+            {{-- JSON armado y escapado en PHP (App\Support\Seo::jsonLd) — nunca
+                 escribir '@' . 'context' literal aquí: Blade lo toma por directiva. --}}
+            <script type="application/ld+json">{!! $seo['json_ld'] !!}</script>
+        @endif
+
+        @if ($seo['indexable'])
+            {{-- Core Web Vitals del login: el logo (LCP en móvil) y la foto del panel
+                 lateral (LCP en escritorio, solo ≥1024px) se piden desde el <head>. --}}
+            {{-- Misma URL exacta que el <img> de AuthBrand (sin ?v) o el navegador lo baja dos veces. --}}
+            <link rel="preload" as="image" href="/logoMrLana.png" type="image/png">
+            @php
+                try {
+                    $loginSideImage = \Illuminate\Support\Facades\Vite::asset('resources/js/img/login-side.jpg');
+                } catch (\Throwable $e) {
+                    $loginSideImage = null;
+                }
+            @endphp
+            @if ($loginSideImage)
+                <link rel="preload" as="image" href="{{ $loginSideImage }}" media="(min-width: 1024px)" fetchpriority="high">
+            @endif
+        @endif
+
+        <link rel="preconnect" href="https://fonts.bunny.net" crossorigin>
+        <link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600&display=swap" rel="stylesheet" />
 
         @vite(['resources/css/app.css', 'resources/js/app.ts', "resources/js/pages/{$page['component']}.vue"])
+        {{-- data-inertia="" = Inertia reemplaza ESTE <title> con el de <Head> (si
+             no lo lleva, Inertia agrega un segundo <title> y quedan dos). --}}
         <x-inertia::head>
-            <title>{{ config('app.name', 'Laravel') }}</title>
+            <title data-inertia="">{{ $seo['title'] }}</title>
         </x-inertia::head>
     </head>
     <body class="font-sans antialiased">
+        @if ($seo['indexable'] && $seo['heading'])
+            {{-- Contenido indexable sin JavaScript: el login es SPA y #app llega
+                 vacío en el HTML inicial (no hay SSR, ver docs/seo.md). --}}
+            <noscript>
+                <main style="max-width: 32rem; margin: 4rem auto; padding: 0 1rem; font-family: system-ui, sans-serif;">
+                    <img src="/logoMrLana.png" alt="Logo Mr Lana" width="64" height="64">
+                    <h1>{{ $seo['heading'] }}</h1>
+                    <p>{{ $seo['intro'] }}</p>
+                    <p>Para iniciar sesión activa JavaScript en tu navegador.</p>
+                </main>
+            </noscript>
+        @endif
         <x-inertia::app />
     </body>
 </html>

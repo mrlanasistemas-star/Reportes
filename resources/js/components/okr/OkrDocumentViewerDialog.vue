@@ -66,9 +66,9 @@ const missing = computed(() => props.document?.file_available === false && !prop
 
                 <div v-else class="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-muted/30">
                     <div v-if="!loaded" class="absolute inset-0 flex flex-col gap-3 p-6">
-                        <div class="h-6 w-1/3 animate-pulse rounded bg-muted" />
-                        <div class="h-4 w-2/3 animate-pulse rounded bg-muted" />
-                        <div class="flex-1 animate-pulse rounded-lg bg-muted" />
+                        <div class="h-6 w-1/3 app-skeleton rounded bg-muted" />
+                        <div class="h-4 w-2/3 app-skeleton rounded bg-muted" />
+                        <div class="flex-1 app-skeleton rounded-lg bg-muted" />
                     </div>
                     <iframe :key="document.view_url" :src="document.view_url" :title="`${title} ${document.folio}`" class="size-full bg-white" @load="loaded = true" />
                 </div>

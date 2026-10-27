@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\FinancialController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\OkrController;
 use App\Http\Controllers\Api\V1\PeriodController;
+use App\Http\Controllers\Api\V1\PeriodKpiController;
 use Illuminate\Support\Facades\Route;
 
 // Fase 1 — API general de reportería, servidor a servidor (Sanctum personal
@@ -51,6 +52,26 @@ Route::prefix('v1')
             Route::get('/financial/employees/{employeeId}', [FinancialController::class, 'employeeSummary']);
             Route::get('/financial/metrics', [FinancialController::class, 'metrics']);
             Route::get('/financial/metric-values', [FinancialController::class, 'metricValues']);
+        });
+
+        // Exportación de KPIs por periodo (2026-10-27) — misma fuente que el reporte
+        // mensual/Excel (ver PeriodKpiController). Colaboradores por periodo exigen
+        // employees.read Y financial.read (igual que financial-summary).
+        Route::middleware('ensure.ability:employees.read,financial.read')->group(function () {
+            Route::get('/periods/{periodId}/employees', [PeriodKpiController::class, 'employees']);
+            Route::get('/employees/{employeeId}/periods', [PeriodKpiController::class, 'employeePeriods']);
+        });
+
+        Route::middleware('ensure.ability:financial.read')->group(function () {
+            Route::get('/periods/{periodId}/branches', [PeriodKpiController::class, 'branches']);
+        });
+
+        // Exportación masiva: financial.read + límite de exportaciones; el bloque de
+        // colaboradores exige además employees.read (verificado en el controlador
+        // según `include`, con la misma doble verificación token+consumidor).
+        Route::middleware(['ensure.ability:financial.read', 'throttle:api-exports'])->group(function () {
+            Route::get('/periods/export', [PeriodKpiController::class, 'rangeExport']);
+            Route::get('/periods/{periodId}/export', [PeriodKpiController::class, 'export']);
         });
 
         Route::middleware('ensure.ability:collections.read')->group(function () {

@@ -1,7 +1,10 @@
 {
-    "name": "Reportes",
-    "short_name": "Reportes",
-    "description": "Panel de gestión Reportes",
+    "id": "/",
+    "name": "Reportes Mr Lana",
+    "short_name": "Reportes Mr Lana",
+    "description": "Reportes Mr Lana: sistema interno de reportes financieros de Mr Lana (radiografía financiera, cierre mensual y metas por sucursal).",
+    "lang": "es-MX",
+    "dir": "ltr",
     "start_url": "/dashboard",
     "scope": "/",
     "display": "standalone",

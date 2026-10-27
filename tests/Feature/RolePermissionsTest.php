@@ -143,6 +143,9 @@ it('every action shown in the matrix is enforced by a route middleware (or the O
         }
     }
     $enforced['okr.administrar_otros'] = true; // OkrObjectivePolicy::managesOthers()
+    // Alcance por autor: ReportVisibilityService en cada endpoint de MonthlyReportController (ver ReportViewScopePermissionTest).
+    $enforced['reportes.ver_propios'] = true;
+    $enforced['reportes.ver_todos'] = true;
 
     $missing = collect(app(ActionPermissionService::class)->catalog())
         ->map(fn ($a) => "{$a['module']}.{$a['action']}")

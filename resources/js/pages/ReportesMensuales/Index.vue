@@ -2,7 +2,7 @@
 import { Head } from '@inertiajs/vue3'
 import {
     CalendarRange, Eye, FileBarChart2, FileSpreadsheet, FileText,
-    GitCompareArrows, Search, Building2, UserRound,
+    GitCompareArrows, Search, Building2, UserRound, ShieldCheck,
 } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
@@ -31,13 +31,23 @@ type GeneratedReport = {
     preview_url: string
 }
 
+/** 27-oct-2026 — qué reportes ve este usuario: por autor (su rol) y por sucursal (su usuario). */
+type ReportVisibility = {
+    mode: 'all' | 'own' | 'none'
+    general_scope: boolean
+    branches_label: string
+    text: string
+}
+
 const props = withDefaults(
     defineProps<{
         message: string
         generatedReports?: GeneratedReport[]
+        visibility?: ReportVisibility | null
     }>(),
     {
         generatedReports: () => [],
+        visibility: null,
     },
 )
 
@@ -152,6 +162,21 @@ return `${startDate} → ${endDate}`
             </span>
         </section>
 
+        <!-- Alcance de consulta: por autor (rol) + por sucursal (usuario) -->
+        <p
+            v-if="visibility"
+            class="flex items-start gap-2 rounded-xl border px-3 py-2 text-xs"
+            :class="visibility.mode === 'none' ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200' : 'border-border bg-muted/40 text-muted-foreground'"
+            role="note"
+        >
+            <ShieldCheck class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+            <span>
+                {{ visibility.text }}
+                <template v-if="visibility.mode === 'own'"> Para ver los de otros usuarios, un administrador debe habilitar «Ver reportes de todos» en Roles y permisos.</template>
+                <template v-else-if="visibility.mode === 'none'"> Un administrador puede habilitar «Ver reportes propios» o «Ver reportes de todos» en Roles y permisos.</template>
+            </span>
+        </p>
+
         <!-- Filtros -->
         <section v-if="generatedReports.length" class="flex flex-col gap-3 rounded-xl border bg-card p-2 shadow-soft-xs lg:flex-row lg:items-center" data-tour="reportes-filters">
             <div class="relative flex-1">
@@ -189,11 +214,11 @@ return `${startDate} → ${endDate}`
         </section>
 
         <!-- Tarjetas -->
-        <section v-if="filteredReports.length" class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <section v-if="filteredReports.length" class="app-stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <article
                 v-for="report in filteredReports"
                 :key="report.id"
-                class="flex flex-col rounded-2xl border bg-card p-5 shadow-soft-xs transition-shadow hover:shadow-soft-md"
+                class="app-hover-lift flex flex-col rounded-2xl border bg-card p-5 shadow-soft-xs"
             >
                 <div class="flex items-start justify-between gap-2">
                     <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold" :class="statusBadge(report.status)">
@@ -242,8 +267,8 @@ return `${startDate} → ${endDate}`
         </section>
 
         <div v-if="!generatedReports.length" class="rounded-2xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">
-            <p class="font-semibold text-foreground">Aún no hay reportes generados.</p>
-            <p class="mt-1">Se generan desde «Carga de archivos», en la etapa «Generar reporte» del periodo.</p>
+            <p class="font-semibold text-foreground">{{ visibility?.mode === 'none' ? 'Tu rol no tiene permiso para ver reportes.' : visibility?.mode === 'own' ? 'Aún no has generado reportes.' : 'Aún no hay reportes generados.' }}</p>
+            <p v-if="visibility?.mode !== 'none'" class="mt-1">Se generan desde «Carga de archivos», en la etapa «Generar reporte» del periodo.</p>
         </div>
         <div v-else-if="!filteredReports.length" class="rounded-2xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">
             <p>No hay reportes que coincidan con los filtros aplicados.</p>

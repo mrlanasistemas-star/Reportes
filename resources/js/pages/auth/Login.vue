@@ -22,10 +22,10 @@ const showPassword = ref(false)
 </script>
 
 <template>
-    <!-- robots/description ya salen correctos desde el HTML servido por PHP
-         (resources/views/app.blade.php) — decidido ahí por ruta, no aquí, porque
-         un crawler que no ejecute JavaScript nunca vería un override hecho acá. -->
-    <Head title="Iniciar sesión" />
+    <!-- robots/description/canonical/OG/JSON-LD salen del HTML servido por PHP
+         (resources/views/app.blade.php + config/seo.php). Aquí solo el título, y
+         IDÉNTICO al del servidor para que Inertia no lo cambie al montar. -->
+    <Head title="Reportes Mr Lana — Iniciar sesión" />
 
     <div class="grid min-h-svh lg:grid-cols-2">
         <AuthAsidePanel />
@@ -33,10 +33,10 @@ const showPassword = ref(false)
         <AuthFormPanel
             mobile-title="Iniciar sesión"
             desktop-title="Iniciar sesión"
-            desktop-subtitle="Entra con el correo y la contraseña que te asignó tu administrador."
+            desktop-subtitle="Entra a Reportes Mr Lana con el correo y la contraseña que te asignó tu administrador."
             :status="status"
         >
-            <Form v-bind="store.form()" :reset-on-success="['password']" v-slot="{ errors, processing }" class="space-y-5" novalidate>
+            <Form v-bind="store.form()" :reset-on-success="['password']" v-slot="{ errors, processing }" class="app-stagger space-y-5" style="--stagger-offset: 120ms" novalidate>
                 <!-- Resumen del error de acceso (credenciales, cuenta bloqueada, demasiados intentos) -->
                 <div v-if="errors.email" role="alert" class="app-banner app-banner-danger">
                     <CircleAlert aria-hidden="true" />
@@ -108,7 +108,7 @@ const showPassword = ref(false)
                     :disabled="processing"
                     data-test="login-button"
                     size="lg"
-                    class="h-11 w-full rounded-xl text-[0.95rem] font-semibold"
+                    class="h-11 w-full rounded-xl text-[0.95rem] font-semibold shadow-md shadow-primary/20 hover:-translate-y-px"
                 >
                     <Spinner v-if="processing" class="size-4" />
                     <span>{{ processing ? 'Entrando…' : 'Entrar' }}</span>

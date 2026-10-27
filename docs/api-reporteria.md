@@ -69,6 +69,8 @@ específica vía middleware `ensure.ability:<ability>`:
 | `collections.read` | `/collections/effectiveness` |
 | `collections.export` | `/collections/effectiveness/export` — ability **propia** de exportación: leer (`collections.read`) nunca basta para descargar el archivo. No se concede por defecto. |
 | `okr.read` | `/okr/*` |
+| `employees.read` **Y** `financial.read` | `/periods/{id}/employees`, `/employees/{id}/periods` (colaboradores con KPIs por periodo — ver §14) |
+| `financial.read` | `/periods/{id}/branches`; `/periods/{id}/export` y `/periods/export` (el bloque de colaboradores del export exige además `employees.read`) |
 
 `/health` no requiere autenticación ni ability (no expone datos sensibles).
 `/capabilities` solo requiere estar autenticado — informa qué puede hacer ESE token.
@@ -140,6 +142,11 @@ respuesta ni valores financieros — solo metadata de QUIÉN pidió QUÉ.
 | GET | `/api/v1/collections/effectiveness/export?period_id=&scope=` | `collections.export` |
 | GET | `/api/v1/okr/summary` | `okr.read` |
 | GET | `/api/v1/okr/employees/{id}` | `okr.read` |
+| GET | `/api/v1/periods/{id}/employees` | `employees.read` + `financial.read` |
+| GET | `/api/v1/employees/{id}/periods?from_period_id=&to_period_id=` | `employees.read` + `financial.read` |
+| GET | `/api/v1/periods/{id}/branches` | `financial.read` |
+| GET | `/api/v1/periods/{id}/export` | `financial.read` (+ `employees.read` para colaboradores), `throttle:api-exports` |
+| GET | `/api/v1/periods/export?from_period_id=&to_period_id=` | ídem |
 
 Parámetros comunes: `scope` = `general`\|`branch`\|`employee` (default `general`), `branch_id`,
 `employee_id`, `period_id` (obligatorio en todos los endpoints financieros — la API nunca
@@ -325,3 +332,214 @@ de nombre. Ver `App\Models\EmployeeExternalIdentity` y
 Ver `docs/seguridad-fase2-correcciones.md` (9 hallazgos de una auditoría externa, todos
 corregidos y probados) y `docs/rendimiento-fase3-mediciones.md` (mediciones reales, no
 estimadas, de las optimizaciones de esta misma fecha).
+
+## 14. Exportación de KPIs por periodo — colaboradores, sucursales, corporativo, consolidado (2026-10-27)
+
+Objetivo: que un sistema externo obtenga **todo** lo que el reporte mensual calcula para un
+periodo (o un rango) sin recalcular nada: cada colaborador con su sucursal y **ruta** de ese
+periodo y sus KPIs (colocación, recuperación, cartera/mora, nómina, comisiones, OPEX, EBITDA),
+cada sucursal con todos sus KPIs, el bloque **CORPORATIVO** y el **CONSOLIDADO**.
+
+### 14.1 Endpoints
+
+| Endpoint | Qué devuelve | Paginación / formato |
+|---|---|---|
+| `GET /periods/{id}/employees` | Colaboradores del periodo | `page`, `per_page` (1-100); filtros `branch_id`, `sucursal_id`; `format=csv` (todas las filas) |
+| `GET /employees/{id}/periods` | Un colaborador en varios periodos (con efectividad de cobranza) | rango (máx. 24); `include_effectiveness=0` la omite; `format=csv` |
+| `GET /periods/{id}/branches` | Sucursales + `corporate` + `consolidated` + `reconciliation` | `format=csv` (una fila por bloque) |
+| `GET /periods/{id}/export` | Todo lo anterior en una llamada | `include=branches,employees` (default ambos) |
+| `GET /periods/export` | Igual, para un rango (máx. 12 periodos) | `include=`; `format=csv&dataset=employees` o `dataset=branches` |
+
+**Rango de periodos** (`/employees/{id}/periods`, `/periods/export`): `period_ids=19,20,21` **o**
+`from_period_id=19&to_period_id=21` (todos los periodos del MISMO tipo que `from` cuyo inicio cae
+entre ambos). Nunca se adivina "el último periodo": sin parámetros → 422.
+
+**CSV**: UTF-8 con BOM, columnas con la ruta del campo (`kpis.ebitda.ebitda`,
+`sucursal.codigo`…); las listas anidadas (rutas, desgloses) van como JSON en una celda; se
+omiten `opex.items` y `placement.by_product` (siguen en JSON).
+
+### 14.2 De dónde sale cada número (paridad con el reporte)
+
+| Bloque | Fuente (la MISMA que el reporte) |
+|---|---|
+| Colaboradores | `RadiographySnapshotBuilder::buildAllEmployeeGestorRows()` (= `buildEmployeesGestores()`, con la fusión de identidad del reporte) + OPEX vía `OpexClassificationService` + EBITDA vía `computeEmployeeFinancialMetrics()` — exactamente el "Excel de colaboradores" (`EmployeesHistoricoExportService`). Servicio: `App\Services\Api\EmployeePeriodKpiService`. |
+| Sucursales | `snapshot.branch_radiography.branches` (BranchRadiographyCalculator) con `nominaTotalFor()`, `gastosTotalesFor()`, `ingresoEbitdaBaseFor()`, `ebitdaFinalFor()`, `margenEbitdaFor()`. Servicio: `App\Services\Api\PeriodBranchKpiService`. |
+| Corporativo | `snapshot.branch_radiography.unassigned` (hoja "SIN ASIGNAR": nómina de colaboradores sin sucursal operativa) + `sections.corporate_funding` (excedentes enviados a corporativo). |
+| Consolidado | `snapshot.summary` (cifras de portada del reporte) + `branch_radiography.global`. |
+
+Verificado contra la BD real (solo lectura, Junio 2026, periodo 21): 136 colaboradores, **0
+diferencias** contra el Excel de colaboradores en recuperación, colocación, cartera, vencida,
+OPEX, Nómina y Capital Humano, percepciones, deducciones, EBITDA y margen; EBITDA consolidado =
+Σ sucursales + aporte corporativo (diferencia 0.00).
+
+**Caché**: colaboradores 12 h por periodo + versión de la radiografía vigente
+(`PeriodSummary.id/updated_at`); sucursales reutilizan la caché de 12 h del snapshot general del
+reporte. Regenerar la radiografía invalida ambas. Sin N+1: todo se carga en lote (número de
+consultas constante sin importar cuántos colaboradores haya — cubierto por prueba).
+
+**Sin radiografía vigente** → `status: not_available`, `data: []` / bloques `null`. Nunca ceros.
+
+### 14.3 Fila de colaborador (`/periods/{id}/employees`)
+
+```json
+{
+  "employee": {
+    "id": 412, "employee_ids": [412, 977], "full_name": "NOMBRE APELLIDO APELLIDO",
+    "report_name": "NOMBRE APELLIDO APELLIDO", "employee_code": "0153", "employee_codes": ["0153"],
+    "promoter_code": "P-118", "position": "GESTOR", "is_active": true
+  },
+  "branch_id": 131, "branch": { "id": 131, "code": "TULACEN", "name": "TULA CENTRO" },
+  "branch_status": "known", "branch_source": "assignment", "assigned_branch_id": 131,
+  "sucursal": { "id": 11, "codigo": "tula", "nombre": "TULA" }, "region": "Q3",
+  "report_branch_name": "TULA",
+  "routes": [
+    { "route": "TULA CENTRO", "catalog_route": "TULA CENTRO", "catalog_branch": "TULA", "active": true,
+      "sources": ["assignment", "portfolio"], "contracts": 214, "balance": 812345.10 }
+  ],
+  "employment": {
+    "operational_status": "ACTIVO", "roster_status": "activo_confirmado", "roster_status_label": "Activo confirmado",
+    "movement_type": "activo", "is_active_for_period": true, "requires_review": false, "roster_available": true
+  },
+  "kpis": {
+    "placement": { "amount": 210000.00, "operations": 21, "by_product": [{ "product": "CRECE", "operations": 21, "amount": 210000.00 }] },
+    "recovery": { "total": 265000.00, "components": { "capital": 201000.00, "interest": 48000.00, "tax": 7680.00, "late_charges": 2100.00, "additional_charges": 0, "surplus": 0, "initial_charges": 0, "opening_fee": 4200.00, "crece_insurance_recognized": 900.00, "other": 1120.00 } },
+    "portfolio": { "total": 812345.10, "overdue": 96000.00, "current": 716345.10, "mora_pct": 11.82, "buckets": { "al_corriente": { "contracts": 190, "amount": 700000.00 }, "mora_1_30": { "contracts": 12, "amount": 40000.00 } } },
+    "payroll": { "human_capital_total": 14250.00, "payments": 13000.00, "bonuses": 1800.00, "discounts": 550.00,
+                 "noi_perceptions": 14800.00, "noi_deductions": 550.00, "noi_net_paid": 14250.00,
+                 "concepts": { "sueldo": 9000.00, "comisiones": 4000.00, "bonos": 1800.00, "bonos_aceleradores": 0, "vacaciones": 0, "prima_vacacional": 0, "otras_percepciones": 0 },
+                 "deductions_detail": [{ "concept": "D001 ISR", "amount": 550.00 }] },
+    "commissions": 4000.00,
+    "opex": { "automatic_total": 1350.00, "opex_pure": 1350.00, "employee_payroll_expenses": 0, "manual": 0, "total": 1350.00,
+              "items": [{ "category": "Recargas Telefónicas", "concept": "RECARGAS TELEFONICAS", "amount": 350.00, "type": "opex" }] },
+    "ebitda": { "income_base": 63980.00, "total_expenses": 15600.00, "ebitda": 48380.00, "margin_pct": 75.62, "category": "JUNIOR" },
+    "collections_effectiveness": null
+  },
+  "availability": { "collections_effectiveness": "Solo en GET /api/v1/employees/{id}/periods ...", "roster": null, "manual_expense_adjustment": "..." }
+}
+```
+
+(Valores ilustrativos.) Respuesta envolvente: `{ period, status, message, source,
+definition_version, calculated_at, radiography_version, data: [...], meta: { current_page,
+per_page, total, last_page, unidentified_count } }`. En `/employees/{id}/periods` cada elemento de
+`data` es `{ period, status, calculated_at, radiography_version, ...fila }` con `status` ∈ `ok` \|
+`not_available` \| `not_found` (sin actividad ese periodo) \| `forbidden`, y
+`kpis.collections_effectiveness` = `{ status, effectiveness_pct, recovered_from_overdue,
+previous_period_overdue_portfolio, previous_period_label, composition{current, late, overdue} }`.
+
+| Campo | Significado / fuente |
+|---|---|
+| `employee.id` | Id canónico = el menor de los `employee_ids` fusionados (misma regla que `CanonicalEmployeeResolver`). Cualquiera de los `employee_ids` sirve para `/employees/{id}/periods`. |
+| `employee.employee_code` | Clave NOI del registro canónico (`employees.employee_code`). `promoter_code` = código de promotor Lendus de la fila. |
+| `branch` / `branch_status` | Asignación registrada en `employee_branch_assignments` para ESE periodo (o un periodo componente) — misma regla que `EmployeeBranchHistoryResolver`. Si no hay (`unknown`), se usa el branch con el mismo nombre que la sucursal de la fila del reporte (`branch_source: report_row`). La **autorización** usa solo `assigned_branch_id`. |
+| `sucursal` | Sucursal institucional (una de las 11) desde `branches.sucursal_id`; nunca por nombre. `null` si el branch no está mapeado. **Nota:** en la BD real la tabla `sucursales` está vacía y ningún branch tiene `sucursal_id` hasta correr `SucursalSeeder` → hoy `sucursal` sale `null` (el `branch` sí viene). |
+| `routes[]` | Ruta(s) del periodo: el branch asignado si es una ruta del catálogo oficial (`sources: assignment`) y las rutas de la cartera Lendus del periodo (`fact_portfolios.route_name`) del gestor por nombre canónico o código de promotor (`sources: portfolio`, con contratos y saldo). `catalog_*` = normalización contra `BranchRouteCatalog` (null si la ruta es desconocida — nunca se inventa). |
+| `employment.operational_status` | ACTIVO/BAJA con la misma regla que el Excel (ingreso real u OPEX automático > 0). |
+| `employment.roster_*` | Roster laboral del periodo (`period_employee_rosters`, `RosterMovementStatus`): alta/activo/baja confirmada, posible baja, etc. `roster_available=false` si no hay fila (solo se materializa en periodos mensuales con NOI). |
+| `kpis.placement` | Colocación del gestor (fact_placements, por promotor) y desglose por producto. |
+| `kpis.recovery` | Recuperación con las MISMAS exclusiones que el reporte (seguros, unificación, condonación) y sus componentes. |
+| `kpis.portfolio` | Cartera y cartera vencida al cierre (DPD > 0), mora % y buckets. |
+| `kpis.payroll.human_capital_total` | "Nómina / Capital Humano" del colaborador = neto (pagos + bonos − descuentos), el valor que entra al EBITDA del colaborador en el reporte. `concepts` = percepciones NOI clasificadas con `classifyPercepcionConcept()`; `noi_*` = percepciones/deducciones/neto NOI (informativo). |
+| `kpis.commissions` | Percepciones NOI de comisiones (P002/P119). |
+| `kpis.opex` | OPEX automático atribuido (`eligible_for_attribution`: OPEX puro + gastos de nómina-empleado como finiquito/médicos/moto) con su detalle. `manual` siempre 0: el ajuste manual del reporte es efímero. |
+| `kpis.ebitda` | `income_base` (ingreso base EBITDA del gestor) − (`opex.total` + `payroll.human_capital_total`); margen y categoría. |
+
+### 14.4 KPIs por colaborador que quedan `null` o no se exponen (y por qué)
+
+| KPI | Dónde | Motivo |
+|---|---|---|
+| `collections_effectiveness` | `/periods/{id}/employees` y export | Cálculo pesado por colaborador (lee el DPD de toda la cartera). Disponible en `/employees/{id}/periods` (misma función que la vista del reporte) y la versión aprobada V4 semanal en `/collections/effectiveness?scope=employee`. |
+| Unificación/condonación excluida, fondeo, excedentes, seguros puente | no se exponen por colaborador | El reporte no los atribuye a un solo colaborador (`summaryFromRow()` los deja `null`). |
+| Rotación | no por colaborador | Solo existe a nivel sucursal/general. |
+| Filas sin identidad | `employees.unidentified` del export (solo alcance global) | Gestores que solo aparecen en Lendus sin registro `Employee`: el Excel de colaboradores tampoco los incluye. Se listan aparte con colocación/recuperación/cartera para que las sumas cuadren. |
+
+### 14.5 Sucursales, corporativo y consolidado (`/periods/{id}/branches`)
+
+Forma: `{ period, status, message, source, definition_version, calculated_at, data: [sucursal…],
+corporate, consolidated, reconciliation }`.
+
+```json
+{
+  "name": "TULA", "branch_id": 99, "branch": { "id": 99, "code": "TULA", "name": "TULA" },
+  "sucursal": { "id": 11, "codigo": "tula", "nombre": "TULA" }, "region": "Q3",
+  "routes": [{ "route": "TULA CENTRO", "active": true }, { "route": "TEPEJI", "active": true }],
+  "kpis": {
+    "placement": { "amount": 1200000.00, "credits": 140 },
+    "recovery": { "total": 1500000.00, "gross": 1530000.00, "components": { "capital": 1150000.00, "interest": 260000.00, "tax": 41600.00, "late_charges": 9000.00, "additional_charges": 3000.00, "surplus": 1500.00, "initial_charges": 0, "opening_fee": 22000.00, "crece_insurance_recognized": 9000.00, "other": 3900.00 },
+                  "excluded": { "insurance_gross": 25000.00, "savehearts_gross": 20000.00, "comadres_gross": 5000.00, "crece_gross": 30000.00, "crece_not_recognized": 21000.00, "unification": 0, "condonation": 0 } },
+    "portfolio": { "total": 3801969.92, "contracts": 1100, "overdue": 410000.00, "current": 3391969.92, "mora_pct": 10.78, "buckets": { "mora_0_30": { "contracts": 60, "amount": 150000.00 } } },
+    "expenses": { "opex_total": 85199.47, "erp": 50000.00, "lendus": 35199.47, "erp_loaded": 52000.00, "erp_excluded_insurance": 2000.00, "lendus_loaded": 90000.00, "lendus_excluded_funding": 30000.00, "lendus_excluded_surplus": 20000.00, "lendus_excluded_payroll": 4000.00, "lendus_reclassified_payroll": 500.00, "lendus_excluded_policies": 300.00, "by_concept": { "Gasolina": 20000.00 } },
+    "payroll": { "human_capital_total": 192254.41, "breakdown": { "Sueldo": 120000.00, "Comisiones": 40000.00, "IMSS patronal": 20000.00 }, "imss_employer": 20000.00, "employee_expenses": 2254.41, "deductions_informative": { "ISR": 9000.00 }, "noi_perceptions": 170000.00, "noi_deductions": 9000.00, "noi_net_paid": 161000.00 },
+    "commissions": 40000.00,
+    "funding": { "interbranch_loans": 30000.00, "surplus_sent_to_corporate": 20000.00 },
+    "insurance": { "lendus_bridge": 300.00, "crece_policies_30": 9000.00, "crece_comadres_informative": 0 },
+    "ebitda": { "income_base": 346100.00, "total_expenses": 277453.88, "ebitda": 227397.86, "margin_pct": 65.7, "category": "SENIOR" },
+    "turnover_pct": 3.97, "collections_effectiveness": null
+  }
+}
+```
+
+(Valores ilustrativos salvo EBITDA/cartera/nómina/OPEX de TULA en Junio 2026, verificados.)
+
+| Campo de sucursal | Fuente en `branch_radiography.branches[i]` |
+|---|---|
+| `placement.amount` / `credits` | `colocacion` / `creditos_colocados` |
+| `recovery.*` | `recuperacion_total`, `recuperacion_bruta`; componentes `capital_recuperado`, `interes_recuperado`, `impuesto_recuperado`, `charges`, `cargos_adicionales`, `excedente_recuperado`, `cargos_inicio`, `comision_apertura`, `seguro_crece_reconocido`, `otros_recuperacion`; exclusiones `seguro_*_bruto`, `unificacion_excluida`, `condonacion_excluida` |
+| `portfolio.*` | `valor_cartera`, `contratos`; vencida = Σ `mora_0_30 … mora_120_plus` (= `cartera_vencida`); mora % = vencida ÷ cartera — igual que `summaryFromRow()` |
+| `expenses.*` | `gastos_operativos` (OPEX = ERP + Lendus), `gastos_erp_total`, `gastos_lendus_total`, cargados/excluidos (seguros, fondeo, excedentes, nómina, pólizas), `gastos_detalle` |
+| `payroll.human_capital_total` / `breakdown` | `nominaTotalFor()` / `nominaBreakdownFor()` (percepciones NOI + IMSS patronal + gastos de empleados). `noi_*` = percepciones/deducciones NOI de los colaboradores asignados al branch en el periodo (misma regla que `computeNoiPercepcionesDeduccionesForBranch()`). |
+| `commissions` | `comisiones` |
+| `funding` | `prestamos_fondea` (fondeo entre sucursales), `excedentes` (envío a corporativo) |
+| `insurance` | `seguros_lendus_puente`, `polizas_crece_30`, `seguro_crece_comadres_informativo` |
+| `ebitda` | `ingresoEbitdaBaseFor()`, `gastosTotalesFor()`, `ebitdaFinalFor()`, `margenEbitdaFor()`, `RadiographyStyleHelper::ebitdaCategory()` |
+| `turnover_pct` | `sections.rotation.por_sucursal[].indice_rotacion` |
+| `collections_effectiveness` | `null` por sucursal (requiere el snapshot proyectado a esa sucursal): usar `/financial/branches/{id}` métrica `collections_effectiveness_legacy`. |
+
+**`corporate`** (CORPORATIVO / SIN SUCURSAL): `payroll` = Nómina y Capital Humano de los
+colaboradores sin sucursal operativa (Corporativo y sin asignar) con desglose y lista de
+empleados (`name, employee_id, source, salary_p001, commissions_p002, bonuses` — hoja "SIN
+ASIGNAR"); `expenses` (los gastos ERP/Lendus de Corporativo están excluidos del OPEX del reporte
+por regla; se listan como referencia); `imss_excluded_informative` (IMSS de unidades no
+operativas, excluido del consolidado); `surplus_received` (excedentes enviados por las
+sucursales, `sections.corporate_funding`); `ebitda_contribution` = −Nómina corporativa (lo que
+resta al consolidado). Corporativo no coloca, no cobra ni tiene cartera: esos KPIs son
+`not_attributable` (nunca 0).
+
+**`consolidated`** (CONSOLIDADO): mismas claves que una sucursal, con las cifras de portada del
+reporte (`summary`: colocación, recuperación, cartera "Saldos por cliente" sin filtro, mora %,
+OPEX, ERP/Lendus, fondeo, excedentes, seguros puente, Nómina y Capital Humano, percepciones/
+deducciones NOI, número de colaboradores, ingreso base, gastos totales, EBITDA, margen,
+categoría) + `turnover_pct` general, `collections_effectiveness` histórica,
+`cash.opening_balance/closing_balance`.
+
+**`reconciliation`**: `ebitda.difference` debe ser 0 (EBITDA consolidado = Σ sucursales + aporte
+corporativo). `portfolio.difference` puede no ser 0: la cartera consolidada incluye todas las
+rutas excepto Aguascalientes; la de sucursal solo las sucursales operativas.
+
+### 14.6 Alcance por sucursal
+
+- Colaboradores: un consumidor restringido solo recibe filas cuya **asignación del periodo**
+  está en su `allowed_branch_ids` (nunca por nombre ni por la asignación más reciente); las
+  filas sin identidad y `unidentified_count` solo se entregan a consumidores globales.
+- `/employees/{id}/periods`: cada periodo fuera de alcance aparece como `status: forbidden`; 403
+  si ninguno está permitido.
+- Sucursales: solo las autorizadas; `corporate`/`consolidated` → `{status: not_authorized}` y
+  `reconciliation: null` para consumidores restringidos.
+
+### 14.7 Ejemplos
+
+```bash
+# Colaboradores de Junio 2026, página 1 (100 por página)
+curl -H "Authorization: Bearer <token>" "https://<host>/api/v1/periods/21/employees?per_page=100"
+# Mismo listado completo en CSV
+curl -H "Authorization: Bearer <token>" "https://<host>/api/v1/periods/21/employees?format=csv" -o colaboradores-junio.csv
+# Un colaborador de abril a junio
+curl -H "Authorization: Bearer <token>" "https://<host>/api/v1/employees/412/periods?from_period_id=19&to_period_id=21"
+# Todo el periodo (sucursales + corporativo + consolidado + colaboradores)
+curl -H "Authorization: Bearer <token>" "https://<host>/api/v1/periods/21/export"
+# Rango, solo sucursales, CSV
+curl -H "Authorization: Bearer <token>" "https://<host>/api/v1/periods/export?from_period_id=19&to_period_id=21&format=csv&dataset=branches" -o sucursales.csv
+```
+
+`GET /capabilities` anuncia este contrato con `features.period_kpi_export: true` y
+`features.csv_format: true`, y los recursos `period_employees_kpis`, `employee_periods_kpis`,
+`period_branches_kpis`, `period_export` (cada uno con `required_abilities` y `endpoints`).

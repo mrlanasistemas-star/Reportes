@@ -15,7 +15,8 @@ import type { BranchOption, BranchScopeMode, LinkableEmployee, UserRoleOption } 
 const props = defineProps<{
     storeUrl: string
     roles: UserRoleOption[]
-    employees: LinkableEmployee[]
+    /** Prop diferida de la página: undefined mientras se carga. */
+    employees?: LinkableEmployee[]
     canInvite: boolean
     canManageAccess: boolean
     invitationExpiresMinutes: number
@@ -37,7 +38,8 @@ const form = useForm({
 const assignable = computed(() => props.roles.filter((r) => r.assignable))
 // Una entrada por PERSONA (ya viene deduplicada del backend por identidad
 // canónica). El secundario muestra y permite buscar por NOI · sucursal · puesto.
-const freeEmployees = computed(() => props.employees
+const employeesLoading = computed(() => props.employees === undefined)
+const freeEmployees = computed(() => (props.employees ?? [])
     .filter((e) => e.linked_user_id === null)
     .map((e) => ({
         id: e.id,
@@ -126,7 +128,8 @@ function submit() {
                 <div class="space-y-2">
                     <SearchableSelect
                         v-model="form.employee_id" :options="freeEmployees" label="Colaborador vinculado (opcional)"
-                        placeholder="Sin vincular" search-placeholder="Buscar colaborador…" allow-null null-label="Sin vincular"
+                        :placeholder="employeesLoading ? 'Cargando colaboradores…' : 'Sin vincular'" :disabled="employeesLoading"
+                        search-placeholder="Buscar colaborador…" allow-null null-label="Sin vincular"
                         :error="form.errors.employee_id"
                     />
                     <p class="rounded-xl bg-muted/50 px-3 py-2 text-[11px] leading-4 text-muted-foreground">

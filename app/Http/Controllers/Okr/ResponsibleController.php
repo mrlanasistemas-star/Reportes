@@ -62,136 +62,33 @@ class ResponsibleController extends Controller
     {
         $actor = $request->user();
         $catalog = app(RoleCatalogService::class);
-
-        $usageCounts = OkrObjective::query()
-            ->whereNotNull('responsible_user_id')
-            ->selectRaw('responsible_user_id, count(*) as total')
-            ->groupBy('responsible_user_id')
-            ->pluck('total', 'responsible_user_id');
-
-        $branchNames = Branch::query()->pluck('name', 'id');
+        // UNA instancia por petición (antes `app(DataScopeService::class)` creaba
+        // una nueva en cada fila y el memo de alcance no servía de nada).
+        $scope = app(DataScopeService::class);
         $enabledAdmins = User::query()->where('role', User::ROLE_ADMIN)->whereNull('disabled_at')->count();
 
-        $users = User::query()->with('employee:id,full_name,is_active')->orderBy('name')->get()
-            ->map(function (User $u) use ($usageCounts, $branchResolver, $branchNames, $actor, $catalog, $enabledAdmins) {
-                $branchId = $u->employee_id ? $branchResolver->currentBranchIdFor($u->employee_id) : null;
-                $manageable = $u->id !== $actor->id && $this->guard->canManageUser($actor, $u);
-                $isLastAdmin = $u->isAdmin() && $u->disabled_at === null && $enabledAdmins <= 1;
-
-                return [
-                    'id' => $u->id, 'name' => $u->name, 'email' => $u->email,
-                    'role' => $u->role, 'role_name' => $catalog->label($u->role),
-                    // Estado de ACCESO (nunca situación laboral): bloqueado > pendiente > habilitado.
-                    'access' => $u->disabled_at !== null ? 'blocked' : ($u->access_enabled_at !== null ? 'enabled' : 'pending'),
-                    'access_enabled_at' => $u->access_enabled_at?->toDateTimeString(),
-                    'disabled_at' => $u->disabled_at?->toDateTimeString(),
-                    'last_login_at' => $u->last_login_at?->toDateTimeString(),
-                    'created_at' => $u->created_at?->toDateTimeString(),
-                    'invitation' => [
-                        'status' => UserInvitationService::statusOf($u),
-                        'sent_at' => $u->welcome_email_sent_at?->toDateTimeString(),
-                        'error' => $u->welcome_email_error,
-                        'attempts' => (int) ($u->welcome_email_attempts ?? 0),
-                        'last_attempt_at' => $u->welcome_email_last_attempt_at?->toDateTimeString(),
-                    ],
-                    'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
-                    'employee_id' => $u->employee_id,
-                    'employee_name' => $u->employee?->full_name,
-                    'employee_is_active' => $u->employee?->is_active,
-                    'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
-                    // Fase 6.4 — alcance por sucursal (general o lista) para la tabla y el editor.
-                    'data_scope' => app(DataScopeService::class)->describe($u),
-                    'is_self' => $u->id === $actor->id,
-                    'is_last_admin' => $isLastAdmin,
-                    // URLs generadas por el BACKEND (route()): respetan el prefijo/subcarpeta
-                    // real del servidor — un '/okr/...' fijo en el frontend daba 404 si la app
-                    // no está en la raíz del dominio (ver prioridad 10, botón reenviar).
-                    'urls' => [
-                        'enable_access' => route('usuarios.enable-access', $u),
-                        'disable_access' => route('usuarios.disable-access', $u),
-                        'toggle_disabled' => route('usuarios.toggle-disabled', $u),
-                        'reset_password' => route('usuarios.reset-password', $u),
-                        'resend_invitation' => route('usuarios.resend-invitation', $u),
-                        'update_role' => route('usuarios.update-role', $u),
-                        'link_employee' => route('usuarios.link-employee', $u),
-                        'update_branch_scope' => route('usuarios.update-branch-scope', $u),
-                    ],
-                    'can' => [
-                        'manage_access' => $manageable && ! $isLastAdmin && $this->actions->canAction($actor, 'usuarios', 'gestionar_acceso'),
-                        'reset_password' => $manageable && $this->actions->canAction($actor, 'usuarios', 'restablecer'),
-                        'invite' => $this->guard->canManageUser($actor, $u) && $this->actions->canAction($actor, 'usuarios', 'invitar'),
-                        'change_role' => $manageable && ! ($u->isAdmin() && $isLastAdmin) && $this->actions->canAction($actor, 'usuarios', 'asignar_rol'),
-                        'link_employee' => $this->guard->canManageUser($actor, $u) && $this->actions->canAction($actor, 'usuarios', 'editar'),
-                        'change_branch_scope' => ! $u->isAdmin() && $manageable && $this->actions->canAction($actor, 'usuarios', 'asignar_rol'),
-                    ],
-                ];
-            });
-
-        // Colaboradores vinculables: UNA entrada por PERSONA (identidad canónica),
-        // no una fila por cada registro histórico de `employees`. El mismo
-        // colaborador tiene varios `Employee.id` (NOI vs NOI Fiscal, varios
-        // periodos) que nunca se unificaron y hacían aparecer el mismo nombre
-        // repetido muchas veces en el selector (p. ej. ADRIAN DIAZ MENA). Se
-        // colapsa por `normalized_name` con la MISMA regla que ya usa Reportería
-        // y OKR (CanonicalEmployeeResolver), respetando homónimos reales distintos
-        // (employee_match_rejections). NO se borra ni modifica ningún registro
-        // histórico: solo se consolida la VISTA del buscador. El id expuesto es el
-        // canónico (menor del grupo), estable entre llamadas.
-        $employeeRows = Employee::query()
-            ->where(fn ($q) => $q->where('is_active', true)->orWhereHas('user'))
-            ->with('user:id,employee_id')
-            ->orderBy('full_name')
-            ->get(['id', 'full_name', 'normalized_name', 'position', 'employee_code', 'is_active']);
-
-        $rowsById = $employeeRows->keyBy('id');
-        $linkedUserByEmployeeId = $employeeRows->filter(fn ($e) => $e->user)->mapWithKeys(fn ($e) => [$e->id => $e->user->id]);
-
-        $employees = app(CanonicalEmployeeResolver::class)->canonicalize($employeeRows)
-            ->map(function ($person) use ($rowsById, $linkedUserByEmployeeId, $branchResolver, $branchNames) {
-                // Representante del grupo: se prefiere un registro activo; si no, el canónico.
-                $rep = collect($person->employee_ids)
-                    ->map(fn ($id) => $rowsById->get($id))->filter()
-                    ->sortByDesc(fn ($e) => $e->is_active ? 1 : 0)->first() ?? $rowsById->get($person->id);
-                // Si CUALQUIER registro del grupo ya tiene cuenta, la persona está vinculada:
-                // así una identidad laboral nunca se ofrece para una segunda cuenta activa.
-                $linkedUserId = collect($person->employee_ids)
-                    ->map(fn ($id) => $linkedUserByEmployeeId->get($id))->filter()->first();
-                $branchId = $branchResolver->currentBranchIdFor($person->id);
-
-                return [
-                    'id' => $person->id,
-                    'full_name' => $rep?->full_name ?? $person->full_name,
-                    'employee_code' => $rep?->employee_code,
-                    'position' => $rep?->position,
-                    'is_active' => (bool) ($rep?->is_active ?? false),
-                    'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
-                    'linked_user_id' => $linkedUserId ? (int) $linkedUserId : null,
-                    // Nº de registros históricos que representa (para señalar consolidaciones).
-                    'records' => count($person->employee_ids),
-                ];
-            })
-            ->sortBy('full_name', SORT_NATURAL | SORT_FLAG_CASE)
-            ->values();
-
-        $roles = collect($catalog->all())->map(fn ($r) => [
-            'key' => $r['key'], 'name' => $r['name'], 'description' => $r['description'], 'base_level' => $r['base_level'], 'is_system' => $r['is_system'],
-            'modules_count' => $r['key'] === User::ROLE_ADMIN ? count(ModuleAccessService::MODULES) : count($moduleAccess->matrix()[$r['key']] ?? []),
-            'assignable' => $r['key'] !== User::ROLE_ADMIN && $this->guard->canGrantRole($actor, $r['key']),
-            'grantable' => $this->guard->canGrantRole($actor, $r['key']),
-        ])->values()->all();
-
+        // Rendimiento (27-oct-2026): las props pesadas son closures — Inertia solo
+        // las evalúa si la visita las pide (p. ej. router.reload({ only: ['users'] })
+        // ya no recalcula colaboradores ni roles). `employees` es DIFERIDA: la
+        // página se pinta sin ella y el frontend la recibe en una segunda petición
+        // automática (solo la usan los diálogos de alta y de vincular colaborador).
         return Inertia::render('usuarios/Index', [
-            'users' => $users,
-            'employees' => $employees,
-            'roles' => $roles,
-            'audit' => $this->audit->recent(),
+            'users' => fn () => $this->userRows($actor, $scope, $branchResolver, $catalog, $enabledAdmins),
+            'employees' => Inertia::defer(fn () => $this->linkableEmployees($branchResolver)),
+            'roles' => fn () => collect($catalog->all())->map(fn ($r) => [
+                'key' => $r['key'], 'name' => $r['name'], 'description' => $r['description'], 'base_level' => $r['base_level'], 'is_system' => $r['is_system'],
+                'modules_count' => $r['key'] === User::ROLE_ADMIN ? count(ModuleAccessService::MODULES) : count($moduleAccess->matrix()[$r['key']] ?? []),
+                'assignable' => $r['key'] !== User::ROLE_ADMIN && $this->guard->canGrantRole($actor, $r['key']),
+                'grantable' => $this->guard->canGrantRole($actor, $r['key']),
+            ])->values()->all(),
+            'audit' => fn () => $this->audit->recent(),
             'current_user_id' => $actor->id,
             'enabled_admin_count' => $enabledAdmins,
             'invitation_expires_minutes' => $this->invitations->expiresInMinutes(),
             'store_url' => route('usuarios.store'),
             // Fase 6.4 — sucursales que ESTE actor puede conceder (nunca más que las suyas).
-            'scope_branches' => app(DataScopeService::class)->filterBranchOptions($actor, app(DataScopeService::class)->assignableBranches()),
-            'actor_scope' => app(DataScopeService::class)->describe($actor),
+            'scope_branches' => fn () => $scope->filterBranchOptions($actor, $scope->assignableBranches()),
+            'actor_scope' => fn () => $scope->describe($actor),
             'roles_url' => $moduleAccess->allows($actor, 'roles') ? route('roles.index') : null,
             'environment' => app()->environment(),
             // Importación masiva del directorio de gerencias (solo administradores).
@@ -220,6 +117,171 @@ class ResponsibleController extends Controller
             'import_preview' => session()->pull('import_preview'),
             'import_result' => session()->pull('import_result'),
         ]);
+    }
+
+    /**
+     * Filas de la tabla de Usuarios con un número FIJO de consultas (antes ~20
+     * por usuario): sucursal vigente de todos los colaboradores vinculados en
+     * una sola pasada (membershipMap), alcance por sucursal precargado en lote
+     * y permisos del actor (constantes) calculados una vez. Las reglas de
+     * autorización no cambian: se usan los mismos servicios y el backend
+     * vuelve a validar cada acción.
+     */
+    private function userRows(User $actor, DataScopeService $scope, OkrEmployeeBranchResolver $branchResolver, RoleCatalogService $catalog, int $enabledAdmins): array
+    {
+        $usageCounts = OkrObjective::query()
+            ->whereNotNull('responsible_user_id')
+            ->selectRaw('responsible_user_id, count(*) as total')
+            ->groupBy('responsible_user_id')
+            ->pluck('total', 'responsible_user_id');
+
+        $branchNames = Branch::query()->pluck('name', 'id');
+        $users = User::query()->with('employee:id,full_name,is_active')->orderBy('name')->get();
+
+        $memberships = $branchResolver->membershipMap($users->pluck('employee_id')->filter()->map(fn ($id) => (int) $id)->all());
+        $scope->preload($users->concat([$actor]), $branchResolver);
+
+        // Permisos del ACTOR: no dependen de la fila.
+        $actorCan = collect(['gestionar_acceso', 'restablecer', 'invitar', 'asignar_rol', 'editar'])
+            ->mapWithKeys(fn ($a) => [$a => $this->actions->canAction($actor, 'usuarios', $a)])->all();
+
+        return $this->withRequestScope($scope, $branchResolver, fn () => $users->map(function (User $u) use ($usageCounts, $memberships, $branchNames, $actor, $catalog, $enabledAdmins, $scope, $actorCan) {
+                $branchId = $u->employee_id ? ($memberships[(int) $u->employee_id]['branch_id'] ?? null) : null;
+                $canManage = $this->guard->canManageUser($actor, $u);
+                $manageable = $u->id !== $actor->id && $canManage;
+                $isLastAdmin = $u->isAdmin() && $u->disabled_at === null && $enabledAdmins <= 1;
+
+                return [
+                    'id' => $u->id, 'name' => $u->name, 'email' => $u->email,
+                    'role' => $u->role, 'role_name' => $catalog->label($u->role),
+                    // Estado de ACCESO (nunca situación laboral): bloqueado > pendiente > habilitado.
+                    'access' => $u->disabled_at !== null ? 'blocked' : ($u->access_enabled_at !== null ? 'enabled' : 'pending'),
+                    'access_enabled_at' => $u->access_enabled_at?->toDateTimeString(),
+                    'disabled_at' => $u->disabled_at?->toDateTimeString(),
+                    'last_login_at' => $u->last_login_at?->toDateTimeString(),
+                    'created_at' => $u->created_at?->toDateTimeString(),
+                    'invitation' => [
+                        'status' => UserInvitationService::statusOf($u),
+                        'sent_at' => $u->welcome_email_sent_at?->toDateTimeString(),
+                        'error' => $u->welcome_email_error,
+                        'attempts' => (int) ($u->welcome_email_attempts ?? 0),
+                        'last_attempt_at' => $u->welcome_email_last_attempt_at?->toDateTimeString(),
+                    ],
+                    'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
+                    'employee_id' => $u->employee_id,
+                    'employee_name' => $u->employee?->full_name,
+                    'employee_is_active' => $u->employee?->is_active,
+                    'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
+                    // Fase 6.4 — alcance por sucursal (general o lista) para la tabla y el editor.
+                    'data_scope' => $scope->describe($u),
+                    'is_self' => $u->id === $actor->id,
+                    'is_last_admin' => $isLastAdmin,
+                    // URLs generadas por el BACKEND (route()): respetan el prefijo/subcarpeta
+                    // real del servidor — un '/okr/...' fijo en el frontend daba 404 si la app
+                    // no está en la raíz del dominio (ver prioridad 10, botón reenviar).
+                    'urls' => [
+                        'enable_access' => route('usuarios.enable-access', $u),
+                        'disable_access' => route('usuarios.disable-access', $u),
+                        'toggle_disabled' => route('usuarios.toggle-disabled', $u),
+                        'reset_password' => route('usuarios.reset-password', $u),
+                        'resend_invitation' => route('usuarios.resend-invitation', $u),
+                        'update_role' => route('usuarios.update-role', $u),
+                        'link_employee' => route('usuarios.link-employee', $u),
+                        'update_branch_scope' => route('usuarios.update-branch-scope', $u),
+                    ],
+                    'can' => [
+                        'manage_access' => $manageable && ! $isLastAdmin && $actorCan['gestionar_acceso'],
+                        'reset_password' => $manageable && $actorCan['restablecer'],
+                        'invite' => $canManage && $actorCan['invitar'],
+                        'change_role' => $manageable && ! ($u->isAdmin() && $isLastAdmin) && $actorCan['asignar_rol'],
+                        'link_employee' => $canManage && $actorCan['editar'],
+                        'change_branch_scope' => ! $u->isAdmin() && $manageable && $actorCan['asignar_rol'],
+                    ],
+                ];
+            })->values()->all());
+    }
+
+    /**
+     * Colaboradores vinculables: UNA entrada por PERSONA (identidad canónica),
+     * no una fila por cada registro histórico de `employees`. El mismo
+     * colaborador tiene varios `Employee.id` (NOI vs NOI Fiscal, varios
+     * periodos) que nunca se unificaron y hacían aparecer el mismo nombre
+     * repetido muchas veces en el selector (p. ej. ADRIAN DIAZ MENA). Se
+     * colapsa por `normalized_name` con la MISMA regla que ya usa Reportería
+     * y OKR (CanonicalEmployeeResolver), respetando homónimos reales distintos
+     * (employee_match_rejections). NO se borra ni modifica ningún registro
+     * histórico: solo se consolida la VISTA del buscador. El id expuesto es el
+     * canónico (menor del grupo), estable entre llamadas. La sucursal vigente
+     * de todas las personas se resuelve en UNA pasada (membershipMap), no una
+     * por persona.
+     */
+    private function linkableEmployees(OkrEmployeeBranchResolver $branchResolver): array
+    {
+        $branchNames = Branch::query()->pluck('name', 'id');
+        $employeeRows = Employee::query()
+            ->where(fn ($q) => $q->where('is_active', true)->orWhereHas('user'))
+            ->with('user:id,employee_id')
+            ->orderBy('full_name')
+            ->get(['id', 'full_name', 'normalized_name', 'position', 'employee_code', 'is_active']);
+
+        $rowsById = $employeeRows->keyBy('id');
+        $linkedUserByEmployeeId = $employeeRows->filter(fn ($e) => $e->user)->mapWithKeys(fn ($e) => [$e->id => $e->user->id]);
+
+        $people = app(CanonicalEmployeeResolver::class)->canonicalize($employeeRows);
+        $memberships = $branchResolver->membershipMap($people->pluck('id')->map(fn ($id) => (int) $id)->all());
+
+        return $people
+            ->map(function ($person) use ($rowsById, $linkedUserByEmployeeId, $memberships, $branchNames) {
+                // Representante del grupo: se prefiere un registro activo; si no, el canónico.
+                $rep = collect($person->employee_ids)
+                    ->map(fn ($id) => $rowsById->get($id))->filter()
+                    ->sortByDesc(fn ($e) => $e->is_active ? 1 : 0)->first() ?? $rowsById->get($person->id);
+                // Si CUALQUIER registro del grupo ya tiene cuenta, la persona está vinculada:
+                // así una identidad laboral nunca se ofrece para una segunda cuenta activa.
+                $linkedUserId = collect($person->employee_ids)
+                    ->map(fn ($id) => $linkedUserByEmployeeId->get($id))->filter()->first();
+                $branchId = $memberships[(int) $person->id]['branch_id'] ?? null;
+
+                return [
+                    'id' => $person->id,
+                    'full_name' => $rep?->full_name ?? $person->full_name,
+                    'employee_code' => $rep?->employee_code,
+                    'position' => $rep?->position,
+                    'is_active' => (bool) ($rep?->is_active ?? false),
+                    'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
+                    'linked_user_id' => $linkedUserId ? (int) $linkedUserId : null,
+                    // Nº de registros históricos que representa (para señalar consolidaciones).
+                    'records' => count($person->employee_ids),
+                ];
+            })
+            ->sortBy('full_name', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Mientras se arman las filas, `app(DataScopeService::class)` (que usa
+     * AccessDelegationGuard por dentro) devuelve ESTA instancia ya precargada
+     * en vez de una nueva sin memo por cada fila. Se restaura al terminar: no
+     * queda caché de alcance para otras peticiones.
+     */
+    private function withRequestScope(DataScopeService $scope, OkrEmployeeBranchResolver $resolver, \Closure $fn): mixed
+    {
+        $bound = [];
+        foreach ([DataScopeService::class => $scope, OkrEmployeeBranchResolver::class => $resolver] as $abstract => $instance) {
+            if (! app()->isShared($abstract)) {
+                app()->instance($abstract, $instance);
+                $bound[] = $abstract;
+            }
+        }
+
+        try {
+            return $fn();
+        } finally {
+            foreach ($bound as $abstract) {
+                app()->forgetInstance($abstract);
+            }
+        }
     }
 
     public function store(Request $request): RedirectResponse

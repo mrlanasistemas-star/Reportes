@@ -30,7 +30,7 @@ defineProps<{
             desktop-subtitle="Ingresa tu correo y te enviaremos un enlace para restablecer tu acceso."
             :status="status"
         >
-            <Form v-bind="email.form()" v-slot="{ errors, processing }" class="space-y-5">
+            <Form v-bind="email.form()" v-slot="{ errors, processing }" class="app-stagger space-y-5" style="--stagger-offset: 120ms">
                 <div class="space-y-2">
                     <Label for="email">Correo electrónico</Label>
                     <div class="group relative">
@@ -57,7 +57,7 @@ defineProps<{
                     :disabled="processing"
                     data-test="email-password-reset-link-button"
                     size="lg"
-                    class="h-11 w-full rounded-xl text-[0.95rem] font-semibold"
+                    class="h-11 w-full rounded-xl text-[0.95rem] font-semibold shadow-md shadow-primary/20 hover:-translate-y-px"
                 >
                     <Spinner v-if="processing" class="size-4" />
                     <span>{{ processing ? 'Enviando enlace…' : 'Enviar enlace de recuperación' }}</span>
