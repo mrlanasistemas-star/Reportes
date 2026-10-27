@@ -34,6 +34,7 @@ import { toast } from '@/components/feedback/Toast';
 import SelectField from '@/components/forms/SelectField.vue';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { hideDownloadLoading, showDownloadLoading } from '@/lib/downloadOverlay';
 import { index as efectividadIndex } from '@/routes/efectividad-cobranza';
 
 const props = defineProps<{
@@ -394,6 +395,7 @@ async function exportar(formato: 'pdf' | 'png') {
     }
 
     exportando.value = formato;
+    showDownloadLoading(formato === 'pdf' ? 'pdf' : 'archivo');
 
     try {
         const res = await fetch(
@@ -422,6 +424,7 @@ async function exportar(formato: 'pdf' | 'png') {
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
     } finally {
+        hideDownloadLoading();
         exportando.value = null;
     }
 }
