@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\ApiConsumer;
+use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\EmployeeBranchAssignment;
 use App\Models\Period;
@@ -29,13 +30,13 @@ class EmployeeController extends Controller
     {
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
-        $perPage  = ApiValidation::perPage($request);
+        $perPage = ApiValidation::perPage($request);
         $branchId = ApiValidation::nullableId($request, 'branch_id');
 
         $query = Employee::query()->where('is_active', true);
 
         if ($branchId !== null) {
-            if (!$consumer->canAccessBranch($branchId)) {
+            if (! $consumer->canAccessBranch($branchId)) {
                 throw new HttpException(403, 'Este consumidor no está autorizado para la sucursal solicitada.');
             }
             $employeeIds = EmployeeBranchAssignment::query()->where('branch_id', $branchId)->pluck('employee_id');
@@ -55,19 +56,38 @@ class EmployeeController extends Controller
         // Fase 3.2 — una sola consulta para TODA la página, nunca una por empleado.
         $branchByEmployeeId = $this->batchResolveCurrentBranchIds($employees->getCollection()->pluck('id'));
 
+        // Branches (con su sucursal) de TODA la página en una sola consulta —
+        // nunca una por empleado. El `branch`/`sucursal`/`region` son ADITIVOS:
+        // la sucursal sale de la relación REAL del branch (sucursal_id), jamás
+        // se infiere del nombre del colaborador.
+        $branchesById = Branch::query()
+            ->with('sucursal')
+            ->whereIn('id', $branchByEmployeeId->values()->filter()->unique()->all())
+            ->get()
+            ->keyBy('id');
+
         return response()->json([
-            'data' => $employees->getCollection()->map(fn (Employee $employee) => [
-                'id'            => $employee->id,
-                'employee_code' => $employee->employee_code,
-                'full_name'     => $employee->full_name,
-                'position'      => $employee->position,
-                'branch_id'     => $branchByEmployeeId->get($employee->id),
-            ])->values(),
+            'data' => $employees->getCollection()->map(function (Employee $employee) use ($branchByEmployeeId, $branchesById) {
+                $branchId = $branchByEmployeeId->get($employee->id);
+                $attribution = $this->branchAttribution($branchId === null ? null : $branchesById->get($branchId));
+
+                return [
+                    'id' => $employee->id,
+                    'employee_code' => $employee->employee_code,
+                    'full_name' => $employee->full_name,
+                    'position' => $employee->position,
+                    'is_active' => $employee->is_active,
+                    'branch_id' => $branchId,
+                    'branch' => $attribution['branch'],
+                    'sucursal' => $attribution['sucursal'],
+                    'region' => $attribution['region'],
+                ];
+            })->values(),
             'meta' => [
                 'current_page' => $employees->currentPage(),
-                'per_page'     => $employees->perPage(),
-                'total'        => $employees->total(),
-                'last_page'    => $employees->lastPage(),
+                'per_page' => $employees->perPage(),
+                'total' => $employees->total(),
+                'last_page' => $employees->lastPage(),
             ],
         ]);
     }
@@ -85,17 +105,23 @@ class EmployeeController extends Controller
         $employee = Employee::query()->findOrFail($employeeId);
         $branchId = $branchHistory->resolveCurrent($employee->id);
 
-        if (!$consumer->canAccessBranch($branchId)) {
+        if (! $consumer->canAccessBranch($branchId)) {
             throw new HttpException(403, 'Este consumidor no está autorizado para el colaborador solicitado.');
         }
 
+        $branch = $branchId === null ? null : Branch::query()->with('sucursal')->find($branchId);
+        $attribution = $this->branchAttribution($branch);
+
         return response()->json([
-            'id'            => $employee->id,
+            'id' => $employee->id,
             'employee_code' => $employee->employee_code,
-            'full_name'     => $employee->full_name,
-            'position'      => $employee->position,
-            'is_active'     => $employee->is_active,
-            'branch_id'     => $branchId,
+            'full_name' => $employee->full_name,
+            'position' => $employee->position,
+            'is_active' => $employee->is_active,
+            'branch_id' => $branchId,
+            'branch' => $attribution['branch'],
+            'sucursal' => $attribution['sucursal'],
+            'region' => $attribution['region'],
         ]);
     }
 
@@ -120,22 +146,57 @@ class EmployeeController extends Controller
         $consumer = $request->user();
         $employee = Employee::query()->findOrFail($employeeId);
         $periodId = ApiValidation::requiredId($request, 'period_id');
-        $period   = Period::query()->findOrFail($periodId);
+        $period = Period::query()->findOrFail($periodId);
 
         $scopeResolver->assertEmployeeAllowedForPeriod($consumer, $employeeId, $period);
         $resolvedBranch = $branchHistory->resolveForPeriod($employeeId, $period);
+
+        // Atribución a una de las 11 sucursales de OKR para ESE periodo (histórica,
+        // consistente con la foto-del-periodo: un cambio de ruta dentro de la misma
+        // sucursal conserva el mismo sucursal_id). ADITIVO: sucursal_id sale de la
+        // relación real del branch del periodo (branches.sucursal_id), nunca del
+        // nombre. unknown cuando el branch del periodo es null o no mapea a las 11.
+        $sucursalId = $resolvedBranch['branch_id'] === null
+            ? null
+            : Branch::query()->whereKey($resolvedBranch['branch_id'])->value('sucursal_id');
 
         $metrics = collect(self::EMPLOYEE_METRICS)
             ->map(fn (string $code) => $resolver->resolve($code, $period, 'employee', null, $employee->id))
             ->values();
 
         return response()->json([
-            'employee_id'   => $employee->id,
-            'period_id'     => $period->id,
-            'branch_id'     => $resolvedBranch['branch_id'],
+            'employee_id' => $employee->id,
+            'period_id' => $period->id,
+            // Ruta/sucursal-branch registrada para ESE periodo (foto histórica).
+            'branch_id' => $resolvedBranch['branch_id'],
             'branch_status' => $resolvedBranch['status'],
-            'metrics'       => $metrics,
+            'sucursal_id' => $sucursalId === null ? null : (int) $sucursalId,
+            'sucursal_status' => $sucursalId === null ? 'unknown' : 'known',
+            'metrics' => $metrics,
         ]);
+    }
+
+    /**
+     * Bloque ADITIVO de atribución para un branch (o null): la referencia de
+     * branch {id, code, name} y su sucursal institucional {id, codigo, nombre}
+     * + región, tomadas de la relación REAL del branch (sucursal_id), nunca del
+     * nombre del colaborador. Branch null o no atribuible → todo null (honesto).
+     *
+     * @return array{branch: array{id:int, code:?string, name:string}|null, sucursal: array{id:int, codigo:string, nombre:string}|null, region: string|null}
+     */
+    private function branchAttribution(?Branch $branch): array
+    {
+        if ($branch === null) {
+            return ['branch' => null, 'sucursal' => null, 'region' => null];
+        }
+
+        $summary = $branch->attributionSummary();
+
+        return [
+            'branch' => ['id' => $branch->id, 'code' => $branch->code, 'name' => $branch->name],
+            'sucursal' => $summary['sucursal'],
+            'region' => $summary['region'],
+        ];
     }
 
     /** @return Collection<int, int|null> keyBy employee_id => branch_id */

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\ApiConsumer;
+use App\Models\EfectividadCobranzaRun;
 use App\Services\Api\FinancialMetricRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -55,30 +56,46 @@ class CapabilitiesController extends Controller
 
         $resources = [];
         foreach (self::RESOURCE_ABILITIES as $resource => $ability) {
-            $implemented = !array_key_exists($resource, self::BLOCKED_RESOURCES);
+            $implemented = ! array_key_exists($resource, self::BLOCKED_RESOURCES);
             $consumerHasAbility = $consumer->is_active
                 && $consumer->hasAbility($ability)
                 && ($hasWildcard || in_array($ability, $tokenAbilities, true));
 
             $resources[$resource] = [
                 'implemented' => $implemented,
-                'permitted'   => $implemented && $consumerHasAbility,
+                'permitted' => $implemented && $consumerHasAbility,
                 'blocked_reason' => self::BLOCKED_RESOURCES[$resource] ?? null,
             ];
+            if ($resource === 'branches') {
+                // Bandera ADITIVA: este contrato devuelve la atribución a una de
+                // las 11 sucursales de OKR (sucursal/region/active en /branches,
+                // branch/sucursal/region en /employees, sucursal_id/sucursal_status
+                // en financial-summary). Un consumidor viejo simplemente la ignora.
+                $resources[$resource]['sucursal_attribution'] = true;
+            }
             if ($resource === 'collections_effectiveness_approved') {
                 // Versión del motor que respalda `versions.approved` (nunca la calculadora anterior).
-                $resources[$resource]['engine_version'] = \App\Models\EfectividadCobranzaRun::currentEngineVersion();
+                $resources[$resource]['engine_version'] = EfectividadCobranzaRun::currentEngineVersion();
                 // Metodología financiera vigente (p. ej. V7), independiente de la versión
                 // técnica del motor: un snapshot con metodología anterior no se sirve como vigente.
-                $resources[$resource]['methodology'] = \App\Models\EfectividadCobranzaRun::currentMethodology();
+                $resources[$resource]['methodology'] = EfectividadCobranzaRun::currentMethodology();
                 $resources[$resource]['period_type'] = 'weekly';
             }
         }
 
         return response()->json([
-            'api_version'         => 'v1',
-            'definition_version'  => FinancialMetricRegistry::DEFINITION_VERSION,
-            'consumer'            => [
+            'api_version' => 'v1',
+            'definition_version' => FinancialMetricRegistry::DEFINITION_VERSION,
+            // Banderas de contrato ADITIVAS — detección de capacidades nuevas sin
+            // romper a consumidores viejos ni mover `api_version`/`definition_version`.
+            // Auditoría debe comprobar `features.route_branch_mapping === true` antes
+            // de confiar en los campos de atribución a sucursal; si falta (contrato
+            // anterior), degrada tratando la sucursal como desconocida.
+            'features' => [
+                'route_branch_mapping' => true,
+                'sucursal_attribution' => true,
+            ],
+            'consumer' => [
                 'system_code' => $consumer->system_code,
                 'is_active' => $consumer->is_active,
                 'branch_access_mode' => $consumer->branch_access_mode,

@@ -269,6 +269,41 @@ Corrección: cada ejecución ahora **sella** su metodología (columna `metodolog
 
 Todas las respuestas de error son JSON: `{"message": "..."}`.
 
+## 11-bis. Atribución a sucursal (ADITIVO, retro-compatible)
+
+Un `branch` es una **sucursal/ruta operativa** de Reportería (una fila por oficina/ruta);
+NO es el catálogo institucional de las **11 sucursales de OKR**. La atribución de un branch a
+una de esas 11 se materializó en `branches.sucursal_id` (fuente única: el catálogo oficial de
+`BranchRouteCatalog`, nunca por parecido en tiempo de ejecución — ver `SucursalSeeder`). Esta
+ronda **expone** esa atribución en la API, solo **agregando** campos: ninguna clave existente
+se quitó ni se renombró.
+
+| Endpoint | Campos nuevos (aditivos) |
+|---|---|
+| `GET /branches` (cada item) | `sucursal: {id, codigo, nombre}\|null`, `region: string\|null`, `active: bool` |
+| `GET /employees` (cada item) y `GET /employees/{id}` | `branch: {id, code, name}\|null`, `sucursal: {id, codigo, nombre}\|null`, `region: string\|null` (además `is_active` presente también en el listado) |
+| `GET /employees/{id}/financial-summary` | `sucursal_id: int\|null`, `sucursal_status: 'known'\|'unknown'` |
+
+Reglas:
+
+- **`sucursal`/`sucursal_id` nunca se infiere del nombre del colaborador**: sale de la
+  relación real del branch (`branches.sucursal_id`). Un branch que no corresponde a ninguna de
+  las 11 (San Juan del Río, Tenango del Valle, Aguascalientes, Corporativo, agrupaciones de
+  matriz/región, etc.) → `sucursal: null` / `sucursal_id: null` (honesto, nunca fabricado).
+- **`active`** es el estado operativo DERIVADO (`Branch::derivedActive()`): `false` si el branch
+  está inactivo o si su ruta está marcada inactiva en el catálogo oficial.
+- **`financial-summary` es HISTÓRICO**: `branch_id` es la ruta/branch registrada para ese
+  `period_id` (foto del periodo, Fase 2.3), y `sucursal_id` es la sucursal de ESE branch. Un
+  cambio de ruta dentro de la misma sucursal conserva el mismo `sucursal_id`.
+  `sucursal_status` = `known` solo cuando el branch del periodo mapea a una de las 11;
+  `unknown` cuando el branch es `null` o no mapea.
+
+**Cómo detecta Auditoría este contrato** (sin romper consumidores viejos): `GET /capabilities`
+trae un bloque aditivo `features` con `route_branch_mapping: true` y `sucursal_attribution: true`
+(equivalente: `resources.branches.sucursal_attribution === true`). `api_version` sigue en `v1`
+y `definition_version` no se movió (las definiciones de métricas no cambiaron). Si `features`
+falta (contrato anterior), Auditoría debe degradar tratando la sucursal como desconocida.
+
 ## 11. Identidad externa de colaboradores (`employee_external_identities`)
 
 Tabla aditiva nueva, nunca modifica `employees`. Permite vincular un `Employee` con un

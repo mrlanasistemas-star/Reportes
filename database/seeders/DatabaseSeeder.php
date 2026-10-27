@@ -10,14 +10,17 @@ use Illuminate\Database\Seeder;
  * que correr este seeder varias veces nunca duplica catálogos. Nunca siembra
  * usuarios reales.
  */
-class DatabaseSeeder extends Seeder {
-
-    public function run(): void {
+class DatabaseSeeder extends Seeder
+{
+    public function run(): void
+    {
         $this->call([
             DataSourceSeeder::class,
             BranchSeeder::class,
+            // Después de BranchSeeder: siembra las 11 sucursales y materializa
+            // branches.sucursal_id desde el catálogo oficial. Idempotente.
+            SucursalSeeder::class,
             OkrKpiSeeder::class,
         ]);
     }
-
 }

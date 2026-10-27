@@ -48,6 +48,10 @@ paths:
         Fase 2.8 — cada recurso en `resources` trae tres campos: `implemented` (verdad del
         sistema), `permitted` (si ESTE consumidor puede usarlo ahora) y `blocked_reason`
         (razón explícita cuando `implemented=false`, nunca un booleano sin contexto).
+        El bloque ADITIVO `features` anuncia capacidades del contrato sin mover `api_version`:
+        `features.route_branch_mapping === true` (equivalente: `resources.branches.sucursal_attribution`)
+        indica que /branches, /employees y financial-summary ya traen la atribución a sucursal.
+        Si falta (contrato anterior), el consumidor debe degradar tratando la sucursal como desconocida.
       responses:
         "200":
           description: OK
@@ -56,7 +60,15 @@ paths:
   /branches:
     get:
       tags: [branches]
-      summary: Catálogo de sucursales activas
+      summary: Catálogo de sucursales/rutas operativas activas
+      description: >
+        `branches` son las **sucursales/rutas operativas** de Reportería (una fila por
+        oficina/ruta), NO el catálogo institucional de las 11 sucursales de OKR. La
+        atribución a una de esas 11 viaja en el campo ADITIVO `sucursal` (una `SucursalRef`
+        o `null` cuando la ruta no es atribuible a ninguna de las 11 — honesto, nunca
+        inventado). `active` es el estado operativo DERIVADO (combina `is_active` del branch
+        con la bandera de la ruta en el catálogo oficial). Las claves originales
+        `{id, code, name}` y `meta` se conservan sin cambios (retro-compatibilidad).
       parameters:
         - $ref: "#/components/parameters/PerPage"
       responses:
@@ -78,7 +90,11 @@ paths:
           name: branch_id
           schema: { type: integer }
       responses:
-        "200": { description: OK }
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaginatedEmployees" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -89,7 +105,11 @@ paths:
       parameters:
         - $ref: "#/components/parameters/EmployeeIdPath"
       responses:
-        "200": { description: OK }
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Employee" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -117,8 +137,22 @@ paths:
                 properties:
                   employee_id: { type: integer }
                   period_id: { type: integer }
-                  branch_id: { type: integer, nullable: true }
+                  branch_id:
+                    type: integer
+                    nullable: true
+                    description: >
+                      Sucursal/ruta operativa (branch) registrada para el colaborador en ESE
+                      periodo (foto histórica), nunca su asignación más reciente.
                   branch_status: { type: string, enum: [known, unknown] }
+                  sucursal_id:
+                    type: integer
+                    nullable: true
+                    description: >
+                      ADITIVO. Id de la sucursal institucional (una de las 11 de OKR) del
+                      branch del periodo. `null` cuando el branch es desconocido o no mapea a
+                      ninguna de las 11. Histórico: un cambio de ruta dentro de la misma
+                      sucursal conserva el mismo `sucursal_id`.
+                  sucursal_status: { type: string, enum: [known, unknown] }
                   metrics:
                     type: array
                     items: { $ref: "#/components/schemas/MetricValue" }
@@ -379,6 +413,58 @@ components:
         source: { type: string, enum: [summary, derived, special, legacy_section] }
         definition: { type: string, nullable: true }
         definition_version: { type: string }
+    SucursalRef:
+      type: object
+      description: >
+        Referencia a una de las 11 sucursales INSTITUCIONALES de OKR (ancla estable de
+        atribución). `null` donde aparece significa "no atribuible a ninguna de las 11".
+      properties:
+        id: { type: integer }
+        codigo: { type: string, example: SAN_LUIS_POTOSI }
+        nombre: { type: string, example: SAN LUIS POTOSI }
+    BranchRef:
+      type: object
+      description: Referencia a una sucursal/ruta operativa (branch), no a una de las 11.
+      properties:
+        id: { type: integer }
+        code: { type: string, nullable: true }
+        name: { type: string }
+    Employee:
+      type: object
+      properties:
+        id: { type: integer }
+        employee_code: { type: string, nullable: true }
+        full_name: { type: string }
+        position: { type: string, nullable: true }
+        is_active: { type: boolean }
+        branch_id:
+          type: integer
+          nullable: true
+          description: Branch (ruta/sucursal operativa) actual del colaborador, solo identificación.
+        branch:
+          allOf: [{ $ref: "#/components/schemas/BranchRef" }]
+          nullable: true
+          description: ADITIVO. Branch actual resuelto desde `branch_id`, o `null`.
+        sucursal:
+          allOf: [{ $ref: "#/components/schemas/SucursalRef" }]
+          nullable: true
+          description: >
+            ADITIVO. Sucursal institucional del branch actual (tomada de la relación real
+            branches.sucursal_id, JAMÁS inferida del nombre). `null` si no es atribuible.
+        region: { type: string, nullable: true, description: "ADITIVO. Región de la sucursal (p. ej. Q1/Q3), o null." }
+    PaginatedEmployees:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Employee" }
+        meta:
+          type: object
+          properties:
+            current_page: { type: integer }
+            per_page: { type: integer }
+            total: { type: integer }
+            last_page: { type: integer }
     PaginatedBranches:
       type: object
       properties:
@@ -390,6 +476,16 @@ components:
               id: { type: integer }
               code: { type: string, nullable: true }
               name: { type: string }
+              sucursal:
+                allOf: [{ $ref: "#/components/schemas/SucursalRef" }]
+                nullable: true
+                description: ADITIVO. Sucursal institucional (una de las 11) atribuida a este branch/ruta, o null.
+              region: { type: string, nullable: true, description: "ADITIVO. Región de la sucursal atribuida, o null." }
+              active:
+                type: boolean
+                description: >
+                  ADITIVO. Estado operativo DERIVADO (Branch::derivedActive): false si el
+                  branch está inactivo o si su ruta está marcada inactiva en el catálogo.
         meta:
           type: object
           properties:

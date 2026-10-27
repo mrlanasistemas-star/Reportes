@@ -23,7 +23,7 @@ class BranchController extends Controller
     {
         /** @var ApiConsumer $consumer */
         $consumer = $request->user();
-        $perPage  = ApiValidation::perPage($request);
+        $perPage = ApiValidation::perPage($request);
 
         $query = Branch::query()->where('is_active', true);
 
@@ -32,23 +32,36 @@ class BranchController extends Controller
 
         if ($consumer->hasNoBranchAccess()) {
             $query->whereRaw('1 = 0');
-        } elseif ($consumer->isRestrictedToBranches() && !$hasGlobalOverride) {
+        } elseif ($consumer->isRestrictedToBranches() && ! $hasGlobalOverride) {
             $query->whereIn('id', $consumer->allowed_branch_ids);
         }
 
-        $branches = $query->orderBy('name')->paginate($perPage);
+        $branches = $query->with('sucursal')->orderBy('name')->paginate($perPage);
 
         return response()->json([
-            'data' => $branches->getCollection()->map(fn (Branch $branch) => [
-                'id'   => $branch->id,
-                'code' => $branch->code,
-                'name' => $branch->name,
-            ])->values(),
+            // Claves originales {id, code, name} intactas byte-a-byte; los campos
+            // sucursal/region/active son ADITIVOS (atribución a una de las 11
+            // sucursales de OKR). Un branch/ruta no atribuible → sucursal/region null
+            // (honesto, nunca se fabrica); `active` es el estado operativo DERIVADO
+            // (Branch::derivedActive(): considera is_active y si la ruta del catálogo
+            // está inactiva).
+            'data' => $branches->getCollection()->map(function (Branch $branch) {
+                $attribution = $branch->attributionSummary();
+
+                return [
+                    'id' => $branch->id,
+                    'code' => $branch->code,
+                    'name' => $branch->name,
+                    'sucursal' => $attribution['sucursal'],
+                    'region' => $attribution['region'],
+                    'active' => $attribution['activa_derivada'],
+                ];
+            })->values(),
             'meta' => [
                 'current_page' => $branches->currentPage(),
-                'per_page'     => $branches->perPage(),
-                'total'        => $branches->total(),
-                'last_page'    => $branches->lastPage(),
+                'per_page' => $branches->perPage(),
+                'total' => $branches->total(),
+                'last_page' => $branches->lastPage(),
             ],
         ]);
     }
