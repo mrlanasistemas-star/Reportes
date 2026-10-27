@@ -9,6 +9,7 @@ import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, Loader2, Shield
 import { computed, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { downloadFile } from '@/lib/downloadOverlay'
 
 type PreviewRow = {
     noi: string | null
@@ -88,7 +89,7 @@ function submitConfirm() {
 }
 
 function downloadCredentials() {
-    window.location.href = props.urls.credentials
+    void downloadFile(props.urls.credentials)
 }
 
 function close() {

@@ -3,11 +3,13 @@ import { FileSpreadsheet, FileText, LoaderCircle } from 'lucide-vue-next'
 import Swal from 'sweetalert2'
 import { ref } from 'vue'
 import { buttonVariants } from '@/components/ui/button'
+import { hideDownloadLoading, showDownloadLoading } from '@/lib/downloadOverlay'
 import { cn } from '@/lib/utils'
 
 // Botones "Exportar PDF / Excel" del Dashboard (Fase 7.2/7.3/8.5). Descarga vía
-// fetch para dar un estado de carga LOCAL en el propio botón (nada de pantalla
-// completa) y mostrar el mensaje real del servidor si algo falla (403 de alcance,
+// fetch con spinner en el botón y, desde el 27-oct-2026, también la pantalla de
+// carga de descargas (downloadOverlay) — mismo feedback que cualquier otro PDF/Excel
+// del sistema. Muestra el mensaje real del servidor si algo falla (403 de alcance,
 // periodo sin radiografía, referencia de error), en vez de abrir una pestaña con HTML.
 const props = defineProps<{
     pdfUrl: string
@@ -45,6 +47,7 @@ async function download(kind: Kind) {
 
     busy.value = kind
     const url = kind === 'pdf' ? props.pdfUrl : props.excelUrl
+    showDownloadLoading(kind)
 
     try {
         const resp = await fetch(url, { credentials: 'same-origin', headers: { Accept: kind === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } })
@@ -81,6 +84,7 @@ async function download(kind: Kind) {
             confirmButtonText: 'Entendido',
         })
     } finally {
+        hideDownloadLoading()
         busy.value = null
     }
 }

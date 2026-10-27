@@ -8,6 +8,7 @@ import '@/composables/usePwaInstall';
 import AppLayout from '@/layouts/AppLayout.vue';
 import AuthLayout from '@/layouts/AuthLayout.vue';
 import SettingsLayout from '@/layouts/settings/Layout.vue';
+import { attachDownloadInterceptor } from '@/lib/downloadOverlay';
 import { attachInertiaRouteLoading } from '@/lib/routeLoadingOverlay';
 
 const appName = import.meta.env.VITE_APP_NAME || 'Reportes';
@@ -21,6 +22,10 @@ const brandTitle = /mr\s*lana/i.test(appName) ? appName : `${appName} Mr Lana`;
 // incluyendo login → dashboard, sin tocar cómo createInertiaApp resuelve/monta cada
 // página. Ver resources/js/lib/routeLoadingOverlay.ts.
 attachInertiaRouteLoading();
+
+// Pantalla de carga al descargar PDF/Excel desde cualquier enlace — ver
+// resources/js/lib/downloadOverlay.ts.
+attachDownloadInterceptor();
 
 // Service worker mínimo (sin caché) solo para que el navegador considere el
 // sitio "instalable" y dispare beforeinstallprompt — ver public/sw.js.

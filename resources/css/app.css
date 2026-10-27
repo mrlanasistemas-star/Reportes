@@ -813,7 +813,8 @@
 }
 
 /* Pantalla de carga global — ver resources/js/lib/routeLoadingOverlay.ts */
-#fv-route-loading {
+#fv-route-loading,
+#fv-download-loading {
     position: fixed;
     inset: 0;
     z-index: 9999;
@@ -828,7 +829,8 @@
     transition: opacity 0.2s ease;
 }
 
-#fv-route-loading.is-visible {
+#fv-route-loading.is-visible,
+#fv-download-loading.is-visible {
     opacity: 1;
     pointer-events: auto;
 }
@@ -851,7 +853,8 @@
     transition: transform 0.25s ease;
 }
 
-#fv-route-loading.is-visible .fv-route-loading-card {
+#fv-route-loading.is-visible .fv-route-loading-card,
+#fv-download-loading.is-visible .fv-route-loading-card {
     transform: scale(1);
 }
 

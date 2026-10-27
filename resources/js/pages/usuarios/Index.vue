@@ -24,6 +24,7 @@ import UserSummaryCards from '@/components/usuarios/UserSummaryCards.vue'
 import { useUserActions } from '@/components/usuarios/useUserActions'
 import { useTabIndicator } from '@/composables/useTabIndicator'
 import AppLayout from '@/layouts/AppLayout.vue'
+import { downloadFile } from '@/lib/downloadOverlay'
 
 defineOptions({ layout: AppLayout })
 
@@ -213,7 +214,7 @@ watch(() => props.bulk_password_result, (result) => {
         confirmButtonText: 'Descargar Excel', showCancelButton: true, cancelButtonText: 'Cerrar', confirmButtonColor: '#4f46e5', allowOutsideClick: false,
     }).then((r) => {
         if (r.isConfirmed) {
-            window.location.href = props.bulk_password_urls.download
+            void downloadFile(props.bulk_password_urls.download)
         }
     })
 }, { immediate: true })
