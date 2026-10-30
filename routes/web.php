@@ -200,6 +200,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('/calculadora/{token}/calcular', 'calculate')->middleware(['throttle:30,1', 'permission:efectividad,calcular'])->name('calculate');
             Route::get('/calculadora/{token}/vista', 'view')->name('view');
             Route::get('/calculadora/{token}/exportar/{formato}', 'export')->whereIn('formato', ['pdf', 'png'])->middleware(['throttle:20,1', 'permission:efectividad,exportar'])->name('export');
+            // Excel con su propio permiso (efectividad,exportar_excel) para designar por rol
+            // quién ve el botón; mismo formato que el PDF/imagen (hoja EFECTIVIDAD de la macro V4).
+            Route::get('/calculadora/{token}/exportar-excel', 'exportExcel')->middleware(['throttle:20,1', 'permission:efectividad,exportar_excel'])->name('export-excel');
         });
 
     // Administración (prioridad 8): Usuarios y Roles y permisos — módulos propios,

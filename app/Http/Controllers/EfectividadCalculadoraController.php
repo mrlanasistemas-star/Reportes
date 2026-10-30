@@ -91,19 +91,9 @@ class EfectividadCalculadoraController extends Controller
 
     public function export(Request $request, string $token, string $formato): BinaryFileResponse|JsonResponse
     {
-        $filtros = $request->validate([
-            'sucursal' => ['nullable', 'string', 'max:150'],
-            'oficina' => ['nullable', 'string', 'max:150'],
-            'promotor' => ['nullable', 'string', 'max:150'],
-        ]);
-
         try {
-            $r = $this->service->filtrar(
-                $this->service->resultado($token, $request->user()->id),
-                $filtros['sucursal'] ?? null, $filtros['oficina'] ?? null,
-                $filtros['promotor'] ?? null,
-            );
-            $base = 'Efectividad_'.Str::slug(($r['modo'] ?? '').'_'.($r['parametros']['fecha_corte'] ?? ''), '_');
+            $r = $this->resultadoFiltrado($request, $token);
+            $base = $this->nombreBase($r);
             if ($formato === 'pdf') {
                 return response()->download($this->export->pdf($r), $base.'.pdf', ['Content-Type' => 'application/pdf'])->deleteFileAfterSend();
             }
@@ -115,6 +105,47 @@ class EfectividadCalculadoraController extends Controller
         } catch (PdfRenderException) {
             return response()->json(['message' => 'No se pudo generar el archivo (Chrome/Browsershot no disponible). Intenta de nuevo o avisa a sistemas.'], 500);
         }
+    }
+
+    /**
+     * Exportación a Excel (.xlsx) — mismo resultado y formato que el PDF/imagen (hoja
+     * EFECTIVIDAD de la macro V4). Ruta y permiso propios (`efectividad,exportar_excel`)
+     * para designar por rol quién ve el botón.
+     */
+    public function exportExcel(Request $request, string $token): BinaryFileResponse|JsonResponse
+    {
+        try {
+            $r = $this->resultadoFiltrado($request, $token);
+
+            return response()->download(
+                $this->export->xlsx($r),
+                $this->nombreBase($r).'.xlsx',
+                ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+            )->deleteFileAfterSend();
+        } catch (EfectividadArchivoException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /** Aplica los filtros de la vista (sucursal/oficina/promotor) sobre el resultado calculado. */
+    private function resultadoFiltrado(Request $request, string $token): array
+    {
+        $filtros = $request->validate([
+            'sucursal' => ['nullable', 'string', 'max:150'],
+            'oficina' => ['nullable', 'string', 'max:150'],
+            'promotor' => ['nullable', 'string', 'max:150'],
+        ]);
+
+        return $this->service->filtrar(
+            $this->service->resultado($token, $request->user()->id),
+            $filtros['sucursal'] ?? null, $filtros['oficina'] ?? null,
+            $filtros['promotor'] ?? null,
+        );
+    }
+
+    private function nombreBase(array $r): string
+    {
+        return 'Efectividad_'.Str::slug(($r['modo'] ?? '').'_'.($r['parametros']['fecha_corte'] ?? ''), '_');
     }
 
     private function responder(callable $fn): JsonResponse
