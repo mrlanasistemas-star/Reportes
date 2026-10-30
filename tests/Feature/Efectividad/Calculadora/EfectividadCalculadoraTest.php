@@ -4,6 +4,7 @@ use App\Models\User;
 use App\Services\Efectividad\Calculadora\EfectividadCalculadoraService;
 use App\Services\Efectividad\Calculadora\EfectividadExcelReader;
 use App\Services\Efectividad\Calculadora\EfectividadWorkspace;
+use App\Services\Efectividad\V4\EfectividadV4ExcelExporter;
 use App\Services\Pdf\BrowsershotPdfRenderer;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -263,6 +264,56 @@ it('exporta PDF y PNG del mismo resultado y borra los archivos generados tras en
         ->and($html[0])->toContain('GRAN TOTAL')->toContain('$300.00')->toContain('83.33%')
         ->and($html[1])->toContain('$300.00')
         ->and(glob(EfectividadWorkspace::raiz().'/exports/*'))->toBe([]);
+});
+
+it('exporta Excel por HTTP del mismo resultado, respeta los filtros y borra el archivo tras enviarlo', function () {
+    // Captura las filas que llegan al exportador: prueba el filtrado de extremo a extremo
+    // sin depender de parsear el xlsx. El exportador real se cubre en su propio test unitario.
+    $capturado = [];
+    $this->mock(EfectividadV4ExcelExporter::class, function ($m) use (&$capturado) {
+        $m->shouldReceive('export')->andReturnUsing(function ($filas, $parametros, $incidencias, $out) use (&$capturado) {
+            $capturado[] = $filas;
+            file_put_contents($out, "PK\x03\x04prueba-xlsx"); // firma ZIP (como un .xlsx real)
+
+            return $out;
+        });
+    });
+
+    $svc = app(EfectividadCalculadoraService::class);
+    $token = $svc->agregarArchivos(null, $this->admin->id, array_map('calcUpload', calcArchivosSemana($this->dir)))['token'];
+    $svc->calcular($token, $this->admin->id, 'SEMANAL', '2026-10-11');
+
+    // Descarga sin filtro: 200, nombre .xlsx y tipo de contenido de hoja de cálculo.
+    $sinFiltro = $this->actingAs($this->admin)->get("/efectividad-cobranza/calculadora/$token/exportar-excel")->assertOk();
+    expect($sinFiltro->headers->get('content-type'))->toContain('spreadsheetml')
+        ->and($sinFiltro->headers->get('content-disposition'))->toContain('.xlsx');
+    $sinFiltro->sendContent(); // dispara deleteFileAfterSend
+
+    // Mismo endpoint con filtro por oficina: al exportador llegan solo las filas de esa ruta.
+    $this->actingAs($this->admin)->get("/efectividad-cobranza/calculadora/$token/exportar-excel?oficina=ACAMBAY")->assertOk()->sendContent();
+
+    $promSinFiltro = collect($capturado[0])->where('tipo', 'promotor')->pluck('promotor')->all();
+    $promConFiltro = collect($capturado[1])->where('tipo', 'promotor')->pluck('promotor')->all();
+    expect($promSinFiltro)->toContain('ANA LOPEZ', 'BETO RUIZ')
+        ->and($promConFiltro)->toBe(['BETO RUIZ']) // solo la ruta ACAMBAY
+        ->and(glob(EfectividadWorkspace::raiz().'/exports/*'))->toBe([]); // nada queda en disco
+});
+
+it('el botón de Excel exige el permiso efectividad.exportar_excel: sin él es 403 aunque el PDF sí funcione', function () {
+    // Gerencial trae por defecto calcular+exportar (PDF/imagen) pero NO exportar_excel.
+    $gerente = User::factory()->create(['role' => 'gerencial']);
+    $svc = app(EfectividadCalculadoraService::class);
+    $token = $svc->agregarArchivos(null, $gerente->id, array_map('calcUpload', calcArchivosSemana($this->dir)))['token'];
+    $svc->calcular($token, $gerente->id, 'SEMANAL', '2026-10-11');
+
+    // El gate de permiso corta ANTES del controlador: 403 para Excel.
+    $this->actingAs($gerente)->get("/efectividad-cobranza/calculadora/$token/exportar-excel")->assertForbidden();
+
+    // Pero su permiso de exportar sí le deja el PDF (422 = pasó el gate; aquí solo validamos el acceso).
+    $this->mock(BrowsershotPdfRenderer::class, function ($m) {
+        $m->shouldReceive('renderHtmlToFile')->andReturnUsing(fn ($h, $out) => file_put_contents($out, '%PDF-1.4'));
+    });
+    $this->actingAs($gerente)->get("/efectividad-cobranza/calculadora/$token/exportar/pdf")->assertOk();
 });
 
 it('el TTL elimina espacios temporales abandonados', function () {
