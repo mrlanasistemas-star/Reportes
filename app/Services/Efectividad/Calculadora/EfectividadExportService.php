@@ -2,8 +2,6 @@
 
 namespace App\Services\Efectividad\Calculadora;
 
-use App\Services\Efectividad\V4\EfectividadV4Calculator;
-use App\Services\Efectividad\V4\EfectividadV4ExcelExporter;
 use App\Services\Pdf\BrowsershotPdfRenderer;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
@@ -23,7 +21,7 @@ class EfectividadExportService
 
     public function __construct(
         private readonly BrowsershotPdfRenderer $renderer,
-        private readonly EfectividadV4ExcelExporter $excel,
+        private readonly EfectividadCalculadoraExcelExporter $excel,
     ) {}
 
     /** @return string ruta absoluta del PDF temporal */
@@ -44,23 +42,14 @@ class EfectividadExportService
     }
 
     /**
-     * XLSX con EXACTAMENTE el mismo resultado y formato que el PDF/imagen: reutiliza el
-     * exportador de la macro V4 (hoja EFECTIVIDAD + bitácora + fuentes). La forma de
-     * `filas`, `parametros` e `incidencias` que produce la calculadora es la misma que
-     * consume este exportador (es el motor V4), por eso no se transforma nada.
+     * XLSX con el mismo resultado y formato que el PDF/imagen, más la bitácora de
+     * incidencias en una segunda hoja.
      *
      * @return string ruta absoluta del XLSX temporal
      */
     public function xlsx(array $r): string
     {
-        return $this->excel->export(
-            $r['filas'],
-            $r['parametros'],
-            $r['incidencias'] ?? [],
-            $this->tmp('xlsx'),
-            [],
-            EfectividadV4Calculator::ENGINE_VERSION,
-        );
+        return $this->excel->export($r, $this->tmp('xlsx'));
     }
 
     /** @return array{ruta:string, tipo:string} PNG único o ZIP con imágenes numeradas */

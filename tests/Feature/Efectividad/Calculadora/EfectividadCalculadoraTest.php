@@ -1,16 +1,17 @@
 <?php
 
 use App\Models\User;
+use App\Services\Efectividad\Calculadora\EfectividadCalculadoraExcelExporter;
 use App\Services\Efectividad\Calculadora\EfectividadCalculadoraService;
 use App\Services\Efectividad\Calculadora\EfectividadExcelReader;
 use App\Services\Efectividad\Calculadora\EfectividadWorkspace;
-use App\Services\Efectividad\V4\EfectividadV4ExcelExporter;
 use App\Services\Pdf\BrowsershotPdfRenderer;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\XLSX\Writer;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 
 /**
  * Calculadora de Efectividad (flujo único, sin BD) con Excel sintéticos con la
@@ -270,9 +271,9 @@ it('exporta Excel por HTTP del mismo resultado, respeta los filtros y borra el a
     // Captura las filas que llegan al exportador: prueba el filtrado de extremo a extremo
     // sin depender de parsear el xlsx. El exportador real se cubre en su propio test unitario.
     $capturado = [];
-    $this->mock(EfectividadV4ExcelExporter::class, function ($m) use (&$capturado) {
-        $m->shouldReceive('export')->andReturnUsing(function ($filas, $parametros, $incidencias, $out) use (&$capturado) {
-            $capturado[] = $filas;
+    $this->mock(EfectividadCalculadoraExcelExporter::class, function ($m) use (&$capturado) {
+        $m->shouldReceive('export')->andReturnUsing(function ($r, $out) use (&$capturado) {
+            $capturado[] = $r['filas'];
             file_put_contents($out, "PK\x03\x04prueba-xlsx"); // firma ZIP (como un .xlsx real)
 
             return $out;
@@ -297,6 +298,26 @@ it('exporta Excel por HTTP del mismo resultado, respeta los filtros y borra el a
     expect($promSinFiltro)->toContain('ANA LOPEZ', 'BETO RUIZ')
         ->and($promConFiltro)->toBe(['BETO RUIZ']) // solo la ruta ACAMBAY
         ->and(glob(EfectividadWorkspace::raiz().'/exports/*'))->toBe([]); // nada queda en disco
+});
+
+it('el Excel descargado de un cálculo real trae logo, formato del PDF y gran total', function () {
+    $svc = app(EfectividadCalculadoraService::class);
+    $token = $svc->agregarArchivos(null, $this->admin->id, array_map('calcUpload', calcArchivosSemana($this->dir)))['token'];
+    $svc->calcular($token, $this->admin->id, 'SEMANAL', '2026-10-11');
+
+    $respuesta = $this->actingAs($this->admin)->get("/efectividad-cobranza/calculadora/$token/exportar-excel")->assertOk();
+    $copia = $this->dir.'/descarga.xlsx';
+    copy($respuesta->getFile()->getPathname(), $copia);
+    $respuesta->sendContent();
+    $ws = IOFactory::load($copia)->getSheetByName('EFECTIVIDAD');
+
+    $gt = collect($svc->resultado($token, $this->admin->id)['filas'])->firstWhere('tipo', 'gran_total');
+    expect($ws->getDrawingCollection())->toHaveCount(1)
+        ->and($ws->getDrawingCollection()[0]->getCoordinates())->toBe('A1')
+        ->and($ws->getCell('B2')->getValue())->toBe('Efectividad de Cobranza')
+        ->and((string) $ws->getCell('B3')->getValue())->toContain('Metodología')
+        ->and($ws->getCell('H7')->getValue())->toEqual($gt['cobranza_total'])
+        ->and(glob(EfectividadWorkspace::raiz().'/exports/*'))->toBe([]);
 });
 
 it('el botón de Excel exige el permiso efectividad.exportar_excel: sin él es 403 aunque el PDF sí funcione', function () {

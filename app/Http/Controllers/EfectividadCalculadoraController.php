@@ -108,9 +108,8 @@ class EfectividadCalculadoraController extends Controller
     }
 
     /**
-     * Exportación a Excel (.xlsx) — mismo resultado y formato que el PDF/imagen (hoja
-     * EFECTIVIDAD de la macro V4). Ruta y permiso propios (`efectividad,exportar_excel`)
-     * para designar por rol quién ve el botón.
+     * Exportación a Excel (.xlsx) — mismo resultado y formato que el PDF/imagen. Ruta y
+     * permiso propios (`efectividad,exportar_excel`) para designar por rol quién ve el botón.
      */
     public function exportExcel(Request $request, string $token): BinaryFileResponse|JsonResponse
     {

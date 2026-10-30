@@ -233,7 +233,7 @@ class EfectividadV4ExcelExporter
         $ws->setSelectedCell('A1');
     }
 
-    private function hojaAuditoria(Worksheet $ws, array $incidencias, array $p): void
+    public function hojaAuditoria(Worksheet $ws, array $incidencias, array $p): void
     {
         $ws->setTitle('_AUDITORIA_EFECTIVIDAD');
         $ws->setCellValue('A1', 'INCIDENCIAS DE CALCULO | MR LANA');
