@@ -148,6 +148,14 @@ class EfectividadV4ExcelExporter
             if ($f['tipo'] === 'subtotal') {
                 $s->getBorders()->getTop()->setBorderStyle(Border::BORDER_THIN)->getColor()->setRGB('B4B4B4');
                 $ws->getRowDimension($fila)->setRowHeight(20);
+            } elseif ($f['tipo'] === 'subtotal_sucursal') {
+                // Solo en exportaciones multi-sucursal de la calculadora (la macro V4 nunca lo emite):
+                // franja azul tenue para distinguir el total de sucursal, como en el PDF/imagen.
+                foreach ([$s->getBorders()->getTop(), $s->getBorders()->getBottom()] as $b) {
+                    $b->setBorderStyle(Border::BORDER_THIN)->getColor()->setRGB(self::COB_AZUL);
+                }
+                $s->getFill()->getStartColor()->setRGB('EAF2F8');
+                $ws->getRowDimension($fila)->setRowHeight(20);
             } elseif ($f['tipo'] === 'gran_total') {
                 foreach ([$s->getBorders()->getTop(), $s->getBorders()->getBottom()] as $b) {
                     $b->setBorderStyle(Border::BORDER_MEDIUM)->getColor()->setRGB(self::AZUL_OSCURO);

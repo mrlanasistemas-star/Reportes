@@ -71,7 +71,11 @@ class ActionPermissionService
         ],
         'efectividad' => [
             'calcular' => ['label' => 'Subir archivos y calcular', 'column' => 'crear', 'description' => 'Usar la calculadora de efectividad.'],
-            'exportar' => ['label' => 'Exportar resultados', 'column' => 'exportar', 'description' => 'Descargar el resultado en PDF o imagen.'],
+            'exportar' => ['label' => 'Exportar resultados (PDF/imagen)', 'column' => 'exportar', 'description' => 'Descargar el resultado en PDF o imagen.'],
+            // 29-oct-2026 — botón de Excel por separado: sin valor por defecto para ningún
+            // nivel (no está en LEVEL_DEFAULTS), así solo el administrador lo trae y se designa
+            // explícitamente por rol en Roles y permisos. Mismo formato que el PDF/imagen.
+            'exportar_excel' => ['label' => 'Exportar a Excel', 'column' => 'exportar', 'description' => 'Descargar el resultado en Excel (.xlsx), con el mismo formato que el PDF/imagen.'],
         ],
         'okr' => [
             'crear' => ['label' => 'Crear OKR', 'column' => 'crear', 'description' => 'Asignar un OKR nuevo (asistente).'],

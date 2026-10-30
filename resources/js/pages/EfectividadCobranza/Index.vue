@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head } from '@inertiajs/vue3';
+import { Head, usePage } from '@inertiajs/vue3';
 import {
     Calculator,
     CalendarCheck,
@@ -7,6 +7,7 @@ import {
     CalendarRange,
     Download,
     FileImage,
+    FileSpreadsheet,
     FileText,
     Loader2,
     RotateCcw,
@@ -50,6 +51,15 @@ defineOptions({
 });
 
 const BASE = '/efectividad-cobranza/calculadora';
+
+// El botón de Excel se designa por rol (permiso `efectividad.exportar_excel`); solo se
+// muestra a quien lo tiene. El backend vuelve a exigirlo en la ruta, esto es solo UX.
+const page = usePage();
+const canExportarExcel = computed(() => {
+    const perms = (page.props as { auth?: { permissions?: string[] } }).auth
+        ?.permissions;
+    return Array.isArray(perms) && perms.includes('efectividad.exportar_excel');
+});
 
 const MODOS: Array<{
     valor: Modo;
@@ -98,7 +108,7 @@ const filas = ref<FilaEfectividad[]>([]);
 const sucursal = ref<string>('');
 const oficina = ref<string>(''); // RUTA de Lendus
 const promotor = ref<string>('');
-const exportando = ref<'pdf' | 'png' | null>(null);
+const exportando = ref<'pdf' | 'png' | 'xlsx' | null>(null);
 
 const ocupado = computed(
     () => subiendo.value || calculando.value || exportando.value !== null,
@@ -389,7 +399,7 @@ async function cargarVista() {
     }
 }
 
-async function exportar(formato: 'pdf' | 'png') {
+async function exportar(formato: 'pdf' | 'png' | 'xlsx') {
     if (!token.value) {
         return;
     }
@@ -398,10 +408,12 @@ async function exportar(formato: 'pdf' | 'png') {
     showDownloadLoading(formato === 'pdf' ? 'pdf' : 'archivo');
 
     try {
-        const res = await fetch(
-            `${BASE}/${token.value}/exportar/${formato}?${filtrosQuery()}`,
-            { headers: xsrfHeaders() },
-        );
+        // El Excel tiene ruta/permiso propios; PDF e imagen comparten la ruta `exportar/{formato}`.
+        const ruta =
+            formato === 'xlsx'
+                ? `${BASE}/${token.value}/exportar-excel?${filtrosQuery()}`
+                : `${BASE}/${token.value}/exportar/${formato}?${filtrosQuery()}`;
+        const res = await fetch(ruta, { headers: xsrfHeaders() });
 
         if (!res.ok) {
             void Swal.fire({
@@ -665,6 +677,19 @@ onBeforeUnmount(() => {
                             />
                             <FileText v-else class="size-4" />
                             Descargar PDF
+                        </Button>
+                        <Button
+                            v-if="canExportarExcel"
+                            variant="outline"
+                            :disabled="ocupado"
+                            @click="exportar('xlsx')"
+                        >
+                            <Loader2
+                                v-if="exportando === 'xlsx'"
+                                class="size-4 animate-spin"
+                            />
+                            <FileSpreadsheet v-else class="size-4" />
+                            Descargar Excel
                         </Button>
                     </div>
                 </div>
