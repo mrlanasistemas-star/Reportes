@@ -50,11 +50,19 @@ defineOptions({
     },
 });
 
-const BASE = '/efectividad-cobranza/calculadora';
+const page = usePage();
+
+// Prefijo de instalación de la app: "/reportes/public" cuando Laravel vive en un
+// subdirectorio (WAMP), "" cuando se sirve en la raíz del dominio (producción nginx).
+// Lo expone el servidor (HandleInertiaRequests → props.base = request()->getBaseUrl()).
+// Se antepone a TODAS las URLs del módulo (subir, calcular, vista, exportar, excel)
+// para que fetch/descarga resuelvan bien en ambos casos sin hardcodear ni depender de
+// reiniciar Apache. En producción (base vacía) el resultado es idéntico al anterior.
+const appBase = (page.props as { base?: string }).base ?? '';
+const BASE = `${appBase}/efectividad-cobranza/calculadora`;
 
 // El botón de Excel se designa por rol (permiso `efectividad.exportar_excel`); solo se
 // muestra a quien lo tiene. El backend vuelve a exigirlo en la ruta, esto es solo UX.
-const page = usePage();
 const canExportarExcel = computed(() => {
     const perms = (page.props as { auth?: { permissions?: string[] } }).auth
         ?.permissions;

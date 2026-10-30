@@ -46,6 +46,11 @@ class HandleInertiaRequests extends Middleware
         return [
             ...parent::share($request),
             'name' => config('app.name'),
+            // Prefijo de instalación de la app ("/reportes/public" en WAMP bajo
+            // subdirectorio, "" en producción servida en la raíz del dominio). El
+            // frontend lo antepone al construir URLs de fetch/descarga para que
+            // funcionen igual en subdirectorio o en raíz, sin hardcodear nada.
+            'base' => $request->getBaseUrl(),
             'auth' => [
                 'user' => $request->user(),
                 // Módulos que el menú debe mostrar (14-oct-2026) — misma fuente que
