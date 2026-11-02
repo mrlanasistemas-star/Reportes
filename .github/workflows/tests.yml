@@ -43,6 +43,9 @@ jobs:
       - name: Install Dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
+      - name: Composer audit (producción)
+        run: composer audit --no-interaction --locked --no-dev
+
       - name: Copy Environment File
         run: cp .env.example .env
 
