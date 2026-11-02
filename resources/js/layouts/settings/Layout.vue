@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { Link } from '@inertiajs/vue3';
 import { Palette, ShieldCheck, UserRound } from 'lucide-vue-next';
-import type { Component } from 'vue';
 import { useCurrentUrl } from '@/composables/useCurrentUrl';
 import { toUrl } from '@/lib/utils';
+import type { Component } from 'vue';
 import { edit as editAppearance } from '@/routes/appearance';
 import { edit as editProfile } from '@/routes/profile';
 import { edit as editSecurity } from '@/routes/security';
