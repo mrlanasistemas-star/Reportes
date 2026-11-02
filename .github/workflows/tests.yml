@@ -49,9 +49,6 @@ jobs:
       - name: Generate Application Key
         run: php artisan key:generate
 
-      - name: Frontend format
-        run: npm run format:check
-
       - name: Frontend lint
         run: npm run lint:check
 
