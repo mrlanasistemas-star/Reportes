@@ -5,8 +5,8 @@ import BackgroundActivityBell from '@/components/BackgroundActivityBell.vue';
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import InstallAppButton from '@/components/InstallAppButton.vue';
 import { SidebarTrigger } from '@/components/ui/sidebar';
-import type { BreadcrumbItem } from '@/types';
 import { dashboard } from '@/routes';
+import type { BreadcrumbItem } from '@/types';
 
 withDefaults(
     defineProps<{
