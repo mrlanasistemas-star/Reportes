@@ -35,7 +35,9 @@ jobs:
           composer install --no-interaction --prefer-dist --no-progress
           cp .env.example .env
           php artisan key:generate
-          php artisan wayfinder:generate --with-form --skip-database
+          touch database/database.sqlite
+          php artisan migrate --force
+          php artisan wayfinder:generate --with-form
 
       - name: Actualizar sólo a parches compatibles
         shell: bash
