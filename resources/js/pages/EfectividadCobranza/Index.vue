@@ -66,6 +66,7 @@ const BASE = `${appBase}/efectividad-cobranza/calculadora`;
 const canExportarExcel = computed(() => {
     const perms = (page.props as { auth?: { permissions?: string[] } }).auth
         ?.permissions;
+
     return Array.isArray(perms) && perms.includes('efectividad.exportar_excel');
 });
 
