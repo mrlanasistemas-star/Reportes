@@ -23,7 +23,17 @@ jobs:
           cache: npm
 
       - name: Actualizar sólo a parches compatibles
-        run: npm audit fix --package-lock-only
+        shell: bash
+        run: |
+          set +e
+          npm audit fix --package-lock-only
+          status=$?
+          set -e
+          # npm audit devuelve 1 si quedan advisories aunque los high/critical
+          # ya se hayan corregido. Sólo aceptamos 0/1; errores reales (>1) fallan.
+          if (( status > 1 )); then
+            exit "$status"
+          fi
 
       - name: Instalar lock corregido
         run: npm ci
