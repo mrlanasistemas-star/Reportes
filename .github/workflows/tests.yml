@@ -49,6 +49,9 @@ jobs:
       - name: Generate Application Key
         run: php artisan key:generate
 
+      - name: Generar rutas y acciones Wayfinder
+        run: php artisan wayfinder:generate --with-form --skip-database
+
       - name: Frontend lint
         run: npm run lint:check
 
