@@ -11,8 +11,8 @@ import {
     UserCog,
     Users,
 } from 'lucide-vue-next';
-import type { Auth, NavItem } from '@/types';
 import { dashboard } from '@/routes';
+import type { Auth, NavItem } from '@/types';
 
 // Fuente única de los módulos del sistema — la usan AppSidebar.vue (menú de
 // escritorio) y MobileBottomNav.vue (barra inferior en móvil) para que no se
