@@ -1,16 +1,17 @@
 # Archivos sensibles versionados en Git — inventario y corrección
 
-> **Solo instrucciones.** Nada de esto se ha ejecutado. Cada paso marcado
-> **[AUTORIZACIÓN]** debe aprobarlo el dueño del repositorio antes de correrlo.
-> Inventario hecho el 15-oct-2026 sobre `main @ 8510207` con `git ls-files` y
-> `git log --all --no-renames --diff-filter=A --name-only`.
+> **Estado actualizado 02-nov-2026.** Los 57 archivos de datos reales que todavía estaban
+> rastreados en `main` se retiraron del índice en el commit `2b8889e`; no forman parte de
+> nuevos clones de la rama principal. **El historial anterior sigue conteniéndolos y el
+> repositorio sigue público**, por lo que la exposición histórica NO está resuelta. La
+> limpieza del historial continúa requiriendo el procedimiento controlado de la sección 3.
 
 ## 0. Situación
 
 - El remoto `github.com/JesusA2004/Reportes` redirige a
-  **`github.com/mrlanasistemas-star/Reportes`, que hoy es PÚBLICO** (`gh repo view`:
-  `"visibility":"PUBLIC"`, 0 forks). Cualquier persona puede descargar los archivos de
-  abajo desde GitHub, tanto de la rama `main` como de cualquier commit del historial.
+  **`github.com/mrlanasistemas-star/Reportes`, que al 02-nov-2026 sigue PÚBLICO**.
+  Los archivos sensibles ya no están en el árbol actual de `main`, pero continúan
+  recuperables desde commits anteriores mientras no se reescriba/purgue el historial.
 - Los datos entraron a partir del 07-may-2026 (commits `9d7b03f` y `01f0e92`). De las
   ramas y referencias remotas, **solo `refs/heads/main` los contiene**. Las 15 referencias
   `refs/pull/*` y las ramas `add-claude-github-actions-…` y
@@ -21,7 +22,7 @@
 
 ## 1. Inventario
 
-### 1.1 En el índice actual (siguen en `main`): 58 archivos
+### 1.1 Retirados del índice actual de `main` el 02-nov-2026: 57 archivos
 
 | Categoría | Archivos | Contenido |
 |---|---|---|
@@ -69,12 +70,11 @@ datos de prueba. No llevan sueldos, pero con el repositorio público se pueden l
 recomienda que, cuando el equipo de desarrollo pueda, cambie las pruebas a nombres
 ficticios y lleve las excepciones por nombre a datos de la base o de configuración.
 
-## 2. Corrección mínima: dejar de versionarlos **[AUTORIZACIÓN]**
+## 2. Corrección mínima: dejar de versionarlos — EJECUTADA EN `main`
 
-Los archivos locales **se conservan**: `--cached` solo los quita del índice. El código no los
-lee. Las pruebas de paridad de Efectividad usan copias locales en `docs/ejemplosCorte/` y
-`docs/efectividad/MR_LANA_EFECTIVIDAD.xlsm`, que no se versionan, y se marcan como omitidas
-(skip) si esas copias no están.
+El commit `2b8889e` retiró esos 57 archivos del árbol versionado actual. El código productivo
+no depende de ellos; las pruebas que necesitan muestras locales deben usar archivos ignorados
+y se omiten de forma explícita cuando esas muestras no existen. **Esto no limpia el historial.**
 
 ```bash
 # 0) Lo más urgente: hacer PRIVADO el repositorio en GitHub
