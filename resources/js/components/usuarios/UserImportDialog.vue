@@ -63,7 +63,11 @@ const allSelected = computed(() => selectableRows.value.length > 0 && selectable
 function toggleRow(email: string) {
     const key = email.toLowerCase()
     const next = new Set(selected.value)
-    next.has(key) ? next.delete(key) : next.add(key)
+    if (next.has(key)) {
+        next.delete(key)
+    } else {
+        next.add(key)
+    }
     selected.value = next
 }
 function toggleAll() {
