@@ -63,11 +63,13 @@ const allSelected = computed(() => selectableRows.value.length > 0 && selectable
 function toggleRow(email: string) {
     const key = email.toLowerCase()
     const next = new Set(selected.value)
+
     if (next.has(key)) {
         next.delete(key)
     } else {
         next.add(key)
     }
+
     selected.value = next
 }
 function toggleAll() {
@@ -84,6 +86,7 @@ function submitUpload() {
     if (!uploadForm.file) {
         return
     }
+
     uploadForm.post(props.urls.preview, { forceFormData: true, preserveScroll: true, preserveState: true })
 }
 
