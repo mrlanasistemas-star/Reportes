@@ -35,10 +35,8 @@ jobs:
           composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
           npm ci
 
-      # El repositorio arrastra formato PHP histórico anterior a este gate. No se
-      # reescriben cientos de archivos financieros en un commit cosmético: desde aquí,
-      # todo PHP nuevo/modificado sí debe cumplir Pint sin que CI modifique nada.
-      - name: Pint en PHP modificado (sin modificar)
+      - name: Detectar base del cambio
+        id: base
         shell: bash
         env:
           EVENTO: ${{ github.event_name }}
@@ -53,6 +51,15 @@ jobs:
           if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
             BASE="$(git rev-list --max-parents=0 HEAD)"
           fi
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+
+      # Hay deuda histórica de formato. No se reescribe masivamente código financiero:
+      # todo archivo PHP nuevo/modificado sí queda obligado a cumplir Pint.
+      - name: Pint en PHP modificado
+        shell: bash
+        env:
+          BASE: ${{ steps.base.outputs.sha }}
+        run: |
           mapfile -t PHP_FILES < <(git diff --diff-filter=ACMR --name-only "$BASE" HEAD -- '*.php')
           if (( ${#PHP_FILES[@]} == 0 )); then
             echo "Sin archivos PHP modificados."
@@ -61,36 +68,16 @@ jobs:
           printf 'Verificando %s archivo(s) PHP con Pint.\n' "${#PHP_FILES[@]}"
           vendor/bin/pint --test "${PHP_FILES[@]}"
 
-      # Igual que PHP: existe deuda histórica de Prettier. Se bloquea cualquier
-      # archivo frontend nuevo/modificado que no venga formateado, sin reescribir el repo.
-      - name: Formato de frontend modificado (sin modificar)
+      # Mismo criterio para Prettier: impide deuda nueva sin reformatear cientos
+      # de archivos históricos en un commit cosmético.
+      - name: Prettier en frontend modificado
         shell: bash
         env:
-          EVENTO: ${{ github.event_name }}
-          BASE_PR: ${{ github.event.pull_request.base.sha }}
-          BEFORE_PUSH: ${{ github.event.before }}
+          BASE: ${{ steps.base.outputs.sha }}
         run: |
-          if [[ "$EVENTO" == "pull_request" ]]; then
-            BASE="$BASE_PR"
-          else
-            BASE="$BEFORE_PUSH"
-          fi
-          if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
-            BASE="$(git rev-list --max-parents=0 HEAD)"
-          fi
           mapfile -t FRONT_FILES < <(
-            git diff --diff-filter=ACMR --name-only "$BASE" HEAD -- resources/               | grep -E '\.(vue|js|mjs|cjs|ts|tsx|css|scss|json|md)      - name: Lint Frontend (sin modificar)
-        run: npm run lint:check
-
-      - name: Typecheck Frontend
-        run: npm run types:check
-
-      # - name: Commit Changes
-      #   uses: stefanzweifel/git-auto-commit-action@v7
-      #   with:
-      #     commit_message: fix code style
-      #     commit_options: '--no-verify'
- || true
+            git diff --diff-filter=ACMR --name-only "$BASE" HEAD -- resources/ |
+            awk '/\.(vue|js|mjs|cjs|ts|tsx|css|scss|json|md)$/'
           )
           if (( ${#FRONT_FILES[@]} == 0 )); then
             echo "Sin archivos frontend modificados."
@@ -102,14 +89,8 @@ jobs:
       - name: Auditoría de dependencias Node de producción
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Lint Frontend (sin modificar)
+      - name: Lint Frontend completo
         run: npm run lint:check
 
-      - name: Typecheck Frontend
+      - name: Typecheck Frontend completo
         run: npm run types:check
-
-      # - name: Commit Changes
-      #   uses: stefanzweifel/git-auto-commit-action@v7
-      #   with:
-      #     commit_message: fix code style
-      #     commit_options: '--no-verify'
