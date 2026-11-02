@@ -44,6 +44,9 @@ jobs:
           php artisan migrate --force
           php artisan wayfinder:generate --with-form
 
+      - name: Composer audit (producción)
+        run: composer audit --no-interaction --locked --no-dev
+
       - name: Detectar base del cambio
         id: base
         shell: bash
