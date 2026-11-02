@@ -35,6 +35,13 @@ jobs:
           composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
           npm ci
 
+      - name: Preparar Laravel y Wayfinder
+        shell: bash
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan wayfinder:generate --with-form --skip-database
+
       - name: Detectar base del cambio
         id: base
         shell: bash
