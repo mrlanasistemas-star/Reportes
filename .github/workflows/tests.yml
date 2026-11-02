@@ -120,3 +120,25 @@ jobs:
 
       - name: Pipeline de radiografía contra MySQL real
         run: ./vendor/bin/pest --configuration=phpunit.integration.xml tests/Integration/RadiographyMysqlPipelineTest.php
+
+
+  browser-okr:
+    name: OKR en navegador real
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Prueba real de edición OKR
+        run: npm run test:browser:okr
