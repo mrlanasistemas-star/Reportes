@@ -61,8 +61,46 @@ jobs:
           printf 'Verificando %s archivo(s) PHP con Pint.\n' "${#PHP_FILES[@]}"
           vendor/bin/pint --test "${PHP_FILES[@]}"
 
-      - name: Formato Frontend (sin modificar)
-        run: npm run format:check
+      # Igual que PHP: existe deuda histórica de Prettier. Se bloquea cualquier
+      # archivo frontend nuevo/modificado que no venga formateado, sin reescribir el repo.
+      - name: Formato de frontend modificado (sin modificar)
+        shell: bash
+        env:
+          EVENTO: ${{ github.event_name }}
+          BASE_PR: ${{ github.event.pull_request.base.sha }}
+          BEFORE_PUSH: ${{ github.event.before }}
+        run: |
+          if [[ "$EVENTO" == "pull_request" ]]; then
+            BASE="$BASE_PR"
+          else
+            BASE="$BEFORE_PUSH"
+          fi
+          if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+            BASE="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          mapfile -t FRONT_FILES < <(
+            git diff --diff-filter=ACMR --name-only "$BASE" HEAD -- resources/               | grep -E '\.(vue|js|mjs|cjs|ts|tsx|css|scss|json|md)      - name: Lint Frontend (sin modificar)
+        run: npm run lint:check
+
+      - name: Typecheck Frontend
+        run: npm run types:check
+
+      # - name: Commit Changes
+      #   uses: stefanzweifel/git-auto-commit-action@v7
+      #   with:
+      #     commit_message: fix code style
+      #     commit_options: '--no-verify'
+ || true
+          )
+          if (( ${#FRONT_FILES[@]} == 0 )); then
+            echo "Sin archivos frontend modificados."
+            exit 0
+          fi
+          printf 'Verificando %s archivo(s) frontend con Prettier.\n' "${#FRONT_FILES[@]}"
+          npx prettier --check "${FRONT_FILES[@]}"
+
+      - name: Auditoría de dependencias Node de producción
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint Frontend (sin modificar)
         run: npm run lint:check
