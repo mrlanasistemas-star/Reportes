@@ -9,10 +9,10 @@ import {
     DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import UserInfo from '@/components/UserInfo.vue';
+import type { User } from '@/types';
 import { logout } from '@/routes';
 import { edit } from '@/routes/profile';
 import { edit as editSecurity } from '@/routes/security';
-import type { User } from '@/types';
 
 type Props = {
     user: User;
