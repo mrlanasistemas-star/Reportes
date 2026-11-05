@@ -500,3 +500,30 @@ it('V12.9.4 diario: la base es la cartera del día anterior y solo pide esas dos
         ->and($gt['sano_pc'])->toEqual(200.0)
         ->and($gt['pct_total'])->toEqual(1.0);
 });
+
+it('V12.9.4 mensual con dos semanas: suma importes base de cada semana (la cartera de cierre se reutiliza como base) y recalcula porcentajes', function () {
+    $svc = app(EfectividadCalculadoraService::class);
+    $archivos = [];
+    foreach (range(4, 18) as $d) {
+        $archivos[] = calcCartera($this->dir, sprintf('2026-10-%02d', $d), "c$d.xlsx");
+    }
+    $archivos[] = calcIngresos($this->dir, 'ing.xlsx', [
+        calcPago('C1', '2026-10-05', '2026-10-05', 100),
+        calcPago('C2', '2026-10-06', '2026-10-06', 150, 'ACAMBAY', 'BETO RUIZ'),
+        calcPago('C1', '2026-10-12', '2026-10-12', 100),
+    ], '2026-10-05 A 2026-10-18');
+    $t = $svc->agregarArchivos(null, $this->admin->id, array_map('calcUpload', $archivos))['token'];
+
+    $s1 = collect($svc->calcular($t, $this->admin->id, 'SEMANAL', '2026-10-11')['filas'])->firstWhere('tipo', 'gran_total');
+    $s2 = collect($svc->calcular($t, $this->admin->id, 'SEMANAL', '2026-10-18')['filas'])->firstWhere('tipo', 'gran_total');
+    $mes = $svc->calcular($t, $this->admin->id, 'MENSUAL', '2026-10');
+    $gt = collect($mes['filas'])->firstWhere('tipo', 'gran_total');
+
+    expect($mes['semanas'])->toHaveCount(2)
+        ->and($gt['sano_pc'])->toEqual($s1['sano_pc'] + $s2['sano_pc'])
+        ->and($gt['cobranza_total'])->toEqual($s1['cobranza_total'] + $s2['cobranza_total'])
+        // Control: cobrado de atraso en todas las semanas + pendiente al último corte (no se suma la misma deuda dos veces).
+        ->and($gt['atraso_pc'])->toEqual($s1['atraso_cob'] + $s2['atraso_pc'])
+        ->and($gt['pct_total'])->toEqual($gt['cobranza_total'] / $gt['sano_pc'])
+        ->and($mes['auditoria']['estado'])->toBeIn(['PRELIMINAR', 'CONCILIADO']);
+});
