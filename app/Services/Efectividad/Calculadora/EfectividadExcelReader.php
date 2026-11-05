@@ -2,8 +2,8 @@
 
 namespace App\Services\Efectividad\Calculadora;
 
-use App\Services\Efectividad\V4\EfectividadV4Calculator;
-use App\Services\Efectividad\V4\EfectividadV4ColumnMap;
+use App\Services\Efectividad\V12\EfectividadV12Calculator;
+use App\Services\Efectividad\V12\V12ColumnMap;
 use DateTimeInterface;
 use OpenSpout\Reader\XLSX\Options;
 use OpenSpout\Reader\XLSX\Reader;
@@ -36,7 +36,7 @@ class EfectividadExcelReader
 
     private const FILAS_BUSQUEDA_ENCABEZADO = 20;
 
-    public function __construct(private readonly EfectividadV4Calculator $calc = new EfectividadV4Calculator) {}
+    public function __construct(private readonly EfectividadV12Calculator $calc = new EfectividadV12Calculator) {}
 
     /**
      * @return array{tipo:string, fecha:?string, desde:?string, hasta:?string, columnas:list<string>, filas:list<array<string,mixed>>, resumen:array<string,mixed>}
@@ -76,7 +76,7 @@ class EfectividadExcelReader
                             continue;
                         }
                         $encabezados = $valores;
-                        $mapa = EfectividadV4ColumnMap::resolver($valores, $tipo === self::TIPO_CARTERA ? EfectividadV4ColumnMap::FOTO : EfectividadV4ColumnMap::INGRESOS);
+                        $mapa = V12ColumnMap::resolver($valores, $tipo === self::TIPO_CARTERA ? V12ColumnMap::FOTO : V12ColumnMap::INGRESOS);
 
                         continue;
                     }
@@ -126,9 +126,9 @@ class EfectividadExcelReader
         }
 
         if ($tipo === self::TIPO_CARTERA) {
-            $faltantes = array_values(array_diff([...EfectividadV4Calculator::COLUMNAS_FOTO_OBLIGATORIAS, 'contrato'], $columnas));
+            $faltantes = array_values(array_diff([...EfectividadV12Calculator::COLUMNAS_FOTO_OBLIGATORIAS, 'contrato'], $columnas));
             if ($faltantes) {
-                throw new EfectividadArchivoException('A la cartera le faltan columnas obligatorias: '.implode(', ', $faltantes).'.');
+                throw new EfectividadArchivoException('A la cartera le faltan columnas obligatorias: '.$this->etiquetas($faltantes, V12ColumnMap::FOTO).'.');
             }
             $fecha = $this->fechaTitulo($titulo);
             if ($fecha === null) {
@@ -145,9 +145,9 @@ class EfectividadExcelReader
             ];
         }
 
-        $faltantes = array_values(array_diff(EfectividadV4Calculator::COLUMNAS_INGRESOS_OBLIGATORIAS, $columnas));
+        $faltantes = array_values(array_diff(EfectividadV12Calculator::COLUMNAS_INGRESOS_OBLIGATORIAS, $columnas));
         if ($faltantes) {
-            throw new EfectividadArchivoException('Al archivo de ingresos le faltan columnas obligatorias: '.implode(', ', $faltantes).'.');
+            throw new EfectividadArchivoException('Al archivo de ingresos le faltan columnas obligatorias: '.$this->etiquetas($faltantes, V12ColumnMap::INGRESOS).'.');
         }
         $min = null;
         $max = null;
@@ -177,6 +177,12 @@ class EfectividadExcelReader
             'columnas' => $columnas, 'filas' => $filas,
             'resumen' => ['registros' => count($filas), 'contratos' => count($contratos), 'oficinas' => count($oficinas), 'rutas' => array_keys($oficinas), 'columnas_archivo' => $totalColumnas],
         ];
+    }
+
+    /** Nombre del encabezado de Lendus (primer alias) de cada campo faltante. */
+    private function etiquetas(array $campos, array $mapa): string
+    {
+        return implode(', ', array_map(fn ($c) => $mapa[$c][0][0] ?? $c, $campos));
     }
 
     private function tipoEncabezado(array $valores): ?string

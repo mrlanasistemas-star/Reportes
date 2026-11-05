@@ -63,16 +63,35 @@ export type FilaEfectividad = {
     promotor: string;
     sano_pc: number;
     sano_cob: number;
-    sano_pct: number;
+    /** Porcentajes sobre Sano por cobrar; null = sin base (Sano por cobrar = 0). */
+    sano_pct: number | null;
     atraso_pc: number;
     atraso_cob: number;
-    atraso_pct: number;
+    atraso_pct: number | null;
     vencido_pc: number;
     vencido_cob: number;
-    vencido_pct: number;
+    vencido_pct: number | null;
     cobranza_total: number;
-    pct_total: number;
+    /** Efectividad total sin tope (puede superar 100%); null = sin base. */
+    pct_total: number | null;
+    /** Puede ser negativa cuando la efectividad supera el 100%. */
     mora: number;
+};
+
+export type EstadoAuditoria = 'PRELIMINAR' | 'CONCILIADO';
+
+/** Control y trazabilidad del cálculo (opcional: resultados anteriores no lo traen). */
+export type Auditoria = {
+    estado: EstadoAuditoria;
+    estado_texto: string;
+    contratos_ajustados: number;
+    cuotas_inferidas: number;
+    importe_inferido: number;
+    contratos_con_diferencia: number;
+    diferencia_sin_asignar: number;
+    desapariciones_sin_soporte: number;
+    saldo_sin_soporte: number;
+    cierres_refi_comprobados: number;
 };
 
 export type Incidencia = {
@@ -90,6 +109,7 @@ export type Resultado = {
     titulo: string;
     leyenda: string;
     metodologia: string;
+    engine_version?: string | null;
     generado: string;
     parametros: {
         modo: string;
@@ -112,6 +132,7 @@ export type Resultado = {
         sucursal: string;
         rutas: Array<{ ruta: string; promotores: string[] }>;
     }>;
+    auditoria?: Auditoria | null;
 };
 
 export function xsrfHeaders(): Record<string, string> {
@@ -140,6 +161,22 @@ export async function mensajeError(res: Response): Promise<string> {
     }
 }
 
+/** Mora: positiva en rojo; negativa (efectividad > 100%) en verde. */
+export function colorMora(v: number): string {
+    if (v > 0) {
+        return 'text-red-600 dark:text-red-400';
+    }
+
+    return v < 0 ? 'text-emerald-600 dark:text-emerald-400' : '';
+}
+
+/** Leyenda del resultado separada en sus frases ("A | B | C" → [A, B, C]). */
+export const partesLeyenda = (leyenda: string | null | undefined): string[] =>
+    (leyenda ?? '')
+        .split('|')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
 const money = new Intl.NumberFormat('es-MX', {
     style: 'currency',
     currency: 'MXN',
@@ -147,14 +184,22 @@ const money = new Intl.NumberFormat('es-MX', {
 });
 
 export const fmtMoney = (v: number) => money.format(v);
-export const fmtPct = (v: number) =>
-    `${(v * 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+
+/** Hay base para el porcentaje (no null, no NaN, no Infinity). */
+export const tienePct = (v: number | null | undefined): v is number =>
+    typeof v === 'number' && Number.isFinite(v);
+
+/** Porcentaje sin tope; sin base se muestra "—" (nunca 0.00%, NaN o Infinity). */
+export const fmtPct = (v: number | null | undefined) =>
+    tienePct(v)
+        ? `${(v * 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
+        : '—';
 export const fmtFecha = (ymd: string | null) =>
     ymd ? ymd.split('-').reverse().join('/') : '—';
 
-/** Semáforo de la macro: ≥95% verde, ≥90% ámbar, resto rojo (solo con Sano por cobrar > 0). */
+/** Semáforo: ≥95% verde, ≥90% ámbar, resto rojo. Sin base (Sano por cobrar = 0) → neutro. */
 export function semaforo(f: FilaEfectividad): string {
-    if (f.sano_pc <= 0) {
+    if (f.sano_pc <= 0 || !tienePct(f.pct_total)) {
         return '';
     }
 
