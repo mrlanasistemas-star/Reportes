@@ -23,6 +23,9 @@ class EfectividadCalculadoraService
 {
     public const MAX_ARCHIVOS = 45;
 
+    /** Memoria mínima para leer/calcular en la solicitud (una semana de una sucursal grande ronda 120 MB). */
+    public const MEMORIA_MINIMA = 512 * 1024 * 1024;
+
     public function __construct(
         private readonly EfectividadWorkspace $workspace,
         private readonly EfectividadExcelReader $reader,
@@ -35,6 +38,7 @@ class EfectividadCalculadoraService
      */
     public function agregarArchivos(?string $token, int $userId, array $archivos): array
     {
+        self::asegurarMemoria();
         $this->workspace->purgarVencidos();
         $token ??= $this->workspace->crear($userId);
         $meta = $this->workspace->meta($token, $userId);
@@ -205,6 +209,7 @@ class EfectividadCalculadoraService
      */
     public function calcular(string $token, int $userId, string $modo, string $valor): array
     {
+        self::asegurarMemoria();
         $meta = $this->workspace->meta($token, $userId);
         $resumen = $this->resumen($meta);
         $opciones = $resumen['cortes'][$modo] ?? null;
@@ -308,6 +313,21 @@ class EfectividadCalculadoraService
         $this->workspace->eliminar($token);
     }
 
+    /** Eleva memory_limit a MEMORIA_MINIMA solo si el actual es menor (nunca lo reduce; -1 = sin límite). */
+    public static function asegurarMemoria(): void
+    {
+        $actual = trim((string) ini_get('memory_limit'));
+        if ($actual === '-1' || $actual === '') {
+            return;
+        }
+        $bytes = (int) $actual * match (strtoupper(substr($actual, -1))) {
+            'G' => 1024 ** 3, 'M' => 1024 ** 2, 'K' => 1024, default => 1,
+        };
+        if ($bytes < self::MEMORIA_MINIMA) {
+            ini_set('memory_limit', (string) self::MEMORIA_MINIMA);
+        }
+    }
+
     // ------------------------------------------------------------------
 
     private function calcularCorte(string $token, array $meta, string $modo, string $base, string $corte, array $historial, array &$cache): array
@@ -386,6 +406,11 @@ class EfectividadCalculadoraService
             foreach ($r['incidencias'] as $i) {
                 $incidencias[$i['id']] ??= $i;
             }
+            // Memoria acotada a una semana: de las carteras ya leídas solo se reutiliza la del
+            // domingo de corte (base de la semana siguiente); el resto se libera.
+            $siguienteBase = array_column(array_filter($meta['archivos'], fn ($a) => $a['tipo'] === EfectividadExcelReader::TIPO_CARTERA && $a['fecha'] === $s['corte']), 'id');
+            $cache = array_intersect_key($cache, array_flip($siguienteBase));
+            unset($r);
         }
 
         return [
