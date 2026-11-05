@@ -2,24 +2,34 @@
 import { Head, usePage } from '@inertiajs/vue3';
 import {
     Calculator,
-    CalendarCheck,
-    CalendarDays,
-    CalendarRange,
+    CheckCircle2,
+    CircleDashed,
     Download,
     FileImage,
     FileSpreadsheet,
     FileText,
     Loader2,
     RotateCcw,
-    Sun,
 } from 'lucide-vue-next';
 import Swal from 'sweetalert2';
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+    computed,
+    nextTick,
+    onBeforeUnmount,
+    onMounted,
+    ref,
+    watch,
+} from 'vue';
 
 import ArchivosDropzone from '@/components/efectividad/calculadora/ArchivosDropzone.vue';
+import ControlTrazabilidad from '@/components/efectividad/calculadora/ControlTrazabilidad.vue';
+import FiltrosResultado from '@/components/efectividad/calculadora/FiltrosResultado.vue';
+import PasoCalculadora from '@/components/efectividad/calculadora/PasoCalculadora.vue';
 import RequisitosCorte from '@/components/efectividad/calculadora/RequisitosCorte.vue';
 import ResultadoEfectividad from '@/components/efectividad/calculadora/ResultadoEfectividad.vue';
+import ResultadoHero from '@/components/efectividad/calculadora/ResultadoHero.vue';
 import ResumenFuentes from '@/components/efectividad/calculadora/ResumenFuentes.vue';
+import SelectorModalidad from '@/components/efectividad/calculadora/SelectorModalidad.vue';
 import type {
     FilaEfectividad,
     Modo,
@@ -28,14 +38,18 @@ import type {
     ResumenFuentes as Resumen,
 } from '@/components/efectividad/calculadora/types';
 import {
+    fmtPct,
     mensajeError,
     xsrfHeaders,
 } from '@/components/efectividad/calculadora/types';
-import { toast } from '@/components/feedback/Toast';
 import SelectField from '@/components/forms/SelectField.vue';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { hideDownloadLoading, showDownloadLoading } from '@/lib/downloadOverlay';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useEfectividadFiltros } from '@/composables/useEfectividadFiltros';
+import {
+    hideDownloadLoading,
+    showDownloadLoading,
+} from '@/lib/downloadOverlay';
 import { index as efectividadIndex } from '@/routes/efectividad-cobranza';
 
 const props = defineProps<{
@@ -70,38 +84,6 @@ const canExportarExcel = computed(() => {
     return Array.isArray(perms) && perms.includes('efectividad.exportar_excel');
 });
 
-const MODOS: Array<{
-    valor: Modo;
-    titulo: string;
-    texto: string;
-    icono: typeof Sun;
-}> = [
-    {
-        valor: 'DIARIO',
-        titulo: 'Diario',
-        texto: 'Cobranza de un solo día. Usa las carteras desde el domingo anterior hasta ese día.',
-        icono: Sun,
-    },
-    {
-        valor: 'ACUMULADO',
-        titulo: 'Acumulado',
-        texto: 'Del lunes de la semana hasta el día elegido.',
-        icono: CalendarCheck,
-    },
-    {
-        valor: 'SEMANAL',
-        titulo: 'Semanal',
-        texto: 'Lunes a domingo. Requiere las 8 carteras (domingo base a domingo de corte).',
-        icono: CalendarDays,
-    },
-    {
-        valor: 'MENSUAL',
-        titulo: 'Mensual',
-        texto: 'Suma las semanas completas del mes. Los saldos de atraso/vencido son los del último corte.',
-        icono: CalendarRange,
-    },
-];
-
 const modo = ref<Modo>('SEMANAL');
 const token = ref<string | null>(null);
 const resumen = ref<Resumen | null>(null);
@@ -114,10 +96,19 @@ const corte = ref<string | null>(null);
 const calculando = ref(false);
 const resultado = ref<Resultado | null>(null);
 const filas = ref<FilaEfectividad[]>([]);
-const sucursal = ref<string>('');
-const oficina = ref<string>(''); // RUTA de Lendus
-const promotor = ref<string>('');
 const exportando = ref<'pdf' | 'png' | 'xlsx' | null>(null);
+const cargandoVista = ref(false);
+/** Identifica cada cálculo exitoso: reinicia la animación de entrada del resultado. */
+const calculoId = ref(0);
+const duracionMs = ref<number | null>(null);
+const controlAbierto = ref(false);
+/** Mensaje para lectores de pantalla al terminar el cálculo. */
+const anuncio = ref('');
+const seccionResultado = ref<HTMLElement | null>(null);
+const seccionControl = ref<HTMLElement | null>(null);
+
+const filtros = useEfectividadFiltros(resultado);
+const { sucursal, oficina, promotor } = filtros;
 
 const ocupado = computed(
     () => subiendo.value || calculando.value || exportando.value !== null,
@@ -128,38 +119,6 @@ const hayArchivos = computed(
         resumen.value.carteras.length + resumen.value.ingresos.length > 0,
 );
 const opcionesCorte = computed(() => resumen.value?.cortes[modo.value] ?? []);
-// Filtros en cascada: Sucursal → Ruta → Promotor (una ruta pertenece a una sucursal).
-const opcionesSucursal = computed(() => [
-    { value: '', label: 'Todas las sucursales' },
-    ...(resultado.value?.catalogo ?? []).map((s) => ({
-        value: s.sucursal,
-        label: s.sucursal,
-    })),
-]);
-const rutasVisibles = computed(() =>
-    (resultado.value?.catalogo ?? [])
-        .filter((s) => !sucursal.value || s.sucursal === sucursal.value)
-        .flatMap((s) => s.rutas),
-);
-const opcionesOficina = computed(() => [
-    { value: '', label: 'Todas las rutas' },
-    ...rutasVisibles.value.map((r) => ({ value: r.ruta, label: r.ruta })),
-]);
-const opcionesPromotor = computed(() => {
-    const lista = oficina.value
-        ? rutasVisibles.value.filter((r) => r.ruta === oficina.value)
-        : rutasVisibles.value;
-
-    return [
-        { value: '', label: 'Todos los promotores' },
-        ...lista.flatMap((r) =>
-            r.promotores.map((p) => ({
-                value: p,
-                label: oficina.value ? p : `${p} · ${r.ruta}`,
-            })),
-        ),
-    ];
-});
 const opcionCorte = computed(
     () => opcionesCorte.value.find((o) => o.valor === corte.value) ?? null,
 );
@@ -177,6 +136,41 @@ const faltante = computed(() => {
 
     return opcionCorte.value.listo ? null : opcionCorte.value.falta;
 });
+const puedeCalcular = computed(
+    () => !faltante.value && !!opcionCorte.value?.listo && !ocupado.value,
+);
+const etiquetaCorte = computed(
+    () =>
+        ({
+            MENSUAL: 'Mes',
+            SEMANAL: 'Semana',
+            ACUMULADO: 'Acumulado hasta',
+            DIARIO: 'Día de corte',
+        })[modo.value],
+);
+
+const ESTADO_CORTE: Record<string, string> = {
+    listo: 'listo para calcular',
+    faltan_ingresos: 'carteras completas · faltan ingresos',
+    faltan_carteras: 'faltan carteras',
+};
+const opcionesSelectCorte = computed(() =>
+    opcionesCorte.value.map((o) => ({
+        value: o.valor,
+        label: `${o.etiqueta} — ${ESTADO_CORTE[o.estado]}`,
+    })),
+);
+
+const estadoPasoArchivos = computed(() =>
+    hayArchivos.value ? 'completo' : 'activo',
+);
+const estadoPasoCalcular = computed(() => {
+    if (resultado.value) {
+        return 'completo';
+    }
+
+    return hayArchivos.value ? 'activo' : 'pendiente';
+});
 
 // Al cambiar de modalidad o de archivos se conserva lo cargado y se elige el corte
 // listo más reciente (o el más reciente si ninguno está listo).
@@ -192,18 +186,6 @@ watch(
     { immediate: true },
 );
 
-const ESTADO_CORTE: Record<string, string> = {
-    listo: 'listo para calcular',
-    faltan_ingresos: 'carteras completas · faltan ingresos',
-    faltan_carteras: 'faltan carteras',
-};
-watch(sucursal, () => {
-    oficina.value = '';
-    promotor.value = '';
-});
-watch(oficina, () => {
-    promotor.value = '';
-});
 watch([sucursal, oficina, promotor], () => void cargarVista());
 
 async function subir(archivos: File[]) {
@@ -325,12 +307,48 @@ async function limpiar(confirmar = true) {
     rechazados.value = [];
 }
 
+/** El resultado llegó completo (nunca se anuncia un éxito con una respuesta incompleta). */
+function esResultadoValido(r: unknown): r is Resultado {
+    const x = r as Partial<Resultado> | null | undefined;
+
+    return (
+        !!x &&
+        typeof x.titulo === 'string' &&
+        Array.isArray(x.filas) &&
+        !!x.parametros
+    );
+}
+
+function prefiereMenosMovimiento(): boolean {
+    return (
+        typeof window !== 'undefined' &&
+        !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    );
+}
+
+/** Lleva la vista al resultado recién generado y le da el foco (accesible). */
+async function mostrarResultado() {
+    await nextTick();
+    const el = seccionResultado.value;
+
+    if (!el) {
+        return;
+    }
+
+    el.scrollIntoView({
+        behavior: prefiereMenosMovimiento() ? 'auto' : 'smooth',
+        block: 'start',
+    });
+    el.focus({ preventScroll: true });
+}
+
 async function calcular() {
     if (!token.value || !corte.value) {
         return;
     }
 
     calculando.value = true;
+    const inicio = performance.now();
 
     try {
         const res = await fetch(`${BASE}/${token.value}/calcular`, {
@@ -349,63 +367,112 @@ async function calcular() {
             return;
         }
 
-        resultado.value = (
-            (await res.json()) as { resultado: Resultado }
-        ).resultado;
-        filas.value = resultado.value.filas;
-        sucursal.value = '';
-        oficina.value = '';
-        promotor.value = '';
-        toast.fire({ icon: 'success', title: 'Efectividad calculada' });
+        const body = (await res.json().catch(() => null)) as {
+            resultado?: unknown;
+        } | null;
+
+        const nuevo = body?.resultado;
+
+        if (!esResultadoValido(nuevo)) {
+            void Swal.fire({
+                icon: 'error',
+                title: 'Respuesta incompleta',
+                text: 'El servidor terminó, pero el resultado llegó incompleto. Vuelve a calcular; si se repite, informa a Sistemas.',
+            });
+
+            return;
+        }
+
+        resultado.value = nuevo;
+        filas.value = nuevo.filas;
+        filtros.limpiar();
+        duracionMs.value = performance.now() - inicio;
+        controlAbierto.value = false;
+        calculoId.value++;
+
+        const total = nuevo.filas.find((f) => f.tipo === 'gran_total');
+        anuncio.value = total
+            ? `Reporte generado: ${nuevo.titulo}. Efectividad total ${fmtPct(total.pct_total)}.`
+            : `Cálculo terminado: ${nuevo.titulo}, sin movimientos.`;
+
+        void mostrarResultado();
     } catch {
         void Swal.fire({
             icon: 'error',
             title: 'Sin conexión',
-            text: 'No se pudo contactar al servidor.',
+            text: 'No se pudo contactar al servidor. Revisa tu conexión e intenta de nuevo.',
         });
     } finally {
         calculando.value = false;
     }
 }
 
-function filtrosQuery(): string {
-    const q = new URLSearchParams();
-
-    if (sucursal.value) {
-        q.set('sucursal', sucursal.value);
-    }
-
-    if (oficina.value) {
-        q.set('oficina', oficina.value);
-    }
-
-    if (promotor.value) {
-        q.set('promotor', promotor.value);
-    }
-
-    return q.toString();
-}
+// Cada cambio de filtro pide su vista; solo se aplica la respuesta más reciente.
+let vistaSeq = 0;
 
 async function cargarVista() {
     if (!token.value || !resultado.value) {
         return;
     }
 
-    if (!sucursal.value && !oficina.value && !promotor.value) {
+    const seq = ++vistaSeq;
+
+    if (!filtros.hayFiltros.value) {
         filas.value = resultado.value.filas;
+        cargandoVista.value = false;
 
         return;
     }
 
-    const res = await fetch(`${BASE}/${token.value}/vista?${filtrosQuery()}`, {
-        headers: xsrfHeaders(),
-    });
+    cargandoVista.value = true;
 
-    if (res.ok) {
-        filas.value = (
-            (await res.json()) as { filas: FilaEfectividad[] }
-        ).filas;
+    try {
+        const res = await fetch(
+            `${BASE}/${token.value}/vista?${filtros.query()}`,
+            { headers: xsrfHeaders() },
+        );
+
+        if (seq !== vistaSeq) {
+            return;
+        }
+
+        if (!res.ok) {
+            void Swal.fire({
+                icon: 'warning',
+                title: 'No se pudo aplicar el filtro',
+                text: await mensajeError(res),
+            });
+
+            return;
+        }
+
+        const body = (await res.json()) as { filas: FilaEfectividad[] };
+
+        if (seq === vistaSeq) {
+            filas.value = body.filas;
+        }
+    } catch {
+        if (seq === vistaSeq) {
+            void Swal.fire({
+                icon: 'error',
+                title: 'Sin conexión',
+                text: 'No se pudo actualizar la vista filtrada. Intenta de nuevo.',
+            });
+        }
+    } finally {
+        if (seq === vistaSeq) {
+            cargandoVista.value = false;
+        }
     }
+}
+
+async function verControl() {
+    controlAbierto.value = true;
+    await nextTick();
+    seccionControl.value?.scrollIntoView({
+        behavior: prefiereMenosMovimiento() ? 'auto' : 'smooth',
+        block: 'start',
+    });
 }
 
 async function exportar(formato: 'pdf' | 'png' | 'xlsx') {
@@ -420,8 +487,8 @@ async function exportar(formato: 'pdf' | 'png' | 'xlsx') {
         // El Excel tiene ruta/permiso propios; PDF e imagen comparten la ruta `exportar/{formato}`.
         const ruta =
             formato === 'xlsx'
-                ? `${BASE}/${token.value}/exportar-excel?${filtrosQuery()}`
-                : `${BASE}/${token.value}/exportar/${formato}?${filtrosQuery()}`;
+                ? `${BASE}/${token.value}/exportar-excel?${filtros.query()}`
+                : `${BASE}/${token.value}/exportar/${formato}?${filtros.query()}`;
         const res = await fetch(ruta, { headers: xsrfHeaders() });
 
         if (!res.ok) {
@@ -472,244 +539,274 @@ onBeforeUnmount(() => {
     <Head title="Efectividad de Cobranza" />
 
     <div class="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6">
-        <header>
-            <h1 class="text-2xl font-semibold tracking-tight">
+        <header class="space-y-1">
+            <p
+                class="text-xs font-semibold tracking-widest text-primary uppercase"
+            >
+                Calculadora
+            </p>
+            <h1 class="text-2xl font-semibold tracking-tight md:text-3xl">
                 Efectividad de Cobranza
             </h1>
-            <p class="mt-1 text-sm text-muted-foreground">
-                Calcula la efectividad diaria, semanal o mensual utilizando tus
+            <p class="max-w-3xl text-sm text-muted-foreground">
+                Calcula la efectividad diaria, semanal o mensual con tus
                 archivos de cartera e ingresos de Lendus. Los archivos no se
                 guardan: se usan para este cálculo y se eliminan.
             </p>
         </header>
 
-        <!-- 1. Modalidad -->
-        <Card>
-            <CardContent class="space-y-3 p-5">
-                <h2 class="font-semibold">
-                    <span class="text-primary">1.</span> Modalidad
-                </h2>
-                <div
-                    class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-                    role="radiogroup"
-                    aria-label="Modalidad"
+        <!-- Paso 1. Modalidad -->
+        <PasoCalculadora
+            :numero="1"
+            titulo="Modalidad"
+            descripcion="Elige el tipo de periodo que quieres medir."
+            estado="completo"
+        >
+            <SelectorModalidad v-model="modo" :disabled="calculando" />
+        </PasoCalculadora>
+
+        <!-- Paso 2. Archivos -->
+        <PasoCalculadora
+            :numero="2"
+            titulo="Cargar archivos"
+            descripcion="Carteras diarias e Ingresos Cobranza en Excel. Puedes agregar más archivos en cualquier momento."
+            :estado="estadoPasoArchivos"
+        >
+            <template v-if="hayArchivos" #acciones>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="ocupado"
+                    @click="limpiar()"
                 >
-                    <button
-                        v-for="m in MODOS"
-                        :key="m.valor"
-                        type="button"
-                        role="radio"
-                        :aria-checked="modo === m.valor"
-                        class="flex gap-3 rounded-xl border p-4 text-left transition-colors focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
-                        :class="
-                            modo === m.valor
-                                ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                                : 'hover:bg-muted/40'
-                        "
-                        @click="modo = m.valor"
-                    >
-                        <component
-                            :is="m.icono"
-                            class="mt-0.5 size-5 shrink-0"
-                            :class="
-                                modo === m.valor
-                                    ? 'text-primary'
-                                    : 'text-muted-foreground'
-                            "
-                        />
-                        <span>
-                            <span class="block font-medium">{{
-                                m.titulo
-                            }}</span>
-                            <span
-                                class="mt-0.5 block text-xs text-muted-foreground"
-                                >{{ m.texto }}</span
-                            >
-                        </span>
-                    </button>
-                </div>
-            </CardContent>
-        </Card>
+                    <RotateCcw class="size-4" /> Limpiar archivos
+                </Button>
+            </template>
+            <ArchivosDropzone
+                :subiendo="subiendo"
+                :progreso="progreso"
+                :max-mb="props.limites.max_mb"
+                @archivos="subir"
+            />
+            <ResumenFuentes
+                v-if="resumen && hayArchivos"
+                :resumen="resumen"
+                :rechazados="rechazados"
+                :ocupado="ocupado"
+                :inicio-periodo="opcionCorte?.desde ?? null"
+                @quitar="quitar"
+            />
+            <ResumenFuentes
+                v-else-if="rechazados.length"
+                :resumen="{
+                    carteras: [],
+                    ingresos: [],
+                    cortes: {
+                        DIARIO: [],
+                        ACUMULADO: [],
+                        SEMANAL: [],
+                        MENSUAL: [],
+                    },
+                    expira_minutos: 0,
+                }"
+                :rechazados="rechazados"
+                :ocupado="ocupado"
+            />
+        </PasoCalculadora>
 
-        <!-- 2-3. Archivos y resumen -->
-        <Card>
-            <CardContent class="space-y-4 p-5">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                    <h2 class="font-semibold">
-                        <span class="text-primary">2.</span> Cargar archivos
-                    </h2>
+        <!-- Paso 3. Corte y cálculo -->
+        <PasoCalculadora
+            :numero="3"
+            titulo="Elegir corte y calcular"
+            descripcion="Revisa que el corte tenga todas sus carteras e ingresos antes de calcular."
+            :estado="estadoPasoCalcular"
+        >
+            <div v-if="opcionesCorte.length" class="md:w-[28rem]">
+                <SelectField
+                    v-model="corte"
+                    :label="etiquetaCorte"
+                    :options="opcionesSelectCorte"
+                    :disabled="ocupado"
+                />
+            </div>
+            <RequisitosCorte :modo="modo" :opcion="opcionCorte" />
+            <div
+                class="flex flex-col gap-3 rounded-2xl border bg-muted/30 p-4 md:flex-row md:items-center md:justify-between"
+            >
+                <p
+                    class="flex items-start gap-2 text-sm"
+                    :class="
+                        calculando
+                            ? 'text-foreground'
+                            : faltante
+                              ? 'text-muted-foreground'
+                              : 'text-emerald-700 dark:text-emerald-400'
+                    "
+                    aria-live="polite"
+                >
+                    <Loader2
+                        v-if="calculando"
+                        class="mt-0.5 size-4 shrink-0 animate-spin"
+                        aria-hidden="true"
+                    />
+                    <CircleDashed
+                        v-else-if="faltante"
+                        class="mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                    />
+                    <CheckCircle2
+                        v-else
+                        class="mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                    />
+                    <span>{{
+                        calculando
+                            ? 'Procesando carteras e ingresos. Esto puede tardar unos segundos…'
+                            : (faltante ?? `Listo: ${opcionCorte?.titulo}`)
+                    }}</span>
+                </p>
+                <Button
+                    size="lg"
+                    class="shrink-0 rounded-xl"
+                    :disabled="!puedeCalcular"
+                    @click="calcular"
+                >
+                    <Loader2 v-if="calculando" class="size-4 animate-spin" />
+                    <Calculator v-else class="size-4" />
+                    {{
+                        calculando
+                            ? 'Calculando…'
+                            : resultado
+                              ? 'Volver a calcular'
+                              : 'Calcular efectividad'
+                    }}
+                </Button>
+            </div>
+        </PasoCalculadora>
+
+        <p class="sr-only" role="status" aria-live="polite">{{ anuncio }}</p>
+
+        <!-- Espera del primer cálculo -->
+        <div
+            v-if="calculando && !resultado"
+            class="space-y-4 rounded-2xl border bg-card p-5 shadow-sm md:p-6"
+            aria-hidden="true"
+        >
+            <div class="flex items-center gap-3">
+                <Skeleton class="size-10 rounded-full" />
+                <div class="flex-1 space-y-2">
+                    <Skeleton class="h-3 w-40" />
+                    <Skeleton class="h-5 w-72 max-w-full" />
+                </div>
+            </div>
+            <div class="grid gap-3 lg:grid-cols-4">
+                <Skeleton v-for="i in 4" :key="i" class="h-24 rounded-2xl" />
+            </div>
+        </div>
+
+        <!-- Paso 4. Resultado -->
+        <section
+            v-if="resultado"
+            ref="seccionResultado"
+            tabindex="-1"
+            class="scroll-mt-4 space-y-5 outline-none"
+            aria-label="Resultado de efectividad"
+        >
+            <Transition
+                appear
+                mode="out-in"
+                enter-active-class="transition duration-500 ease-out motion-reduce:transition-none"
+                enter-from-class="translate-y-3 scale-[0.99] opacity-0"
+                enter-to-class="translate-y-0 scale-100 opacity-100"
+            >
+                <ResultadoHero
+                    :key="calculoId"
+                    :resultado="resultado"
+                    :duracion-ms="duracionMs"
+                    :class="calculando ? 'opacity-60 transition-opacity' : ''"
+                    @ver-control="verControl"
+                />
+            </Transition>
+
+            <div
+                v-if="resultado.auditoria"
+                ref="seccionControl"
+                class="scroll-mt-4"
+            >
+                <ControlTrazabilidad
+                    v-model:abierto="controlAbierto"
+                    :auditoria="resultado.auditoria"
+                    :metodologia="resultado.metodologia"
+                    :engine-version="resultado.engine_version"
+                />
+            </div>
+
+            <FiltrosResultado
+                v-model:sucursal="sucursal"
+                v-model:oficina="oficina"
+                v-model:promotor="promotor"
+                :opciones-sucursal="filtros.opcionesSucursal.value"
+                :opciones-oficina="filtros.opcionesOficina.value"
+                :opciones-promotor="filtros.opcionesPromotor.value"
+                :activos="filtros.activos.value"
+                :disabled="ocupado"
+                @quitar="filtros.quitar"
+                @limpiar="filtros.limpiar"
+            >
+                <template #acciones>
                     <Button
-                        v-if="hayArchivos"
                         variant="outline"
-                        size="sm"
                         :disabled="ocupado"
-                        @click="limpiar()"
-                    >
-                        <RotateCcw class="size-4" /> Limpiar archivos
-                    </Button>
-                </div>
-                <ArchivosDropzone
-                    :subiendo="subiendo"
-                    :progreso="progreso"
-                    :max-mb="props.limites.max_mb"
-                    @archivos="subir"
-                />
-                <div class="space-y-3">
-                    <div v-if="opcionesCorte.length" class="md:w-[28rem]">
-                        <SelectField
-                            v-model="corte"
-                            :label="
-                                modo === 'MENSUAL'
-                                    ? 'Mes'
-                                    : modo === 'SEMANAL'
-                                      ? 'Semana'
-                                      : modo === 'ACUMULADO'
-                                        ? 'Acumulado hasta'
-                                        : 'Día de corte'
-                            "
-                            :options="
-                                opcionesCorte.map((o) => ({
-                                    value: o.valor,
-                                    label: `${o.etiqueta} — ${ESTADO_CORTE[o.estado]}`,
-                                }))
-                            "
-                            :disabled="ocupado"
-                        />
-                    </div>
-                    <RequisitosCorte :modo="modo" :opcion="opcionCorte" />
-                </div>
-                <ResumenFuentes
-                    v-if="resumen && hayArchivos"
-                    :resumen="resumen"
-                    :rechazados="rechazados"
-                    :ocupado="ocupado"
-                    :inicio-periodo="opcionCorte?.desde ?? null"
-                    @quitar="quitar"
-                />
-                <ResumenFuentes
-                    v-else-if="rechazados.length"
-                    :resumen="{
-                        carteras: [],
-                        ingresos: [],
-                        cortes: {
-                            DIARIO: [],
-                            ACUMULADO: [],
-                            SEMANAL: [],
-                            MENSUAL: [],
-                        },
-                        expira_minutos: 0,
-                    }"
-                    :rechazados="rechazados"
-                    :ocupado="ocupado"
-                />
-            </CardContent>
-        </Card>
-
-        <!-- 4-5. Corte y cálculo -->
-        <Card>
-            <CardContent class="space-y-4 p-5">
-                <h2 class="font-semibold">
-                    <span class="text-primary">3.</span> Calcular
-                </h2>
-                <div class="flex flex-col gap-3 md:flex-row md:items-center">
-                    <Button
-                        size="lg"
-                        :disabled="!!faltante || !opcionCorte?.listo || ocupado"
-                        @click="calcular"
+                        @click="exportar('png')"
                     >
                         <Loader2
-                            v-if="calculando"
+                            v-if="exportando === 'png'"
                             class="size-4 animate-spin"
                         />
-                        <Calculator v-else class="size-4" />
-                        {{
-                            calculando ? 'Calculando…' : 'Calcular efectividad'
-                        }}
+                        <FileImage v-else class="size-4" />
+                        Descargar imagen PNG
                     </Button>
-                    <p
-                        class="text-sm"
-                        :class="
-                            faltante
-                                ? 'text-muted-foreground'
-                                : 'text-emerald-700 dark:text-emerald-400'
-                        "
+                    <Button :disabled="ocupado" @click="exportar('pdf')">
+                        <Loader2
+                            v-if="exportando === 'pdf'"
+                            class="size-4 animate-spin"
+                        />
+                        <FileText v-else class="size-4" />
+                        Descargar PDF
+                    </Button>
+                    <Button
+                        v-if="canExportarExcel"
+                        variant="outline"
+                        :disabled="ocupado"
+                        @click="exportar('xlsx')"
                     >
-                        {{ faltante ?? opcionCorte?.titulo }}
-                    </p>
-                </div>
-            </CardContent>
-        </Card>
+                        <Loader2
+                            v-if="exportando === 'xlsx'"
+                            class="size-4 animate-spin"
+                        />
+                        <FileSpreadsheet v-else class="size-4" />
+                        Descargar Excel
+                    </Button>
+                </template>
+            </FiltrosResultado>
 
-        <!-- 6-7. Resultados y exportación -->
-        <Card v-if="resultado">
-            <CardContent class="space-y-5 p-5">
-                <div
-                    class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between"
-                >
-                    <div class="grid gap-3 sm:grid-cols-3 lg:w-full lg:max-w-3xl">
-                        <SelectField
-                            v-model="sucursal"
-                            label="Sucursal"
-                            :options="opcionesSucursal"
-                            :disabled="ocupado"
-                        />
-                        <SelectField
-                            v-model="oficina"
-                            label="Ruta"
-                            :options="opcionesOficina"
-                            :disabled="ocupado"
-                        />
-                        <SelectField
-                            v-model="promotor"
-                            label="Promotor"
-                            :options="opcionesPromotor"
-                            :disabled="ocupado"
-                        />
-                    </div>
-                    <div class="flex flex-wrap gap-2">
-                        <Button
-                            variant="outline"
-                            :disabled="ocupado"
-                            @click="exportar('png')"
-                        >
-                            <Loader2
-                                v-if="exportando === 'png'"
-                                class="size-4 animate-spin"
-                            />
-                            <FileImage v-else class="size-4" />
-                            Descargar imagen PNG
-                        </Button>
-                        <Button :disabled="ocupado" @click="exportar('pdf')">
-                            <Loader2
-                                v-if="exportando === 'pdf'"
-                                class="size-4 animate-spin"
-                            />
-                            <FileText v-else class="size-4" />
-                            Descargar PDF
-                        </Button>
-                        <Button
-                            v-if="canExportarExcel"
-                            variant="outline"
-                            :disabled="ocupado"
-                            @click="exportar('xlsx')"
-                        >
-                            <Loader2
-                                v-if="exportando === 'xlsx'"
-                                class="size-4 animate-spin"
-                            />
-                            <FileSpreadsheet v-else class="size-4" />
-                            Descargar Excel
-                        </Button>
-                    </div>
-                </div>
-                <ResultadoEfectividad :resultado="resultado" :filas="filas" />
-                <p
-                    class="flex items-center gap-1.5 text-xs text-muted-foreground"
-                >
-                    <Download class="size-3.5" /> PNG y PDF usan exactamente
-                    este mismo resultado. Generado {{ resultado.generado }}.
-                </p>
-            </CardContent>
-        </Card>
+            <ResultadoEfectividad
+                :resultado="resultado"
+                :filas="filas"
+                :filtrado="filtros.hayFiltros.value"
+                :cargando="cargandoVista"
+            />
+
+            <p
+                class="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
+            >
+                <Download class="size-3.5" aria-hidden="true" /> PNG y PDF usan
+                exactamente este mismo resultado. Generado
+                {{ resultado.generado
+                }}<template v-if="resultado.metodologia">
+                    · Metodología {{ resultado.metodologia }}</template
+                >.
+            </p>
+        </section>
     </div>
 </template>

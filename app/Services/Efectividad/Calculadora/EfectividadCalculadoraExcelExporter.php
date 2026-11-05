@@ -162,7 +162,7 @@ class EfectividadCalculadoraExcelExporter
             ['B', 'D', 'SANO COBRADO', (float) ($gt['sano_cob'] ?? 0), self::MONEDA, self::TINTA],
             ['E', 'G', 'ATRASO + VENCIDO COBRADO', (float) ($gt['atraso_cob'] ?? 0) + (float) ($gt['vencido_cob'] ?? 0), self::MONEDA, self::TINTA],
             ['H', 'J', 'COBRANZA TOTAL', (float) ($gt['cobranza_total'] ?? 0), self::MONEDA, self::TINTA],
-            ['K', 'L', '% COBRANZA TOTAL', (float) ($gt['pct_total'] ?? 0), self::PCT, $this->semaforo($gt) ?? self::TINTA],
+            ['K', 'L', '% COBRANZA TOTAL', $gt['pct_total'] ?? null, self::PCT, $this->semaforo($gt) ?? self::TINTA],
             ['M', 'M', 'MORA', $mora, self::MONEDA, $mora > 0 ? self::BAD : self::OK],
         ];
         foreach ($kpis as [$desde, $hasta, $etiqueta, $valor, $formato, $color]) {
@@ -190,13 +190,13 @@ class EfectividadCalculadoraExcelExporter
         $ws->setCellValue('A8', 'Ruta / Promotor');
         $this->estiloEncabezado($ws, 'A8:A9', self::TINTA, self::BLANCO, Alignment::HORIZONTAL_LEFT);
 
-        foreach ([['B8:D8', 'Sano', '059669', self::BLANCO], ['E8:G8', 'Vigente con atraso', 'FBBF24', self::TINTA], ['H8:J8', 'Vencido con atraso', 'DC2626', self::BLANCO], ['K8:M8', 'Total', self::PIZARRA, self::BLANCO]] as [$rango, $texto, $bg, $fg]) {
+        foreach ([['B8:D8', 'Sano', '059669', self::BLANCO], ['E8:G8', 'Vigente con atraso', 'FBBF24', self::TINTA], ['H8:J8', 'Vencida', 'DC2626', self::BLANCO], ['K8:M8', 'Cobranza total', self::PIZARRA, self::BLANCO]] as [$rango, $texto, $bg, $fg]) {
             $ws->mergeCells($rango);
             $ws->setCellValue(explode(':', $rango)[0], $texto);
             $this->estiloEncabezado($ws, $rango, $bg, $fg, Alignment::HORIZONTAL_CENTER);
         }
 
-        foreach (['Por cobrar', 'Cobrado', '%', 'Por cobrar', 'Cobrado', '%', 'Por cobrar', 'Cobrado', '%', 'Cobranza', '%', 'Mora'] as $i => $texto) {
+        foreach (['Por cobrar', 'Cobrado', '% Aporte', 'Por cobrar', 'Cobrado', '% Aporte', 'Por cobrar', 'Cobrado', '% Aporte', 'Cobrado', '% Efectividad', 'Mora'] as $i => $texto) {
             $ws->setCellValue(chr(ord('B') + $i).'9', $texto);
         }
         $this->estiloEncabezado($ws, 'B9:M9', self::TINTA, self::BLANCO, Alignment::HORIZONTAL_RIGHT);
@@ -250,7 +250,10 @@ class EfectividadCalculadoraExcelExporter
         $ws->setCellValueExplicit("A{$fila}", (string) $f['promotor'], DataType::TYPE_STRING);
         foreach (self::CAMPOS as $i => $campo) {
             $col = chr(ord('B') + $i);
-            $ws->setCellValue("{$col}{$fila}", (float) $f[$campo]);
+            // Porcentaje sin base (Sano por cobrar = 0): celda vacía, nunca 0.00 %.
+            if ($f[$campo] !== null) {
+                $ws->setCellValue("{$col}{$fila}", (float) $f[$campo]);
+            }
             $ws->getStyle("{$col}{$fila}")->getNumberFormat()->setFormatCode(str_ends_with($campo, 'pct') || $campo === 'pct_total' ? self::PCT : self::MONEDA);
         }
 
@@ -384,7 +387,7 @@ class EfectividadCalculadoraExcelExporter
 
     private function semaforo(array $f): ?string
     {
-        if ((float) ($f['sano_pc'] ?? 0) <= 0) {
+        if ((float) ($f['sano_pc'] ?? 0) <= 0 || ($f['pct_total'] ?? null) === null) {
             return null;
         }
         $p = (float) $f['pct_total'];

@@ -2,8 +2,8 @@
 
 namespace App\Services\Efectividad\Calculadora;
 
-use App\Services\Efectividad\V4\EfectividadV4Calculator;
-use App\Services\Efectividad\V4\EfectividadV4Exception;
+use App\Services\Efectividad\V12\EfectividadV12Calculator;
+use App\Services\Efectividad\V12\V12Exception;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\UploadedFile;
 use Throwable;
@@ -11,12 +11,13 @@ use Throwable;
 /**
  * Calculadora de Efectividad de Cobranza — ÚNICO flujo activo.
  *
- * SUBIR → VALIDAR → CALCULAR → MOSTRAR → EXPORTAR → ELIMINAR. Trabaja solo con
- * los Excel de la solicitud (espacio efímero `EfectividadWorkspace`); jamás lee
- * ni escribe tablas financieras (fact_recoveries, portfolio_snapshots,
- * efectividad_cobranza_runs…). El cálculo diario/semanal es el motor V4
- * (`EfectividadV4Calculator`, puerto de la macro) sin modificaciones; el mensual
- * es una agregación documentada de semanas completas (ver `calcularMensual`).
+ * SUBIR → VALIDAR → CALCULAR → MOSTRAR → FILTRAR → EXPORTAR → ELIMINAR. Trabaja
+ * solo con los Excel de la solicitud (espacio efímero `EfectividadWorkspace`);
+ * jamás lee ni escribe tablas financieras (fact_recoveries, portfolio_snapshots,
+ * efectividad_cobranza_runs…). El cálculo diario/acumulado/semanal es el motor
+ * V12.9.4 (`EfectividadV12Calculator`); el mensual es una agregación documentada
+ * de semanas completas (ver `calcularMensual`). Web, PDF, PNG y Excel usan el
+ * MISMO resultado guardado por `calcular()`.
  */
 class EfectividadCalculadoraService
 {
@@ -25,7 +26,7 @@ class EfectividadCalculadoraService
     public function __construct(
         private readonly EfectividadWorkspace $workspace,
         private readonly EfectividadExcelReader $reader,
-        private readonly EfectividadV4Calculator $calc,
+        private readonly EfectividadV12Calculator $calc,
     ) {}
 
     /**
@@ -226,19 +227,20 @@ class EfectividadCalculadoraService
             $resultado = $modo === 'MENSUAL'
                 ? $this->calcularMensual($token, $meta, $valor, $historial, $cache)
                 : $this->calcularCorte($token, $meta, $modo, $opcion['base'], $opcion['corte'], $historial, $cache);
-        } catch (EfectividadV4Exception $e) {
+        } catch (V12Exception $e) {
             throw new EfectividadArchivoException($e->getMessage());
         }
 
         $avisos = [];
         if (! $opcion['historial_previo']) {
-            $avisos[] = 'No se cargaron ingresos anteriores al periodo. Los anticipos (pagos hechos antes con fecha de cuota dentro del periodo) y los pagos de contratos sin cartera de semanas previas solo se reflejan si agregas también el Excel de Ingresos Cobranza de esas semanas.';
+            $avisos[] = 'No se cargaron ingresos anteriores al periodo. Los anticipos se reconstruyen con las fotografías de cartera (número de siguiente pago y saldo pendiente); los pagos hechos en semanas previas a una cuota del periodo solo se descuentan de la meta si agregas también el Excel de Ingresos Cobranza de esas semanas.';
         }
 
         $resultado += [
             'modo' => $modo,
-            'leyenda' => EfectividadV4Calculator::LEYENDA,
-            'metodologia' => EfectividadV4Calculator::METODOLOGIA,
+            'leyenda' => EfectividadV12Calculator::LEYENDA,
+            'metodologia' => EfectividadV12Calculator::METODOLOGIA,
+            'engine_version' => EfectividadV12Calculator::ENGINE_VERSION,
             'avisos' => $avisos,
             'generado' => now('America/Mexico_City')->format('d/m/Y H:i'),
             'fuentes' => [
@@ -313,8 +315,10 @@ class EfectividadCalculadoraService
         $fBase = CarbonImmutable::parse($base);
         $fCorte = CarbonImmutable::parse($corte);
         $fotos = [];
-        for ($i = 0, $pasos = (int) $fBase->diffInDays($fCorte); $i <= $pasos; $i++) {
-            $fotos[$i] = $this->foto($token, $meta, $fBase->addDays($i)->toDateString(), $cache) + ['nombre' => EfectividadV4Calculator::NOMBRES_FOTO[$i]];
+        $pasos = (int) $fBase->diffInDays($fCorte);
+        // DIARIO V12.9.4: la foto base es el cierre del día anterior al corte.
+        for ($i = $modo === 'DIARIO' ? $pasos - 1 : 0; $i <= $pasos; $i++) {
+            $fotos[$i] = $this->foto($token, $meta, $fBase->addDays($i)->toDateString(), $cache);
         }
         $r = $this->calc->calculate(['modo' => $modo, 'domingo_base' => $base, 'fecha_corte' => $corte], $fotos, $historial, $historial);
 
@@ -329,6 +333,7 @@ class EfectividadCalculadoraService
             'parametros' => $p,
             'filas' => $this->conSucursal($r['filas']),
             'incidencias' => $r['incidencias'],
+            'auditoria' => $r['auditoria'],
             'estadisticas' => $r['estadisticas'],
             'sin_movimientos' => $r['sin_movimientos'],
             'semanas' => [],
@@ -339,12 +344,16 @@ class EfectividadCalculadoraService
     /**
      * MENSUAL — agregación documentada (la macro no define un corte mensual; no hay
      * referencia de paridad). Se calculan todas las semanas COMPLETAS cuyo domingo de
-     * corte cae en el mes, cada una exactamente como la macro (SEMANAL), y por promotor:
-     *  - flujos (Sano por cobrar y los tres cobrados) se SUMAN entre semanas: son
-     *    cuotas/pagos de semanas distintas, sin duplicarse;
-     *  - stocks (Vigente con atraso y Vencido por cobrar) se toman SOLO del último
-     *    corte del mes: son saldos a una fecha y no se suman;
-     *  - porcentajes y mora se recalculan desde esos importes.
+     * corte cae en el mes, cada una con la regla SEMANAL V12.9.4, y por promotor se
+     * suman IMPORTES BASE (nunca porcentajes):
+     *  - Sano por cobrar y los tres cobrados se SUMAN: son metas/pagos de semanas
+     *    distintas, sin duplicarse;
+     *  - Atraso / Vencido por cobrar (vista de control): en cada semana equivalen a
+     *    lo cobrado del bucket + el saldo que sigue pendiente al corte. En el mes =
+     *    cobrado del bucket en TODAS las semanas + pendiente al corte de la ÚLTIMA.
+     *    Así la misma deuda no se cuenta una vez por semana;
+     *  - porcentajes y mora se recalculan desde esos importes (sin base → vacío).
+     * Un promotor con recuperación y meta cero se conserva.
      */
     private function calcularMensual(string $token, array $meta, string $mes, array $historial, array &$cache): array
     {
@@ -355,23 +364,24 @@ class EfectividadCalculadoraService
         $acum = [];
         $incidencias = [];
         $detalle = [];
+        $auditorias = [];
         $ultima = count($semanas) - 1;
         foreach ($semanas as $k => $s) {
             $r = $this->calcularCorte($token, $meta, 'SEMANAL', $s['base'], $s['corte'], $historial, $cache);
-            $detalle[] = ['titulo' => $r['titulo'], 'corte' => $s['corte'], 'gran_total' => collect($r['filas'])->firstWhere('tipo', 'gran_total')];
+            $detalle[] = ['titulo' => $r['titulo'], 'corte' => $s['corte'], 'gran_total' => collect($r['filas'])->firstWhere('tipo', 'gran_total'), 'estado' => $r['auditoria']['estado'] ?? null];
+            $auditorias[] = $r['auditoria'];
             foreach ($r['filas'] as $f) {
                 if ($f['tipo'] !== 'promotor') {
                     continue;
                 }
-                $clave = $this->calc->normalizar($f['oficina']).'|'.$this->calc->normalizar($f['promotor']);
+                $clave = $this->calc->normalizar($f['oficina']).'~'.$this->calc->normalizar($f['promotor']);
                 $acum[$clave] ??= ['oficina' => $f['oficina'], 'promotor' => $f['promotor'], 'sucursal' => $f['sucursal'] ?? $this->sucursalDe($f['oficina']), 'sano_pc' => 0.0, 'sano_cob' => 0.0, 'atraso_pc' => 0.0, 'atraso_cob' => 0.0, 'vencido_pc' => 0.0, 'vencido_cob' => 0.0];
                 foreach (['sano_pc', 'sano_cob', 'atraso_cob', 'vencido_cob'] as $c) {
                     $acum[$clave][$c] += $f[$c];
                 }
-                if ($k === $ultima) {
-                    $acum[$clave]['atraso_pc'] = $f['atraso_pc'];
-                    $acum[$clave]['vencido_pc'] = $f['vencido_pc'];
-                }
+                // Por cobrar de control: lo cobrado en el bucket (cada semana) + pendiente al último corte.
+                $acum[$clave]['atraso_pc'] += $k === $ultima ? $f['atraso_pc'] : $f['atraso_cob'];
+                $acum[$clave]['vencido_pc'] += $k === $ultima ? $f['vencido_pc'] : $f['vencido_cob'];
             }
             foreach ($r['incidencias'] as $i) {
                 $incidencias[$i['id']] ??= $i;
@@ -387,8 +397,9 @@ class EfectividadCalculadoraService
                 'inicio_ingresos' => $semanas[0]['desde'],
                 'fin_ingresos' => $semanas[$ultima]['corte'],
             ],
-            'filas' => $this->calc->construirFilas(array_values($acum), $this->sinSucursal()),
+            'filas' => $filas = $this->calc->construirFilas(array_values($acum), $this->sinSucursal()),
             'incidencias' => array_values($incidencias),
+            'auditoria' => $this->auditoriaMensual($auditorias, collect($filas)->firstWhere('tipo', 'gran_total') ?? []),
             'estadisticas' => [],
             'sin_movimientos' => ! $acum,
             'semanas' => $detalle,
@@ -396,31 +407,55 @@ class EfectividadCalculadoraService
         ];
     }
 
+    /** Estado mensual: PRELIMINAR si alguna semana lo es; contadores sumados. */
+    private function auditoriaMensual(array $auditorias, array $gt): array
+    {
+        $a = ['estado' => 'CONCILIADO'];
+        foreach ($auditorias as $s) {
+            if (($s['estado'] ?? null) === 'PRELIMINAR') {
+                $a['estado'] = 'PRELIMINAR';
+            }
+            foreach (['contratos_ajustados', 'cuotas_inferidas', 'importe_inferido', 'contratos_con_diferencia', 'diferencia_sin_asignar', 'desapariciones_sin_soporte', 'saldo_sin_soporte', 'cierres_refi_comprobados', 'transferencias_gestor'] as $c) {
+                $a[$c] = ($a[$c] ?? 0) + ($s[$c] ?? 0);
+            }
+        }
+        $a['estado_texto'] = $a['estado'] === 'PRELIMINAR' ? 'Preliminar: alguna semana requiere revisar evidencias antes de comisionar.' : 'Conciliado en todas las semanas del mes.';
+        $a['sano_pc'] = (float) ($gt['sano_pc'] ?? 0);
+        $a['cobranza_total'] = (float) ($gt['cobranza_total'] ?? 0);
+        $a['efectividad'] = $gt['pct_total'] ?? null;
+        $a['mora'] = (float) ($gt['mora'] ?? 0);
+
+        return $a;
+    }
+
     private function notas(string $modo): array
     {
         $notas = [
-            'Anticipos a fecha de cuota: el pago se reconoce el día mayor entre la fecha de transacción y la fecha de cuota.',
-            'Refinanciamientos (REFINANCIAMIENTO/DESCUENTO) solo cuentan si la transacción y la cuota caen en la semana evaluada.',
-            'Vencido/atraso según la fotografía diaria de cartera del día en que se reconoce el pago.',
-            'Sin moratorios: importe = capital + interés + impuesto + cargos calendario.',
-            'Porcentajes calculados sobre el Sano por cobrar; Mora = Sano por cobrar − Cobranza total.',
-            'Rutas sin Sano por cobrar en el periodo no se muestran ni suman al gran total (tampoco sus saldos de atraso o vencido).',
+            'Sano por cobrar = saldo neto exigible del periodo que seguía pendiente al inicio: cuota ordinaria menos anticipos y pagos aplicados antes del periodo. Los cobros del propio periodo no reducen la meta.',
+            '% Sano, % Atraso y % Vencido = cobrado de cada bucket / Sano por cobrar. Efectividad = suma de los tres aportes, sin tope de 100 %.',
+            'Vigente con atraso y Vencida por cobrar son vistas de control (cobrado en el bucket + saldo pendiente al corte); no se suman a la meta.',
+            'Una cuota que vence hoy sigue sana hasta terminar el día. Una deuda que migra de sano a atraso o vencido no genera una meta nueva.',
+            'Refinanciamientos: una cuota futura cancelada no es meta ni cobranza (solo se conserva el abono ordinario real previo al cierre). En una cuota del día o vencida se reconoce únicamente el neto real liquidado; los descuentos de cuotas futuras, reestructuras y unificaciones nunca son cobranza.',
+            'Cambio de gestor en la semana: solo la meta pendiente pasa al nuevo gestor; los cobros previos conservan su gestor.',
+            'Sin moratorios ni seguros: importe = capital + interés + impuesto. Mora = Sano por cobrar − Cobranza total (negativa si se supera la meta).',
+            'Gestores con recuperación y meta cero sí suman al consolidado; su porcentaje queda vacío (sin base).',
+            'Las asignaciones por saldo global se marcan como inferencias y una desaparición de cartera no se toma como liquidación: el reporte queda PRELIMINAR hasta revisar esas evidencias.',
         ];
 
         return match ($modo) {
-            'ACUMULADO' => [...$notas, 'Acumulado: Sano por cobrar = cuotas programadas del lunes a la fecha de corte; Vigente con atraso y Vencido = saldos de la cartera del día de corte.'],
-            'DIARIO' => [...$notas, 'Corte diario: Sano por cobrar = cuotas programadas del día; Vigente con atraso y Vencido = saldos de la cartera de ese día.'],
-            'MENSUAL' => [...$notas, 'Mensual: suma de las semanas completas del mes, cada una calculada con las reglas semanales. Sano por cobrar y cobrados se suman; Vigente con atraso y Vencido por cobrar son saldos del último corte del mes (no se suman). Porcentajes y mora se recalculan desde los importes.'],
+            'ACUMULADO' => [...$notas, 'Acumulado: foto base del domingo; meta = cuotas netas del lunes a la fecha de corte; atraso y vencido al día de corte.'],
+            'DIARIO' => [...$notas, 'Corte diario: la foto base es el cierre del día anterior; meta = cuotas netas que vencen ese día.'],
+            'MENSUAL' => [...$notas, 'Mensual: suma de los importes base de las semanas completas del mes (cada una con la regla semanal). Atraso y vencido por cobrar = lo cobrado en el mes + el pendiente al último corte, para no contar la misma deuda cada semana. Porcentajes y mora se recalculan desde los importes.'],
             default => $notas,
         };
     }
 
     /**
-     * Historial de ingresos de la solicitud, armado como `ActualizarHistorialIngresos`
-     * (V6): los archivos se aplican del más antiguo al más reciente; cada uno quita del
-     * historial SOLO las fechas de transacción que trae y agrega sus movimientos al
-     * final. Así una fecha nunca se duplica y gana la carga más reciente. La referencia
-     * de cada movimiento es su fila en ese historial (fila 1 = encabezados).
+     * Historial de ingresos de la solicitud, armado como `MR_ActualizarHistorial`
+     * (V12.9.4): los archivos se aplican del más antiguo al más reciente; cada uno quita
+     * del historial SOLO las combinaciones contrato + fecha de transacción que trae y
+     * agrega sus movimientos al final. Así un movimiento nunca se duplica y gana la
+     * carga más reciente. La referencia de cada movimiento es su fila en ese historial.
      */
     private function historial(string $token, array $meta): array
     {
@@ -431,19 +466,19 @@ class EfectividadCalculadoraService
         foreach ($ingresos as $a) {
             $datos = $this->workspace->leer($token, 'f_'.$a['id']) ?? ['columnas' => [], 'filas' => []];
             $columnas = $columnas === null ? $datos['columnas'] : array_values(array_intersect($columnas, $datos['columnas']));
+            $llave = function ($f) {
+                $d = $this->calc->leerFecha($f['fecha_transaccion'] ?? null);
+
+                return $d === null ? null : $this->calc->normalizar($f['contrato'] ?? null).'|'.$d;
+            };
             $fechas = [];
             foreach ($datos['filas'] as $f) {
-                $d = $this->calc->leerFecha($f['fecha_transaccion'] ?? null);
-                if ($d !== null && trim((string) ($f['contrato'] ?? '')) !== '') {
-                    $fechas[$d] = true;
+                if (trim((string) ($f['contrato'] ?? '')) !== '' && ($k = $llave($f)) !== null) {
+                    $fechas[$k] = true;
                 }
             }
             if ($fechas && $filas) {
-                $filas = array_values(array_filter($filas, function ($f) use ($fechas) {
-                    $d = $this->calc->leerFecha($f['fecha_transaccion'] ?? null);
-
-                    return $d === null || ! isset($fechas[$d]);
-                }));
+                $filas = array_values(array_filter($filas, fn ($f) => ($k = $llave($f)) === null || ! isset($fechas[$k])));
             }
             foreach ($datos['filas'] as $f) {
                 if (trim((string) ($f['contrato'] ?? '')) !== '') {
@@ -525,7 +560,7 @@ class EfectividadCalculadoraService
         if (count($sucursales) <= 1) {
             $s = $sucursales[0] ?? null;
 
-            return array_map(fn ($f) => $f + ['sucursal' => $f['tipo'] === 'gran_total' ? null : $s], $filas);
+            return array_map(fn ($f) => array_replace($f, ['sucursal' => $f['tipo'] === 'gran_total' ? null : $s]), $filas);
         }
 
         return $this->calc->construirFilas(array_map(fn ($p) => $this->base($p), $promotores), $this->sinSucursal());
@@ -546,9 +581,11 @@ class EfectividadCalculadoraService
     {
         $requisitos = [];
         $faltanCarteras = [];
-        for ($d = $base, $i = 0; $d->lte($corte); $d = $d->addDay(), $i++) {
+        // DIARIO (V12.9.4): solo la cartera del día anterior (base) y la del día de corte.
+        $inicio = $modo === 'DIARIO' ? $corte->subDay() : $base;
+        for ($d = $inicio, $i = (int) $base->diffInDays($inicio); $d->lte($corte); $d = $d->addDay(), $i++) {
             $ok = isset($fechas[$d->toDateString()]);
-            $nombre = $i === 0 ? 'Cartera base (domingo)' : ($d->equalTo($corte) && $modo !== 'SEMANAL'
+            $nombre = $d->equalTo($inicio) ? ($i === 0 ? 'Cartera base (domingo)' : 'Cartera base (cierre del '.$this->diaNombre($d).')') : ($d->equalTo($corte) && $modo !== 'SEMANAL'
                 ? 'Cartera del '.$this->diaNombre($d)
                 : ($i === 7 ? 'Cartera domingo de cierre' : 'Cartera del '.$this->diaNombre($d)));
             $requisitos[] = ['tipo' => 'cartera', 'etiqueta' => $nombre.' '.$d->format('d/m'), 'fecha' => $d->toDateString(), 'disponible' => $ok];

@@ -1,4 +1,9 @@
-# Efectividad de Cobranza V4 — motor vigente
+> **Documento histórico.** Describe el motor anterior (V4 / V6 / V7, `mrlana-v4-2026-10`),
+> que se conserva como referencia y sigue en los flujos heredados. La calculadora vigente
+> usa la metodología **V12.9.4** (`mrlana-v12.9.4-2026-11`): ver
+> [`../v12/README.md`](../v12/README.md).
+
+# Efectividad de Cobranza V4 — motor anterior
 
 **Motor vigente:** `mrlana-v4-2026-10` (`App\Services\Efectividad\V4\EfectividadV4Calculator`),
 puerto fiel de `Módulo1.bas` de `MR_LANA_EFECTIVIDAD.xlsm`.

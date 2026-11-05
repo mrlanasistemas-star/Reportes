@@ -50,7 +50,7 @@ const n = (v: number | null | undefined) =>
     <div class="space-y-4">
         <div
             v-if="rechazados.length"
-            class="rounded-lg border border-destructive/30 bg-destructive/5 p-3"
+            class="rounded-2xl border border-destructive/30 bg-destructive/5 p-4"
             role="alert"
         >
             <p class="text-sm font-medium text-destructive">
@@ -73,7 +73,7 @@ const n = (v: number | null | undefined) =>
 
         <div
             v-if="historial"
-            class="flex gap-3 rounded-lg border p-3 text-sm"
+            class="flex gap-3 rounded-2xl border p-4 text-sm"
             :class="
                 historial.previo
                     ? 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/30'
@@ -120,7 +120,7 @@ const n = (v: number | null | undefined) =>
             <div
                 v-for="s in resumen.sucursales"
                 :key="s.sucursal"
-                class="rounded-lg border px-3 py-2"
+                class="rounded-xl border px-3 py-2"
                 :class="
                     s.en_catalogo
                         ? ''
@@ -141,7 +141,7 @@ const n = (v: number | null | undefined) =>
             </div>
         </div>
 
-        <div class="overflow-hidden rounded-lg border">
+        <div class="overflow-hidden rounded-2xl border">
             <table class="w-full text-sm">
                 <thead
                     class="bg-muted/50 text-left text-xs text-muted-foreground"

@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Services\Efectividad\Calculadora\EfectividadArchivoException;
 use App\Services\Efectividad\Calculadora\EfectividadCalculadoraExcelExporter;
 use App\Services\Efectividad\Calculadora\EfectividadCalculadoraService;
 use App\Services\Efectividad\Calculadora\EfectividadExcelReader;
@@ -19,7 +20,22 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
  * encabezados en la fila 5 (cartera); títulos + encabezados (ingresos).
  */
 const CALC_FOTO_HEAD = ['Oficina', 'Promotor', 'Nombre promotor', 'Contrato', 'Acreditado', 'Estatus', 'Substatus', 'Producto de crédito',
-    'Fecha primer pago', 'Fecha vencimiento', 'Cuota total', 'Periodicidad', 'Pagos', 'Total atrasado', 'Pagos atrasados', 'Total pendiente', 'Saldo capital'];
+    'Fecha primer pago', 'Fecha vencimiento', 'Cuota', 'Cuota total', 'Periodicidad', 'Pagos', 'Saldo capital', 'Saldo interés', 'Saldo impuesto',
+    'Pagos pendientes', 'Capital pendiente', 'Interés pendiente', 'Impuesto pendiente', 'Total pendiente',
+    'Pagos atrasados', 'Capital atrasado', 'Interés atrasado', 'Impuesto atrasado', 'Total atrasado', 'Número siguiente pago'];
+
+/**
+ * Fila de cartera coherente (V12.9.4): [oficina, código, promotor, contrato, substatus, primer pago, vencimiento,
+ * cuota, pagos, siguiente pago, atraso, saldo]. El saldo pendiente (sin atrasos) = cuotas por vencer × cuota.
+ */
+function calcFila(string $of, string $cod, string $prom, string $ct, string $sub, string $primero, string $venc, float $cuota, int $pagos, int $sig, float $atraso, float $saldo): array
+{
+    $pendientes = $pagos - $sig + 1;
+    $pendiente = max(0, $saldo - $atraso);
+
+    return [$of, $cod, $prom, $ct, 'A'.substr($ct, 1), 'ACTIVO', $sub, 'SEMANAL 12', $primero, $venc, $cuota, $cuota, 'SEMANAL', $pagos,
+        $saldo, 0, 0, $pendientes, $pendiente, 0, 0, $pendiente, $atraso > 0 ? (int) ceil($atraso / $cuota) : 0, $atraso, 0, 0, $atraso, $sig];
+}
 const CALC_ING_HEAD = ['Oficina', 'Promotor', 'Contrato', 'Acreditado', 'Producto de crédito', 'Operación', 'Concepto', 'Transacción',
     'Fecha transacción', 'Fecha cuota', 'Número cuota', 'Capital', 'Interés', 'Impuesto', 'Cargos calendario', 'Cargos vencimiento'];
 
@@ -38,10 +54,10 @@ function calcXlsx(string $path, array $rows): string
 function calcCartera(string $dir, string $fecha, string $nombre, array $extra = []): string
 {
     $filas = [
-        ['TEPEJI', 'P1', 'ANA LOPEZ', 'C1', 'A1', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-05', '2026-12-28', 100, 'SEMANAL', 12, 0, 0, 1000, 900],
-        ['ACAMBAY', 'P2', 'BETO RUIZ', 'C2', 'A2', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-06', '2026-12-29', 200, 'SEMANAL', 12, 0, 0, 2000, 1800],
-        // Ruta sin Sano por cobrar (solo vencido): no figura ni suma al gran total.
-        ['ATITALAQUIA', 'P3', 'VACANTE', 'C3', 'A3', 'ACTIVO', 'VENCIDO', 'SEMANAL 12', '2026-01-05', '2026-03-30', 150, 'SEMANAL', 12, 4000, 10, 4000, 3500],
+        calcFila('TEPEJI', 'P1', 'ANA LOPEZ', 'C1', 'VIGENTE', '2026-10-05', '2026-12-21', 100, 12, 1, 0, 1200),
+        calcFila('ACAMBAY', 'P2', 'BETO RUIZ', 'C2', 'VIGENTE', '2026-10-06', '2026-12-22', 200, 12, 1, 0, 2400),
+        // Ruta sin meta ni cobranza (solo vencido): no figura ni suma al gran total.
+        calcFila('ATITALAQUIA', 'P3', 'VACANTE', 'C3', 'VENCIDO', '2026-01-05', '2026-03-23', 150, 12, 13, 1800, 1800),
         ...$extra,
     ];
 
@@ -106,7 +122,7 @@ it('lee la fecha de la cartera del contenido (A4), con encabezados en la fila 5 
         ->and($r['fecha'])->toBe('2026-10-07')
         ->and($r['resumen']['contratos'])->toBe(3)
         ->and($r['filas'][0]['contrato'])->toBe('C1')
-        ->and($r['columnas'])->toContain('nombre_promotor', 'substatus', 'cuota_total');
+        ->and($r['columnas'])->toContain('nombre_promotor', 'cuota', 'numero_siguiente_pago', 'capital_pendiente');
 
     $i = (new EfectividadExcelReader)->leer(calcIngresos($this->dir, 'ing.xlsx', [calcPago('C1', '2026-10-06', '2026-10-06', 10)]));
     expect($i['tipo'])->toBe('ingresos')
@@ -119,7 +135,7 @@ it('rechaza archivos que no son de Lendus, Excel corruptos, duplicados y fechas 
     $otro = calcXlsx($this->dir.'/otro.xlsx', [['Nombre', 'Edad'], ['X', 1]]);
     file_put_contents($this->dir.'/roto.xlsx', 'esto no es un zip');
     $c1 = calcCartera($this->dir, '2026-10-04', 'a.xlsx');
-    $c2 = calcCartera($this->dir, '2026-10-04', 'b.xlsx', [['ACAMBAY', 'P2', 'BETO RUIZ', 'C7', 'A7', 'ACTIVO', 'VIGENTE', 'S', '2026-10-06', '2026-12-29', 1, 'SEMANAL', 1, 0, 0, 1, 1]]);
+    $c2 = calcCartera($this->dir, '2026-10-04', 'b.xlsx', [calcFila('ACAMBAY', 'P2', 'BETO RUIZ', 'C7', 'VIGENTE', '2026-10-06', '2026-10-06', 1, 1, 1, 0, 1)]);
 
     $r = $svc->agregarArchivos(null, $this->admin->id, [calcUpload($otro), calcUpload($this->dir.'/roto.xlsx'), calcUpload($c1), calcUpload($c1), calcUpload($c2)]);
     $errores = array_column($r['rechazados'], 'error', 'nombre');
@@ -177,7 +193,7 @@ it('flujo web completo: carga múltiple, resumen ordenado, cálculo semanal, fil
         ->and($gt['cobranza_total'])->toEqual(250.0)
         ->and($gt['pct_total'])->toEqual(250 / 300)
         ->and($gt['mora'])->toEqual(50.0)
-        ->and(collect($res['incidencias'])->pluck('codigo')->all())->toContain('NO-CARTERA')
+        ->and(collect($res['incidencias'])->pluck('codigo')->all())->toContain('COBRO-SIN-CARTERA')
         ->and($res['avisos'])->not->toBeEmpty(); // sin ingresos previos: se explica que faltan anticipos
 
     // Filtro por oficina: subtotal y gran total recalculados en el servidor.
@@ -194,7 +210,9 @@ it('flujo web completo: carga múltiple, resumen ordenado, cálculo semanal, fil
     foreach (['DIARIO' => '2026-10-06', 'ACUMULADO' => '2026-10-06', 'MENSUAL' => '2026-10'] as $modo => $valor) {
         $r = $this->actingAs($this->admin)->postJson("/efectividad-cobranza/calculadora/$token/calcular", ['modo' => $modo, 'valor' => $valor])->assertOk()->json('resultado');
         $sano = collect($r['filas'])->firstWhere('tipo', 'gran_total')['sano_pc'];
-        expect($sano)->toEqual(match ($modo) { 'DIARIO' => 200.0, 'ACUMULADO' => 300.0, 'MENSUAL' => 300.0 });
+        expect($sano)->toEqual(match ($modo) {
+            'DIARIO' => 200.0, 'ACUMULADO' => 300.0, 'MENSUAL' => 300.0
+        });
     }
 
     // Limpiar borra el espacio temporal; después, la sesión ya no existe.
@@ -220,7 +238,10 @@ it('el historial se arma con varios Excel de ingresos sin duplicar fechas y reco
     $res = $svc->calcular($r['token'], $this->admin->id, 'SEMANAL', '2026-10-11');
     $norte = collect($res['filas'])->firstWhere('promotor', 'ANA LOPEZ');
 
-    expect($norte['sano_cob'])->toEqual(140.0) // 100 de la semana + 40 de anticipo; nunca los 999 reemplazados
+    // V12.9.4: el anticipo previo REDUCE la meta (100 − 40 = 60) y el cobro de la semana no la reduce
+    // retroactivamente; de los 100 cobrados solo 60 cubren la cuota. Nunca cuentan los 999 reemplazados.
+    expect($norte['sano_pc'])->toEqual(60.0)
+        ->and($norte['sano_cob'])->toEqual(60.0)
         ->and($res['avisos'])->toBe([]);
 });
 
@@ -348,7 +369,7 @@ it('el TTL elimina espacios temporales abandonados', function () {
 
 it('una ruta fuera del catálogo se calcula igual y se muestra en SIN SUCURSAL ASIGNADA con aviso', function () {
     $svc = app(EfectividadCalculadoraService::class);
-    $nueva = [['RUTA NUEVA', 'P4', 'CARLA DIAZ', 'C4', 'A4', 'ACTIVO', 'VIGENTE', 'SEMANAL 12', '2026-10-05', '2026-12-28', 50, 'SEMANAL', 12, 0, 0, 500, 450]];
+    $nueva = [calcFila('RUTA NUEVA', 'P4', 'CARLA DIAZ', 'C4', 'VIGENTE', '2026-10-05', '2026-12-21', 50, 12, 1, 0, 600)];
     $archivos = [];
     foreach (range(4, 11) as $d) {
         $archivos[] = calcCartera($this->dir, sprintf('2026-10-%02d', $d), "c$d.xlsx", $nueva);
@@ -383,7 +404,7 @@ it('cada modalidad pide solo sus archivos: diario con domingo + día + ingresos 
         ->and($lunes['falta'])->toBe('Solo falta cargar Ingresos Cobranza del lunes 05/10 para calcular.')
         ->and(collect($r['resumen']['cortes']['SEMANAL'])->firstWhere('valor', '2026-10-11')['estado'])->toBe('faltan_carteras');
     expect(fn () => $svc->calcular($t, $this->admin->id, 'DIARIO', '2026-10-05'))
-        ->toThrow(App\Services\Efectividad\Calculadora\EfectividadArchivoException::class, 'Solo falta cargar Ingresos Cobranza');
+        ->toThrow(EfectividadArchivoException::class, 'Solo falta cargar Ingresos Cobranza');
 
     // Un único Excel de ingresos de toda la semana habilita el lunes (solo usa sus movimientos del día).
     $r = $svc->agregarArchivos($t, $this->admin->id, $up([calcIngresos($this->dir, 'ing.xlsx', [
@@ -401,4 +422,81 @@ it('cada modalidad pide solo sus archivos: diario con domingo + día + ingresos 
     expect($gt['sano_pc'])->toEqual(300.0)->and($gt['cobranza_total'])->toEqual(250.0);
     // Los archivos se conservan entre modalidades: el diario del lunes sigue disponible.
     expect($svc->calcular($t, $this->admin->id, 'DIARIO', '2026-10-05')['titulo'])->toBe('CORTE DIARIO: 05/10/2026');
+});
+
+it('V12.9.4 regla 32: gestor con recuperación y meta cero aparece, suma al gran total y su % queda vacío en web, PDF, PNG y Excel', function () {
+    $html = [];
+    $this->mock(BrowsershotPdfRenderer::class, function ($m) use (&$html) {
+        $m->shouldReceive('renderHtmlToFile')->andReturnUsing(function ($h, $out) use (&$html) {
+            $html[] = $h;
+            file_put_contents($out, '%PDF-1.4 prueba');
+        });
+        $m->shouldReceive('renderHtmlToImage')->andReturnUsing(function ($h, $out) use (&$html) {
+            $html[] = $h;
+            file_put_contents($out, "\x89PNG prueba");
+        });
+    });
+    $svc = app(EfectividadCalculadoraService::class);
+    $archivos = array_slice(calcArchivosSemana($this->dir), 0, 8);
+    // Cobro de deuda vencida (cuota 12 del 23/03, contrato ya vencido) en una ruta sin meta sana.
+    $archivos[] = calcIngresos($this->dir, 'ing.xlsx', [
+        calcPago('C1', '2026-10-05', '2026-10-05', 100),
+        calcPago('C2', '2026-10-06', '2026-10-06', 150, 'ACAMBAY', 'BETO RUIZ'),
+        ['ATITALAQUIA', 'VACANTE', 'C3', 'A3', 'SEMANAL 12', 'PAGO A CONTRATO', 'PRINCIPAL', 'PAGO', '2026-10-07', '2026-03-23', 12, 100, 0, 0, 0, 0],
+    ]);
+    $token = $svc->agregarArchivos(null, $this->admin->id, array_map('calcUpload', $archivos))['token'];
+    $res = $svc->calcular($token, $this->admin->id, 'SEMANAL', '2026-10-11');
+    $vacante = collect($res['filas'])->firstWhere('promotor', 'VACANTE');
+    $gt = collect($res['filas'])->firstWhere('tipo', 'gran_total');
+
+    expect($vacante)->not->toBeNull()
+        ->and($vacante['sano_pc'])->toEqual(0.0)
+        ->and($vacante['vencido_cob'])->toEqual(100.0)
+        ->and($vacante['vencido_pc'])->toEqual(1800.0) // saldo vencido del corte inicial: control, no meta
+        ->and([$vacante['sano_pct'], $vacante['atraso_pct'], $vacante['vencido_pct'], $vacante['pct_total']])->toBe([null, null, null, null])
+        ->and($gt['sano_pc'])->toEqual(300.0) // la vista de control no se suma a la meta
+        ->and($gt['cobranza_total'])->toEqual(350.0)
+        ->and($gt['pct_total'])->toEqual(350 / 300) // sin tope de 100 %
+        ->and($gt['mora'])->toEqual(-50.0)
+        ->and($res['metodologia'])->toBe('V12.9.4')
+        ->and($res['auditoria']['estado'])->toBeIn(['PRELIMINAR', 'CONCILIADO']);
+
+    $this->actingAs($this->admin)->get("/efectividad-cobranza/calculadora/$token/exportar/pdf")->assertOk()->sendContent();
+    $this->actingAs($this->admin)->get("/efectividad-cobranza/calculadora/$token/exportar/png")->assertOk()->sendContent();
+    expect($html)->toHaveCount(2);
+    foreach ($html as $h) {
+        expect($h)->toContain('VACANTE')->toContain('—')->toContain('116.67%')->not->toContain('NO APLICA')->not->toContain('NaN');
+    }
+
+    $respuesta = $this->actingAs($this->admin)->get("/efectividad-cobranza/calculadora/$token/exportar-excel")->assertOk();
+    $copia = $this->dir.'/regla32.xlsx';
+    copy($respuesta->getFile()->getPathname(), $copia);
+    $respuesta->sendContent();
+    $ws = IOFactory::load($copia)->getSheetByName('EFECTIVIDAD');
+    $fila = null;
+    foreach ($ws->getRowIterator() as $row) {
+        if ($ws->getCell('A'.$row->getRowIndex())->getValue() === 'VACANTE') {
+            $fila = $row->getRowIndex();
+        }
+    }
+    expect($fila)->not->toBeNull()
+        ->and($ws->getCell("I{$fila}")->getValue())->toEqual(100.0)
+        ->and($ws->getCell("J{$fila}")->getValue())->toBeNull() // % vencido sin base: celda vacía
+        ->and($ws->getCell("L{$fila}")->getValue())->toBeNull(); // % efectividad sin base
+});
+
+it('V12.9.4 diario: la base es la cartera del día anterior y solo pide esas dos carteras', function () {
+    $svc = app(EfectividadCalculadoraService::class);
+    $r = $svc->agregarArchivos(null, $this->admin->id, array_map('calcUpload', [
+        calcCartera($this->dir, '2026-10-05', 'l.xlsx'), calcCartera($this->dir, '2026-10-06', 'm.xlsx'),
+        calcIngresos($this->dir, 'ing.xlsx', [calcPago('C2', '2026-10-06', '2026-10-06', 200, 'ACAMBAY', 'BETO RUIZ')]),
+    ]));
+    $martes = collect($r['resumen']['cortes']['DIARIO'])->firstWhere('valor', '2026-10-06');
+    expect(collect($martes['requisitos'])->where('tipo', 'cartera')->pluck('fecha')->all())->toBe(['2026-10-05', '2026-10-06'])
+        ->and($martes['listo'])->toBeTrue();
+    $res = $svc->calcular($r['token'], $this->admin->id, 'DIARIO', '2026-10-06');
+    $gt = collect($res['filas'])->firstWhere('tipo', 'gran_total');
+    expect($res['parametros']['foto_base'])->toBe('2026-10-05')
+        ->and($gt['sano_pc'])->toEqual(200.0)
+        ->and($gt['pct_total'])->toEqual(1.0);
 });

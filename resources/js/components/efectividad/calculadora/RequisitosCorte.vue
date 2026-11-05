@@ -17,7 +17,7 @@ const GUIA: Record<Modo, string> = {
 </script>
 
 <template>
-    <div class="rounded-lg border" aria-live="polite">
+    <div class="overflow-hidden rounded-2xl border bg-card" aria-live="polite">
         <template v-if="opcion">
             <div
                 class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5"

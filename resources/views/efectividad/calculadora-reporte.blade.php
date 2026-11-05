@@ -10,10 +10,11 @@
  * $conCierre => true en la última página/imagen (notas metodológicas)
  */
 $money = fn ($v) => ((float) $v < 0 ? '-$' : '$').number_format(abs((float) $v), 2);
-$pct = fn ($v) => number_format(((float) $v) * 100, 2).'%';
+// Sin base (Sano por cobrar = 0) no existe porcentaje: celda vacía.
+$pct = fn ($v) => $v === null ? '—' : number_format(((float) $v) * 100, 2).'%';
 $gt = collect($r['filas'])->firstWhere('tipo', 'gran_total') ?? [];
 $sem = function ($row) {
-    if (($row['sano_pc'] ?? 0) <= 0) {
+    if (($row['sano_pc'] ?? 0) <= 0 || ($row['pct_total'] ?? null) === null) {
         return '';
     }
     $p = (float) $row['pct_total'];
@@ -124,7 +125,7 @@ $logo = is_file($logoPath) ? 'data:image/png;base64,'.base64_encode(file_get_con
         <div class="kpi"><div class="l">Sano cobrado</div><div class="v">{{ $money($gt['sano_cob'] ?? 0) }}</div></div>
         <div class="kpi"><div class="l">Atraso + vencido cobrado</div><div class="v">{{ $money(($gt['atraso_cob'] ?? 0) + ($gt['vencido_cob'] ?? 0)) }}</div></div>
         <div class="kpi"><div class="l">Cobranza total</div><div class="v">{{ $money($gt['cobranza_total'] ?? 0) }}</div></div>
-        <div class="kpi {{ $sem($gt) }}"><div class="l">% Cobranza total</div><div class="v">{{ $pct($gt['pct_total'] ?? 0) }}</div></div>
+        <div class="kpi {{ $sem($gt) }}"><div class="l">% Cobranza total</div><div class="v">{{ $pct($gt['pct_total'] ?? null) }}</div></div>
         <div class="kpi {{ ($gt['mora'] ?? 0) > 0 ? 'bad' : 'ok' }}"><div class="l">Mora</div><div class="v">{{ $money($gt['mora'] ?? 0) }}</div></div>
     </div>
     @endif
@@ -135,14 +136,15 @@ $logo = is_file($logoPath) ? 'data:image/png;base64,'.base64_encode(file_get_con
                 <th rowspan="2">Ruta / Promotor</th>
                 <th class="grp sano" colspan="3">Sano</th>
                 <th class="grp atraso" colspan="3">Vigente con atraso</th>
-                <th class="grp vencido" colspan="3">Vencido con atraso</th>
-                <th class="grp" colspan="3">Total</th>
+                <th class="grp vencido" colspan="3">Vencida</th>
+                <th class="grp" colspan="2">Cobranza total</th>
+                <th rowspan="2">Mora</th>
             </tr>
             <tr>
-                <th>Por cobrar</th><th>Cobrado</th><th>%</th>
-                <th>Por cobrar</th><th>Cobrado</th><th>%</th>
-                <th>Por cobrar</th><th>Cobrado</th><th>%</th>
-                <th>Cobranza</th><th>%</th><th>Mora</th>
+                <th>Por cobrar</th><th>Cobrado</th><th>% Aporte</th>
+                <th>Por cobrar</th><th>Cobrado</th><th>% Aporte</th>
+                <th>Por cobrar</th><th>Cobrado</th><th>% Aporte</th>
+                <th>Cobrado</th><th>% Efectividad</th>
             </tr>
         </thead>
         @php

@@ -52,7 +52,6 @@ function tulaUploads(string $dir, array $extra = []): array
     }, array_merge($extra, glob(base_path(TULA_DIR.'/*.xlsx'))));
 }
 
-
 /**
  * V7 (nota técnica V6→V7): el libro local es la versión V6. Contra él, V7 debe coincidir
  * EXACTO en todo excepto Sano cobrado / Vigente con atraso cobrado (y sus %), que solo se
@@ -215,7 +214,7 @@ it('Excel originales de Lendus + ingresos previos: paridad exacta de importes, a
         ->and($mensual['sano_cob'])->toBe($gt['sano_cob'])->and($mensual['atraso_cob'])->toBe($gt['atraso_cob']);
 
     expect($escrituras)->toBe(0);
-});
+})->skip('Paridad V6/V7 de la metodología anterior por el flujo de la calculadora; la calculadora aplica ahora V12.9.4 (ver tests/Feature/Efectividad/V12/EfectividadV12CordobaParityTest.php). La paridad V4/V7 del motor histórico sigue cubierta arriba.');
 
 it('Tula paso a paso: domingo+lunes sin ingresos → solo faltan ingresos; luego diario, acumulado y semanal en la misma sesión', function () {
     $escrituras = 0;
@@ -274,4 +273,4 @@ it('Tula paso a paso: domingo+lunes sin ingresos → solo faltan ingresos; luego
     expect($svc->calcular($t, 1, 'DIARIO', '2026-10-05')['filas'])->toEqual($d05['filas']);
 
     expect($escrituras)->toBe(0);
-});
+})->skip('Paridad V6/V7 de la metodología anterior por el flujo de la calculadora; la calculadora aplica ahora V12.9.4 (ver tests/Feature/Efectividad/V12/EfectividadV12CordobaParityTest.php). La paridad V4/V7 del motor histórico sigue cubierta arriba.');
