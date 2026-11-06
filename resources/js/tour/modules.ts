@@ -1,5 +1,5 @@
 import {
-    BarChart3, CalendarRange, FileSpreadsheet, LayoutDashboard, Settings, ShieldCheck, Target, Upload, Users, Wallet,
+    BarChart3, CalendarRange, FileSpreadsheet, Landmark, LayoutDashboard, Settings, ShieldCheck, Target, Upload, Users, Wallet,
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
 
@@ -68,6 +68,13 @@ export const GUIDE_MODULES: GuideModule[] = [
         uses: 'Las carteras diarias (Saldos por Cliente) y el Ingresos Cobranza de Lendus que subes en el momento; no se guardan.',
         missing: 'Si falta un día o una ruta, confirma que subiste la cartera de ese día en el formato de Lendus.',
         paths: ['/efectividad-cobranza'], topics: ['Archivo Lendus', 'Resultados'],
+    },
+    {
+        id: 'estado_resultados', access: ['estado_resultados'], tourId: null, label: 'Estado de Resultados', icon: Landmark, tone: 'from-teal-600 to-cyan-600',
+        description: 'Estado de Resultados gerencial con tres EBITDA (sucursales, corporativo y final), EBIT, EBT y utilidad neta.',
+        uses: 'La radiografía del periodo (ingresos, OPEX y nómina de sucursales), el ERP de gastos, los dos estados de cuenta complementarios y los ajustes contables capturados.',
+        missing: 'Si un movimiento no suma, ábrelo en Conciliación: la ficha explica si ya está en el ERP, si es transferencia o si requiere revisión.',
+        paths: ['/estado-resultados'], topics: ['EBITDA', 'Conciliación', 'Excel', 'PDF'],
     },
     {
         id: 'usuarios', access: ['usuarios', 'roles'], tourId: 'usuarios', label: 'Usuarios y accesos', icon: ShieldCheck, tone: 'from-slate-600 to-slate-800',

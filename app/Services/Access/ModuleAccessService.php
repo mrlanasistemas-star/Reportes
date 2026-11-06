@@ -22,6 +22,9 @@ class ModuleAccessService
         'colaboradores' => ['label' => 'Colaboradores', 'url' => '/asignaciones-empleado-sucursal', 'description' => 'Sucursal por periodo, altas y bajas.'],
         'reportes' => ['label' => 'Reportes mensuales', 'url' => '/reportes-mensuales', 'description' => 'Radiografía, comparativo, validaciones y exportes.'],
         'efectividad' => ['label' => 'Efectividad de Cobranza', 'url' => '/efectividad-cobranza', 'description' => 'Calculadora de efectividad por ruta.'],
+        // 05-nov-2026 — Estado de Resultados gerencial (3 EBITDA). Información consolidada
+        // de toda la empresa (Corporativo/DG): sólo el Administrador hasta que se asigne en Roles.
+        'estado_resultados' => ['label' => 'Estado de Resultados', 'url' => '/estado-resultados', 'description' => 'EBITDA sucursales, corporativo y final; conciliación de bancos y exportes.'],
         'okr' => ['label' => 'OKR', 'url' => '/okr', 'description' => 'Objetivos, check-ins y seguimiento.'],
         // Administración (prioridad 8) — por defecto solo el Administrador; se
         // pueden delegar, pero nadie puede otorgar más de lo que él mismo tiene
@@ -46,7 +49,7 @@ class ModuleAccessService
      * alcance RESTRINGIDO por sucursal (DataScopeService) no los recibe aunque
      * su rol los tenga: si no, vería y modificaría datos de sucursales ajenas.
      */
-    public const GENERAL_SCOPE_MODULES = ['carga', 'periodos'];
+    public const GENERAL_SCOPE_MODULES = ['carga', 'periodos', 'estado_resultados'];
 
     /** @return array<string, list<string>> rol => módulos permitidos (solo roles configurables). */
     public function matrix(): array
