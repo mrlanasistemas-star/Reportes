@@ -58,3 +58,13 @@ yarn-error.log
 *.sql.gz
 *.dump
 ~$*
+
+# Estado de Resultados (06-nov-2026): estados de cuenta bancarios, Estados de
+# Resultados reales y directorios de personal. Solo locales, nunca versionar.
+# Las plantillas en blanco viven en resources/templates/ y no se ven afectadas.
+/docs/3EBITDA/
+/docs/usuarios/
+/docs/**/*.xlsx
+/docs/**/*.xlsm
+/docs/**/*.xls
+/docs/**/*.csv

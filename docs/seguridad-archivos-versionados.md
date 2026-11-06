@@ -1,5 +1,32 @@
 # Archivos sensibles versionados en Git — inventario y corrección
 
+> **Actualización 06-nov-2026 (Estado de Resultados).** Se detectaron 4 archivos sensibles más
+> en `main`. Se retiraron del árbol actual en el commit de seguridad de esta fecha, y hay copia
+> verificada por sha256 fuera del repositorio, en el equipo del responsable
+> (`Documents/MRLANA_privado/repo-retirado-2026-11-06/`).
+>
+> | Archivo | Entró en | Contenido |
+> |---|---|---|
+> | `docs/3EBITDA/09. SEPTIEMBRE 26 MRLANA 6697.xlsx` | `b6f6e6a` (06-nov-2026) | estado de cuenta bancario real (cuenta administrativa) |
+> | `docs/3EBITDA/09. SEPTIEMBRE 26 MRLANA 8119.xlsx` | `b6f6e6a` | estado de cuenta bancario real (cuenta de excedentes) |
+> | `docs/3EBITDA/MR_LANA_Estado_Resultados_Cordoba_Octubre_2026.xlsx` | `b6f6e6a` | cifras reales de Córdoba y hoja «NOMINA GESTORES» con personas y sueldos |
+> | `docs/usuarios/DIRECTORIO_GERENCIAS_MRLANA.xlsx` | `67a392c` (16-oct-2026) | directorio de gerencias con datos personales de contacto |
+>
+> Las dos infografías de `docs/3EBITDA/` son ejemplos ilustrativos sin datos reales. Se
+> conservaron como documentación en `docs/estado-resultados/` con nombres descriptivos.
+> Ninguna prueba, comando ni funcionalidad depende de los archivos retirados: las pruebas usan
+> fixtures sintéticos de `tests/Support/EstadoResultadosFixtures.php`.
+>
+> **Siguen en el historial.** Ambos commits solo están en `main`; no hay etiquetas. Para la
+> limpieza, agrega estas rutas a la orden `git filter-repo` de la sección 3:
+>
+> ```bash
+>   --path docs/3EBITDA/ --path docs/usuarios/DIRECTORIO_GERENCIAS_MRLANA.xlsx
+> ```
+>
+> y en la verificación posterior añade `|^docs/3EBITDA/|^docs/usuarios/` al `grep`. La
+> reescritura y el `push --force` siguen **pendientes de autorización**.
+
 > **Estado actualizado 02-nov-2026.** Los 57 archivos de datos reales que todavía estaban
 > rastreados en `main` se retiraron del índice en el commit `2b8889e`; no forman parte de
 > nuevos clones de la rama principal. **El historial anterior sigue conteniéndolos y el
