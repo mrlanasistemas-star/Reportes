@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import ConciliationSummary from './ConciliationSummary.vue';
-import EbitdaWaterfall from './EbitdaWaterfall.vue';
-import RadiographyReconciliationCard from './RadiographyReconciliationCard.vue';
+import OpexComposition from './OpexComposition.vue';
+import ResultWaterfall from './ResultWaterfall.vue';
 import StepInspector from './StepInspector.vue';
 import { buildStepMeta } from './storyline';
 import type { Dataset } from './types';
@@ -55,7 +55,7 @@ const shownKey = computed(
                 class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] 2xl:grid-cols-[minmax(0,1fr)_400px]"
             >
                 <div class="min-w-0">
-                    <EbitdaWaterfall
+                    <ResultWaterfall
                         :steps="dataset.waterfall"
                         :meta="meta"
                         :selected="selected"
@@ -74,7 +74,9 @@ const shownKey = computed(
             </div>
         </section>
 
-        <div class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <div
+            class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] [&>*]:min-w-0"
+        >
             <ConciliationSummary
                 :c="dataset.conciliation"
                 :movements="dataset.movements"
@@ -82,8 +84,9 @@ const shownKey = computed(
                 compact
                 @filter="(k) => emit('openMovements', k)"
             />
-            <RadiographyReconciliationCard
-                :rec="dataset.radiography_reconciliation"
+            <OpexComposition
+                :dataset="dataset"
+                @open="(k) => emit('openStatement', k)"
             />
         </div>
     </div>

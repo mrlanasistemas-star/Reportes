@@ -1,11 +1,12 @@
 /**
- * Une cada paso de la cascada con el bloque del estado de resultados que lo
- * explica (sección con sus líneas, o resultado con su fórmula). Sólo reorganiza
- * datos del dataset; no calcula importes.
+ * Une cada paso de la cascada con el bloque del estado de resultados que lo explica.
+ * Modelo de UN solo EBITDA: Ingresos → OPEX (categorías) → EBITDA → D&A → EBIT →
+ * Resultado financiero neto → EBT → ISR → Utilidad neta. Sólo reorganiza datos del
+ * dataset; no calcula importes.
  */
-import { sectionOfStep } from './types';
 import type {
     Dataset,
+    OpexCategory,
     StatementResult,
     StatementSection,
     WaterfallStep,
@@ -14,40 +15,70 @@ import type {
 export interface StepMeta {
     step: WaterfallStep;
     section: StatementSection | null;
+    /** Categoría de OPEX cuando el paso es una de ellas. */
+    category: OpexCategory | null;
     result: StatementResult | null;
-    /** Fórmula (resultados) o explicación de qué resta/suma (secciones). */
     formula: string;
     sources: string[];
     complete: boolean;
     missing: string[];
-    /** Movimientos de banco/ERP que suman a esta sección (conteo, no dinero). */
+    /** Movimientos de banco/ERP que suman a esta línea (conteo, no dinero). */
     movementCount: number;
     group: number;
+    /** Clave de bloque para "Ver en el estado de resultados". */
+    blockKey: string;
 }
 
-export const STEP_GROUPS: Record<number, { label: string; short: string }> = {
-    1: { label: 'Sucursales', short: 'Sucursales' },
-    2: { label: 'Corporativo', short: 'Corporativo' },
-    3: { label: 'Dirección General', short: 'DG' },
-    4: { label: 'Contable, financiero y fiscal', short: 'Contable' },
+export const STEP_GROUPS: Record<number, { label: string }> = {
+    1: { label: 'Ingresos' },
+    2: { label: 'OPEX · gastos operativos' },
+    3: { label: 'Del EBITDA a la utilidad neta' },
 };
 
-export const groupOfLevel = (level: number) => (level >= 4 ? 4 : level);
+/** Paso del modelo (1–9) → grupo visual. Versiones anteriores sin `step` usan `level`. */
+export function groupOf(
+    s: Pick<WaterfallStep, 'step' | 'level' | 'group'>,
+): number {
+    const step = s.step ?? s.level;
 
-/** Hitos del EBITDA: el número que el usuario ve como "Nivel 1/2/3". */
-export const EBITDA_TIER: Record<string, string> = {
-    ebitda_sucursales: 'Nivel 1',
-    ebitda_corporativo: 'Nivel 2',
-    ebitda_final: 'Nivel 3',
+    if (s.group === 'opex' || step === 2) {
+        return 2;
+    }
+
+    return step <= 1 ? 1 : 3;
+}
+
+/** Paso de la cascada → sección del estado de resultados. */
+const STEP_SECTION: Record<string, string> = {
+    ingresos_operativos: 'ingresos',
+    ingresos: 'ingresos',
+    depreciacion_amortizacion: 'da',
+    resultado_financiero_neto: 'financiero',
+    isr: 'isr',
+};
+
+const FORMULAS: Record<string, string> = {
+    ingresos_operativos:
+        'Punto de partida: ingresos operativos cobrados en el periodo',
+    depreciacion_amortizacion:
+        'Se resta: depreciación de activos y amortización de sistemas propios',
+    resultado_financiero_neto:
+        'Con signo: gastos financieros negativos, ingresos financieros / no operativos positivos',
+    isr: 'Se resta: impuesto sobre la renta del periodo',
 };
 
 export function buildStepMeta(d: Dataset): Record<string, StepMeta> {
     const sections = new Map<string, StatementSection>();
     const results = new Map<string, StatementResult>();
+    const categories = new Map<string, OpexCategory>();
 
     for (const b of d.statement) {
         if (b.type === 'section') {
             sections.set(b.key, b);
+
+            for (const c of b.categories ?? []) {
+                categories.set(c.key, c);
+            }
         } else {
             results.set(b.key, b);
         }
@@ -64,46 +95,47 @@ export function buildStepMeta(d: Dataset): Record<string, StepMeta> {
     const out: Record<string, StepMeta> = {};
 
     for (const step of d.waterfall) {
-        const sectionKey = sectionOfStep(step.key);
+        const category = categories.get(step.key) ?? null;
+        const sectionKey = category
+            ? 'opex'
+            : (STEP_SECTION[step.key] ?? step.key);
         const section = sections.get(sectionKey) ?? null;
         const result = results.get(step.key) ?? null;
-        const sources = section
-            ? [...new Set(section.lines.map((l) => l.source).filter(Boolean))]
-            : [];
-        const complete = result
-            ? result.complete
-            : !(section?.lines ?? []).some(
-                  (l) => l.state === 'sin_informacion',
-              );
+        const lines = category ? category.lines : (section?.lines ?? []);
+        const sources = [
+            ...new Set(lines.map((l) => l.source).filter(Boolean)),
+        ];
+        const pending = step.amount === null || step.pending === true;
         const missing = result
             ? result.missing
-            : (section?.lines ?? [])
+            : lines
                   .filter((l) => l.state === 'sin_informacion')
                   .map((l) => l.label);
 
-        let formula = result?.formula ?? '';
+        let formula = result?.formula ?? FORMULAS[step.key] ?? '';
 
-        if (!formula && step.type === 'delta') {
-            formula =
-                step.key === 'resultado_financiero_neto'
-                    ? 'Gastos financieros − ingresos financieros / no operativos'
-                    : `Se resta: ${section?.total.label.toLowerCase() ?? step.label}`;
-        }
-
-        if (!formula && step.key === 'ingresos') {
-            formula = 'Punto de partida: ingresos operativos del periodo';
+        if (!formula && category) {
+            formula = `Categoría de OPEX: ${category.label}. Se resta de los ingresos para llegar al EBITDA.`;
         }
 
         out[step.key] = {
             step,
             section,
+            category,
             result,
             formula,
             sources,
-            complete,
+            complete:
+                !pending && (result ? result.complete : missing.length === 0),
             missing,
-            movementCount: counts.get(sectionKey) ?? 0,
-            group: groupOfLevel(step.level),
+            movementCount:
+                counts.get(category ? category.key : sectionKey) ?? 0,
+            group: groupOf(step),
+            blockKey: category
+                ? `opex:${category.key}`
+                : result
+                  ? result.key
+                  : sectionKey,
         };
     }
 

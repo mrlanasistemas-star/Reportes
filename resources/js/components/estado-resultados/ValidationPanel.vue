@@ -148,12 +148,41 @@ const importOk = computed(
                         u.label
                     }}</span>
                     <span
+                        v-if="u.blocking !== undefined"
+                        class="shrink-0 rounded-full px-2 py-px text-[10.5px] font-bold"
+                        :class="
+                            u.blocking
+                                ? 'bg-rose-600 text-white'
+                                : 'bg-muted text-muted-foreground'
+                        "
+                        :title="
+                            u.blocking
+                                ? 'Impide aprobar la versión.'
+                                : 'Informativo: no impide aprobar.'
+                        "
+                        >{{
+                            u.blocking ? 'Bloquea la aprobación' : 'Informativo'
+                        }}</span
+                    >
+                    <span
                         class="shrink-0 text-xs text-muted-foreground tabular-nums"
-                        >{{ u.count.toLocaleString('es-MX') }}</span
+                        :title="
+                            u.open_count !== undefined ? 'Abiertas / total' : ''
+                        "
+                        >{{ (u.open_count ?? u.count).toLocaleString('es-MX')
+                        }}<template
+                            v-if="
+                                u.open_count !== undefined &&
+                                u.open_count !== u.count
+                            "
+                        >
+                            de {{ u.count.toLocaleString('es-MX') }}</template
+                        >
+                        abiertas</span
                     >
                     <span
                         class="w-32 shrink-0 text-right font-bold text-rose-700 tabular-nums dark:text-rose-400"
-                        >{{ mxn(u.amount) }}</span
+                        >{{ mxn(u.open_amount ?? u.amount) }}</span
                     >
                 </li>
             </ul>
@@ -444,7 +473,7 @@ const importOk = computed(
                 <section class="rounded-2xl border bg-card p-5 shadow-soft-xs">
                     <div class="flex items-center justify-between gap-2">
                         <h3 class="text-base font-extrabold">
-                            EBITDA sucursales vs Radiografía
+                            Control: EBITDA de sucursales = Radiografía
                         </h3>
                         <span
                             class="rounded-full px-2 py-0.5 text-xs font-bold"

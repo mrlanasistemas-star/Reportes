@@ -9,9 +9,8 @@ import {
     Rows3,
 } from 'lucide-vue-next';
 import { computed } from 'vue';
-import { EBITDA_TIER } from './storyline';
 import type { StepMeta } from './storyline';
-import { isNegative, isZero, mxn, num, pct, sectionOfStep } from './types';
+import { isNegative, isZero, mxn, num, pct } from './types';
 import type { WaterfallStep } from './types';
 
 const props = defineProps<{
@@ -47,8 +46,35 @@ const equation = computed(() => {
     return rows;
 });
 
+/** Líneas del paso: las de su categoría de OPEX o las de su sección. */
+const source = computed(() => {
+    const m = props.meta;
+
+    if (!m) {
+        return null;
+    }
+
+    if (m.category) {
+        return {
+            title: m.category.label,
+            applies: m.category.applies,
+            note: m.category.note,
+            lines: m.category.lines,
+        };
+    }
+
+    return m.section
+        ? {
+              title: m.section.title,
+              applies: m.section.applies,
+              note: m.section.note,
+              lines: m.section.lines,
+          }
+        : null;
+});
+
 const lines = computed(() => {
-    const s = props.meta?.section;
+    const s = source.value;
 
     if (!s || !s.applies) {
         return [];
@@ -62,8 +88,16 @@ const lines = computed(() => {
     }));
 });
 
-const sectionKey = computed(() =>
-    props.meta ? sectionOfStep(props.meta.step.key) : '',
+const pending = computed(
+    () =>
+        !!props.meta &&
+        (props.meta.step.amount === null || props.meta.step.pending === true),
+);
+/** Filtro de movimientos: la categoría de OPEX o la sección. */
+const lineKey = computed(() =>
+    props.meta?.category
+        ? props.meta.category.key
+        : (props.meta?.section?.key ?? ''),
 );
 </script>
 
@@ -92,15 +126,12 @@ const sectionKey = computed(() =>
                     <p
                         class="flex items-center gap-1.5 text-xs text-muted-foreground"
                     >
-                        <span
-                            v-if="EBITDA_TIER[meta.step.key]"
-                            class="rounded-full bg-cyan-500/15 px-1.5 py-px text-[10px] font-bold text-cyan-800 dark:text-cyan-300"
-                            >{{ EBITDA_TIER[meta.step.key] }}</span
-                        >
                         {{
-                            meta.step.type === 'delta'
-                                ? 'Se resta en este paso'
-                                : 'Resultado'
+                            meta.category
+                                ? 'Categoría de OPEX'
+                                : meta.step.type === 'delta'
+                                  ? 'Se resta o suma en este paso'
+                                  : 'Resultado'
                         }}
                         <span
                             v-if="!pinned"
@@ -127,6 +158,13 @@ const sectionKey = computed(() =>
             </div>
 
             <p
+                v-if="pending"
+                class="mt-2 inline-flex w-fit items-center rounded-xl border-2 border-dashed border-amber-400 px-3 py-1 text-2xl font-extrabold text-amber-800 dark:text-amber-300"
+            >
+                Pendiente
+            </p>
+            <p
+                v-else
                 class="mt-2 text-3xl font-extrabold tracking-tight tabular-nums"
                 :class="
                     isNegative(meta.step.amount)
@@ -137,11 +175,28 @@ const sectionKey = computed(() =>
                 {{ mxn(meta.step.amount) }}
             </p>
             <p
-                v-if="meta.result?.pct || meta.section?.total.pct"
+                v-if="meta.result?.note || (pending && meta.section?.note)"
+                class="mt-1 text-xs font-semibold text-amber-800 dark:text-amber-300"
+            >
+                {{ meta.result?.note ?? meta.section?.note }}
+            </p>
+            <p
+                v-if="
+                    !pending &&
+                    (meta.category?.total.pct ??
+                        meta.result?.pct ??
+                        meta.section?.total.pct)
+                "
                 class="text-xs text-muted-foreground"
             >
-                {{ pct(meta.result?.pct ?? meta.section?.total.pct) }} de los
-                ingresos operativos
+                {{
+                    pct(
+                        meta.category?.total.pct ??
+                            meta.result?.pct ??
+                            meta.section?.total.pct,
+                    )
+                }}
+                de los ingresos operativos
             </p>
 
             <!-- Fórmula -->
@@ -163,14 +218,18 @@ const sectionKey = computed(() =>
                                     ? 'text-rose-600 dark:text-rose-400'
                                     : ''
                             "
-                            >{{ mxn(s.amount) }}</span
+                            >{{
+                                s.amount === null ? 'Pendiente' : mxn(s.amount)
+                            }}</span
                         >
                     </li>
                     <li
                         class="flex justify-between gap-2 border-t pt-1 font-bold"
                     >
                         <span>= {{ meta.step.label }}</span>
-                        <span>{{ mxn(meta.step.amount) }}</span>
+                        <span>{{
+                            pending ? 'Pendiente' : mxn(meta.step.amount)
+                        }}</span>
                     </li>
                 </ul>
                 <p
@@ -192,18 +251,18 @@ const sectionKey = computed(() =>
             </div>
 
             <!-- Líneas de la sección -->
-            <div v-if="meta.section" class="mt-4 min-h-0 flex-1">
+            <div v-if="source" class="mt-4 min-h-0 flex-1">
                 <p class="mb-2 text-xs font-semibold">
                     Líneas que lo forman
                     <span class="font-normal text-muted-foreground"
-                        >· {{ meta.section.lines.length }}</span
+                        >· {{ source.lines.length }}</span
                     >
                 </p>
                 <p
-                    v-if="!meta.section.applies"
+                    v-if="!source.applies"
                     class="text-xs text-muted-foreground italic"
                 >
-                    {{ meta.section.note }}
+                    {{ source.note }}
                 </p>
                 <p
                     v-else-if="!lines.length"
@@ -262,7 +321,7 @@ const sectionKey = computed(() =>
                     v-if="meta.section || meta.result"
                     type="button"
                     class="inline-flex items-center gap-1.5 rounded-xl border bg-card px-3 py-2 text-xs font-semibold transition hover:border-emerald-400 hover:text-emerald-800 focus-visible:ring-3 focus-visible:ring-emerald-500/30 focus-visible:outline-none dark:hover:text-emerald-300"
-                    @click="emit('openStatement', sectionKey)"
+                    @click="emit('openStatement', meta.blockKey)"
                 >
                     <ListTree class="size-3.5" /> Ver en el estado de resultados
                     <ArrowUpRight class="size-3.5" />
@@ -271,7 +330,7 @@ const sectionKey = computed(() =>
                     v-if="meta.movementCount"
                     type="button"
                     class="inline-flex items-center gap-1.5 rounded-xl border bg-card px-3 py-2 text-xs font-semibold transition hover:border-cyan-400 hover:text-cyan-800 focus-visible:ring-3 focus-visible:ring-cyan-500/30 focus-visible:outline-none dark:hover:text-cyan-300"
-                    @click="emit('openMovements', `line:${sectionKey}`)"
+                    @click="emit('openMovements', `line:${lineKey}`)"
                 >
                     <Rows3 class="size-3.5" />
                     {{ meta.movementCount }} movimiento(s) del banco suman aquí

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head } from '@inertiajs/vue3';
+import { Head, usePage } from '@inertiajs/vue3';
 import {
     AlertTriangle,
     BarChart3,
@@ -15,12 +15,15 @@ import {
     ShieldCheck,
     Shuffle,
     Lock,
+    LineChart,
+    History,
 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
 import AppPageHeader from '@/components/app/AppPageHeader.vue';
 import AdjustmentsPanel from '@/components/estado-resultados/AdjustmentsPanel.vue';
 import ClassifyDialog from '@/components/estado-resultados/ClassifyDialog.vue';
 import CloseRoute from '@/components/estado-resultados/CloseRoute.vue';
+import ComparativesPanel from '@/components/estado-resultados/ComparativesPanel.vue';
 import ConciliationSummary from '@/components/estado-resultados/ConciliationSummary.vue';
 import ControlPanel from '@/components/estado-resultados/ControlPanel.vue';
 import DatasetSkeleton from '@/components/estado-resultados/DatasetSkeleton.vue';
@@ -52,6 +55,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { useCloseRoute } from '@/composables/estado-resultados/useCloseRoute';
 import type { CloseStep } from '@/composables/estado-resultados/useCloseRoute';
 import { useErActions } from '@/composables/estado-resultados/useErActions';
+import { useErComparatives } from '@/composables/estado-resultados/useErComparatives';
 import { useErDataset } from '@/composables/estado-resultados/useErDataset';
 import { useErGovernance } from '@/composables/estado-resultados/useErGovernance';
 import { useErNavigation } from '@/composables/estado-resultados/useErNavigation';
@@ -81,6 +85,13 @@ const props = defineProps<{
     toleranceDays: number;
     reportStatuses?: Array<{ key: string; label: string }>;
     uploadRules?: UploadRules;
+    /** Alcance de datos por sucursal del usuario (general = puede ver el consolidado). */
+    branchScope?: {
+        mode: string;
+        general: boolean;
+        label: string;
+        allowed_names?: string[] | null;
+    } | null;
 }>();
 
 const initialVersion = (() => {
@@ -121,6 +132,15 @@ const preliminaryReasons = computed<string[]>(() =>
         : route.blockers.value,
 );
 const historyOpen = ref(false);
+/** Versión aprobada con el modelo anterior (sin meta.model): se avisa y se muestra tal cual. */
+const legacyModel = computed(
+    () => !!dataset.value && !dataset.value.meta.model,
+);
+
+// Variación de las tarjetas: comparativa contra el periodo anterior (consulta ligera aparte).
+const base = ref((usePage().props as { base?: string }).base ?? '');
+const kpiComp = useErComparatives(base);
+const kpiPair = computed(() => kpiComp.data.value?.modes.anterior ?? null);
 const route = useCloseRoute(dataset);
 const nav = useErNavigation();
 const actions = useErActions({
@@ -193,6 +213,7 @@ const tabs = computed<ErTab[]>(() => {
 
     return [
         { key: 'resumen', label: 'Resumen', icon: BarChart3 },
+        { key: 'comparativas', label: 'Comparativas', icon: LineChart },
         { key: 'estado', label: 'Estado de resultados', icon: ListTree },
         { key: 'conciliacion', label: 'Movimientos', icon: Scale },
         {
@@ -247,6 +268,21 @@ watch(version, () => {
             dataset.value?.movements.find((m) => m.fingerprint === fp) ?? null;
     }
 });
+// Las tarjetas comparan contra el periodo anterior (sólo cifras en vivo del periodo vigente).
+watch(
+    () =>
+        [dataset.value?.meta.period.id, dataset.value?.meta.scope.key] as const,
+    ([pid, sc]) => {
+        if (pid && sc) {
+            kpiComp.load({
+                periodId: pid,
+                scope: sc,
+                modes: ['anterior'],
+                charts: false,
+            });
+        }
+    },
+);
 watch(periodId, () => {
     table.value?.clearSelection();
     nav.selectedStep.value = null;
@@ -337,7 +373,7 @@ const historyUrl = (fp: string) =>
             <AppPageHeader
                 kicker="Análisis financiero"
                 title="Estado de Resultados"
-                subtitle="Del banco, el ERP y la Radiografía a los tres EBITDA, el EBIT, el EBT y la utilidad neta. Cada cifra se puede abrir para ver de dónde sale."
+                subtitle="Ingresos operativos − OPEX = EBITDA → EBIT → EBT → utilidad neta, con banco, ERP y Radiografía conciliados. Cada cifra se puede abrir para ver de dónde sale."
             >
                 <template #icon>
                     <Landmark class="size-5" />
@@ -406,9 +442,18 @@ const historyUrl = (fp: string) =>
                         :class="loading ? 'pointer-events-none opacity-60' : ''"
                         :aria-busy="loading"
                     >
+                        <KpiStrip
+                            :dataset="dataset"
+                            :comparison="dataset.meta.model ? kpiPair : null"
+                            :comparison-loading="kpiComp.loading.value"
+                            :active-step="nav.selectedStep.value"
+                            @select="nav.selectStep"
+                        />
+
                         <ReportStatusBar
                             v-if="report"
                             :report="report"
+                            :dataset="dataset"
                             :can-approve="!!can.aprobar"
                             :approving="gov.approving.value"
                             :reopening="gov.reopening.value"
@@ -420,6 +465,32 @@ const historyUrl = (fp: string) =>
                             @go="(t) => nav.go(t)"
                         />
 
+                        <p
+                            v-if="legacyModel"
+                            class="flex items-start gap-2 rounded-2xl border border-violet-300 bg-violet-50 px-4 py-3 text-sm text-violet-900 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+                            role="note"
+                        >
+                            <History class="mt-0.5 size-4 shrink-0" />
+                            <span
+                                ><b>Versión con modelo anterior.</b> Se aprobó
+                                antes del modelo de un solo EBITDA: se muestra
+                                tal como se aprobó y algunas cifras (OPEX total,
+                                márgenes) pueden no estar disponibles.</span
+                            >
+                        </p>
+                        <p
+                            v-if="branchScope && !branchScope.general"
+                            class="flex items-start gap-2 rounded-2xl border bg-muted/50 px-4 py-3 text-sm"
+                            role="note"
+                        >
+                            <Lock class="mt-0.5 size-4 shrink-0" />
+                            <span
+                                >Tu acceso está limitado a
+                                <b>{{ branchScope.label }}</b
+                                >: no ves el consolidado ni los gastos
+                                centralizados.</span
+                            >
+                        </p>
                         <p
                             v-if="dataset.meta.redactions?.message"
                             class="flex items-start gap-2 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
@@ -440,12 +511,6 @@ const historyUrl = (fp: string) =>
                             @go="onRouteStep"
                         />
 
-                        <KpiStrip
-                            :dataset="dataset"
-                            :active-step="nav.selectedStep.value"
-                            @select="nav.selectStep"
-                        />
-
                         <span id="er-tabs-anchor" class="block scroll-mt-2" />
                         <ErTabs v-model="nav.tab.value" :tabs="tabs" />
 
@@ -460,6 +525,20 @@ const historyUrl = (fp: string) =>
                                     :dataset="dataset"
                                     @open-statement="nav.openStatement"
                                     @open-movements="nav.openMovements"
+                                />
+                            </section>
+
+                            <section
+                                v-else-if="nav.tab.value === 'comparativas'"
+                                key="comparativas"
+                                role="tabpanel"
+                            >
+                                <ComparativesPanel
+                                    v-model:mode="nav.compMode.value"
+                                    v-model:contra="nav.compContra.value"
+                                    :period-id="dataset.meta.period.id"
+                                    :scope="dataset.meta.scope.key"
+                                    :periods="periods"
                                 />
                             </section>
 

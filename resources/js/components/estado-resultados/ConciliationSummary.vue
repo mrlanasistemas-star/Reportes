@@ -287,7 +287,7 @@ const reviewed = computed(() => {
             class="mt-4 grid gap-2"
             :class="
                 compact
-                    ? 'grid-cols-2 sm:grid-cols-3 2xl:grid-cols-5'
+                    ? 'sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5'
                     : 'sm:grid-cols-2 lg:grid-cols-5'
             "
         >
