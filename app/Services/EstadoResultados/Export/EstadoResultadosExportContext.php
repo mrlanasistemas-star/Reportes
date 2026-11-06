@@ -304,10 +304,28 @@ class EstadoResultadosExportContext
         $period = (array) ($d['meta']['period'] ?? []);
         $periodRange = isset($period['start'], $period['end']) ? $period['start'].' a '.$period['end'] : '';
         $rows = [];
-        foreach (['radiografia', 'erp', 'nomina'] as $k) {
-            if (isset($s[$k])) {
-                $rows[] = ['label' => (string) $s[$k]['label'], 'status' => (string) ($s[$k]['status'] ?? ''), 'status_label' => self::SOURCE_STATUS[$s[$k]['status'] ?? ''] ?? (string) ($s[$k]['status'] ?? ''),
-                    'period' => $periodRange, 'detail' => (string) ($s[$k]['detail'] ?? '')];
+        // Fuentes de datos simples: las conocidas primero y luego cualquier otra que agregue el
+        // dataset (p. ej. NOI de corporativo) con forma {label, status, detail}. Tolerante a
+        // claves nuevas o ausentes y a estados nuevos (se rotulan legibles, sin inventar).
+        $special = ['cuentas', 'ajustes', 'procesamiento', 'exportaciones'];
+        $simple = array_unique(array_merge(['radiografia', 'erp', 'nomina'], array_keys($s)));
+        $simpleRow = fn (array $src) => ['label' => (string) $src['label'], 'status' => (string) ($src['status'] ?? ''),
+            'status_label' => (string) ($src['status_label'] ?? self::statusLabel((string) ($src['status'] ?? ''))),
+            'period' => is_string($src['period'] ?? null) ? $src['period'] : $periodRange,
+            'detail' => (string) ErFormat::mask(is_scalar($src['detail'] ?? null) ? (string) $src['detail'] : '')];
+        foreach ($simple as $k) {
+            if (in_array($k, $special, true) || ! is_array($s[$k] ?? null)) {
+                continue;
+            }
+            if (isset($s[$k]['label'])) {
+                $rows[] = $simpleRow($s[$k]);
+            } elseif (array_is_list($s[$k])) {
+                // Fuente con varias partes (lista de {label, status, …}).
+                foreach ($s[$k] as $part) {
+                    if (is_array($part) && isset($part['label'])) {
+                        $rows[] = $simpleRow($part);
+                    }
+                }
             }
         }
         foreach ((array) ($s['cuentas'] ?? []) as $c) {
@@ -319,18 +337,26 @@ class EstadoResultadosExportContext
                 $detail = trim(ErFormat::mask((string) ($u['account'] ?? '')).' · '.ErFormat::mask((string) $u['name']).' · '.(int) $u['movements'].' movimientos · control '.$control, ' ·');
                 $range = trim(($u['first_date'] ?? '').' a '.($u['last_date'] ?? ''), ' a');
             }
-            $rows[] = ['label' => (string) $c['label'], 'status' => (string) $c['status'], 'status_label' => self::SOURCE_STATUS[$c['status']] ?? (string) $c['status'], 'period' => $range, 'detail' => $detail];
+            $rows[] = ['label' => (string) ($c['label'] ?? 'Cuenta bancaria'), 'status' => (string) ($c['status'] ?? ''), 'status_label' => self::statusLabel((string) ($c['status'] ?? '')), 'period' => $range, 'detail' => $detail];
         }
-        if (isset($s['ajustes'])) {
-            $rows[] = ['label' => (string) $s['ajustes']['label'], 'status' => (string) $s['ajustes']['status'], 'status_label' => self::SOURCE_STATUS[$s['ajustes']['status']] ?? (string) $s['ajustes']['status'], 'period' => $periodRange, 'detail' => (string) $s['ajustes']['detail']];
+        if (is_array($s['ajustes'] ?? null)) {
+            $a = $s['ajustes'];
+            $rows[] = ['label' => (string) ($a['label'] ?? 'Ajustes contables'), 'status' => (string) ($a['status'] ?? ''), 'status_label' => self::statusLabel((string) ($a['status'] ?? '')), 'period' => $periodRange, 'detail' => (string) ($a['detail'] ?? '')];
         }
-        if (isset($s['procesamiento'])) {
+        if (is_array($s['procesamiento'] ?? null)) {
             $p = $s['procesamiento'];
-            $rows[] = ['label' => (string) $p['label'], 'status' => (string) $p['status'], 'status_label' => self::SOURCE_STATUS[$p['status']] ?? (string) $p['status'], 'period' => $periodRange,
-                'detail' => $p['last_run'] ? 'Último procesamiento '.$p['last_run']['at'].' por '.($p['last_run']['user'] ?? '—') : 'Sin procesar'];
+            $run = $p['last_run'] ?? null;
+            $rows[] = ['label' => (string) ($p['label'] ?? 'Conciliación y clasificación'), 'status' => (string) ($p['status'] ?? ''), 'status_label' => self::statusLabel((string) ($p['status'] ?? '')), 'period' => $periodRange,
+                'detail' => $run ? 'Último procesamiento '.($run['at'] ?? '—').' por '.($run['user'] ?? '—') : 'Sin procesar'];
         }
 
         return $rows;
+    }
+
+    /** Rótulo legible de un estado de fuente (los estados nuevos se muestran humanizados, nunca vacíos). */
+    public static function statusLabel(string $status): string
+    {
+        return self::SOURCE_STATUS[$status] ?? ($status === '' ? 'Sin estado' : ucfirst(str_replace('_', ' ', $status)));
     }
 
     private function validation(array $d): array

@@ -141,3 +141,26 @@ it('sin ninguna fuente ni cifra: «sin datos» con importes null (nunca $0.00)',
         ->and(array_unique(array_values($s['values'])))->toBe([null])
         ->and($s['opex_categories'])->toBe([]);
 });
+
+it('comparabilidad con reservas: nunca sólo «no comparable»; dice qué fuente falta, de qué periodo y dónde se carga', function () {
+    $c = new PeriodComparability;
+    $oct = ucSummary(['period' => ['id' => 10, 'label' => 'Octubre 2026'], 'availability' => ['erp' => false, 'bancos' => ['cargadas' => 1, 'faltantes' => [['key' => 'excedentes', 'label' => 'Cuenta de excedentes']]]]]);
+    $sep = ucSummary(['period' => ['id' => 9, 'label' => 'Septiembre 2026'], 'availability' => ['bancos' => ['faltantes' => []]]]);
+
+    $r = $c->evaluate($oct, $sep);
+    expect($r['level'])->toBe('con_reservas')
+        ->and($r['comparable'])->toBeFalse()
+        ->and($r['headline'])->toContain('para comparar Octubre 2026 contra Septiembre 2026 falta')
+        ->and(collect($r['missing'])->pluck('source')->all())->toBe(['erp', 'bancos'])
+        ->and($r['missing'][0])->toMatchArray(['side' => 'actual', 'period_id' => 10, 'where' => 'carga'])
+        ->and($r['missing'][0]['message'])->toContain('ERP de gastos de Octubre 2026 → Carga de archivos')
+        ->and($r['missing'][1]['source_label'])->toContain('Cuenta de excedentes')
+        ->and($r['missing'][1]['where'])->toBe('er')
+        ->and($r['unaffected'])->toContain('ingresos_operativos');
+
+    expect($c->evaluate(ucSummary(), ucSummary())['level'])->toBe('comparable')
+        ->and($c->evaluate(ucSummary(), ucSummary(['status' => 'sin_datos']))['level'])->toBe('no_comparable')
+        // Resúmenes anteriores a la fuente NOI de corporativo (null) no se consideran distintos.
+        ->and($c->evaluate(ucSummary(['availability' => ['noi_corp' => true]]), ucSummary())['level'])->toBe('comparable')
+        ->and($c->evaluate(ucSummary(['availability' => ['noi_corp' => true]]), ucSummary(['availability' => ['noi_corp' => false]]))['missing'][0]['source'])->toBe('noi_corp');
+});

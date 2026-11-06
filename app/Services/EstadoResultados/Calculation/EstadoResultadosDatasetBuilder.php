@@ -11,16 +11,21 @@ use App\Models\Period;
 use App\Services\EstadoResultados\AdjustmentService;
 use App\Services\EstadoResultados\Classification\ClassificationService;
 use App\Services\EstadoResultados\Classification\ErpOutsideClassifier;
+use App\Services\EstadoResultados\Import\CorporatePayrollUploadService;
 use App\Services\EstadoResultados\Import\EstadoResultadosUploadService;
+use App\Services\EstadoResultados\Reconciliation\CorporatePayrollRepository;
 use App\Services\EstadoResultados\Reconciliation\ErpExpenseRepository;
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
 use App\Services\EstadoResultados\Reconciliation\NoiPayrollRepository;
+use App\Services\EstadoResultados\Sources\SourceChecklist;
+use App\Services\EstadoResultados\Sources\UploadModuleInspector;
 use App\Services\EstadoResultados\Support\Dimensions;
 use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\RadiographySummary;
 use App\Services\EstadoResultados\Support\Treatment as T;
 use App\Services\Radiography\BranchRadiographyCalculator as Radio;
 use Brick\Math\BigDecimal;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -94,6 +99,9 @@ class EstadoResultadosDatasetBuilder
     /** Última corrida OK (validación de integridad). */
     private ?EstadoResultadosRun $lastOkRun = null;
 
+    /** NOI de corporativo vigente (fuente propia del ER): carga y colaboradores. */
+    private array $corpData = ['upload' => null, 'employees' => []];
+
     public function __construct(
         private readonly RadiographyBaseProvider $base,
         private readonly ErpExpenseRepository $erp,
@@ -101,6 +109,8 @@ class EstadoResultadosDatasetBuilder
         private readonly ClassificationService $classifications,
         private readonly AdjustmentService $adjustments,
         private readonly NoiPayrollRepository $noi,
+        private readonly CorporatePayrollRepository $corpPayroll,
+        private readonly UploadModuleInspector $inspector,
     ) {}
 
     /** Alcances disponibles: consolidado + sucursales operativas de Radiografía. */
@@ -196,6 +206,7 @@ class EstadoResultadosDatasetBuilder
         $this->linkedApplied = $ctx['linked_applied'];
         $this->currentErpSignature = $ctx['current_erp_signature'];
         $this->lastOkRun = $ctx['sources_shared']['last_ok_run'];
+        $this->corpData = $ctx['corp_payroll'];
 
         $consolidated = $scope === self::CONSOLIDADO;
         if (! $consolidated && ! isset($base['branches'][$scope])) {
@@ -626,6 +637,11 @@ class EstadoResultadosDatasetBuilder
             ];
         }
 
+        $corp = $this->corpPayroll->forPeriod($period->id);
+        if ($corp['upload'] !== null) {
+            $this->appendCorporatePayroll($items, $corp, $noiData, $overrides, $period);
+        }
+
         // Reembolsos vinculados: reducen la MISMA línea del gasto reembolsado (si está reconocido).
         $byFp = [];
         foreach ($items as $idx => $i) {
@@ -670,12 +686,121 @@ class EstadoResultadosDatasetBuilder
 
         return [
             'items' => $items,
+            'corp_payroll' => $corp,
             'noi' => $noiData,
             'current_erp_signature' => $currentErpSignature,
             'active_upload_totals' => $activeUploadTotals,
             'active_uploads' => $activeUploads,
             'linked_applied' => $linkedApplied,
         ];
+    }
+
+    /**
+     * NOI de corporativo (fuente propia del ER) → un item por colaborador, categoría Nómina corporativa.
+     *
+     * Regla de NO doble conteo (se documenta en el dataset y se marca en validación):
+     *  1. Colaborador del NOI de corporativo que también está en el NOI de sucursales de Carga de
+     *     archivos (misma llave de nombre): Radiografía ya suma TODO ese NOI al consolidado ⇒ el item
+     *     queda «Ya incluido en Radiografía» y NO se suma (se puede reclasificar con motivo).
+     *  2. Pago de banco/ERP clasificado como Nómina corporativa que NOMBRA a un colaborador del NOI de
+     *     corporativo: es el pago de un costo ya reconocido ⇒ pasa a «Requiere revisión» con sugerencia
+     *     «Ya incluido en el NOI de corporativo» (no suma hasta que una persona lo confirme).
+     *  3. Resto de nómina corporativa desde banco/ERP (sin nombre): se conserva, pero se lista como
+     *     diferencia que bloquea la aprobación hasta confirmarla manualmente (no es el mismo pago).
+     *
+     * @param  list<array<string,mixed>>  $items
+     */
+    private function appendCorporatePayroll(array &$items, array $corp, array $noiData, array $overrides, Period $period): void
+    {
+        $upload = $corp['upload'];
+        $corpIndex = ['employees' => [], 'ambiguous_keys' => []];
+        foreach ($corp['employees'] as $emp) {
+            if (str_contains($emp['key'], ' ')) {
+                $corpIndex['employees'][$emp['key']] = ['employee_id' => 0, 'name' => $emp['name'], 'branch' => 'CORPORATIVO', 'operative' => false, 'total' => $emp['percepciones']];
+            }
+        }
+
+        // (2) Pagos de banco/ERP que nombran a un colaborador del NOI de corporativo.
+        foreach ($items as &$i) {
+            if ($i['override'] !== null || $i['treatment'] !== T::NOMINA_CORPORATIVA || ! in_array($i['source'], ['banco', 'erp'], true)) {
+                continue;
+            }
+            $text = trim(implode(' ', array_filter([$i['beneficiary'] ?? null, $i['concept'] ?? null, $i['observations'] ?? null])));
+            $match = NoiPayrollRepository::match($corpIndex, $i['beneficiary'] ?? null);
+            if ($match['status'] === 'ninguno') {
+                $match = NoiPayrollRepository::match($corpIndex, $text, true);
+            }
+            if ($match['status'] === 'ninguno') {
+                continue;
+            }
+            $i['treatment'] = T::PENDIENTE;
+            $i['needs_review'] = true;
+            $i['suggested_treatment'] = T::CUBIERTO_NOI_CORPORATIVO;
+            $i['rule_code'] = 'nomina_corporativa_en_noi_corporativo';
+            $i['rule_reason'] = 'El pago nombra a '.$match['employee']['name'].', colaborador del NOI de corporativo cuyo costo ya se reconoce desde ese NOI. Confirme si es el mismo pago (entonces «Ya incluido en el NOI de corporativo») o un pago adicional antes de sumarlo: la nómina nunca se cuenta dos veces.';
+        }
+        unset($i);
+
+        $end = $period->end_date->format('Y-m-d');
+        foreach ($corp['employees'] as $emp) {
+            $fp = 'noicorp:'.sha1($emp['key']);
+            $inBranchNoi = str_contains($emp['key'], ' ') ? NoiPayrollRepository::match($noiData, $emp['name']) : ['status' => 'ninguno', 'employee' => null];
+            $overlap = $inBranchNoi['status'] !== 'ninguno' ? $inBranchNoi['employee'] : null;
+            $auto = $overlap ? T::CUBIERTO_RADIOGRAFIA : T::NOMINA_CORPORATIVA;
+            $ov = $overrides[$fp] ?? null;
+            $treatment = $ov['treatment'] ?? $auto;
+            $items[] = [
+                'fingerprint' => $fp,
+                'source' => 'noi_corp',
+                'account_slot' => 'noi_corporativo',
+                'account_label' => 'NOI de corporativo',
+                'file' => $upload->original_name,
+                'source_row' => 0,
+                'date' => $end,
+                'reference' => $emp['code'] ? 'Clave '.$emp['code'] : null,
+                'folio' => null,
+                'uuid' => null,
+                'beneficiary' => $emp['name'],
+                'concept' => 'Nómina NOI de corporativo · '.$emp['name'],
+                'category' => 'Nómina corporativa (NOI de corporativo)',
+                'observations' => $emp['lines'].' concepto(s) · percepciones $'.number_format((float) $emp['percepciones'], 2).' · deducciones $'.number_format((float) $emp['deducciones'], 2).' (las deducciones no se suman: el costo es la percepción)',
+                'sucursal_raw' => 'CORPORATIVO',
+                'branch_name' => 'CORPORATIVO',
+                'branch_kind' => 'corporativo',
+                'cargo' => $emp['percepciones'],
+                'abono' => '0.00',
+                'in_period' => true,
+                'erp' => [],
+                'reconciliation_status' => 'noi_corporativo',
+                'reconciliation_message' => $overlap
+                    ? 'También está en el NOI de sucursales de Carga de archivos ('.($overlap['branch'] ?? 'sin sucursal').', $'.number_format((float) $overlap['total'], 2).'): Radiografía ya lo suma; no se cuenta otra vez.'
+                    : 'Costo de nómina del NOI de corporativo (Σ percepciones). Se reconoce una sola vez, desde aquí.',
+                'auto_treatment' => $auto,
+                'suggested_treatment' => null,
+                'rule_code' => $overlap ? 'nomina_corporativa_ya_en_noi_sucursales' : 'nomina_noi_corporativo',
+                'rule_reason' => $overlap
+                    ? 'El colaborador '.$emp['name'].' también aparece en el NOI de sucursales del periodo; Radiografía ya incluye ese NOI en el consolidado. Sumarlo desde el NOI de corporativo lo duplicaría.'
+                    : 'Percepciones del colaborador en el NOI de corporativo: categoría Nómina corporativa del OPEX.',
+                'treatment' => $treatment,
+                'override' => $ov,
+                'needs_review' => $treatment === T::PENDIENTE,
+                'transfer_pair' => null,
+                'detail_lines' => (int) $emp['lines'],
+                'linked_bank' => [],
+                'applied' => '0.00',
+                'match_type' => null,
+                'match_group' => null,
+                'reversal_pair' => null,
+                'refund_of' => null,
+                'refund_status' => null,
+                'noi_employee_id' => $overlap['employee_id'] ?? null,
+                'recognizing_hint' => $overlap ? 'noi' : null,
+                'import_status' => 'noi_corporativo',
+                'recognition' => ['period_id' => $period->id, 'period_code' => $period->code, 'basis' => 'periodo_noi', 'out_of_period' => null],
+                'dates' => ['operation' => $end, 'bank' => null, 'erp_capture' => null, 'erp_payment' => null, 'accrual' => $end],
+                'links' => [],
+            ];
+        }
     }
 
     private function publicLink(object $l, bool $inverse): array
@@ -800,6 +925,10 @@ class EstadoResultadosDatasetBuilder
                 $key = 'erp|'.($i['category'] ?: 'Sin categoría');
                 $label = 'ERP · '.($i['category'] ?: 'Sin categoría');
                 $source = 'ERP de gastos (sucursal CORPORATIVO)';
+            } elseif ($i['source'] === 'noi_corp') {
+                $key = 'noi_corp';
+                $label = 'NOI de corporativo (percepciones del personal de Corporativo)';
+                $source = 'NOI de corporativo (Estado de Resultados → Fuentes)';
             } else {
                 $key = 'banco';
                 $label = 'Pagos complementarios (estados de cuenta)';
@@ -1293,6 +1422,14 @@ class EstadoResultadosDatasetBuilder
         $addUnresolved('erp_saldo_pendiente', 'Saldo ERP sin pago bancario identificado (pagos parciales)', count($erpPartial), Money::str2(Money::sum(array_map(fn ($i) => $i['erp_payment']['pending'], $erpPartial))), false);
         $addUnresolved('traspasos_sin_contraparte', 'Traspasos entre cuentas sin contraparte en la otra cuenta', count($unpairedTraspasos), $gross($unpairedTraspasos), true,
             array_values(array_filter($unpairedTraspasos, $isOpen)), fn ($i) => $i['amounts']['gross']);
+        if ($this->corpData['upload'] !== null) {
+            // NOI de corporativo: posibles dobles conteos (regla en appendCorporatePayroll()).
+            $corpBankErp = array_values(array_filter($items, fn ($i) => in_array($i['source'], ['banco', 'erp'], true) && $i['in_period'] && $i['treatment'] === T::NOMINA_CORPORATIVA));
+            $addUnresolved('noi_corporativo_doble_conteo', 'Nómina corporativa desde bancos/ERP además del NOI de corporativo: confirma con una clasificación manual que no es el mismo pago', count($corpBankErp), Money::str2(Money::sum(array_map(fn ($i) => $i['impact']['amount'], $corpBankErp))), true,
+                array_values(array_filter($corpBankErp, fn ($i) => ($i['override'] ?? null) === null)), fn ($i) => $i['impact']['amount']);
+            $corpInBranch = array_values(array_filter($items, fn ($i) => $i['source'] === 'noi_corp' && $i['rule_code'] === 'nomina_corporativa_ya_en_noi_sucursales' && $i['treatment'] === T::CUBIERTO_RADIOGRAFIA));
+            $addUnresolved('noi_corporativo_en_noi_sucursales', 'Colaboradores del NOI de corporativo que ya están en el NOI de sucursales (Radiografía ya los suma: no se cuentan otra vez)', count($corpInBranch), $total($corpInBranch, 'gross'), false);
+        }
         if (! ($radiography['base_ok'] ?? true)) {
             $addUnresolved('radiografia_no_explicada', 'Diferencia NO explicada contra Radiografía', 1, (string) $radiography['difference_base']);
         }
@@ -1445,6 +1582,18 @@ class EstadoResultadosDatasetBuilder
             // Antes se volvía a leer TODO el ERP sólo para recalcular su firma: es la misma foto de items().
             'current_sig' => $currentSig,
             'uploads' => EstadoResultadosUpload::query()->with('uploader:id,name')->where('period_id', $period->id)->orderByDesc('id')->get(),
+            // Diagnóstico de lo que el ER ve en Carga de archivos (sólo lectura) y del NOI de corporativo.
+            'diagnosis' => $this->inspector->inspect($period, $dataIds),
+            'payroll_history' => Schema::hasTable('estado_resultados_payroll_uploads')
+                ? DB::table('estado_resultados_payroll_uploads as pu')->leftJoin('users as u', 'u.id', '=', 'pu.uploaded_by')
+                    ->where('pu.period_id', $period->id)->orderByDesc('pu.id')->limit(20)
+                    ->get(['pu.id', 'pu.original_name', 'pu.status', 'pu.file_hash', 'pu.employees_count', 'pu.created_at', 'u.name as uploader'])
+                    ->map(fn ($r) => [
+                        'id' => (int) $r->id, 'name' => (string) $r->original_name, 'status' => (string) $r->status, 'hash' => substr((string) $r->file_hash, 0, 12),
+                        'movements' => (int) $r->employees_count, 'uploaded_by' => $r->uploader,
+                        'uploaded_at' => $r->created_at ? Carbon::parse($r->created_at)->timezone('America/Mexico_City')->format('d/m/Y H:i') : null,
+                    ])->all()
+                : [],
             'unprocessed' => EstadoResultadosMovement::query()->where('period_id', $period->id)->whereNull('processed_at')->exists(),
             'exports' => EstadoResultadosExport::query()->with('user:id,name')
                 ->where('period_id', $period->id)->latest('id')->limit(15)->get()
@@ -1503,8 +1652,9 @@ class EstadoResultadosDatasetBuilder
         $hasBank = $uploads->contains(fn ($u) => $u->status !== EstadoResultadosUpload::STATUS_REPLACED);
         $stale = $lastRun && $lastRun->status === 'ok' && $lastRun->erp_signature !== $currentSig;
         $unprocessed = $shared['unprocessed'];
+        $diag = $shared['diagnosis'] ?? [];
 
-        return [
+        $out = [
             'radiografia' => [
                 'label' => 'Radiografía (base EBITDA sucursales)',
                 'status' => $summary ? 'procesado' : 'con_incidencias',
@@ -1513,14 +1663,16 @@ class EstadoResultadosDatasetBuilder
             'erp' => [
                 'label' => 'ERP de gastos',
                 'status' => $erpCount > 0 ? ($stale ? 'con_incidencias' : 'procesado') : 'pendiente',
-                'detail' => $erpCount > 0 ? "{$erpCount} requisiciones del periodo".($stale ? ' · el ERP cambió después del último procesamiento: vuelva a procesar.' : '') : 'Sin ERP cargado para el periodo (se carga en Carga de archivos).',
+                'detail' => $erpCount > 0 ? "{$erpCount} requisiciones del periodo".($stale ? ' · el ERP cambió después del último procesamiento: vuelva a procesar.' : '') : ($diag['erp']['message'] ?? 'Sin ERP cargado para el periodo (se carga en Carga de archivos).'),
                 'count' => $erpCount,
+                'diagnosis' => $diag['erp'] ?? null,
             ],
             'nomina' => [
                 'label' => 'Nómina (NOI + IMSS)',
                 'status' => $noiCount > 0 ? 'procesado' : 'pendiente',
-                'detail' => $noiCount > 0 ? "{$noiCount} movimientos NOI · {$imssCount} registros IMSS" : 'Sin NOI cargado para el periodo.',
+                'detail' => $noiCount > 0 ? "{$noiCount} movimientos NOI · {$imssCount} registros IMSS" : ($diag['nomina']['message'] ?? 'Sin NOI cargado para el periodo.'),
                 'count' => $noiCount,
+                'diagnosis' => $diag['nomina'] ?? null,
             ],
             'cuentas' => $slots,
             'ajustes' => [
@@ -1542,6 +1694,37 @@ class EstadoResultadosDatasetBuilder
             ],
             'exportaciones' => $shared['exports'],
         ];
+        $out['noi_corporativo'] = $this->corporatePayrollSource($shared, $items);
+        $out['checklist'] = SourceChecklist::build((string) $shared['period']->label, $out, $diag, array_values($adj),
+            (bool) config('estado_resultados.fuentes.noi_corporativo_obligatorio', false));
+
+        return $out;
+    }
+
+    /** Tarjeta del NOI de corporativo (fuente propia del ER) para Fuentes. */
+    private function corporatePayrollSource(array $shared, array $items): array
+    {
+        $upload = $this->corpData['upload'];
+        $corpItems = array_values(array_filter($items, fn ($i) => $i['source'] === 'noi_corp'));
+        $overlap = array_values(array_filter($corpItems, fn ($i) => $i['rule_code'] === 'nomina_corporativa_ya_en_noi_sucursales'));
+        $recognized = Money::sum(array_map(fn ($i) => $i['impact']['amount'], array_filter($corpItems, fn ($i) => $i['impact']['included'])));
+        $other = array_filter($items, fn ($i) => $i['source'] !== 'noi_corp' && $i['in_period'] && $i['treatment'] === T::NOMINA_CORPORATIVA);
+
+        return [
+            'key' => 'noi_corporativo',
+            'label' => 'NOI de corporativo',
+            'status' => $upload ? 'procesado' : 'pendiente',
+            'required' => (bool) config('estado_resultados.fuentes.noi_corporativo_obligatorio', false),
+            'detail' => $upload
+                ? $upload->employees_count.' colaborador(es) · percepciones $'.number_format((float) $upload->total_percepciones, 2).' · reconocido en Nómina corporativa $'.number_format((float) Money::str2($recognized), 2)
+                : 'Sin NOI de corporativo para el periodo (se sube aquí).',
+            'upload' => CorporatePayrollUploadService::payload($upload),
+            'recognized' => Money::str2($recognized),
+            'overlap' => ['count' => count($overlap), 'amount' => Money::str2(Money::sum(array_column($overlap, 'cargo')))],
+            'other_sources_amount' => Money::str2(Money::sum(array_map(fn ($i) => $i['impact']['amount'], $other))),
+            'rule' => 'Costo = Σ percepciones del NOI de corporativo. No se suma otra vez: (1) un colaborador que ya está en el NOI de sucursales (Radiografía lo incluye); (2) un pago de banco/ERP que nombra a un colaborador del NOI de corporativo (queda por revisar); el resto de nómina corporativa de banco/ERP se marca para confirmar.',
+            'history' => $shared['payroll_history'] ?? [],
+        ];
     }
 
     private function publicItem(array $i): array
@@ -1550,6 +1733,7 @@ class EstadoResultadosDatasetBuilder
             'erp' => 'Registro ERP',
             'erp_con_pago_bancario' => 'Registro ERP con pago bancario',
             'sin_procesar' => 'Sin procesar',
+            'noi_corporativo' => 'NOI de corporativo',
             default => $i['reconciliation_status'],
         };
         $i['treatment_label'] = T::label($i['treatment']);

@@ -79,6 +79,14 @@ class ApprovalInputSignature
         foreach (self::FACT_TABLES as $table => $extra) {
             $c['fact.'.$table] = $this->aggregate($table, fn ($q) => $q->whereIn('period_id', $dataIds ?: [0]), $extra);
         }
+        // NOI de corporativo: sólo si el periodo tiene cargas (las firmas de versiones previas no cambian).
+        if (Schema::hasTable('estado_resultados_payroll_uploads')) {
+            $payroll = DB::table('estado_resultados_payroll_uploads')->where('period_id', $pid)->orderBy('id')
+                ->get(['id', 'file_hash', 'status', 'total_percepciones', 'updated_at'])->map(fn ($r) => array_values((array) $r))->all();
+            if ($payroll !== []) {
+                $c['payroll_uploads'] = $payroll;
+            }
+        }
 
         return ['hash' => hash('sha256', json_encode($c, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION)), 'components' => $c];
     }

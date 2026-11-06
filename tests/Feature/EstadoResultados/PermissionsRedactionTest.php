@@ -214,11 +214,13 @@ it('datos incompletos ⇒ PRELIMINAR en dataset, Excel y PDF; nunca muestra un a
             $da = $ws->getCell("C{$r}")->getValue();
         }
     }
-    expect((string) $ws->getCell('G1')->getValue())->toBe('PRELIMINAR')
-        ->and((string) $ws->getCell('C4')->getValue())->toContain('Versión 1')->toContain('PENDIENTE DE CONCILIACIÓN')
+    // Encabezado de la hoja: estado + versión a la derecha (F2) y aviso breve (F3).
+    expect((string) $ws->getCell('F2')->getValue())->toContain('PRELIMINAR')->toContain('VERSIÓN 1')
+        ->and((string) $ws->getCell('F3')->getValue())->toBe('Las cifras pueden cambiar')
         ->and($da)->toBe('Sin información');
     $control = $book->getSheetByName('Conciliación y trazabilidad')->toArray(null, false, false, false);
-    expect(collect($control)->pluck(1)->filter()->all())->toContain('Motivo PRELIMINAR', 'Criterio gerencial aplicado', 'Versión del reporte', 'Estado del reporte');
+    expect(collect($control)->pluck(1)->filter()->all())->toContain('Motivo PRELIMINAR', 'Criterio gerencial aplicado', 'Versión del reporte', 'Estado del reporte')
+        ->and(collect($control)->firstWhere(1, 'Estado del reporte')[2] ?? '')->toContain('Pendiente de conciliación')->toContain('PRELIMINAR');
 
     $html = (string) file_get_contents($this->actingAs($admin)->get("/estado-resultados/{$period->id}/exportar/pdf")->assertOk()->getFile()->getPathname());
     expect($html)->toContain('class="watermark">PRELIMINAR')

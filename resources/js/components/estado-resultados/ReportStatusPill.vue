@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { BadgeCheck, CircleDashed, ShieldAlert } from 'lucide-vue-next';
-import { computed } from 'vue';
+import { computed, inject } from 'vue';
 import {
     Popover,
     PopoverContent,
@@ -50,6 +50,9 @@ const view = computed(() => {
         icon: BadgeCheck,
     };
 });
+
+/** Acceso a Fuentes provisto por la página (sin pasar por la barra de comandos). */
+const goFuentes = inject<(() => void) | null>('er:goFuentes', null);
 
 const TONES: Record<string, string> = {
     emerald:
@@ -135,6 +138,22 @@ const TONES: Record<string, string> = {
                 Fuentes cargadas, conciliación procesada, sin pendientes,
                 ajustes capturados y validaciones en $0.00.
             </p>
+            <div
+                v-if="
+                    goFuentes &&
+                    blockers.length &&
+                    report?.source !== 'snapshot'
+                "
+                class="border-t px-4 py-2.5"
+            >
+                <button
+                    type="button"
+                    class="text-xs font-bold text-emerald-700 hover:underline focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:outline-none dark:text-emerald-400"
+                    @click="goFuentes()"
+                >
+                    Ver qué falta y cómo resolverlo →
+                </button>
+            </div>
         </PopoverContent>
     </Popover>
 </template>

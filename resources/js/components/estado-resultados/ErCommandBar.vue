@@ -1,27 +1,33 @@
 <script setup lang="ts">
 import {
-    CalendarRange,
-    ChevronDown,
     Clock3,
     FileSpreadsheet,
     FileText,
     Loader2,
     Lock,
-    MapPin,
     RefreshCw,
 } from 'lucide-vue-next';
-import { computed } from 'vue';
+import { computed, reactive, watch } from 'vue';
 import { Button } from '@/components/ui/button';
 import {
     Tooltip,
     TooltipContent,
     TooltipTrigger,
 } from '@/components/ui/tooltip';
+import ErPeriodPicker from './ErPeriodPicker.vue';
+import type { PeriodStatus } from './ErPeriodPicker.vue';
+import ErScopePicker from './ErScopePicker.vue';
 import ReportStatusPill from './ReportStatusPill.vue';
 import type { Dataset, Permissions } from './types';
 
 const props = defineProps<{
-    periods: Array<{ id: number; code: string; label: string }>;
+    periods: Array<{
+        id: number;
+        code: string;
+        label: string;
+        start?: string;
+        end?: string;
+    }>;
     scopes: Array<{ key: string; label: string }>;
     dataset: Dataset | null;
     loading: boolean;
@@ -61,8 +67,26 @@ const processBlock = computed<string | null>(() => {
     return null;
 });
 
-const selectCls =
-    'peer h-11 w-full cursor-pointer appearance-none truncate rounded-xl border border-transparent bg-transparent pr-9 pl-10 text-sm font-semibold text-foreground transition outline-none hover:bg-muted/60 focus-visible:border-emerald-500 focus-visible:ring-3 focus-visible:ring-emerald-500/20';
+/**
+ * Estado de cada periodo ya consultado en esta pestaña (sale del dataset que llega; no se
+ * pide nada extra al servidor). Solo se toma de la versión vigente, no de una consultada.
+ */
+const statuses = reactive<Record<number, PeriodStatus>>({});
+watch(
+    () => props.dataset?.meta,
+    (m) => {
+        const r = m?.report;
+
+        if (m && r && r.current !== false) {
+            statuses[m.period.id] = {
+                status: r.status,
+                label: r.status_label,
+                preliminary: !!r.preliminary,
+            };
+        }
+    },
+    { immediate: true },
+);
 </script>
 
 <template>
@@ -70,42 +94,21 @@ const selectCls =
         class="flex flex-wrap items-center gap-2 rounded-2xl border bg-card p-1.5 shadow-soft-xs"
     >
         <div
-            class="flex max-w-full flex-[1_1_24rem] flex-col gap-1 sm:flex-row"
+            class="flex max-w-full flex-[1_1_24rem] flex-col gap-1.5 sm:flex-row"
         >
-            <label
-                class="relative block min-w-0 sm:min-w-[18rem] sm:flex-[1.2]"
-            >
-                <span class="sr-only">Periodo</span>
-                <CalendarRange
-                    class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-emerald-700 dark:text-emerald-400"
-                />
-                <select
-                    v-model.number="periodId"
-                    :class="selectCls"
-                    :title="periods.find((p) => p.id === periodId)?.label"
-                >
-                    <option v-for="p in periods" :key="p.id" :value="p.id">
-                        {{ p.label }}
-                    </option>
-                </select>
-                <ChevronDown
-                    class="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground"
-                />
-            </label>
-            <label class="relative block min-w-0 sm:min-w-[15.5rem] sm:flex-1">
-                <span class="sr-only">Alcance</span>
-                <MapPin
-                    class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-cyan-600 dark:text-cyan-400"
-                />
-                <select v-model="scope" :class="selectCls">
-                    <option v-for="s in scopes" :key="s.key" :value="s.key">
-                        {{ s.label }}
-                    </option>
-                </select>
-                <ChevronDown
-                    class="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground"
-                />
-            </label>
+            <ErPeriodPicker
+                v-model="periodId"
+                class="min-w-0 sm:min-w-[17rem] sm:flex-[1.15]"
+                :periods="periods"
+                :statuses="statuses"
+                :loading="loading"
+            />
+            <ErScopePicker
+                v-model="scope"
+                class="min-w-0 sm:min-w-[15rem] sm:flex-1"
+                :scopes="scopes"
+                :loading="loading"
+            />
         </div>
 
         <div

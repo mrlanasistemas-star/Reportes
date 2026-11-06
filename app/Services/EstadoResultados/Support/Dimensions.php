@@ -28,6 +28,7 @@ final class Dimensions
         'sin_control' => 'Importado (el archivo no trae total de control)',
         'control_no_cuadra' => 'Importado (el total de control no cuadra)',
         'erp' => 'Registro del ERP de gastos',
+        'noi_corporativo' => 'NOI de corporativo (cargado en el Estado de Resultados)',
     ];
 
     public const RECONCILIATION = [
@@ -60,6 +61,7 @@ final class Dimensions
         'erp' => 'ERP de gastos',
         'noi' => 'NOI (nómina, ya en Radiografía)',
         'radiografia' => 'Radiografía (ERP / Lendus / NOI de sucursales)',
+        'noi_corp' => 'NOI de corporativo',
     ];
 
     public const OUT_OF_PERIOD = [
@@ -72,6 +74,7 @@ final class Dimensions
     public const BASIS = [
         'fecha_bancaria' => 'Fecha bancaria dentro del periodo',
         'periodo_erp' => 'Periodo de importación del ERP (mismo universo que Radiografía)',
+        'periodo_noi' => 'Periodo de la nómina (NOI de corporativo del mes)',
     ];
 
     public const LINK_KINDS = [
@@ -125,6 +128,7 @@ final class Dimensions
             $nothingLeft => $c['recognizing_hint'] ?? 'erp',
             $affects => $c['source'],
             $t === Treatment::CONCILIADO_ERP, $t === Treatment::CUBIERTO_RADIOGRAFIA => $c['recognizing_hint'] ?? 'radiografia',
+            $t === Treatment::CUBIERTO_NOI_CORPORATIVO => 'noi_corp',
             $t === Treatment::PENDIENTE && $applied => $c['recognizing_hint'], // la parte aplicada ya la reconoce el ERP
             default => null,
         };

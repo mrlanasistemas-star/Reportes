@@ -29,6 +29,32 @@ $formulaWith = [
     'utilidad_neta' => [$r['ebt'], '−', $r['isr']],
 ];
 $numbered = ['ingresos_operativos' => 1, 'opex_total' => 2, 'depreciacion_amortizacion' => 3, 'resultado_financiero_neto' => 4, 'isr' => 5];
+// Índice: secciones numeradas con anclas internas (#id). $pages (opcional) = página REAL de cada ancla,
+// leída del propio PDF en una primera pasada (EstadoResultadosPdfExporter); sin ella no se muestran números.
+$pages = $pages ?? [];
+$br = $cmp['branches'] ?? null;
+$hasBranches = $m['scope']['consolidated'] && $br && $br['rows'];
+$pairTitles = ['anterior' => 'Contra el periodo anterior', 'anio_anterior' => 'Contra el mismo mes del año anterior', 'acumulado' => 'Acumulado del año (YTD)'];
+$toc = [
+    ['id' => 'resumen', 'n' => '01', 'title' => 'Resumen ejecutivo', 'desc' => 'Resultados clave, márgenes y del ingreso a la utilidad neta', 'subs' => []],
+    ['id' => 'estado', 'n' => '02', 'title' => 'Estado de Resultados detallado', 'desc' => 'Cada renglón con su importe y su peso sobre los ingresos', 'subs' => []],
+    ['id' => 'comparativas', 'n' => '03', 'title' => 'Comparativas', 'desc' => 'Variaciones en importe, porcentaje y evaluación',
+        'subs' => $cmp['available'] ? array_values(array_filter(array_map(fn ($k) => isset($cmp['pairs'][$k]) ? ['id' => 'cmp-'.$k, 'title' => $pairTitles[$k]] : null, array_keys($pairTitles)))) : []],
+    ['id' => 'graficas', 'n' => '04', 'title' => 'Gráficas', 'desc' => 'Tendencias, cascada del resultado y composición del gasto',
+        'subs' => array_values(array_filter([
+            ['id' => 'g-evolucion', 'title' => 'Evolución de resultados'],
+            ['id' => 'g-ingresos', 'title' => 'Ingresos operativos vs OPEX'],
+            ['id' => 'g-cascada', 'title' => 'Cascada del resultado'],
+            ['id' => 'g-composicion', 'title' => 'Composición del OPEX'],
+            ['id' => 'g-margenes', 'title' => 'Márgenes'],
+            $m['scope']['consolidated'] && $svg['sucursales'] ? ['id' => 'g-sucursales', 'title' => 'Resultado por sucursal'] : null,
+        ]))],
+];
+if ($hasBranches) {
+    $toc[] = ['id' => 'sucursales', 'n' => '05', 'title' => 'Sucursales', 'desc' => 'Resultado por sucursal y conciliación al consolidado', 'subs' => []];
+}
+$toc[] = ['id' => 'conciliacion', 'n' => sprintf('%02d', count($toc) + 1), 'title' => 'Conciliación y fuentes', 'desc' => 'Validaciones, fuentes del periodo y trazabilidad', 'subs' => []];
+$num = collect($toc)->pluck('n', 'id');
 @endphp
 <!DOCTYPE html>
 <html lang="es">
@@ -132,6 +158,29 @@ $numbered = ['ingresos_operativos' => 1, 'opex_total' => 2, 'depreciacion_amorti
     .grid2 { display: flex; gap: 8px; } .grid2 > div { flex: 1; min-width: 0; }
     .ev.ok { color: #047857; font-weight: 700; } .ev.bad { color: #b91c1c; font-weight: 700; } .ev.mute { color: #64748b; }
     .hashline { font-family: monospace; font-size: 6.6pt; color: #475569; word-break: break-all; }
+    /* Índice (contenido) */
+    .toc-title { font-size: 22pt; font-weight: 800; letter-spacing: -.5px; color: #0f172a; margin: 6mm 0 1mm; }
+    .toc-lead { font-size: 8.4pt; color: #64748b; margin-bottom: 6mm; }
+    .toc { list-style: none; }
+    .toc > li { border-bottom: 1px solid #e2e8f0; padding: 3.2mm 0; break-inside: avoid; }
+    .toc a { color: inherit; text-decoration: none; }
+    .toc .row { display: flex; align-items: center; gap: 4mm; }
+    .toc .n { width: 11mm; height: 11mm; border-radius: 9px; background: linear-gradient(135deg, #10b981, #0f766e); color: #fff; font-weight: 800; font-size: 11pt; display: flex; align-items: center; justify-content: center; flex: none; }
+    .toc .tt { font-size: 11.5pt; font-weight: 800; color: #0f172a; }
+    .toc .dd { font-size: 7.6pt; color: #64748b; }
+    .toc .lead { flex: 1; border-bottom: 1.5px dotted #cbd5e1; margin: 0 1mm 2.2mm; align-self: flex-end; min-width: 8mm; }
+    .toc .pg { font-size: 11pt; font-weight: 800; color: #0f766e; min-width: 8mm; text-align: right; font-variant-numeric: tabular-nums; }
+    .toc .go { font-size: 7.2pt; font-weight: 700; color: #0f766e; }
+    .toc ul { list-style: none; margin: 1.6mm 0 0 15mm; }
+    .toc ul li { font-size: 8.2pt; color: #334155; padding: .6mm 0; }
+    .toc ul li .row { align-items: baseline; gap: 2mm; }
+    .toc ul li .lead { margin-bottom: 1mm; border-bottom-width: 1px; align-self: auto; }
+    .toc ul li .pg { font-size: 8.2pt; font-weight: 700; }
+    .toc ul li .sn { color: #0f766e; font-weight: 700; width: 8mm; flex: none; }
+    .toc-note { margin-top: 6mm; font-size: 7pt; color: #94a3b8; }
+    .secnum { display: inline-block; min-width: 26px; padding: 2px 6px; margin-right: 3px; border-radius: 7px; background: linear-gradient(135deg, #10b981, #0f766e); color: #fff; font-size: 10pt; text-align: center; vertical-align: 2px; }
+    .head .meta a { color: #0f766e; text-decoration: none; font-weight: 700; }
+    h4.ct { margin: 0 0 2px; }
     .watermark { position: fixed; top: 40%; left: 0; right: 0; text-align: center; font-size: 92pt; font-weight: 800; color: #b91c1c; opacity: .07; transform: rotate(-28deg); z-index: 0; pointer-events: none; }
 </style>
 </head>
@@ -164,15 +213,42 @@ $numbered = ['ingresos_operativos' => 1, 'opex_total' => 2, 'depreciacion_amorti
 @php
 $head = function () use ($logo, $m, $rep, $period) {
     return '<div class="head">'.($logo ? '<img src="'.$logo.'" alt="MR LANA">' : '<b style="font-size:13pt;color:#0f766e">MR LANA</b>')
-        .'<div class="meta"><b>'.e($m['scope']['label']).'</b> · '.e($period['label']).' · '.e($period['code']).'<br>Versión '.e($rep['version']).' · '.e($rep['status_label'])
-        .($rep['preliminary'] ? ' · <b style="color:#b91c1c">'.e($rep['display_status']).'</b>' : '').' · dataset '.e($m['hash_short']).'</div></div>';
+        .'<div class="meta"><b>'.e($m['scope']['label']).'</b> · '.e($period['label']).' · <a href="#contenido">↑ Contenido</a><br>Versión '.e($rep['version']).' · '.e($rep['status_label'])
+        .($rep['preliminary'] ? ' · <b style="color:#b91c1c">'.e($rep['display_status']).'</b>' : '').'</div></div>';
 };
 @endphp
 
-{{-- ═══════════════ RESUMEN EJECUTIVO ═══════════════ --}}
-<section class="page-break">
+{{-- ═══════════════ CONTENIDO (índice con ligas internas) ═══════════════ --}}
+<section class="page-break" id="contenido">
     {!! $head() !!}
-    <h2><span class="g">Resumen ejecutivo</span></h2>
+    <h2 class="toc-title">Contenido</h2>
+    <p class="toc-lead">{{ $m['scope']['label'] }} · {{ $period['label'] }} · Toca una sección para ir directo a ella.</p>
+    <ol class="toc">
+        @foreach($toc as $t)
+            <li>
+                <a href="#{{ $t['id'] }}" class="row">
+                    <span class="n">{{ $t['n'] }}</span>
+                    <span><span class="tt">{{ $t['title'] }}</span><br><span class="dd">{{ $t['desc'] }}</span></span>
+                    <span class="lead"></span>
+                    @if(isset($pages[$t['id']]))<span class="pg">{{ $pages[$t['id']] }}</span>@else<span class="go">Ir&nbsp;›</span>@endif
+                </a>
+                @if($t['subs'])
+                    <ul>
+                        @foreach($t['subs'] as $i => $sub)
+                            <li><a href="#{{ $sub['id'] }}" class="row"><span class="sn">{{ (int) $t['n'] }}.{{ $i + 1 }}</span><span>{{ $sub['title'] }}</span><span class="lead"></span>@if(isset($pages[$sub['id']]))<span class="pg">{{ $pages[$sub['id']] }}</span>@endif</a></li>
+                        @endforeach
+                    </ul>
+                @endif
+            </li>
+        @endforeach
+    </ol>
+    <p class="toc-note">@if($pages)Los números son la página del PDF. @endif Cifras en MXN. «Pendiente» nunca equivale a $0.00.</p>
+</section>
+
+{{-- ═══════════════ RESUMEN EJECUTIVO ═══════════════ --}}
+<section class="page-break" id="resumen">
+    {!! $head() !!}
+    <h2><span class="secnum">{{ $num['resumen'] }}</span> <span class="g">Resumen ejecutivo</span></h2>
     @if($x['legacy'])<div class="legacy">{{ $x['legacy_notice'] }}</div>@endif
     @if(!empty($x['redaction_message']))<p class="warnnote">{{ $x['redaction_message'] }}</p>@endif
     <div class="kpis">
@@ -225,9 +301,9 @@ $head = function () use ($logo, $m, $rep, $period) {
 </section>
 
 {{-- ═══════════════ ESTADO DE RESULTADOS DETALLADO ═══════════════ --}}
-<section class="page-break">
+<section class="page-break" id="estado">
     {!! $head() !!}
-    <h2><span class="g">Estado de Resultados</span> detallado <span class="muted" style="font-size:8pt;font-weight:500">importe y % sobre ingresos operativos</span></h2>
+    <h2><span class="secnum">{{ $num['estado'] }}</span> <span class="g">Estado de Resultados</span> detallado <span class="muted" style="font-size:8pt;font-weight:500">importe y % sobre ingresos operativos</span></h2>
     <table>
         <thead><tr><th>Concepto</th><th class="n" style="width:110px">Importe</th><th class="n" style="width:62px">% ingresos</th></tr></thead>
         <tbody>
@@ -286,9 +362,9 @@ $head = function () use ($logo, $m, $rep, $period) {
 </section>
 
 {{-- ═══════════════ COMPARATIVAS ═══════════════ --}}
-<section class="page-break">
+<section class="page-break" id="comparativas">
     {!! $head() !!}
-    <h2><span class="g">Comparativas</span></h2>
+    <h2><span class="secnum">{{ $num['comparativas'] }}</span> <span class="g">Comparativas</span></h2>
     @if(! $cmp['available'])
         <div class="card"><p class="warnnote">{{ $cmp['error'] }}</p></div>
     @else
@@ -296,7 +372,7 @@ $head = function () use ($logo, $m, $rep, $period) {
         @foreach(['anterior', 'anio_anterior', 'acumulado'] as $pk)
             @php $p = $cmp['pairs'][$pk] ?? null; @endphp
             @continue(! $p)
-            <div class="avoid">
+            <div class="avoid" id="cmp-{{ $pk }}">
                 <h3>{{ $p['title'] }} <span class="hint">{{ $p['current_label'] }} vs {{ $p['comparison_label'] }}@if($p['partial']) · <b style="color:#b45309">acumulado parcial</b>@endif</span></h3>
                 @if(! $p['available'])
                     <p class="warnnote">{{ $p['unavailable'] ?? 'Sin datos de comparación.' }}</p>
@@ -327,28 +403,27 @@ $head = function () use ($logo, $m, $rep, $period) {
 </section>
 
 {{-- ═══════════════ GRÁFICAS ═══════════════ --}}
-<section class="page-break">
+<section class="page-break" id="graficas">
     {!! $head() !!}
-    <h2><span class="g">Gráficas</span></h2>
-    <div class="chart"><div class="ct">Evolución de EBITDA, EBIT, EBT y utilidad neta</div><div class="cs">{{ $svgMeta['evolucion'] }}</div>{!! $svg['evolucion'] !!}</div>
-    <div class="chart"><div class="ct">Ingresos operativos vs OPEX</div><div class="cs">{{ $svgMeta['evolucion'] }}</div>{!! $svg['ingresos_opex'] !!}</div>
-    <div class="chart"><div class="ct">Cascada del resultado · {{ $period['label'] }}</div><div class="cs">Ingresos − OPEX = EBITDA − D&amp;A = EBIT ± resultado financiero = EBT − ISR = utilidad neta. Un paso pendiente no se dibuja como $0.00.</div>{!! $svg['cascada'] !!}</div>
+    <h2><span class="secnum">{{ $num['graficas'] }}</span> <span class="g">Gráficas</span></h2>
+    <div class="chart" id="g-evolucion"><h4 class="ct">Evolución de EBITDA, EBIT, EBT y utilidad neta</h4><div class="cs">{{ $svgMeta['evolucion'] }}</div>{!! $svg['evolucion'] !!}</div>
+    <div class="chart" id="g-ingresos"><h4 class="ct">Ingresos operativos vs OPEX</h4><div class="cs">{{ $svgMeta['evolucion'] }}</div>{!! $svg['ingresos_opex'] !!}</div>
+    <div class="chart" id="g-cascada"><h4 class="ct">Cascada del resultado · {{ $period['label'] }}</h4><div class="cs">Ingresos − OPEX = EBITDA − D&amp;A = EBIT ± resultado financiero = EBT − ISR = utilidad neta. Un paso pendiente no se dibuja como $0.00.</div>{!! $svg['cascada'] !!}</div>
 </section>
 <section class="page-break">
     {!! $head() !!}
-    <div class="chart"><div class="ct">Composición del OPEX · {{ $period['label'] }}</div><div class="cs">Categorías tal como las presenta el Estado de Resultados.</div>{!! $svg['composicion'] !!}</div>
-    <div class="chart"><div class="ct">Márgenes EBITDA, EBIT y neto</div><div class="cs">% sobre ingresos operativos · {{ $svgMeta['evolucion'] }}</div>{!! $svg['margenes'] !!}</div>
+    <div class="chart" id="g-composicion"><h4 class="ct">Composición del OPEX · {{ $period['label'] }}</h4><div class="cs">Categorías tal como las presenta el Estado de Resultados.</div>{!! $svg['composicion'] !!}</div>
+    <div class="chart" id="g-margenes"><h4 class="ct">Márgenes EBITDA, EBIT y neto</h4><div class="cs">% sobre ingresos operativos · {{ $svgMeta['evolucion'] }}</div>{!! $svg['margenes'] !!}</div>
     @if($m['scope']['consolidated'] && $svg['sucursales'])
-        <div class="chart"><div class="ct">EBITDA por sucursal · {{ $period['label'] }}</div><div class="cs">EBITDA de sucursal = ingresos − OPEX directo de la sucursal. Corporativo y Dirección General son centralizados y no se asignan.</div>{!! $svg['sucursales'] !!}</div>
+        <div class="chart" id="g-sucursales"><h4 class="ct">EBITDA por sucursal · {{ $period['label'] }}</h4><div class="cs">EBITDA de sucursal = ingresos − OPEX directo de la sucursal. Corporativo y Dirección General son centralizados y no se asignan.</div>{!! $svg['sucursales'] !!}</div>
     @endif
 </section>
 
 {{-- ═══════════════ SUCURSALES (consolidado) ═══════════════ --}}
-@php $br = $cmp['branches'] ?? null; @endphp
-@if($m['scope']['consolidated'] && $br && $br['rows'])
-<section class="page-break">
+@if($hasBranches)
+<section class="page-break" id="sucursales">
     {!! $head() !!}
-    <h2><span class="g">Sucursales</span> <span class="muted" style="font-size:8pt;font-weight:500">{{ $br['label'] }}</span></h2>
+    <h2><span class="secnum">{{ $num['sucursales'] }}</span> <span class="g">Sucursales</span> <span class="muted" style="font-size:8pt;font-weight:500">{{ $br['label'] }}</span></h2>
     <table>
         <thead><tr><th>Sucursal</th><th class="n">Ingresos</th><th class="n">OPEX directo</th><th class="n">EBITDA sucursal</th><th class="n">Margen</th><th class="n">Part. ingresos</th><th class="n">Var EBITDA vs ant.</th></tr></thead>
         <tbody>
@@ -395,9 +470,9 @@ $head = function () use ($logo, $m, $rep, $period) {
 
 {{-- ═══════════════ CONCILIACIÓN Y FUENTES ═══════════════ --}}
 @php $v = $x['validation']; @endphp
-<section class="page-break">
+<section class="page-break" id="conciliacion">
     {!! $head() !!}
-    <h2><span class="g">Conciliación</span> y fuentes</h2>
+    <h2><span class="secnum">{{ $num['conciliacion'] }}</span> <span class="g">Conciliación</span> y fuentes</h2>
     <div class="card">
         <b>Estado de validación:</b> <span class="badge {{ $v['status'] === 'ok' ? 'ok' : ($v['status'] === 'con_pendientes' ? 'warn' : 'bad') }}">{{ $v['status_label'] }}</span>
         · Validaciones matemáticas: {{ $v['checks_ok'] }} de {{ $v['checks_total'] }} en $0.00

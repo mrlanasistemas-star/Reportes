@@ -17,10 +17,31 @@ export interface Reason {
     message: string;
 }
 
+export interface CompMissing {
+    side: 'actual' | 'comparacion';
+    period_id: number | null;
+    period_label: string;
+    source: 'erp' | 'noi' | 'bancos' | 'noi_corp';
+    source_label: string;
+    /** carga: Carga de archivos · er: Estado de Resultados → Fuentes */
+    where: 'carga' | 'er';
+    where_label: string;
+    message: string;
+}
+
 export interface Comparability {
+    /** true sólo si level = comparable. */
     comparable: boolean;
+    /** comparable | con_reservas | no_comparable (opcional en respuestas anteriores). */
+    level?: 'comparable' | 'con_reservas' | 'no_comparable';
+    level_label?: string;
+    headline?: string;
     reasons: Reason[];
     warnings: Reason[];
+    /** Lo que falta para que sean comparables: fuente, periodo y dónde se carga. */
+    missing?: CompMissing[];
+    /** Conceptos que la diferencia de fuentes no afecta (lectura normal). */
+    unaffected?: string[];
 }
 
 export interface CompPeriod {
@@ -59,6 +80,8 @@ export interface CompRow {
     assessment: 'favorable' | 'desfavorable' | 'neutral' | null;
     assessment_label: string | null;
     reason: Reason | null;
+    /** «Con reservas»: la variación se muestra pero puede deberse a la fuente que falta. */
+    reservation?: Reason | null;
     complete: { current: boolean; previous: boolean };
     centralized?: boolean;
 }

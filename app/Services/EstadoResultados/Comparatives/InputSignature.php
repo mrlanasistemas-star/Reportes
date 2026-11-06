@@ -56,6 +56,14 @@ class InputSignature
             'er_runs' => $agg('estado_resultados_runs', [$period->id]),
             'er_versions' => $agg('estado_resultados_versions', [$period->id]),
         ];
+        // NOI de corporativo (fuente propia del ER): sólo entra a la firma si el periodo tiene cargas.
+        if (Schema::hasTable('estado_resultados_payroll_uploads')) {
+            $payroll = DB::table('estado_resultados_payroll_uploads')->where('period_id', $period->id)->orderBy('id')
+                ->get(['id', 'status', 'file_hash', 'updated_at'])->map(fn ($r) => implode('|', (array) $r))->all();
+            if ($payroll !== []) {
+                $parts['er_payroll'] = $payroll;
+            }
+        }
 
         return hash('sha256', json_encode($parts, JSON_UNESCAPED_UNICODE));
     }

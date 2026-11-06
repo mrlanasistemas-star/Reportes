@@ -283,6 +283,11 @@ class ReportUploadController extends Controller {
 
         $currentPeriodId = ($periods->firstWhere('can_receive_uploads', true)['id'] ?? null)
             ?: ($periods->first()['id'] ?? null);
+        // Enlace directo desde el Estado de Resultados (?periodo=ID): abre ese periodo si existe.
+        $requestedPeriod = (int) request()->integer('periodo');
+        if ($requestedPeriod > 0 && $periods->contains('id', $requestedPeriod)) {
+            $currentPeriodId = $requestedPeriod;
+        }
 
         $branches  = Branch::query()
             ->whereIn('name', self::OPERATIVE_BRANCH_NAMES)

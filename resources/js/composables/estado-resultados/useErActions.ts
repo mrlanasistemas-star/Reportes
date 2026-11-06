@@ -144,6 +144,49 @@ export function useErActions(ctx: Ctx) {
         }
 
         uploadingSlot.value = slot;
+
+        if (slot === 'noi_corporativo') {
+            // NOI de corporativo: fuente propia del ER. Sólo inserta ESTE archivo; no hay que procesar la conciliación.
+            busy(
+                'Validando NOI de corporativo…',
+                `Revisamos "${file.name}" completo: colaboradores, conceptos e importes.`,
+            );
+
+            try {
+                const form = new FormData();
+                form.append('file', file);
+                const res = await apiJson<{
+                    message: string;
+                    idempotent?: boolean;
+                    upload: { warnings: string[] };
+                }>(ctx.url('/cargas/noi-corporativo'), {
+                    method: 'POST',
+                    body: form,
+                });
+                await ctx.loadDataset();
+                const warn = res.upload.warnings ?? [];
+                await swal.fire({
+                    icon: res.idempotent
+                        ? 'info'
+                        : warn.length
+                          ? 'warning'
+                          : 'success',
+                    title: res.idempotent
+                        ? 'Ese NOI ya estaba cargado'
+                        : 'NOI de corporativo cargado',
+                    html: `<p>${escapeHtml(res.message)}</p>${list(warn)}`,
+                    confirmButtonText: 'Entendido',
+                });
+            } catch (e) {
+                await showError(e, 'El NOI de corporativo no se cargó');
+            } finally {
+                uploadingSlot.value = null;
+                uploadSeq.value++;
+            }
+
+            return;
+        }
+
         busy(
             'Validando archivo…',
             `Revisamos "${file.name}" completo antes de guardarlo: columnas, fechas y totales de control.`,

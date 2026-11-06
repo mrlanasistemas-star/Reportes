@@ -107,6 +107,15 @@ return [
     | 'precalentar' encola un job que deja listas las comparativas del periodo consultado (y de
     | sus periodos de contraste) para que nadie espere el cálculo en frío en pantalla.
     */
+    /*
+    | Fuentes (06-nov-2026). El NOI de corporativo es una fuente PROPIA del ER (se sube en
+    | ER → Fuentes). Mientras sea opcional, su falta se muestra como «Falta (recomendada)» en
+    | la lista de fuentes pero NO impide aprobar; con true pasa a ser obligatoria para aprobar.
+    */
+    'fuentes' => [
+        'noi_corporativo_obligatorio' => (bool) env('ER_NOI_CORPORATIVO_OBLIGATORIO', false),
+    ],
+
     'cache' => [
         'base_radiografia' => (bool) env('ER_CACHE_BASE_RADIOGRAFIA', true),
         'base_ttl_minutos' => (int) env('ER_CACHE_BASE_TTL_MINUTOS', 720),

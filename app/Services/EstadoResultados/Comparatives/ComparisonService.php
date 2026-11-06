@@ -332,7 +332,7 @@ class ComparisonService
 
         $rows = [];
         foreach (ComparisonConcepts::ORDER as $k) {
-            $rows[] = $this->row($k, ComparisonConcepts::meta($k), $current, $cmp, $c['comparable']);
+            $rows[] = $this->row($k, ComparisonConcepts::meta($k), $current, $cmp, $c);
         }
         $cats = [];
         $curCats = array_column($current['opex_categories'], null, 'key');
@@ -341,7 +341,7 @@ class ComparisonService
             $cur = $curCats[$ck]['amount'] ?? ($current['available'] ? '0.00' : null);
             $prev = $cmpCats[$ck]['amount'] ?? ($cmp['available'] ? '0.00' : null);
             $cats[] = $this->amountRow($ck, $curCats[$ck]['label'] ?? $cmpCats[$ck]['label'], ComparisonConcepts::EXPENSE, $cur, $prev,
-                $current['available'], $cmp['available'], true, true, $c['comparable'])
+                $current['available'], $cmp['available'], true, true, $c)
                 + ['centralized' => (bool) ($curCats[$ck]['centralized'] ?? $cmpCats[$ck]['centralized'] ?? false)];
         }
 
@@ -372,7 +372,7 @@ class ComparisonService
         return array_intersect_key($e, array_flip(['period', 'available', 'status', 'status_label', 'unavailable_reason', 'source', 'source_label', 'report', 'months']));
     }
 
-    private function row(string $k, array $meta, array $cur, array $cmp, bool $comparable): array
+    private function row(string $k, array $meta, array $cur, array $cmp, array $comp): array
     {
         if ($meta['kind'] === ComparisonConcepts::MARGIN) {
             $of = $meta['of'];
@@ -386,29 +386,46 @@ class ComparisonService
                 $cur['values'][$of] === null => 'pendiente_actual',
                 $cmp['values'][$of] === null => 'pendiente_anterior',
                 $a === null || $b === null => 'base_ingresos_cero',
-                ! $comparable => 'no_comparable',
+                ($comp['level'] ?? (! empty($comp['comparable']) ? 'comparable' : 'no_comparable')) === 'no_comparable' => 'no_comparable',
                 ! $okA || ! $okB => 'incompleto',
                 default => null,
             };
             $points = $reason === null ? Figures::points($a, $b) : null;
+            $reservation = $points !== null ? $this->reservation($k, $comp) : null;
+            $x = Figures::assessment($points, $meta['kind']);
 
             return [
                 'key' => $k, 'label' => $meta['label'], 'kind' => $meta['kind'], 'unit' => '%',
                 'current' => $a, 'previous' => $b,
                 'variation' => $points, 'variation_unit' => 'pp',
                 'variation_pct' => null,
-                'assessment' => Figures::assessment($points, $meta['kind']),
-                'assessment_label' => ($x = Figures::assessment($points, $meta['kind'])) ? ComparisonConcepts::ASSESSMENT_LABELS[$x] : null,
+                'assessment' => $x,
+                'assessment_label' => $x ? ComparisonConcepts::ASSESSMENT_LABELS[$x].($reservation ? ' (con reservas)' : '') : null,
                 'reason' => Figures::reason($reason ?? 'margen_en_puntos'),
+                'reservation' => $reservation,
                 'complete' => ['current' => $okA, 'previous' => $okB],
             ];
         }
 
         return $this->amountRow($k, $meta['label'], $meta['kind'], $cur['values'][$k] ?? null, $cmp['values'][$k] ?? null,
-            $cur['available'], $cmp['available'], (bool) ($cur['complete'][$k] ?? false), (bool) ($cmp['complete'][$k] ?? false), $comparable);
+            $cur['available'], $cmp['available'], (bool) ($cur['complete'][$k] ?? false), (bool) ($cmp['complete'][$k] ?? false), $comp);
     }
 
-    private function amountRow(string $k, string $label, string $kind, ?string $a, ?string $b, bool $availA, bool $availB, bool $okA, bool $okB, bool $comparable): array
+    /**
+     * «Con reservas» para un concepto: sólo cuando los periodos no comparten fuentes/duración y el
+     * concepto depende de esa diferencia (PeriodComparability::$unaffected lista los que no).
+     */
+    private function reservation(string $k, array $comp): ?array
+    {
+        if (($comp['level'] ?? null) !== 'con_reservas' || in_array($k, (array) ($comp['unaffected'] ?? []), true)) {
+            return null;
+        }
+        $codes = array_column((array) ($comp['reasons'] ?? []), 'code');
+
+        return Figures::reason(in_array('duracion_distinta', $codes, true) && ! in_array('cobertura_distinta', $codes, true) ? 'con_reservas_duracion' : 'con_reservas');
+    }
+
+    private function amountRow(string $k, string $label, string $kind, ?string $a, ?string $b, bool $availA, bool $availB, bool $okA, bool $okB, array $comp): array
     {
         $delta = Figures::sub($a, $b);
         $reason = match (true) {
@@ -416,13 +433,14 @@ class ComparisonService
             ! $availB => 'sin_datos_anterior',
             $a === null => 'pendiente_actual',
             $b === null => 'pendiente_anterior',
-            ! $comparable => 'no_comparable',
+            ($comp['level'] ?? (! empty($comp['comparable']) ? 'comparable' : 'no_comparable')) === 'no_comparable' => 'no_comparable',
             ! $okA || ! $okB => 'incompleto',
             Money::of($b)->isZero() => 'base_cero',
             default => null,
         };
         $assessable = $delta !== null && in_array($reason, [null, 'base_cero'], true);
         $assessment = $assessable ? Figures::assessment($delta, $kind) : null;
+        $reservation = $delta !== null && $reason !== 'no_comparable' ? $this->reservation($k, $comp) : null;
 
         return [
             'key' => $k, 'label' => $label, 'kind' => $kind, 'unit' => 'MXN',
@@ -430,8 +448,9 @@ class ComparisonService
             'variation' => $delta, 'variation_unit' => 'MXN',
             'variation_pct' => $reason === null ? Figures::variationPct($a, $b) : null,
             'assessment' => $assessment,
-            'assessment_label' => $assessment ? ComparisonConcepts::ASSESSMENT_LABELS[$assessment] : null,
+            'assessment_label' => $assessment ? ComparisonConcepts::ASSESSMENT_LABELS[$assessment].($reservation ? ' (con reservas)' : '') : null,
             'reason' => Figures::reason($reason),
+            'reservation' => $reservation,
             'complete' => ['current' => $okA, 'previous' => $okB],
         ];
     }
@@ -492,12 +511,16 @@ class ComparisonService
         $pair = $this->pair('acumulado', 'Acumulado '.$year.' vs acumulado equivalente '.($year - 1), $cur, $prev, false);
         if ($cur['available'] && $prev['available'] && $cur['month_numbers'] !== $prev['month_numbers']) {
             $pair['comparability']['comparable'] = false;
+            $pair['comparability']['level'] = 'con_reservas';
+            $pair['comparability']['level_label'] = 'Con reservas';
             $pair['comparability']['reasons'][] = ['code' => 'meses_distintos', 'message' => 'El acumulado del año anterior no tiene datos de los mismos meses.'];
+            $pair['comparability']['headline'] = 'Comparación con reservas: el acumulado del año anterior no tiene datos de los mismos meses; se muestran las cifras y la variación en pesos, sin porcentaje ni lectura.';
             foreach ($pair['rows'] as &$r) {
                 $r['variation_pct'] = null;
                 $r['assessment'] = null;
                 $r['assessment_label'] = null;
-                $r['reason'] = Figures::reason('no_comparable');
+                $r['reservation'] = null;
+                $r['reason'] = Figures::reason('meses_distintos');
                 if ($r['unit'] === '%') {
                     $r['variation'] = null;
                 }
@@ -620,10 +643,10 @@ class ComparisonService
             $variation = [];
             foreach (['ingresos_operativos', 'opex_total', 'ebitda'] as $k) {
                 $r = $this->amountRow($k, ComparisonConcepts::meta($k)['label'], ComparisonConcepts::meta($k)['kind'], $v[$k], $pe['values'][$k],
-                    $e['available'], $pe['available'], true, true, $cmp['comparable']);
-                $variation[$k] = array_intersect_key($r, array_flip(['previous', 'variation', 'variation_pct', 'assessment', 'assessment_label', 'reason']));
+                    $e['available'], $pe['available'], true, true, $cmp);
+                $variation[$k] = array_intersect_key($r, array_flip(['previous', 'variation', 'variation_pct', 'assessment', 'assessment_label', 'reason', 'reservation']));
             }
-            $variation['margen_ebitda'] = array_intersect_key($this->row('margen_ebitda', ComparisonConcepts::meta('margen_ebitda'), $e, $pe, $cmp['comparable']),
+            $variation['margen_ebitda'] = array_intersect_key($this->row('margen_ebitda', ComparisonConcepts::meta('margen_ebitda'), $e, $pe, $cmp),
                 array_flip(['previous', 'variation', 'variation_unit', 'assessment', 'assessment_label', 'reason']));
 
             $rows[] = [

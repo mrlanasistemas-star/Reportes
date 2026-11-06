@@ -18,7 +18,7 @@ import {
     LineChart,
     History,
 } from 'lucide-vue-next';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, provide, ref, watch } from 'vue';
 import AppPageHeader from '@/components/app/AppPageHeader.vue';
 import AdjustmentsPanel from '@/components/estado-resultados/AdjustmentsPanel.vue';
 import ClassifyDialog from '@/components/estado-resultados/ClassifyDialog.vue';
@@ -33,6 +33,7 @@ import ErTabs from '@/components/estado-resultados/ErTabs.vue';
 import type { ErTab } from '@/components/estado-resultados/ErTabs.vue';
 import IndicatorsPanel from '@/components/estado-resultados/IndicatorsPanel.vue';
 import KpiStrip from '@/components/estado-resultados/KpiStrip.vue';
+import MissingSourcesBanner from '@/components/estado-resultados/MissingSourcesBanner.vue';
 import MovementDetailSheet from '@/components/estado-resultados/MovementDetailSheet.vue';
 import { resolveFilter } from '@/components/estado-resultados/movementFilters';
 import MovementsTable from '@/components/estado-resultados/MovementsTable.vue';
@@ -185,6 +186,8 @@ onMounted(() => {
 const kpiPair = computed(() => kpiComp.data.value?.modes.anterior ?? null);
 const route = useCloseRoute(dataset);
 const nav = useErNavigation();
+// «Ver qué falta» desde el estado del reporte (ReportStatusPill) sin pasar por la barra de comandos.
+provide('er:goFuentes', () => nav.go('fuentes'));
 const actions = useErActions({
     url: data.url,
     scope,
@@ -487,6 +490,17 @@ const historyUrl = (fp: string) =>
                 :lock-reason="lockReason"
                 @process="actions.process()"
                 @export="actions.exportFile"
+            />
+
+            <MissingSourcesBanner
+                v-if="
+                    periods.length &&
+                    dataset?.sources.checklist &&
+                    !isSnapshot &&
+                    nav.tab.value !== 'fuentes'
+                "
+                :checklist="dataset.sources.checklist"
+                @go="nav.go('fuentes')"
             />
 
             <div
@@ -803,7 +817,12 @@ const historyUrl = (fp: string) =>
                                     :refresh-key="
                                         version + actions.uploadSeq.value
                                     "
+                                    :period-id="periodId"
+                                    :period-label="dataset.meta.period.label"
+                                    :can-process="can.procesar"
                                     @upload="actions.upload"
+                                    @tab="(t: string) => nav.go(t)"
+                                    @process="actions.process()"
                                 />
                             </section>
 

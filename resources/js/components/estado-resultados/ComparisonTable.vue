@@ -1,6 +1,12 @@
 <script setup lang="ts">
-import { AlertTriangle, ChevronDown, Info, Lock } from 'lucide-vue-next';
-import { ref } from 'vue';
+import {
+    AlertTriangle,
+    ChevronDown,
+    ExternalLink,
+    Info,
+    Lock,
+} from 'lucide-vue-next';
+import { computed, ref } from 'vue';
 import {
     Tooltip,
     TooltipContent,
@@ -8,6 +14,7 @@ import {
 } from '@/components/ui/tooltip';
 import { signed } from './comparativas';
 import type { CompPair, CompRow } from './comparativas';
+import { cargaUrl, fuentesUrl } from './sourceLinks';
 import { isNegative, mxn, pct } from './types';
 
 const props = defineProps<{
@@ -18,6 +25,20 @@ const props = defineProps<{
 }>();
 
 const showCats = ref(false);
+
+/** Respuestas anteriores sin `level`: no comparable ⇒ se trata como «con reservas». */
+const level = computed(
+    () =>
+        props.pair.comparability.level ??
+        (props.pair.comparability.comparable ? 'comparable' : 'con_reservas'),
+);
+const missing = computed(() => props.pair.comparability.missing ?? []);
+/** La cobertura distinta ya se explica con la lista exacta de lo que falta. */
+const otherReasons = computed(() =>
+    props.pair.comparability.reasons.filter(
+        (r) => !(missing.value.length && r.code === 'cobertura_distinta'),
+    ),
+);
 
 /** "Sin datos" (no hay periodo) y "Pendiente" (concepto sin información) son distintos de $0. */
 function empty(r: CompRow, side: 'current' | 'previous'): string | null {
@@ -82,23 +103,85 @@ const ASSESS: Record<string, string> = {
             </div>
         </header>
 
-        <!-- Advertencias de comparabilidad: sin conclusiones porcentuales -->
+        <!-- Comparabilidad: se muestran cifras y variaciones; «con reservas» dice exactamente qué falta -->
         <div
             v-if="!pair.comparability.comparable"
-            class="m-4 flex gap-2.5 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
-            role="alert"
+            class="m-4 flex gap-2.5 rounded-xl border p-3 text-sm"
+            :class="
+                level === 'no_comparable'
+                    ? 'border-border bg-muted/40 text-foreground'
+                    : 'border-amber-300 bg-amber-50 text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100'
+            "
+            role="status"
         >
             <AlertTriangle class="mt-0.5 size-4 shrink-0" />
-            <div>
+            <div class="min-w-0 flex-1">
                 <p class="font-bold">
-                    Estos periodos no son comparables: no se muestran
-                    variaciones porcentuales ni conclusiones.
+                    {{
+                        level === 'no_comparable'
+                            ? 'No hay contra qué comparar'
+                            : 'Comparación con reservas: las cifras y variaciones se muestran, pero marcadas'
+                    }}
                 </p>
-                <ul class="mt-1 space-y-0.5 text-xs">
-                    <li v-for="r in pair.comparability.reasons" :key="r.code">
+                <p
+                    v-if="pair.comparability.headline && !missing.length"
+                    class="mt-0.5 text-xs"
+                >
+                    {{ pair.comparability.headline }}
+                </p>
+                <div v-if="missing.length" class="mt-1.5 space-y-1.5">
+                    <p class="text-xs">
+                        Para comparar
+                        <b>{{ pair.current.period.label }}</b> contra
+                        <b>{{ pair.comparison.period.label }}</b> falta:
+                    </p>
+                    <ul class="space-y-1.5">
+                        <li
+                            v-for="m in missing"
+                            :key="`${m.side}-${m.source}-${m.source_label}`"
+                            class="flex flex-wrap items-center gap-2 text-xs"
+                        >
+                            <span class="font-semibold"
+                                >{{ m.source_label }} de
+                                {{ m.period_label }}</span
+                            >
+                            <span class="text-muted-foreground"
+                                >→ {{ m.where_label }}</span
+                            >
+                            <a
+                                :href="
+                                    m.where === 'carga'
+                                        ? cargaUrl(m.period_id)
+                                        : fuentesUrl(m.period_id)
+                                "
+                                class="inline-flex items-center gap-1 rounded-lg bg-amber-600 px-2 py-1 text-[11px] font-bold text-white transition hover:bg-amber-700 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:outline-none"
+                            >
+                                {{
+                                    m.where === 'carga'
+                                        ? 'Ir a Carga de archivos'
+                                        : 'Subirlo en Fuentes'
+                                }}
+                                <ExternalLink class="size-3" />
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+                <ul
+                    v-if="otherReasons.length"
+                    class="mt-1.5 space-y-0.5 text-xs"
+                >
+                    <li v-for="r in otherReasons" :key="r.code">
                         • {{ r.message }}
                     </li>
                 </ul>
+                <p
+                    v-if="level === 'con_reservas'"
+                    class="mt-1.5 text-[11px] opacity-80"
+                >
+                    Los conceptos que dependen de la fuente faltante llevan la
+                    marca «con reservas»: su variación puede deberse a esa
+                    fuente y no a la operación.
+                </p>
             </div>
         </div>
         <ul
@@ -182,7 +265,7 @@ const ASSESS: Record<string, string> = {
                         <td
                             class="text-right tabular-nums"
                             :class="
-                                !pair.comparability.comparable
+                                r.reservation || level === 'no_comparable'
                                     ? 'text-muted-foreground'
                                     : ''
                             "
@@ -197,8 +280,23 @@ const ASSESS: Record<string, string> = {
                             }}
                         </td>
                         <td>
+                            <Tooltip v-if="r.assessment && r.reservation">
+                                <TooltipTrigger as-child>
+                                    <button
+                                        type="button"
+                                        class="cursor-help rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ring-amber-400 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none"
+                                        :class="ASSESS[r.assessment]"
+                                        :aria-label="`${r.assessment_label}: ${r.reservation.message}`"
+                                    >
+                                        {{ r.assessment_label }}
+                                    </button>
+                                </TooltipTrigger>
+                                <TooltipContent class="max-w-xs">{{
+                                    r.reservation.message
+                                }}</TooltipContent>
+                            </Tooltip>
                             <span
-                                v-if="r.assessment"
+                                v-else-if="r.assessment"
                                 class="rounded-full px-2 py-0.5 text-[11px] font-bold"
                                 :class="ASSESS[r.assessment]"
                                 >{{ r.assessment_label }}</span

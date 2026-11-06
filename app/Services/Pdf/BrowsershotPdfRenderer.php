@@ -37,6 +37,7 @@ class BrowsershotPdfRenderer
      *     ready_timeout?: int,
      *     full_bleed?: bool,
      *     landscape?: bool,
+     *     outline?: bool,
      * } $options
      */
     public function renderHtmlToFile(string $html, string $outputPath, array $options = []): void
@@ -53,7 +54,7 @@ class BrowsershotPdfRenderer
         $margins = $options['margins'] ?? ($fullBleed
             ? ['top' => 0, 'right' => 0, 'bottom' => 0, 'left' => 0]
             : ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14]);
-        $format  = $options['format'] ?? config('pdf.defaults.format', 'Letter');
+        $format = $options['format'] ?? config('pdf.defaults.format', 'Letter');
         $waitForReady = $options['wait_for_ready'] ?? true;
         $readyTimeout = $options['ready_timeout'] ?? config('pdf.defaults.pdf_ready_timeout', 20000);
 
@@ -67,6 +68,12 @@ class BrowsershotPdfRenderer
             $shot->landscape();
         }
 
+        // Opcional (apagado por defecto: el resto de los PDF no cambia): marcadores / esquema del
+        // documento generados por Chrome a partir de los encabezados h1–h6 (requiere PDF etiquetado).
+        if ($options['outline'] ?? false) {
+            $shot->taggedPdf()->setOption('outline', true);
+        }
+
         if (config('pdf.defaults.print_background', true)) {
             $shot->showBackground();
         }
@@ -77,7 +84,7 @@ class BrowsershotPdfRenderer
             $shot->waitForFunction('window.__PDF_READY__ === true', timeout: (int) $readyTimeout);
         }
 
-        if (!$fullBleed) {
+        if (! $fullBleed) {
             $shot->showBrowserHeaderAndFooter()
                 ->hideHeader()
                 ->footerHtml($this->footerTemplate(
@@ -92,7 +99,7 @@ class BrowsershotPdfRenderer
             throw $this->translate($exception, $waitForReady);
         }
 
-        if (!file_exists($outputPath) || filesize($outputPath) === 0) {
+        if (! file_exists($outputPath) || filesize($outputPath) === 0) {
             throw PdfRenderException::htmlFailed(new \RuntimeException('Browsershot no produjo un archivo PDF válido.'));
         }
     }
@@ -123,7 +130,7 @@ class BrowsershotPdfRenderer
             throw $this->translate($exception, true);
         }
 
-        if (!file_exists($outputPath) || filesize($outputPath) === 0) {
+        if (! file_exists($outputPath) || filesize($outputPath) === 0) {
             throw PdfRenderException::htmlFailed(new \RuntimeException('Browsershot no produjo una imagen válida.'));
         }
     }
@@ -132,7 +139,7 @@ class BrowsershotPdfRenderer
     {
         $nodeBinary = config('pdf.browsershot.node_binary');
         $chromePath = config('pdf.browsershot.chrome_path');
-        $npmBinary  = config('pdf.browsershot.npm_binary');
+        $npmBinary = config('pdf.browsershot.npm_binary');
         if ($nodeBinary) {
             $shot->setNodeBinary($nodeBinary);
         }
@@ -160,14 +167,14 @@ class BrowsershotPdfRenderer
     private function assertBinariesConfigured(): void
     {
         $nodeBinary = config('pdf.browsershot.node_binary');
-        if ($nodeBinary && !is_file($nodeBinary)) {
+        if ($nodeBinary && ! is_file($nodeBinary)) {
             throw PdfRenderException::nodeNotFound(new \RuntimeException(
                 "BROWSERSHOT_NODE_BINARY apunta a una ruta que no existe: {$nodeBinary}"
             ));
         }
 
         $chromePath = config('pdf.browsershot.chrome_path');
-        if ($chromePath && !is_file($chromePath)) {
+        if ($chromePath && ! is_file($chromePath)) {
             throw PdfRenderException::chromeNotFound(new \RuntimeException(
                 "BROWSERSHOT_CHROME_PATH apunta a una ruta que no existe: {$chromePath}"
             ));
@@ -179,10 +186,10 @@ class BrowsershotPdfRenderer
         $right ??= 'Página <span class="pageNumber"></span> de <span class="totalPages"></span>';
 
         return '<div style="width:100%;font-family:Helvetica,Arial,sans-serif;font-size:6.8pt;color:#94a3b8;'
-            . 'display:flex;justify-content:space-between;padding:0 14mm;">'
-            . '<span>' . e($left) . '</span>'
-            . '<span>' . $right . '</span>'
-            . '</div>';
+            .'display:flex;justify-content:space-between;padding:0 14mm;">'
+            .'<span>'.e($left).'</span>'
+            .'<span>'.$right.'</span>'
+            .'</div>';
     }
 
     /**
@@ -199,7 +206,7 @@ class BrowsershotPdfRenderer
 
         Log::error('BrowsershotPdfRenderer: fallo generando PDF.', [
             'exception' => get_class($exception),
-            'message'   => $message,
+            'message' => $message,
         ]);
 
         $lower = mb_strtolower($message);

@@ -93,7 +93,13 @@ function onDrop(e: DragEvent): void {
 
 <template>
     <div
-        class="group relative flex flex-col overflow-hidden rounded-2xl border bg-card shadow-soft-xs transition hover:shadow-soft-md"
+        :id="`er-slot-${account.key}`"
+        class="group relative flex scroll-mt-24 flex-col overflow-hidden rounded-2xl border bg-card shadow-soft-xs transition hover:shadow-soft-md"
+        :class="
+            account.status === 'pendiente'
+                ? 'border-rose-300 ring-1 ring-rose-200 dark:border-rose-900 dark:ring-rose-950'
+                : ''
+        "
     >
         <div class="flex flex-1 flex-col gap-3 p-4">
             <div class="flex items-start justify-between gap-2">
@@ -270,7 +276,20 @@ function onDrop(e: DragEvent): void {
                     >
                     · se valida completo antes de guardar</span
                 >
+                <span
+                    v-if="!uploading"
+                    class="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm transition group-hover:bg-emerald-700"
+                    aria-hidden="true"
+                >
+                    <UploadCloud class="size-3.5" />
+                    {{
+                        account.upload
+                            ? 'Elegir archivo nuevo'
+                            : 'Subir estado de cuenta'
+                    }}
+                </span>
                 <input
+                    :id="`er-slot-input-${account.key}`"
                     ref="input"
                     type="file"
                     class="sr-only"

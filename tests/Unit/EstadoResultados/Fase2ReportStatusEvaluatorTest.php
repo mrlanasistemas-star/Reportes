@@ -141,3 +141,18 @@ it('ajustes sin información y completitud ausente bloquean', function () {
     unset($d['completeness']);
     expect(evRun($d)['status'])->toBe(ReportStatus::BORRADOR);
 });
+
+it('con lista de fuentes, los motivos de PRELIMINAR son exactos y dicen dónde se resuelve', function () {
+    $d = evOk();
+    $d['sources']['erp']['status'] = 'pendiente';
+    $d['sources']['checklist'] = ['items' => [
+        ['key' => 'erp', 'state' => 'con_problemas', 'required' => true, 'reason' => 'Falta el ERP de gastos de Octubre 2026: el archivo «X» ya está en Carga de archivos → En Carga de archivos → Octubre 2026, pulsa «Cargar registros».'],
+        ['key' => 'noi_corporativo', 'state' => 'falta', 'required' => false, 'reason' => 'Falta el NOI de corporativo de Octubre 2026 → Súbelo aquí.'],
+    ]];
+    $e = (new ReportStatusEvaluator)->evaluate($d);
+    expect($e['missing'])->toContain('Falta el ERP de gastos de Octubre 2026: el archivo «X» ya está en Carga de archivos → En Carga de archivos → Octubre 2026, pulsa «Cargar registros».')
+        ->and(implode(' ', $e['preliminary_reasons']))->not->toContain('NOI de corporativo');
+
+    $d['sources']['checklist']['items'][1]['required'] = true;
+    expect((new ReportStatusEvaluator)->evaluate($d)['missing'])->toContain('Falta el NOI de corporativo de Octubre 2026 → Súbelo aquí.');
+});

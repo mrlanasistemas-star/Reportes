@@ -171,7 +171,7 @@ it('ISR sin información queda PENDIENTE (null, nunca $0) y deja pendiente la ut
         ->and($steps['utilidad_neta']['pending'])->toBeTrue();
 });
 
-it('comparación personalizada: cobertura y duración distintas ⇒ comparable:false y sin conclusiones porcentuales', function () {
+it('comparación personalizada: cobertura y duración distintas ⇒ «con reservas»: cifras, % y lectura visibles pero marcadas, y lo que falta exacto', function () {
     [$may, $jun] = cmpReferencePeriods();
     $other = F::monthPeriod(2026, 3, '2026-02-23', '2026-03-29'); // 35 días
     F::fakeRadiographyByPeriod([
@@ -185,12 +185,33 @@ it('comparación personalizada: cobertura y duración distintas ⇒ comparable:f
     $codes = array_column($p['comparability']['reasons'], 'code');
 
     expect($p['comparability']['comparable'])->toBeFalse()
-        ->and($codes)->toContain('duracion_distinta', 'cobertura_distinta');
-    foreach ($p['rows'] as $r) {
-        expect($r['variation_pct'])->toBeNull()->and($r['assessment'])->toBeNull();
-    }
-    expect(cmpRow($p, 'ingresos_operativos')['variation'])->toBe('100000.00')
-        ->and(cmpRow($p, 'ingresos_operativos')['reason']['code'])->toBe('no_comparable');
+        ->and($codes)->toContain('duracion_distinta', 'cobertura_distinta')
+        ->and($p['comparability']['level'])->toBe('con_reservas')
+        ->and($p['comparability']['headline'])->toContain('Comparación con reservas')->toContain('ERP de gastos de '.$jun->label);
+    // Lo que falta, exacto: el ERP del periodo SELECCIONADO, que se carga en Carga de archivos.
+    expect($p['comparability']['missing'])->toHaveCount(1)
+        ->and($p['comparability']['missing'][0])->toMatchArray(['side' => 'actual', 'period_id' => $jun->id, 'source' => 'erp', 'where' => 'carga']);
+    // Con distinta duración, todo concepto con variación va «con reservas» (nunca «no comparable» a secas).
+    $ing = cmpRow($p, 'ingresos_operativos');
+    expect($ing['variation'])->toBe('100000.00')
+        ->and($ing['variation_pct'])->toBe('11.11')
+        ->and($ing['assessment'])->toBe('favorable')
+        ->and($ing['assessment_label'])->toBe('Favorable (con reservas)')
+        ->and($ing['reservation']['code'])->toBe('con_reservas')
+        ->and($ing['reason'])->toBeNull();
+});
+
+it('comparación con fuentes distintas y misma duración: conceptos que no dependen de la fuente conservan su lectura normal', function () {
+    [$may, $jun] = cmpReferencePeriods();
+    F::erp($may, 'CORPORATIVO', 'REQ-M1', '1000.00', '2026-05-01', 'Luz', 'LUZ'); // ERP sólo en mayo
+    $p = cmp($jun, null, ['modes' => ['anterior']])['modes']['anterior'];
+
+    expect($p['comparability']['level'])->toBe('con_reservas')
+        ->and($p['comparability']['missing'][0])->toMatchArray(['side' => 'actual', 'source' => 'erp', 'period_label' => $jun->label]);
+    expect(cmpRow($p, 'ingresos_operativos')['reservation'])->toBeNull()
+        ->and(cmpRow($p, 'ingresos_operativos')['assessment_label'])->not->toContain('reservas')
+        ->and(cmpRow($p, 'ebitda')['reservation']['code'])->toBe('con_reservas')
+        ->and(cmpRow($p, 'ebitda')['variation_pct'])->not->toBeNull();
 });
 
 it('acumulado anual: suma sólo meses del mismo año ≤ seleccionado, se etiqueta PARCIAL y sin año anterior no compara', function () {
