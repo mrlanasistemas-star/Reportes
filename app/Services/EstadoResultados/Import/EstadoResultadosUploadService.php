@@ -211,7 +211,7 @@ class EstadoResultadosUploadService
             'has_macros' => (bool) $upload?->has_macros,
             'id' => $a->id,
             'slot' => $a->account_slot,
-            'slot_label' => self::SLOTS[$a->account_slot] ?? $a->account_slot,
+            'slot_label' => self::SLOTS[$a->account_slot] ?? ($a->account_slot === CorporatePayrollUploadService::SLOT ? CorporatePayrollUploadService::LABEL : $a->account_slot),
             'file' => $a->original_name,
             'file_hash' => $a->file_hash,
             'file_size' => (int) $a->file_size,

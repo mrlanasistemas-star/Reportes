@@ -15,6 +15,7 @@ use App\Services\EstadoResultados\Comparatives\ComparisonService;
 use App\Services\EstadoResultados\EstadoResultadosProcessor;
 use App\Services\EstadoResultados\Export\EstadoResultadosExcelExporter;
 use App\Services\EstadoResultados\Export\EstadoResultadosPdfExporter;
+use App\Services\EstadoResultados\Import\CorporatePayrollUploadService;
 use App\Services\EstadoResultados\Import\EstadoResultadosDuplicateUploadException;
 use App\Services\EstadoResultados\Import\EstadoResultadosImportException;
 use App\Services\EstadoResultados\Import\EstadoResultadosUploadService;
@@ -165,6 +166,37 @@ class EstadoResultadosController extends Controller
             'message' => 'Archivo cargado: '.$upload->movements_count.' movimientos. Presiona "Procesar conciliación" para conciliar y clasificar.',
             'idempotent' => false,
             'upload' => ['id' => $upload->id, 'warnings' => $upload->warnings ?? [], 'control_ok' => $upload->control_ok],
+        ]);
+    }
+
+    /**
+     * NOI de corporativo (fuente propia del ER). Incremental: sólo inserta los renglones de ESTE
+     * archivo; no reprocesa estados de cuenta ni toca Carga de archivos / Radiografía.
+     */
+    public function uploadPayroll(Request $request, Period $period, CorporatePayrollUploadService $service): JsonResponse
+    {
+        $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'La carga del NOI de corporativo del Estado de Resultados');
+        $this->lock->assertUnlocked($period);
+        $data = $request->validate([
+            'file' => ['required', 'file'],
+        ], [
+            'file.required' => 'Selecciona el archivo del NOI de corporativo.',
+            'file.file' => 'No se recibió el archivo completo. Vuelve a intentarlo.',
+        ]);
+
+        try {
+            ['upload' => $upload, 'idempotent' => $idempotent] = $service->upload($period, $data['file'], $request->user()?->id);
+        } catch (EstadoResultadosImportException $e) {
+            return $this->importError($e);
+        }
+
+        return response()->json([
+            'message' => $idempotent
+                ? 'Este mismo NOI de corporativo ya estaba cargado: no se duplicó nada.'
+                : 'NOI de corporativo cargado: '.$upload->employees_count.' colaborador(es), percepciones $'.number_format((float) $upload->total_percepciones, 2).'. Ya se refleja en Nómina corporativa; no hace falta volver a procesar la conciliación.',
+            'idempotent' => $idempotent,
+            'upload' => ['id' => $upload->id, 'warnings' => array_column((array) ($upload->warnings ?? []), 'message')],
         ]);
     }
 

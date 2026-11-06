@@ -51,14 +51,38 @@ export function useCloseRoute(dataset: Ref<Dataset | null>) {
                         `${c.label}: los totales no cuadran con el control del banco.`,
                 ),
         ];
-        const srcTotal = simple.length + src.cuentas.length;
-        const srcReady =
-            simple.filter(
-                (s) =>
-                    s.status !== 'pendiente' && s.status !== 'con_incidencias',
-            ).length +
-            src.cuentas.filter((c) => c.upload && c.upload.control_ok !== false)
-                .length;
+        // Con la lista de fuentes del backend, los motivos son EXACTOS (qué falta y dónde se resuelve).
+        // El NOI de corporativo recomendado no bloquea el paso, pero sí se cuenta en «listas».
+        const check = src.checklist;
+
+        if (check) {
+            const open = check.items.filter((i) => i.state !== 'lista');
+            // Procesar, revisar y ajustes tienen su propio paso: aquí sólo lo que hay que cargar.
+            const required = open.filter(
+                (i) =>
+                    i.required &&
+                    (i.action.kind === 'upload' || i.action.kind === 'carga'),
+            );
+            srcBlockers.splice(
+                0,
+                srcBlockers.length,
+                ...required.map((i) => i.reason ?? `${i.label}: ${i.message}`),
+            );
+        }
+
+        const srcTotal = check
+            ? check.summary.total
+            : simple.length + src.cuentas.length;
+        const srcReady = check
+            ? check.summary.lista
+            : simple.filter(
+                  (s) =>
+                      s.status !== 'pendiente' &&
+                      s.status !== 'con_incidencias',
+              ).length +
+              src.cuentas.filter(
+                  (c) => c.upload && c.upload.control_ok !== false,
+              ).length;
 
         // 2 · Procesamiento
         const proc = src.procesamiento;

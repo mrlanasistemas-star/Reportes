@@ -221,6 +221,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/{period}/historial-clasificacion', 'history')->name('history');
             Route::get('/{period}/ajustes/historial', 'adjustmentLogs')->name('adjustment-logs');
             Route::post('/{period}/cargas', 'upload')->middleware(['throttle:30,1', 'permission:estado_resultados,cargar'])->name('upload');
+            Route::post('/{period}/cargas/noi-corporativo', 'uploadPayroll')->middleware(['throttle:30,1', 'permission:estado_resultados,cargar'])->name('upload-payroll');
             Route::post('/{period}/procesar', 'process')->middleware(['throttle:20,1', 'permission:estado_resultados,procesar'])->name('process');
             Route::post('/{period}/clasificar', 'classify')->middleware('permission:estado_resultados,clasificar')->name('classify');
             Route::post('/{period}/aceptar-sugerencias', 'acceptSuggestions')->middleware('permission:estado_resultados,clasificar')->name('accept-suggestions');

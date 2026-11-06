@@ -62,14 +62,18 @@ const firstOpex = computed(() => categories.value[0]?.key ?? 'opex_total');
 const rows = computed(
     () => new Map((props.comparison?.rows ?? []).map((r) => [r.key, r])),
 );
-const comparable = computed(
-    () => props.comparison?.comparability.comparable ?? false,
-);
+// «Con reservas» también muestra la variación (marcada); sólo se oculta si no hay contra qué comparar.
+const comparable = computed(() => {
+    const c = props.comparison?.comparability;
+
+    return c ? (c.level ? c.level !== 'no_comparable' : c.comparable) : false;
+});
 const against = computed(
     () => props.comparison?.comparison.period.label ?? null,
 );
 const notComparableWhy = computed(
     () =>
+        props.comparison?.comparability.headline ??
         props.comparison?.comparability.reasons[0]?.message ??
         'Los periodos no se pueden comparar.',
 );

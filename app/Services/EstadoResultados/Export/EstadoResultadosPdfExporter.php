@@ -18,29 +18,48 @@ class EstadoResultadosPdfExporter
         private readonly EstadoResultadosExportContext $context,
     ) {}
 
-    public function html(array $dataset, ?array $comparisons = null, ?string $comparisonsError = null): string
+    public function html(array $dataset, ?array $comparisons = null, ?string $comparisonsError = null, array $pages = []): string
     {
         $x = $this->context->make($dataset, $comparisons, $comparisonsError);
 
-        return view('estado-resultados.pdf', ['x' => $x] + $this->charts($x))->render();
+        return view('estado-resultados.pdf', ['x' => $x, 'pages' => $pages] + $this->charts($x))->render();
     }
 
     /**
+     * Dos pasadas: la primera genera el PDF y lee de él la página REAL de cada sección
+     * (destinos con nombre de Chrome); la segunda imprime esos números en el índice. Si no se
+     * pueden leer, el índice queda con ligas pero sin números (nunca números supuestos).
+     *
      * @throws PdfRenderException fallo/timeout de Chrome (el archivo parcial se elimina)
      */
     public function export(array $dataset, string $outputPath, ?array $comparisons = null, ?string $comparisonsError = null): string
     {
         $x = $this->context->make($dataset, $comparisons, $comparisonsError);
-        $html = view('estado-resultados.pdf', ['x' => $x] + $this->charts($x))->render();
+        $charts = $this->charts($x);
         $rep = $x['report'];
+        $options = [
+            'format' => 'Letter',
+            'margins' => ['top' => 12, 'right' => 11, 'bottom' => 16, 'left' => 11],
+            'ready_timeout' => 30000,
+            'outline' => true,
+            'footer_left' => 'MR LANA · Estado de Resultados · '.$x['meta']['period']['label'].' · '.$x['meta']['scope']['label']
+                .' · Versión '.$rep['version'].' · '.$rep['display_status'],
+        ];
         try {
-            $this->renderer->renderHtmlToFile($html, $outputPath, [
-                'format' => 'Letter',
-                'margins' => ['top' => 12, 'right' => 11, 'bottom' => 16, 'left' => 11],
-                'ready_timeout' => 30000,
-                'footer_left' => 'MR LANA · Estado de Resultados · '.$x['meta']['period']['label'].' · '.$x['meta']['scope']['label']
-                    .' · v'.$rep['version'].' '.$rep['display_status'].' · dataset '.$x['meta']['hash_short'],
-            ]);
+            $pages = [];
+            $stable = false;
+            for ($pass = 1; $pass <= 3 && ! $stable; $pass++) {
+                $html = view('estado-resultados.pdf', ['x' => $x, 'pages' => $pages] + $charts)->render();
+                $this->renderer->renderHtmlToFile($html, $outputPath, $options);
+                $found = ErPdfDestinations::pages($outputPath);
+                // Estable (los números impresos coinciden con el PDF) o ilegible: se queda este archivo.
+                $stable = $found === [] || $found === $pages;
+                $pages = $found;
+            }
+            if (! $stable) {
+                // No convergió: índice sin números antes que con números dudosos.
+                $this->renderer->renderHtmlToFile(view('estado-resultados.pdf', ['x' => $x, 'pages' => []] + $charts)->render(), $outputPath, $options);
+            }
         } catch (\Throwable $e) {
             if (is_file($outputPath)) {
                 @unlink($outputPath);

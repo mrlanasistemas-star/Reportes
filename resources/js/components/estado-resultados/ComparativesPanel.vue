@@ -237,9 +237,9 @@ const samePeriods = computed(
                 Elige dos periodos distintos.
             </p>
             <p v-else-if="!contra" class="w-full text-xs text-muted-foreground">
-                Elige el periodo B para comparar. Si no son comparables
-                (duración o fuentes distintas) te lo diremos y no mostraremos
-                conclusiones porcentuales.
+                Elige el periodo B para comparar. Si tienen fuentes o duración
+                distintas verás las cifras «con reservas» y exactamente qué
+                falta cargar para compararlos bien.
             </p>
         </div>
 

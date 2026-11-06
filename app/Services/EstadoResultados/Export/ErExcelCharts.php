@@ -17,6 +17,9 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
  * contrato er-comparativas/1) y lleva además sus valores en caché (convención del proyecto:
  * sin caché, algunos visores muestran la gráfica vacía). Un valor pendiente se deja como
  * celda VACÍA: Excel la trata como hueco (displayBlanksAs = gap), nunca como cero.
+ *
+ * Los datos de las gráficas van en columnas AGRUPADAS y contraídas (hideColumns): la hoja
+ * queda limpia para dirección y las gráficas los leen igual (plotVisOnly = 0).
  */
 final class ErExcelCharts
 {
@@ -26,6 +29,18 @@ final class ErExcelCharts
         $sheet = "'".str_replace("'", "''", $ws->getTitle())."'";
 
         return $sheet.'!$'.$col.'$'.$r1.($r2 !== null && $r2 !== $r1 ? ':$'.$col.'$'.$r2 : '');
+    }
+
+    /** Agrupa (nivel 1) y contrae las columnas $from..$to: datos de gráficas fuera de la vista. */
+    public static function hideColumns(Worksheet $ws, string $from, string $to): void
+    {
+        for ($c = $from; ; $c++) {
+            $ws->getColumnDimension($c)->setOutlineLevel(1)->setVisible(false)->setCollapsed(true);
+            if ($c === $to) {
+                break;
+            }
+        }
+        $ws->setShowSummaryRight(true);
     }
 
     /**
@@ -79,7 +94,7 @@ final class ErExcelCharts
             new Title($title),
             count($series) > 1 ? new Legend(Legend::POSITION_BOTTOM, null, false) : null,
             new PlotArea(null, [$ds]),
-            true,
+            false, // plotVisOnly=0: los datos viven en columnas agrupadas y ocultas (se pueden desplegar con «+»).
             DataSeries::EMPTY_AS_GAP,
         );
         $chart->setTopLeftPosition($topLeft);

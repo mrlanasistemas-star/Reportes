@@ -142,8 +142,9 @@ it('caso de referencia: el Excel (valores y fórmulas recalculadas) es idéntico
     $path = $res->getFile()->getPathname();
     $book = IOFactory::load($path);
 
-    // Hojas en el orden pedido (y anexos después).
-    expect(array_slice($book->getSheetNames(), 0, 6))->toBe(array_values(EstadoResultadosExcelExporter::SHEETS))
+    // Índice primero, hojas principales en el orden pedido y anexos después.
+    expect(array_slice($book->getSheetNames(), 0, count(EstadoResultadosExcelExporter::SHEETS)))->toBe(array_values(EstadoResultadosExcelExporter::SHEETS))
+        ->and($book->getSheetNames()[0])->toBe('Índice')
         ->and($book->getSheetNames())->toContain('Anexo Movimientos', 'Anexo Ajustes');
 
     // Hoja 2: subtotales y resultados son FÓRMULAS y su valor recalculado = dataset.
@@ -209,6 +210,29 @@ it('caso de referencia: el Excel (valores y fórmulas recalculadas) es idéntico
             expect($book->getSheetByName(str_replace("''", "'", $m[1])))->not->toBeNull($ref);
         }
     }
+
+    // Navegación: el índice liga a cada hoja; cada hoja vuelve al índice; toda liga interna apunta a una hoja real.
+    $targets = [];
+    foreach ($book->getWorksheetIterator() as $ws) {
+        $back = false;
+        foreach ($ws->getHyperlinkCollection() as $coord => $link) {
+            expect((bool) preg_match("/^sheet:\\/\\/'(.+)'!([A-Z]+\\d+)$/u", $link->getUrl(), $m))->toBeTrue($ws->getTitle().'!'.$coord);
+            $target = str_replace("''", "'", $m[1]);
+            expect($book->getSheetByName($target))->not->toBeNull($link->getUrl());
+            $back = $back || $target === 'Índice';
+            if ($ws->getTitle() === 'Índice') {
+                $targets[] = $target;
+            }
+        }
+        if ($ws->getTitle() !== 'Índice') {
+            expect($back)->toBeTrue('sin liga al índice: '.$ws->getTitle());
+        }
+    }
+    foreach (array_diff($book->getSheetNames(), ['Índice']) as $name) {
+        expect($targets)->toContain($name);
+    }
+    // Tarjetas del índice = mismas cifras (fórmulas al ER).
+    expect((float) $book->getSheetByName('Índice')->getCell('F8')->getCalculatedValue())->toBe(400000.0);
 });
 
 it('ISR sin información: «Pendiente» en el Excel (nunca $0.00) y la utilidad neta también queda pendiente', function () {

@@ -145,17 +145,32 @@ class ReportStatusEvaluator
 
         // ── Fuentes obligatorias (lista blanca) ────────────────────────────
         $missing = [];
+        // Lista de fuentes (SourceChecklist): cuando existe, cada motivo dice EXACTAMENTE qué falta y
+        // dónde se resuelve («Falta el ERP de gastos de Octubre 2026: … → Carga de archivos …»).
+        $check = [];
+        foreach ((array) ($sources['checklist']['items'] ?? []) as $ci) {
+            if (is_array($ci) && isset($ci['key'])) {
+                $check[$ci['key']] = $ci;
+            }
+        }
+        $exact = fn (string $key) => isset($check[$key]) && ($check[$key]['state'] ?? 'lista') !== 'lista' && ! empty($check[$key]['reason']) ? (string) $check[$key]['reason'] : null;
         foreach (['radiografia', 'erp', 'nomina'] as $key) {
             $status = $sources[$key]['status'] ?? null;
-            if ($status === 'pendiente') {
+            if ($status === 'pendiente' && ($m = $exact($key)) !== null) {
+                $missing[] = $m;
+            } elseif ($status === 'pendiente') {
                 $missing[] = match ($key) {
                     'erp' => 'Falta el ERP de gastos del periodo.',
                     'nomina' => 'Falta la nómina (NOI) del periodo.',
                     default => 'Falta la Radiografía del periodo.',
                 };
             } elseif ($status !== self::SATISFACTORY_SOURCE) {
-                $add($other, 'fuentes', $this->sourceMessage($key, $status));
+                $add($other, 'fuentes', $exact($key) ?? $this->sourceMessage($key, $status));
             }
+        }
+        // NOI de corporativo: sólo bloquea si la configuración lo hace obligatorio.
+        if (! empty($check['noi_corporativo']['required']) && ($m = $exact('noi_corporativo')) !== null) {
+            $missing[] = $m;
         }
         $cuentas = $sources['cuentas'] ?? null;
         if (! is_array($cuentas) || $cuentas === []) {
@@ -165,7 +180,7 @@ class ReportStatusEvaluator
                 $label = $this->str($cta['label'] ?? $cta['key'] ?? 'cuenta');
                 $status = $cta['status'] ?? null;
                 if ($status === 'pendiente') {
-                    $missing[] = 'Falta el estado de cuenta: '.$label.'.';
+                    $missing[] = $exact((string) ($cta['key'] ?? '')) ?? 'Falta el estado de cuenta: '.$label.'.';
                 } elseif ($status === 'cargado') {
                     $add($reconciliation, 'procesamiento', 'El estado de cuenta «'.$label.'» está cargado pero sin procesar.');
                 } elseif ($status === 'con_incidencias') {
@@ -180,7 +195,8 @@ class ReportStatusEvaluator
         }
         $adjMissing = (array) ($d['completeness']['utilidad_neta']['missing'] ?? []);
         if ($adjMissing !== []) {
-            $missing[] = 'Ajustes sin información (no se asumen $0): '.implode(', ', $adjMissing).'.';
+            $missing[] = 'Ajustes sin información (no se asumen $0): '.implode(', ', $adjMissing).'.'
+                .(isset($check['ajustes']) ? ' → Captura el importe o confirma $0 en la pestaña «Ajustes».' : '');
         } elseif (! isset($d['completeness']['utilidad_neta'])) {
             $missing[] = 'El dataset no trae la completitud de los ajustes contables.';
         }

@@ -46,6 +46,9 @@ final class Treatment
 
     public const CUBIERTO_RADIOGRAFIA = 'cubierto_radiografia';
 
+    // NOI de corporativo (fuente propia del ER): el pago bancario/ERP es el MISMO costo ya reconocido desde el NOI.
+    public const CUBIERTO_NOI_CORPORATIVO = 'cubierto_noi_corporativo';
+
     // ── Estados de sistema (no seleccionables manualmente) ─────────────────
     public const CONCILIADO_ERP = 'conciliado_erp';
 
@@ -208,6 +211,13 @@ final class Treatment
             'tone' => 'muted',
             'explain' => 'El gasto ya está dentro del EBITDA de sucursales (NOI, ERP, Lendus o IMSS). Sumarlo otra vez lo duplicaría.',
         ],
+        self::CUBIERTO_NOI_CORPORATIVO => [
+            'label' => 'Ya incluido en el NOI de corporativo',
+            'line' => null,
+            'group' => 'fuera',
+            'tone' => 'muted',
+            'explain' => 'Es el pago de una nómina que ya se reconoce desde el NOI de corporativo (cargado en Fuentes). Sumarlo otra vez la duplicaría.',
+        ],
         self::CONCILIADO_ERP => [
             'label' => 'Conciliado con ERP',
             'line' => null,
@@ -263,6 +273,7 @@ final class Treatment
         self::BALANCE,
         self::PUENTE_TERCEROS,
         self::CUBIERTO_RADIOGRAFIA,
+        self::CUBIERTO_NOI_CORPORATIVO,
         self::PENDIENTE,
     ];
 
@@ -327,7 +338,7 @@ final class Treatment
             self::DG_OPERATIVO, self::DG_REMUNERACION => 'gasto_operativo',
             self::GASTO_FINANCIERO => 'gasto_financiero',
             self::INGRESO_NO_OPERATIVO => 'ingreso_no_operativo',
-            self::CONCILIADO_ERP, self::CUBIERTO_RADIOGRAFIA => 'reconocido_en_otra_fuente',
+            self::CONCILIADO_ERP, self::CUBIERTO_RADIOGRAFIA, self::CUBIERTO_NOI_CORPORATIVO => 'reconocido_en_otra_fuente',
             self::CAPEX => 'inversion',
             self::CAPITAL_DEUDA => 'pasivo',
             self::TRANSFERENCIA_INTERNA => 'eliminacion_interna',

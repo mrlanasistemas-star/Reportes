@@ -21,7 +21,7 @@ use App\Services\EstadoResultados\Support\Money;
  */
 class PeriodSummaryExtractor
 {
-    public const VERSION = 1;
+    public const VERSION = 2; // 2: availability con faltantes de bancos y NOI de corporativo
 
     /** Secciones del statement que forman el OPEX en el dataset de compatibilidad. */
     private const LEGACY_OPEX_SECTIONS = ['opex_sucursales', 'nomina_sucursales', 'opex_corporativo', 'nomina_corporativa', 'dg'];
@@ -250,7 +250,12 @@ class PeriodSummaryExtractor
             'bancos' => [
                 'cargadas' => count(array_filter($cuentas, fn ($c) => ($c['status'] ?? 'pendiente') !== 'pendiente')),
                 'total' => count($cuentas),
+                // Qué estado de cuenta falta (para decir EXACTAMENTE qué subir al comparar).
+                'faltantes' => array_values(array_map(fn ($c) => ['key' => (string) ($c['key'] ?? ''), 'label' => (string) ($c['label'] ?? '')],
+                    array_filter($cuentas, fn ($c) => ($c['status'] ?? 'pendiente') === 'pendiente'))),
             ],
+            // NOI de corporativo (fuente propia del ER); null = dataset anterior a esta fuente.
+            'noi_corp' => array_key_exists('noi_corporativo', $s) ? ! empty($s['noi_corporativo']['upload']) : null,
             'ajustes' => $counts,
             'procesamiento' => (string) ($s['procesamiento']['status'] ?? 'pendiente'),
         ];

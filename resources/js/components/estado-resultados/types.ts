@@ -111,7 +111,8 @@ export interface Override {
 
 export interface Movement {
     fingerprint: string;
-    source: 'banco' | 'erp';
+    /** banco | erp | noi_corp (NOI de corporativo, fuente propia del ER) */
+    source: 'banco' | 'erp' | 'noi_corp';
     account_slot: string;
     account_label: string | null;
     file: string | null;
@@ -340,6 +341,111 @@ export interface SimpleSource {
     status: SourceStatus;
     detail: string;
     count?: number;
+    /** Diagnóstico de Carga de archivos (sólo ERP y NOI). */
+    diagnosis?: SourceDiagnosis | null;
+}
+
+/** Qué ve el ER de una fuente de Carga de archivos (UploadModuleInspector). */
+export interface SourceDiagnosis {
+    reason: string;
+    module_label?: string;
+    fact_rows: number;
+    uploads: Array<{
+        id: number;
+        period_id: number;
+        name: string;
+        status: string;
+        status_label: string;
+        rows: number;
+        uploaded_by: string | null;
+        uploaded_at: string | null;
+    }>;
+    run: null | {
+        id: number;
+        status: string;
+        error: string | null;
+        at: string | null;
+    };
+    elsewhere: Array<{
+        upload_id: number;
+        period_id: number;
+        period_label: string;
+        name: string;
+        status: string;
+    }>;
+}
+
+export type ChecklistState = 'lista' | 'falta' | 'con_problemas';
+
+export interface ChecklistAction {
+    /** upload: se sube aquí · carga: Carga de archivos · tab: otra pestaña · process: procesar conciliación */
+    kind: 'upload' | 'carga' | 'tab' | 'process';
+    label: string;
+    slot?: string;
+    tab?: string;
+}
+
+/** Una fuente de la lista de Fuentes (SourceChecklist). */
+export interface ChecklistItem {
+    key: string;
+    label: string;
+    where: 'er' | 'carga' | 'er_tab';
+    where_label: string;
+    state: ChecklistState;
+    state_label: string;
+    required: boolean;
+    message: string;
+    fix: string | null;
+    affects: string;
+    action: ChecklistAction;
+    reason: string | null;
+    diagnosis: SourceDiagnosis | null;
+}
+
+export interface SourceChecklist {
+    items: ChecklistItem[];
+    summary: {
+        total: number;
+        lista: number;
+        falta: number;
+        con_problemas: number;
+        pendientes: number;
+        pendientes_obligatorias: number;
+    };
+}
+
+/** NOI de corporativo (fuente propia del ER). */
+export interface CorporatePayrollSource {
+    key: 'noi_corporativo';
+    label: string;
+    status: SourceStatus;
+    required: boolean;
+    detail: string;
+    upload: null | {
+        id: number;
+        name: string;
+        hash: string;
+        employees: number;
+        lines: number;
+        total_percepciones: string;
+        total_deducciones: string;
+        warnings: string[];
+        uploaded_by: string | null;
+        uploaded_at: string | null;
+    };
+    recognized: string;
+    overlap: CountAmount;
+    other_sources_amount: string;
+    rule: string;
+    history: Array<{
+        id: number;
+        name: string;
+        status: string;
+        hash: string;
+        movements: number;
+        uploaded_by: string | null;
+        uploaded_at: string | null;
+    }>;
 }
 
 export interface ProcessingSource {
@@ -464,6 +570,9 @@ export interface Dataset {
         cuentas: AccountSource[];
         ajustes: SimpleSource & { counts: Record<string, number> };
         procesamiento: ProcessingSource;
+        /** Opcional: datasets/snapshots anteriores al 06-nov-2026 no lo traen. */
+        noi_corporativo?: CorporatePayrollSource;
+        checklist?: SourceChecklist;
         exportaciones: Array<{
             format: string;
             scope: string;

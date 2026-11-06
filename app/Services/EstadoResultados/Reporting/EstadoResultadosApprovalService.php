@@ -4,6 +4,7 @@ namespace App\Services\EstadoResultados\Reporting;
 
 use App\Models\EstadoResultados\EstadoResultadosAdjustment;
 use App\Models\EstadoResultados\EstadoResultadosClassification;
+use App\Models\EstadoResultados\EstadoResultadosPayrollUpload;
 use App\Models\EstadoResultados\EstadoResultadosRun;
 use App\Models\EstadoResultados\EstadoResultadosUpload;
 use App\Models\EstadoResultados\EstadoResultadosVersion;
@@ -19,6 +20,7 @@ use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Cierre (aprobación) y versionado del Estado de Resultados de un periodo.
@@ -449,6 +451,9 @@ class EstadoResultadosApprovalService
             ] : null,
             // Mismo criterio que Radiografía (vigente, no invalidado, id más reciente) — ver RadiographySummary.
             'radiografia_summary_id' => RadiographySummary::currentId($period->id),
-        ];
+        ] + (Schema::hasTable('estado_resultados_payroll_uploads') && ($payroll = EstadoResultadosPayrollUpload::query()->active()->where('period_id', $period->id)->orderBy('id')->get()
+            ->map(fn ($u) => ['id' => $u->id, 'kind' => $u->kind, 'name' => $u->original_name, 'file_hash' => $u->file_hash, 'stored_path' => $u->stored_path,
+                'employees' => (int) $u->employees_count, 'total_percepciones' => (string) $u->total_percepciones, 'uploaded_by' => $u->uploaded_by,
+                'uploaded_at' => $u->created_at?->toIso8601String()])->all()) !== [] ? ['payroll_uploads' => $payroll] : []);
     }
 }

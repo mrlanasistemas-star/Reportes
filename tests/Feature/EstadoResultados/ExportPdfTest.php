@@ -5,6 +5,7 @@ use App\Services\EstadoResultados\AdjustmentService;
 use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
 use App\Services\EstadoResultados\Comparatives\ComparisonService;
 use App\Services\EstadoResultados\Export\ErFormat;
+use App\Services\EstadoResultados\Export\ErPdfDestinations;
 use App\Services\EstadoResultados\Export\EstadoResultadosPdfExporter;
 use App\Services\Pdf\BrowsershotPdfRenderer;
 use App\Services\Pdf\PdfRenderException;
@@ -85,6 +86,33 @@ it('caso de referencia: el HTML del PDF trae los cuatro resultados, comparativas
     expect(substr_count($html, '<svg'))->toBeGreaterThanOrEqual(6);
     // Logo oficial embebido (sin rutas internas del servidor).
     expect($html)->toContain('data:image/png;base64,')->not->toContain(str_replace('\\', '/', base_path()))->not->toContain(base_path());
+
+    // Índice después de la portada: cada liga interna (#id) apunta a un ancla que existe.
+    expect($html)->toContain('id="contenido"')->toContain('href="#resumen"')->toContain('href="#conciliacion"');
+    preg_match_all('/href="#([^"]+)"/', $html, $hrefs);
+    expect($hrefs[1])->not->toBeEmpty();
+    foreach (array_unique($hrefs[1]) as $id) {
+        expect($html)->toContain('id="'.$id.'"');
+    }
+    // Sin números de página inventados cuando no se pudo leer el PDF (render simulado).
+    expect($html)->not->toContain('class="pg"');
+});
+
+it('índice del PDF: lee la página real de cada ancla desde los destinos con nombre de Chrome', function () {
+    $pdf = "%PDF-1.4\n1 0 obj\n<</Type /Catalog\n/Pages 2 0 R\n/Dests 9 0 R>>\nendobj\n"
+        ."2 0 obj\n<</Type /Pages\n/Count 3\n/Kids [3 0 R 4 0 R]>>\nendobj\n"
+        ."3 0 obj\n<</Type /Page\n/Parent 2 0 R>>\nendobj\n"
+        ."4 0 obj\n<</Type /Pages\n/Count 2\n/Kids [5 0 R 6 0 R]\n/Parent 2 0 R>>\nendobj\n"
+        ."5 0 obj\n<</Type /Page\n/Resources <</Font <<>>>>\n/Parent 4 0 R>>\nendobj\n"
+        ."6 0 obj\n<</Type /Page\n/Parent 4 0 R>>\nendobj\n"
+        ."9 0 obj\n<</contenido [5 0 R /XYZ 0 792 0]\n/cmp-anterior [6 0 R /XYZ 0 500 0]>>\nendobj\n";
+    $path = storage_path('framework/testing/er/dests_'.uniqid().'.pdf');
+    @mkdir(dirname($path), 0775, true);
+    file_put_contents($path, $pdf);
+    expect(ErPdfDestinations::pages($path))->toBe(['contenido' => 2, 'cmp-anterior' => 3]);
+    file_put_contents($path, 'no es un pdf');
+    expect(ErPdfDestinations::pages($path))->toBe([]);
+    @unlink($path);
 });
 
 it('ISR pendiente: el PDF muestra «Pendiente» y nunca $0.00 ni la utilidad neta', function () {
@@ -178,7 +206,14 @@ it('render real con Browsershot (se omite si no hay Chrome/Chromium disponible)'
         }
     }
     $bytes = (string) file_get_contents($out);
+    $dests = ErPdfDestinations::pages($out);
     @unlink($out);
+
+    // Índice en la página 2 (tras la portada) con ligas a páginas reales y marcadores del documento.
+    expect($dests['contenido'] ?? null)->toBe(2)
+        ->and($dests['resumen'] ?? null)->toBe(3)
+        ->and($dests['conciliacion'] ?? 0)->toBeGreaterThan($dests['resumen'] ?? 99)
+        ->and($bytes)->toContain('/Outlines');
 
     expect(substr($bytes, 0, 5))->toBe('%PDF-')
         ->and(preg_match_all('#/Type\s*/Page[^s]#', $bytes))->toBeGreaterThanOrEqual(6);
