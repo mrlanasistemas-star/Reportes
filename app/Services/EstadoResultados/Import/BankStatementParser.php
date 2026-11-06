@@ -37,6 +37,9 @@ class BankStatementParser
 
     public const LAYOUT_EXCEDENTES = 'excedentes';
 
+    /** Límite defensivo de filas por hoja (un estado de cuenta mensual real tiene cientos). */
+    public const MAX_ROWS = 50000;
+
     private const HEADER_ALIASES = [
         'fecha' => ['FECHA', 'FECHA OPERACION', 'FECHA MOVIMIENTO'],
         'referencia' => ['REFERENCIA BANCA', 'REFRENCIA BANCA', 'REFERENCIA BANCARIA', 'REFERENCIA', 'DESCRIPCION Y REFERENCIA', 'DESCRIPCION', 'CONCEPTO BANCO'],
@@ -75,7 +78,14 @@ class BankStatementParser
 
         $detected = null;
         foreach ($book->getSheetNames() as $index => $name) {
-            $rows = $book->getSheet($index)->toArray(null, true, false, false);
+            $sheet = $book->getSheet($index);
+            if ($sheet->getHighestDataRow() > self::MAX_ROWS) {
+                throw new EstadoResultadosImportException(
+                    'La hoja "'.$name.'" tiene más de '.number_format(self::MAX_ROWS).' filas: no parece un estado de cuenta mensual.',
+                    ['Verifica que el archivo sea el estado de cuenta del periodo y no un acumulado.']
+                );
+            }
+            $rows = $sheet->toArray(null, true, false, false);
             $header = $this->detectHeader($rows);
             if ($header !== null) {
                 $detected = ['sheet' => $name, 'rows' => $rows] + $header;
@@ -216,19 +226,19 @@ class BankStatementParser
             }
 
             if ($cargo->isNegative() || $abono->isNegative()) {
-                $errors[] = "Fila {$rowNumber}: CARGO/ABONO no pueden ser negativos.";
+                $errors[] = ['row' => $rowNumber, 'column' => 'CARGO/ABONO', 'message' => "Fila {$rowNumber}: CARGO/ABONO no pueden ser negativos."];
 
                 continue;
             }
             if (! $cargo->isZero() && ! $abono->isZero()) {
-                $errors[] = "Fila {$rowNumber}: tiene CARGO y ABONO a la vez; un movimiento bancario es uno u otro.";
+                $errors[] = ['row' => $rowNumber, 'column' => 'CARGO/ABONO', 'message' => "Fila {$rowNumber}: tiene CARGO y ABONO a la vez; un movimiento bancario es uno u otro."];
 
                 continue;
             }
 
             $date = $this->date($cell('fecha'));
             if ($date === null) {
-                $errors[] = "Fila {$rowNumber}: FECHA vacía o inválida ('".$this->text($cell('fecha'))."') en un movimiento con importe.";
+                $errors[] = ['row' => $rowNumber, 'column' => 'FECHA', 'message' => "Fila {$rowNumber}: FECHA vacía o inválida ('".mb_substr((string) $this->text($cell('fecha')), 0, 60)."') en un movimiento con importe."];
 
                 continue;
             }
@@ -278,7 +288,8 @@ class BankStatementParser
         if ($errors !== []) {
             throw new EstadoResultadosImportException(
                 'El archivo tiene '.count($errors).' fila(s) con error. No se cargó ningún movimiento.',
-                array_slice($errors, 0, 50)
+                array_slice(array_column($errors, 'message'), 0, 50),
+                array_slice($errors, 0, 1000),
             );
         }
         if ($movements === []) {
@@ -314,7 +325,7 @@ class BankStatementParser
         }
         $value = Money::tryOf($raw);
         if ($value === null) {
-            $errors[] = "Fila {$row}: {$col} no es un importe válido ('{$raw}').";
+            $errors[] = ['row' => $row, 'column' => $col, 'message' => "Fila {$row}: {$col} no es un importe válido ('".mb_substr((string) $raw, 0, 60)."')."];
 
             return null;
         }

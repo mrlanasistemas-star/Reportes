@@ -14,11 +14,9 @@ const proc = computed(() => props.dataset.sources.procesamiento);
 <template>
     <div class="space-y-4">
         <div
-            class="rounded-2xl border bg-gradient-to-br from-teal-700 to-cyan-600 p-4 text-white shadow-soft-xs"
+            class="rounded-2xl border bg-slate-900 p-4 text-white shadow-soft-xs dark:bg-white/5"
         >
-            <p
-                class="flex items-center gap-1.5 text-xs font-bold tracking-wide uppercase opacity-90"
-            >
+            <p class="flex items-center gap-1.5 text-xs font-bold opacity-90">
                 <Fingerprint class="size-4" /> Hash del dataset
             </p>
             <p class="mt-1 font-mono text-xs break-all">

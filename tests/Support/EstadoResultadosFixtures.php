@@ -11,6 +11,7 @@ use App\Models\ReportUpload;
 use App\Services\EstadoResultados\Calculation\RadiographyBaseProvider;
 use App\Services\EstadoResultados\PeriodDataIds;
 use App\Services\Radiography\BranchRadiographyCalculator;
+use Illuminate\Support\Facades\DB;
 use PhpOffice\PhpSpreadsheet\Shared\Date;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -33,7 +34,9 @@ final class EstadoResultadosFixtures
 
         return Period::query()->create([
             'name' => 'ER prueba '.self::$seq, 'code' => 'M-ER-'.self::$seq, 'type' => 'monthly',
-            'year' => 2026, 'month' => 9, 'sequence' => 1,
+            // sequence único: en MySQL (tablas no InnoDB) el periodo no se revierte y chocaría
+            // con la clave única (type, year, month, sequence) de otras pruebas.
+            'year' => 2026, 'month' => 9, 'sequence' => 900 + self::$seq,
             'start_date' => $start, 'end_date' => $end, 'is_closed' => false,
         ]);
     }
@@ -67,6 +70,53 @@ final class EstadoResultadosFixtures
             'observations' => 'Folio: '.$folio,
             'raw_payload' => ['folio' => $folio, 'estatus' => 'PAGADA', 'sucursal_raw' => $branch, 'fecha_pago' => $fechaPago, 'fecha_captura' => $fechaCaptura ?? $fechaPago],
         ]);
+    }
+
+    /**
+     * Fila ERP con campos adicionales (estatus, observaciones) — misma forma que erp().
+     * (Agregado por el endurecimiento de conciliación; no cambia erp().)
+     */
+    public static function erpWith(Period $period, string $branch, string $folio, string $amount, string $fechaPago, array $extra = []): Expense
+    {
+        $e = self::erp($period, $branch, $folio, $amount, $fechaPago, $extra['category'] ?? 'Gastos Operativos', $extra['concept'] ?? 'SERVICIOS', $extra['fecha_captura'] ?? null);
+        $payload = $e->raw_payload;
+        if (isset($extra['estatus'])) {
+            $payload['estatus'] = $extra['estatus'];
+        }
+        $e->forceFill(['raw_payload' => $payload, 'observations' => $extra['observations'] ?? $e->observations])->save();
+
+        return $e;
+    }
+
+    /**
+     * Colaborador NOI del periodo (employees + employee_branch_assignments + fact_noi_movements,
+     * percepción P001 SUELDO) — misma forma que lee Radiografía. $branch null = sin asignación.
+     */
+    public static function noiEmployee(Period $period, string $fullName, ?string $branch, string $amount): int
+    {
+        $source = DataSource::query()->firstOrCreate(['code' => 'noi_nomina'], ['name' => 'NOI Nómina', 'description' => 'NOI', 'is_active' => true]);
+        $upload = ReportUpload::query()->firstOrCreate(
+            ['period_id' => $period->id, 'data_source_id' => $source->id],
+            ['original_name' => 'noi.xlsx', 'stored_path' => 'reports/noi.xlsx', 'mime_type' => 'application/vnd.ms-excel', 'file_size' => 10, 'uploaded_at' => now(), 'status' => ReportUploadStatus::Processed, 'notes' => null],
+        );
+        self::$seq++;
+        $employeeId = DB::table('employees')->insertGetId([
+            'employee_code' => 'E-ER-'.self::$seq, 'full_name' => $fullName, 'normalized_name' => mb_strtolower($fullName),
+            'is_active' => true, 'source_system' => 'noi', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        if ($branch !== null) {
+            DB::table('employee_branch_assignments')->insert([
+                'period_id' => $period->id, 'employee_id' => $employeeId, 'branch_id' => self::branch($branch)->id,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+        DB::table('fact_noi_movements')->insert([
+            'period_id' => $period->id, 'employee_id' => $employeeId, 'report_upload_id' => $upload->id,
+            'concept' => 'P001 SUELDO', 'concept_type' => 'percepcion', 'amount' => $amount, 'quantity' => 1,
+            'source_row_key' => 'er-'.self::$seq, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        return $employeeId;
     }
 
     /**

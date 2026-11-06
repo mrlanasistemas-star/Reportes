@@ -13,6 +13,10 @@ class EstadoResultadosMovement extends Model
 
     protected $casts = [
         'movement_date' => 'date:Y-m-d',
+        'operation_date' => 'date:Y-m-d',
+        'erp_capture_date' => 'date:Y-m-d',
+        'erp_payment_date' => 'date:Y-m-d',
+        'accrual_date' => 'date:Y-m-d',
         'detail_lines' => 'array',
         'raw_payload' => 'array',
         'reconciliation_detail' => 'array',

@@ -154,7 +154,7 @@ const valid = computed(
                         rows="3"
                         maxlength="2000"
                         placeholder="Ej. Factura de servicio de internet de Corporativo, verificada contra CFDI."
-                        class="w-full rounded-xl border bg-background p-2.5 text-sm outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                        class="w-full rounded-xl border bg-background p-2.5 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
                     />
                 </label>
             </div>
@@ -165,7 +165,7 @@ const valid = computed(
                 </Button>
                 <Button
                     :disabled="!valid || saving"
-                    class="bg-teal-700 text-white hover:bg-teal-800"
+                    class="bg-emerald-700 text-white hover:bg-emerald-800"
                     @click="emit('submit', { treatment, notes: notes.trim() })"
                 >
                     <Loader2 v-if="saving" class="size-4 animate-spin" />

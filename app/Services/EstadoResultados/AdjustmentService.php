@@ -5,6 +5,7 @@ namespace App\Services\EstadoResultados;
 use App\Models\EstadoResultados\EstadoResultadosAdjustment;
 use App\Models\EstadoResultados\EstadoResultadosAdjustmentLog;
 use App\Models\Period;
+use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
 use App\Services\EstadoResultados\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -70,6 +71,7 @@ class AdjustmentService
 
     public function save(Period $period, string $scopeKey, string $concept, string $state, mixed $amount, ?string $notes, ?int $userId): EstadoResultadosAdjustment
     {
+        app(PeriodLockGuard::class)->assertUnlocked($period); // versión aprobada ⇒ HTTP 423
         if (! isset(self::CONCEPTS[$concept])) {
             throw new \InvalidArgumentException('Concepto de ajuste no válido.');
         }

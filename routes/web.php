@@ -226,6 +226,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::put('/{period}/ajustes', 'saveAdjustment')->middleware('permission:estado_resultados,ajustes')->name('adjustments');
             Route::get('/{period}/exportar/excel', 'exportExcel')->middleware(['throttle:20,1', 'permission:estado_resultados,exportar'])->name('export-excel');
             Route::get('/{period}/exportar/pdf', 'exportPdf')->middleware(['throttle:20,1', 'permission:estado_resultados,exportar'])->name('export-pdf');
+            // 06-nov-2026 — gobierno: intentos de carga, aprobación/versiones y detalle restringido.
+            Route::get('/{period}/cargas/intentos', 'uploadAttempts')->middleware('permission:estado_resultados,cargar')->name('upload-attempts');
+            Route::get('/{period}/versiones', 'versions')->name('versions');
+            Route::post('/{period}/aprobar', 'approve')->middleware(['throttle:10,1', 'permission:estado_resultados,aprobar'])->name('approve');
+            Route::post('/{period}/nueva-version', 'openNewVersion')->middleware(['throttle:10,1', 'permission:estado_resultados,aprobar'])->name('new-version');
+            Route::get('/{period}/detalle/nomina', 'payrollDetail')->middleware('permission:estado_resultados,ver_nomina')->name('payroll-detail');
+            Route::get('/{period}/detalle/dg', 'dgDetail')->middleware('permission:estado_resultados,ver_dg')->name('dg-detail');
         });
 
     // Administración (prioridad 8): Usuarios y Roles y permisos — módulos propios,

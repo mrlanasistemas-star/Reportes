@@ -79,11 +79,16 @@ class ActionPermissionService
         ],
         // 05-nov-2026 — Estado de Resultados. Sin LEVEL_DEFAULTS: solo el administrador
         // hasta que se asignen explícitamente en Roles y permisos.
+        // 06-nov-2026 — claves guardadas intactas (procesar = conciliar, clasificar = reclasificar,
+        // ajustes = editar ajustes); se agregan ver_nomina, ver_dg y aprobar, también sin defaults.
         'estado_resultados' => [
+            'ver_nomina' => ['label' => 'Consultar detalle de nómina', 'column' => 'consultar', 'description' => 'Ver el desglose y los movimientos de nómina. Sin este permiso sólo se ven los totales.'],
+            'ver_dg' => ['label' => 'Consultar detalle de Dirección General', 'column' => 'consultar', 'description' => 'Ver el desglose y los movimientos de DG. Sin este permiso sólo se ve el total.'],
             'cargar' => ['label' => 'Cargar estados de cuenta', 'column' => 'crear', 'description' => 'Subir los Excel complementarios (cuenta administrativa y de excedentes).'],
-            'procesar' => ['label' => 'Procesar conciliación', 'column' => 'editar', 'description' => 'Conciliar contra ERP y aplicar las reglas de clasificación.'],
-            'clasificar' => ['label' => 'Clasificar movimientos', 'column' => 'autorizar', 'description' => 'Asignar o corregir el tratamiento financiero de un movimiento (queda en la bitácora).'],
+            'procesar' => ['label' => 'Conciliar (procesar conciliación)', 'column' => 'editar', 'description' => 'Conciliar contra ERP y aplicar las reglas de clasificación.'],
+            'clasificar' => ['label' => 'Reclasificar movimientos', 'column' => 'autorizar', 'description' => 'Asignar o corregir el tratamiento financiero de un movimiento (queda en la bitácora).'],
             'ajustes' => ['label' => 'Editar ajustes contables', 'column' => 'editar', 'description' => 'Depreciación, amortización, intereses, ISR, CAPEX y capital de deuda.'],
+            'aprobar' => ['label' => 'Aprobar y abrir nueva versión', 'column' => 'autorizar', 'description' => 'Aprobar (congelar) el Estado de Resultados del periodo y, con motivo, abrir una nueva versión.'],
             'exportar' => ['label' => 'Exportar Excel/PDF', 'column' => 'exportar', 'description' => 'Descargar el Estado de Resultados en Excel o PDF.'],
         ],
         'okr' => [

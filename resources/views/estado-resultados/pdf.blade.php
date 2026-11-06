@@ -13,6 +13,9 @@ $m = $d['meta'];
 $consolidated = $m['scope']['consolidated'];
 $section = fn (string $key) => collect($d['statement'])->firstWhere('key', $key);
 $resultBlock = fn (string $key) => collect($d['statement'])->first(fn ($b) => $b['type'] === 'result' && $b['key'] === $key);
+// Sección con ajustes "sin información": si su total es 0 se muestra "Sin información" (nunca $0.00 sin confirmar).
+$unknownSection = fn (?array $sec) => $sec && collect($sec['lines'] ?? [])->contains(fn ($l) => ($l['state'] ?? null) === 'sin_informacion');
+$showTotal = fn (?array $sec, $amount) => ($unknownSection($sec) && (float) $amount == 0.0) ? 'Sin información' : $money($amount);
 $steps = [
     ['n' => '1', 'title' => 'Ingresos operativos', 'sub' => 'Intereses + IVA (criterio gerencial) + moratorios + cargos + comisiones. Sin capital recuperado.', 'amount' => $r['ingresos'], 'kind' => 'line'],
     ['n' => '2', 'title' => 'OPEX y nómina de sucursales', 'sub' => 'OPEX '.$money($r['opex_sucursales']).' + Nómina y Capital Humano '.$money($r['nomina_sucursales']), 'amount' => (string) round((float) $r['opex_sucursales'] + (float) $r['nomina_sucursales'], 2), 'kind' => 'line'],
@@ -24,11 +27,11 @@ if ($consolidated) {
     $steps[] = ['n' => '4', 'title' => 'Dirección General', 'sub' => 'Sólo gasto empresarial y remuneración DG. Lo personal/patrimonial queda fuera.', 'amount' => $r['dg'], 'kind' => 'line'];
     $steps[] = ['n' => '=', 'title' => 'EBITDA FINAL', 'sub' => 'EBITDA corporativo − DG operativo', 'amount' => $r['ebitda_final'], 'kind' => 'result', 'key' => 'ebitda_final'];
 }
-$steps[] = ['n' => $consolidated ? '5' : '3', 'title' => 'Depreciación y amortización', 'sub' => 'Activos propios + sistemas capitalizados.', 'amount' => $r['depreciacion_amortizacion'], 'kind' => 'line'];
+$steps[] = ['n' => $consolidated ? '5' : '3', 'title' => 'Depreciación y amortización', 'sub' => 'Activos propios + sistemas capitalizados.', 'amount' => $r['depreciacion_amortizacion'], 'kind' => 'line', 'sec' => 'da'];
 $steps[] = ['n' => '=', 'title' => 'EBIT', 'sub' => 'EBITDA − D&A', 'amount' => $r['ebit'], 'kind' => 'result', 'key' => 'ebit'];
-$steps[] = ['n' => $consolidated ? '6' : '4', 'title' => 'Resultado financiero y no operativo', 'sub' => 'Intereses BBVA / LEROM + otros − ingresos financieros. Nunca el capital del préstamo.', 'amount' => $r['resultado_financiero_neto'], 'kind' => 'line'];
+$steps[] = ['n' => $consolidated ? '6' : '4', 'title' => 'Resultado financiero y no operativo', 'sub' => 'Intereses BBVA / LEROM + otros − ingresos financieros. Nunca el capital del préstamo.', 'amount' => $r['resultado_financiero_neto'], 'kind' => 'line', 'sec' => 'financiero'];
 $steps[] = ['n' => '=', 'title' => 'EBT', 'sub' => 'EBIT − resultado financiero neto', 'amount' => $r['ebt'], 'kind' => 'result', 'key' => 'ebt'];
-$steps[] = ['n' => $consolidated ? '7' : '5', 'title' => 'ISR', 'sub' => 'Impuesto sobre la renta del periodo.', 'amount' => $r['isr'], 'kind' => 'line'];
+$steps[] = ['n' => $consolidated ? '7' : '5', 'title' => 'ISR', 'sub' => 'Impuesto sobre la renta del periodo.', 'amount' => $r['isr'], 'kind' => 'line', 'sec' => 'isr'];
 $steps[] = ['n' => '=', 'title' => 'UTILIDAD NETA', 'sub' => 'EBT − ISR', 'amount' => $r['utilidad_neta'], 'kind' => 'result final', 'key' => 'utilidad_neta'];
 $bars = function (array $lines) {
     $max = max(1, ...array_map(fn ($l) => abs((float) $l['amount']), $lines ?: [['amount' => 1]]));
@@ -37,6 +40,15 @@ $bars = function (array $lines) {
 $c = $d['conciliation'];
 $rec = $d['radiography_reconciliation'];
 $failedChecks = collect($d['checks'])->where('ok', false);
+// 06-nov-2026 — gobierno del reporte (resolver): versión, estado, criterio y marca PRELIMINAR.
+$rep = ($m['report'] ?? []) + [
+    'status' => 'borrador', 'status_label' => 'Borrador', 'version' => 1, 'source' => 'en_vivo',
+    'preliminary' => false, 'preliminary_reasons' => [], 'approved_by' => null, 'approved_at' => null, 'snapshot_hash' => null,
+    'criterion' => $m['criterion'] ?? \App\Services\EstadoResultados\Reporting\ReportStatus::DEFAULT_CRITERION,
+    'rules_version' => $m['rules_version'] ?? '', 'issued_at' => now('America/Mexico_City')->format('d/m/Y H:i'),
+];
+$statusTone = match ($rep['status']) { 'aprobado' => 'ok', 'sustituido' => 'mute', 'listo_revision' => 'ok', default => 'warn' };
+$redactions = $m['redactions'] ?? [];
 @endphp
 <!DOCTYPE html>
 <html lang="es">
@@ -104,6 +116,11 @@ $failedChecks = collect($d['checks'])->where('ok', false);
     .kpis .kpi .v.neg { color: #b91c1c; }
     .note { font-size: 6.8pt; color: #64748b; margin-top: 4px; }
     .hash { font-family: monospace; font-size: 6.5pt; color: #475569; word-break: break-all; }
+    .gov { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; border: 1px solid #e2e8f0; border-radius: 9px; padding: 5px 9px; margin-bottom: 8px; font-size: 7pt; color: #334155; background: #f8fafc; }
+    .gov b { color: #0f172a; }
+    .prelim { border: 2px solid #b91c1c; background: #fef2f2; color: #991b1b; border-radius: 9px; padding: 6px 10px; margin-bottom: 8px; font-size: 7.4pt; page-break-inside: avoid; }
+    .prelim .t { font-weight: 800; font-size: 11pt; letter-spacing: 1px; }
+    .watermark { position: fixed; top: 42%; left: 0; right: 0; text-align: center; font-size: 86pt; font-weight: 800; color: #b91c1c; opacity: .07; transform: rotate(-28deg); z-index: 0; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -114,13 +131,30 @@ $failedChecks = collect($d['checks'])->where('ok', false);
     <div class="meta">
         <b>{{ $m['scope']['label'] }}</b> · {{ $m['period']['label'] }}<br>
         Periodo {{ $m['period']['code'] }} ({{ \Carbon\Carbon::parse($m['period']['start'])->format('d/m/Y') }} – {{ \Carbon\Carbon::parse($m['period']['end'])->format('d/m/Y') }}) · Cifras en MXN<br>
-        Generado {{ $m['generated_at'] }}
+        Cifras generadas {{ $m['generated_at'] }} · Versión {{ $rep['version'] }} · {{ $rep['status_label'] }}@if($rep['preliminary']) · <b style="color:#b91c1c">PRELIMINAR</b>@endif
     </div>
 </div>
 <div class="hero">
     <h1><span class="g1">ESTADO DE</span> <span class="g2">RESULTADOS</span></h1>
     <div class="sub">Tres niveles de EBITDA: sucursales → corporativo → final</div>
 </div>
+@if($rep['preliminary'])<div class="watermark">PRELIMINAR</div>@endif
+<div class="gov">
+    <span><b>Versión {{ $rep['version'] }}</b></span>
+    <span class="badge {{ $statusTone }}">{{ $rep['status_label'] }}</span>
+    @if($rep['approved_at'])<span>Aprobado por <b>{{ $rep['approved_by'] ?? '—' }}</b> el {{ $rep['approved_at'] }}</span>@endif
+    <span>Cifras: {{ $rep['source'] === 'snapshot' ? 'snapshot aprobado (inmutable)' : 'cálculo en vivo' }}</span>
+    <span>Reglas {{ $rep['rules_version'] }}</span>
+    <span>Emitido {{ $rep['issued_at'] }}</span>
+</div>
+@if($rep['preliminary'])
+    <div class="prelim">
+        <div class="t">PRELIMINAR</div>
+        Faltan datos obligatorios o hay partidas por conciliar; las cifras pueden cambiar:
+        @foreach($rep['preliminary_reasons'] as $reason)<br>· {{ $reason }}@endforeach
+    </div>
+@endif
+@if(!empty($redactions['message']))<p class="note" style="color:#92400e;margin:-2px 0 6px">{{ $redactions['message'] }}</p>@endif
 
 @foreach($steps as $s)
     @php $block = isset($s['key']) ? $resultBlock($s['key']) : null; @endphp
@@ -133,7 +167,8 @@ $failedChecks = collect($d['checks'])->where('ok', false);
             </div>
             <div class="s">{{ $s['sub'] }}@if($block && !$block['complete']) · Falta: {{ implode(', ', $block['missing']) }}@endif</div>
         </div>
-        <div class="amt {{ (float) $s['amount'] < 0 ? 'neg' : '' }}">{{ $money($s['amount']) }}</div>
+        @php $stepSec = isset($s['sec']) ? $section($s['sec']) : null; @endphp
+        <div class="amt {{ (float) $s['amount'] < 0 ? 'neg' : '' }}">{{ $showTotal($stepSec, $s['amount']) }}@if($stepSec && $unknownSection($stepSec) && (float) $s['amount'] != 0.0)&nbsp;<span class="badge warn">Incompleto</span>@endif</div>
     </div>
 @endforeach
 
@@ -167,7 +202,7 @@ $failedChecks = collect($d['checks'])->where('ok', false);
                         <td class="n">{{ $pct($l['pct']) }}</td>
                     </tr>
                 @endforeach
-                <tr class="tot"><td>{{ $b['total']['label'] }}</td><td class="n">{{ $money($b['total']['amount']) }}</td><td class="n">{{ $pct($b['total']['pct']) }}</td></tr>
+                <tr class="tot"><td>{{ $b['total']['label'] }}</td><td class="n">{{ $showTotal($b, $b['total']['amount']) }}</td><td class="n">{{ $pct($b['total']['pct']) }}</td></tr>
             @endif
         @else
             <tr class="res l{{ $b['level'] }}"><td>= {{ $b['label'] }} @if(!$b['complete'])(preliminar)@endif <span style="font-weight:500;font-size:6.6pt">· {{ $b['formula'] }}</span></td><td class="n">{{ $money($b['amount']) }}</td><td class="n">{{ $pct($b['pct']) }}</td></tr>
@@ -304,6 +339,9 @@ $failedChecks = collect($d['checks'])->where('ok', false);
     <p class="note">Hash del dataset (idéntico en web, Excel y PDF):</p>
     <p class="hash">{{ $m['dataset_hash'] }}</p>
     <p class="note">Reglas {{ $m['rules_version'] }} · tolerancia de fechas en conciliación: {{ $m['tolerance_days'] }} día(s).</p>
+    <p class="note"><b>Criterio gerencial aplicado:</b> {{ $rep['criterion'] }}</p>
+    <p class="note">Versión {{ $rep['version'] }} · {{ $rep['status_label'] }}@if($rep['approved_at']) · aprobada por {{ $rep['approved_by'] ?? '—' }} el {{ $rep['approved_at'] }}@endif · emitido {{ $rep['issued_at'] }}</p>
+    @if($rep['snapshot_hash'])<p class="note">Hash del snapshot aprobado:</p><p class="hash">{{ $rep['snapshot_hash'] }}</p>@endif
 </div>
 </body>
 </html>

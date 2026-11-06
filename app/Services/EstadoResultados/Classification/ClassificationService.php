@@ -4,6 +4,7 @@ namespace App\Services\EstadoResultados\Classification;
 
 use App\Models\EstadoResultados\EstadoResultadosClassification;
 use App\Models\Period;
+use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
 use App\Services\EstadoResultados\Support\Treatment;
 use Illuminate\Support\Facades\DB;
 
@@ -66,6 +67,7 @@ class ClassificationService
      */
     public function classify(Period $period, array $items, string $treatment, string $notes, ?int $userId): int
     {
+        app(PeriodLockGuard::class)->assertUnlocked($period); // versión aprobada ⇒ HTTP 423
         if (! Treatment::isAssignable($treatment)) {
             throw new \InvalidArgumentException('Tratamiento no permitido: '.$treatment);
         }
