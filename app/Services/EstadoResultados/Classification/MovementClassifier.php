@@ -3,6 +3,7 @@
 namespace App\Services\EstadoResultados\Classification;
 
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
+use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\Treatment as T;
 use Illuminate\Support\Str;
 
@@ -50,6 +51,12 @@ class MovementClassifier
         // ── Cargos: primero el resultado de conciliación contra ERP ──────
         $status = $rec['status'] ?? R::SIN_FOLIO;
         if (in_array($status, R::CONCILIADOS, true)) {
+            // Aplicación parcial con excedente bancario: sólo lo aplicado se cuenta desde el ERP;
+            // el remanente NO se incluye ni se excluye en automático.
+            if (isset($rec['pending']) && ! Money::isZeroCents($rec['pending'])) {
+                return $this->out(T::PENDIENTE, $this->suggestForCargo($concept, $kind, $m), 'conciliado_parcial_excedente', (string) ($rec['message'] ?? 'Conciliación parcial.'), true);
+            }
+
             return $this->out(T::CONCILIADO_ERP, null, $status, (string) ($rec['message'] ?? 'Conciliado con ERP.'));
         }
         if ($status === R::DUPLICADO_UUID) {
@@ -78,8 +85,9 @@ class MovementClassifier
         if (preg_match('/^DESC(UENTO)?\b|DESC PRESTAMO|DESC VENTA/', $concept)) {
             return $this->out(T::RECUPERABLE, null, 'descuento_recuperado', 'Recuperación de préstamo/venta a colaborador vía descuento. Es cobro de una cuenta por cobrar, no ingreso.');
         }
-        if (str_contains($concept, 'DEVOLUCION')) {
-            return $this->out(T::RECUPERABLE, null, 'devolucion_requisicion', 'Reintegro/devolución de una requisición o viático. No es ingreso; el gasto se registra por su total comprobado en el ERP.');
+        if (preg_match('/DEVOLUCION|REEMBOLSO|REINTEGRO/', $text)) {
+            // El procesador lo vincula con el gasto que reembolsa (mismo folio); sin vínculo queda pendiente.
+            return $this->out(T::PENDIENTE, T::RECUPERABLE, 'reembolso_sin_vinculo', 'Reintegro/devolución sin gasto reconocido vinculado (mismo folio). No es ingreso; confirme si reduce un gasto o es una cuenta por cobrar.'.$noIngreso, true);
         }
         if (str_contains($concept, 'POLIZA')) {
             return $this->out(T::PUENTE_TERCEROS, null, 'poliza_puente', 'Cobro de pólizas por cuenta de la aseguradora (puente). Mismo criterio que Radiografía: no es ingreso.');

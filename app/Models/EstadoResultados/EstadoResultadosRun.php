@@ -14,6 +14,7 @@ class EstadoResultadosRun extends Model
 
     protected $casts = [
         'summary' => 'array',
+        'recognition_criterion' => 'array',
         'started_at' => 'datetime',
         'finished_at' => 'datetime',
     ];

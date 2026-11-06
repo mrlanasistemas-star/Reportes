@@ -23,9 +23,7 @@ function show(i: Indicator): string {
 <template>
     <div class="space-y-5">
         <div>
-            <p
-                class="mb-2 text-xs font-bold tracking-wide text-muted-foreground uppercase"
-            >
+            <p class="mb-2 text-xs font-bold text-muted-foreground">
                 Indicadores financieros
             </p>
             <div class="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
@@ -35,9 +33,7 @@ function show(i: Indicator): string {
                     class="rounded-2xl border bg-card p-3 shadow-soft-xs"
                     :class="i.value === null ? 'opacity-60' : ''"
                 >
-                    <p
-                        class="text-[10.5px] font-semibold text-muted-foreground uppercase"
-                    >
+                    <p class="text-xs font-semibold text-muted-foreground">
                         {{ i.label }}
                     </p>
                     <p
@@ -70,7 +66,7 @@ function show(i: Indicator): string {
         </div>
         <div>
             <p
-                class="mb-2 flex items-center gap-1.5 text-xs font-bold tracking-wide text-muted-foreground uppercase"
+                class="mb-2 flex items-center gap-1.5 text-xs font-bold text-muted-foreground"
             >
                 Indicadores operativos
                 <span
@@ -84,9 +80,7 @@ function show(i: Indicator): string {
                     :key="i.key"
                     class="rounded-2xl border bg-card p-3"
                 >
-                    <p
-                        class="text-[10.5px] font-semibold text-muted-foreground uppercase"
-                    >
+                    <p class="text-xs font-semibold text-muted-foreground">
                         {{ i.label }}
                     </p>
                     <p

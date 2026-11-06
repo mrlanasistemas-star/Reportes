@@ -18,6 +18,9 @@ export interface StatementLine {
     source: string;
     hint: string | null;
     state: string | null;
+    /** Próximo contrato: detalle oculto por permisos (nómina / DG). */
+    redacted?: boolean;
+    redacted_reason?: string | null;
 }
 
 export interface StatementSection {
@@ -31,6 +34,8 @@ export interface StatementSection {
     lines: StatementLine[];
     total: { label: string; amount: string; pct: string | null };
     subtotals?: Array<{ label: string; amount: string }>;
+    /** Detalle oculto por permisos (nómina / DG): sólo se ve el total. */
+    restricted?: boolean;
 }
 
 export interface StatementResult {
@@ -112,7 +117,8 @@ export interface Movement {
     treatment_label: string;
     treatment_group: string;
     treatment_explain: string;
-    treatment_source: 'manual' | 'regla';
+    /** manual | regla | reembolso */
+    treatment_source: string;
     override: Override | null;
     needs_review: boolean;
     transfer_pair: string | null;
@@ -129,6 +135,80 @@ export interface Movement {
         amount: string;
         text: string;
     };
+    /** Renglón anonimizado por permisos. */
+    redacted?: boolean;
+    // Trazabilidad (06-nov-2026). Opcionales: snapshots anteriores no las traen.
+    dimensions?: MovementDimensions;
+    dates?: MovementDates;
+    amounts?: MovementAmounts;
+    links?: MovementLink[];
+    applied?: string;
+    match_type?: string | null;
+    match_group?: string | null;
+    reversal_pair?: string | null;
+    refund_of?: string | null;
+    refund_status?: string | null;
+    erp_payment?: { amount: string; applied: string; pending: string };
+    erp_payment_status?: string;
+    reconciliation_delta_days?: number | null;
+}
+
+export interface KeyLabel {
+    key: string | null;
+    label: string;
+}
+
+export interface MovementDimensions {
+    import: KeyLabel;
+    reconciliation: KeyLabel;
+    category: KeyLabel;
+    accounting: KeyLabel;
+    review: KeyLabel;
+    inclusion: KeyLabel;
+    source: KeyLabel;
+    recognition: KeyLabel & {
+        period_id?: number | null;
+        period_code: string | null;
+        basis?: string;
+        basis_label: string;
+        out_of_period?: string | null;
+        out_of_period_label: string | null;
+    };
+}
+
+export interface MovementDates {
+    operation: string | null;
+    bank: string | null;
+    erp_capture: string | null;
+    erp_payment: string | null;
+    accrual: string | null;
+}
+
+/** Conciliado + reconocido + excluido + pendiente + fuera de periodo = bruto. */
+export interface MovementAmounts {
+    gross: string;
+    conciliated: string;
+    recognized: string;
+    excluded: string;
+    pending: string;
+    out_of_period: string;
+    classifiable: string;
+}
+
+export interface MovementLink {
+    kind: string;
+    kind_label: string;
+    /** banco | erp | noi */
+    target_type: string;
+    target: string | null;
+    match_type: string | null;
+    group_key?: string | null;
+    applied: string;
+    movement_pending: string;
+    target_pending: string;
+    delta_days: number | null;
+    evidence: Record<string, unknown> | unknown[];
+    redacted?: boolean;
 }
 
 export interface TreatmentMeta {
@@ -251,6 +331,13 @@ export interface Dataset {
         tolerance_days: number;
         generated_at: string;
         dataset_hash: string;
+        report?: ReportMeta;
+        redactions?: Redactions;
+        recognition?: {
+            version: string;
+            criterio: string;
+            reglas: Record<string, string>;
+        };
     };
     results: Record<string, string>;
     margins: Record<string, string | null>;
@@ -294,6 +381,15 @@ export interface Dataset {
             abonos: string;
         }>;
         por_estado: Record<string, number>;
+        por_tipo_emparejamiento?: Array<{
+            key: string;
+            count: number;
+            applied: string;
+        }>;
+        parciales?: { count: number; excedente_pendiente: string };
+        reversos?: CountAmount;
+        reembolsos_vinculados?: CountAmount;
+        erp_saldo_pendiente_pago?: string;
     };
     movements: Movement[];
     outside: {
@@ -332,6 +428,224 @@ export interface Dataset {
     };
     treatments: TreatmentMeta[];
     reconciliation_labels: Record<string, string>;
+    /** Opcional: snapshots aprobados antes del 06-nov-2026 no la traen. */
+    validation?: Validation;
+    dimensions?: {
+        version?: string;
+        inclusion?: Array<{ key: string; label: string }>;
+        review?: Array<{ key: string; label: string }>;
+        category?: Array<{ key: string; label: string }>;
+        reconciliation?: Array<{ key: string; label: string }>;
+        match_types?: Array<{ key: string; label: string }>;
+        link_kinds?: Array<{ key: string; label: string }>;
+    };
+}
+
+export type ReportStatusKey =
+    | 'borrador'
+    | 'pendiente_conciliacion'
+    | 'listo_revision'
+    | 'aprobado'
+    | 'sustituido';
+
+export interface ReportBlocker {
+    /** pendientes | procesamiento | validaciones | datos_faltantes */
+    code: string;
+    message: string;
+    scope?: string;
+}
+
+export interface VersionSummary {
+    id: number;
+    version: number;
+    status: string;
+    status_label: string;
+    locked: boolean;
+    rules_version: string | null;
+    dataset_hash: string | null;
+    snapshot_hash: string | null;
+    scopes: string[];
+    approved_by: string | null;
+    approved_at: string | null;
+    approval_notes?: string | null;
+    reopened: { at: string; by: string | null; reason: string | null } | null;
+    superseded_at: string | null;
+    superseded_by_version_id?: number | null;
+}
+
+export interface VersionHistory {
+    locked: boolean;
+    current: VersionSummary | null;
+    draft_version: number | null;
+    versions: VersionSummary[];
+    logs: Array<{
+        id: number;
+        action: string;
+        action_label: string;
+        version: number;
+        reason: string | null;
+        user: string | null;
+        at: string | null;
+    }>;
+}
+
+export interface ReportMeta {
+    status: string;
+    status_label: string;
+    /** en_vivo | snapshot */
+    source: string;
+    version: number;
+    version_id: number | null;
+    locked: boolean;
+    current: boolean;
+    preliminary: boolean;
+    preliminary_reasons: string[];
+    blockers: ReportBlocker[];
+    approvable: boolean;
+    approved_by: string | null;
+    approved_at: string | null;
+    snapshot_hash: string | null;
+    criterion: string;
+    rules_version: string;
+    generated_at: string;
+    issued_at: string;
+    reopened: { at: string; by: string | null; reason: string | null } | null;
+    previous_version: VersionSummary | null;
+    superseded_at: string | null;
+}
+
+export interface Redactions {
+    nomina: boolean;
+    dg: boolean;
+    hidden_movements: { nomina: number; dg: number };
+    redacted_references?: number;
+    message: string | null;
+}
+
+export interface DiffItem {
+    fingerprint: string | null;
+    date: string | null;
+    folio: string | null;
+    concept: string | null;
+    account_slot: string;
+    bank_amount: string;
+    erp_amounts: string[];
+    difference: string | null;
+    delta_days: number | null;
+    status: string;
+    status_label: string;
+    message: string | null;
+    out_of_period?: string | null;
+    redacted?: boolean;
+}
+
+export interface DiffGroup {
+    count: number;
+    amount: string;
+    items: DiffItem[];
+}
+
+export interface PartitionCheck {
+    total: string;
+    sum_parts: string;
+    difference: string;
+    ok: boolean;
+}
+
+export interface Validation {
+    /** ok | con_pendientes | con_diferencias */
+    status: string;
+    scope_note: string | null;
+    totals: {
+        source: {
+            count: number;
+            cargos: string;
+            abonos: string;
+            total: string;
+        };
+        imported: {
+            count: number;
+            cargos: string;
+            abonos: string;
+            total: string;
+        };
+        erp_outside: { count: number; total: string };
+        conciliated: CountAmount;
+        recognized: CountAmount;
+        excluded_justified: CountAmount;
+        pending: CountAmount;
+        out_of_period: CountAmount;
+    };
+    partition: {
+        bank: PartitionCheck;
+        erp: PartitionCheck;
+        all: PartitionCheck;
+    };
+    differences: {
+        by_amount: DiffGroup;
+        by_date: DiffGroup;
+        by_folio: DiffGroup;
+    };
+    radiography: {
+        er: string;
+        radiografia: string;
+        difference: string;
+        base_difference?: string;
+        ok: boolean;
+        base_ok?: boolean;
+        explained: Array<{ label: string; amount: string }>;
+    };
+    integrity: {
+        status: string;
+        import_matches_source?: boolean;
+        uploads: Array<{
+            slot: string;
+            file: string;
+            hash: string;
+            control_ok: boolean | null;
+            control_cargos: string | null;
+            control_abonos: string | null;
+            read_cargos: string;
+            read_abonos: string;
+            movements: number;
+        }>;
+        erp_stale: boolean;
+        rules_version_last_run?: string | null;
+        recognition_version_last_run?: string | null;
+    };
+    eliminations: {
+        transfers: { pairs: number; count: number; amount: string };
+        unpaired_transfers: {
+            count: number;
+            amount: string;
+            items: Array<{
+                fingerprint: string | null;
+                date: string | null;
+                account_slot: string;
+                cargo: string;
+                abono: string;
+                concept: string | null;
+            }>;
+        };
+        internal_flows: CountAmount;
+        reversals: { pairs: number; count: number; amount: string };
+        corporate_allocation?: string;
+    };
+    noi: {
+        employees: number;
+        total: string;
+        unassigned_total: string;
+        unassigned_employees: number;
+        linked_payments: CountAmount;
+        recognizing_rule: string;
+    };
+    unresolved: Array<{
+        key: string;
+        label: string;
+        count: number;
+        amount: string;
+    }>;
+    failed_checks: Array<{ key: string; label: string; difference: string }>;
 }
 
 export interface Permissions {
@@ -340,6 +654,43 @@ export interface Permissions {
     clasificar: boolean;
     ajustes: boolean;
     exportar: boolean;
+    consultar?: boolean;
+    conciliar?: boolean;
+    reclasificar?: boolean;
+    editar_ajustes?: boolean;
+    aprobar?: boolean;
+    ver_nomina?: boolean;
+    ver_dg?: boolean;
+}
+
+export interface UploadRules {
+    max_mb: number;
+    extensions: string[];
+    accept: string;
+}
+
+export interface RowError {
+    row: number | null;
+    column: string | null;
+    message: string;
+}
+
+export interface UploadAttempt {
+    id: number;
+    slot: string;
+    slot_label: string;
+    file: string;
+    file_hash: string | null;
+    file_size: number;
+    status: string;
+    status_label: string;
+    message: string | null;
+    errors_count: number;
+    errors: RowError[];
+    upload_id: number | null;
+    original_kept: boolean;
+    user: string | null;
+    at: string | null;
 }
 
 // ── Formato ────────────────────────────────────────────────────────────
@@ -383,6 +734,37 @@ export function pct(v: string | number | null | undefined): string {
 
 export function isNegative(v: string | number | null | undefined): boolean {
     return Number(v ?? 0) < 0;
+}
+
+/** Número para proporciones visuales (anchos, alturas). Nunca para mostrar dinero. */
+export function num(v: string | number | null | undefined): number {
+    const n = Number(v ?? 0);
+
+    return Number.isFinite(n) ? n : 0;
+}
+
+/** Paso de la cascada → sección del estado de resultados que lo explica. */
+export const STEP_SECTION: Record<string, string> = {
+    depreciacion_amortizacion: 'da',
+    resultado_financiero_neto: 'financiero',
+};
+
+export function sectionOfStep(stepKey: string): string {
+    return STEP_SECTION[stepKey] ?? stepKey;
+}
+
+export function escapeHtml(s: string): string {
+    return s.replace(
+        /[&<>"']/g,
+        (c) =>
+            ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;',
+            })[c] as string,
+    );
 }
 
 export function isZero(v: string | number | null | undefined): boolean {
@@ -472,8 +854,24 @@ export class ApiError extends Error {
     constructor(
         message: string,
         public readonly details: string[] = [],
+        public readonly status = 0,
+        /** JSON completo de la respuesta (blockers, errors por fila, attempt_id…). */
+        public readonly body: Record<string, unknown> = {},
     ) {
         super(message);
+    }
+
+    /** Errores por fila de una carga rechazada. */
+    get rowErrors(): RowError[] {
+        return Array.isArray(this.body.errors)
+            ? (this.body.errors as RowError[])
+            : [];
+    }
+
+    get blockers(): ReportBlocker[] {
+        return Array.isArray(this.body.blockers)
+            ? (this.body.blockers as ReportBlocker[])
+            : [];
     }
 }
 
@@ -482,19 +880,27 @@ async function parseError(res: Response): Promise<ApiError> {
         const body = (await res.json()) as {
             message?: string;
             details?: string[];
-            errors?: Record<string, string[]>;
-        };
-        const first = body.errors ? Object.values(body.errors)[0]?.[0] : null;
+            errors?: Record<string, string[]> | RowError[];
+        } & Record<string, unknown>;
+        // Validación de Laravel: { campo: [mensajes] }; carga rechazada: lista por fila.
+        const first =
+            body.errors && !Array.isArray(body.errors)
+                ? Object.values(body.errors)[0]?.[0]
+                : null;
 
         return new ApiError(
             first ?? body.message ?? `Error ${res.status}`,
             body.details ?? [],
+            res.status,
+            body,
         );
     } catch {
         return new ApiError(
             res.status === 413
                 ? 'El archivo es demasiado grande para el servidor.'
                 : `Error ${res.status} del servidor.`,
+            [],
+            res.status,
         );
     }
 }

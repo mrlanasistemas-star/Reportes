@@ -2,12 +2,17 @@
 
 namespace App\Services\EstadoResultados\Import;
 
+use App\Models\EstadoResultados\EstadoResultadosImportAttempt;
+use App\Models\EstadoResultados\EstadoResultadosImportError;
 use App\Models\EstadoResultados\EstadoResultadosMovement;
 use App\Models\EstadoResultados\EstadoResultadosUpload;
 use App\Models\Period;
+use App\Services\EstadoResultados\Reporting\EstadoResultadosLockedException;
+use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
 use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\SucursalNormalizer;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
@@ -30,6 +35,8 @@ class EstadoResultadosUploadService
 
     public const DISK = 'local';
 
+    public const EXTENSIONS = ['xlsx', 'xlsm', 'xls'];
+
     public function __construct(
         private readonly BankStatementParser $parser,
         private readonly SucursalNormalizer $sucursales,
@@ -37,19 +44,203 @@ class EstadoResultadosUploadService
 
     public function upload(Period $period, UploadedFile $file, string $slot, ?int $userId): EstadoResultadosUpload
     {
-        return $this->importPath($period, $file->getRealPath(), $file->getClientOriginalName(), $slot, $userId, $file);
+        return $this->importPath($period, (string) $file->getRealPath(), $file->getClientOriginalName(), $slot, $userId, $file);
     }
 
-    /** Punto de entrada usado también por pruebas/comandos con una ruta local. */
+    /** Máximo permitido por archivo (config `estado_resultados.import.max_mb`, 10 MB por defecto). */
+    public static function maxBytes(): int
+    {
+        return (int) round(self::maxMb() * 1024 * 1024);
+    }
+
+    public static function maxMb(): float
+    {
+        return max(0.001, (float) config('estado_resultados.import.max_mb', 10));
+    }
+
+    /**
+     * Punto de entrada usado también por pruebas/comandos con una ruta local.
+     *
+     * Endurecido (06-nov-2026): bloqueo por versión aprobada, validación de
+     * extensión / contenido / tamaño, candado por periodo+cuenta (cargas
+     * concurrentes), intento registrado con sus errores por fila y copia del
+     * original (también si se rechaza). Una carga sólo queda publicada si TODO
+     * el archivo es válido y la transacción termina.
+     */
     public function importPath(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file = null): EstadoResultadosUpload
     {
-        if (! isset(self::SLOTS[$slot])) {
-            throw new EstadoResultadosImportException('Cuenta no válida. Elige "Cuenta administrativa" o "Cuenta de excedentes".');
-        }
-        if ($period->type !== 'monthly') {
-            throw new EstadoResultadosImportException('El Estado de Resultados se carga sobre periodos mensuales. Selecciona un periodo mensual.');
+        $attempt = EstadoResultadosImportAttempt::query()->create([
+            'period_id' => $period->id,
+            'account_slot' => mb_substr($slot, 0, 30),
+            'original_name' => mb_substr($originalName, 0, 255),
+            'extension' => mb_substr(mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION)), 0, 10) ?: null,
+            'mime' => is_file($absolutePath) ? (mb_substr((string) (@mime_content_type($absolutePath) ?: ''), 0, 120) ?: null) : null,
+            'file_size' => $file?->getSize() ?: (is_file($absolutePath) ? (int) @filesize($absolutePath) : 0),
+            'status' => EstadoResultadosImportAttempt::EN_PROCESO,
+            'user_id' => $userId,
+            'started_at' => now(),
+        ]);
+
+        try {
+            app(PeriodLockGuard::class)->assertUnlocked($period);
+            if (! isset(self::SLOTS[$slot])) {
+                throw new EstadoResultadosImportException('Cuenta no válida. Elige "Cuenta administrativa" o "Cuenta de excedentes".');
+            }
+            if ($period->type !== 'monthly') {
+                throw new EstadoResultadosImportException('El Estado de Resultados se carga sobre periodos mensuales. Selecciona un periodo mensual.');
+            }
+            $this->validateFile($absolutePath, $originalName, $file?->getSize() ?: null);
+            $attempt->update(['file_hash' => hash_file('sha256', $absolutePath) ?: null]);
+
+            $lock = Cache::lock('estado_resultados:carga:'.$period->id.':'.$slot, 300);
+            if (! $lock->get()) {
+                throw new EstadoResultadosImportException(
+                    'Ya hay una carga en curso para "'.self::SLOTS[$slot].'" de este periodo. Espera a que termine y vuelve a intentarlo.',
+                    [], [], 409,
+                );
+            }
+            try {
+                $upload = $this->doImport($period, $absolutePath, $originalName, $slot, $userId, $file);
+            } finally {
+                $lock->release();
+            }
+        } catch (EstadoResultadosDuplicateUploadException $e) {
+            $this->finishAttempt($attempt, EstadoResultadosImportAttempt::DUPLICADO, $e->getMessage(), [], $e->existing->id);
+
+            throw $e->withAttempt($attempt->id);
+        } catch (EstadoResultadosImportException $e) {
+            $this->finishAttempt($attempt, EstadoResultadosImportAttempt::RECHAZADO, $e->getMessage(), $e->errors());
+            $this->keepRejectedOriginal($attempt, $absolutePath);
+
+            throw $e->withAttempt($attempt->id);
+        } catch (EstadoResultadosLockedException $e) {
+            $this->finishAttempt($attempt, EstadoResultadosImportAttempt::RECHAZADO, $e->getMessage(), []);
+
+            throw $e;
+        } catch (\Throwable $e) {
+            $this->finishAttempt($attempt, EstadoResultadosImportAttempt::RECHAZADO, 'Error inesperado al cargar: no se publicó ningún movimiento.', [['row' => null, 'column' => null, 'message' => mb_substr($e->getMessage(), 0, 1000)]]);
+            $this->keepRejectedOriginal($attempt, $absolutePath);
+
+            throw $e;
         }
 
+        $this->finishAttempt($attempt, EstadoResultadosImportAttempt::COMPLETADO, 'Archivo cargado: '.$upload->movements_count.' movimientos.', [], $upload->id, $upload->stored_path);
+
+        return $upload;
+    }
+
+    /** Extensión permitida, tamaño máximo y contenido real (firma binaria) coherente con la extensión. */
+    public function validateFile(string $absolutePath, string $originalName, ?int $reportedSize = null): void
+    {
+        $ext = mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        if (! in_array($ext, self::EXTENSIONS, true)) {
+            throw new EstadoResultadosImportException(
+                'Formato no permitido'.($ext !== '' ? ' (.'.$ext.')' : '').'. Sube el estado de cuenta en Excel: .xlsx, .xlsm o .xls.'
+            );
+        }
+        if (! is_file($absolutePath) || ! is_readable($absolutePath)) {
+            throw new EstadoResultadosImportException('No se recibió el archivo completo. Vuelve a intentarlo.');
+        }
+        $size = max((int) $reportedSize, (int) filesize($absolutePath));
+        if ($size === 0) {
+            throw new EstadoResultadosImportException('El archivo está vacío.');
+        }
+        if ($size > self::maxBytes()) {
+            throw new EstadoResultadosImportException(
+                'El archivo pesa '.number_format($size / 1048576, 1).' MB y excede el máximo permitido de '.rtrim(rtrim(number_format(self::maxMb(), 1), '0'), '.').' MB.',
+                ['Un estado de cuenta mensual pesa normalmente menos de 2 MB. Verifica que sea el archivo correcto.'],
+            );
+        }
+        $head = (string) file_get_contents($absolutePath, false, null, 0, 8);
+        $isZip = str_starts_with($head, "PK\x03\x04");
+        $isOle = $head === "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
+        if (($ext === 'xls' && ! $isOle && ! $isZip) || ($ext !== 'xls' && ! $isZip)) {
+            throw new EstadoResultadosImportException(
+                'El contenido del archivo no corresponde a un Excel .'.$ext.' (archivo renombrado o dañado).',
+                ['Ábrelo en Excel y guárdalo de nuevo como "Libro de Excel (.xlsx)".'],
+            );
+        }
+    }
+
+    /** @return list<array<string,mixed>> intentos recientes con sus errores por fila. */
+    public function attempts(Period $period, int $limit = 30): array
+    {
+        return EstadoResultadosImportAttempt::query()
+            ->with(['user:id,name', 'errors' => fn ($q) => $q->orderBy('id')])
+            ->where('period_id', $period->id)
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get()
+            ->map(fn (EstadoResultadosImportAttempt $a) => self::attemptPayload($a))
+            ->all();
+    }
+
+    public static function attemptPayload(EstadoResultadosImportAttempt $a, int $maxErrors = 200): array
+    {
+        return [
+            'id' => $a->id,
+            'slot' => $a->account_slot,
+            'slot_label' => self::SLOTS[$a->account_slot] ?? $a->account_slot,
+            'file' => $a->original_name,
+            'file_hash' => $a->file_hash,
+            'file_size' => (int) $a->file_size,
+            'status' => $a->status,
+            'status_label' => EstadoResultadosImportAttempt::LABELS[$a->status] ?? $a->status,
+            'message' => $a->message,
+            'errors_count' => (int) $a->errors_count,
+            'errors' => $a->errors->take($maxErrors)->map(fn ($e) => ['row' => $e->row_number, 'column' => $e->column_name, 'message' => $e->message])->values()->all(),
+            'upload_id' => $a->upload_id,
+            'original_kept' => $a->stored_path !== null,
+            'user' => $a->user?->name,
+            'at' => $a->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
+        ];
+    }
+
+    /** @param list<array{row:?int, column:?string, message:string}> $errors */
+    private function finishAttempt(EstadoResultadosImportAttempt $attempt, string $status, string $message, array $errors, ?int $uploadId = null, ?string $storedPath = null): void
+    {
+        $now = now();
+        $rows = [];
+        foreach (array_slice($errors, 0, 1000) as $e) {
+            $rows[] = [
+                'attempt_id' => $attempt->id,
+                'row_number' => $e['row'] ?? null,
+                'column_name' => isset($e['column']) ? mb_substr((string) $e['column'], 0, 60) : null,
+                'message' => mb_substr((string) $e['message'], 0, 2000),
+                'created_at' => $now,
+            ];
+        }
+        foreach (array_chunk($rows, 200) as $chunk) {
+            EstadoResultadosImportError::query()->insert($chunk);
+        }
+        $attempt->update(array_filter([
+            'status' => $status,
+            'message' => mb_substr($message, 0, 2000),
+            'errors_count' => count($errors),
+            'upload_id' => $uploadId,
+            'stored_path' => $storedPath,
+            'finished_at' => $now,
+        ], fn ($v) => $v !== null));
+    }
+
+    /** Conserva el original de un intento rechazado (auditoría), si no excede el máximo permitido. */
+    private function keepRejectedOriginal(EstadoResultadosImportAttempt $attempt, string $absolutePath): void
+    {
+        try {
+            if (! is_file($absolutePath) || (int) filesize($absolutePath) > self::maxBytes()) {
+                return;
+            }
+            $ext = preg_replace('/[^a-z0-9]/', '', (string) $attempt->extension) ?: 'bin';
+            $path = 'estado-resultados/'.$attempt->period_id.'/rechazados/'.$attempt->id.'_'.substr((string) ($attempt->file_hash ?: hash_file('sha256', $absolutePath)), 0, 16).'.'.$ext;
+            Storage::disk(self::DISK)->put($path, (string) file_get_contents($absolutePath));
+            $attempt->update(['stored_path' => $path]);
+        } catch (\Throwable) {
+            // Conservar el original es auditoría: nunca debe ocultar el error real de la carga.
+        }
+    }
+
+    private function doImport(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file): EstadoResultadosUpload
+    {
         $hash = hash_file('sha256', $absolutePath) ?: '';
         $duplicate = EstadoResultadosUpload::query()
             ->active()
@@ -57,8 +248,9 @@ class EstadoResultadosUploadService
             ->where('file_hash', $hash)
             ->first();
         if ($duplicate) {
-            throw new EstadoResultadosImportException(
-                'Este mismo archivo ya está cargado en el periodo (cargado el '.$duplicate->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i').'). No se duplicó ningún movimiento.'
+            throw new EstadoResultadosDuplicateUploadException(
+                'Este mismo archivo ya está cargado en el periodo (cargado el '.$duplicate->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i').'). No se duplicó ningún movimiento.',
+                $duplicate,
             );
         }
 

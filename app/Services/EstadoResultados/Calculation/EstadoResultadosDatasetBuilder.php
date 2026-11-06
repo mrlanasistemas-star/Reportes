@@ -4,6 +4,7 @@ namespace App\Services\EstadoResultados\Calculation;
 
 use App\Models\EstadoResultados\EstadoResultadosExport;
 use App\Models\EstadoResultados\EstadoResultadosMovement;
+use App\Models\EstadoResultados\EstadoResultadosReconciliationLink;
 use App\Models\EstadoResultados\EstadoResultadosRun;
 use App\Models\EstadoResultados\EstadoResultadosUpload;
 use App\Models\Period;
@@ -13,11 +14,14 @@ use App\Services\EstadoResultados\Classification\ErpOutsideClassifier;
 use App\Services\EstadoResultados\Import\EstadoResultadosUploadService;
 use App\Services\EstadoResultados\Reconciliation\ErpExpenseRepository;
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
+use App\Services\EstadoResultados\Reconciliation\NoiPayrollRepository;
+use App\Services\EstadoResultados\Support\Dimensions;
 use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\Treatment as T;
 use App\Services\Radiography\BranchRadiographyCalculator as Radio;
 use Brick\Math\BigDecimal;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * FUENTE ÚNICA DE VERDAD del Estado de Resultados.
@@ -36,6 +40,10 @@ use Illuminate\Support\Facades\DB;
  *   EBIT                = EBITDA FINAL − Depreciación − Amortización
  *   EBT                 = EBIT − Resultado financiero neto (gastos financieros − ingresos financieros)
  *   UTILIDAD NETA       = EBT − ISR
+ *
+ * Partición de importes (cada peso de cada fuente queda en EXACTAMENTE un destino):
+ *   bruto = conciliado (lo reconoce el ERP/Radiografía) + reconocido (línea del ER)
+ *         + excluido con justificación + pendiente + fuera del periodo
  */
 class EstadoResultadosDatasetBuilder
 {
@@ -54,12 +62,25 @@ class EstadoResultadosDatasetBuilder
     /** @var list<string> totales (cargos+abonos) de las cargas activas — para la validación de partición */
     private array $activeUploadTotals = [];
 
+    /** @var list<array<string,mixed>> resumen de integridad de las cargas activas */
+    private array $activeUploads = [];
+
+    /** NOI del periodo (mismo universo que Radiografía). */
+    private array $noiData = [];
+
+    /** Σ importe aplicado según la tabla de vínculos (para el control conciliados ↔ vínculos). */
+    private string $linkedApplied = '0.00';
+
+    /** Firma del ERP vigente (para detectar procesamiento desactualizado). */
+    private ?string $currentErpSignature = null;
+
     public function __construct(
         private readonly RadiographyBaseProvider $base,
         private readonly ErpExpenseRepository $erp,
         private readonly ErpOutsideClassifier $erpClassifier,
         private readonly ClassificationService $classifications,
         private readonly AdjustmentService $adjustments,
+        private readonly NoiPayrollRepository $noi,
     ) {}
 
     /** Alcances disponibles: consolidado + sucursales operativas de Radiografía. */
@@ -151,16 +172,18 @@ class EstadoResultadosDatasetBuilder
         $ebit = $ebitdaBase->minus($da);
 
         // ── 08 Resultado financiero ────────────────────────────────────
+        $finBancos = $this->sumTreatment($scoped, [T::GASTO_FINANCIERO]);
+        $ingNoOpBancos = $this->sumTreatment($scoped, [T::INGRESO_NO_OPERATIVO]);
         $finExpense = [
             $this->adjLine($adj['intereses_bbva']),
             $this->adjLine($adj['intereses_lerom']),
             $this->adjLine($adj['otros_intereses']),
             $this->adjLine($adj['otros_gastos_financieros']),
-            $this->line('fin_bancos', 'Gastos financieros clasificados desde bancos', $this->sumTreatment($scoped, [T::GASTO_FINANCIERO]), 'Estados de cuenta · clasificación'),
+            $this->line('fin_bancos', 'Gastos financieros clasificados desde bancos', $finBancos, 'Estados de cuenta · clasificación'),
         ];
         $finIncome = [
             $this->adjLine($adj['ingresos_financieros'], '(+) '),
-            $this->line('ing_no_operativo_bancos', '(+) Ingresos no operativos clasificados desde bancos', $this->sumTreatment($scoped, [T::INGRESO_NO_OPERATIVO]), 'Estados de cuenta · clasificación'),
+            $this->line('ing_no_operativo_bancos', '(+) Ingresos no operativos clasificados desde bancos', $ingNoOpBancos, 'Estados de cuenta · clasificación'),
         ];
         $finGastos = $this->sumLines($finExpense);
         $finIngresos = $this->sumLines($finIncome);
@@ -183,13 +206,20 @@ class EstadoResultadosDatasetBuilder
             'isr' => $isr, 'utilidad_neta' => $utilidad,
         ];
 
+        // Importe que cada categoría financiera EXCLUSIVA recibe desde movimientos (banco/ERP).
+        $categoryTotals = [
+            'opex_sucursales' => $opexComp, 'nomina_sucursales' => $nominaComp, 'opex_corporativo' => $opexCorp,
+            'nomina_corporativa' => $nominaCorp, 'opex_dg' => $dg, 'financiero' => $finBancos->plus($ingNoOpBancos),
+        ];
+
         $statement = $this->statement($consolidated, $incomeLines, $opexLines, $nominaLines, $corpLines, $nomCorpLines, $dgLines, $daLines, $finExpense, $finIncome, $isrLines, $results, $completeness);
 
         $radiografiaEbitda = Money::of(Radio::ebitdaFinalFor($row));
         $reconciliation = $this->radiographyReconciliation($row, $base, $consolidated, $ingresos, $opexRadio, $nominaRadio, $opexComp, $nominaComp, $ebitdaSuc, $radiografiaEbitda);
 
         $conciliation = $this->conciliationSummary($items, $scoped, $consolidated);
-        $checks = $this->checks($row, $incomeLines, $opexLines, $nominaLines, $statement, $results, $items, $scoped, $ingresos, $opexRadio, $nominaRadio, $consolidated);
+        $checks = $this->checks($row, $incomeLines, $opexLines, $nominaLines, $statement, $results, $items, $scoped, $ingresos, $opexRadio, $nominaRadio, $consolidated, $categoryTotals);
+        $validation = $this->validation($period, $items, $scoped, $checks, $reconciliation, $consolidated);
 
         $dataset = [
             'meta' => [
@@ -201,6 +231,8 @@ class EstadoResultadosDatasetBuilder
                 'currency' => 'MXN',
                 'rules_version' => (string) config('estado_resultados.rules_version'),
                 'tolerance_days' => (int) config('estado_resultados.conciliacion.tolerancia_dias', 3),
+                'recognition' => Dimensions::criterion(),
+                'dimensions_version' => Dimensions::VERSION,
                 'generated_at' => now('America/Mexico_City')->format('d/m/Y H:i'),
             ],
             'results' => array_map(fn ($v) => Money::str2($v), $results),
@@ -218,6 +250,8 @@ class EstadoResultadosDatasetBuilder
             'sources' => $this->sources($period, $base, $items, $adj),
             'treatments' => T::catalog(),
             'reconciliation_labels' => R::LABELS,
+            'validation' => $validation,
+            'dimensions' => Dimensions::catalog(),
         ];
         $dataset['meta']['dataset_hash'] = $this->hash($dataset);
 
@@ -237,34 +271,62 @@ class EstadoResultadosDatasetBuilder
         foreach ($erpRows as $e) {
             $erpByFp[$e['fingerprint']] = $e;
         }
+        $this->noiData = $this->noi->forDataIds($dataIds);
+        $this->currentErpSignature = ErpExpenseRepository::signature($erpRows);
 
-        $uploads = EstadoResultadosUpload::query()->active()->where('period_id', $period->id)->get()->keyBy('id');
+        $uploads = EstadoResultadosUpload::query()->active()->where('period_id', $period->id)->orderBy('id')->get()->keyBy('id');
         $this->activeUploadTotals = $uploads->map(fn ($u) => (string) Money::of($u->total_cargos)->plus(Money::of($u->total_abonos)))->values()->all();
+        $this->activeUploads = $uploads->values()->map(fn ($u) => [
+            'slot' => $u->account_slot, 'file' => $u->original_name, 'hash' => $u->file_hash, 'control_ok' => $u->control_ok,
+            'control_cargos' => $u->control_total_cargos !== null ? Money::str2($u->control_total_cargos) : null,
+            'control_abonos' => $u->control_total_abonos !== null ? Money::str2($u->control_total_abonos) : null,
+            'read_cargos' => Money::str2($u->total_cargos), 'read_abonos' => Money::str2($u->total_abonos),
+            'movements' => (int) $u->movements_count,
+        ])->all();
         $movements = EstadoResultadosMovement::query()
             ->where('period_id', $period->id)
             ->whereIn('upload_id', $uploads->keys()->all() ?: [0])
             ->orderBy('movement_date')->orderBy('account_slot')->orderBy('source_row')
             ->get();
+        $movByFp = $movements->keyBy('fingerprint');
+
+        // Lectura tolerante: antes de aplicar la migración 2026_11_06_0000A1 no hay vínculos (se ve como "sin procesar").
+        $links = Schema::hasTable('estado_resultados_reconciliation_links')
+            ? EstadoResultadosReconciliationLink::query()->where('period_id', $period->id)->orderBy('id')->get()
+            : collect();
+        $linksByMovement = $links->groupBy('movement_fingerprint');
+        $erpLinks = $links->where('link_kind', 'conciliacion')->groupBy('target_fingerprint');
+        $this->linkedApplied = Money::str2(Money::sum($links->where('link_kind', 'conciliacion')->filter(fn ($l) => $movByFp->has($l->movement_fingerprint))->pluck('applied_amount')->all()));
+
+        $recognitionIds = $movements->pluck('recognition_period_id')->filter()->unique()->all();
+        $periodCodes = $recognitionIds ? Period::query()->whereIn('id', $recognitionIds)->pluck('code', 'id')->all() : [];
+        $periodCodes[$period->id] = $period->code;
 
         $items = [];
-        $linksToErp = [];
         foreach ($movements as $m) {
             $processed = $m->processed_at !== null;
             $auto = $processed ? (string) $m->auto_treatment : T::PENDIENTE;
             $ov = $overrides[$m->fingerprint] ?? null;
             $treatment = $ov['treatment'] ?? $auto;
             $erpMatches = (array) ($m->reconciliation_detail['erp'] ?? []);
-            if ($auto === T::CONCILIADO_ERP) {
-                foreach ($erpMatches as $em) {
-                    $linksToErp[$em['fingerprint']][] = ['row' => $m->source_row, 'account' => $m->account_slot, 'amount' => Money::str2($m->cargo), 'date' => $m->movement_date->format('Y-m-d')];
-                }
-            }
+            $applied = $processed ? Money::str2($m->applied_amount ?? 0) : '0.00';
+            $mLinks = $linksByMovement->get($m->fingerprint, collect());
+            $conciliacion = $mLinks->where('link_kind', 'conciliacion');
+            $hint = match (true) {
+                $mLinks->contains('link_kind', 'evidencia_noi') => 'noi',
+                $conciliacion->isNotEmpty() => $conciliacion->every(fn ($l) => ($l->evidence['erp_universe'] ?? null) === 'radiografia') ? 'radiografia' : 'erp',
+                $treatment === T::CUBIERTO_RADIOGRAFIA => 'radiografia',
+                default => null,
+            };
+            $upload = $uploads[$m->upload_id] ?? null;
+            $recPeriodId = $m->recognition_period_id !== null ? (int) $m->recognition_period_id : ($m->in_period ? $period->id : null);
+
             $items[] = [
                 'fingerprint' => $m->fingerprint,
                 'source' => 'banco',
                 'account_slot' => $m->account_slot,
-                'account_label' => $uploads[$m->upload_id]->account_label ?? null,
-                'file' => $uploads[$m->upload_id]->original_name ?? null,
+                'account_label' => $upload->account_label ?? null,
+                'file' => $upload->original_name ?? null,
                 'source_row' => (int) $m->source_row,
                 'date' => $m->movement_date->format('Y-m-d'),
                 'reference' => $m->bank_reference,
@@ -283,6 +345,7 @@ class EstadoResultadosDatasetBuilder
                 'erp' => $erpMatches,
                 'reconciliation_status' => $processed ? $m->reconciliation_status : 'sin_procesar',
                 'reconciliation_message' => $m->reconciliation_detail['message'] ?? null,
+                'reconciliation_delta_days' => $m->reconciliation_detail['delta_days'] ?? null,
                 'auto_treatment' => $auto,
                 'suggested_treatment' => $m->suggested_treatment,
                 'rule_code' => $processed ? $m->rule_code : 'sin_procesar',
@@ -293,6 +356,30 @@ class EstadoResultadosDatasetBuilder
                 'transfer_pair' => $m->transfer_pair_key,
                 'detail_lines' => count((array) $m->detail_lines),
                 'linked_bank' => [],
+                // ── Dimensiones / trazabilidad (nuevas) ───────────────────
+                'applied' => $applied,
+                'match_type' => $processed ? $m->match_type : null,
+                'match_group' => $processed ? $m->match_group : null,
+                'reversal_pair' => $processed ? $m->reversal_pair_key : null,
+                'refund_of' => $processed ? $m->refund_target_fingerprint : null,
+                'refund_status' => $processed ? $m->refund_status : null,
+                'noi_employee_id' => $processed && $m->noi_employee_id ? (int) $m->noi_employee_id : null,
+                'recognizing_hint' => $hint,
+                'import_status' => $upload?->control_ok === true ? 'importado' : ($upload?->control_ok === false ? 'control_no_cuadra' : 'sin_control'),
+                'recognition' => [
+                    'period_id' => $recPeriodId,
+                    'period_code' => $recPeriodId !== null ? ($periodCodes[$recPeriodId] ?? null) : null,
+                    'basis' => 'fecha_bancaria',
+                    'out_of_period' => $processed ? $m->out_of_period_kind : (! $m->in_period ? ($m->movement_date->format('Y-m-d') < $period->start_date->format('Y-m-d') ? 'fecha_anterior_al_periodo' : 'fecha_posterior_al_periodo') : null),
+                ],
+                'dates' => [
+                    'operation' => $m->operation_date?->format('Y-m-d') ?? $m->movement_date->format('Y-m-d'),
+                    'bank' => $m->movement_date->format('Y-m-d'),
+                    'erp_capture' => $m->erp_capture_date?->format('Y-m-d'),
+                    'erp_payment' => $m->erp_payment_date?->format('Y-m-d'),
+                    'accrual' => $m->accrual_date?->format('Y-m-d'),
+                ],
+                'links' => $mLinks->map(fn ($l) => $this->publicLink($l, false))->values()->all(),
             ];
         }
 
@@ -301,8 +388,42 @@ class EstadoResultadosDatasetBuilder
                 continue; // ya dentro del EBITDA de sucursales
             }
             $c = $this->erpClassifier->classify($e);
+            $noiLink = null;
+            // ERP + NOI: una requisición de nómina que nombra a un colaborador NOI podría ya estar en Nómina sucursales.
+            if ($c['treatment'] === T::NOMINA_CORPORATIVA || str_contains(mb_strtoupper((string) $e['category']), 'NÓMINA') || str_contains(mb_strtoupper((string) $e['category']), 'NOMINA')) {
+                $match = NoiPayrollRepository::match($this->noiData, trim(($e['concept'] ?? '').' '.($e['observations'] ?? '')), true);
+                if ($match['status'] !== 'ninguno') {
+                    $noiLink = $match['employee'];
+                    $c = ['treatment' => T::PENDIENTE, 'suggested' => T::NOMINA_CORPORATIVA, 'rule' => 'erp_nomina_colaborador_noi', 'review' => true,
+                        'reason' => 'La requisición ERP de nómina nombra a '.$noiLink['name'].', colaborador NOI del periodo cuya nómina ya está en Nómina sucursales (Radiografía). Confirme que no es el mismo pago antes de sumarlo (NOI, ERP y banco nunca se cuentan dos veces).'];
+                }
+            }
             $ov = $overrides[$e['fingerprint']] ?? null;
             $treatment = $ov['treatment'] ?? $c['treatment'];
+            $bankLinks = $erpLinks->get($e['fingerprint'], collect())->filter(fn ($l) => $movByFp->has($l->movement_fingerprint));
+            $paid = Money::sum($bankLinks->pluck('applied_amount')->all());
+            if ($bankLinks->isEmpty()) {
+                // Compatibilidad: procesamientos previos a la tabla de vínculos.
+                foreach ($movements as $m) {
+                    if ($m->auto_treatment === T::CONCILIADO_ERP && in_array($e['fingerprint'], array_column((array) ($m->reconciliation_detail['erp'] ?? []), 'fingerprint'), true)) {
+                        $paid = $paid->plus(Money::of($m->cargo));
+                        $bankLinks->push((object) ['movement_fingerprint' => $m->fingerprint, 'applied_amount' => $m->cargo, 'link_kind' => 'conciliacion', 'target_type' => 'erp', 'target_fingerprint' => $e['fingerprint'], 'match_type' => '1:1', 'group_key' => null, 'movement_pending' => 0, 'target_pending' => 0, 'delta_days' => null, 'evidence' => []]);
+                    }
+                }
+            }
+            $erpPending = Money::of($e['amount'])->minus($paid);
+            $status = match (true) {
+                $bankLinks->isEmpty() => 'erp',
+                $erpPending->isGreaterThan(0) => 'erp_pago_parcial',
+                default => 'erp_con_pago_bancario',
+            };
+            $linkedBank = $bankLinks->map(function ($l) use ($movByFp) {
+                $bm = $movByFp->get($l->movement_fingerprint);
+
+                return ['row' => $bm?->source_row, 'account' => $bm?->account_slot, 'amount' => Money::str2($l->applied_amount), 'date' => $bm?->movement_date?->format('Y-m-d'), 'fingerprint' => $l->movement_fingerprint, 'match_type' => $l->match_type];
+            })->values()->all();
+            $bankDates = array_filter(array_column($linkedBank, 'date'));
+
             $items[] = [
                 'fingerprint' => $e['fingerprint'],
                 'source' => 'erp',
@@ -325,10 +446,12 @@ class EstadoResultadosDatasetBuilder
                 'abono' => '0.00',
                 'in_period' => true,
                 'erp' => [],
-                'reconciliation_status' => isset($linksToErp[$e['fingerprint']]) ? 'erp_con_pago_bancario' : 'erp',
-                'reconciliation_message' => isset($linksToErp[$e['fingerprint']])
-                    ? 'Registro ERP conciliado con '.count($linksToErp[$e['fingerprint']]).' pago(s) bancario(s): se cuenta una sola vez, desde aquí.'
-                    : 'Registro ERP sin pago bancario identificado en los archivos complementarios.',
+                'reconciliation_status' => $status === 'erp_pago_parcial' ? 'erp_con_pago_bancario' : $status,
+                'reconciliation_message' => match ($status) {
+                    'erp' => 'Registro ERP sin pago bancario identificado en los archivos complementarios.',
+                    'erp_pago_parcial' => 'Registro ERP con pago bancario PARCIAL: pagado $'.number_format((float) Money::str2($paid), 2).', saldo pendiente de pago $'.number_format((float) Money::str2($erpPending), 2).'. Se reconoce una sola vez, desde aquí.',
+                    default => 'Registro ERP conciliado con '.count($linkedBank).' pago(s) bancario(s): se cuenta una sola vez, desde aquí.',
+                },
                 'auto_treatment' => $c['treatment'],
                 'suggested_treatment' => $c['suggested'],
                 'rule_code' => $c['rule'],
@@ -338,23 +461,110 @@ class EstadoResultadosDatasetBuilder
                 'needs_review' => $treatment === T::PENDIENTE,
                 'transfer_pair' => null,
                 'detail_lines' => 0,
-                'linked_bank' => $linksToErp[$e['fingerprint']] ?? [],
+                'linked_bank' => $linkedBank,
                 'erp_universe' => $e['universe'],
+                'applied' => '0.00',
+                'match_type' => null,
+                'match_group' => null,
+                'reversal_pair' => null,
+                'refund_of' => null,
+                'refund_status' => null,
+                'noi_employee_id' => $noiLink['employee_id'] ?? null,
+                'recognizing_hint' => null,
+                'import_status' => 'erp',
+                'erp_payment_status' => $status,
+                'erp_payment' => ['amount' => Money::str2($e['amount']), 'applied' => Money::str2($paid), 'pending' => Money::str2($erpPending)],
+                'recognition' => ['period_id' => $period->id, 'period_code' => $period->code, 'basis' => 'periodo_erp', 'out_of_period' => null],
+                'dates' => [
+                    'operation' => $e['fecha_captura'] ?? $e['date'],
+                    'bank' => $bankDates !== [] ? min($bankDates) : null,
+                    'erp_capture' => $e['fecha_captura'] ?? null,
+                    'erp_payment' => $e['fecha_pago'] ?? null,
+                    'accrual' => null,
+                ],
+                'links' => array_merge(
+                    $bankLinks->map(fn ($l) => $this->publicLink($l, true))->values()->all(),
+                    $noiLink ? [['kind' => 'evidencia_noi', 'kind_label' => Dimensions::LINK_KINDS['evidencia_noi'], 'target_type' => 'noi', 'target' => (string) $noiLink['employee_id'],
+                        'match_type' => null, 'group_key' => null, 'applied' => '0.00', 'movement_pending' => '0.00', 'target_pending' => '0.00', 'delta_days' => null,
+                        'evidence' => ['employee' => $noiLink['name'], 'branch' => $noiLink['branch'], 'operative' => $noiLink['operative'], 'noi_total' => $noiLink['total']]]] : [],
+                ),
             ];
         }
 
+        // Reembolsos vinculados: reducen la MISMA línea del gasto reembolsado (si está reconocido).
+        $byFp = [];
+        foreach ($items as $idx => $i) {
+            $byFp[$i['fingerprint']] = $idx;
+        }
+        foreach ($items as &$i) {
+            $i['treatment_source'] = $i['override'] ? 'manual' : 'regla';
+            if ($i['override'] || $i['rule_code'] !== 'reembolso_vinculado' || $i['refund_of'] === null) {
+                continue;
+            }
+            $target = isset($byFp[$i['refund_of']]) ? $items[$byFp[$i['refund_of']]] : null;
+            if ($target && $target['in_period'] && T::affectsStatement($target['treatment']) && $target['treatment'] !== T::INGRESO_NO_OPERATIVO) {
+                $i['treatment'] = $target['treatment'];
+                $i['needs_review'] = false;
+                $i['treatment_source'] = 'reembolso';
+                $i['rule_reason'] .= ' Reduce: '.T::label($target['treatment']).' (folio '.($target['folio'] ?? '—').').';
+                if ($i['branch_name'] === null || $target['source'] === 'erp') {
+                    $i['branch_name'] = $target['branch_name'];
+                }
+            } else {
+                $i['rule_reason'] .= ' El gasto vinculado no está reconocido en el ER (pendiente o fuera de él): el reembolso queda pendiente.';
+            }
+        }
+        unset($i);
+
         foreach ($items as &$i) {
             $i['impact'] = $this->impact($i);
+            $i['amounts'] = $this->allocation($i);
+            $i['dimensions_raw'] = Dimensions::derive([
+                'source' => $i['source'],
+                'in_period' => $i['in_period'],
+                'treatment' => $i['treatment'],
+                'reconciliation_status' => $i['source'] === 'erp' ? $i['erp_payment_status'] : $i['reconciliation_status'],
+                'applied' => $i['applied'],
+                'classifiable' => $i['amounts']['classifiable'],
+                'has_override' => $i['override'] !== null,
+                'recognizing_hint' => $i['recognizing_hint'],
+                'import' => $i['import_status'],
+            ]);
         }
         unset($i);
 
         return $items;
     }
 
-    /** Importe con el que un item afecta su línea (gasto: cargo − abono; ingreso: abono − cargo). */
+    private function publicLink(object $l, bool $inverse): array
+    {
+        $evidence = is_array($l->evidence ?? null) ? $l->evidence : (json_decode((string) ($l->evidence ?? ''), true) ?: []);
+
+        return [
+            'kind' => $l->link_kind,
+            'kind_label' => Dimensions::LINK_KINDS[$l->link_kind] ?? $l->link_kind,
+            'target_type' => $inverse ? 'banco' : $l->target_type,
+            'target' => $inverse ? $l->movement_fingerprint : $l->target_fingerprint,
+            'match_type' => $l->match_type,
+            'group_key' => $l->group_key,
+            'applied' => Money::str2($l->applied_amount),
+            'movement_pending' => Money::str2($l->movement_pending ?? 0),
+            'target_pending' => Money::str2($l->target_pending ?? 0),
+            'delta_days' => $l->delta_days !== null ? (int) $l->delta_days : null,
+            'evidence' => $evidence,
+        ];
+    }
+
+    /** Porción de cargo que NO quedó cubierta por la conciliación con ERP (lo único clasificable). */
+    private function classifiableCargo(array $item): BigDecimal
+    {
+        return Money::of($item['cargo'])->minus(Money::of($item['applied'] ?? '0'));
+    }
+
+    /** Importe con el que un item afecta su línea (gasto: cargo − abono; ingreso: abono − cargo), sin la parte conciliada. */
     private function signedAmount(array $item): BigDecimal
     {
-        $cargo = Money::of($item['cargo']);
+        $cargo = $this->classifiableCargo($item);
         $abono = Money::of($item['abono']);
 
         return $item['treatment'] === T::INGRESO_NO_OPERATIVO ? $abono->minus($cargo) : $cargo->minus($abono);
@@ -364,12 +574,13 @@ class EstadoResultadosDatasetBuilder
     {
         $t = $item['treatment'];
         $line = T::line($t);
-        if ($line !== null && $item['in_period']) {
+        $classifiable = $this->classifiableCargo($item)->plus(Money::of($item['abono']));
+        if ($line !== null && $item['in_period'] && ! Money::isZeroCents($classifiable)) {
             return [
                 'included' => true,
                 'line' => $line,
                 'amount' => Money::str2($this->signedAmount($item)),
-                'text' => 'Suma a: '.T::label($t),
+                'text' => 'Suma a: '.T::label($t).($item['treatment_source'] === 'reembolso' ? ' (reembolso: reduce la línea)' : ''),
             ];
         }
 
@@ -377,8 +588,35 @@ class EstadoResultadosDatasetBuilder
             'included' => false,
             'line' => null,
             'amount' => '0.00',
-            'text' => 'No suma: '.T::label($t),
+            'text' => $line !== null && $item['in_period']
+                ? 'No suma: el importe ya está conciliado con el ERP (se reconoce una sola vez, desde el ERP).'
+                : 'No suma: '.T::label($t),
         ];
+    }
+
+    /**
+     * Partición del importe BRUTO (cargo + abono) del item: cada peso queda en exactamente un destino.
+     *
+     * @return array{gross:string, conciliated:string, recognized:string, excluded:string, pending:string, out_of_period:string, classifiable:string}
+     */
+    private function allocation(array $item): array
+    {
+        $gross = Money::of($item['cargo'])->plus(Money::of($item['abono']));
+        $parts = ['conciliated' => BigDecimal::zero(), 'recognized' => BigDecimal::zero(), 'excluded' => BigDecimal::zero(), 'pending' => BigDecimal::zero(), 'out_of_period' => BigDecimal::zero()];
+        $classifiable = $gross->minus(Money::of($item['applied'] ?? '0'));
+        if (! $item['in_period']) {
+            $parts['out_of_period'] = $gross;
+        } else {
+            $parts['conciliated'] = Money::of($item['applied'] ?? '0');
+            $dest = match (true) {
+                $item['impact']['included'] => 'recognized',
+                $item['treatment'] === T::PENDIENTE => 'pending',
+                default => 'excluded',
+            };
+            $parts[$dest] = $parts[$dest]->plus($classifiable);
+        }
+
+        return ['gross' => Money::str2($gross)] + array_map(fn ($v) => Money::str2($v), $parts) + ['classifiable' => Money::str2($classifiable)];
     }
 
     private function inScope(array $item, string $scope): bool
@@ -627,6 +865,7 @@ class EstadoResultadosDatasetBuilder
         $sum = fn (array $list, string $field) => Money::sum(array_column($list, $field));
         $where = fn (array $list, callable $fn) => array_values(array_filter($list, $fn));
         $amount = fn (array $list) => Money::sum(array_map(fn ($i) => Money::of($i['cargo'])->plus(Money::of($i['abono'])), $list));
+        $part = fn (array $list, string $key) => Money::sum(array_map(fn ($i) => $i['amounts'][$key], $list));
 
         $cargosIn = $where($inPeriod, fn ($i) => (float) $i['cargo'] > 0);
         $conciliados = $where($inPeriod, fn ($i) => in_array($i['reconciliation_status'], R::CONCILIADOS, true));
@@ -637,6 +876,8 @@ class EstadoResultadosDatasetBuilder
         $includedBank = $where($inPeriod, fn ($i) => $i['impact']['included']);
         $erp = $where($items, fn ($i) => $i['source'] === 'erp');
         $includedErp = $where($erp, fn ($i) => $i['impact']['included']);
+        $reversals = $where($inPeriod, fn ($i) => $i['treatment'] === T::REVERSO);
+        $refunds = $where($inPeriod, fn ($i) => $i['treatment_source'] === 'reembolso');
 
         $byTreatment = [];
         foreach ($items as $i) {
@@ -659,6 +900,15 @@ class EstadoResultadosDatasetBuilder
         }
         ksort($byStatus);
 
+        $byMatch = [];
+        foreach ($conciliados as $i) {
+            $type = $i['match_type'] ?? (R::MATCH_TYPES[$i['reconciliation_status']] ?? '1:1');
+            $byMatch[$type] ??= ['key' => $type, 'count' => 0, 'applied' => BigDecimal::zero()];
+            $byMatch[$type]['count']++;
+            $byMatch[$type]['applied'] = $byMatch[$type]['applied']->plus(Money::of($i['applied']));
+        }
+        ksort($byMatch);
+
         return [
             'movimientos_leidos' => count($bank),
             'movimientos_en_periodo' => count($inPeriod),
@@ -666,20 +916,29 @@ class EstadoResultadosDatasetBuilder
             'total_cargos' => Money::str2($sum($inPeriod, 'cargo')),
             'total_abonos' => Money::str2($sum($inPeriod, 'abono')),
             'candidatos' => count($cargosIn),
-            'conciliados_erp' => ['count' => count($conciliados), 'amount' => Money::str2($amount($conciliados))],
+            'conciliados_erp' => ['count' => count($conciliados), 'amount' => Money::str2($part($conciliados, 'conciliated'))],
             'nuevos' => ['count' => count($nuevos), 'amount' => Money::str2($amount($nuevos))],
             'transferencias' => ['count' => count($transfers), 'amount' => Money::str2($amount($transfers))],
             'fuera_er' => ['count' => count($fuera), 'amount' => Money::str2($amount($fuera))],
-            'pendientes' => ['count' => count($pend), 'amount' => Money::str2($amount($pend))],
+            'pendientes' => ['count' => count($pend), 'amount' => Money::str2($part($pend, 'pending'))],
             'incorporado_bancos' => Money::str2(Money::sum(array_map(fn ($i) => $i['impact']['amount'], $includedBank))),
             'incorporado_erp_fuera_radiografia' => Money::str2(Money::sum(array_map(fn ($i) => $i['impact']['amount'], $includedErp))),
             'erp_fuera_radiografia' => ['count' => count($erp), 'amount' => Money::str2($sum($erp, 'cargo'))],
             'por_tratamiento' => $byTreatment,
             'por_estado' => $byStatus,
+            // ── Nuevas claves ─────────────────────────────────────────────
+            'por_tipo_emparejamiento' => array_values(array_map(fn ($m) => ['key' => $m['key'], 'count' => $m['count'], 'applied' => Money::str2($m['applied'])], $byMatch)),
+            'parciales' => [
+                'count' => count($where($conciliados, fn ($i) => $i['reconciliation_status'] === R::PARCIAL)),
+                'excedente_pendiente' => Money::str2($part($where($conciliados, fn ($i) => $i['reconciliation_status'] === R::PARCIAL), 'pending')),
+            ],
+            'erp_saldo_pendiente_pago' => Money::str2(Money::sum(array_map(fn ($i) => $i['erp_payment']['pending'], $where($erp, fn ($i) => $i['erp_payment_status'] === 'erp_pago_parcial')))),
+            'reversos' => ['count' => count($reversals), 'amount' => Money::str2($amount($reversals))],
+            'reembolsos_vinculados' => ['count' => count($refunds), 'amount' => Money::str2($sum($refunds, 'abono'))],
         ];
     }
 
-    private function checks(array $row, array $income, array $opex, array $nomina, array $statement, array $r, array $items, array $scoped, BigDecimal $ingresos, BigDecimal $opexRadio, BigDecimal $nominaRadio, bool $consolidated): array
+    private function checks(array $row, array $income, array $opex, array $nomina, array $statement, array $r, array $items, array $scoped, BigDecimal $ingresos, BigDecimal $opexRadio, BigDecimal $nominaRadio, bool $consolidated, array $categoryTotals = []): array
     {
         $checks = [];
         $add = function (string $key, string $label, BigDecimal $expected, BigDecimal $actual, ?string $explain = null) use (&$checks) {
@@ -709,13 +968,18 @@ class EstadoResultadosDatasetBuilder
             $add('seccion_'.$block['key'], 'Total '.$block['title'].' = Σ de sus líneas', Money::sum(array_column($block['lines'], 'amount')), Money::of($block['total']['amount']), 'Comparado a 2 decimales de presentación.');
         }
 
-        // Complementarios incorporados = Σ items incluidos que NO están conciliados con ERP.
+        // Complementarios incorporados = Σ porción NO conciliada de los movimientos incluidos (la parte conciliada la reconoce el ERP).
         $bankIncluded = array_filter($scoped, fn ($i) => $i['source'] === 'banco' && $i['impact']['included']);
-        $bankIncludedNotConciliated = array_filter($bankIncluded, fn ($i) => ! in_array($i['reconciliation_status'], R::CONCILIADOS, true));
-        $add('complementarios_incorporados', 'Importe incorporado desde complementarios = Σ movimientos incluidos no conciliados con ERP',
-            Money::sum(array_map(fn ($i) => $i['impact']['amount'], $bankIncludedNotConciliated)),
+        $fromAllocation = function (array $i): BigDecimal {
+            $abono = Money::of($i['abono']);
+            $cargoNoConciliado = Money::of($i['amounts']['classifiable'])->minus($abono);
+
+            return $i['treatment'] === T::INGRESO_NO_OPERATIVO ? $abono->minus($cargoNoConciliado) : $cargoNoConciliado->minus($abono);
+        };
+        $add('complementarios_incorporados', 'Importe incorporado desde complementarios = Σ porción no conciliada de los movimientos incluidos',
+            Money::sum(array_map($fromAllocation, $bankIncluded)),
             Money::sum(array_map(fn ($i) => $i['impact']['amount'], $bankIncluded)),
-            'Si difiere, hay movimientos conciliados con ERP que un usuario reclasificó para sumar: revise que no se dupliquen.');
+            'Si difiere, alguna parte ya conciliada con el ERP se estaría sumando otra vez.');
 
         // Cada peso de cada cargo/abono en periodo queda en exactamente un tratamiento (sin exclusiones silenciosas).
         $bank = array_filter($items, fn ($i) => $i['source'] === 'banco');
@@ -731,7 +995,179 @@ class EstadoResultadosDatasetBuilder
             $uploadTotals,
             Money::sum($byTreatment));
 
+        // ── Invariantes de no duplicidad (nuevos) ─────────────────────────
+        // Cada importe va a UNA sola categoría exclusiva: Σ impactos de los items = Σ de las líneas que alimentan.
+        if ($categoryTotals !== []) {
+            $add('exclusividad_categorias', 'Σ importes reconocidos por movimiento = Σ líneas del ER que alimentan (cada peso en una sola categoría)',
+                Money::sum(array_map(fn ($i) => $i['impact']['amount'], array_filter($scoped, fn ($i) => $i['impact']['included'] && ($consolidated || in_array($i['treatment'], [T::OPEX_SUCURSAL, T::NOMINA_SUCURSAL, T::GASTO_FINANCIERO, T::INGRESO_NO_OPERATIVO], true))))),
+                Money::sum($categoryTotals),
+                'Si difiere, algún importe se está contando en dos líneas o en ninguna.');
+        }
+        $fps = array_column($items, 'fingerprint');
+        $dup = count($fps) - count(array_unique($fps));
+        $add('huella_unica', 'Cada huella (movimiento/ERP) aparece una sola vez', BigDecimal::zero(), BigDecimal::of($dup), 'Número de huellas repetidas en el dataset.');
+
+        $allGross = Money::sum(array_map(fn ($i) => $i['amounts']['gross'], $items));
+        $allParts = Money::sum(array_map(fn ($i) => Money::sum([$i['amounts']['conciliated'], $i['amounts']['recognized'], $i['amounts']['excluded'], $i['amounts']['pending'], $i['amounts']['out_of_period']]), $items));
+        $add('particion_total', 'Σ importes de las fuentes = conciliado + reconocido + excluido + pendiente + fuera de periodo', $allGross, $allParts, 'Ningún importe desaparece sin explicación.');
+
+        $add('conciliados_sin_doble_gasto', 'Σ importe aplicado en vínculos ERP = Σ porción conciliada de los movimientos (nunca se reconoce otra vez)',
+            Money::of($this->linkedApplied),
+            Money::sum(array_map(fn ($i) => $i['amounts']['conciliated'], array_filter($items, fn ($i) => $i['source'] === 'banco'))),
+            'La parte conciliada de un pago la reconoce el ERP; el banco nunca crea un segundo gasto.');
+
+        // Clasificación manual contradictoria: un pago conciliado con ERP reclasificado para sumar. No se
+        // suma (sería doble conteo), pero tampoco se oculta: queda como diferencia hasta corregirlo.
+        $contradictory = array_filter($items, fn ($i) => $i['source'] === 'banco' && $i['override'] !== null && $i['in_period']
+            && T::affectsStatement($i['treatment']) && ! Money::isZeroCents($i['amounts']['conciliated']) && Money::isZeroCents($i['amounts']['classifiable']));
+        $add('conciliados_reclasificados', 'Pagos conciliados con ERP reclasificados manualmente para sumar (importe que NO se suma otra vez)',
+            BigDecimal::zero(),
+            Money::sum(array_map(fn ($i) => $i['amounts']['conciliated'], $contradictory)),
+            'La parte conciliada ya la reconoce el ERP. Revierta la clasificación manual o revise la conciliación.');
+
         return $checks;
+    }
+
+    /**
+     * Calidad financiera del periodo: totales por destino, particiones, diferencias por
+     * importe/fecha/folio, diferencia contra Radiografía, integridad de fuentes y
+     * eliminaciones internas. Las diferencias se MUESTRAN; nunca se compensan.
+     */
+    private function validation(Period $period, array $items, array $scoped, array $checks, array $radiography, bool $consolidated): array
+    {
+        $bank = array_values(array_filter($items, fn ($i) => $i['source'] === 'banco'));
+        $erp = array_values(array_filter($items, fn ($i) => $i['source'] === 'erp'));
+        $total = fn (array $list, string $key) => Money::str2(Money::sum(array_map(fn ($i) => $i['amounts'][$key], $list)));
+        $countWith = fn (array $list, string $key) => count(array_filter($list, fn ($i) => ! Money::isZeroCents($i['amounts'][$key])));
+        $bucket = fn (array $list, string $key) => ['count' => $countWith($list, $key), 'amount' => $total($list, $key)];
+
+        $srcCargos = Money::sum(array_column($this->activeUploads, 'read_cargos'));
+        $srcAbonos = Money::sum(array_column($this->activeUploads, 'read_abonos'));
+        $impCargos = Money::sum(array_column($bank, 'cargo'));
+        $impAbonos = Money::sum(array_column($bank, 'abono'));
+
+        $partition = function (array $list) use ($total) {
+            $gross = Money::of($total($list, 'gross'));
+            $parts = Money::sum([$total($list, 'conciliated'), $total($list, 'recognized'), $total($list, 'excluded'), $total($list, 'pending'), $total($list, 'out_of_period')]);
+
+            return ['total' => Money::str2($gross), 'sum_parts' => Money::str2($parts), 'difference' => Money::str2($parts->minus($gross)), 'ok' => Money::isZeroCents($parts->minus($gross))];
+        };
+
+        $diffItem = fn (array $i, ?string $difference = null) => [
+            'fingerprint' => $i['fingerprint'], 'date' => $i['date'], 'folio' => $i['folio'], 'concept' => $i['concept'],
+            'account_slot' => $i['account_slot'], 'bank_amount' => $i['cargo'],
+            'erp_amounts' => array_values(array_map(fn ($e) => $e['amount'], (array) $i['erp'])),
+            'difference' => $difference, 'delta_days' => $i['reconciliation_delta_days'] ?? null,
+            'status' => $i['reconciliation_status'], 'status_label' => R::LABELS[$i['reconciliation_status']] ?? $i['reconciliation_status'],
+            'message' => $i['reconciliation_message'],
+        ];
+        $byStatus = fn (array $statuses) => array_values(array_filter($bank, fn ($i) => $i['in_period'] && in_array($i['reconciliation_status'], $statuses, true)));
+        $group = function (array $list, callable $map) {
+            $rows = array_map($map, $list);
+
+            return ['count' => count($rows), 'amount' => Money::str2(Money::sum(array_column($rows, 'bank_amount'))), 'items' => $rows];
+        };
+        $byAmount = $group($byStatus([R::FOLIO_MONTO_DIFERENTE]), function ($i) use ($diffItem) {
+            $erpSum = Money::sum(array_map(fn ($e) => $e['amount'], (array) $i['erp']));
+
+            return $diffItem($i, Money::str2(Money::of($i['cargo'])->minus($erpSum)));
+        });
+        $byDate = $group($byStatus([R::FOLIO_FECHA_DIFERENTE]), fn ($i) => $diffItem($i));
+        $byFolio = $group($byStatus([R::FOLIO_SIN_ERP, R::FOLIO_OTRO_PERIODO, R::FOLIO_YA_CONCILIADO, R::FOLIO_AMBIGUO, R::POSIBLE_DUPLICADO_ERP]), fn ($i) => $diffItem($i) + ['out_of_period' => $i['recognition']['out_of_period']]);
+
+        // ── Eliminaciones internas (consolidación) ────────────────────────
+        $inPeriodBank = array_values(array_filter($bank, fn ($i) => $i['in_period']));
+        $transfers = array_values(array_filter($inPeriodBank, fn ($i) => $i['treatment'] === T::TRANSFERENCIA_INTERNA));
+        $paired = array_values(array_filter($transfers, fn ($i) => $i['transfer_pair'] !== null));
+        $unpairedTraspasos = array_values(array_filter($transfers, fn ($i) => $i['transfer_pair'] === null && $i['rule_code'] === 'traspaso_cuentas_propias'));
+        $internalFlows = array_values(array_filter($transfers, fn ($i) => $i['rule_code'] !== 'traspaso_cuentas_propias'));
+        $gross = fn (array $list) => Money::str2(Money::sum(array_map(fn ($i) => $i['amounts']['gross'], $list)));
+        $reversals = array_values(array_filter($inPeriodBank, fn ($i) => $i['treatment'] === T::REVERSO));
+
+        // ── Integridad de fuentes ─────────────────────────────────────────
+        $lastRun = EstadoResultadosRun::query()->where('period_id', $period->id)->where('status', 'ok')->latest('id')->first();
+        $currentSig = $this->currentErpSignature;
+        $uploadsOk = array_reduce($this->activeUploads, fn ($ok, $u) => $ok && $u['control_ok'] !== false, true);
+        $importOk = Money::isZeroCents($srcCargos->minus($impCargos)) && Money::isZeroCents($srcAbonos->minus($impAbonos));
+        $stale = $lastRun !== null && $currentSig !== null && $lastRun->erp_signature !== $currentSig;
+
+        $partitions = ['bank' => $partition($bank), 'erp' => $partition($erp), 'all' => $partition($items)];
+        $failedChecks = array_values(array_map(fn ($c) => ['key' => $c['key'], 'label' => $c['label'], 'difference' => $c['difference']], array_filter($checks, fn ($c) => ! $c['ok'])));
+
+        $unresolved = [];
+        $addUnresolved = function (string $key, string $label, int $count, string $amount) use (&$unresolved) {
+            if ($count > 0 || ! Money::isZeroCents($amount)) {
+                $unresolved[] = ['key' => $key, 'label' => $label, 'count' => $count, 'amount' => $amount];
+            }
+        };
+        $pendingItems = array_values(array_filter($items, fn ($i) => ! Money::isZeroCents($i['amounts']['pending'])));
+        $addUnresolved('pendientes', 'Movimientos pendientes de clasificar (no suman ni se excluyen)', count($pendingItems), $total($pendingItems, 'pending'));
+        $addUnresolved('diferencia_importe', 'Mismo folio con importe diferente al ERP', $byAmount['count'], $byAmount['amount']);
+        $addUnresolved('diferencia_fecha', 'Mismo folio e importe con fecha fuera de tolerancia', $byDate['count'], $byDate['amount']);
+        $addUnresolved('diferencia_folio', 'Folio sin ERP, de otro periodo, ya conciliado o ambiguo', $byFolio['count'], $byFolio['amount']);
+        $erpPartial = array_values(array_filter($erp, fn ($i) => $i['erp_payment_status'] === 'erp_pago_parcial'));
+        $addUnresolved('erp_saldo_pendiente', 'Saldo ERP sin pago bancario identificado (pagos parciales)', count($erpPartial), Money::str2(Money::sum(array_map(fn ($i) => $i['erp_payment']['pending'], $erpPartial))));
+        $addUnresolved('traspasos_sin_contraparte', 'Traspasos entre cuentas sin contraparte en la otra cuenta', count($unpairedTraspasos), $gross($unpairedTraspasos));
+        if (! ($radiography['base_ok'] ?? true)) {
+            $addUnresolved('radiografia_no_explicada', 'Diferencia NO explicada contra Radiografía', 1, (string) $radiography['difference_base']);
+        }
+        foreach ($failedChecks as $fc) {
+            $addUnresolved('control_'.$fc['key'], 'Validación con diferencia: '.$fc['label'], 1, $fc['difference']);
+        }
+
+        $noi = $this->noiData;
+        $noiLinked = array_values(array_filter($bank, fn ($i) => $i['noi_employee_id'] !== null));
+
+        return [
+            'status' => $failedChecks === [] && $partitions['all']['ok'] && $importOk ? ($unresolved === [] ? 'ok' : 'con_pendientes') : 'con_diferencias',
+            'scope_note' => $consolidated ? null : 'Las validaciones de partición cubren todos los movimientos del periodo (no sólo los de la sucursal).',
+            'criterion' => Dimensions::criterion(),
+            'totals' => [
+                'source' => ['count' => array_sum(array_column($this->activeUploads, 'movements')), 'cargos' => Money::str2($srcCargos), 'abonos' => Money::str2($srcAbonos), 'total' => Money::str2($srcCargos->plus($srcAbonos))],
+                'imported' => ['count' => count($bank), 'cargos' => Money::str2($impCargos), 'abonos' => Money::str2($impAbonos), 'total' => Money::str2($impCargos->plus($impAbonos))],
+                'erp_outside' => ['count' => count($erp), 'total' => $total($erp, 'gross')],
+                'conciliated' => $bucket($items, 'conciliated'),
+                'recognized' => $bucket($items, 'recognized'),
+                'excluded_justified' => $bucket($items, 'excluded'),
+                'pending' => $bucket($items, 'pending'),
+                'out_of_period' => $bucket($items, 'out_of_period'),
+            ],
+            'partition' => $partitions,
+            'differences' => ['by_amount' => $byAmount, 'by_date' => $byDate, 'by_folio' => $byFolio],
+            'radiography' => [
+                'er' => $radiography['er_ebitda_sucursales'], 'radiografia' => $radiography['radiografia_ebitda'],
+                'difference' => $radiography['difference'], 'base_difference' => $radiography['difference_base'],
+                'ok' => $radiography['ok'], 'base_ok' => $radiography['base_ok'], 'explained' => $radiography['explanations'],
+            ],
+            'integrity' => [
+                'status' => $uploadsOk && $importOk && ! $stale ? 'ok' : 'con_incidencias',
+                'import_matches_source' => $importOk,
+                'uploads' => $this->activeUploads,
+                'erp_signature' => $currentSig,
+                'erp_signature_last_run' => $lastRun?->erp_signature,
+                'erp_stale' => $stale,
+                'input_signature_last_run' => $lastRun?->input_signature,
+                'rules_version_last_run' => $lastRun?->rules_version,
+                'recognition_version_last_run' => $lastRun?->recognition_version,
+            ],
+            'eliminations' => [
+                'transfers' => ['pairs' => count(array_unique(array_column($paired, 'transfer_pair'))), 'count' => count($paired), 'amount' => $gross($paired)],
+                'unpaired_transfers' => ['count' => count($unpairedTraspasos), 'amount' => $gross($unpairedTraspasos), 'items' => array_map(fn ($i) => ['fingerprint' => $i['fingerprint'], 'date' => $i['date'], 'account_slot' => $i['account_slot'], 'cargo' => $i['cargo'], 'abono' => $i['abono'], 'concept' => $i['concept']], $unpairedTraspasos)],
+                'internal_flows' => ['count' => count($internalFlows), 'amount' => $gross($internalFlows)],
+                'reversals' => ['pairs' => count(array_unique(array_filter(array_column($reversals, 'reversal_pair')))), 'count' => count($reversals), 'amount' => $gross($reversals)],
+                'corporate_allocation' => 'Sin asignación automática de costos corporativos a sucursales: Corporativo y DG sólo se presentan en el consolidado.',
+            ],
+            'noi' => [
+                'employees' => $noi['employees_count'] ?? 0,
+                'total' => $noi['total'] ?? '0.00',
+                'unassigned_total' => $noi['unassigned_total'] ?? '0.00',
+                'unassigned_employees' => $noi['unassigned_employees'] ?? 0,
+                'linked_payments' => ['count' => count($noiLinked), 'amount' => Money::str2(Money::sum(array_column($noiLinked, 'cargo')))],
+                'recognizing_rule' => 'La nómina de un colaborador NOI la reconoce el NOI (Nómina sucursales, vía Radiografía). El pago bancario y la requisición ERP que lo nombran son evidencia; nunca un segundo gasto.',
+            ],
+            'unresolved' => $unresolved,
+            'failed_checks' => $failedChecks,
+        ];
     }
 
     private function outside(array $items, array $adj): array
@@ -917,7 +1353,19 @@ class EstadoResultadosDatasetBuilder
         $i['treatment_group'] = T::group($i['treatment']);
         $i['treatment_explain'] = T::explain($i['treatment']);
         $i['suggested_label'] = $i['suggested_treatment'] ? T::label($i['suggested_treatment']) : null;
-        $i['treatment_source'] = $i['override'] ? 'manual' : 'regla';
+
+        $rec = $i['recognition'];
+        $i['dimensions'] = Dimensions::present($i['dimensions_raw'], [
+            'key' => $rec['out_of_period'] ?? 'en_periodo',
+            'label' => $rec['out_of_period'] ? Dimensions::OUT_OF_PERIOD[$rec['out_of_period']] : 'Se reconoce en este periodo',
+            'period_id' => $rec['period_id'],
+            'period_code' => $rec['period_code'],
+            'basis' => $rec['basis'],
+            'basis_label' => Dimensions::BASIS[$rec['basis']],
+            'out_of_period' => $rec['out_of_period'],
+            'out_of_period_label' => $rec['out_of_period'] ? Dimensions::OUT_OF_PERIOD[$rec['out_of_period']] : null,
+        ]);
+        unset($i['dimensions_raw'], $i['recognizing_hint'], $i['recognition'], $i['import_status']);
 
         return $i;
     }
@@ -925,15 +1373,26 @@ class EstadoResultadosDatasetBuilder
     /** Hash de TODAS las cifras del dataset (excluye la hora de generación). */
     private function hash(array $dataset): string
     {
+        $v = $dataset['validation'];
         $payload = [
             'period' => $dataset['meta']['period'],
             'scope' => $dataset['meta']['scope']['key'],
+            'recognition' => [$dataset['meta']['recognition']['version'], $dataset['meta']['dimensions_version']],
             'results' => $dataset['results'],
             'statement' => $dataset['statement'],
             'checks' => array_map(fn ($c) => [$c['key'], $c['actual'], $c['expected']], $dataset['checks']),
             'conciliation' => array_diff_key($dataset['conciliation'], ['por_estado' => true]),
-            'movements' => array_map(fn ($m) => [$m['fingerprint'], $m['treatment'], $m['impact']['amount']], $dataset['movements']),
+            'movements' => array_map(fn ($m) => [
+                $m['fingerprint'], $m['treatment'], $m['impact']['amount'], $m['dimensions']['inclusion']['key'],
+                $m['dimensions']['category']['key'], $m['amounts']['conciliated'], $m['amounts']['pending'],
+            ], $dataset['movements']),
             'adjustments' => array_map(fn ($a) => [$a['key'], $a['state'], $a['amount']], $dataset['adjustments']),
+            'validation' => [
+                $v['status'], $v['totals'], $v['partition'],
+                array_map(fn ($d) => [$d['count'], $d['amount']], $v['differences']),
+                $v['radiography'], $v['integrity']['status'], $v['eliminations']['transfers'], $v['eliminations']['reversals'],
+                $v['unresolved'],
+            ],
         ];
 
         return hash('sha256', json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION));

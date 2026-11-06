@@ -5,7 +5,9 @@ import {
     CircleSlash,
     History,
     Loader2,
+    Lock,
     ShieldAlert,
+    Sparkles,
     Tags,
 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
@@ -17,6 +19,9 @@ import {
     SheetHeader,
     SheetTitle,
 } from '@/components/ui/sheet';
+import AmountPartitionBar from './AmountPartitionBar.vue';
+import DimensionGrid from './DimensionGrid.vue';
+import EvidenceChain from './EvidenceChain.vue';
 import { apiJson, mxn, reconciliationTone } from './types';
 import type { Movement } from './types';
 
@@ -26,11 +31,16 @@ const props = defineProps<{
     historyUrl: (fingerprint: string) => string;
     canClassify: boolean;
     toneOf: (treatment: string) => string;
+    lookup: (fingerprint: string) => Movement | null;
+    /** Motivo de solo lectura (versión aprobada / histórica). */
+    lockReason?: string | null;
 }>();
 
 const emit = defineEmits<{
     'update:open': [v: boolean];
     classify: [fingerprints: string[]];
+    acceptSuggestion: [fingerprint: string];
+    openMovement: [m: Movement];
 }>();
 
 interface HistoryRow {
@@ -80,7 +90,7 @@ const headline = computed(() => {
         return {
             icon: CheckCircle2,
             cls: 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200',
-            title: `✅ Sí suma: ${mxn(mv.impact.amount)}`,
+            title: `Sí suma: ${mxn(mv.impact.amount)}`,
             text: `Afecta la línea "${mv.treatment_label}". ${mv.treatment_explain}`,
         };
     }
@@ -89,7 +99,7 @@ const headline = computed(() => {
         return {
             icon: ShieldAlert,
             cls: 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200',
-            title: '⚠ Requiere revisión — no suma todavía',
+            title: 'Requiere revisión: todavía no suma',
             text: mv.treatment_explain,
         };
     }
@@ -98,7 +108,7 @@ const headline = computed(() => {
         return {
             icon: CheckCircle2,
             cls: 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200',
-            title: '✅ Conciliado con ERP — no se vuelve a sumar',
+            title: 'Ya está en el ERP: no se vuelve a sumar',
             text: mv.treatment_explain,
         };
     }
@@ -114,7 +124,7 @@ const headline = computed(() => {
 
 <template>
     <Sheet :open="open" @update:open="(v: boolean) => emit('update:open', v)">
-        <SheetContent class="w-full overflow-y-auto sm:max-w-xl">
+        <SheetContent class="w-full overflow-y-auto sm:max-w-2xl">
             <template v-if="m">
                 <SheetHeader>
                     <SheetTitle class="pr-6 text-base">
@@ -142,6 +152,19 @@ const headline = computed(() => {
                             {{ headline.text }}
                         </p>
                     </div>
+
+                    <AmountPartitionBar v-if="m.amounts" :amounts="m.amounts" />
+                    <DimensionGrid
+                        v-if="m.dimensions"
+                        :dimensions="m.dimensions"
+                        :dates="m.dates"
+                    />
+                    <EvidenceChain
+                        v-if="m.links"
+                        :movement="m"
+                        :lookup="lookup"
+                        @open="(x) => emit('openMovement', x)"
+                    />
 
                     <div class="grid grid-cols-2 gap-2 text-xs">
                         <div class="rounded-xl bg-muted/50 p-2">
@@ -196,11 +219,7 @@ const headline = computed(() => {
                     </div>
 
                     <section class="space-y-2">
-                        <h3
-                            class="text-xs font-bold tracking-wide text-muted-foreground uppercase"
-                        >
-                            Conciliación
-                        </h3>
+                        <h3 class="text-sm font-extrabold">Conciliación</h3>
                         <span
                             class="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold"
                             :class="reconciliationTone(m.reconciliation_status)"
@@ -290,9 +309,7 @@ const headline = computed(() => {
                     </section>
 
                     <section class="space-y-2">
-                        <h3
-                            class="text-xs font-bold tracking-wide text-muted-foreground uppercase"
-                        >
+                        <h3 class="text-sm font-extrabold">
                             Clasificación financiera
                         </h3>
                         <div class="flex flex-wrap items-center gap-2">
@@ -327,29 +344,51 @@ const headline = computed(() => {
                             {{ m.override.at }} · motivo: {{ m.override.notes }}
                         </div>
                         <Button
-                            v-if="canClassify"
+                            v-if="
+                                canClassify &&
+                                !lockReason &&
+                                m.treatment === 'pendiente' &&
+                                m.suggested_treatment
+                            "
                             size="sm"
-                            class="bg-teal-700 text-white hover:bg-teal-800"
+                            variant="outline"
+                            class="mr-2"
+                            @click="emit('acceptSuggestion', m.fingerprint)"
+                        >
+                            <Sparkles class="size-3.5 text-amber-500" />
+                            Aceptar sugerencia
+                        </Button>
+                        <Button
+                            v-if="canClassify && !lockReason"
+                            size="sm"
+                            class="bg-emerald-700 text-white hover:bg-emerald-800"
                             @click="emit('classify', [m.fingerprint])"
                         >
                             <Tags class="size-3.5" /> Clasificar / corregir
                         </Button>
+                        <p
+                            v-if="lockReason"
+                            class="flex items-start gap-1.5 rounded-xl bg-muted/60 p-2.5 text-xs text-muted-foreground"
+                        >
+                            <Lock class="mt-0.5 size-3.5 shrink-0" />
+                            {{ lockReason }}
+                        </p>
                     </section>
 
                     <section v-if="m.override" class="space-y-2">
                         <h3
-                            class="flex items-center gap-1 text-xs font-bold tracking-wide text-muted-foreground uppercase"
+                            class="flex items-center gap-1 text-sm font-extrabold"
                         >
                             <History class="size-3.5" /> Historial de
                             clasificación
                         </h3>
                         <Loader2
                             v-if="loadingHistory"
-                            class="size-4 animate-spin text-teal-600"
+                            class="size-4 animate-spin text-emerald-600"
                         />
                         <ol
                             v-else
-                            class="space-y-1.5 border-l-2 border-teal-200 pl-3 text-xs dark:border-teal-900"
+                            class="space-y-1.5 border-l-2 border-emerald-200 pl-3 text-xs dark:border-emerald-900"
                         >
                             <li v-for="(h, i) in history" :key="i">
                                 <b>{{ h.treatment_label }}</b>

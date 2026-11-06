@@ -6,6 +6,7 @@ import {
     FileSpreadsheet,
     History,
     Loader2,
+    Lock,
     UploadCloud,
 } from 'lucide-vue-next';
 import { ref } from 'vue';
@@ -16,12 +17,15 @@ import {
 } from '@/components/ui/collapsible';
 import StatusBadge from './StatusBadge.vue';
 import { mxn } from './types';
-import type { AccountSource } from './types';
+import type { AccountSource, UploadRules } from './types';
 
 const props = defineProps<{
     account: AccountSource;
     canUpload: boolean;
     uploading: boolean;
+    uploadRules?: UploadRules | null;
+    /** Motivo de solo lectura (versión aprobada / histórica). */
+    lockReason?: string | null;
 }>();
 
 const emit = defineEmits<{ upload: [slot: string, file: File] }>();
@@ -45,7 +49,7 @@ function pick(files: FileList | null | undefined): void {
 function onDrop(e: DragEvent): void {
     dragging.value = false;
 
-    if (props.canUpload && !props.uploading) {
+    if (props.canUpload && !props.lockReason && !props.uploading) {
         pick(e.dataTransfer?.files);
     }
 }
@@ -53,11 +57,8 @@ function onDrop(e: DragEvent): void {
 
 <template>
     <div
-        class="group relative flex flex-col overflow-hidden rounded-2xl border bg-card shadow-soft-xs transition hover:shadow-md"
+        class="group relative flex flex-col overflow-hidden rounded-2xl border bg-card shadow-soft-xs transition hover:shadow-soft-md"
     >
-        <div
-            class="h-1 w-full bg-gradient-to-r from-emerald-500 via-teal-600 to-cyan-500"
-        />
         <div class="flex flex-1 flex-col gap-3 p-4">
             <div class="flex items-start justify-between gap-2">
                 <div class="flex min-w-0 items-center gap-2.5">
@@ -87,9 +88,7 @@ function onDrop(e: DragEvent): void {
                 </p>
                 <div class="grid grid-cols-3 gap-2">
                     <div class="rounded-xl bg-muted/50 p-2">
-                        <p
-                            class="text-[10px] tracking-wide text-muted-foreground uppercase"
-                        >
+                        <p class="text-[11px] text-muted-foreground">
                             Movimientos
                         </p>
                         <p class="font-semibold tabular-nums">
@@ -97,21 +96,13 @@ function onDrop(e: DragEvent): void {
                         </p>
                     </div>
                     <div class="rounded-xl bg-muted/50 p-2">
-                        <p
-                            class="text-[10px] tracking-wide text-muted-foreground uppercase"
-                        >
-                            Cargos
-                        </p>
+                        <p class="text-[11px] text-muted-foreground">Cargos</p>
                         <p class="font-semibold tabular-nums">
                             {{ mxn(account.upload.total_cargos) }}
                         </p>
                     </div>
                     <div class="rounded-xl bg-muted/50 p-2">
-                        <p
-                            class="text-[10px] tracking-wide text-muted-foreground uppercase"
-                        >
-                            Abonos
-                        </p>
+                        <p class="text-[11px] text-muted-foreground">Abonos</p>
                         <p class="font-semibold tabular-nums">
                             {{ mxn(account.upload.total_abonos) }}
                         </p>
@@ -155,13 +146,20 @@ function onDrop(e: DragEvent): void {
                 </ul>
             </div>
 
+            <p
+                v-if="canUpload && lockReason"
+                class="mt-auto flex items-start gap-2 rounded-xl border border-dashed p-3 text-xs text-muted-foreground"
+            >
+                <Lock class="mt-0.5 size-3.5 shrink-0" />
+                No se pueden cargar archivos: {{ lockReason }}
+            </p>
             <label
-                v-if="canUpload"
-                class="mt-auto flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed p-4 text-center text-xs transition"
+                v-else-if="canUpload"
+                class="mt-auto flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed p-4 text-center text-xs transition focus-within:ring-3 focus-within:ring-emerald-500/30"
                 :class="
                     dragging
                         ? 'border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/30'
-                        : 'border-border hover:border-emerald-400 hover:bg-muted/40'
+                        : 'border-border hover:border-emerald-400 hover:bg-emerald-50/40 dark:hover:bg-emerald-950/20'
                 "
                 @dragover.prevent="dragging = true"
                 @dragleave.prevent="dragging = false"
@@ -180,17 +178,25 @@ function onDrop(e: DragEvent): void {
                         ? 'Validando archivo…'
                         : account.upload
                           ? 'Reemplazar archivo'
-                          : 'Arrastra el Excel o haz clic'
+                          : 'Arrastra el Excel aquí o haz clic para elegirlo'
                 }}</span>
                 <span class="text-muted-foreground"
-                    >.xlsx / .xls / .xlsm · se valida completo antes de
-                    guardar</span
+                    >{{
+                        uploadRules
+                            ? uploadRules.extensions
+                                  .map((x) => '.' + x)
+                                  .join(' / ')
+                            : '.xlsx / .xls / .xlsm'
+                    }}<template v-if="uploadRules">
+                        · máximo {{ uploadRules.max_mb }} MB</template
+                    >
+                    · se valida completo antes de guardar</span
                 >
                 <input
                     ref="input"
                     type="file"
                     class="sr-only"
-                    accept=".xlsx,.xls,.xlsm"
+                    :accept="uploadRules?.accept ?? '.xlsx,.xls,.xlsm'"
                     :disabled="uploading"
                     @change="pick(($event.target as HTMLInputElement).files)"
                 />

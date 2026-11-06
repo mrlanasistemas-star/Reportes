@@ -111,7 +111,7 @@ class ErpExpenseRepository
             ->join('periods as p', 'p.id', '=', 'e.period_id')
             ->where('ru.data_source_id', $sourceId)
             ->whereNotIn('e.period_id', $dataIds)
-            ->select(['e.id', 'e.amount', 'e.paid_amount', 'e.raw_payload', 'p.code'])
+            ->select(['e.id', 'e.amount', 'e.paid_amount', 'e.raw_payload', 'p.code', 'p.id as pid', 'p.start_date as pstart'])
             ->orderBy('e.id')
             ->chunk(1000, function ($chunk) use (&$out, $wanted) {
                 foreach ($chunk as $r) {
@@ -120,6 +120,8 @@ class ErpExpenseRepository
                     if ($folio !== null && isset($wanted[$folio])) {
                         $out[$folio][] = [
                             'period_code' => (string) $r->code,
+                            'period_id' => (int) $r->pid,
+                            'period_start' => substr((string) $r->pstart, 0, 10),
                             'amount' => Money::str2((float) $r->paid_amount != 0.0 ? $r->paid_amount : $r->amount),
                             'date' => $payload['fecha_pago'] ?? ($payload['fecha_captura'] ?? null),
                         ];

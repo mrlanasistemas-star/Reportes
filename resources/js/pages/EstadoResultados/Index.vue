@@ -1,56 +1,60 @@
 <script setup lang="ts">
-import { Head, usePage } from '@inertiajs/vue3';
+import { Head } from '@inertiajs/vue3';
 import {
     AlertTriangle,
     BarChart3,
     Calculator,
-    ClipboardCheck,
-    FileSpreadsheet,
-    FileText,
+    FolderInput,
     Gauge,
+    Inbox,
     Landmark,
+    ListChecks,
     ListTree,
-    Loader2,
-    RefreshCw,
     Scale,
+    ScanSearch,
     ShieldCheck,
     Shuffle,
+    Lock,
 } from 'lucide-vue-next';
-import Swal from 'sweetalert2';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import AppPageHeader from '@/components/app/AppPageHeader.vue';
 import AdjustmentsPanel from '@/components/estado-resultados/AdjustmentsPanel.vue';
 import ClassifyDialog from '@/components/estado-resultados/ClassifyDialog.vue';
+import CloseRoute from '@/components/estado-resultados/CloseRoute.vue';
 import ConciliationSummary from '@/components/estado-resultados/ConciliationSummary.vue';
 import ControlPanel from '@/components/estado-resultados/ControlPanel.vue';
 import DatasetSkeleton from '@/components/estado-resultados/DatasetSkeleton.vue';
-import EbitdaWaterfall from '@/components/estado-resultados/EbitdaWaterfall.vue';
+import ErCommandBar from '@/components/estado-resultados/ErCommandBar.vue';
+import ErTabs from '@/components/estado-resultados/ErTabs.vue';
+import type { ErTab } from '@/components/estado-resultados/ErTabs.vue';
 import IndicatorsPanel from '@/components/estado-resultados/IndicatorsPanel.vue';
 import KpiStrip from '@/components/estado-resultados/KpiStrip.vue';
 import MovementDetailSheet from '@/components/estado-resultados/MovementDetailSheet.vue';
+import { resolveFilter } from '@/components/estado-resultados/movementFilters';
 import MovementsTable from '@/components/estado-resultados/MovementsTable.vue';
 import OutsidePanel from '@/components/estado-resultados/OutsidePanel.vue';
-import RadiographyReconciliationCard from '@/components/estado-resultados/RadiographyReconciliationCard.vue';
+import ReportStatusBar from '@/components/estado-resultados/ReportStatusBar.vue';
+import ReviewQueue from '@/components/estado-resultados/ReviewQueue.vue';
 import SourcesPanel from '@/components/estado-resultados/SourcesPanel.vue';
 import StatementTable from '@/components/estado-resultados/StatementTable.vue';
-import {
-    ApiError,
-    apiJson,
-    mxn,
-    TONE_CLS,
-} from '@/components/estado-resultados/types';
+import SummaryView from '@/components/estado-resultados/SummaryView.vue';
+import { TONE_CLS } from '@/components/estado-resultados/types';
 import type {
-    AdjustmentState,
-    Dataset,
     Movement,
     Permissions,
     TreatmentMeta,
+    UploadRules,
 } from '@/components/estado-resultados/types';
+import ValidationPanel from '@/components/estado-resultados/ValidationPanel.vue';
+import VersionHistorySheet from '@/components/estado-resultados/VersionHistorySheet.vue';
 import { Button } from '@/components/ui/button';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { useConfirm } from '@/composables/useConfirm';
-import { useToast } from '@/composables/useToast';
-import { downloadFile } from '@/lib/downloadOverlay';
+import { useCloseRoute } from '@/composables/estado-resultados/useCloseRoute';
+import type { CloseStep } from '@/composables/estado-resultados/useCloseRoute';
+import { useErActions } from '@/composables/estado-resultados/useErActions';
+import { useErDataset } from '@/composables/estado-resultados/useErDataset';
+import { useErGovernance } from '@/composables/estado-resultados/useErGovernance';
+import { useErNavigation } from '@/composables/estado-resultados/useErNavigation';
 
 defineOptions({
     layout: {
@@ -75,260 +79,183 @@ const props = defineProps<{
     adjustmentStates: string[];
     can: Permissions;
     toleranceDays: number;
+    reportStatuses?: Array<{ key: string; label: string }>;
+    uploadRules?: UploadRules;
 }>();
 
-const page = usePage();
-const toast = useToast();
-const { confirm } = useConfirm();
-const appBase = (page.props as { base?: string }).base ?? '';
+const initialVersion = (() => {
+    if (typeof window === 'undefined') {
+        return null;
+    }
 
-// ── Estado ───────────────────────────────────────────────────────────────
-const periodId = ref<number>(props.initialPeriodId);
-const scope = ref<string>(props.initialScope || 'CONSOLIDADO');
-const scopes = ref<Array<{ key: string; label: string }>>([
-    { key: 'CONSOLIDADO', label: 'Consolidado MR LANA' },
-]);
-const dataset = ref<Dataset | null>(null);
-const loading = ref(false);
-const loadError = ref<string | null>(null);
-const processing = ref(false);
-const uploadingSlot = ref<string | null>(null);
-const tab = ref('resumen');
+    const v = Number(
+        new URLSearchParams(window.location.search).get('version'),
+    );
 
+    return Number.isInteger(v) && v > 0 ? v : null;
+})();
+
+// ── Estado (refs y computeds antes de cualquier watch) ───────────────────
+const data = useErDataset({
+    periodId: props.initialPeriodId,
+    scope: props.initialScope,
+    version: initialVersion,
+});
+const { periodId, scope, scopes, dataset, loading, loadError, version } = data;
+const gov = useErGovernance({
+    url: data.url,
+    dataset,
+    viewVersion: data.viewVersion,
+    periodId,
+    loadDataset: data.loadDataset,
+    can: props.can,
+});
+const report = gov.report;
+const lockReason = gov.lockReason;
+/** Motivos de "preliminar" según el backend (o la ruta de cierre si no llega). */
+const preliminaryReasons = computed<string[]>(() =>
+    report.value
+        ? report.value.preliminary
+            ? report.value.preliminary_reasons
+            : []
+        : route.blockers.value,
+);
+const historyOpen = ref(false);
+const route = useCloseRoute(dataset);
+const nav = useErNavigation();
+const actions = useErActions({
+    url: data.url,
+    scope,
+    scopeQuery: data.scopeQuery,
+    loadDataset: data.loadDataset,
+    can: props.can,
+    toleranceDays: props.toleranceDays,
+    blockers: () => preliminaryReasons.value,
+    lockReason: () => lockReason.value,
+    uploadRules: props.uploadRules ?? null,
+});
+
+/** Permisos efectivos: en una versión de solo lectura nadie modifica nada. */
+const canWrite = computed(() => ({
+    cargar: props.can.cargar && !lockReason.value,
+    clasificar: props.can.clasificar && !lockReason.value,
+    ajustes: props.can.ajustes && !lockReason.value,
+}));
+const hiddenNote = computed(() => {
+    const r = dataset.value?.meta.redactions;
+
+    if (!r || (!r.nomina && !r.dg)) {
+        return null;
+    }
+
+    const n = r.hidden_movements.nomina + r.hidden_movements.dg;
+
+    return n
+        ? `${n} movimiento(s) de ${[r.nomina ? 'nómina' : null, r.dg ? 'DG' : null].filter(Boolean).join(' y ')} ocultos por permisos`
+        : null;
+});
+const movementByFp = computed(
+    () =>
+        new Map(
+            (dataset.value?.movements ?? []).map((m) => [m.fingerprint, m]),
+        ),
+);
+const lookup = (fp: string) => movementByFp.value.get(fp) ?? null;
+
+const table = ref<InstanceType<typeof MovementsTable> | null>(null);
 const detailOpen = ref(false);
 const detailMovement = ref<Movement | null>(null);
 const classifyOpen = ref(false);
 const classifyItems = ref<Movement[]>([]);
-const classifying = ref(false);
-const savingAdjustment = ref<string | null>(null);
-const adjustmentLogs = ref<
-    Array<{
-        label: string;
-        old_state: string | null;
-        old_amount: string | null;
-        new_state: string;
-        new_amount: string | null;
-        notes: string | null;
-        user: string | null;
-        at: string;
-    }>
->([]);
-const logsLoading = ref(false);
-const table = ref<InstanceType<typeof MovementsTable> | null>(null);
 
-const url = (path: string) =>
-    `${appBase}/estado-resultados/${periodId.value}${path}`;
-const scopeQuery = () => `alcance=${encodeURIComponent(scope.value)}`;
+const toneOf = (t: string) => {
+    const meta = props.treatments.find((x) => x.key === t);
 
-const treatmentTone = computed<Record<string, string>>(() =>
-    Object.fromEntries(
-        props.treatments.map((t) => [
-            t.key,
-            TONE_CLS[t.tone] ?? TONE_CLS.muted,
-        ]),
-    ),
-);
-const toneOf = (t: string) => treatmentTone.value[t] ?? TONE_CLS.muted;
+    return TONE_CLS[meta?.tone ?? 'muted'] ?? TONE_CLS.muted;
+};
 
-const TABS = [
-    { key: 'resumen', label: 'Resumen', icon: BarChart3 },
-    { key: 'estado', label: 'Estado de resultados', icon: ListTree },
-    { key: 'conciliacion', label: 'Conciliación', icon: Scale },
-    { key: 'fuera', label: 'Fuera del ER', icon: Shuffle },
-    { key: 'ajustes', label: 'Ajustes contables', icon: Calculator },
-    { key: 'indicadores', label: 'Indicadores', icon: Gauge },
-    { key: 'control', label: 'Control', icon: ShieldCheck },
-];
+const sectionTitle = (key: string) => {
+    const b = dataset.value?.statement.find((x) => x.key === key);
 
-const pendingCount = computed(
-    () => dataset.value?.conciliation.pendientes.count ?? 0,
-);
-const alerts = computed(() => {
+    return b?.type === 'section' ? b.title.toLowerCase() : key;
+};
+const resolve = (key: string) =>
+    resolveFilter(key, { treatments: props.treatments, sectionTitle });
+
+const tabs = computed<ErTab[]>(() => {
     const d = dataset.value;
+    const pend = d?.conciliation.pendientes.count ?? 0;
+    const failed = d?.checks.filter((c) => !c.ok).length ?? 0;
+    const sourcesStep = route.steps.value.find((s) => s.key === 'fuentes');
+    const noInfo =
+        d?.adjustments.filter((a) => a.state === 'sin_informacion' && a.affects)
+            .length ?? 0;
 
-    if (!d) {
-        return [];
-    }
-
-    const list: Array<{ tone: 'warn' | 'bad'; text: string }> = [];
-
-    if (d.sources.procesamiento.unprocessed) {
-        list.push({
+    return [
+        { key: 'resumen', label: 'Resumen', icon: BarChart3 },
+        { key: 'estado', label: 'Estado de resultados', icon: ListTree },
+        { key: 'conciliacion', label: 'Movimientos', icon: Scale },
+        {
+            key: 'revision',
+            label: 'Por revisar',
+            icon: ListChecks,
+            badge: pend || null,
             tone: 'warn',
-            text: 'Hay archivos cargados sin procesar: presiona "Procesar conciliación" para conciliar contra ERP y clasificar.',
-        });
-    }
-
-    if (d.sources.procesamiento.stale_erp) {
-        list.push({
+        },
+        { key: 'fuera', label: 'Fuera del ER', icon: Shuffle },
+        {
+            key: 'ajustes',
+            label: 'Ajustes',
+            icon: Calculator,
+            badge: noInfo || null,
             tone: 'warn',
-            text: 'El ERP del periodo cambió después del último procesamiento. Vuelve a procesar para conciliar contra el ERP vigente.',
-        });
-    }
-
-    if (d.conciliation.pendientes.count > 0) {
-        list.push({
+        },
+        { key: 'indicadores', label: 'Indicadores', icon: Gauge },
+        {
+            key: 'fuentes',
+            label: 'Fuentes',
+            icon: FolderInput,
+            badge: sourcesStep && !sourcesStep.done ? '!' : null,
             tone: 'warn',
-            text: `${d.conciliation.pendientes.count} movimiento(s) por ${mxn(d.conciliation.pendientes.amount)} requieren revisión y NO están sumados. Los EBITDA corporativo y final pueden cambiar al clasificarlos.`,
-        });
-    }
-
-    const failed = d.checks.filter((c) => !c.ok);
-
-    if (failed.length) {
-        list.push({
+        },
+        {
+            key: 'validacion',
+            label: 'Validación',
+            icon: ScanSearch,
+            badge: d?.validation
+                ? d.validation.unresolved.length +
+                      d.validation.failed_checks.length || null
+                : null,
+            tone: d?.validation?.status === 'con_diferencias' ? 'bad' : 'warn',
+        },
+        {
+            key: 'control',
+            label: 'Control',
+            icon: ShieldCheck,
+            badge: failed || null,
             tone: 'bad',
-            text: `${failed.length} validación(es) matemática(s) no cuadran: ${failed.map((c) => c.label).join('; ')}.`,
-        });
-    }
-
-    return list;
+        },
+    ];
 });
 
-// ── Carga del dataset ────────────────────────────────────────────────────
-let requestId = 0;
-async function loadDataset(): Promise<void> {
-    if (!periodId.value) {
-        return;
+// Al recalcular, el detalle abierto se refresca con la versión nueva del movimiento.
+watch(version, () => {
+    const fp = detailMovement.value?.fingerprint;
+
+    if (fp) {
+        detailMovement.value =
+            dataset.value?.movements.find((m) => m.fingerprint === fp) ?? null;
     }
-
-    const current = ++requestId;
-    loading.value = true;
-    loadError.value = null;
-
-    try {
-        const res = await apiJson<{
-            dataset: Dataset;
-            scopes: Array<{ key: string; label: string }>;
-        }>(url(`/dataset?${scopeQuery()}`));
-
-        if (current !== requestId) {
-            return;
-        }
-
-        dataset.value = res.dataset;
-        scopes.value = res.scopes;
-
-        if (detailMovement.value) {
-            detailMovement.value =
-                res.dataset.movements.find(
-                    (m) => m.fingerprint === detailMovement.value?.fingerprint,
-                ) ?? null;
-        }
-    } catch (e) {
-        if (current === requestId) {
-            loadError.value =
-                e instanceof Error
-                    ? e.message
-                    : 'No se pudo calcular el Estado de Resultados.';
-            dataset.value = null;
-        }
-    } finally {
-        if (current === requestId) {
-            loading.value = false;
-        }
-    }
-}
-
+});
 watch(periodId, () => {
-    scope.value = 'CONSOLIDADO';
     table.value?.clearSelection();
-    loadDataset();
+    nav.selectedStep.value = null;
+    nav.movementFilter.value = null;
 });
-watch(scope, () => loadDataset());
-onMounted(loadDataset);
 
-// ── Acciones ─────────────────────────────────────────────────────────────
-function showError(e: unknown, title = 'No se pudo completar la acción'): void {
-    const err =
-        e instanceof ApiError
-            ? e
-            : new ApiError(e instanceof Error ? e.message : String(e));
-    const list = err.details.length
-        ? `<ul style="text-align:left;margin-top:8px;font-size:13px;max-height:240px;overflow:auto">${err.details.map((d) => `<li>• ${escapeHtml(d)}</li>`).join('')}</ul>`
-        : '';
-    Swal.fire({
-        icon: 'error',
-        title,
-        html: `<p>${escapeHtml(err.message)}</p>${list}`,
-    });
-}
-
-function escapeHtml(s: string): string {
-    return s.replace(
-        /[&<>"']/g,
-        (c) =>
-            ({
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                '"': '&quot;',
-                "'": '&#39;',
-            })[c] as string,
-    );
-}
-
-async function upload(slot: string, file: File): Promise<void> {
-    uploadingSlot.value = slot;
-
-    try {
-        const form = new FormData();
-        form.append('slot', slot);
-        form.append('file', file);
-        const res = await apiJson<{
-            message: string;
-            upload: { warnings: string[] };
-        }>(url('/cargas'), { method: 'POST', body: form });
-        await loadDataset();
-        const warn = res.upload.warnings ?? [];
-        const go = await Swal.fire({
-            icon: warn.length ? 'warning' : 'success',
-            title: 'Archivo validado y cargado',
-            html: `<p>${escapeHtml(res.message)}</p>${warn.length ? `<ul style="text-align:left;margin-top:8px;font-size:13px">${warn.map((w) => `<li>• ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}`,
-            showCancelButton: props.can.procesar,
-            confirmButtonText: props.can.procesar
-                ? 'Procesar conciliación ahora'
-                : 'Entendido',
-            cancelButtonText: 'Después',
-        });
-
-        if (go.isConfirmed && props.can.procesar) {
-            await process(false);
-        }
-    } catch (e) {
-        showError(e, 'El archivo no se cargó');
-    } finally {
-        uploadingSlot.value = null;
-    }
-}
-
-async function process(ask = true): Promise<void> {
-    if (ask) {
-        const ok = await confirm({
-            title: 'Procesar conciliación',
-            text: `Se conciliarán los cargos contra el ERP (tolerancia de ${props.toleranceDays} día(s)) y se aplicarán las reglas. Es idempotente: reprocesar no duplica movimientos ni borra clasificaciones manuales.`,
-            icon: 'question',
-            confirmText: 'Procesar',
-        });
-
-        if (!ok.isConfirmed) {
-            return;
-        }
-    }
-
-    processing.value = true;
-
-    try {
-        const res = await apiJson<{ message: string }>(url('/procesar'), {
-            method: 'POST',
-        });
-        toast.success(res.message);
-        await loadDataset();
-    } catch (e) {
-        showError(e, 'No se pudo procesar');
-    } finally {
-        processing.value = false;
-    }
+// ── Interacciones ────────────────────────────────────────────────────────
+function onRouteStep(s: CloseStep): void {
+    nav.go(s.go.tab, s.go.filter);
 }
 
 function openDetail(m: Movement): void {
@@ -341,6 +268,7 @@ function openClassify(fingerprints: string[]): void {
     classifyItems.value = (dataset.value?.movements ?? []).filter((m) =>
         set.has(m.fingerprint),
     );
+    detailOpen.value = false;
 
     if (classifyItems.value.length) {
         classifyOpen.value = true;
@@ -351,222 +279,119 @@ async function submitClassify(payload: {
     treatment: string;
     notes: string;
 }): Promise<void> {
-    classifying.value = true;
+    const ok = await actions.classify(
+        classifyItems.value.map((m) => m.fingerprint),
+        payload,
+    );
 
-    try {
-        const res = await apiJson<{ message: string }>(url('/clasificar'), {
-            method: 'POST',
-            body: JSON.stringify({
-                fingerprints: classifyItems.value.map((m) => m.fingerprint),
-                ...payload,
-            }),
-        });
+    if (ok) {
         classifyOpen.value = false;
         table.value?.clearSelection();
-        toast.success(res.message);
-        await loadDataset();
-    } catch (e) {
-        showError(e, 'No se pudo clasificar');
-    } finally {
-        classifying.value = false;
     }
 }
 
-async function acceptSuggestions(fingerprints: string[]): Promise<void> {
-    if (!fingerprints.length) {
-        return;
-    }
-
-    const ok = await confirm({
-        title: `Aceptar ${fingerprints.length} sugerencia(s)`,
-        text: 'Cada movimiento pendiente se clasificará con su tratamiento sugerido. Queda registrado con tu usuario y puedes corregirlo después.',
-        icon: 'question',
-        confirmText: 'Aceptar sugerencias',
-    });
-
-    if (!ok.isConfirmed) {
-        return;
-    }
-
-    try {
-        const res = await apiJson<{ message: string }>(
-            url('/aceptar-sugerencias'),
-            { method: 'POST', body: JSON.stringify({ fingerprints }) },
-        );
+async function accept(fingerprints: string[], ask: boolean): Promise<void> {
+    if (await actions.acceptSuggestions(fingerprints, ask)) {
         table.value?.clearSelection();
-        toast.success(res.message);
-        await loadDataset();
-    } catch (e) {
-        showError(e, 'No se pudieron aceptar las sugerencias');
     }
 }
 
-async function saveAdjustment(p: {
-    concept: string;
-    state: AdjustmentState;
-    amount: string | null;
-    notes: string | null;
-}): Promise<void> {
-    savingAdjustment.value = p.concept;
+function openByFingerprint(fp: string): void {
+    const m = lookup(fp);
 
-    try {
-        const res = await apiJson<{ message: string }>(url('/ajustes'), {
-            method: 'PUT',
-            body: JSON.stringify({ scope: scope.value, ...p }),
-        });
-        toast.success(res.message);
-        await loadDataset();
-        adjustmentLogs.value = [];
-    } catch (e) {
-        showError(e, 'No se guardó el ajuste');
-    } finally {
-        savingAdjustment.value = null;
-    }
-}
-
-async function loadLogs(): Promise<void> {
-    logsLoading.value = true;
-
-    try {
-        const res = await apiJson<{ logs: typeof adjustmentLogs.value }>(
-            url(`/ajustes/historial?${scopeQuery()}`),
+    if (m) {
+        openDetail(m);
+    } else {
+        // Oculto por permisos o fuera del alcance: se explica, no se falla en silencio.
+        actions.showError(
+            new Error(
+                'Ese movimiento no está disponible en esta vista (puede estar fuera del alcance elegido o restringido por permisos).',
+            ),
+            'No se puede abrir el movimiento',
         );
-        adjustmentLogs.value = res.logs;
-    } catch {
-        adjustmentLogs.value = [];
-    } finally {
-        logsLoading.value = false;
     }
 }
 
-async function exportFile(kind: 'excel' | 'pdf'): Promise<void> {
-    await downloadFile(url(`/exportar/${kind}?${scopeQuery()}`));
+async function openHistory(): Promise<void> {
+    historyOpen.value = true;
+    await gov.loadHistory();
 }
+
+function onVersionPick(v: number | null): void {
+    historyOpen.value = false;
+    gov.viewVersion(v);
+}
+
+const attemptsUrl = computed(() =>
+    props.can.cargar ? data.url('/cargas/intentos') : null,
+);
 
 const historyUrl = (fp: string) =>
-    url(`/historial-clasificacion?fingerprint=${encodeURIComponent(fp)}`);
+    data.url(`/historial-clasificacion?fingerprint=${encodeURIComponent(fp)}`);
 </script>
 
 <template>
     <Head title="Estado de Resultados" />
     <TooltipProvider :delay-duration="150">
-        <div class="space-y-6 p-4 md:p-6">
+        <div class="space-y-4 p-4 md:p-6">
             <AppPageHeader
                 kicker="Análisis financiero"
                 title="Estado de Resultados"
-                subtitle="Tres niveles de EBITDA (sucursales → corporativo → final), conciliación de estados de cuenta contra ERP y exportes con la misma fuente de verdad."
+                subtitle="Del banco, el ERP y la Radiografía a los tres EBITDA, el EBIT, el EBT y la utilidad neta. Cada cifra se puede abrir para ver de dónde sale."
             >
                 <template #icon>
                     <Landmark class="size-5" />
                 </template>
             </AppPageHeader>
 
-            <!-- Barra de controles: fila propia para no comprimir el título -->
-            <div
-                class="flex flex-wrap items-center gap-2 rounded-2xl border bg-card/60 p-2 shadow-sm"
-            >
-                <select
-                    v-model.number="periodId"
-                    class="h-9 rounded-xl border bg-background px-3 text-sm font-medium"
-                    aria-label="Periodo"
-                >
-                    <option v-for="p in periods" :key="p.id" :value="p.id">
-                        {{ p.label }} ({{ p.code }})
-                    </option>
-                </select>
-                <select
-                    v-model="scope"
-                    class="h-9 rounded-xl border bg-background px-3 text-sm font-medium"
-                    aria-label="Alcance"
-                >
-                    <option v-for="s in scopes" :key="s.key" :value="s.key">
-                        {{ s.label }}
-                    </option>
-                </select>
-                <Button
-                    v-if="can.procesar"
-                    class="bg-teal-700 text-white hover:bg-teal-800"
-                    :disabled="processing || loading || !dataset"
-                    @click="process()"
-                >
-                    <Loader2 v-if="processing" class="animate-spin" />
-                    <RefreshCw v-else />
-                    Procesar conciliación
-                </Button>
-                <template v-if="can.exportar">
-                    <Button
-                        variant="outline"
-                        :disabled="!dataset || loading"
-                        @click="exportFile('excel')"
-                    >
-                        <FileSpreadsheet class="text-emerald-600" /> Excel
-                    </Button>
-                    <Button
-                        variant="outline"
-                        :disabled="!dataset || loading"
-                        @click="exportFile('pdf')"
-                    >
-                        <FileText class="text-rose-600" /> PDF
-                    </Button>
-                </template>
-            </div>
+            <ErCommandBar
+                v-if="periods.length"
+                v-model:period-id="periodId"
+                v-model:scope="scope"
+                :periods="periods"
+                :scopes="scopes"
+                :dataset="dataset"
+                :loading="loading"
+                :processing="actions.processing.value"
+                :can="can"
+                :complete="!preliminaryReasons.length"
+                :blockers="preliminaryReasons"
+                :lock-reason="lockReason"
+                @process="actions.process()"
+                @export="actions.exportFile"
+            />
 
             <div
                 v-if="!periods.length"
-                class="flex flex-col items-center gap-2 rounded-3xl border border-dashed py-20 text-center"
+                class="flex flex-col items-center gap-2 rounded-2xl border border-dashed bg-card py-20 text-center"
             >
                 <Landmark class="size-10 text-muted-foreground" />
-                <p class="font-semibold">No hay periodos mensuales</p>
-                <p class="text-sm text-muted-foreground">
-                    Crea el periodo mensual en el módulo Periodos para generar
-                    su Estado de Resultados.
+                <p class="font-semibold">Todavía no hay periodos mensuales</p>
+                <p class="max-w-md text-sm text-muted-foreground">
+                    Crea el periodo del mes en el módulo Periodos; después
+                    podrás generar aquí su Estado de Resultados.
                 </p>
             </div>
 
             <template v-else>
                 <div
-                    v-if="dataset"
-                    class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
-                >
-                    <span
-                        class="rounded-full border bg-card px-2.5 py-1 font-semibold text-foreground"
-                        >{{ dataset.meta.scope.label }}</span
-                    >
-                    <span
-                        >{{ dataset.meta.period.label }} ·
-                        {{ dataset.meta.period.start }} a
-                        {{ dataset.meta.period.end }} · cifras en MXN</span
-                    >
-                    <span
-                        class="rounded-full border px-2 py-0.5 font-mono"
-                        :title="dataset.meta.dataset_hash"
-                        >dataset
-                        {{ dataset.meta.dataset_hash.slice(0, 12) }}</span
-                    >
-                    <span>generado {{ dataset.meta.generated_at }}</span>
-                    <Loader2
-                        v-if="loading"
-                        class="size-3.5 animate-spin text-teal-600"
-                    />
-                </div>
-
-                <div
                     v-if="loadError"
-                    class="flex items-start gap-2 rounded-2xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200"
+                    role="alert"
+                    class="flex items-start gap-3 rounded-2xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200"
                 >
-                    <AlertTriangle class="mt-0.5 size-4 shrink-0" />
+                    <AlertTriangle class="mt-0.5 size-5 shrink-0" />
                     <div>
-                        <p class="font-semibold">
+                        <p class="font-bold">
                             No se pudo calcular el Estado de Resultados
                         </p>
-                        <p>{{ loadError }}</p>
+                        <p class="mt-0.5">{{ loadError }}</p>
                         <Button
                             size="sm"
                             variant="outline"
-                            class="mt-2"
-                            @click="loadDataset"
+                            class="mt-3 rounded-lg"
+                            @click="data.loadDataset()"
                         >
-                            Reintentar
+                            Intentar de nuevo
                         </Button>
                     </div>
                 </div>
@@ -577,162 +402,169 @@ const historyUrl = (fp: string) =>
                     <div
                         v-if="dataset"
                         :key="dataset.meta.period.id + dataset.meta.scope.key"
-                        class="space-y-6"
-                        :class="
-                            loading
-                                ? 'pointer-events-none opacity-70 transition'
-                                : 'transition'
-                        "
+                        class="space-y-4 transition-opacity"
+                        :class="loading ? 'pointer-events-none opacity-60' : ''"
+                        :aria-busy="loading"
                     >
-                        <TransitionGroup
-                            v-if="alerts.length"
-                            tag="div"
-                            name="er-fade"
-                            class="space-y-2"
-                        >
-                            <div
-                                v-for="a in alerts"
-                                :key="a.text"
-                                class="flex items-start gap-2 rounded-2xl border p-3 text-sm"
-                                :class="
-                                    a.tone === 'bad'
-                                        ? 'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200'
-                                        : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200'
-                                "
-                            >
-                                <AlertTriangle class="mt-0.5 size-4 shrink-0" />
-                                <span>{{ a.text }}</span>
-                            </div>
-                        </TransitionGroup>
-
-                        <SourcesPanel
-                            :sources="dataset.sources"
-                            :can-upload="can.cargar"
-                            :uploading-slot="uploadingSlot"
-                            @upload="upload"
+                        <ReportStatusBar
+                            v-if="report"
+                            :report="report"
+                            :can-approve="!!can.aprobar"
+                            :approving="gov.approving.value"
+                            :reopening="gov.reopening.value"
+                            :viewing-historic="gov.viewingHistoric.value"
+                            @approve="gov.approve"
+                            @reopen="gov.openNewVersion"
+                            @history="openHistory"
+                            @back-to-current="gov.viewVersion(null)"
+                            @go="(t) => nav.go(t)"
                         />
 
-                        <KpiStrip :dataset="dataset" />
-
-                        <div
-                            class="sticky top-0 z-10 -mx-1 flex gap-1 overflow-x-auto rounded-2xl border bg-card/95 p-1 shadow-soft-xs backdrop-blur"
-                            role="tablist"
+                        <p
+                            v-if="dataset.meta.redactions?.message"
+                            class="flex items-start gap-2 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                            role="note"
                         >
-                            <button
-                                v-for="t in TABS"
-                                :key="t.key"
-                                type="button"
-                                role="tab"
-                                :aria-selected="tab === t.key"
-                                class="flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-semibold transition"
-                                :class="
-                                    tab === t.key
-                                        ? 'bg-gradient-to-r from-teal-700 to-cyan-600 text-white shadow'
-                                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                                "
-                                @click="tab = t.key"
+                            <Lock class="mt-0.5 size-4 shrink-0" />
+                            <span
+                                >{{ dataset.meta.redactions.message }} Los
+                                totales y los resultados sí incluyen esos
+                                importes.</span
                             >
-                                <component :is="t.icon" class="size-4" />
-                                {{ t.label }}
-                                <span
-                                    v-if="
-                                        t.key === 'conciliacion' && pendingCount
-                                    "
-                                    class="rounded-full bg-amber-400 px-1.5 text-[10px] font-bold text-amber-950"
-                                    >{{ pendingCount }}</span
-                                >
-                                <span
-                                    v-if="
-                                        t.key === 'control' &&
-                                        dataset.checks.some((c) => !c.ok)
-                                    "
-                                    class="rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white"
-                                    >!</span
-                                >
-                            </button>
-                        </div>
+                        </p>
+
+                        <CloseRoute
+                            v-if="!lockReason"
+                            :steps="route.steps.value"
+                            :done-count="route.doneCount.value"
+                            @go="onRouteStep"
+                        />
+
+                        <KpiStrip
+                            :dataset="dataset"
+                            :active-step="nav.selectedStep.value"
+                            @select="nav.selectStep"
+                        />
+
+                        <span id="er-tabs-anchor" class="block scroll-mt-2" />
+                        <ErTabs v-model="nav.tab.value" :tabs="tabs" />
 
                         <Transition name="er-fade" mode="out-in">
                             <section
-                                v-if="tab === 'resumen'"
+                                v-if="nav.tab.value === 'resumen'"
                                 key="resumen"
-                                class="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_400px]"
+                                role="tabpanel"
                             >
-                                <div
-                                    class="min-w-0 rounded-3xl border bg-card p-4 shadow-soft-xs md:p-5"
-                                >
-                                    <div
-                                        class="mb-3 flex items-center justify-between gap-2"
-                                    >
-                                        <div>
-                                            <p
-                                                class="text-[11px] font-bold tracking-wider text-muted-foreground uppercase"
-                                            >
-                                                Cascada de resultados
-                                            </p>
-                                            <p class="text-base font-bold">
-                                                De los ingresos a la utilidad
-                                                neta
-                                            </p>
-                                        </div>
-                                        <ClipboardCheck
-                                            class="size-5 text-teal-600"
-                                        />
-                                    </div>
-                                    <EbitdaWaterfall
-                                        :steps="dataset.waterfall"
-                                    />
-                                </div>
-                                <RadiographyReconciliationCard
-                                    :rec="dataset.radiography_reconciliation"
+                                <SummaryView
+                                    v-model:selected="nav.selectedStep.value"
+                                    :dataset="dataset"
+                                    @open-statement="nav.openStatement"
+                                    @open-movements="nav.openMovements"
                                 />
                             </section>
 
-                            <section v-else-if="tab === 'estado'" key="estado">
-                                <StatementTable :blocks="dataset.statement" />
+                            <section
+                                v-else-if="nav.tab.value === 'estado'"
+                                key="estado"
+                                role="tabpanel"
+                            >
+                                <StatementTable
+                                    :blocks="dataset.statement"
+                                    :movements="dataset.movements"
+                                    :highlight="nav.statementFocus.value"
+                                    @open-movements="nav.openMovements"
+                                />
                             </section>
 
                             <section
-                                v-else-if="tab === 'conciliacion'"
+                                v-else-if="nav.tab.value === 'conciliacion'"
                                 key="conciliacion"
+                                role="tabpanel"
                                 class="space-y-4"
                             >
                                 <ConciliationSummary
                                     :c="dataset.conciliation"
+                                    :movements="dataset.movements"
+                                    :active-filter="nav.movementFilter.value"
+                                    @filter="
+                                        (k) =>
+                                            (nav.movementFilter.value =
+                                                nav.movementFilter.value === k
+                                                    ? null
+                                                    : k)
+                                    "
                                 />
                                 <MovementsTable
                                     ref="table"
+                                    v-model:filter="nav.movementFilter.value"
                                     :movements="dataset.movements"
                                     :can-classify="can.clasificar"
+                                    :lock-reason="lockReason"
+                                    :hidden-note="hiddenNote"
+                                    :dimension-catalog="dataset.dimensions"
                                     :tone-of="toneOf"
+                                    :resolve="resolve"
                                     @open="openDetail"
                                     @classify="openClassify"
-                                    @accept-suggestions="acceptSuggestions"
+                                    @accept-suggestions="accept"
                                 />
-                            </section>
-
-                            <section v-else-if="tab === 'fuera'" key="fuera">
-                                <OutsidePanel :outside="dataset.outside" />
+                                <p class="text-xs text-muted-foreground">
+                                    Haz clic en un movimiento para ver por qué
+                                    suma o no. Los tramos de la barra filtran la
+                                    tabla.
+                                </p>
                             </section>
 
                             <section
-                                v-else-if="tab === 'ajustes'"
+                                v-else-if="nav.tab.value === 'revision'"
+                                key="revision"
+                                role="tabpanel"
+                            >
+                                <ReviewQueue
+                                    :movements="dataset.movements"
+                                    :c="dataset.conciliation"
+                                    :can-classify="canWrite.clasificar"
+                                    :lock-reason="lockReason"
+                                    :accepting="actions.accepting.value"
+                                    @accept="accept"
+                                    @classify="openClassify"
+                                    @open="openDetail"
+                                    @show-all="nav.openMovements('pendientes')"
+                                />
+                            </section>
+
+                            <section
+                                v-else-if="nav.tab.value === 'fuera'"
+                                key="fuera"
+                                role="tabpanel"
+                            >
+                                <OutsidePanel
+                                    :outside="dataset.outside"
+                                    @open-movements="nav.openMovements"
+                                />
+                            </section>
+
+                            <section
+                                v-else-if="nav.tab.value === 'ajustes'"
                                 key="ajustes"
+                                role="tabpanel"
                             >
                                 <AdjustmentsPanel
                                     :adjustments="dataset.adjustments"
-                                    :can-edit="can.ajustes"
-                                    :saving-key="savingAdjustment"
-                                    :logs="adjustmentLogs"
-                                    :logs-loading="logsLoading"
-                                    @save="saveAdjustment"
-                                    @load-logs="loadLogs"
+                                    :can-edit="canWrite.ajustes"
+                                    :lock-reason="lockReason"
+                                    :saving-key="actions.savingAdjustment.value"
+                                    :logs="actions.adjustmentLogs.value"
+                                    :logs-loading="actions.logsLoading.value"
+                                    @save="actions.saveAdjustment"
+                                    @load-logs="actions.loadLogs"
                                 />
                             </section>
 
                             <section
-                                v-else-if="tab === 'indicadores'"
+                                v-else-if="nav.tab.value === 'indicadores'"
                                 key="indicadores"
+                                role="tabpanel"
                             >
                                 <IndicatorsPanel
                                     :financial="dataset.indicators.financial"
@@ -742,12 +574,61 @@ const historyUrl = (fp: string) =>
                                 />
                             </section>
 
-                            <section v-else key="control">
+                            <section
+                                v-else-if="nav.tab.value === 'fuentes'"
+                                key="fuentes"
+                                role="tabpanel"
+                            >
+                                <SourcesPanel
+                                    :sources="dataset.sources"
+                                    :can-upload="can.cargar"
+                                    :uploading-slot="
+                                        actions.uploadingSlot.value
+                                    "
+                                    :upload-rules="uploadRules"
+                                    :lock-reason="lockReason"
+                                    :attempts-url="attemptsUrl"
+                                    :refresh-key="
+                                        version + actions.uploadSeq.value
+                                    "
+                                    @upload="actions.upload"
+                                />
+                            </section>
+
+                            <section
+                                v-else-if="nav.tab.value === 'validacion'"
+                                key="validacion"
+                                role="tabpanel"
+                            >
+                                <ValidationPanel
+                                    v-if="dataset.validation"
+                                    :validation="dataset.validation"
+                                    @open="openByFingerprint"
+                                />
+                                <p
+                                    v-else
+                                    class="rounded-2xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground"
+                                >
+                                    Esta versión se aprobó antes de que
+                                    existiera la pantalla de validación: no trae
+                                    ese detalle.
+                                </p>
+                            </section>
+
+                            <section v-else key="control" role="tabpanel">
                                 <ControlPanel :dataset="dataset" />
                             </section>
                         </Transition>
                     </div>
                 </Transition>
+
+                <div
+                    v-if="!dataset && !loading && !loadError"
+                    class="flex flex-col items-center gap-2 rounded-2xl border border-dashed bg-card py-16 text-center"
+                >
+                    <Inbox class="size-9 text-muted-foreground/60" />
+                    <p class="font-semibold">Elige un periodo para empezar</p>
+                </div>
             </template>
         </div>
 
@@ -756,52 +637,61 @@ const historyUrl = (fp: string) =>
             :movement="detailMovement"
             :history-url="historyUrl"
             :can-classify="can.clasificar"
+            :lock-reason="lockReason"
+            :lookup="lookup"
             :tone-of="toneOf"
-            @classify="
-                (fps) => {
-                    detailOpen = false;
-                    openClassify(fps);
-                }
-            "
+            @classify="openClassify"
+            @open-movement="openDetail"
+            @accept-suggestion="(fp) => accept([fp], false)"
         />
         <ClassifyDialog
             v-model:open="classifyOpen"
             :items="classifyItems"
             :treatments="treatments"
-            :saving="classifying"
+            :saving="actions.classifying.value"
             @submit="submitClassify"
+        />
+        <VersionHistorySheet
+            v-model:open="historyOpen"
+            :history="gov.history.value"
+            :loading="gov.historyLoading.value"
+            :viewing="data.viewVersion.value"
+            :report="report"
+            @view="onVersionPick"
         />
     </TooltipProvider>
 </template>
 
 <style>
+/* Sólo lo que Tailwind no cubre: transiciones de Vue y la animación de entrada de la cascada. */
 .er-fade-enter-active,
 .er-fade-leave-active {
     transition:
-        opacity 180ms ease,
-        transform 180ms ease;
+        opacity 180ms var(--ease-out, ease),
+        transform 180ms var(--ease-out, ease);
 }
 .er-fade-enter-from,
 .er-fade-leave-to {
     opacity: 0;
     transform: translateY(4px);
 }
-@keyframes er-fade-up {
-    from {
-        opacity: 0;
-        transform: translateY(6px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+.er-slide-enter-active,
+.er-slide-leave-active {
+    transition:
+        opacity 200ms var(--ease-out, ease),
+        transform 200ms var(--ease-out, ease);
 }
-.er-fade-up {
-    animation: er-fade-up 360ms ease-out both;
+.er-slide-enter-from {
+    opacity: 0;
+    transform: translateX(16px);
+}
+.er-slide-leave-to {
+    opacity: 0;
+    transform: translateX(-16px);
 }
 @keyframes er-grow {
     from {
-        transform: scaleY(0.35);
+        transform: scaleY(0);
     }
     to {
         transform: scaleY(1);
@@ -809,12 +699,19 @@ const historyUrl = (fp: string) =>
 }
 .er-grow {
     transform-origin: bottom;
-    animation: er-grow 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    animation: er-grow 620ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.er-grow.er-grow-down {
+    transform-origin: top;
 }
 @media (prefers-reduced-motion: reduce) {
-    .er-fade-up,
-    .er-grow {
+    .er-grow,
+    .er-fade-enter-active,
+    .er-fade-leave-active,
+    .er-slide-enter-active,
+    .er-slide-leave-active {
         animation: none;
+        transition: none;
     }
 }
 </style>

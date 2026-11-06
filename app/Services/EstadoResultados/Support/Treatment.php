@@ -55,6 +55,42 @@ final class Treatment
 
     public const PENDIENTE = 'pendiente';
 
+    public const REVERSO = 'reverso';
+
+    /**
+     * Categoría financiera EXCLUSIVA: cada peso reconocido contribuye exactamente a una.
+     * D&A e ISR sólo provienen de Ajustes contables (nunca de un movimiento).
+     */
+    public const CATEGORIES = [
+        'opex_sucursales' => 'OPEX sucursales',
+        'nomina_sucursales' => 'Nómina sucursales',
+        'opex_corporativo' => 'OPEX Corporativo',
+        'nomina_corporativa' => 'Nómina Corporativo',
+        'opex_dg' => 'OPEX Dirección General',
+        'da' => 'Depreciación y amortización',
+        'financiero' => 'Financiero / no operativo',
+        'isr' => 'ISR',
+    ];
+
+    /** Tratamiento contable (dimensión independiente de la conciliación y de la línea del ER). */
+    public const ACCOUNTING = [
+        'gasto_operativo' => 'Gasto operativo del periodo',
+        'gasto_financiero' => 'Gasto financiero',
+        'ingreso_no_operativo' => 'Ingreso financiero / no operativo',
+        'reconocido_en_otra_fuente' => 'Reconocido en otra fuente (ERP / Radiografía / NOI)',
+        'inversion' => 'Inversión (CAPEX)',
+        'pasivo' => 'Pago de pasivo (capital de deuda)',
+        'eliminacion_interna' => 'Movimiento interno (se elimina en consolidación)',
+        'patrimonial' => 'Movimiento patrimonial / socios',
+        'cuenta_por_cobrar' => 'Cuenta por cobrar / reintegro',
+        'pasivo_terceros' => 'Pasivo de terceros (retenciones)',
+        'puente_terceros' => 'Puente de terceros',
+        'duplicado' => 'Duplicado',
+        'reverso' => 'Reverso (neto $0)',
+        'otro_periodo' => 'Pertenece a otro periodo',
+        'sin_definir' => 'Sin definir (requiere revisión)',
+    ];
+
     /**
      * line: clave de la línea/sección del ER que afecta (null = fuera del ER).
      * sign: +1 suma a la línea (gasto o ingreso según la sección).
@@ -200,6 +236,13 @@ final class Treatment
             'tone' => 'warning',
             'explain' => 'Movimiento ambiguo: NO se suma a ninguna línea hasta que un usuario autorizado lo clasifique.',
         ],
+        self::REVERSO => [
+            'label' => 'Reverso / cancelación',
+            'line' => null,
+            'group' => 'fuera',
+            'tone' => 'muted',
+            'explain' => 'Cargo y abono de la misma cuenta por el mismo importe que se anulan entre sí (reverso o cancelación). Neto $0: no es gasto ni ingreso.',
+        ],
     ];
 
     /** Tratamientos que un usuario puede asignar manualmente. */
@@ -263,6 +306,42 @@ final class Treatment
         return self::META[$treatment]['explain'] ?? '';
     }
 
+    /** Categoría financiera exclusiva (clave de CATEGORIES) o null si no afecta el ER. */
+    public static function category(string $treatment): ?string
+    {
+        return match (self::line($treatment)) {
+            'opex_sucursales' => 'opex_sucursales',
+            'nomina_sucursales' => 'nomina_sucursales',
+            'opex_corporativo' => 'opex_corporativo',
+            'nomina_corporativa' => 'nomina_corporativa',
+            'dg' => 'opex_dg',
+            'financiero' => 'financiero',
+            default => null,
+        };
+    }
+
+    public static function accounting(string $treatment): string
+    {
+        return match ($treatment) {
+            self::OPEX_SUCURSAL, self::NOMINA_SUCURSAL, self::OPEX_CORPORATIVO, self::NOMINA_CORPORATIVA,
+            self::DG_OPERATIVO, self::DG_REMUNERACION => 'gasto_operativo',
+            self::GASTO_FINANCIERO => 'gasto_financiero',
+            self::INGRESO_NO_OPERATIVO => 'ingreso_no_operativo',
+            self::CONCILIADO_ERP, self::CUBIERTO_RADIOGRAFIA => 'reconocido_en_otra_fuente',
+            self::CAPEX => 'inversion',
+            self::CAPITAL_DEUDA => 'pasivo',
+            self::TRANSFERENCIA_INTERNA => 'eliminacion_interna',
+            self::PERSONAL_SOCIOS => 'patrimonial',
+            self::RECUPERABLE => 'cuenta_por_cobrar',
+            self::BALANCE => 'pasivo_terceros',
+            self::PUENTE_TERCEROS => 'puente_terceros',
+            self::DUPLICADO => 'duplicado',
+            self::REVERSO => 'reverso',
+            self::FUERA_PERIODO => 'otro_periodo',
+            default => 'sin_definir',
+        };
+    }
+
     public static function tone(string $treatment): string
     {
         return self::META[$treatment]['tone'] ?? 'muted';
@@ -281,6 +360,8 @@ final class Treatment
                 'tone' => $meta['tone'],
                 'explain' => $meta['explain'],
                 'assignable' => in_array($key, self::ASSIGNABLE, true),
+                'category' => self::category($key),
+                'accounting' => self::accounting($key),
             ];
         }
 
