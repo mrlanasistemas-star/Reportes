@@ -77,6 +77,15 @@ class ActionPermissionService
             // explícitamente por rol en Roles y permisos. Mismo formato que el PDF/imagen.
             'exportar_excel' => ['label' => 'Exportar a Excel', 'column' => 'exportar', 'description' => 'Descargar el resultado en Excel (.xlsx), con el mismo formato que el PDF/imagen.'],
         ],
+        // 05-nov-2026 — Estado de Resultados. Sin LEVEL_DEFAULTS: solo el administrador
+        // hasta que se asignen explícitamente en Roles y permisos.
+        'estado_resultados' => [
+            'cargar' => ['label' => 'Cargar estados de cuenta', 'column' => 'crear', 'description' => 'Subir los Excel complementarios (cuenta administrativa y de excedentes).'],
+            'procesar' => ['label' => 'Procesar conciliación', 'column' => 'editar', 'description' => 'Conciliar contra ERP y aplicar las reglas de clasificación.'],
+            'clasificar' => ['label' => 'Clasificar movimientos', 'column' => 'autorizar', 'description' => 'Asignar o corregir el tratamiento financiero de un movimiento (queda en la bitácora).'],
+            'ajustes' => ['label' => 'Editar ajustes contables', 'column' => 'editar', 'description' => 'Depreciación, amortización, intereses, ISR, CAPEX y capital de deuda.'],
+            'exportar' => ['label' => 'Exportar Excel/PDF', 'column' => 'exportar', 'description' => 'Descargar el Estado de Resultados en Excel o PDF.'],
+        ],
         'okr' => [
             'crear' => ['label' => 'Crear OKR', 'column' => 'crear', 'description' => 'Asignar un OKR nuevo (asistente).'],
             'cargar_colocacion' => ['label' => 'Cargar colocación', 'column' => 'crear', 'description' => 'Subir el archivo semanal de colocación.'],

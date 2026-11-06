@@ -1,0 +1,24 @@
+<?php
+
+namespace App\Models\EstadoResultados;
+
+use App\Models\User;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+/** Bitácora append-only: la clasificación vigente de un movimiento es su fila más reciente. */
+class EstadoResultadosClassification extends Model
+{
+    public const UPDATED_AT = null;
+
+    protected $table = 'estado_resultados_classifications';
+
+    protected $guarded = ['id'];
+
+    protected $casts = ['created_at' => 'datetime'];
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+}

@@ -3,6 +3,7 @@ import {
     CalendarRange,
     FileSpreadsheet,
     FolderOpen,
+    Landmark,
     LayoutGrid,
     Settings,
     ShieldCheck,
@@ -67,6 +68,14 @@ export const mainNavItems: NavItem[] = [
         href: '/efectividad-cobranza',
         icon: TrendingUp,
         module: 'efectividad',
+    },
+    {
+        title: 'Estado de Resultados',
+        shortTitle: 'Edo. Resultados',
+        group: 'Análisis',
+        href: '/estado-resultados',
+        icon: Landmark,
+        module: 'estado_resultados',
     },
     {
         title: 'OKR',
