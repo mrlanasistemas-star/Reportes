@@ -24,7 +24,7 @@ class ModuleAccessService
         'efectividad' => ['label' => 'Efectividad de Cobranza', 'url' => '/efectividad-cobranza', 'description' => 'Calculadora de efectividad por ruta.'],
         // 05-nov-2026 — Estado de Resultados gerencial (3 EBITDA). Información consolidada
         // de toda la empresa (Corporativo/DG): sólo el Administrador hasta que se asigne en Roles.
-        'estado_resultados' => ['label' => 'Estado de Resultados', 'url' => '/estado-resultados', 'description' => 'EBITDA sucursales, corporativo y final; conciliación de bancos y exportes.'],
+        'estado_resultados' => ['label' => 'Estado de Resultados', 'url' => '/estado-resultados', 'description' => 'Ingresos, OPEX, EBITDA y utilidad neta del mes; conciliación de bancos y exportes.'],
         'okr' => ['label' => 'OKR', 'url' => '/okr', 'description' => 'Objetivos, check-ins y seguimiento.'],
         // Administración (prioridad 8) — por defecto solo el Administrador; se
         // pueden delegar, pero nadie puede otorgar más de lo que él mismo tiene
