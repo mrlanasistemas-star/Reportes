@@ -1,111 +1,115 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import type { CompPair } from './comparativas';
 import KpiTile from './KpiTile.vue';
-import { mxn } from './types';
 import type { Dataset } from './types';
 
-const props = defineProps<{ dataset: Dataset; activeStep: string | null }>();
+const props = defineProps<{
+    dataset: Dataset;
+    activeStep: string | null;
+    /** Comparativa contra el periodo anterior (carga aparte; puede no estar lista). */
+    comparison?: CompPair | null;
+    comparisonLoading?: boolean;
+}>();
 defineEmits<{ select: [stepKey: string] }>();
 
-/** Resultados de la cadena ingresos → utilidad neta, tal como los entrega el dataset. */
-const tiles = computed(() => {
-    const d = props.dataset;
-    const r = d.results;
-    const m = d.margins;
-    const c = d.completeness;
-    const rec = d.radiography_reconciliation;
-    const consolidated = d.meta.scope.consolidated;
+/** Valor del modelo vigente; las versiones con el modelo anterior usan sus claves equivalentes. */
+function value(key: string, legacy?: string): string | null {
+    const r = props.dataset.results;
 
-    const list = [
-        {
-            key: 'ingresos',
-            label: 'Ingresos operativos',
-            tier: null as string | null,
-            value: r.ingresos,
-            margin: null as string | null,
-            missing: [] as string[],
-            note: null as null | {
-                tone: 'ok' | 'warn';
-                text: string;
-                title: string;
-            },
-        },
-        {
-            key: 'ebitda_sucursales',
-            label: 'EBITDA sucursales',
-            tier: consolidated ? '1' : null,
-            value: r.ebitda_sucursales,
-            margin: m.ebitda_sucursales,
-            missing: [],
-            note: rec.ok
-                ? {
-                      tone: 'ok' as const,
-                      text: '= Radiografía',
-                      title: 'Coincide en $0.00 con el EBITDA de la Radiografía del periodo.',
-                  }
-                : {
-                      tone: 'warn' as const,
-                      text: `Dif. ${mxn(rec.difference)}`,
-                      title: `Radiografía reporta ${mxn(rec.radiografia_ebitda)}. Revisa la conciliación con Radiografía en el resumen.`,
-                  },
-        },
-    ];
-
-    if (consolidated) {
-        list.push(
-            {
-                key: 'ebitda_corporativo',
-                label: 'EBITDA corporativo',
-                tier: '2',
-                value: r.ebitda_corporativo,
-                margin: m.ebitda_corporativo,
-                missing: [],
-                note: null,
-            },
-            {
-                key: 'ebitda_final',
-                label: 'EBITDA final',
-                tier: '3',
-                value: r.ebitda_final,
-                margin: m.ebitda_final,
-                missing: [],
-                note: null,
-            },
-        );
+    if (key in r) {
+        return r[key] ?? null;
     }
 
-    list.push(
+    return legacy && legacy in r ? (r[legacy] ?? null) : null;
+}
+
+const tiles = computed(() => {
+    const d = props.dataset;
+    const m = d.margins;
+    const c = d.completeness;
+    const firstOpex =
+        d.waterfall.find((w) => w.group === 'opex')?.key ?? 'opex_total';
+
+    return [
+        {
+            key: 'ingresos_operativos',
+            step: 'ingresos_operativos',
+            label: 'Ingresos operativos',
+            unit: 'MXN' as const,
+            value: value('ingresos_operativos', 'ingresos'),
+        },
+        {
+            key: 'opex_total',
+            step: firstOpex,
+            label: 'OPEX',
+            unit: 'MXN' as const,
+            value: value('opex_total'),
+        },
+        {
+            key: 'ebitda',
+            step: 'ebitda',
+            label: 'EBITDA',
+            unit: 'MXN' as const,
+            value: value('ebitda', 'ebitda_final'),
+            emphasis: true,
+        },
         {
             key: 'ebit',
+            step: 'ebit',
             label: 'EBIT',
-            tier: null,
-            value: r.ebit,
-            margin: m.ebit,
-            missing: c.ebit?.missing ?? [],
-            note: null,
+            unit: 'MXN' as const,
+            value: value('ebit'),
+            missing: c.ebit?.missing,
         },
         {
             key: 'ebt',
+            step: 'ebt',
             label: 'EBT',
-            tier: null,
-            value: r.ebt,
-            margin: m.ebt,
-            missing: c.ebt?.missing ?? [],
-            note: null,
+            unit: 'MXN' as const,
+            value: value('ebt'),
+            missing: c.ebt?.missing,
         },
         {
             key: 'utilidad_neta',
+            step: 'utilidad_neta',
             label: 'Utilidad neta',
-            tier: null,
-            value: r.utilidad_neta,
-            margin: m.neto,
-            missing: c.utilidad_neta?.missing ?? [],
-            note: null,
+            unit: 'MXN' as const,
+            value: value('utilidad_neta'),
+            emphasis: true,
+            missing: c.utilidad_neta?.missing,
+            pendingText: 'Pendiente de ISR',
         },
-    );
-
-    return list;
+        {
+            key: 'margen_ebitda',
+            step: 'ebitda',
+            label: 'Margen EBITDA',
+            unit: '%' as const,
+            value: m.ebitda ?? null,
+            pendingText: 'Sin margen',
+        },
+        {
+            key: 'margen_ebit',
+            step: 'ebit',
+            label: 'Margen EBIT',
+            unit: '%' as const,
+            value: m.ebit ?? null,
+            pendingText: 'Sin margen',
+        },
+        {
+            key: 'margen_neto',
+            step: 'utilidad_neta',
+            label: 'Margen neto',
+            unit: '%' as const,
+            value: m.neto ?? null,
+            pendingText: 'Sin margen',
+        },
+    ];
 });
+
+const rows = computed(
+    () => new Map((props.comparison?.rows ?? []).map((r) => [r.key, r])),
+);
 </script>
 
 <template>
@@ -113,20 +117,41 @@ const tiles = computed(() => {
         aria-label="Resultados del periodo"
         class="overflow-hidden rounded-2xl border bg-card shadow-soft-xs"
     >
+        <div
+            class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2 text-xs text-muted-foreground"
+        >
+            <span class="font-semibold text-foreground"
+                >Resultados del periodo</span
+            >
+            <span v-if="comparison">
+                Variación contra
+                <b class="text-foreground">{{
+                    comparison.comparison.period.label
+                }}</b>
+                <template v-if="!comparison.comparability.comparable">
+                    · no comparable</template
+                >
+            </span>
+            <span v-else-if="comparisonLoading"
+                >Buscando el periodo anterior…</span
+            >
+        </div>
         <div class="-mr-px -mb-px flex flex-wrap">
             <KpiTile
                 v-for="t in tiles"
                 :key="t.key"
-                class="flex-[1_1_150px] border-r border-b border-border/70"
+                class="flex-[1_1_118px] border-r border-b border-border/70"
                 :label="t.label"
-                :tier="t.tier"
                 :value="t.value"
-                :margin="t.margin"
+                :unit="t.unit"
                 :missing="t.missing"
-                :note="t.note"
-                :emphasis="!!t.tier || t.key === 'utilidad_neta'"
-                :active="activeStep === t.key"
-                @select="$emit('select', t.key)"
+                :pending-text="t.pendingText"
+                :emphasis="t.emphasis"
+                :active="activeStep === t.step"
+                :delta="rows.get(t.key) ?? null"
+                :comparable="comparison?.comparability.comparable ?? false"
+                :delta-loading="comparisonLoading && !comparison"
+                @select="$emit('select', t.step)"
             />
         </div>
     </section>

@@ -23,17 +23,35 @@ export interface StatementLine {
     redacted_reason?: string | null;
 }
 
+/** Categoría de OPEX (sucursales, nómina, corporativo, DG): NO son niveles de resultado. */
+export interface OpexCategory {
+    key: string;
+    label: string;
+    applies: boolean;
+    note: string | null;
+    lines: StatementLine[];
+    total: { label: string; amount: string | null; pct: string | null };
+    restricted?: boolean;
+}
+
 export interface StatementSection {
     type: 'section';
     key: string;
+    /** Paso 1–9 del modelo de un solo EBITDA (ausente en versiones anteriores). */
+    step?: number;
     number: string;
     title: string;
     kind: string;
     applies: boolean;
     note: string | null;
+    /** 'pendiente' = sin información (p. ej. ISR): nunca se presenta como $0. */
+    state?: string | null;
     lines: StatementLine[];
-    total: { label: string; amount: string; pct: string | null };
-    subtotals?: Array<{ label: string; amount: string }>;
+    /** amount null = pendiente. */
+    total: { label: string; amount: string | null; pct: string | null };
+    subtotals?: Array<{ key?: string; label: string; amount: string }>;
+    /** Sólo la sección OPEX: sus categorías. */
+    categories?: OpexCategory[];
     /** Detalle oculto por permisos (nómina / DG): sólo se ve el total. */
     restricted?: boolean;
 }
@@ -41,11 +59,14 @@ export interface StatementSection {
 export interface StatementResult {
     type: 'result';
     key: string;
+    step?: number;
     label: string;
-    amount: string;
+    /** null = pendiente (p. ej. utilidad neta sin ISR). */
+    amount: string | null;
     pct: string | null;
     formula: string;
     level: number;
+    note?: string | null;
     complete: boolean;
     missing: string[];
 }
@@ -55,9 +76,14 @@ export type StatementBlock = StatementSection | StatementResult;
 export interface WaterfallStep {
     key: string;
     label: string;
-    amount: string;
+    /** null = pendiente (nunca $0). */
+    amount: string | null;
     type: 'total' | 'delta' | 'subtotal';
     level: number;
+    step?: number;
+    pending?: boolean;
+    /** 'opex' para las categorías de OPEX. */
+    group?: string;
 }
 
 export interface ErpMatch {
@@ -277,6 +303,20 @@ export interface AccountSource {
         total_abonos: string;
         control_ok: boolean | null;
         warnings: string[];
+        /** Avisos clasificados: informativa | bloqueante. */
+        warnings_detail?: Array<{
+            code: string;
+            severity: string;
+            message: string;
+        }>;
+        blocking_warnings?: Array<{
+            code: string;
+            severity: string;
+            message: string;
+        }>;
+        /** recibido | validado | procesado | conciliado | rechazado | duplicado */
+        lifecycle?: string | null;
+        lifecycle_label?: string | null;
         first_date: string | null;
         last_date: string | null;
         uploaded_by: string | null;
@@ -288,6 +328,7 @@ export interface AccountSource {
         name: string;
         status: string;
         hash: string;
+        lifecycle?: string | null;
         movements: number;
         uploaded_by: string | null;
         uploaded_at: string | null;
@@ -332,6 +373,8 @@ export interface Dataset {
         generated_at: string;
         dataset_hash: string;
         report?: ReportMeta;
+        /** Modelo de un solo EBITDA. Ausente en versiones aprobadas con el modelo anterior. */
+        model?: { version: string; steps: string[]; sign: string };
         redactions?: Redactions;
         recognition?: {
             version: string;
@@ -339,7 +382,10 @@ export interface Dataset {
             reglas: Record<string, string>;
         };
     };
-    results: Record<string, string>;
+    /** Modelo vigente: ingresos_operativos, opex_total, ebitda, …; null = pendiente. */
+    results: Record<string, string | null>;
+    /** Claves del modelo anterior, SÓLO como controles (p. ej. EBITDA sucursales = Radiografía). */
+    controls?: Record<string, string | null>;
     margins: Record<string, string | null>;
     completeness: Record<string, { complete: boolean; missing: string[] }>;
     statement: StatementBlock[];
@@ -644,6 +690,10 @@ export interface Validation {
         label: string;
         count: number;
         amount: string;
+        /** ¿Impide aprobar? */
+        blocking?: boolean;
+        open_count?: number;
+        open_amount?: string;
     }>;
     failed_checks: Array<{ key: string; label: string; difference: string }>;
 }
@@ -741,16 +791,6 @@ export function num(v: string | number | null | undefined): number {
     const n = Number(v ?? 0);
 
     return Number.isFinite(n) ? n : 0;
-}
-
-/** Paso de la cascada → sección del estado de resultados que lo explica. */
-export const STEP_SECTION: Record<string, string> = {
-    depreciacion_amortizacion: 'da',
-    resultado_financiero_neto: 'financiero',
-};
-
-export function sectionOfStep(stepKey: string): string {
-    return STEP_SECTION[stepKey] ?? stepKey;
 }
 
 export function escapeHtml(s: string): string {

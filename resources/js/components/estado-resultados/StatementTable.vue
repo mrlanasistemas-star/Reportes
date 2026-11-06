@@ -13,14 +13,13 @@ import {
     TooltipContent,
     TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { EBITDA_TIER } from './storyline';
 import { isNegative, isZero, mxn, pct } from './types';
-import type { Movement, StatementBlock } from './types';
+import type { Movement, StatementBlock, StatementLine } from './types';
 
 const props = defineProps<{
     blocks: StatementBlock[];
     movements: Movement[];
-    /** Sección o resultado a resaltar (viene de la cascada). */
+    /** Bloque a resaltar: 'ebitda', 'da', u 'opex:<categoría>'. */
     highlight: string | null;
 }>();
 
@@ -42,16 +41,21 @@ const movementCount = computed(() => {
     return map;
 });
 
-const sectionKeys = computed(() =>
-    props.blocks.filter((b) => b.type === 'section').map((b) => b.key),
+/** Claves colapsables: secciones y categorías de OPEX. */
+const collapsible = computed(() =>
+    props.blocks.flatMap((b) =>
+        b.type === 'section'
+            ? [b.key, ...(b.categories ?? []).map((c) => `opex:${c.key}`)]
+            : [],
+    ),
 );
 const allCollapsed = computed(() =>
-    sectionKeys.value.every((k) => collapsed[k]),
+    collapsible.value.every((k) => collapsed[k]),
 );
 
 function toggleAll(): void {
     const v = !allCollapsed.value;
-    sectionKeys.value.forEach((k) => (collapsed[k] = v));
+    collapsible.value.forEach((k) => (collapsed[k] = v));
 }
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
@@ -62,9 +66,14 @@ async function reveal(key: string | null): Promise<void> {
     }
 
     collapsed[key] = false;
+
+    if (key.startsWith('opex:')) {
+        collapsed.opex = false;
+    }
+
     await nextTick();
     const el = root.value?.querySelector<HTMLElement>(
-        `[data-er-block="${key}"]`,
+        `[data-er-block="${CSS.escape(key)}"]`,
     );
 
     if (!el) {
@@ -79,13 +88,11 @@ async function reveal(key: string | null): Promise<void> {
 
 watch(() => props.highlight, reveal, { immediate: true });
 
-const RESULT_TONE: Record<number, string> = {
-    1: 'bg-emerald-800 text-white dark:bg-emerald-900/80',
-    2: 'bg-emerald-800 text-white dark:bg-emerald-900/80',
-    3: 'bg-emerald-900 text-white dark:bg-emerald-950',
-    4: 'bg-slate-800 text-white dark:bg-slate-800/80',
-    5: 'bg-slate-800 text-white dark:bg-slate-800/80',
-    6: 'bg-slate-950 text-white dark:bg-black',
+const restrictedLine = (l: StatementLine) =>
+    l.redacted || l.state === 'restringido';
+const RESULT_TONE: Record<string, string> = {
+    ebitda: 'bg-cyan-800 text-white dark:bg-cyan-950',
+    utilidad_neta: 'bg-emerald-900 text-white dark:bg-emerald-950',
 };
 </script>
 
@@ -116,7 +123,7 @@ const RESULT_TONE: Record<number, string> = {
         </div>
 
         <template v-for="b in blocks" :key="b.key">
-            <!-- Sección -->
+            <!-- Sección (con categorías si es OPEX) -->
             <div
                 v-if="b.type === 'section'"
                 :data-er-block="b.key"
@@ -132,14 +139,18 @@ const RESULT_TONE: Record<number, string> = {
                     >
                         <span
                             class="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-[11px] font-extrabold text-muted-foreground tabular-nums"
-                            >{{ b.number }}</span
+                            >{{ b.step ?? b.number }}</span
                         >
                         <span class="truncate">{{ b.title }}</span>
                         <span
                             v-if="b.restricted"
                             class="inline-flex shrink-0 items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-2 py-px text-[10px] font-bold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                            title="Tu rol ve sólo el total de esta sección; el desglose requiere permiso."
                             ><Lock class="size-3" /> Detalle restringido</span
+                        >
+                        <span
+                            v-if="b.state === 'pendiente'"
+                            class="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-2 py-px text-[10px] font-bold text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
+                            >Pendiente</span
                         >
                         <ChevronDown
                             class="size-4 shrink-0 text-muted-foreground transition-transform"
@@ -153,19 +164,147 @@ const RESULT_TONE: Record<number, string> = {
                         :title="`Ver los ${movementCount[b.key]} movimientos de banco que suman a esta sección`"
                         @click="emit('openMovements', `line:${b.key}`)"
                     >
-                        <Rows3 class="size-3" />
-                        {{ movementCount[b.key] }} mov.
+                        <Rows3 class="size-3" /> {{ movementCount[b.key] }} mov.
                     </button>
                 </div>
 
                 <p
-                    v-if="!b.applies"
-                    class="px-4 pb-3 pl-12 text-xs text-muted-foreground italic"
+                    v-if="b.note"
+                    class="px-4 pb-2 pl-12 text-xs"
+                    :class="
+                        b.state === 'pendiente'
+                            ? 'font-semibold text-amber-800 dark:text-amber-300'
+                            : 'text-muted-foreground italic'
+                    "
                 >
                     {{ b.note }}
                 </p>
-                <template v-else>
-                    <div v-show="!collapsed[b.key]">
+
+                <div v-show="!collapsed[b.key]">
+                    <!-- OPEX: una sub-sección por categoría -->
+                    <template v-if="b.categories?.length">
+                        <div
+                            v-for="c in b.categories"
+                            :key="c.key"
+                            :data-er-block="`opex:${c.key}`"
+                            class="transition-colors duration-700"
+                            :class="
+                                flash === `opex:${c.key}`
+                                    ? 'bg-cyan-50 dark:bg-cyan-950/30'
+                                    : ''
+                            "
+                        >
+                            <div
+                                class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                            >
+                                <span
+                                    class="flex min-w-0 items-center gap-1.5 pl-8"
+                                >
+                                    <button
+                                        type="button"
+                                        class="flex min-w-0 items-center gap-1.5 font-semibold transition hover:text-emerald-800 dark:hover:text-emerald-300"
+                                        :aria-expanded="
+                                            !collapsed[`opex:${c.key}`]
+                                        "
+                                        @click="
+                                            collapsed[`opex:${c.key}`] =
+                                                !collapsed[`opex:${c.key}`]
+                                        "
+                                    >
+                                        <ChevronDown
+                                            class="size-3.5 shrink-0 text-muted-foreground transition-transform"
+                                            :class="
+                                                collapsed[`opex:${c.key}`]
+                                                    ? '-rotate-90'
+                                                    : ''
+                                            "
+                                        />
+                                        <span class="truncate">{{
+                                            c.label
+                                        }}</span>
+                                    </button>
+                                    <Lock
+                                        v-if="c.restricted"
+                                        class="size-3.5 shrink-0 text-muted-foreground"
+                                    />
+                                    <button
+                                        v-if="movementCount[c.key]"
+                                        type="button"
+                                        class="shrink-0 rounded-full border px-1.5 text-[10px] font-semibold text-cyan-800 hover:border-cyan-400 dark:text-cyan-300"
+                                        @click="
+                                            emit(
+                                                'openMovements',
+                                                `line:${c.key}`,
+                                            )
+                                        "
+                                    >
+                                        {{ movementCount[c.key] }} mov.
+                                    </button>
+                                </span>
+                                <span
+                                    class="text-right font-semibold tabular-nums"
+                                    >{{
+                                        c.total.amount === null
+                                            ? 'Pendiente'
+                                            : mxn(c.total.amount)
+                                    }}</span
+                                >
+                                <span
+                                    class="hidden text-right text-xs text-muted-foreground tabular-nums sm:block"
+                                    >{{ pct(c.total.pct) }}</span
+                                >
+                            </div>
+                            <div v-show="!collapsed[`opex:${c.key}`]">
+                                <p
+                                    v-if="!c.lines.length"
+                                    class="px-4 pb-1.5 pl-16 text-xs text-muted-foreground"
+                                >
+                                    Sin líneas en este periodo.
+                                </p>
+                                <div
+                                    v-for="l in c.lines"
+                                    :key="l.key"
+                                    class="group grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1 text-[13px] transition-colors hover:bg-muted/50 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                                >
+                                    <span
+                                        class="flex min-w-0 items-center gap-1.5 pl-16"
+                                    >
+                                        <Lock
+                                            v-if="restrictedLine(l)"
+                                            class="size-3 shrink-0 text-muted-foreground"
+                                        />
+                                        <span
+                                            class="truncate"
+                                            :class="
+                                                restrictedLine(l) ||
+                                                l.state === 'sin_informacion'
+                                                    ? 'text-muted-foreground italic'
+                                                    : ''
+                                            "
+                                            :title="l.hint ?? l.label"
+                                            >{{ l.label }}</span
+                                        >
+                                    </span>
+                                    <span
+                                        class="text-right tabular-nums"
+                                        :class="
+                                            isZero(l.amount)
+                                                ? 'text-muted-foreground'
+                                                : ''
+                                        "
+                                        >{{ mxn(l.amount) }}</span
+                                    >
+                                    <span
+                                        class="hidden text-right text-xs text-muted-foreground tabular-nums sm:block"
+                                        >{{ pct(l.pct) }}</span
+                                    >
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Resto de secciones: líneas directas -->
+                    <template v-else>
                         <p
                             v-if="!b.lines.length"
                             class="px-4 pb-2 pl-12 text-xs text-muted-foreground"
@@ -181,17 +320,14 @@ const RESULT_TONE: Record<number, string> = {
                                 class="flex min-w-0 items-center gap-1.5 pl-8"
                             >
                                 <Lock
-                                    v-if="
-                                        l.redacted || l.state === 'restringido'
-                                    "
+                                    v-if="restrictedLine(l)"
                                     class="size-3.5 shrink-0 text-muted-foreground"
                                 />
                                 <span
                                     class="truncate"
                                     :class="
                                         l.state === 'sin_informacion' ||
-                                        l.redacted ||
-                                        l.state === 'restringido'
+                                        restrictedLine(l)
                                             ? 'text-muted-foreground italic'
                                             : ''
                                     "
@@ -217,17 +353,6 @@ const RESULT_TONE: Record<number, string> = {
                                             Fuente: {{ l.source }}
                                         </p>
                                         <p v-if="l.hint">{{ l.hint }}</p>
-                                        <p
-                                            v-if="
-                                                l.redacted ||
-                                                l.state === 'restringido'
-                                            "
-                                        >
-                                            {{
-                                                l.redacted_reason ??
-                                                'Tu rol no puede ver este detalle; el total sí se incluye.'
-                                            }}
-                                        </p>
                                     </TooltipContent>
                                 </Tooltip>
                             </span>
@@ -252,40 +377,54 @@ const RESULT_TONE: Record<number, string> = {
                                 >{{ pct(l.pct) }}</span
                             >
                         </div>
-                    </div>
-                    <div
-                        class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-t border-dashed px-4 py-2 text-sm font-bold sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                    </template>
+                </div>
+
+                <div
+                    class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-t border-dashed px-4 py-2 text-sm font-bold sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                >
+                    <span class="truncate pl-8">{{ b.total.label }}</span>
+                    <span
+                        class="text-right tabular-nums"
+                        :class="
+                            b.total.amount === null
+                                ? 'text-amber-700 dark:text-amber-300'
+                                : isNegative(b.total.amount)
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : ''
+                        "
+                        >{{
+                            b.total.amount === null
+                                ? 'Pendiente'
+                                : mxn(b.total.amount)
+                        }}</span
                     >
-                        <span class="truncate pl-8">{{ b.total.label }}</span>
-                        <span class="text-right tabular-nums">{{
-                            mxn(b.total.amount)
-                        }}</span>
-                        <span
-                            class="hidden text-right text-xs tabular-nums sm:block"
-                            >{{ pct(b.total.pct) }}</span
-                        >
-                    </div>
-                    <p
-                        v-if="b.subtotals"
-                        class="flex flex-wrap gap-x-4 px-4 pb-2 pl-12 text-xs text-muted-foreground"
+                    <span
+                        class="hidden text-right text-xs tabular-nums sm:block"
+                        >{{ pct(b.total.pct) }}</span
                     >
-                        <span v-for="s in b.subtotals" :key="s.label"
-                            >{{ s.label }}:
-                            <b class="text-foreground tabular-nums">{{
-                                mxn(s.amount)
-                            }}</b></span
-                        >
-                    </p>
-                </template>
+                </div>
+                <p
+                    v-if="b.subtotals"
+                    class="flex flex-wrap gap-x-4 px-4 pb-2 pl-12 text-xs text-muted-foreground"
+                >
+                    <span v-for="s in b.subtotals" :key="s.label"
+                        >{{ s.label }}:
+                        <b class="text-foreground tabular-nums">{{
+                            mxn(s.amount)
+                        }}</b></span
+                    >
+                </p>
             </div>
 
-            <!-- Resultado (EBITDA / EBIT / EBT / Utilidad) -->
+            <!-- Resultado: EBITDA (único), EBIT, EBT, Utilidad neta -->
             <div
                 v-else
                 :data-er-block="b.key"
                 class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-3.5 transition-shadow duration-700 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
                 :class="[
-                    RESULT_TONE[b.level] ?? RESULT_TONE[4],
+                    RESULT_TONE[b.key] ??
+                        'bg-slate-800 text-white dark:bg-slate-800/80',
                     flash === b.key
                         ? 'shadow-[inset_0_0_0_3px_rgb(34_197_214)]'
                         : '',
@@ -295,13 +434,8 @@ const RESULT_TONE: Record<number, string> = {
                     <p
                         class="flex flex-wrap items-center gap-2 text-sm font-extrabold"
                     >
-                        <span
-                            v-if="EBITDA_TIER[b.key]"
-                            class="rounded-full bg-cyan-400/25 px-2 py-px text-[10px] font-bold text-cyan-100"
-                            >{{ EBITDA_TIER[b.key] }}</span
-                        >
                         = {{ b.label }}
-                        <Tooltip v-if="!b.complete">
+                        <Tooltip v-if="!b.complete && b.amount !== null">
                             <TooltipTrigger as-child>
                                 <span
                                     class="cursor-help rounded-full bg-amber-300 px-1.5 text-[10px] font-bold text-amber-950"
@@ -317,8 +451,20 @@ const RESULT_TONE: Record<number, string> = {
                     <p class="truncate text-[11px] opacity-75">
                         {{ b.formula }}
                     </p>
+                    <p
+                        v-if="b.note"
+                        class="text-[11px] font-semibold text-amber-200"
+                    >
+                        {{ b.note }}
+                    </p>
                 </div>
                 <span
+                    v-if="b.amount === null"
+                    class="justify-self-end rounded-lg border-2 border-dashed border-amber-300 px-2 py-0.5 text-sm font-extrabold text-amber-200"
+                    >Pendiente</span
+                >
+                <span
+                    v-else
                     class="text-right text-base font-extrabold tabular-nums"
                     :class="
                         isNegative(b.amount)

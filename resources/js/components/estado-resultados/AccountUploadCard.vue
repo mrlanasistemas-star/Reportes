@@ -15,6 +15,7 @@ import {
     CollapsibleContent,
     CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import FileLifecycle from './FileLifecycle.vue';
 import StatusBadge from './StatusBadge.vue';
 import { mxn } from './types';
 import type { AccountSource, UploadRules } from './types';
@@ -86,6 +87,11 @@ function onDrop(e: DragEvent): void {
                 <p class="truncate font-medium" :title="account.upload.name">
                     {{ account.upload.name }}
                 </p>
+                <FileLifecycle
+                    v-if="account.upload.lifecycle"
+                    :lifecycle="account.upload.lifecycle"
+                    :label="account.upload.lifecycle_label"
+                />
                 <div class="grid grid-cols-3 gap-2">
                     <div class="rounded-xl bg-muted/50 p-2">
                         <p class="text-[11px] text-muted-foreground">
@@ -137,7 +143,35 @@ function onDrop(e: DragEvent): void {
                     revisión
                 </p>
                 <ul
-                    v-if="account.upload.warnings.length"
+                    v-if="account.upload.warnings_detail?.length"
+                    class="space-y-1"
+                >
+                    <li
+                        v-for="(w, i) in account.upload.warnings_detail"
+                        :key="i"
+                        class="flex gap-1.5 rounded-lg p-1.5"
+                        :class="
+                            w.severity === 'bloqueante'
+                                ? 'bg-rose-50 font-semibold text-rose-800 dark:bg-rose-950/30 dark:text-rose-300'
+                                : 'bg-muted/60 text-muted-foreground'
+                        "
+                    >
+                        <span
+                            class="shrink-0 rounded px-1 text-[10px] font-bold"
+                            :class="
+                                w.severity === 'bloqueante'
+                                    ? 'bg-rose-600 text-white'
+                                    : 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200'
+                            "
+                            >{{
+                                w.severity === 'bloqueante' ? 'Bloquea' : 'Info'
+                            }}</span
+                        >
+                        {{ w.message }}
+                    </li>
+                </ul>
+                <ul
+                    v-else-if="account.upload.warnings.length"
                     class="space-y-1 rounded-xl border border-amber-200 bg-amber-50/70 p-2 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
                 >
                     <li v-for="(w, i) in account.upload.warnings" :key="i">

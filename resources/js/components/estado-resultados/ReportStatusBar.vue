@@ -19,10 +19,13 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { BLOCKER_GROUPS } from '@/composables/estado-resultados/useErGovernance';
-import type { ReportMeta } from './types';
+import ApprovalChecklist from './ApprovalChecklist.vue';
+import type { Dataset, ReportMeta } from './types';
 
 const props = defineProps<{
     report: ReportMeta;
+    /** Para el panel de aprobación: fuentes, diferencias abiertas. */
+    dataset?: Dataset | null;
     canApprove: boolean;
     approving: boolean;
     reopening: boolean;
@@ -79,7 +82,9 @@ const groups = computed(() => {
     const order = [
         'procesamiento',
         'pendientes',
+        'diferencias',
         'validaciones',
+        'fuentes',
         'datos_faltantes',
     ];
     const map = new Map<string, string[]>();
@@ -101,7 +106,7 @@ const groups = computed(() => {
         }));
 });
 
-const showBlockers = ref(true);
+const showBlockers = ref(false);
 const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
 </script>
 
@@ -345,7 +350,7 @@ const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
         </p>
 
         <!-- Qué falta para aprobar -->
-        <div v-if="!isSnapshot && groups.length" class="border-t">
+        <div v-if="!isSnapshot && (groups.length || dataset)" class="border-t">
             <button
                 type="button"
                 class="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-bold transition hover:bg-muted/40"
@@ -353,8 +358,13 @@ const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
                 @click="showBlockers = !showBlockers"
             >
                 <ShieldAlert class="size-4 text-amber-600" />
-                Qué falta para poder aprobar
+                {{
+                    groups.length
+                        ? `Antes de aprobar la versión ${report.version}`
+                        : `Revisión previa de la versión ${report.version}`
+                }}
                 <span
+                    v-if="groups.length"
                     class="rounded-full bg-amber-400 px-1.5 text-[10px] font-bold text-amber-950 tabular-nums"
                     >{{ report.blockers.length }}</span
                 >
@@ -363,46 +373,56 @@ const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
                     :class="showBlockers ? 'rotate-180' : ''"
                 />
             </button>
-            <div
-                v-show="showBlockers"
-                class="grid gap-2 px-4 pb-4 md:grid-cols-2 2xl:grid-cols-4"
-            >
+            <div v-show="showBlockers" class="space-y-3 px-4 pb-4">
+                <ApprovalChecklist
+                    v-if="dataset"
+                    :dataset="dataset"
+                    @go="(t) => emit('go', t)"
+                />
+                <p v-if="groups.length" class="text-sm font-bold">
+                    Qué impide aprobar
+                </p>
                 <div
-                    v-for="g in groups"
-                    :key="g.code"
-                    class="flex flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-900 dark:bg-amber-950/20"
+                    v-if="groups.length"
+                    class="grid gap-2 md:grid-cols-2 2xl:grid-cols-3"
                 >
-                    <p
-                        class="text-sm font-bold text-amber-950 dark:text-amber-200"
+                    <div
+                        v-for="g in groups"
+                        :key="g.code"
+                        class="flex flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-900 dark:bg-amber-950/20"
                     >
-                        {{ g.meta.title }}
-                    </p>
-                    <ul
-                        class="space-y-1 text-xs leading-relaxed text-amber-900 dark:text-amber-200/90"
-                    >
-                        <li
-                            v-for="(m, i) in g.messages"
-                            :key="i"
-                            class="flex gap-1.5"
+                        <p
+                            class="text-sm font-bold text-amber-950 dark:text-amber-200"
                         >
-                            <span
-                                class="mt-1.5 size-1 shrink-0 rounded-full bg-current"
-                            />
-                            {{ m }}
-                        </li>
-                    </ul>
-                    <button
-                        type="button"
-                        class="mt-auto self-start rounded-lg bg-white px-2.5 py-1 text-xs font-bold text-amber-900 shadow-sm transition hover:bg-amber-100 dark:bg-amber-900/50 dark:text-amber-100 dark:hover:bg-amber-900"
-                        @click="emit('go', g.meta.tab)"
-                    >
-                        {{ g.meta.action }}
-                    </button>
+                            {{ g.meta.title }}
+                        </p>
+                        <ul
+                            class="space-y-1 text-xs leading-relaxed text-amber-900 dark:text-amber-200/90"
+                        >
+                            <li
+                                v-for="(m, i) in g.messages"
+                                :key="i"
+                                class="flex gap-1.5"
+                            >
+                                <span
+                                    class="mt-1.5 size-1 shrink-0 rounded-full bg-current"
+                                />
+                                {{ m }}
+                            </li>
+                        </ul>
+                        <button
+                            type="button"
+                            class="mt-auto self-start rounded-lg bg-white px-2.5 py-1 text-xs font-bold text-amber-900 shadow-sm transition hover:bg-amber-100 dark:bg-amber-900/50 dark:text-amber-100 dark:hover:bg-amber-900"
+                            @click="emit('go', g.meta.tab)"
+                        >
+                            {{ g.meta.action }}
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
         <p
-            v-else-if="!isSnapshot && report.approvable"
+            v-if="!isSnapshot && report.approvable && !groups.length"
             class="flex items-center gap-2 border-t bg-emerald-50/70 px-4 py-2.5 text-sm font-semibold text-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200"
         >
             <BadgeCheck class="size-4" /> Todo cuadra y no hay pendientes: la

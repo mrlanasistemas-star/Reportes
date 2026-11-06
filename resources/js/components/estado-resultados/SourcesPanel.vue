@@ -25,7 +25,7 @@ const simple = computed<
     {
         src: props.sources.radiografia,
         icon: Activity,
-        feeds: 'Ingresos, OPEX y nómina de sucursales (EBITDA nivel 1)',
+        feeds: 'Ingresos y OPEX de sucursales (incluye su nómina)',
     },
     {
         src: props.sources.erp,

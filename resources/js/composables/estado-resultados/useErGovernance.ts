@@ -43,6 +43,16 @@ export const BLOCKER_GROUPS: Record<
         action: 'Abrir validación',
         tab: 'validacion',
     },
+    diferencias: {
+        title: 'Hay diferencias de conciliación abiertas',
+        action: 'Abrir validación',
+        tab: 'validacion',
+    },
+    fuentes: {
+        title: 'Alguna fuente tiene observaciones',
+        action: 'Ver fuentes',
+        tab: 'fuentes',
+    },
     datos_faltantes: {
         title: 'Faltan datos obligatorios',
         action: 'Ver fuentes y ajustes',
@@ -59,6 +69,32 @@ const blockerList = (blockers: ReportBlocker[]) =>
               )
               .join('')}</ul>`
         : '';
+
+/** Resumen de lo que se aprueba: versión, huella, fuentes con observaciones y diferencias abiertas. */
+function approvalSummary(d: Dataset): string {
+    const r = d.meta.report;
+    const accounts = d.sources.cuentas;
+    const info = accounts.reduce(
+        (n, c) =>
+            n +
+            (c.upload?.warnings_detail ?? []).filter(
+                (w) => w.severity !== 'bloqueante',
+            ).length,
+        0,
+    );
+    const open = (d.validation?.unresolved ?? []).filter(
+        (u) => (u.open_count ?? u.count) > 0,
+    );
+    const rows = [
+        `Versión <b>${r?.version ?? '—'}</b> · ${escapeHtml(d.meta.scope.label)} · huella <code>${escapeHtml(d.meta.dataset_hash.slice(0, 12))}</code>`,
+        `Estados de cuenta: ${accounts.filter((c) => c.upload).length} de ${accounts.length} cargados${info ? ` · ${info} aviso(s) informativo(s)` : ''}`,
+        open.length
+            ? `Diferencias abiertas: ${open.map((u) => escapeHtml(u.label)).join('; ')}`
+            : 'Sin diferencias abiertas',
+    ];
+
+    return `<ul style="text-align:left;margin:12px auto 0;font-size:13px;max-width:480px">${rows.map((x) => `<li style="margin:4px 0">• ${x}</li>`).join('')}</ul>`;
+}
 
 /**
  * Gobierno del reporte: versión que se consulta, historial, aprobación y apertura
@@ -143,7 +179,7 @@ export function useErGovernance(ctx: Ctx) {
         const ok = await swal.fire({
             icon: 'question',
             title: `¿Aprobar la versión ${r.version}?`,
-            html: `<p>Las cifras de <b>${escapeHtml(d.meta.period.label)}</b> quedarán congeladas para todos los alcances (consolidado y sucursales). Web, Excel y PDF mostrarán esta versión y nadie podrá cargar, procesar, clasificar ni ajustar hasta abrir una nueva versión.</p>`,
+            html: `<p>Las cifras de <b>${escapeHtml(d.meta.period.label)}</b> quedarán congeladas para todos los alcances (consolidado y sucursales). Web, Excel y PDF mostrarán esta versión y nadie podrá cargar, procesar, clasificar ni ajustar hasta abrir una nueva versión.</p>${approvalSummary(d)}`,
             input: 'textarea',
             inputLabel: 'Notas de aprobación (opcional)',
             inputPlaceholder:
