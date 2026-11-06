@@ -12,6 +12,7 @@ use App\Http\Controllers\SystemGuideController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EfectividadCalculadoraController;
 use App\Http\Controllers\EstadoResultadosController;
+use App\Http\Controllers\EstadoResultadosComparativoController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ApiDocumentationController;
 use App\Http\Controllers\SeoController;
@@ -233,6 +234,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('/{period}/nueva-version', 'openNewVersion')->middleware(['throttle:10,1', 'permission:estado_resultados,aprobar'])->name('new-version');
             Route::get('/{period}/detalle/nomina', 'payrollDetail')->middleware('permission:estado_resultados,ver_nomina')->name('payroll-detail');
             Route::get('/{period}/detalle/dg', 'dgDetail')->middleware('permission:estado_resultados,ver_dg')->name('dg-detail');
+            // 06-nov-2026 — comparativas (anterior, año anterior, evolución, acumulado, sucursales,
+            // personalizado) + series de gráficas: fuente única para web, PDF y Excel.
+            Route::get('/{period}/comparativas', [EstadoResultadosComparativoController::class, 'show'])->middleware('throttle:60,1')->name('comparatives');
         });
 
     // Administración (prioridad 8): Usuarios y Roles y permisos — módulos propios,
