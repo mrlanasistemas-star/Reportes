@@ -4,9 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Models\EstadoResultados\EstadoResultadosExport;
 use App\Models\Period;
+use App\Services\Access\DataScopeService;
 use App\Services\EstadoResultados\AdjustmentService;
 use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
 use App\Services\EstadoResultados\Classification\ClassificationService;
+use App\Services\EstadoResultados\Comparatives\ComparisonAccessException;
+use App\Services\EstadoResultados\Comparatives\ComparisonService;
 use App\Services\EstadoResultados\EstadoResultadosProcessor;
 use App\Services\EstadoResultados\Export\EstadoResultadosExcelExporter;
 use App\Services\EstadoResultados\Export\EstadoResultadosPdfExporter;
@@ -43,6 +46,7 @@ class EstadoResultadosController extends Controller
         private readonly EstadoResultadosReportResolver $resolver,
         private readonly PeriodLockGuard $lock,
         private readonly EstadoResultadosAbilities $abilities,
+        private readonly DataScopeService $dataScope,
     ) {}
 
     public function index(Request $request): Response
@@ -60,7 +64,9 @@ class EstadoResultadosController extends Controller
         return Inertia::render('EstadoResultados/Index', [
             'periods' => $periods,
             'initialPeriodId' => (int) ($request->integer('periodo') ?: ($periods->first()['id'] ?? 0)),
-            'initialScope' => (string) ($request->string('alcance') ?: EstadoResultadosDatasetBuilder::CONSOLIDADO),
+            'initialScope' => $this->initialScope($request),
+            // Alcance de datos por sucursal del usuario (DataScopeService): general = puede ver el consolidado.
+            'branchScope' => $request->user() ? $this->dataScope->describe($request->user()) + ['allowed_names' => $this->dataScope->allowedBranchNames($request->user())] : null,
             'slots' => collect(EstadoResultadosUploadService::SLOTS)->map(fn ($label, $key) => ['key' => $key, 'label' => $label])->values(),
             'treatments' => Treatment::catalog(),
             'adjustmentStates' => AdjustmentService::STATES,
@@ -80,12 +86,15 @@ class EstadoResultadosController extends Controller
         @ini_set('memory_limit', '1024M');
         $this->ensureMonthly($period);
         $version = $this->versionParam($request);
+        $scope = $this->scope($request);
+        $this->authorizeScope($request, $scope);
 
         try {
-            return response()->json([
-                'dataset' => $this->resolver->resolve($period, $this->scope($request), $request->user(), $version),
-                'scopes' => $this->resolver->scopes($period, $version),
-            ]);
+            // Una sola foto de Radiografía para alcances + dataset de esta petición.
+            return $this->builder->session(fn () => response()->json([
+                'dataset' => $this->resolver->resolve($period, $scope, $request->user(), $version),
+                'scopes' => $this->visibleScopes($request, $this->resolver->scopes($period, $version)),
+            ]));
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -96,6 +105,7 @@ class EstadoResultadosController extends Controller
     public function upload(Request $request, Period $period, EstadoResultadosUploadService $service): JsonResponse
     {
         $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'La carga de estados de cuenta del Estado de Resultados');
         $this->lock->assertUnlocked($period);
         $data = $request->validate([
             'slot' => ['required', 'in:'.implode(',', array_keys(EstadoResultadosUploadService::SLOTS))],
@@ -136,6 +146,8 @@ class EstadoResultadosController extends Controller
 
     public function uploadAttempts(Request $request, Period $period, EstadoResultadosUploadService $service): JsonResponse
     {
+        $this->dataScope->requireGeneral($request->user(), 'El historial de cargas del Estado de Resultados');
+
         return response()->json(['attempts' => $service->attempts($period)]);
     }
 
@@ -143,6 +155,7 @@ class EstadoResultadosController extends Controller
     {
         @ini_set('memory_limit', '1024M');
         $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'El procesamiento de la conciliación');
         $this->lock->assertUnlocked($period);
         try {
             $run = $processor->process($period, $request->user()?->id);
@@ -164,6 +177,7 @@ class EstadoResultadosController extends Controller
     public function classify(Request $request, Period $period, ClassificationService $service): JsonResponse
     {
         $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'La clasificación de movimientos');
         $this->lock->assertUnlocked($period);
         $data = $request->validate([
             'fingerprints' => ['required', 'array', 'min:1', 'max:2000'],
@@ -184,6 +198,7 @@ class EstadoResultadosController extends Controller
     public function acceptSuggestions(Request $request, Period $period, ClassificationService $service): JsonResponse
     {
         $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'La clasificación de movimientos');
         $this->lock->assertUnlocked($period);
         $data = $request->validate([
             'fingerprints' => ['required', 'array', 'min:1', 'max:2000'],
@@ -208,6 +223,7 @@ class EstadoResultadosController extends Controller
 
     public function history(Request $request, Period $period, ClassificationService $service): JsonResponse
     {
+        $this->dataScope->requireGeneral($request->user(), 'El historial de clasificación');
         $fp = (string) $request->query('fingerprint', '');
         $movement = collect($this->resolver->unredacted($period, EstadoResultadosDatasetBuilder::CONSOLIDADO)['movements'] ?? [])->firstWhere('fingerprint', $fp);
         if ($movement) {
@@ -231,6 +247,7 @@ class EstadoResultadosController extends Controller
             'notes' => ['nullable', 'string', 'max:2000'],
         ]);
         $this->validScope($period, $data['scope']);
+        $this->authorizeScope($request, $data['scope']);
 
         try {
             $service->save($period, $data['scope'], $data['concept'], $data['state'], $data['amount'] ?? null, $data['notes'] ?? null, $request->user()?->id);
@@ -243,7 +260,10 @@ class EstadoResultadosController extends Controller
 
     public function adjustmentLogs(Request $request, Period $period, AdjustmentService $service): JsonResponse
     {
-        return response()->json(['logs' => $service->logs($period->id, $this->scope($request))]);
+        $scope = $this->scope($request);
+        $this->authorizeScope($request, $scope);
+
+        return response()->json(['logs' => $service->logs($period->id, $scope)]);
     }
 
     // ── Aprobación y versiones ─────────────────────────────────────────
@@ -253,6 +273,7 @@ class EstadoResultadosController extends Controller
         // La aprobación congela el dataset de los ~14 alcances; con 128 MB no alcanza.
         @ini_set('memory_limit', '2048M');
         $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'La aprobación del Estado de Resultados');
         $data = $request->validate([
             'notes' => ['nullable', 'string', 'max:2000'],
             'expected_hash' => ['nullable', 'string', 'size:64'],
@@ -268,6 +289,7 @@ class EstadoResultadosController extends Controller
     public function openNewVersion(Request $request, Period $period, EstadoResultadosApprovalService $service): JsonResponse
     {
         $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'Abrir una nueva versión del Estado de Resultados');
         $data = $request->validate([
             'reason' => ['required', 'string', 'min:10', 'max:2000'],
         ], [
@@ -312,7 +334,16 @@ class EstadoResultadosController extends Controller
         }
         $name = $this->fileName($dataset, 'xlsx');
         $path = storage_path('app/tmp/estado-resultados-'.Str::uuid().'.xlsx');
-        $exporter->export($dataset, $path);
+        [$comparisons, $comparisonsError] = $this->exportComparisons($request, $period, $dataset);
+        try {
+            $exporter->export($dataset, $path, $comparisons, $comparisonsError);
+        } catch (\Throwable $e) {
+            @unlink($path);
+            $ref = 'ER-XLSX-'.now()->format('ymdHis').'-'.Str::upper(Str::random(4));
+            Log::error('estado_resultados.excel_failed', ['ref' => $ref, 'period_id' => $period->id, 'error' => $e->getMessage()]);
+
+            return response()->json(['message' => 'No se pudo generar el Excel. Referencia: '.$ref], 500);
+        }
         $this->logExport($request, $period, $dataset, 'xlsx', $name);
 
         return response()->download($path, $name, $this->exportHeaders($dataset, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))->deleteFileAfterSend();
@@ -321,6 +352,7 @@ class EstadoResultadosController extends Controller
     public function exportPdf(Request $request, Period $period, EstadoResultadosPdfExporter $exporter)
     {
         @ini_set('memory_limit', '1024M');
+        @set_time_limit(600);
         $this->ensureMonthly($period);
         $dataset = $this->exportDataset($request, $period);
         if ($dataset instanceof JsonResponse) {
@@ -328,14 +360,16 @@ class EstadoResultadosController extends Controller
         }
         $name = $this->fileName($dataset, 'pdf');
         $path = storage_path('app/tmp/estado-resultados-'.Str::uuid().'.pdf');
+        [$comparisons, $comparisonsError] = $this->exportComparisons($request, $period, $dataset);
 
         try {
-            $exporter->export($dataset, $path);
+            $exporter->export($dataset, $path, $comparisons, $comparisonsError);
         } catch (PdfRenderException $e) {
+            // El exportador ya eliminó el archivo parcial; al usuario sólo se le da una referencia (sin rutas internas).
             $ref = 'ER-PDF-'.now()->format('ymdHis').'-'.Str::upper(Str::random(4));
-            Log::error('estado_resultados.pdf_failed', ['ref' => $ref, 'period_id' => $period->id, 'error' => $e->getMessage()]);
+            Log::error('estado_resultados.pdf_failed', ['ref' => $ref, 'period_id' => $period->id, 'code' => $e->code(), 'error' => $e->getMessage()]);
 
-            return response()->json(['message' => 'No se pudo generar el PDF. Referencia: '.$ref], 500);
+            return response()->json(['message' => $e->getMessage().' Referencia: '.$ref], 500);
         }
         $this->logExport($request, $period, $dataset, 'pdf', $name);
 
@@ -344,10 +378,33 @@ class EstadoResultadosController extends Controller
 
     // ── Helpers ────────────────────────────────────────────────────────
 
+    /**
+     * Comparativas y series de gráficas para los exportes: el MISMO servicio y contrato que la web
+     * (ComparisonService, er-comparativas/1), con el alcance del reporte y los permisos del usuario.
+     * Si no se pueden calcular, el exporte sale igual con un aviso (nunca con cifras inventadas).
+     *
+     * @return array{0: ?array, 1: ?string}
+     */
+    private function exportComparisons(Request $request, Period $period, array $dataset): array
+    {
+        @set_time_limit(600);
+        try {
+            return [app(ComparisonService::class)->build($period, (string) $dataset['meta']['scope']['key'], $request->user(), ['meses' => 6]), null];
+        } catch (ComparisonAccessException|\InvalidArgumentException $e) {
+            return [null, 'Comparativas no disponibles: '.$e->getMessage()];
+        } catch (\Throwable $e) {
+            Log::warning('estado_resultados.export_comparisons_failed', ['period_id' => $period->id, 'error' => $e->getMessage()]);
+
+            return [null, 'Las comparativas no se pudieron calcular en este momento; el Estado de Resultados del periodo sí está completo.'];
+        }
+    }
+
     private function exportDataset(Request $request, Period $period): array|JsonResponse
     {
+        $scope = $this->scope($request);
+        $this->authorizeScope($request, $scope);
         try {
-            return $this->resolver->resolve($period, $this->scope($request), $request->user(), $this->versionParam($request));
+            return $this->resolver->resolve($period, $scope, $request->user(), $this->versionParam($request));
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -379,8 +436,10 @@ class EstadoResultadosController extends Controller
     private function restrictedDetail(Request $request, Period $period, array $sections, callable $filter): JsonResponse
     {
         $this->ensureMonthly($period);
+        $scope = $this->scope($request);
+        $this->authorizeScope($request, $scope);
         try {
-            $d = $this->resolver->unredacted($period, $this->scope($request), $this->versionParam($request));
+            $d = $this->resolver->unredacted($period, $scope, $this->versionParam($request));
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -391,11 +450,41 @@ class EstadoResultadosController extends Controller
             $this->abilities->can($request->user(), 'ver_dg'),
         );
 
+        // Bitácora de consulta de detalle sensible (nómina / Dirección General).
+        Log::info('estado_resultados.detalle_restringido', [
+            'period_id' => $period->id, 'scope' => $scope, 'sections' => $sections,
+            'user_id' => $request->user()?->id, 'version' => $d['meta']['report']['version'] ?? null, 'ip' => $request->ip(),
+        ]);
+
         return response()->json([
-            'sections' => array_values(array_filter($d['statement'], fn ($b) => ($b['type'] ?? null) === 'section' && in_array($b['key'], $sections, true))),
+            'sections' => $this->restrictedSections($d['statement'], $sections),
             'movements' => array_values(array_filter($d['movements'], $filter)),
             'report' => $d['meta']['report'],
         ]);
+    }
+
+    /**
+     * Secciones restringidas: en el modelo de EBITDA único nómina y DG son categorías de la
+     * sección «opex» (se devuelven con la forma de una sección: key, title, lines, total).
+     */
+    private function restrictedSections(array $statement, array $keys): array
+    {
+        $out = [];
+        foreach ($statement as $b) {
+            if (($b['type'] ?? null) !== 'section') {
+                continue;
+            }
+            if (in_array($b['key'], $keys, true)) {
+                $out[] = $b;
+            }
+            foreach ((array) ($b['categories'] ?? []) as $c) {
+                if (in_array($c['key'] ?? null, $keys, true)) {
+                    $out[] = ['type' => 'section', 'title' => $c['label'], 'parent' => $b['key']] + $c;
+                }
+            }
+        }
+
+        return $out;
     }
 
     private function itemsByFingerprint(Request $request, Period $period, array $fingerprints, bool $withSuggestion = false): array
@@ -441,6 +530,52 @@ class EstadoResultadosController extends Controller
         $scope = trim((string) $request->query('alcance', $request->input('alcance', EstadoResultadosDatasetBuilder::CONSOLIDADO)));
 
         return $scope === '' ? EstadoResultadosDatasetBuilder::CONSOLIDADO : mb_substr($scope, 0, 80);
+    }
+
+    /**
+     * Alcance por sucursal del usuario (DataScopeService): el CONSOLIDADO agrega todas las
+     * sucursales → sólo alcance general; una sucursal → debe estar entre las autorizadas.
+     */
+    private function authorizeScope(Request $request, string $scope): void
+    {
+        $user = $request->user();
+        if ($user === null) {
+            abort(403, 'Inicia sesión para consultar el Estado de Resultados.');
+        }
+        if ($scope === EstadoResultadosDatasetBuilder::CONSOLIDADO) {
+            $this->dataScope->requireGeneral($user, 'El Estado de Resultados consolidado');
+
+            return;
+        }
+        if (! $this->dataScope->allowsBranchName($user, $scope)) {
+            abort(403, 'No tienes acceso al Estado de Resultados de la sucursal '.$scope.'. Tu alcance autorizado: '.$this->dataScope->label($user).'. '
+                .'Si necesitas consultarla, pide a un administrador que amplíe tu alcance en Usuarios.');
+        }
+    }
+
+    /** @param list<array{key:string,label:string}> $scopes */
+    private function visibleScopes(Request $request, array $scopes): array
+    {
+        $user = $request->user();
+        if ($user === null || $this->dataScope->isGeneral($user)) {
+            return $scopes;
+        }
+
+        return array_values(array_filter($scopes, fn ($s) => $s['key'] !== EstadoResultadosDatasetBuilder::CONSOLIDADO && $this->dataScope->allowsBranchName($user, $s['key'])));
+    }
+
+    private function initialScope(Request $request): string
+    {
+        $requested = trim((string) $request->string('alcance'));
+        $user = $request->user();
+        if ($user === null || $this->dataScope->isGeneral($user)) {
+            return $requested !== '' ? $requested : EstadoResultadosDatasetBuilder::CONSOLIDADO;
+        }
+        if ($requested !== '' && $requested !== EstadoResultadosDatasetBuilder::CONSOLIDADO && $this->dataScope->allowsBranchName($user, $requested)) {
+            return $requested;
+        }
+
+        return (string) ($this->dataScope->allowedBranchNames($user)[0] ?? EstadoResultadosDatasetBuilder::CONSOLIDADO);
     }
 
     private function validScope(Period $period, string $scope): void

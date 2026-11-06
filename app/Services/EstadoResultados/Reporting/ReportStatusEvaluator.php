@@ -6,15 +6,44 @@ namespace App\Services\EstadoResultados\Reporting;
  * Deriva el estado EN VIVO de un dataset (no consulta la BD: sólo lee el dataset
  * canónico, así web/Excel/PDF y la aprobación llegan siempre al mismo veredicto).
  *
- *   pendiente_conciliacion → hay movimientos pendientes de clasificar o el procesamiento no está al día.
- *   borrador               → no hay pendientes, pero falla una validación o falta un dato obligatorio.
- *   listo_revision         → sin pendientes, todas las validaciones en $0.00 y sin datos obligatorios faltantes.
+ *   pendiente_conciliacion → hay movimientos pendientes, el procesamiento no está al día,
+ *                            o hay diferencias de conciliación abiertas.
+ *   borrador               → falla una validación, falta un dato obligatorio o el estado de
+ *                            una fuente no es satisfactorio.
+ *   listo_revision         → TODO lo anterior en verde.
  *
- * Datos obligatorios: ERP de gastos, nómina (NOI), los dos estados de cuenta y los
- * ajustes que afectan el resultado (un "sin información" nunca se asume $0).
+ * Aprobación por LISTA BLANCA (fase 2.1): sólo los estados explícitamente satisfactorios
+ * permiten aprobar. Un estado nulo, desconocido, fallido, incompleto o desactualizado
+ * BLOQUEA con un motivo exacto (nunca se aprueba "porque no se encontró un error").
+ *
+ *   fuente                        estado(s) satisfactorio(s)
+ *   sources.radiografia.status    procesado (consolidado de Radiografía vigente)
+ *   sources.erp.status            procesado
+ *   sources.nomina.status         procesado
+ *   sources.cuentas[*].status     procesado (las DOS cuentas, cada una con su carga)
+ *   sources.procesamiento.status  procesado · last_run.status = ok · sin stale_erp / unprocessed
+ *   validation.status             ok
+ *   validation.integrity.status   ok
+ *   validation.unresolved[*]      ninguna con blocking = true
+ *   checks[*].ok                  true
+ *   avisos de carga               ninguno bloqueante (sources.cuentas[*].upload.blocking_warnings)
+ *   ajustes (completeness)        ninguno «sin información»
  */
 class ReportStatusEvaluator
 {
+    public const SATISFACTORY_SOURCE = 'procesado';
+
+    public const SATISFACTORY_RUN = 'ok';
+
+    public const SATISFACTORY_VALIDATION = 'ok';
+
+    private const SOURCE_LABELS = [
+        'radiografia' => 'Radiografía del periodo',
+        'erp' => 'ERP de gastos',
+        'nomina' => 'Nómina (NOI)',
+        'procesamiento' => 'Conciliación y clasificación',
+    ];
+
     /**
      * @return array{status:string, status_label:string, preliminary:bool, preliminary_reasons:list<string>,
      *               blockers:list<array{code:string,message:string}>, pending:array{count:int,amount:string},
@@ -22,63 +51,149 @@ class ReportStatusEvaluator
      */
     public function evaluate(array $d): array
     {
-        $blockers = [];
+        $reconciliation = [];   // → pendiente_conciliacion
+        $other = [];            // → borrador
+        $add = function (array &$list, string $code, string $message) {
+            $list[] = ['code' => $code, 'message' => $message];
+        };
+
+        // ── Pendientes de clasificar ──────────────────────────────────────
         $pending = [
             'count' => (int) ($d['conciliation']['pendientes']['count'] ?? 0),
             'amount' => (string) ($d['conciliation']['pendientes']['amount'] ?? '0.00'),
         ];
         if ($pending['count'] > 0) {
-            $blockers[] = ['code' => 'pendientes', 'message' => $pending['count'].' movimiento(s) por $'.number_format((float) $pending['amount'], 2).' pendientes de clasificar: no suman al resultado hasta revisarlos.'];
+            $add($reconciliation, 'pendientes', $pending['count'].' movimiento(s) por $'.number_format((float) $pending['amount'], 2).' pendientes de clasificar: no suman al resultado hasta revisarlos.');
         }
 
-        $proc = (array) ($d['sources']['procesamiento'] ?? []);
-        if (! empty($proc['unprocessed'])) {
-            $blockers[] = ['code' => 'procesamiento', 'message' => 'Hay movimientos cargados sin procesar: presiona «Procesar conciliación».'];
+        // ── Procesamiento (lista blanca) ──────────────────────────────────
+        $sources = is_array($d['sources'] ?? null) ? $d['sources'] : [];
+        $proc = is_array($sources['procesamiento'] ?? null) ? $sources['procesamiento'] : null;
+        if ($proc === null) {
+            $add($reconciliation, 'procesamiento', 'No hay información del procesamiento de la conciliación: no se puede aprobar.');
+        } else {
+            if (! empty($proc['unprocessed'])) {
+                $add($reconciliation, 'procesamiento', 'Hay movimientos cargados sin procesar: presiona «Procesar conciliación».');
+            }
+            if (! empty($proc['stale_erp'])) {
+                $add($reconciliation, 'procesamiento', 'El ERP de gastos cambió después del último procesamiento: vuelve a procesar la conciliación.');
+            }
+            $runStatus = $proc['last_run']['status'] ?? null;
+            $noBank = ($proc['status'] ?? null) === 'pendiente'; // sin estados de cuenta: lo reporta «datos faltantes»
+            if ($runStatus === null && $noBank) {
+                // nada que procesar todavía
+            } elseif ($runStatus === null) {
+                $add($reconciliation, 'procesamiento', 'La conciliación nunca se ha procesado para este periodo: presiona «Procesar conciliación».');
+            } elseif ($runStatus === 'error') {
+                $add($reconciliation, 'procesamiento', 'El último procesamiento terminó con error: vuelve a procesar.');
+            } elseif ($runStatus === 'en_proceso') {
+                $add($reconciliation, 'procesamiento', 'Hay un procesamiento en curso: espera a que termine.');
+            } elseif ($runStatus !== self::SATISFACTORY_RUN) {
+                $add($reconciliation, 'procesamiento', 'El último procesamiento tiene un estado no reconocido («'.$this->str($runStatus).'»): vuelve a procesar.');
+            }
+            $procStatus = $proc['status'] ?? null;
+            // Estado no satisfactorio sin un motivo más específico ya registrado (p. ej. nulo o desconocido).
+            if (! $noBank && $procStatus !== self::SATISFACTORY_SOURCE && ($reconciliation === [] || ! in_array($procStatus, ['cargado', 'con_incidencias', 'pendiente'], true))) {
+                $add($reconciliation, 'procesamiento', $this->sourceMessage('procesamiento', $procStatus));
+            }
         }
-        if (! empty($proc['stale_erp'])) {
-            $blockers[] = ['code' => 'procesamiento', 'message' => 'El ERP de gastos cambió después del último procesamiento: vuelve a procesar la conciliación.'];
-        }
-        if (($proc['last_run']['status'] ?? null) === 'error') {
-            $blockers[] = ['code' => 'procesamiento', 'message' => 'El último procesamiento terminó con error: vuelve a procesar.'];
-        }
-        $reconciliationOpen = $blockers !== [];
 
+        // ── Diferencias de conciliación abiertas (validation.unresolved) ──
+        foreach ((array) ($d['validation']['unresolved'] ?? []) as $u) {
+            if (! is_array($u) || in_array($u['key'] ?? null, ['pendientes'], true) || str_starts_with((string) ($u['key'] ?? ''), 'control_')) {
+                continue; // pendientes y validaciones fallidas se reportan en su propio bloqueo
+            }
+            // Sin el campo `blocking` (datasets anteriores) se asume que BLOQUEA.
+            if (($u['blocking'] ?? true) !== false) {
+                $count = (int) ($u['open_count'] ?? $u['count'] ?? 0);
+                $amount = (string) ($u['open_amount'] ?? $u['amount'] ?? '0.00');
+                $add($reconciliation, 'diferencias', 'Diferencia de conciliación sin resolver: '.$this->str($u['label'] ?? $u['key'] ?? 'sin descripción').' ('.$count.' partida(s), $'.number_format((float) $amount, 2).').');
+            }
+        }
+        $reconciliationOpen = $reconciliation !== [];
+
+        // ── Validaciones matemáticas ───────────────────────────────────────
         $failed = [];
         foreach ((array) ($d['checks'] ?? []) as $c) {
-            if (! ($c['ok'] ?? false)) {
-                $failed[] = ['key' => (string) $c['key'], 'label' => (string) $c['label'], 'difference' => (string) ($c['difference'] ?? '')];
+            if (($c['ok'] ?? null) !== true) {
+                $failed[] = ['key' => (string) ($c['key'] ?? '?'), 'label' => (string) ($c['label'] ?? $c['key'] ?? 'Validación'), 'difference' => (string) ($c['difference'] ?? '')];
             }
         }
         foreach ($failed as $f) {
-            $blockers[] = ['code' => 'validaciones', 'message' => 'Validación no cuadra: '.$f['label'].' (diferencia $'.$f['difference'].').'];
+            $add($other, 'validaciones', 'Validación no cuadra: '.$f['label'].' (diferencia $'.$f['difference'].').');
+        }
+        if (! isset($d['checks']) || ! is_array($d['checks']) || $d['checks'] === []) {
+            $add($other, 'validaciones', 'El dataset no trae validaciones: no se puede aprobar.');
+        }
+        $vStatus = $d['validation']['status'] ?? null;
+        if ($vStatus !== self::SATISFACTORY_VALIDATION && ! ($vStatus === 'con_pendientes' && $reconciliationOpen)) {
+            $add($other, 'validaciones', match ($vStatus) {
+                null => 'El dataset no trae el resultado de la validación financiera: no se puede aprobar.',
+                'con_diferencias' => 'La validación financiera tiene diferencias (partición, importación o controles): revísalas.',
+                'con_pendientes' => 'La validación financiera tiene partidas sin resolver.',
+                default => 'La validación financiera tiene un estado no reconocido («'.$this->str($vStatus).'»).',
+            });
+        }
+        $integrity = $d['validation']['integrity']['status'] ?? null;
+        if ($integrity !== self::SATISFACTORY_VALIDATION) {
+            $add($other, 'integridad', $integrity === null
+                ? 'No hay información de integridad de las fuentes: no se puede aprobar.'
+                : ($integrity === 'con_incidencias'
+                    ? 'La integridad de las fuentes tiene incidencias (control de archivo, importación o ERP desactualizado).'
+                    : 'La integridad de las fuentes tiene un estado no reconocido («'.$this->str($integrity).'»).'));
         }
 
+        // ── Fuentes obligatorias (lista blanca) ────────────────────────────
         $missing = [];
-        $sources = (array) ($d['sources'] ?? []);
-        if (($sources['erp']['status'] ?? null) === 'pendiente') {
-            $missing[] = 'Falta el ERP de gastos del periodo.';
+        foreach (['radiografia', 'erp', 'nomina'] as $key) {
+            $status = $sources[$key]['status'] ?? null;
+            if ($status === 'pendiente') {
+                $missing[] = match ($key) {
+                    'erp' => 'Falta el ERP de gastos del periodo.',
+                    'nomina' => 'Falta la nómina (NOI) del periodo.',
+                    default => 'Falta la Radiografía del periodo.',
+                };
+            } elseif ($status !== self::SATISFACTORY_SOURCE) {
+                $add($other, 'fuentes', $this->sourceMessage($key, $status));
+            }
         }
-        if (($sources['nomina']['status'] ?? null) === 'pendiente') {
-            $missing[] = 'Falta la nómina (NOI) del periodo.';
-        }
-        foreach ((array) ($sources['cuentas'] ?? []) as $cta) {
-            if (($cta['status'] ?? null) === 'pendiente') {
-                $missing[] = 'Falta el estado de cuenta: '.$cta['label'].'.';
+        $cuentas = $sources['cuentas'] ?? null;
+        if (! is_array($cuentas) || $cuentas === []) {
+            $missing[] = 'No hay información de los estados de cuenta del periodo.';
+        } else {
+            foreach ($cuentas as $cta) {
+                $label = $this->str($cta['label'] ?? $cta['key'] ?? 'cuenta');
+                $status = $cta['status'] ?? null;
+                if ($status === 'pendiente') {
+                    $missing[] = 'Falta el estado de cuenta: '.$label.'.';
+                } elseif ($status === 'cargado') {
+                    $add($reconciliation, 'procesamiento', 'El estado de cuenta «'.$label.'» está cargado pero sin procesar.');
+                } elseif ($status === 'con_incidencias') {
+                    $add($other, 'fuentes', 'El estado de cuenta «'.$label.'» tiene incidencias (control que no cuadra o movimientos por revisar).');
+                } elseif ($status !== self::SATISFACTORY_SOURCE) {
+                    $add($other, 'fuentes', 'El estado de cuenta «'.$label.'» tiene un estado no reconocido («'.$this->str($status).'»).');
+                }
+                foreach ((array) ($cta['upload']['blocking_warnings'] ?? []) as $w) {
+                    $add($other, 'avisos_carga', 'Aviso bloqueante en «'.$label.'»: '.$this->str($w['message'] ?? $w['code'] ?? 'aviso').'');
+                }
             }
         }
         $adjMissing = (array) ($d['completeness']['utilidad_neta']['missing'] ?? []);
         if ($adjMissing !== []) {
             $missing[] = 'Ajustes sin información (no se asumen $0): '.implode(', ', $adjMissing).'.';
+        } elseif (! isset($d['completeness']['utilidad_neta'])) {
+            $missing[] = 'El dataset no trae la completitud de los ajustes contables.';
         }
         foreach ($missing as $msg) {
-            $blockers[] = ['code' => 'datos_faltantes', 'message' => $msg];
+            $add($other, 'datos_faltantes', $msg);
         }
 
         $status = match (true) {
-            $reconciliationOpen => ReportStatus::PENDIENTE_CONCILIACION,
-            $failed !== [] || $missing !== [] => ReportStatus::BORRADOR,
+            $reconciliation !== [] => ReportStatus::PENDIENTE_CONCILIACION,
+            $other !== [] => ReportStatus::BORRADOR,
             default => ReportStatus::LISTO_REVISION,
         };
+        $blockers = array_merge($reconciliation, $other);
 
         return [
             'status' => $status,
@@ -90,5 +205,23 @@ class ReportStatusEvaluator
             'failed_checks' => $failed,
             'missing' => $missing,
         ];
+    }
+
+    private function sourceMessage(string $key, mixed $status): string
+    {
+        $label = self::SOURCE_LABELS[$key] ?? $key;
+
+        return match (true) {
+            $status === null => $label.': sin estado (dato faltante o desconocido): no se puede aprobar.',
+            $status === 'con_incidencias' => $label.': tiene incidencias'.($key === 'radiografia' ? ' (no hay un consolidado de Radiografía vigente para el periodo)' : ($key === 'erp' ? ' (cambió después del último procesamiento)' : '')).'.',
+            $status === 'cargado' => $label.': cargado pero sin procesar.',
+            $status === 'pendiente' => $label.': pendiente.',
+            default => $label.': estado no reconocido («'.$this->str($status).'»): no se puede aprobar.',
+        };
+    }
+
+    private function str(mixed $v): string
+    {
+        return is_scalar($v) ? (string) $v : json_encode($v, JSON_UNESCAPED_UNICODE);
     }
 }

@@ -17,6 +17,7 @@ use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconcil
 use App\Services\EstadoResultados\Reconciliation\NoiPayrollRepository;
 use App\Services\EstadoResultados\Support\Dimensions;
 use App\Services\EstadoResultados\Support\Money;
+use App\Services\EstadoResultados\Support\RadiographySummary;
 use App\Services\EstadoResultados\Support\Treatment as T;
 use App\Services\Radiography\BranchRadiographyCalculator as Radio;
 use Brick\Math\BigDecimal;
@@ -49,6 +50,17 @@ class EstadoResultadosDatasetBuilder
 {
     public const CONSOLIDADO = 'CONSOLIDADO';
 
+    /**
+     * Modelo financiero del dataset (meta.model). Un snapshot aprobado SIN meta.model es del
+     * modelo anterior de 3 EBITDA (results.ebitda_sucursales/_corporativo/_final y
+     * resultado_financiero_neto como GASTO neto positivo).
+     */
+    public const MODEL = [
+        'version' => '2026-11-06.ebitda-unico',
+        'steps' => ['ingresos_operativos', 'opex_total', 'ebitda', 'depreciacion_amortizacion', 'ebit', 'resultado_financiero_neto', 'ebt', 'isr', 'utilidad_neta'],
+        'sign' => 'resultado_financiero_neto: gastos negativos, ingresos positivos; EBT = EBIT + resultado financiero neto',
+    ];
+
     private const INCOME_FIELDS = [
         'interes_recuperado' => 'Intereses cobrados',
         'impuesto_recuperado' => 'IVA / impuesto cobrado (criterio gerencial)',
@@ -58,6 +70,11 @@ class EstadoResultadosDatasetBuilder
         'excedente_recuperado' => 'Excedentes recuperados',
         'seguro_crece_reconocido' => 'Seguro CRECE reconocido (30%)',
     ];
+
+    /*
+     * Estado POR CONSTRUCCIÓN: se fija al inicio de cada buildScope() desde el contexto
+     * preparado en prepare(); nunca sobrevive como caché entre llamadas a build().
+     */
 
     /** @var list<string> totales (cargos+abonos) de las cargas activas — para la validación de partición */
     private array $activeUploadTotals = [];
@@ -74,6 +91,9 @@ class EstadoResultadosDatasetBuilder
     /** Firma del ERP vigente (para detectar procesamiento desactualizado). */
     private ?string $currentErpSignature = null;
 
+    /** Última corrida OK (validación de integridad). */
+    private ?EstadoResultadosRun $lastOkRun = null;
+
     public function __construct(
         private readonly RadiographyBaseProvider $base,
         private readonly ErpExpenseRepository $erp,
@@ -86,24 +106,104 @@ class EstadoResultadosDatasetBuilder
     /** Alcances disponibles: consolidado + sucursales operativas de Radiografía. */
     public function scopes(Period $period): array
     {
+        return $this->scopesFromBase($this->base->for($period));
+    }
+
+    public function build(Period $period, string $scope = self::CONSOLIDADO): array
+    {
+        $ctx = $this->prepare($period);
+        if ($scope !== self::CONSOLIDADO && ! isset($ctx['base']['branches'][$scope])) {
+            throw new \InvalidArgumentException('Alcance no válido: '.$scope);
+        }
+
+        return $this->buildScope($ctx, $scope);
+    }
+
+    /**
+     * Construye VARIOS alcances con UNA sola lectura de insumos (Radiografía, ERP, NOI,
+     * movimientos, vínculos, clasificaciones): todos los datasets salen de la MISMA foto
+     * de datos y la parte independiente del alcance se calcula una sola vez. El callback
+     * recibe cada dataset y puede soltarlo (no se acumulan en memoria).
+     *
+     * @param  list<string>|null  $scopeKeys  null = todos los alcances del periodo
+     * @param  callable(string, array, array): void  $each  ($scopeKey, $dataset, $scope)
+     * @return list<array{key:string,label:string}> alcances construidos, en orden
+     */
+    public function buildEach(Period $period, ?array $scopeKeys, callable $each): array
+    {
+        $ctx = $this->prepare($period);
+        $scopes = $this->scopesFromBase($ctx['base']);
+        if ($scopeKeys !== null) {
+            $scopes = array_values(array_filter($scopes, fn ($s) => in_array($s['key'], $scopeKeys, true)));
+        }
+        foreach ($scopes as $s) {
+            $each($s['key'], $this->buildScope($ctx, $s['key']), $s);
+        }
+
+        return $scopes;
+    }
+
+    /**
+     * Reutiliza la base de Radiografía dentro de $fn (una foto de datos por operación:
+     * p. ej. alcances + dataset de una misma petición). Fuera de una sesión cada build()
+     * recalcula todo: no hay caché que pueda quedar viejo entre llamadas.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $fn
+     * @return T
+     */
+    public function session(callable $fn): mixed
+    {
+        return $this->base->session($fn);
+    }
+
+    private function scopesFromBase(array $base): array
+    {
         $out = [['key' => self::CONSOLIDADO, 'label' => 'Consolidado MR LANA']];
-        foreach (array_keys($this->base->for($period)['branches']) as $name) {
+        foreach (array_keys($base['branches']) as $name) {
             $out[] = ['key' => $name, 'label' => 'Sucursal '.$name];
         }
 
         return $out;
     }
 
-    public function build(Period $period, string $scope = self::CONSOLIDADO): array
+    /**
+     * Lectura de insumos + cálculos que NO dependen del alcance (una vez por foto de datos).
+     *
+     * @return array<string,mixed>
+     */
+    private function prepare(Period $period): array
     {
         $base = $this->base->for($period);
+        $ctx = $this->items($period, $base['data_ids']);
+        $ctx['base'] = $base;
+        $ctx['period'] = $period;
+        $ctx['public_items'] = array_map(fn ($i) => $this->publicItem($i), $ctx['items']);
+        $ctx['conciliation'] = $this->conciliationSummary($ctx['items']);
+        $ctx['sources_shared'] = $this->sourcesShared($period, $base, $ctx['current_erp_signature']);
+
+        return $ctx;
+    }
+
+    private function buildScope(array $ctx, string $scope): array
+    {
+        $period = $ctx['period'];
+        $base = $ctx['base'];
+        $this->activeUploadTotals = $ctx['active_upload_totals'];
+        $this->activeUploads = $ctx['active_uploads'];
+        $this->noiData = $ctx['noi'];
+        $this->linkedApplied = $ctx['linked_applied'];
+        $this->currentErpSignature = $ctx['current_erp_signature'];
+        $this->lastOkRun = $ctx['sources_shared']['last_ok_run'];
+
         $consolidated = $scope === self::CONSOLIDADO;
         if (! $consolidated && ! isset($base['branches'][$scope])) {
             throw new \InvalidArgumentException('Alcance no válido: '.$scope);
         }
         $row = $consolidated ? $base['global'] : $base['branches'][$scope];
 
-        $items = $this->items($period, $base['data_ids']);
+        $items = $ctx['items'];
         $scoped = array_values(array_filter($items, fn ($i) => $this->inScope($i, $scope)));
         $adj = $this->adjustments->forPeriod($period->id, $scope);
 
@@ -140,9 +240,12 @@ class EstadoResultadosDatasetBuilder
         }
         $nominaSuc = $nominaRadio->plus($nominaComp);
 
+        // Control (NO es un nivel del ER): EBITDA de sucursales = Ingresos − OPEX y nómina de sucursales.
+        // Se concilia contra Radiografía a $0.00 en las validaciones.
         $ebitdaSuc = $ingresos->minus($opexSuc)->minus($nominaSuc);
 
-        // ── 04/05 Corporativo y 06 DG (sólo consolidado) ───────────────
+        // ── 02 OPEX: Corporativo y Dirección General son CATEGORÍAS de OPEX (sólo consolidado;
+        //    nunca se asignan a una sucursal) ─────────────────────────────────────────────
         $corpLines = [];
         $nomCorpLines = [];
         $dgLines = [];
@@ -153,25 +256,26 @@ class EstadoResultadosDatasetBuilder
             foreach ($this->groupBySourceCategory($scoped, [T::NOMINA_CORPORATIVA]) as $key => [$label, $amount, $source]) {
                 $nomCorpLines[] = $this->line('nomcorp_'.md5($key), $label, $amount, $source);
             }
-            $dgLines[] = $this->line('dg_operativo', 'Gastos DG operativos', $this->sumTreatment($scoped, [T::DG_OPERATIVO]), 'Clasificación DG');
-            $dgLines[] = $this->line('dg_remuneracion', 'Remuneración laboral DG', $this->sumTreatment($scoped, [T::DG_REMUNERACION]), 'Clasificación DG');
+            $dgLines[] = $this->line('dg_operativo', 'Gastos operativos de Dirección General', $this->sumTreatment($scoped, [T::DG_OPERATIVO]), 'Clasificación DG');
+            $dgLines[] = $this->line('dg_remuneracion', 'Remuneración laboral de Dirección General', $this->sumTreatment($scoped, [T::DG_REMUNERACION]), 'Clasificación DG');
         }
         $opexCorp = $this->sumLines($corpLines);
         $nominaCorp = $this->sumLines($nomCorpLines);
         $dg = $this->sumLines($dgLines);
-        $ebitdaCorp = $ebitdaSuc->minus($opexCorp)->minus($nominaCorp);
-        $ebitdaFinal = $ebitdaCorp->minus($dg);
-        $ebitdaBase = $consolidated ? $ebitdaFinal : $ebitdaSuc;
+        $opexTotal = $opexSuc->plus($nominaSuc)->plus($opexCorp)->plus($nominaCorp)->plus($dg);
 
-        // ── 07 D&A ─────────────────────────────────────────────────────
+        // ── 03 EBITDA (único) ──────────────────────────────────────────
+        $ebitda = $ingresos->minus($opexTotal);
+
+        // ── 04 D&A · 05 EBIT ───────────────────────────────────────────
         $daLines = [
             $this->adjLine($adj['depreciacion']),
             $this->adjLine($adj['amortizacion']),
         ];
         $da = $this->sumLines($daLines);
-        $ebit = $ebitdaBase->minus($da);
+        $ebit = $ebitda->minus($da);
 
-        // ── 08 Resultado financiero ────────────────────────────────────
+        // ── 06 Resultado financiero y no operativo NETO (gastos −, ingresos +) · 07 EBT ──
         $finBancos = $this->sumTreatment($scoped, [T::GASTO_FINANCIERO]);
         $ingNoOpBancos = $this->sumTreatment($scoped, [T::INGRESO_NO_OPERATIVO]);
         $finExpense = [
@@ -182,28 +286,35 @@ class EstadoResultadosDatasetBuilder
             $this->line('fin_bancos', 'Gastos financieros clasificados desde bancos', $finBancos, 'Estados de cuenta · clasificación'),
         ];
         $finIncome = [
-            $this->adjLine($adj['ingresos_financieros'], '(+) '),
-            $this->line('ing_no_operativo_bancos', '(+) Ingresos no operativos clasificados desde bancos', $ingNoOpBancos, 'Estados de cuenta · clasificación'),
+            $this->adjLine($adj['ingresos_financieros']),
+            $this->line('ing_no_operativo_bancos', 'Ingresos no operativos clasificados desde bancos', $ingNoOpBancos, 'Estados de cuenta · clasificación'),
         ];
         $finGastos = $this->sumLines($finExpense);
         $finIngresos = $this->sumLines($finIncome);
-        $finNeto = $finGastos->minus($finIngresos);
-        $ebt = $ebit->minus($finNeto);
+        $finNeto = $finIngresos->minus($finGastos);
+        $ebt = $ebit->plus($finNeto);
 
-        // ── 09 ISR ─────────────────────────────────────────────────────
+        // ── 08 ISR · 09 Utilidad neta (sin dato de ISR → PENDIENTE: nunca se asume $0) ──
         $isrLines = [$this->adjLine($adj['isr'])];
-        $isr = $this->sumLines($isrLines);
-        $utilidad = $ebt->minus($isr);
+        $isrPending = $adj['isr']['state'] === AdjustmentService::SIN_INFORMACION;
+        $isr = $isrPending ? null : $this->sumLines($isrLines);
+        $utilidad = $isr === null ? null : $ebt->minus($isr);
 
         $completeness = $this->completeness($adj);
 
         $results = [
+            'ingresos_operativos' => $ingresos, 'opex_total' => $opexTotal, 'ebitda' => $ebitda,
+            'depreciacion_amortizacion' => $da, 'ebit' => $ebit, 'resultado_financiero_neto' => $finNeto,
+            'ebt' => $ebt, 'isr' => $isr, 'utilidad_neta' => $utilidad,
+        ];
+        // Claves del modelo anterior (3 EBITDA) SÓLO como controles/compatibilidad: no son niveles del ER.
+        $ebitdaCorp = $ebitdaSuc->minus($opexCorp)->minus($nominaCorp);
+        $controls = [
             'ingresos' => $ingresos, 'opex_sucursales' => $opexSuc, 'nomina_sucursales' => $nominaSuc,
             'ebitda_sucursales' => $ebitdaSuc, 'opex_corporativo' => $opexCorp, 'nomina_corporativa' => $nominaCorp,
-            'ebitda_corporativo' => $ebitdaCorp, 'dg' => $dg, 'ebitda_final' => $ebitdaFinal,
-            'depreciacion_amortizacion' => $da, 'ebit' => $ebit, 'gastos_financieros' => $finGastos,
-            'ingresos_financieros' => $finIngresos, 'resultado_financiero_neto' => $finNeto, 'ebt' => $ebt,
-            'isr' => $isr, 'utilidad_neta' => $utilidad,
+            'ebitda_corporativo' => $ebitdaCorp, 'dg' => $dg, 'ebitda_final' => $ebitdaCorp->minus($dg),
+            'gastos_financieros' => $finGastos, 'ingresos_financieros' => $finIngresos,
+            'resultado_financiero_neto_gasto' => $finGastos->minus($finIngresos),
         ];
 
         // Importe que cada categoría financiera EXCLUSIVA recibe desde movimientos (banco/ERP).
@@ -212,15 +323,23 @@ class EstadoResultadosDatasetBuilder
             'nomina_corporativa' => $nominaCorp, 'opex_dg' => $dg, 'financiero' => $finBancos->plus($ingNoOpBancos),
         ];
 
-        $statement = $this->statement($consolidated, $incomeLines, $opexLines, $nominaLines, $corpLines, $nomCorpLines, $dgLines, $daLines, $finExpense, $finIncome, $isrLines, $results, $completeness);
+        $opexCategories = [
+            ['key' => 'opex_sucursales', 'label' => 'Gastos operativos de sucursales', 'lines' => $opexLines, 'total' => $opexSuc, 'applies' => true],
+            ['key' => 'nomina_sucursales', 'label' => 'Nómina y capital humano de sucursales', 'lines' => $nominaLines, 'total' => $nominaSuc, 'applies' => true],
+            ['key' => 'opex_corporativo', 'label' => 'Gastos corporativos', 'lines' => $corpLines, 'total' => $opexCorp, 'applies' => $consolidated],
+            ['key' => 'nomina_corporativa', 'label' => 'Nómina corporativa', 'lines' => $nomCorpLines, 'total' => $nominaCorp, 'applies' => $consolidated],
+            ['key' => 'dg', 'label' => 'Dirección General (gastos operativos y remuneración)', 'lines' => $dgLines, 'total' => $dg, 'applies' => $consolidated],
+        ];
+        $statement = $this->statement($consolidated, $incomeLines, $opexCategories, $daLines, $finExpense, $finIncome, $isrLines, $results, $completeness);
 
         $radiografiaEbitda = Money::of(Radio::ebitdaFinalFor($row));
         $reconciliation = $this->radiographyReconciliation($row, $base, $consolidated, $ingresos, $opexRadio, $nominaRadio, $opexComp, $nominaComp, $ebitdaSuc, $radiografiaEbitda);
 
-        $conciliation = $this->conciliationSummary($items, $scoped, $consolidated);
-        $checks = $this->checks($row, $incomeLines, $opexLines, $nominaLines, $statement, $results, $items, $scoped, $ingresos, $opexRadio, $nominaRadio, $consolidated, $categoryTotals);
+        $conciliation = $ctx['conciliation']; // no depende del alcance
+        $checks = $this->checks($row, $incomeLines, $statement, $results, $controls, $items, $scoped, $ingresos, $opexRadio, $nominaRadio, $radiografiaEbitda, $consolidated, $categoryTotals);
         $validation = $this->validation($period, $items, $scoped, $checks, $reconciliation, $consolidated);
 
+        $str = fn ($v) => $v === null ? null : Money::str2($v);
         $dataset = [
             'meta' => [
                 'period' => [
@@ -230,24 +349,31 @@ class EstadoResultadosDatasetBuilder
                 'scope' => ['key' => $scope, 'label' => $consolidated ? 'Consolidado MR LANA' : 'Sucursal '.$scope, 'consolidated' => $consolidated],
                 'currency' => 'MXN',
                 'rules_version' => (string) config('estado_resultados.rules_version'),
+                'model' => self::MODEL,
                 'tolerance_days' => (int) config('estado_resultados.conciliacion.tolerancia_dias', 3),
                 'recognition' => Dimensions::criterion(),
                 'dimensions_version' => Dimensions::VERSION,
                 'generated_at' => now('America/Mexico_City')->format('d/m/Y H:i'),
             ],
-            'results' => array_map(fn ($v) => Money::str2($v), $results),
-            'margins' => $this->margins($results, $consolidated),
+            'results' => array_map($str, $results),
+            'controls' => array_map($str, $controls),
+            // + claves del modelo anterior SÓLO por compatibilidad (exportes/UI en migración).
+            'margins' => $this->margins($results) + [
+                'ebitda_sucursales' => Money::pct($controls['ebitda_sucursales'], $ingresos),
+                'ebitda_corporativo' => $consolidated ? Money::pct($controls['ebitda_corporativo'], $ingresos) : null,
+                'ebitda_final' => $consolidated ? Money::pct($controls['ebitda_final'], $ingresos) : null,
+            ],
             'completeness' => $completeness,
             'statement' => $statement,
-            'waterfall' => $this->waterfall($results, $consolidated),
+            'waterfall' => $this->waterfall($results, $controls, $consolidated),
             'radiography_reconciliation' => $reconciliation,
             'checks' => $checks,
             'conciliation' => $conciliation,
-            'movements' => array_map(fn ($i) => $this->publicItem($i), $items),
+            'movements' => $ctx['public_items'],
             'outside' => $this->outside($items, $adj),
-            'indicators' => $this->indicators($row, $base, $results, $consolidated, $scope),
+            'indicators' => $this->indicators($row, $base, $results, $controls, $consolidated, $scope),
             'adjustments' => array_values($adj),
-            'sources' => $this->sources($period, $base, $items, $adj),
+            'sources' => $this->sources($ctx['sources_shared'], $items, $adj),
             'treatments' => T::catalog(),
             'reconciliation_labels' => R::LABELS,
             'validation' => $validation,
@@ -262,21 +388,20 @@ class EstadoResultadosDatasetBuilder
     // Items (movimientos bancarios + ERP fuera de Radiografía)
     // ───────────────────────────────────────────────────────────────────
 
-    /** @return list<array<string,mixed>> */
+    /**
+     * @return array{items: list<array<string,mixed>>, noi: array, current_erp_signature: string,
+     *               active_upload_totals: list<string>, active_uploads: list<array>, linked_applied: string}
+     */
     private function items(Period $period, array $dataIds): array
     {
         $overrides = $this->classifications->effectiveOverrides($period->id);
         $erpRows = $this->erp->forDataIds($dataIds);
-        $erpByFp = [];
-        foreach ($erpRows as $e) {
-            $erpByFp[$e['fingerprint']] = $e;
-        }
-        $this->noiData = $this->noi->forDataIds($dataIds);
-        $this->currentErpSignature = ErpExpenseRepository::signature($erpRows);
+        $noiData = $this->noi->forDataIds($dataIds);
+        $currentErpSignature = ErpExpenseRepository::signature($erpRows);
 
         $uploads = EstadoResultadosUpload::query()->active()->where('period_id', $period->id)->orderBy('id')->get()->keyBy('id');
-        $this->activeUploadTotals = $uploads->map(fn ($u) => (string) Money::of($u->total_cargos)->plus(Money::of($u->total_abonos)))->values()->all();
-        $this->activeUploads = $uploads->values()->map(fn ($u) => [
+        $activeUploadTotals = $uploads->map(fn ($u) => (string) Money::of($u->total_cargos)->plus(Money::of($u->total_abonos)))->values()->all();
+        $activeUploads = $uploads->values()->map(fn ($u) => [
             'slot' => $u->account_slot, 'file' => $u->original_name, 'hash' => $u->file_hash, 'control_ok' => $u->control_ok,
             'control_cargos' => $u->control_total_cargos !== null ? Money::str2($u->control_total_cargos) : null,
             'control_abonos' => $u->control_total_abonos !== null ? Money::str2($u->control_total_abonos) : null,
@@ -296,7 +421,7 @@ class EstadoResultadosDatasetBuilder
             : collect();
         $linksByMovement = $links->groupBy('movement_fingerprint');
         $erpLinks = $links->where('link_kind', 'conciliacion')->groupBy('target_fingerprint');
-        $this->linkedApplied = Money::str2(Money::sum($links->where('link_kind', 'conciliacion')->filter(fn ($l) => $movByFp->has($l->movement_fingerprint))->pluck('applied_amount')->all()));
+        $linkedApplied = Money::str2(Money::sum($links->where('link_kind', 'conciliacion')->filter(fn ($l) => $movByFp->has($l->movement_fingerprint))->pluck('applied_amount')->all()));
 
         $recognitionIds = $movements->pluck('recognition_period_id')->filter()->unique()->all();
         $periodCodes = $recognitionIds ? Period::query()->whereIn('id', $recognitionIds)->pluck('code', 'id')->all() : [];
@@ -308,7 +433,8 @@ class EstadoResultadosDatasetBuilder
             $auto = $processed ? (string) $m->auto_treatment : T::PENDIENTE;
             $ov = $overrides[$m->fingerprint] ?? null;
             $treatment = $ov['treatment'] ?? $auto;
-            $erpMatches = (array) ($m->reconciliation_detail['erp'] ?? []);
+            $detail = (array) ($m->reconciliation_detail ?? []); // el cast JSON se decodifica en cada acceso: una sola vez
+            $erpMatches = (array) ($detail['erp'] ?? []);
             $applied = $processed ? Money::str2($m->applied_amount ?? 0) : '0.00';
             $mLinks = $linksByMovement->get($m->fingerprint, collect());
             $conciliacion = $mLinks->where('link_kind', 'conciliacion');
@@ -344,8 +470,8 @@ class EstadoResultadosDatasetBuilder
                 'in_period' => (bool) $m->in_period,
                 'erp' => $erpMatches,
                 'reconciliation_status' => $processed ? $m->reconciliation_status : 'sin_procesar',
-                'reconciliation_message' => $m->reconciliation_detail['message'] ?? null,
-                'reconciliation_delta_days' => $m->reconciliation_detail['delta_days'] ?? null,
+                'reconciliation_message' => $detail['message'] ?? null,
+                'reconciliation_delta_days' => $detail['delta_days'] ?? null,
                 'auto_treatment' => $auto,
                 'suggested_treatment' => $m->suggested_treatment,
                 'rule_code' => $processed ? $m->rule_code : 'sin_procesar',
@@ -383,6 +509,16 @@ class EstadoResultadosDatasetBuilder
             ];
         }
 
+        $legacyErpPayments = [];
+        foreach ($movements as $m) {
+            if ($m->auto_treatment !== T::CONCILIADO_ERP) {
+                continue;
+            }
+            foreach (array_unique(array_column((array) ($m->reconciliation_detail['erp'] ?? []), 'fingerprint')) as $erpFp) {
+                $legacyErpPayments[$erpFp][] = $m; // en el MISMO orden de los movimientos
+            }
+        }
+
         foreach ($erpRows as $e) {
             if ($e['universe'] === 'radiografia') {
                 continue; // ya dentro del EBITDA de sucursales
@@ -391,7 +527,7 @@ class EstadoResultadosDatasetBuilder
             $noiLink = null;
             // ERP + NOI: una requisición de nómina que nombra a un colaborador NOI podría ya estar en Nómina sucursales.
             if ($c['treatment'] === T::NOMINA_CORPORATIVA || str_contains(mb_strtoupper((string) $e['category']), 'NÓMINA') || str_contains(mb_strtoupper((string) $e['category']), 'NOMINA')) {
-                $match = NoiPayrollRepository::match($this->noiData, trim(($e['concept'] ?? '').' '.($e['observations'] ?? '')), true);
+                $match = NoiPayrollRepository::match($noiData, trim(($e['concept'] ?? '').' '.($e['observations'] ?? '')), true);
                 if ($match['status'] !== 'ninguno') {
                     $noiLink = $match['employee'];
                     $c = ['treatment' => T::PENDIENTE, 'suggested' => T::NOMINA_CORPORATIVA, 'rule' => 'erp_nomina_colaborador_noi', 'review' => true,
@@ -403,12 +539,11 @@ class EstadoResultadosDatasetBuilder
             $bankLinks = $erpLinks->get($e['fingerprint'], collect())->filter(fn ($l) => $movByFp->has($l->movement_fingerprint));
             $paid = Money::sum($bankLinks->pluck('applied_amount')->all());
             if ($bankLinks->isEmpty()) {
-                // Compatibilidad: procesamientos previos a la tabla de vínculos.
-                foreach ($movements as $m) {
-                    if ($m->auto_treatment === T::CONCILIADO_ERP && in_array($e['fingerprint'], array_column((array) ($m->reconciliation_detail['erp'] ?? []), 'fingerprint'), true)) {
-                        $paid = $paid->plus(Money::of($m->cargo));
-                        $bankLinks->push((object) ['movement_fingerprint' => $m->fingerprint, 'applied_amount' => $m->cargo, 'link_kind' => 'conciliacion', 'target_type' => 'erp', 'target_fingerprint' => $e['fingerprint'], 'match_type' => '1:1', 'group_key' => null, 'movement_pending' => 0, 'target_pending' => 0, 'delta_days' => null, 'evidence' => []]);
-                    }
+                // Compatibilidad: procesamientos previos a la tabla de vínculos (índice precalculado:
+                // antes se recorrían TODOS los movimientos por cada fila ERP — O(ERP × movimientos)).
+                foreach ($legacyErpPayments[$e['fingerprint']] ?? [] as $m) {
+                    $paid = $paid->plus(Money::of($m->cargo));
+                    $bankLinks->push((object) ['movement_fingerprint' => $m->fingerprint, 'applied_amount' => $m->cargo, 'link_kind' => 'conciliacion', 'target_type' => 'erp', 'target_fingerprint' => $e['fingerprint'], 'match_type' => '1:1', 'group_key' => null, 'movement_pending' => 0, 'target_pending' => 0, 'delta_days' => null, 'evidence' => []]);
                 }
             }
             $erpPending = Money::of($e['amount'])->minus($paid);
@@ -533,7 +668,14 @@ class EstadoResultadosDatasetBuilder
         }
         unset($i);
 
-        return $items;
+        return [
+            'items' => $items,
+            'noi' => $noiData,
+            'current_erp_signature' => $currentErpSignature,
+            'active_upload_totals' => $activeUploadTotals,
+            'active_uploads' => $activeUploads,
+            'linked_applied' => $linkedApplied,
+        ];
     }
 
     private function publicLink(object $l, bool $inverse): array
@@ -716,98 +858,115 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    private function statement(bool $consolidated, array $income, array $opex, array $nomina, array $corp, array $nomCorp, array $dg, array $da, array $finExp, array $finInc, array $isr, array $r, array $completeness): array
+    /**
+     * Estado de Resultados en 9 pasos (modelo aprobado 06-nov-2026, EBITDA único):
+     *   1 Ingresos operativos · 2 OPEX (categorías reales) · 3 EBITDA · 4 D&A · 5 EBIT ·
+     *   6 Resultado financiero y no operativo NETO (gastos −, ingresos +) · 7 EBT · 8 ISR · 9 Utilidad neta.
+     * Cada bloque lleva `step` (1-9). La sección `opex` trae `categories[]` (cada una con
+     * sus líneas y total) y, como `lines`, un renglón por categoría (Σ lines = total).
+     */
+    private function statement(bool $consolidated, array $income, array $opexCategories, array $da, array $finExp, array $finInc, array $isr, array $r, array $completeness): array
     {
-        $base = $r['ingresos'];
+        $base = $r['ingresos_operativos'];
+        $str = fn (?BigDecimal $v) => $v === null ? null : Money::str2($v);
+        $pct = fn (?BigDecimal $v) => $v === null ? null : Money::pct($v, $base);
         $fmt = function (array $lines) use ($base) {
-            return array_map(fn ($l) => [
+            return array_values(array_map(fn ($l) => [
                 'key' => $l['key'], 'label' => $l['label'], 'amount' => Money::str2($l['amount_raw']),
                 'pct' => Money::pct($l['amount_raw'], $base), 'source' => $l['source'], 'hint' => $l['hint'], 'state' => $l['state'],
-            ], $lines);
+            ], $lines));
         };
-        $section = fn (string $key, string $number, string $title, string $kind, array $lines, string $totalLabel, BigDecimal $total, bool $applies = true, ?string $note = null) => [
-            'type' => 'section', 'key' => $key, 'number' => $number, 'title' => $title, 'kind' => $kind,
-            'applies' => $applies, 'note' => $note,
+        $section = fn (string $key, int $step, string $number, string $title, string $kind, array $lines, string $totalLabel, ?BigDecimal $total, ?string $note = null, ?string $state = null) => [
+            'type' => 'section', 'key' => $key, 'step' => $step, 'number' => $number, 'title' => $title, 'kind' => $kind,
+            'applies' => true, 'note' => $note, 'state' => $state,
             'lines' => $fmt($lines),
-            'total' => ['label' => $totalLabel, 'amount' => Money::str2($total), 'pct' => Money::pct($total, $base)],
+            'total' => ['label' => $totalLabel, 'amount' => $str($total), 'pct' => $pct($total)],
         ];
-        $result = fn (string $key, string $label, BigDecimal $amount, string $formula, int $level, ?array $complete = null) => [
-            'type' => 'result', 'key' => $key, 'label' => $label, 'amount' => Money::str2($amount),
-            'pct' => Money::pct($amount, $base), 'formula' => $formula, 'level' => $level,
-            'complete' => $complete['complete'] ?? true, 'missing' => $complete['missing'] ?? [],
+        $result = fn (string $key, int $step, string $label, ?BigDecimal $amount, string $formula, ?array $complete = null, ?string $note = null) => [
+            'type' => 'result', 'key' => $key, 'step' => $step, 'level' => $step, 'label' => $label, 'amount' => $str($amount),
+            'pct' => $pct($amount), 'formula' => $formula, 'note' => $note,
+            'complete' => ($complete['complete'] ?? true) && $amount !== null, 'missing' => $complete['missing'] ?? [],
         ];
-        $na = $consolidated ? null : 'Corporativo y Dirección General sólo se presentan en el consolidado.';
+        $na = $consolidated ? null : 'Corporativo y Dirección General sólo se presentan en el consolidado (nunca se asignan a una sucursal).';
 
-        $blocks = [
-            $section('ingresos', '01', 'INGRESOS OPERATIVOS', 'income', $income, 'TOTAL INGRESOS OPERATIVOS', $r['ingresos']),
-            $section('opex_sucursales', '02', 'OPEX SUCURSALES', 'expense', $opex, 'TOTAL OPEX SUCURSALES', $r['opex_sucursales']),
-            $section('nomina_sucursales', '03', 'NÓMINA Y CAPITAL HUMANO SUCURSALES', 'expense', $nomina, 'TOTAL NÓMINA SUCURSALES', $r['nomina_sucursales']),
-            $result('ebitda_sucursales', 'EBITDA SUCURSALES', $r['ebitda_sucursales'], 'Ingresos − OPEX sucursales − Nómina sucursales', 1),
-            $section('opex_corporativo', '04', 'OPEX CORPORATIVO', 'expense', $corp, 'TOTAL OPEX CORPORATIVO', $r['opex_corporativo'], $consolidated, $na),
-            $section('nomina_corporativa', '05', 'NÓMINA CORPORATIVA', 'expense', $nomCorp, 'TOTAL NÓMINA CORPORATIVA', $r['nomina_corporativa'], $consolidated, $na),
-        ];
-        if ($consolidated) {
-            $blocks[] = $result('ebitda_corporativo', 'EBITDA CORPORATIVO', $r['ebitda_corporativo'], 'EBITDA sucursales − OPEX corporativo − Nómina corporativa', 2);
+        $categories = [];
+        $summaryLines = [];
+        foreach ($opexCategories as $c) {
+            if (! $c['applies']) {
+                continue; // sucursal: Corporativo y DG no existen en su OPEX (nunca se asignan)
+            }
+            $categories[] = [
+                'key' => $c['key'], 'label' => $c['label'], 'applies' => $c['applies'], 'note' => $c['applies'] ? null : $na,
+                'lines' => $fmt($c['lines']),
+                'total' => ['label' => 'Total '.mb_strtolower($c['label']), 'amount' => Money::str2($c['total']), 'pct' => Money::pct($c['total'], $base)],
+            ];
+            $summaryLines[] = $this->line($c['key'], $c['label'], $c['total'], 'Categoría de OPEX');
         }
-        $blocks[] = $section('dg', '06', 'GASTOS OPERATIVOS DIRECCIÓN GENERAL', 'expense', $dg, 'TOTAL DG OPERATIVO', $r['dg'], $consolidated, $na);
-        if ($consolidated) {
-            $blocks[] = $result('ebitda_final', 'EBITDA FINAL', $r['ebitda_final'], 'EBITDA corporativo − Gastos DG operativos', 3);
-        }
-        $blocks[] = $section('da', '07', 'DEPRECIACIÓN Y AMORTIZACIÓN CONTABLE', 'expense', $da, 'TOTAL D&A', $r['depreciacion_amortizacion']);
-        $blocks[] = $result('ebit', 'EBIT', $r['ebit'], ($consolidated ? 'EBITDA final' : 'EBITDA sucursal').' − Depreciación − Amortización', 4, $completeness['ebit']);
-        // Los ingresos financieros se presentan en NEGATIVO dentro de una sección expresada como
-        // gasto neto: así Σ líneas = resultado financiero neto (validación de sección exacta).
-        $finIncNeg = array_map(fn ($l) => ['amount_raw' => $l['amount_raw']->negated(), 'hint' => trim(($l['hint'] ?? '').' Se muestra en negativo: disminuye el gasto financiero neto.')] + $l, $finInc);
-        $fin = $section('financiero', '08', 'RESULTADO FINANCIERO Y NO OPERATIVO', 'financial', array_merge($finExp, $finIncNeg), 'RESULTADO FINANCIERO NETO (gasto)', $r['resultado_financiero_neto']);
+        $opex = $section('opex', 2, '02', 'OPEX · GASTOS OPERATIVOS', 'expense', $summaryLines, 'TOTAL OPEX', $r['opex_total'], $na);
+        $opex['categories'] = $categories;
+
+        // Resultado financiero: gastos en NEGATIVO, ingresos en positivo → Σ líneas = resultado neto con signo.
+        $finLines = array_merge(
+            array_map(fn ($l) => ['amount_raw' => $l['amount_raw']->negated()] + $l, $finExp),
+            $finInc,
+        );
+        $fin = $section('financiero', 6, '06', 'RESULTADO FINANCIERO Y NO OPERATIVO', 'financial', $finLines, 'RESULTADO FINANCIERO NETO', $r['resultado_financiero_neto'],
+            'Gastos financieros con signo negativo; ingresos financieros / no operativos con signo positivo.');
+        $finExpTotal = $this->sumLines($finExp);
+        $finIncTotal = $this->sumLines($finInc);
         $fin['subtotals'] = [
-            ['label' => 'Gastos financieros', 'amount' => Money::str2($r['gastos_financieros'])],
-            ['label' => '(+) Ingresos financieros / no operativos', 'amount' => Money::str2($r['ingresos_financieros'])],
+            ['key' => 'gastos_financieros', 'label' => 'Gastos financieros', 'amount' => Money::str2($finExpTotal->negated())],
+            ['key' => 'ingresos_financieros', 'label' => 'Ingresos financieros / no operativos', 'amount' => Money::str2($finIncTotal)],
         ];
-        $blocks[] = $fin;
-        $blocks[] = $result('ebt', 'EBT · UTILIDAD ANTES DE IMPUESTOS', $r['ebt'], 'EBIT − Resultado financiero neto', 5, $completeness['ebt']);
-        $blocks[] = $section('isr', '09', 'IMPUESTO SOBRE LA RENTA', 'expense', $isr, 'TOTAL ISR', $r['isr']);
-        $blocks[] = $result('utilidad_neta', 'UTILIDAD NETA', $r['utilidad_neta'], 'EBT − ISR', 6, $completeness['utilidad_neta']);
 
-        return $blocks;
-    }
-
-    private function margins(array $r, bool $consolidated): array
-    {
-        $base = $r['ingresos'];
+        $isrPending = $r['isr'] === null;
 
         return [
-            'ebitda_sucursales' => Money::pct($r['ebitda_sucursales'], $base),
-            'ebitda_corporativo' => $consolidated ? Money::pct($r['ebitda_corporativo'], $base) : null,
-            'ebitda_final' => $consolidated ? Money::pct($r['ebitda_final'], $base) : null,
-            'ebit' => Money::pct($r['ebit'], $base),
-            'ebt' => Money::pct($r['ebt'], $base),
-            'neto' => Money::pct($r['utilidad_neta'], $base),
+            $section('ingresos', 1, '01', 'INGRESOS OPERATIVOS', 'income', $income, 'TOTAL INGRESOS OPERATIVOS', $r['ingresos_operativos']),
+            $opex,
+            $result('ebitda', 3, 'EBITDA', $r['ebitda'], 'Ingresos operativos − OPEX'),
+            $section('da', 4, '04', 'DEPRECIACIÓN Y AMORTIZACIÓN CONTABLE', 'expense', $da, 'TOTAL D&A', $r['depreciacion_amortizacion']),
+            $result('ebit', 5, 'EBIT', $r['ebit'], 'EBITDA − Depreciación y amortización', $completeness['ebit']),
+            $fin,
+            $result('ebt', 7, 'EBT · UTILIDAD ANTES DE IMPUESTOS', $r['ebt'], 'EBIT + Resultado financiero neto', $completeness['ebt']),
+            $section('isr', 8, '08', 'IMPUESTO SOBRE LA RENTA', 'expense', $isr, 'TOTAL ISR', $r['isr'],
+                $isrPending ? 'ISR PENDIENTE: sin información no se asume $0. Captúralo o confírmalo en $0 en Ajustes.' : null, $isrPending ? 'pendiente' : null),
+            $result('utilidad_neta', 9, 'UTILIDAD NETA', $r['utilidad_neta'], 'EBT − ISR', $completeness['utilidad_neta'],
+                $isrPending ? 'Pendiente: falta el ISR del periodo.' : null),
         ];
     }
 
-    private function waterfall(array $r, bool $consolidated): array
+    /** Márgenes sobre ingresos operativos (null si los ingresos son 0 o el resultado está pendiente). */
+    private function margins(array $r): array
     {
+        $base = $r['ingresos_operativos'];
+        $m = fn (?BigDecimal $v) => $v === null ? null : Money::pct($v, $base);
+
+        return ['ebitda' => $m($r['ebitda']), 'ebit' => $m($r['ebit']), 'ebt' => $m($r['ebt']), 'neto' => $m($r['utilidad_neta'])];
+    }
+
+    private function waterfall(array $r, array $c, bool $consolidated): array
+    {
+        $neg = fn (?BigDecimal $v) => $v?->negated();
         $steps = [
-            ['key' => 'ingresos', 'label' => 'Ingresos operativos', 'amount' => $r['ingresos'], 'type' => 'total', 'level' => 1],
-            ['key' => 'opex_sucursales', 'label' => 'OPEX sucursales', 'amount' => $r['opex_sucursales']->negated(), 'type' => 'delta', 'level' => 1],
-            ['key' => 'nomina_sucursales', 'label' => 'Nómina sucursales', 'amount' => $r['nomina_sucursales']->negated(), 'type' => 'delta', 'level' => 1],
-            ['key' => 'ebitda_sucursales', 'label' => 'EBITDA sucursales', 'amount' => $r['ebitda_sucursales'], 'type' => 'subtotal', 'level' => 1],
+            ['key' => 'ingresos_operativos', 'label' => 'Ingresos operativos', 'amount' => $r['ingresos_operativos'], 'type' => 'total', 'step' => 1],
+            ['key' => 'opex_sucursales', 'label' => 'Gastos operativos sucursales', 'amount' => $neg($c['opex_sucursales']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'],
+            ['key' => 'nomina_sucursales', 'label' => 'Nómina sucursales', 'amount' => $neg($c['nomina_sucursales']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'],
         ];
         if ($consolidated) {
-            $steps[] = ['key' => 'opex_corporativo', 'label' => 'OPEX corporativo', 'amount' => $r['opex_corporativo']->negated(), 'type' => 'delta', 'level' => 2];
-            $steps[] = ['key' => 'nomina_corporativa', 'label' => 'Nómina corporativa', 'amount' => $r['nomina_corporativa']->negated(), 'type' => 'delta', 'level' => 2];
-            $steps[] = ['key' => 'ebitda_corporativo', 'label' => 'EBITDA corporativo', 'amount' => $r['ebitda_corporativo'], 'type' => 'subtotal', 'level' => 2];
-            $steps[] = ['key' => 'dg', 'label' => 'Gastos DG', 'amount' => $r['dg']->negated(), 'type' => 'delta', 'level' => 3];
-            $steps[] = ['key' => 'ebitda_final', 'label' => 'EBITDA final', 'amount' => $r['ebitda_final'], 'type' => 'subtotal', 'level' => 3];
+            $steps[] = ['key' => 'opex_corporativo', 'label' => 'Gastos corporativos', 'amount' => $neg($c['opex_corporativo']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'];
+            $steps[] = ['key' => 'nomina_corporativa', 'label' => 'Nómina corporativa', 'amount' => $neg($c['nomina_corporativa']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'];
+            $steps[] = ['key' => 'dg', 'label' => 'Dirección General', 'amount' => $neg($c['dg']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'];
         }
-        $steps[] = ['key' => 'depreciacion_amortizacion', 'label' => 'Depreciación y amortización', 'amount' => $r['depreciacion_amortizacion']->negated(), 'type' => 'delta', 'level' => 4];
-        $steps[] = ['key' => 'ebit', 'label' => 'EBIT', 'amount' => $r['ebit'], 'type' => 'subtotal', 'level' => 4];
-        $steps[] = ['key' => 'resultado_financiero_neto', 'label' => 'Resultado financiero', 'amount' => $r['resultado_financiero_neto']->negated(), 'type' => 'delta', 'level' => 5];
-        $steps[] = ['key' => 'ebt', 'label' => 'EBT', 'amount' => $r['ebt'], 'type' => 'subtotal', 'level' => 5];
-        $steps[] = ['key' => 'isr', 'label' => 'ISR', 'amount' => $r['isr']->negated(), 'type' => 'delta', 'level' => 6];
-        $steps[] = ['key' => 'utilidad_neta', 'label' => 'Utilidad neta', 'amount' => $r['utilidad_neta'], 'type' => 'total', 'level' => 6];
+        $steps[] = ['key' => 'ebitda', 'label' => 'EBITDA', 'amount' => $r['ebitda'], 'type' => 'subtotal', 'step' => 3];
+        $steps[] = ['key' => 'depreciacion_amortizacion', 'label' => 'Depreciación y amortización', 'amount' => $neg($r['depreciacion_amortizacion']), 'type' => 'delta', 'step' => 4];
+        $steps[] = ['key' => 'ebit', 'label' => 'EBIT', 'amount' => $r['ebit'], 'type' => 'subtotal', 'step' => 5];
+        $steps[] = ['key' => 'resultado_financiero_neto', 'label' => 'Resultado financiero neto', 'amount' => $r['resultado_financiero_neto'], 'type' => 'delta', 'step' => 6];
+        $steps[] = ['key' => 'ebt', 'label' => 'EBT', 'amount' => $r['ebt'], 'type' => 'subtotal', 'step' => 7];
+        $steps[] = ['key' => 'isr', 'label' => 'ISR', 'amount' => $neg($r['isr']), 'type' => 'delta', 'step' => 8];
+        $steps[] = ['key' => 'utilidad_neta', 'label' => 'Utilidad neta', 'amount' => $r['utilidad_neta'], 'type' => 'total', 'step' => 9];
 
-        return array_map(fn ($s) => ['amount' => Money::str2($s['amount'])] + $s, $steps);
+        return array_map(fn ($s) => ['amount' => $s['amount'] === null ? null : Money::str2($s['amount']), 'level' => $s['step'], 'pending' => $s['amount'] === null] + $s, $steps);
     }
 
     // ───────────────────────────────────────────────────────────────────
@@ -858,7 +1017,7 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    private function conciliationSummary(array $items, array $scoped, bool $consolidated): array
+    private function conciliationSummary(array $items): array
     {
         $bank = array_values(array_filter($items, fn ($i) => $i['source'] === 'banco'));
         $inPeriod = array_values(array_filter($bank, fn ($i) => $i['in_period']));
@@ -938,7 +1097,7 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    private function checks(array $row, array $income, array $opex, array $nomina, array $statement, array $r, array $items, array $scoped, BigDecimal $ingresos, BigDecimal $opexRadio, BigDecimal $nominaRadio, bool $consolidated, array $categoryTotals = []): array
+    private function checks(array $row, array $income, array $statement, array $r, array $c, array $items, array $scoped, BigDecimal $ingresos, BigDecimal $opexRadio, BigDecimal $nominaRadio, BigDecimal $radiografiaEbitda, bool $consolidated, array $categoryTotals = []): array
     {
         $checks = [];
         $add = function (string $key, string $label, BigDecimal $expected, BigDecimal $actual, ?string $explain = null) use (&$checks) {
@@ -949,23 +1108,31 @@ class EstadoResultadosDatasetBuilder
             ];
         };
 
-        $add('ingresos_componentes', 'Total ingresos = Σ componentes de ingreso', $this->sumLines($income), $r['ingresos']);
-        $add('ingresos_radiografia', 'Total ingresos = Ingreso base EBITDA de Radiografía', Money::of(Radio::ingresoEbitdaBaseFor($row)), $ingresos);
-        $add('opex_radiografia', 'OPEX sucursales (Σ desglose) = gastos_operativos de Radiografía', Money::of($row['gastos_operativos'] ?? 0), $opexRadio);
-        $add('nomina_radiografia', 'Nómina sucursales (Σ desglose) = Nómina y Capital Humano de Radiografía', Money::of(Radio::nominaTotalFor($row)), $nominaRadio);
-        $add('ebitda_sucursales_formula', 'EBITDA sucursales = Ingresos − OPEX − Nómina', $r['ingresos']->minus($r['opex_sucursales'])->minus($r['nomina_sucursales']), $r['ebitda_sucursales']);
-        $add('ebitda_corporativo_formula', 'EBITDA corporativo = EBITDA sucursales − OPEX corp. − Nómina corp.', $r['ebitda_sucursales']->minus($r['opex_corporativo'])->minus($r['nomina_corporativa']), $r['ebitda_corporativo']);
-        $add('ebitda_final_formula', 'EBITDA final = EBITDA corporativo − DG operativo', $r['ebitda_corporativo']->minus($r['dg']), $r['ebitda_final']);
-        $ebitdaBase = $consolidated ? $r['ebitda_final'] : $r['ebitda_sucursales'];
-        $add('ebit_formula', 'EBIT = EBITDA − Depreciación − Amortización', $ebitdaBase->minus($r['depreciacion_amortizacion']), $r['ebit']);
-        $add('ebt_formula', 'EBT = EBIT − Resultado financiero neto', $r['ebit']->minus($r['resultado_financiero_neto']), $r['ebt']);
-        $add('utilidad_formula', 'Utilidad neta = EBT − ISR', $r['ebt']->minus($r['isr']), $r['utilidad_neta']);
+        $add('ingresos_componentes', 'Total ingresos operativos = Σ componentes de ingreso', $this->sumLines($income), $r['ingresos_operativos']);
+        $add('ingresos_radiografia', 'Total ingresos operativos = Ingreso base EBITDA de Radiografía', Money::of(Radio::ingresoEbitdaBaseFor($row)), $ingresos);
+        $add('opex_radiografia', 'Gastos operativos de sucursales (Σ desglose) = gastos_operativos de Radiografía', Money::of($row['gastos_operativos'] ?? 0), $opexRadio);
+        $add('nomina_radiografia', 'Nómina de sucursales (Σ desglose) = Nómina y Capital Humano de Radiografía', Money::of(Radio::nominaTotalFor($row)), $nominaRadio);
+        // CONTROL (no es un nivel del ER): la base de sucursales concilia a $0.00 con el EBITDA de Radiografía.
+        $add('ebitda_sucursales_radiografia', 'Control: Ingresos − OPEX y nómina de sucursales (base Radiografía) = EBITDA de Radiografía',
+            $radiografiaEbitda, $ingresos->minus($opexRadio)->minus($nominaRadio),
+            'Control de conciliación con Radiografía. Lo clasificado manualmente desde bancos se explica aparte en la conciliación.');
+        $add('opex_total_formula', 'OPEX total = Σ categorías de OPEX (sucursales, nómina, corporativo, nómina corporativa, Dirección General)',
+            Money::sum([$c['opex_sucursales'], $c['nomina_sucursales'], $c['opex_corporativo'], $c['nomina_corporativa'], $c['dg']]), $r['opex_total']);
+        $add('ebitda_formula', 'EBITDA = Ingresos operativos − OPEX', $r['ingresos_operativos']->minus($r['opex_total']), $r['ebitda']);
+        $add('ebit_formula', 'EBIT = EBITDA − Depreciación y amortización', $r['ebitda']->minus($r['depreciacion_amortizacion']), $r['ebit']);
+        $add('ebt_formula', 'EBT = EBIT + Resultado financiero neto (con signo)', $r['ebit']->plus($r['resultado_financiero_neto']), $r['ebt']);
+        if ($r['isr'] !== null) {
+            $add('utilidad_formula', 'Utilidad neta = EBT − ISR', $r['ebt']->minus($r['isr']), $r['utilidad_neta']);
+        }
 
         foreach ($statement as $block) {
-            if ($block['type'] !== 'section') {
+            if ($block['type'] !== 'section' || $block['total']['amount'] === null) {
                 continue;
             }
             $add('seccion_'.$block['key'], 'Total '.$block['title'].' = Σ de sus líneas', Money::sum(array_column($block['lines'], 'amount')), Money::of($block['total']['amount']), 'Comparado a 2 decimales de presentación.');
+            foreach ((array) ($block['categories'] ?? []) as $cat) {
+                $add('categoria_'.$cat['key'], 'Total '.$cat['label'].' = Σ de sus líneas', Money::sum(array_column($cat['lines'], 'amount')), Money::of($cat['total']['amount']), 'Comparado a 2 decimales de presentación.');
+            }
         }
 
         // Complementarios incorporados = Σ porción NO conciliada de los movimientos incluidos (la parte conciliada la reconoce el ERP).
@@ -1085,7 +1252,7 @@ class EstadoResultadosDatasetBuilder
         $reversals = array_values(array_filter($inPeriodBank, fn ($i) => $i['treatment'] === T::REVERSO));
 
         // ── Integridad de fuentes ─────────────────────────────────────────
-        $lastRun = EstadoResultadosRun::query()->where('period_id', $period->id)->where('status', 'ok')->latest('id')->first();
+        $lastRun = $this->lastOkRun;
         $currentSig = $this->currentErpSignature;
         $uploadsOk = array_reduce($this->activeUploads, fn ($ok, $u) => $ok && $u['control_ok'] !== false, true);
         $importOk = Money::isZeroCents($srcCargos->minus($impCargos)) && Money::isZeroCents($srcAbonos->minus($impAbonos));
@@ -1094,20 +1261,38 @@ class EstadoResultadosDatasetBuilder
         $partitions = ['bank' => $partition($bank), 'erp' => $partition($erp), 'all' => $partition($items)];
         $failedChecks = array_values(array_map(fn ($c) => ['key' => $c['key'], 'label' => $c['label'], 'difference' => $c['difference']], array_filter($checks, fn ($c) => ! $c['ok'])));
 
+        /*
+         * Cada partida sin resolver declara si BLOQUEA la aprobación (`blocking`) y cuánto sigue
+         * abierto (`open_count` / `open_amount`):
+         *  - pendientes, diferencia de Radiografía y validaciones con diferencia: bloquean siempre.
+         *  - diferencias banco↔ERP (importe, fecha, folio) y traspasos sin contraparte: una partida
+         *    queda RESUELTA sólo con una clasificación MANUAL (persona, motivo y bitácora) distinta de
+         *    «Requiere revisión»; las reglas automáticas no la resuelven. Bloquean mientras quede alguna abierta.
+         *  - saldo ERP sin pago bancario (pagos parciales): INFORMATIVA. El gasto ya se reconoce una sola
+         *    vez desde el ERP por el periodo de importación (config estado_resultados.reconocimiento.reglas.erp);
+         *    el saldo por pagar es un pasivo, no cambia el resultado.
+         */
         $unresolved = [];
-        $addUnresolved = function (string $key, string $label, int $count, string $amount) use (&$unresolved) {
+        $addUnresolved = function (string $key, string $label, int $count, string $amount, bool $blocking = true, ?array $openItems = null, ?callable $openAmount = null) use (&$unresolved) {
             if ($count > 0 || ! Money::isZeroCents($amount)) {
-                $unresolved[] = ['key' => $key, 'label' => $label, 'count' => $count, 'amount' => $amount];
+                $openCount = $openItems === null ? $count : count($openItems);
+                $open = $openItems === null ? $amount : Money::str2(Money::sum(array_map($openAmount, $openItems)));
+                $unresolved[] = ['key' => $key, 'label' => $label, 'count' => $count, 'amount' => $amount,
+                    'blocking' => $blocking && ($openCount > 0 || ! Money::isZeroCents($open)), 'open_count' => $openCount, 'open_amount' => $open];
             }
         };
+        $isOpen = fn (array $i) => ($i['override'] ?? null) === null || $i['treatment'] === T::PENDIENTE;
+        $cargo = fn (array $i) => $i['cargo'];
         $pendingItems = array_values(array_filter($items, fn ($i) => ! Money::isZeroCents($i['amounts']['pending'])));
         $addUnresolved('pendientes', 'Movimientos pendientes de clasificar (no suman ni se excluyen)', count($pendingItems), $total($pendingItems, 'pending'));
-        $addUnresolved('diferencia_importe', 'Mismo folio con importe diferente al ERP', $byAmount['count'], $byAmount['amount']);
-        $addUnresolved('diferencia_fecha', 'Mismo folio e importe con fecha fuera de tolerancia', $byDate['count'], $byDate['amount']);
-        $addUnresolved('diferencia_folio', 'Folio sin ERP, de otro periodo, ya conciliado o ambiguo', $byFolio['count'], $byFolio['amount']);
+        $addUnresolved('diferencia_importe', 'Mismo folio con importe diferente al ERP', $byAmount['count'], $byAmount['amount'], true, array_values(array_filter($byStatus([R::FOLIO_MONTO_DIFERENTE]), $isOpen)), $cargo);
+        $addUnresolved('diferencia_fecha', 'Mismo folio e importe con fecha fuera de tolerancia', $byDate['count'], $byDate['amount'], true, array_values(array_filter($byStatus([R::FOLIO_FECHA_DIFERENTE]), $isOpen)), $cargo);
+        $addUnresolved('diferencia_folio', 'Folio sin ERP, de otro periodo, ya conciliado o ambiguo', $byFolio['count'], $byFolio['amount'], true,
+            array_values(array_filter($byStatus([R::FOLIO_SIN_ERP, R::FOLIO_OTRO_PERIODO, R::FOLIO_YA_CONCILIADO, R::FOLIO_AMBIGUO, R::POSIBLE_DUPLICADO_ERP]), $isOpen)), $cargo);
         $erpPartial = array_values(array_filter($erp, fn ($i) => $i['erp_payment_status'] === 'erp_pago_parcial'));
-        $addUnresolved('erp_saldo_pendiente', 'Saldo ERP sin pago bancario identificado (pagos parciales)', count($erpPartial), Money::str2(Money::sum(array_map(fn ($i) => $i['erp_payment']['pending'], $erpPartial))));
-        $addUnresolved('traspasos_sin_contraparte', 'Traspasos entre cuentas sin contraparte en la otra cuenta', count($unpairedTraspasos), $gross($unpairedTraspasos));
+        $addUnresolved('erp_saldo_pendiente', 'Saldo ERP sin pago bancario identificado (pagos parciales)', count($erpPartial), Money::str2(Money::sum(array_map(fn ($i) => $i['erp_payment']['pending'], $erpPartial))), false);
+        $addUnresolved('traspasos_sin_contraparte', 'Traspasos entre cuentas sin contraparte en la otra cuenta', count($unpairedTraspasos), $gross($unpairedTraspasos), true,
+            array_values(array_filter($unpairedTraspasos, $isOpen)), fn ($i) => $i['amounts']['gross']);
         if (! ($radiography['base_ok'] ?? true)) {
             $addUnresolved('radiografia_no_explicada', 'Diferencia NO explicada contra Radiografía', 1, (string) $radiography['difference_base']);
         }
@@ -1201,11 +1386,11 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    private function indicators(array $row, array $base, array $r, bool $consolidated, string $scope): array
+    private function indicators(array $row, array $base, array $r, array $c, bool $consolidated, string $scope): array
     {
-        $ing = $r['ingresos'];
-        $opexTotal = $r['opex_sucursales']->plus($r['opex_corporativo']);
-        $nominaTotal = $r['nomina_sucursales']->plus($r['nomina_corporativa']);
+        $ing = $r['ingresos_operativos'];
+        $pct = fn (?BigDecimal $v) => $v === null ? null : Money::pct($v, $ing);
+        $nominaTotal = $c['nomina_sucursales']->plus($c['nomina_corporativa']);
         $cartera = $consolidated ? Money::of($base['cartera']['valor_cartera'] ?? 0) : Money::of($row['valor_cartera'] ?? 0);
         $mora = $consolidated
             ? Money::of($base['cartera']['cartera_vencida'] ?? 0)
@@ -1215,16 +1400,14 @@ class EstadoResultadosDatasetBuilder
 
         return [
             'financial' => [
-                ['key' => 'margen_ebitda_sucursales', 'label' => 'Margen EBITDA sucursales', 'value' => Money::pct($r['ebitda_sucursales'], $ing), 'unit' => '%'],
-                ['key' => 'margen_ebitda_corporativo', 'label' => 'Margen EBITDA corporativo', 'value' => $consolidated ? Money::pct($r['ebitda_corporativo'], $ing) : null, 'unit' => '%'],
-                ['key' => 'margen_ebitda_final', 'label' => 'Margen EBITDA final', 'value' => $consolidated ? Money::pct($r['ebitda_final'], $ing) : null, 'unit' => '%'],
-                ['key' => 'margen_ebit', 'label' => 'Margen EBIT', 'value' => Money::pct($r['ebit'], $ing), 'unit' => '%'],
-                ['key' => 'margen_ebt', 'label' => 'Margen antes de impuestos', 'value' => Money::pct($r['ebt'], $ing), 'unit' => '%'],
-                ['key' => 'margen_neto', 'label' => 'Margen neto', 'value' => Money::pct($r['utilidad_neta'], $ing), 'unit' => '%'],
-                ['key' => 'opex_ingreso', 'label' => 'OPEX / ingreso', 'value' => Money::pct($opexTotal, $ing), 'unit' => '%'],
-                ['key' => 'nomina_ingreso', 'label' => 'Nómina / ingreso', 'value' => Money::pct($nominaTotal, $ing), 'unit' => '%'],
-                ['key' => 'corporativo_ingreso', 'label' => 'Corporativo / ingreso', 'value' => $consolidated ? Money::pct($r['opex_corporativo']->plus($r['nomina_corporativa']), $ing) : null, 'unit' => '%'],
-                ['key' => 'dg_ingreso', 'label' => 'DG / ingreso', 'value' => $consolidated ? Money::pct($r['dg'], $ing) : null, 'unit' => '%'],
+                ['key' => 'margen_ebitda', 'label' => 'Margen EBITDA', 'value' => $pct($r['ebitda']), 'unit' => '%'],
+                ['key' => 'margen_ebit', 'label' => 'Margen EBIT', 'value' => $pct($r['ebit']), 'unit' => '%'],
+                ['key' => 'margen_ebt', 'label' => 'Margen antes de impuestos', 'value' => $pct($r['ebt']), 'unit' => '%'],
+                ['key' => 'margen_neto', 'label' => 'Margen neto', 'value' => $pct($r['utilidad_neta']), 'unit' => '%'],
+                ['key' => 'opex_ingreso', 'label' => 'OPEX / ingreso', 'value' => $pct($r['opex_total']), 'unit' => '%'],
+                ['key' => 'nomina_ingreso', 'label' => 'Nómina / ingreso', 'value' => $pct($nominaTotal), 'unit' => '%'],
+                ['key' => 'corporativo_ingreso', 'label' => 'Corporativo / ingreso', 'value' => $consolidated ? $pct($c['opex_corporativo']->plus($c['nomina_corporativa'])) : null, 'unit' => '%'],
+                ['key' => 'dg_ingreso', 'label' => 'Dirección General / ingreso', 'value' => $consolidated ? $pct($c['dg']) : null, 'unit' => '%'],
             ],
             // Informativos: NO entran a la fórmula del Estado de Resultados.
             'informative' => [
@@ -1244,19 +1427,38 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    private function sources(Period $period, array $base, array $items, array $adj): array
+    /** Consultas de fuentes que NO dependen del alcance (una vez por foto de datos). */
+    private function sourcesShared(Period $period, array $base, string $currentSig): array
     {
         $dataIds = $base['data_ids'];
         $erpSource = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
-        $erpCount = $erpSource ? DB::table('fact_expenses as e')->join('report_uploads as ru', 'ru.id', '=', 'e.report_upload_id')
-            ->whereIn('e.period_id', $dataIds)->where('ru.data_source_id', $erpSource)->count() : 0;
-        $noiCount = DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)->count();
-        $imssCount = DB::table('fact_imss')->whereIn('period_id', $dataIds)->count();
-        $summary = DB::table('period_summaries')->where('period_id', $period->id)->where('status', 'generated')->whereNull('invalidated_at')->first();
-        $lastRun = EstadoResultadosRun::query()->with('user:id,name')->where('period_id', $period->id)->latest('id')->first();
-        $currentSig = ErpExpenseRepository::signature($this->erp->forDataIds($dataIds));
 
-        $uploads = EstadoResultadosUpload::query()->with('uploader:id,name')->where('period_id', $period->id)->orderByDesc('id')->get();
+        return [
+            'period' => $period,
+            'erp_count' => $erpSource ? DB::table('fact_expenses as e')->join('report_uploads as ru', 'ru.id', '=', 'e.report_upload_id')
+                ->whereIn('e.period_id', $dataIds)->where('ru.data_source_id', $erpSource)->count() : 0,
+            'noi_count' => DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)->count(),
+            'imss_count' => DB::table('fact_imss')->whereIn('period_id', $dataIds)->count(),
+            'summary' => RadiographySummary::current($period->id),
+            'last_run' => EstadoResultadosRun::query()->with('user:id,name')->where('period_id', $period->id)->latest('id')->first(),
+            'last_ok_run' => EstadoResultadosRun::query()->where('period_id', $period->id)->where('status', 'ok')->latest('id')->first(),
+            // Antes se volvía a leer TODO el ERP sólo para recalcular su firma: es la misma foto de items().
+            'current_sig' => $currentSig,
+            'uploads' => EstadoResultadosUpload::query()->with('uploader:id,name')->where('period_id', $period->id)->orderByDesc('id')->get(),
+            'unprocessed' => EstadoResultadosMovement::query()->where('period_id', $period->id)->whereNull('processed_at')->exists(),
+            'exports' => EstadoResultadosExport::query()->with('user:id,name')
+                ->where('period_id', $period->id)->latest('id')->limit(15)->get()
+                ->map(fn ($e) => [
+                    'format' => $e->format, 'scope' => $e->scope_key, 'hash' => substr($e->dataset_hash, 0, 12),
+                    'user' => $e->user?->name, 'at' => $e->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
+                ])->all(),
+        ];
+    }
+
+    private function sources(array $shared, array $items, array $adj): array
+    {
+        ['erp_count' => $erpCount, 'noi_count' => $noiCount, 'imss_count' => $imssCount, 'summary' => $summary,
+            'last_run' => $lastRun, 'current_sig' => $currentSig, 'uploads' => $uploads] = $shared;
         $slots = [];
         foreach (EstadoResultadosUploadService::SLOTS as $slot => $label) {
             $active = $uploads->first(fn ($u) => $u->account_slot === $slot && $u->status !== EstadoResultadosUpload::STATUS_REPLACED);
@@ -1276,12 +1478,18 @@ class EstadoResultadosDatasetBuilder
                     'movements' => $active->movements_count, 'detail_lines' => $active->detail_lines_count, 'out_of_period' => $active->out_of_period_count,
                     'total_cargos' => Money::str2($active->total_cargos), 'total_abonos' => Money::str2($active->total_abonos),
                     'control_ok' => $active->control_ok, 'warnings' => $active->warnings ?? [],
+                    // Avisos clasificados (informativa | bloqueante) y ciclo de vida del archivo.
+                    'warnings_detail' => $active->warningsDetailed(),
+                    'blocking_warnings' => $active->blockingWarningsList(),
+                    'lifecycle' => $lifecycle = EstadoResultadosUpload::lifecycleFor((string) $active->status, $active->control_ok, $active->status === EstadoResultadosUpload::STATUS_PROCESSED, $pendingReview, count($active->blockingWarningsList())),
+                    'lifecycle_label' => EstadoResultadosUpload::lifecycleLabel($lifecycle),
                     'first_date' => $active->first_movement_date?->format('Y-m-d'), 'last_date' => $active->last_movement_date?->format('Y-m-d'),
                     'uploaded_by' => $active->uploader?->name, 'uploaded_at' => $active->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
                 ] : null,
                 'pending_review' => $pendingReview,
                 'history' => $uploads->where('account_slot', $slot)->values()->map(fn ($u) => [
                     'id' => $u->id, 'name' => $u->original_name, 'status' => $u->status, 'hash' => substr($u->file_hash, 0, 12),
+                    'lifecycle' => $u->status === EstadoResultadosUpload::STATUS_REPLACED ? EstadoResultadosUpload::LIFECYCLE_REEMPLAZADO : ($u->lifecycle ?? null),
                     'movements' => $u->movements_count, 'uploaded_by' => $u->uploader?->name,
                     'uploaded_at' => $u->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
                 ])->all(),
@@ -1294,7 +1502,7 @@ class EstadoResultadosDatasetBuilder
         }
         $hasBank = $uploads->contains(fn ($u) => $u->status !== EstadoResultadosUpload::STATUS_REPLACED);
         $stale = $lastRun && $lastRun->status === 'ok' && $lastRun->erp_signature !== $currentSig;
-        $unprocessed = EstadoResultadosMovement::query()->where('period_id', $period->id)->whereNull('processed_at')->exists();
+        $unprocessed = $shared['unprocessed'];
 
         return [
             'radiografia' => [
@@ -1332,12 +1540,7 @@ class EstadoResultadosDatasetBuilder
                 'stale_erp' => $stale,
                 'unprocessed' => $unprocessed,
             ],
-            'exportaciones' => EstadoResultadosExport::query()->with('user:id,name')
-                ->where('period_id', $period->id)->latest('id')->limit(15)->get()
-                ->map(fn ($e) => [
-                    'format' => $e->format, 'scope' => $e->scope_key, 'hash' => substr($e->dataset_hash, 0, 12),
-                    'user' => $e->user?->name, 'at' => $e->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
-                ])->all(),
+            'exportaciones' => $shared['exports'],
         ];
     }
 
@@ -1378,7 +1581,9 @@ class EstadoResultadosDatasetBuilder
             'period' => $dataset['meta']['period'],
             'scope' => $dataset['meta']['scope']['key'],
             'recognition' => [$dataset['meta']['recognition']['version'], $dataset['meta']['dimensions_version']],
+            'model' => $dataset['meta']['model']['version'],
             'results' => $dataset['results'],
+            'controls' => $dataset['controls'],
             'statement' => $dataset['statement'],
             'checks' => array_map(fn ($c) => [$c['key'], $c['actual'], $c['expected']], $dataset['checks']),
             'conciliation' => array_diff_key($dataset['conciliation'], ['por_estado' => true]),

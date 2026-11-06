@@ -8,8 +8,12 @@ use Brick\Math\BigDecimal;
 use Brick\Math\RoundingMode;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Str;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
+use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 
 /**
  * Lee un estado de cuenta complementario (Excel) y lo convierte a movimientos
@@ -30,6 +34,17 @@ use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
  *    NUNCA se suma).
  *  - "SALDO INICIAL" se registra como saldo de apertura; "TOTAL ..." como total de
  *    control del archivo (se valida contra la suma leída).
+ *
+ * Seguridad (06-nov-2026, fase 2):
+ *  - SpreadsheetSafetyInspector revisa el contenedor ANTES de cargar (bomba ZIP, partes,
+ *    macros, vínculos externos).
+ *  - Dimensiones (filas/columnas) por hoja con listWorksheetInfo() ANTES de load(), y un
+ *    filtro de lectura que nunca carga más allá de esos límites. Sólo datos (sin estilos).
+ *  - Fórmulas INTERNAS se calculan (mismo resultado que antes); el valor guardado por Excel
+ *    sólo se usa si el cálculo falla, y si difiere del calculado se avisa. Una fórmula que
+ *    referencia OTRO libro, una ruta, URL, DDE o
+ *    funciones de red (WEBSERVICE, RTD, CALL…) jamás se evalúa: si está en una columna
+ *    que se usa ⇒ se rechaza la fila ("pega como valores"); fuera de ellas ⇒ aviso.
  */
 class BankStatementParser
 {
@@ -39,6 +54,44 @@ class BankStatementParser
 
     /** Límite defensivo de filas por hoja (un estado de cuenta mensual real tiene cientos). */
     public const MAX_ROWS = 50000;
+
+    /** Límite defensivo de columnas por hoja (los formatos reales usan 9 y 16). */
+    public const MAX_COLUMNS = 100;
+
+    /** Fórmulas que salen del libro (otro libro, ruta, URL, DDE, funciones de red). */
+    private const EXTERNAL_FORMULA = [
+        '/\[\d+\]/',                                  // [1]Hoja!A1 (índice de vínculo externo)
+        '/\[[^\]]*\.(xl\w*|csv|ods)\]/i',             // [libro.xlsx]Hoja!A1
+        '~[a-z]:\\\\|\\\\\\\\|https?://|file:~i',     // rutas locales/UNC o URLs
+        '/\b[A-Za-z0-9_.]+\|/',                       // DDE: cmd|' /C calc'!A0
+        '/\b(WEBSERVICE|FILTERXML|RTD|CALL|REGISTER\.ID|EXEC|HYPERLINK|IMAGE)\s*\(/i',
+    ];
+
+    /** Fórmulas internas cuyo valor guardado difiere del calculado (aviso informativo). */
+    private int $staleFormulas = 0;
+
+    public function __construct(private readonly SpreadsheetSafetyInspector $inspector = new SpreadsheetSafetyInspector) {}
+
+    public static function maxRows(): int
+    {
+        return max(1, (int) config('estado_resultados.import.max_rows', self::MAX_ROWS));
+    }
+
+    public static function maxColumns(): int
+    {
+        return max(1, (int) config('estado_resultados.import.max_columns', self::MAX_COLUMNS));
+    }
+
+    public static function isExternalFormula(string $formula): bool
+    {
+        foreach (self::EXTERNAL_FORMULA as $re) {
+            if (preg_match($re, $formula)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private const HEADER_ALIASES = [
         'fecha' => ['FECHA', 'FECHA OPERACION', 'FECHA MOVIMIENTO'],
@@ -66,32 +119,73 @@ class BankStatementParser
      *   warnings: list<string>
      * }
      */
-    public function parse(string $absolutePath): array
+    public function parse(string $absolutePath, ?string $extension = null): array
     {
+        $safety = $this->inspector->inspect($absolutePath, $extension ?: (pathinfo($absolutePath, PATHINFO_EXTENSION) ?: 'xlsx'));
+        $maxRows = self::maxRows();
+        $maxCols = self::maxColumns();
+
         try {
             $reader = IOFactory::createReaderForFile($absolutePath);
             $reader->setReadDataOnly(true);
+            $info = $reader->listWorksheetInfo($absolutePath);
+        } catch (\Throwable $e) {
+            throw new EstadoResultadosImportException('No se pudo leer el archivo como Excel válido (.xlsx/.xls/.xlsm).', [$e->getMessage()]);
+        }
+        foreach ($info as $sheetInfo) {
+            $name = (string) ($sheetInfo['worksheetName'] ?? '');
+            if ((int) ($sheetInfo['totalRows'] ?? 0) > $maxRows) {
+                throw new EstadoResultadosImportException(
+                    'La hoja "'.$name.'" tiene más de '.number_format($maxRows).' filas: no parece un estado de cuenta mensual.',
+                    ['Verifica que el archivo sea el estado de cuenta del periodo y no un acumulado.']
+                );
+            }
+            if ((int) ($sheetInfo['totalColumns'] ?? 0) > $maxCols) {
+                throw new EstadoResultadosImportException(
+                    'La hoja "'.$name.'" tiene '.number_format((int) $sheetInfo['totalColumns']).' columnas (máximo '.number_format($maxCols).'): no parece un estado de cuenta.',
+                    ['Elimina las columnas que no forman parte del estado de cuenta y vuelve a cargarlo.']
+                );
+            }
+        }
+
+        try {
+            // Nunca se carga más allá de los límites (defensa adicional si listWorksheetInfo subestima).
+            $reader->setReadFilter(new class($maxRows + 1, $maxCols) implements IReadFilter
+            {
+                public function __construct(private int $rows, private int $cols) {}
+
+                public function readCell($columnAddress, $row, $worksheetName = ''): bool
+                {
+                    return (int) $row <= $this->rows && Coordinate::columnIndexFromString((string) $columnAddress) <= $this->cols;
+                }
+            });
             $book = $reader->load($absolutePath);
         } catch (\Throwable $e) {
             throw new EstadoResultadosImportException('No se pudo leer el archivo como Excel válido (.xlsx/.xls/.xlsm).', [$e->getMessage()]);
         }
 
+        $warnings = $safety['warnings'];
+        $this->staleFormulas = 0;
         $detected = null;
+        $externalElsewhere = 0;
         foreach ($book->getSheetNames() as $index => $name) {
             $sheet = $book->getSheet($index);
-            if ($sheet->getHighestDataRow() > self::MAX_ROWS) {
+            if ($sheet->getHighestDataRow() > $maxRows) {
                 throw new EstadoResultadosImportException(
-                    'La hoja "'.$name.'" tiene más de '.number_format(self::MAX_ROWS).' filas: no parece un estado de cuenta mensual.',
+                    'La hoja "'.$name.'" tiene más de '.number_format($maxRows).' filas: no parece un estado de cuenta mensual.',
                     ['Verifica que el archivo sea el estado de cuenta del periodo y no un acumulado.']
                 );
             }
-            $rows = $sheet->toArray(null, true, false, false);
+            [$rows, $external] = $this->sheetValues($sheet);
             $header = $this->detectHeader($rows);
             if ($header !== null) {
-                $detected = ['sheet' => $name, 'rows' => $rows] + $header;
+                $detected = ['sheet' => $name, 'rows' => $rows, 'external' => $external] + $header;
                 break;
             }
+            $externalElsewhere += count($external);
         }
+        $book->disconnectWorksheets();
+        unset($book);
 
         if ($detected === null) {
             throw new EstadoResultadosImportException(
@@ -103,7 +197,80 @@ class BankStatementParser
             );
         }
 
-        return $this->readRows($detected);
+        // Referencias externas: en columnas que se leen ⇒ rechazo; en el resto ⇒ aviso.
+        $used = array_flip(array_values($detected['columns']));
+        $errors = [];
+        foreach ($detected['external'] as [$rowIdx, $colIdx, $formula]) {
+            if ($rowIdx > $detected['header_row'] && isset($used[$colIdx])) {
+                $letter = Coordinate::stringFromColumnIndex($colIdx + 1);
+                $errors[] = ['row' => $rowIdx + 1, 'column' => $letter, 'message' => 'Fila '.($rowIdx + 1).': la celda '.$letter.($rowIdx + 1).' tiene una fórmula que toma datos de otro libro o de fuera del archivo ('.mb_substr($formula, 0, 60).'). Pega la columna como valores y vuelve a cargarlo.'];
+            } else {
+                $externalElsewhere++;
+            }
+        }
+        if ($errors !== []) {
+            throw new EstadoResultadosImportException(
+                'El archivo tiene '.count($errors).' celda(s) con fórmulas que dependen de otros libros o de fuentes externas. No se cargó ningún movimiento.',
+                array_slice(array_column($errors, 'message'), 0, 50),
+                array_slice($errors, 0, 1000),
+            );
+        }
+        if ($externalElsewhere > 0 || $safety['external_links']) {
+            $warnings[] = ['code' => 'vinculos_externos', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
+                'message' => 'El libro tiene vínculos a otros archivos'.($externalElsewhere > 0 ? ' ('.$externalElsewhere.' celda(s) fuera de las columnas del estado de cuenta)' : '').': no se evaluaron ni se usan.'];
+        }
+        if ($this->staleFormulas > 0) {
+            $warnings[] = ['code' => 'formulas_recalculadas', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
+                'message' => $this->staleFormulas.' fórmula(s) tenían guardado un valor distinto al que resulta de calcularlas: se usó el valor calculado.'];
+        }
+
+        $parsed = $this->readRows($detected);
+        $parsed['warnings_detail'] = array_merge($warnings, $parsed['warnings_detail']);
+        $parsed['warnings'] = array_column($parsed['warnings_detail'], 'message');
+        $parsed['has_macros'] = $safety['has_macros'];
+        $parsed['external_links'] = $safety['external_links'] || $externalElsewhere > 0;
+
+        return $parsed;
+    }
+
+    /**
+     * Valores de la hoja SIN ejecutar el motor de cálculo cuando Excel guardó el resultado.
+     *
+     * @return array{0: array<int, array<int, mixed>>, 1: list<array{0:int,1:int,2:string}>} filas (base 0) y fórmulas externas [fila, columna, fórmula]
+     */
+    private function sheetValues(Worksheet $sheet): array
+    {
+        $rows = $sheet->toArray(null, false, false, false);
+        $external = [];
+        foreach ($sheet->getCoordinates() as $coordinate) {
+            $cell = $sheet->getCell($coordinate);
+            if ($cell->getDataType() !== DataType::TYPE_FORMULA) {
+                continue;
+            }
+            [$col, $row] = Coordinate::indexesFromString($coordinate);
+            $formula = (string) $cell->getValue();
+            if (self::isExternalFormula($formula)) {
+                $external[] = [$row - 1, $col - 1, $formula];
+                $value = null;
+            } else {
+                // Fórmula INTERNA: se calcula (mismo resultado que antes de la fase 2; el motor no
+                // tiene acceso a nada fuera del libro una vez excluidas las externas). El valor
+                // guardado sólo se usa si el cálculo falla: no es confiable (otras herramientas
+                // escriben 0 o nada) y puede estar desactualizado.
+                $cached = $cell->getOldCalculatedValue();
+                try {
+                    $value = $cell->getCalculatedValue();
+                } catch (\Throwable) {
+                    $value = $cached;
+                }
+                if (is_numeric($cached) && is_numeric($value) && abs((float) $cached - (float) $value) >= 0.005) {
+                    $this->staleFormulas++;
+                }
+            }
+            $rows[$row - 1][$col - 1] = $value;
+        }
+
+        return [$rows, $external];
     }
 
     private function detectHeader(array $rows): ?array
@@ -283,7 +450,12 @@ class BankStatementParser
         }
 
         if ($footerIgnored > 0) {
-            $warnings[] = "Se ignoraron {$footerIgnored} fila(s) de pie de archivo posteriores a los totales de control.";
+            $warnings[] = ['code' => 'pie_ignorado', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO, 'message' => "Se ignoraron {$footerIgnored} fila(s) de pie de archivo posteriores a los totales de control."];
+        }
+        $repeated = array_sum(array_map(fn ($n) => $n - 1, array_filter($occurrences, fn ($n) => $n > 1)));
+        if ($repeated > 0) {
+            $warnings[] = ['code' => 'movimientos_repetidos', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
+                'message' => "{$repeated} movimiento(s) repiten exactamente fecha, referencia, importe y saldo de otro renglón del archivo: se cargan como movimientos distintos. Verifica que no sean renglones duplicados por error."];
         }
         if ($errors !== []) {
             throw new EstadoResultadosImportException(
@@ -307,7 +479,8 @@ class BankStatementParser
             'opening_balance' => $opening,
             'control_cargos' => $controlCargos,
             'control_abonos' => $controlAbonos,
-            'warnings' => $warnings,
+            'warnings' => array_column($warnings, 'message'),
+            'warnings_detail' => $warnings,
         ];
     }
 

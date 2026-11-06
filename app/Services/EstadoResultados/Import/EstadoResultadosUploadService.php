@@ -25,6 +25,12 @@ use Illuminate\Support\Facades\Storage;
  *   3. Valida que la cuenta elegida coincida con la estructura y que haya movimientos dentro del periodo.
  *   4. En una sola transacción: reemplaza la carga anterior de la misma cuenta (sus movimientos se
  *      borran; las clasificaciones manuales viven aparte y se re-aplican por huella) e inserta los nuevos.
+ *
+ * Fase 2 (06-nov-2026): inspección de seguridad del contenedor (SpreadsheetSafetyInspector),
+ * avisos con severidad (informativa | bloqueante: un control que no cuadra bloquea la
+ * aprobación), ciclo de vida del archivo (recibido → validado → procesado → conciliado |
+ * rechazado | duplicado | reemplazado) y re-chequeo de versión aprobada / duplicado DENTRO
+ * de la transacción con la fila del periodo bloqueada.
  */
 class EstadoResultadosUploadService
 {
@@ -77,6 +83,7 @@ class EstadoResultadosUploadService
             'mime' => is_file($absolutePath) ? (mb_substr((string) (@mime_content_type($absolutePath) ?: ''), 0, 120) ?: null) : null,
             'file_size' => $file?->getSize() ?: (is_file($absolutePath) ? (int) @filesize($absolutePath) : 0),
             'status' => EstadoResultadosImportAttempt::EN_PROCESO,
+            'lifecycle' => EstadoResultadosUpload::LIFECYCLE_RECIBIDO,
             'user_id' => $userId,
             'started_at' => now(),
         ]);
@@ -92,6 +99,10 @@ class EstadoResultadosUploadService
             $this->validateFile($absolutePath, $originalName, $file?->getSize() ?: null);
             $attempt->update(['file_hash' => hash_file('sha256', $absolutePath) ?: null]);
 
+            // Candado por periodo+cuenta ANTES del chequeo de duplicado y del parseo. release() de
+            // Laravel sólo libera si el dueño (token) coincide: un candado vencido y retomado por
+            // otra carga no se suelta por error. La consistencia final la garantiza la transacción
+            // (fila del periodo bloqueada + re-chequeo de versión aprobada y de duplicado).
             $lock = Cache::lock('estado_resultados:carga:'.$period->id.':'.$slot, 300);
             if (! $lock->get()) {
                 throw new EstadoResultadosImportException(
@@ -124,7 +135,7 @@ class EstadoResultadosUploadService
             throw $e;
         }
 
-        $this->finishAttempt($attempt, EstadoResultadosImportAttempt::COMPLETADO, 'Archivo cargado: '.$upload->movements_count.' movimientos.', [], $upload->id, $upload->stored_path);
+        $this->finishAttempt($attempt, EstadoResultadosImportAttempt::COMPLETADO, 'Archivo cargado: '.$upload->movements_count.' movimientos.'.($upload->blocking_warnings > 0 ? ' Tiene '.$upload->blocking_warnings.' aviso(s) que bloquean la aprobación.' : ''), [], $upload->id, $upload->stored_path);
 
         return $upload;
     }
@@ -166,7 +177,7 @@ class EstadoResultadosUploadService
     public function attempts(Period $period, int $limit = 30): array
     {
         return EstadoResultadosImportAttempt::query()
-            ->with(['user:id,name', 'errors' => fn ($q) => $q->orderBy('id')])
+            ->with(['user:id,name', 'upload', 'errors' => fn ($q) => $q->orderBy('id')])
             ->where('period_id', $period->id)
             ->orderByDesc('id')
             ->limit($limit)
@@ -177,7 +188,27 @@ class EstadoResultadosUploadService
 
     public static function attemptPayload(EstadoResultadosImportAttempt $a, int $maxErrors = 200): array
     {
+        $upload = $a->upload_id ? $a->upload : null;
+        $detail = $upload?->warningsDetailed() ?? [];
+        $blocking = $upload ? $upload->blockingWarningsList() : [];
+        $lifecycle = $a->lifecycle ?? match ($a->status) {
+            EstadoResultadosImportAttempt::COMPLETADO => EstadoResultadosUpload::LIFECYCLE_VALIDADO,
+            EstadoResultadosImportAttempt::RECHAZADO => EstadoResultadosUpload::LIFECYCLE_RECHAZADO,
+            EstadoResultadosImportAttempt::DUPLICADO => EstadoResultadosUpload::LIFECYCLE_DUPLICADO,
+            default => EstadoResultadosUpload::LIFECYCLE_RECIBIDO,
+        };
+        // Un intento validado sigue el ciclo de su carga (procesado / conciliado / reemplazado).
+        if ($upload && $a->status === EstadoResultadosImportAttempt::COMPLETADO && $upload->lifecycle) {
+            $lifecycle = $upload->lifecycle;
+        }
+
         return [
+            'lifecycle' => $lifecycle,
+            'lifecycle_label' => EstadoResultadosUpload::lifecycleLabel($lifecycle),
+            'warnings' => array_column($detail, 'message'),
+            'warnings_detail' => $detail,
+            'blocking_warnings' => $blocking,
+            'has_macros' => (bool) $upload?->has_macros,
             'id' => $a->id,
             'slot' => $a->account_slot,
             'slot_label' => self::SLOTS[$a->account_slot] ?? $a->account_slot,
@@ -215,6 +246,12 @@ class EstadoResultadosUploadService
         }
         $attempt->update(array_filter([
             'status' => $status,
+            'lifecycle' => match ($status) {
+                EstadoResultadosImportAttempt::COMPLETADO => EstadoResultadosUpload::LIFECYCLE_VALIDADO,
+                EstadoResultadosImportAttempt::DUPLICADO => EstadoResultadosUpload::LIFECYCLE_DUPLICADO,
+                default => EstadoResultadosUpload::LIFECYCLE_RECHAZADO,
+            },
+            'validated_at' => $status === EstadoResultadosImportAttempt::COMPLETADO ? $now : null,
             'message' => mb_substr($message, 0, 2000),
             'errors_count' => count($errors),
             'upload_id' => $uploadId,
@@ -254,7 +291,8 @@ class EstadoResultadosUploadService
             );
         }
 
-        $parsed = $this->parser->parse($absolutePath);
+        // La extensión sale del nombre original (el temporal de PHP no la tiene).
+        $parsed = $this->parser->parse($absolutePath, mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION)) ?: null);
 
         if ($parsed['layout'] !== $slot) {
             throw new EstadoResultadosImportException(
@@ -282,24 +320,27 @@ class EstadoResultadosUploadService
 
         $totalCargos = Money::sum(array_column($parsed['movements'], 'cargo'));
         $totalAbonos = Money::sum(array_column($parsed['movements'], 'abono'));
-        $warnings = $parsed['warnings'];
+        $warnings = $parsed['warnings_detail'];
         $controlOk = null;
         if ($parsed['control_cargos'] !== null || $parsed['control_abonos'] !== null) {
             $okC = $parsed['control_cargos'] === null || Money::equalsCents($parsed['control_cargos'], $totalCargos);
             $okA = $parsed['control_abonos'] === null || Money::equalsCents($parsed['control_abonos'], $totalAbonos);
             $controlOk = $okC && $okA;
             if (! $controlOk) {
-                $warnings[] = 'Los totales leídos no coinciden con los totales de control del archivo: cargos '
+                // BLOQUEANTE: lo leído no es lo que el banco reporta ⇒ no se puede aprobar.
+                $warnings[] = ['code' => 'control_no_cuadra', 'severity' => EstadoResultadosUpload::SEVERITY_BLOCKING, 'message' => 'Los totales leídos no coinciden con los totales de control del archivo: cargos '
                     .Money::str2($totalCargos).' vs '.($parsed['control_cargos'] ?? '—').', abonos '
-                    .Money::str2($totalAbonos).' vs '.($parsed['control_abonos'] ?? '—').'.';
+                    .Money::str2($totalAbonos).' vs '.($parsed['control_abonos'] ?? '—').'.'];
             }
         } else {
-            $warnings[] = 'El archivo no trae renglón de totales de control ("TOTAL EXCEL"); no se pudo validar contra el banco.';
+            // INFORMATIVA: sin renglón de control no hay contra qué comparar; queda visible.
+            $warnings[] = ['code' => 'sin_totales_control', 'severity' => EstadoResultadosUpload::SEVERITY_INFO, 'message' => 'El archivo no trae renglón de totales de control ("TOTAL EXCEL"); no se pudo validar contra el banco.'];
         }
         $outOfPeriod = count($parsed['movements']) - $inPeriod;
         if ($outOfPeriod > 0) {
-            $warnings[] = "{$outOfPeriod} movimiento(s) tienen fecha fuera del periodo ({$start} a {$end}): se conservan para auditoría pero no se suman en este periodo.";
+            $warnings[] = ['code' => 'fuera_periodo', 'severity' => EstadoResultadosUpload::SEVERITY_INFO, 'message' => "{$outOfPeriod} movimiento(s) tienen fecha fuera del periodo ({$start} a {$end}): se conservan para auditoría pero no se suman en este periodo."];
         }
+        $blocking = count(array_filter($warnings, fn ($w) => $w['severity'] === EstadoResultadosUpload::SEVERITY_BLOCKING));
 
         $storedPath = null;
         $directory = 'estado-resultados/'.$period->id;
@@ -310,7 +351,16 @@ class EstadoResultadosUploadService
             Storage::disk(self::DISK)->put($storedPath, (string) file_get_contents($absolutePath));
         }
 
-        return DB::transaction(function () use ($period, $slot, $parsed, $hash, $originalName, $absolutePath, $userId, $storedPath, $totalCargos, $totalAbonos, $controlOk, $warnings, $inPeriod, $start, $end, $dates) {
+        return DB::transaction(function () use ($period, $slot, $parsed, $hash, $originalName, $absolutePath, $userId, $storedPath, $totalCargos, $totalAbonos, $controlOk, $warnings, $blocking, $inPeriod, $start, $end, $dates) {
+            // Serializa contra aprobación/procesamiento: fila del periodo bloqueada y RE-CHEQUEO
+            // dentro de la transacción (cierra la carrera «se aprobó mientras se leía el archivo»).
+            DB::table('periods')->where('id', $period->id)->lockForUpdate()->first();
+            app(PeriodLockGuard::class)->assertUnlocked($period);
+            $dup = EstadoResultadosUpload::query()->active()->where('period_id', $period->id)->where('file_hash', $hash)->lockForUpdate()->first();
+            if ($dup) {
+                throw new EstadoResultadosDuplicateUploadException('Este mismo archivo ya está cargado en el periodo. No se duplicó ningún movimiento.', $dup);
+            }
+
             $previous = EstadoResultadosUpload::query()
                 ->active()
                 ->where('period_id', $period->id)
@@ -328,6 +378,8 @@ class EstadoResultadosUploadService
                 'file_size' => (int) @filesize($absolutePath),
                 'stored_path' => $storedPath,
                 'status' => EstadoResultadosUpload::STATUS_LOADED,
+                'lifecycle' => EstadoResultadosUpload::LIFECYCLE_VALIDADO,
+                'validated_at' => now(),
                 'rows_read' => $parsed['rows_read'],
                 'movements_count' => count($parsed['movements']),
                 'detail_lines_count' => $parsed['detail_lines'],
@@ -339,7 +391,10 @@ class EstadoResultadosUploadService
                 'control_ok' => $controlOk,
                 'first_movement_date' => min($dates),
                 'last_movement_date' => max($dates),
-                'warnings' => array_values($warnings),
+                'warnings' => array_values(array_column($warnings, 'message')),
+                'warnings_detail' => array_values($warnings),
+                'blocking_warnings' => $blocking,
+                'has_macros' => (bool) ($parsed['has_macros'] ?? false),
                 'uploaded_by' => $userId,
             ]);
 
@@ -347,6 +402,7 @@ class EstadoResultadosUploadService
                 EstadoResultadosMovement::query()->where('upload_id', $old->id)->delete();
                 $old->update([
                     'status' => EstadoResultadosUpload::STATUS_REPLACED,
+                    'lifecycle' => EstadoResultadosUpload::LIFECYCLE_REEMPLAZADO,
                     'superseded_at' => now(),
                     'superseded_by_upload_id' => $upload->id,
                 ]);

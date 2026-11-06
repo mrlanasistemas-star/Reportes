@@ -12,6 +12,9 @@ use App\Services\EstadoResultados\Support\Treatment as T;
  *    nómina (importes individuales, beneficiarios, conceptos).
  *  - Sin `ver_dg`: igual para la sección y los movimientos de Dirección General.
  *
+ * Secciones (modelo anterior) o categorías de la sección «opex» (modelo de EBITDA único) con
+ * clave nomina_sucursales / nomina_corporativa / dg se colapsan igual.
+ *
  * Totales, resultados, validaciones, conciliaciones agregadas y el hash del
  * dataset NO cambian: web, Excel y PDF del mismo usuario siguen siendo idénticos.
  */
@@ -36,6 +39,15 @@ class EstadoResultadosRedactor
             foreach ($d['statement'] ?? [] as $i => $block) {
                 if (($block['type'] ?? null) !== 'section') {
                     continue;
+                }
+                // Modelo de EBITDA único: nómina y DG son CATEGORÍAS dentro de la sección «opex».
+                foreach ((array) ($block['categories'] ?? []) as $ci => $cat) {
+                    if (! $canNomina && in_array($cat['key'] ?? null, self::NOMINA_SECTIONS, true)) {
+                        $d['statement'][$i]['categories'][$ci] = $this->collapse($cat, 'Consultar detalle de nómina');
+                    }
+                    if (! $canDg && in_array($cat['key'] ?? null, self::DG_SECTIONS, true)) {
+                        $d['statement'][$i]['categories'][$ci] = $this->collapse($cat, 'Consultar detalle de Dirección General');
+                    }
                 }
                 if (! $canNomina && in_array($block['key'], self::NOMINA_SECTIONS, true)) {
                     $d['statement'][$i] = $this->collapse($block, 'Consultar detalle de nómina');

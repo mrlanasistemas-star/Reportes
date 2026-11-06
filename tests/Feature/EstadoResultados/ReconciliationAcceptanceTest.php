@@ -68,8 +68,8 @@ it('nómina NOI pagada por banco = un solo gasto reconocido (el NOI); el banco e
         ->and($m['dimensions']['inclusion']['key'])->toBe('excluido_justificado')
         ->and($m['impact']['included'])->toBeFalse()
         ->and(collect($m['links'])->pluck('kind')->all())->toBe(['evidencia_noi'])
-        ->and($d['results']['nomina_corporativa'])->toBe('0.00')
-        ->and($d['results']['nomina_sucursales'])->toBe('30000.00')      // sólo Radiografía (NOI)
+        ->and($d['controls']['nomina_corporativa'])->toBe('0.00')
+        ->and($d['controls']['nomina_sucursales'])->toBe('30000.00')      // sólo Radiografía (NOI)
         ->and($d['validation']['noi']['linked_payments'])->toBe(['count' => 1, 'amount' => '9000.00'])
         ->and(raFailedChecks($d))->toBe([]);
 });
@@ -85,7 +85,7 @@ it('si el NOI trae colaboradores sin sucursal operativa (p. ej. Corporativo), la
     expect($m['treatment'])->toBe(T::PENDIENTE)
         ->and($m['rule_code'])->toBe('nomina_corporativa_noi_sin_sucursal')
         ->and($m['suggested_treatment'])->toBe(T::NOMINA_CORPORATIVA)
-        ->and($d['results']['nomina_corporativa'])->toBe('0.00')
+        ->and($d['controls']['nomina_corporativa'])->toBe('0.00')
         ->and($d['validation']['noi']['unassigned_total'])->toBe('15000.00');
 });
 
@@ -98,7 +98,7 @@ it('ERP + banco = un solo gasto (desde el ERP), con vínculo y dimensiones indep
     $bank = raMov($d, 'REQ SERVICIOS');
     $erp = raMov($d, 'SERVICIO INTERNET', 'erp');
 
-    expect($d['results']['opex_corporativo'])->toBe('5000.00')
+    expect($d['controls']['opex_corporativo'])->toBe('5000.00')
         ->and($bank['dimensions']['reconciliation']['key'])->toBe('conciliado')
         ->and($bank['dimensions']['inclusion']['key'])->toBe('excluido_justificado')
         ->and($bank['dimensions']['source']['key'])->toBe('erp')
@@ -130,15 +130,15 @@ it('ERP + NOI + banco: nunca triple conteo — la requisición que nombra a un c
         ->and($erp['treatment'])->toBe(T::PENDIENTE)                     // ERP ↔ NOI: revisión explícita
         ->and($erp['rule_code'])->toBe('erp_nomina_colaborador_noi')
         ->and(collect($erp['links'])->pluck('kind')->sort()->values()->all())->toBe(['conciliacion', 'evidencia_noi'])
-        ->and($d['results']['nomina_corporativa'])->toBe('0.00')
-        ->and($d['results']['opex_corporativo'])->toBe('0.00')
+        ->and($d['controls']['nomina_corporativa'])->toBe('0.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('0.00')
         ->and($d['validation']['totals']['recognized'])->toBe(['count' => 0, 'amount' => '0.00'])
         ->and($d['validation']['totals']['pending']['amount'])->toBe('3000.00')
         ->and($d['validation']['totals']['conciliated']['amount'])->toBe('3000.00');
 
     // Al confirmarlo como nómina corporativa se reconoce UNA vez (desde el ERP), no tres.
     raClassify($period, $erp, T::NOMINA_CORPORATIVA);
-    expect(raBuild($period)['results']['nomina_corporativa'])->toBe('3000.00');
+    expect(raBuild($period)['controls']['nomina_corporativa'])->toBe('3000.00');
 });
 
 it('pago parcial con excedente: sólo lo conciliado se neutraliza; el remanente queda pendiente y, al clasificarse, suma sólo el remanente', function () {
@@ -153,14 +153,14 @@ it('pago parcial con excedente: sólo lo conciliado se neutraliza; el remanente 
         ->and($bank['treatment'])->toBe(T::PENDIENTE)
         ->and($bank['dimensions']['reconciliation']['key'])->toBe('conciliado_parcial')
         ->and($bank['amounts'])->toMatchArray(['conciliated' => '5000.00', 'pending' => '500.00', 'recognized' => '0.00'])
-        ->and($d['results']['opex_corporativo'])->toBe('5000.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('5000.00')
         ->and($d['conciliation']['parciales'])->toBe(['count' => 1, 'excedente_pendiente' => '500.00']);
 
     raClassify($period, $bank, T::OPEX_CORPORATIVO);
     $d = raBuild($period);
     $bank = raMov($d, 'REQ RENTA');
 
-    expect($d['results']['opex_corporativo'])->toBe('5500.00')            // 5,000 ERP + 500 remanente (no 10,500)
+    expect($d['controls']['opex_corporativo'])->toBe('5500.00')            // 5,000 ERP + 500 remanente (no 10,500)
         ->and($bank['impact']['amount'])->toBe('500.00')
         ->and($bank['dimensions']['inclusion']['key'])->toBe('incluido_parcial')
         ->and(raFailedChecks($d))->toBe([]);
@@ -177,7 +177,7 @@ it('pago parcial declarado en ERP: el gasto se reconoce una vez y el saldo ERP s
     expect(raMov($d, 'REQ MANTENIMIENTO')['treatment'])->toBe(T::CONCILIADO_ERP)
         ->and($erp['erp_payment'])->toBe(['amount' => '5000.00', 'applied' => '2000.00', 'pending' => '3000.00'])
         ->and($erp['dimensions']['reconciliation']['key'])->toBe('conciliado_parcial')
-        ->and($d['results']['opex_corporativo'])->toBe('5000.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('5000.00')
         ->and($d['conciliation']['erp_saldo_pendiente_pago'])->toBe('3000.00')
         ->and(collect($d['validation']['unresolved'])->pluck('key')->all())->toContain('erp_saldo_pendiente');
 });
@@ -199,15 +199,15 @@ it('reembolso vinculado reduce la misma categoría; sin vínculo queda pendiente
         ->and($refund['treatment_source'])->toBe('reembolso')
         ->and($refund['impact']['amount'])->toBe('-500.00')
         ->and($refund['links'][0])->toMatchArray(['kind' => 'reembolso', 'target_type' => 'erp'])
-        ->and($d['results']['opex_corporativo'])->toBe('4500.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('4500.00')
         ->and(raMov($d, 'DEVOLUCION VIATICO')['treatment'])->toBe(T::PENDIENTE)
         ->and(raMov($d, 'PAGO PROVEEDOR')['treatment'])->toBe(T::REVERSO)
         ->and(raMov($d, 'REVERSO SPEI')['treatment'])->toBe(T::REVERSO)
         ->and(raMov($d, 'PAGO PROVEEDOR')['reversal_pair'])->toBe(raMov($d, 'REVERSO SPEI')['reversal_pair'])
         ->and($d['validation']['eliminations']['reversals'])->toBe(['pairs' => 1, 'count' => 2, 'amount' => '2400.00'])
-        ->and($d['results']['ingresos'])->toBe('100000.00')
-        ->and($d['results']['ingresos_financieros'])->toBe('0.00')
-        ->and($d['results']['ebitda_final'])->toBe('45500.00')
+        ->and($d['controls']['ingresos'])->toBe('100000.00')
+        ->and($d['controls']['ingresos_financieros'])->toBe('0.00')
+        ->and($d['controls']['ebitda_final'])->toBe('45500.00')
         ->and(raFailedChecks($d))->toBe([]);
 });
 
@@ -225,9 +225,9 @@ it('gasto DG registrado en ERP de Corporativo se reclasifica (no se descuenta do
     raClassify($period, raMov($d, 'REQ VIATICOS DG'), T::DG_OPERATIVO);
     $d = raBuild($period);
 
-    expect($d['results']['dg'])->toBe('6000.00')
-        ->and($d['results']['opex_corporativo'])->toBe('0.00')
-        ->and($d['results']['ebitda_final'])->toBe('44000.00')
+    expect($d['controls']['dg'])->toBe('6000.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('0.00')
+        ->and($d['controls']['ebitda_final'])->toBe('44000.00')
         ->and(raMov($d, 'VIATICOS DG', 'erp')['dimensions']['category']['key'])->toBe('opex_dg')
         ->and(raMov($d, 'REQ VIATICOS DG')['impact']['included'])->toBeFalse()
         ->and(raFailedChecks($d))->toBe(['conciliados_reclasificados: 6000.00']);
@@ -251,7 +251,7 @@ it('conciliaciones N:1 y N:M desde los archivos reales: el ERP se reconoce una s
         ->and(raMov($d, 'PAGO AGUA 1')['match_type'])->toBe('N:M')
         ->and(raMov($d, 'PAGO AGUA 2')['match_type'])->toBe('N:M')
         ->and(collect(raMov($d, 'PAGO AGUA 2')['links'])->pluck('applied')->all())->toEqualCanonicalizing(['500.00', '4000.00'])
-        ->and($d['results']['opex_corporativo'])->toBe('12000.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('12000.00')
         ->and($d['conciliation']['incorporado_bancos'])->toBe('0.00')
         ->and(collect($d['conciliation']['por_tipo_emparejamiento'])->pluck('count', 'key')->all())->toBe(['N:1' => 1, 'N:M' => 2])
         ->and(EstadoResultadosReconciliationLink::query()->where('period_id', $period->id)->where('link_kind', 'conciliacion')->count())->toBe(5) // N:1 = 2 vínculos, N:M = 3
@@ -297,7 +297,7 @@ it('reprocesar y reemplazar el archivo no duplica movimientos, vínculos ni gast
     expect($links)->toBe(2)
         ->and(EstadoResultadosReconciliationLink::query()->where('period_id', $period->id)->count())->toBe(2)
         ->and(EstadoResultadosMovement::query()->where('period_id', $period->id)->count())->toBe(2)
-        ->and($d['results']['opex_corporativo'])->toBe('5000.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('5000.00')
         ->and(EstadoResultadosRun::query()->where('period_id', $period->id)->latest('id')->first()->input_signature)
         ->toBe(EstadoResultadosRun::query()->where('period_id', $period->id)->orderBy('id')->skip(1)->first()->input_signature);
     // El hash cambia sólo por el estado del archivo de control (sin total de control); cifras idénticas.
@@ -326,9 +326,9 @@ it('cambio de periodo no contamina: un folio ERP de un periodo anterior es ajust
         ->and($late['treatment'])->toBe(T::PENDIENTE)
         ->and($late['dimensions']['recognition']['out_of_period'])->toBe('ajuste_periodo_anterior')
         ->and($late['rule_reason'])->toContain('Ajuste de periodo anterior')
-        ->and($o['results']['opex_corporativo'])->toBe('0.00')
+        ->and($o['controls']['opex_corporativo'])->toBe('0.00')
         ->and($sepAfter['meta']['dataset_hash'])->toBe($sepBefore['meta']['dataset_hash'])
-        ->and($sepAfter['results']['opex_corporativo'])->toBe('700.00')
+        ->and($sepAfter['controls']['opex_corporativo'])->toBe('700.00')
         ->and($outOfPeriod['dimensions']['inclusion']['key'])->toBe('fuera_periodo')
         ->and($outOfPeriod['dimensions']['recognition']['out_of_period'])->toBe('fecha_posterior_al_periodo')
         ->and($outOfPeriod['dimensions']['recognition']['period_id'])->toBe($oct->id)

@@ -98,14 +98,14 @@ it('Estado de Resultados: EBITDA sucursales = Radiografía ($0.00) y CORPORATIVO
     }
     $d = app(EstadoResultadosDatasetBuilder::class)->build(erGoldenPeriod());
 
-    expect($d['results']['ebitda_sucursales'])->toBe('1861873.28')
+    expect($d['controls']['ebitda_sucursales'])->toBe('1861873.28')
         ->and($d['radiography_reconciliation']['radiografia_ebitda'])->toBe('1861873.28')
         ->and($d['radiography_reconciliation']['difference'])->toBe('0.00')
         ->and($d['conciliation']['erp_fuera_radiografia'])->toBe(['count' => 80, 'amount' => '410568.60'])
-        ->and((float) $d['results']['opex_corporativo'] + (float) $d['results']['nomina_corporativa'])->toBeGreaterThan(0)
+        ->and((float) $d['controls']['opex_corporativo'] + (float) $d['controls']['nomina_corporativa'])->toBeGreaterThan(0)
         ->and(collect($d['checks'])->where('ok', false)->pluck('key')->all())->toBe([]);
 
     // EBITDA corporativo = sucursales − (lo efectivamente clasificado como Corporativo); lo pendiente NO se suma.
     $incorporado = (float) $d['conciliation']['incorporado_erp_fuera_radiografia'];
-    expect(round(1861873.28 - $incorporado, 2))->toBe((float) $d['results']['ebitda_corporativo']);
+    expect(round(1861873.28 - $incorporado, 2))->toBe((float) $d['controls']['ebitda_corporativo']);
 });

@@ -205,5 +205,8 @@ it('neutraliza la inyección de fórmulas en el Excel y conserva las fórmulas d
     expect($values)->toContain('=HYPERLINK("http://malicioso","clic")', '+cmd|calc', '-2+3', '@proveedor', '=cmd|\' /C calc\'!A0')
         ->and(collect($dangerous)->every(fn ($c) => $c[3] === DataType::TYPE_STRING && $c[4] === true))->toBeTrue()
         ->and($formulas)->not->toBeEmpty()
-        ->and(collect($formulas)->every(fn ($f) => (bool) preg_match('/^=ROUND\(SUM\(C\d+:C\d+\)-N\(C\d+\),2\)$/', $f)))->toBeTrue();
+        // Las únicas fórmulas son las propias del exportador (referencias a celdas del libro y
+        // literales numéricos): ningún texto de origen terminó como fórmula.
+        ->and(collect($formulas)->every(fn ($f) => ! preg_match('/HYPERLINK|cmd|calc|proveedor|SUM\(A1:A9\)/i', $f)))->toBeTrue()
+        ->and(collect($formulas)->every(fn ($f) => (bool) preg_match('/^=[A-Za-z0-9$:()+\-*\/,.<>"\x{2014} \'!_ÁÉÍÓÚáéíóúñ]+$/u', $f)))->toBeTrue();
 });

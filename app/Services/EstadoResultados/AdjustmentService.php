@@ -91,6 +91,7 @@ class AdjustmentService
         }
 
         return DB::transaction(function () use ($period, $scopeKey, $concept, $state, $value, $notes, $userId) {
+            app(PeriodLockGuard::class)->lockForWrite($period); // re-verificación con la fila del periodo bloqueada
             $adj = EstadoResultadosAdjustment::query()->lockForUpdate()->firstOrNew([
                 'period_id' => $period->id, 'scope_key' => $scopeKey, 'concept' => $concept,
             ]);
