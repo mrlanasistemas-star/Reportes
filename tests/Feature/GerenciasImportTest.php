@@ -20,25 +20,53 @@ function giSeedBranches(): void
     }
 }
 
+/**
+ * Directorio SINTÉTICO con la misma estructura que el de gerencias: hoja
+ * "Directorio", encabezado "NOMBRE DEL COLABORADOR", bandas "▎ …" y sección de
+ * notas. Personas ficticias; el directorio real nunca se usa en pruebas.
+ *  - 4 creables (con NOI y correo coherente)
+ *  - 1 a revisar porque el correo no corresponde al nombre
+ *  - 1 a revisar porque no tiene NOI
+ */
 function giFile(): UploadedFile
 {
-    $path = base_path('docs/usuarios/DIRECTORIO_GERENCIAS_MRLANA.xlsx');
+    $book = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
+    $ws = $book->getActiveSheet()->setTitle('Directorio');
+    $ws->fromArray([
+        ['DIRECTORIO DE GERENCIAS (EJEMPLO SINTÉTICO)'],
+        ['Empresa de prueba · documento ficticio'],
+        [null],
+        ['NO. NOI', 'NOMBRE DEL COLABORADOR', 'SUCURSAL', 'PUESTO', 'CORREO INSTITUCIONAL'],
+        ['▎ SUCURSALES OPERATIVAS'],
+        ['9001', 'ANA PRUEBA LOPEZ', 'CORDOBA', 'GERENTE DE SUCURSAL', 'ana.prueba@ejemplo.test'],
+        ['9002', 'BRUNO FICTICIO MENDEZ', 'TULA', 'GERENTE DE SUCURSAL', 'bruno.ficticio@ejemplo.test'],
+        ['9003', 'CARLA SINTETICA RUIZ', 'ORIZABA', 'GERENTE DE SUCURSAL', 'carla.sintetica@ejemplo.test'],
+        ['9004', 'DIEGO MODELO PEREZ', 'TLAXCALA', 'GERENTE DE SUCURSAL', 'diego.modelo@ejemplo.test'],
+        ['9005', 'ELENA DEMO SOTO', 'CUERNAVACA', 'GERENTE DE SUCURSAL', 'elena.ajeno@ejemplo.test'],
+        [null, 'FABIAN ENSAYO VEGA', 'ATLIXCO', 'GERENTE DE SUCURSAL', 'fabian.ensayo@ejemplo.test'],
+        [null],
+        ['NOTAS Y OBSERVACIONES'],
+        ['9999', 'FILA POSTERIOR A LAS NOTAS', 'CORDOBA', 'NO DEBE LEERSE', 'no.leer@ejemplo.test'],
+    ], null, 'A1');
 
-    return new UploadedFile($path, 'DIRECTORIO_GERENCIAS_MRLANA.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', null, true);
+    $dir = storage_path('framework/testing');
+    if (! is_dir($dir)) {
+        mkdir($dir, 0775, true);
+    }
+    $path = $dir.'/directorio_sintetico_'.uniqid().'.xlsx';
+    (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($book))->save($path);
+
+    return new UploadedFile($path, 'DIRECTORIO_SINTETICO.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', null, true);
 }
 
 function giAllEmails(): array
 {
-    // Las 25 personas del directorio (todas creables: 21 nuevas + 4 a revisar).
-    return array_map(fn ($u) => $u . '@mr-lana.com', [
-        'eliot.serrano', 'angelica.granados', 'luis.lopez', 'ramses.rojas', 'jaime.valverde', 'maribel.diaz',
-        'ricardo.rocha', 'hesiquio.martinez', 'juan.gonzalez', 'rosalinda.cuellar', 'luis.garay', 'ana.sanchez',
-        'jose.gonzalez', 'monica.ocampo', 'ivan.quevedo', 'lizette.aguilar', 'alejandra.rosas', 'hugo.herrera',
-        'mercedes.rodriguez', 'isaias.farias', 'marlen.razo', 'maricela.flores', 'monica.garcia', 'lidia.jimenez', 'maria.godoy',
+    return array_map(fn ($u) => $u.'@ejemplo.test', [
+        'ana.prueba', 'bruno.ficticio', 'carla.sintetica', 'diego.modelo', 'elena.ajeno', 'fabian.ensayo',
     ]);
 }
 
-it('previsualiza las 25 personas reales del directorio (ignora los contadores erróneos de la hoja)', function () {
+it('previsualiza las personas del directorio sintético (ignora bandas y lo posterior a las notas)', function () {
     Storage::fake('local');
     giSeedBranches();
     $admin = User::factory()->create(['role' => 'admin']);
@@ -47,13 +75,13 @@ it('previsualiza las 25 personas reales del directorio (ignora los contadores er
     $res->assertSessionHasNoErrors()->assertSessionHas('import_preview');
 
     $preview = session('import_preview');
-    expect($preview['summary'])->toMatchArray(['total' => 25, 'create' => 21, 'review' => 4, 'exists' => 0, 'error' => 0]);
-    // Las 4 a revisar: Angélica (correo dudoso) + los 3 sin NOI.
+    expect($preview['summary'])->toMatchArray(['total' => 6, 'create' => 4, 'review' => 2, 'exists' => 0, 'error' => 0]);
+    // Las 2 a revisar: correo que no corresponde al nombre + persona sin NOI.
     $review = collect($preview['rows'])->where('status', 'needs_review')->pluck('name')->all();
-    expect($review)->toContain('ANGELICA AZUCENA GONZALEZ', 'JAIME VALVERDE ERIVES', 'HUGO SAUL HERRERA RAFFUL', 'ISAIAS FARIAS BONILLA');
+    expect($review)->toContain('ELENA DEMO SOTO', 'FABIAN ENSAYO VEGA');
 });
 
-it('crea las 25 cuentas con rol gerencial y alcance = su sucursal, sin contraseñas en claro y sin enviar correos', function () {
+it('crea las 6 cuentas con rol gerencial y alcance = su sucursal, sin contraseñas en claro y sin enviar correos', function () {
     Storage::fake('local');
     giSeedBranches();
     Mail::fake();
@@ -63,15 +91,15 @@ it('crea las 25 cuentas con rol gerencial y alcance = su sucursal, sin contrase�
     $this->actingAs($admin)->post(route('usuarios.import'), ['emails' => giAllEmails(), 'confirmed' => true])
         ->assertSessionHasNoErrors()->assertSessionHas('import_result');
 
-    expect(User::query()->where('role', 'gerencial')->count())->toBe(25);
+    expect(User::query()->where('role', 'gerencial')->count())->toBe(6);
     Mail::assertNothingSent(); // por omisión NO se envían invitaciones (SMTP sin verificar)
 
-    $u = User::query()->where('email', 'eliot.serrano@mr-lana.com')->first();
+    $u = User::query()->where('email', 'ana.prueba@ejemplo.test')->first();
     expect($u)->not->toBeNull()
         ->and($u->role)->toBe('gerencial')
         ->and($u->access_enabled_at)->toBeNull()        // queda pendiente de activación
         ->and($u->branch_scope)->toBe('branches');
-    // Alcance exactamente 1 sucursal (ATLACOMULCO), nunca «todas».
+    // Alcance exactamente 1 sucursal (CORDOBA), nunca «todas».
     $scopeCount = DB::table('user_branch_scopes')->where('user_id', $u->id)->count();
     expect($scopeCount)->toBe(1);
     // En BD solo vive un hash, nunca el claro.
@@ -82,10 +110,10 @@ it('crea las 25 cuentas con rol gerencial y alcance = su sucursal, sin contrase�
     expect(session('import_credentials'))->toBeString();
     $report = \App\Http\Controllers\Okr\ResponsibleController::revealSecret(session('import_credentials'));
     $created = collect($report)->where('creation', 'Creada');
-    expect($created)->toHaveCount(25);
+    expect($created)->toHaveCount(6);
     $created->each(fn ($row) => expect($row['temporary_password'])->toBeString()->not->toBeEmpty());
-    $eliot = $created->firstWhere('email', 'eliot.serrano@mr-lana.com');
-    expect(\Illuminate\Support\Facades\Hash::check($eliot['temporary_password'], $u->password))->toBeTrue();
+    $ana = $created->firstWhere('email', 'ana.prueba@ejemplo.test');
+    expect(\Illuminate\Support\Facades\Hash::check($ana['temporary_password'], $u->password))->toBeTrue();
 });
 
 it('es idempotente: subir y confirmar el mismo archivo otra vez no crea cuentas ni toca las existentes', function () {
@@ -97,18 +125,18 @@ it('es idempotente: subir y confirmar el mismo archivo otra vez no crea cuentas 
     // Primer lote.
     $this->actingAs($admin)->post(route('usuarios.import-preview'), ['file' => giFile()]);
     $this->actingAs($admin)->post(route('usuarios.import'), ['emails' => giAllEmails(), 'confirmed' => true]);
-    expect(User::query()->where('role', 'gerencial')->count())->toBe(25);
-    $hashBefore = User::query()->where('email', 'eliot.serrano@mr-lana.com')->value('password');
+    expect(User::query()->where('role', 'gerencial')->count())->toBe(6);
+    $hashBefore = User::query()->where('email', 'ana.prueba@ejemplo.test')->value('password');
 
     // Segundo intento idéntico.
     $this->actingAs($admin)->post(route('usuarios.import-preview'), ['file' => giFile()])->assertSessionHas('import_preview');
-    expect(session('import_preview')['summary'])->toMatchArray(['total' => 25, 'create' => 0, 'review' => 0, 'exists' => 25, 'error' => 0]);
+    expect(session('import_preview')['summary'])->toMatchArray(['total' => 6, 'create' => 0, 'review' => 0, 'exists' => 6, 'error' => 0]);
 
     $this->actingAs($admin)->post(route('usuarios.import'), ['emails' => giAllEmails(), 'confirmed' => true])->assertSessionHas('import_result');
-    expect(session('import_result')['summary'])->toMatchArray(['created' => 0, 'existing' => 25]);
-    expect(User::query()->where('role', 'gerencial')->count())->toBe(25);
+    expect(session('import_result')['summary'])->toMatchArray(['created' => 0, 'existing' => 6]);
+    expect(User::query()->where('role', 'gerencial')->count())->toBe(6);
     // La contraseña de una cuenta existente no se tocó.
-    expect(User::query()->where('email', 'eliot.serrano@mr-lana.com')->value('password'))->toBe($hashBefore);
+    expect(User::query()->where('email', 'ana.prueba@ejemplo.test')->value('password'))->toBe($hashBefore);
 });
 
 it('descarga el reporte de credenciales una sola vez y exige confirmación y entorno', function () {
