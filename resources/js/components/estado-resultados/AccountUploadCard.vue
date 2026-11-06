@@ -15,9 +15,10 @@ import {
     CollapsibleContent,
     CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import { swal } from '@/composables/estado-resultados/erSwal';
 import FileLifecycle from './FileLifecycle.vue';
 import StatusBadge from './StatusBadge.vue';
-import { mxn } from './types';
+import { escapeHtml, mxn } from './types';
 import type { AccountSource, UploadRules } from './types';
 
 const props = defineProps<{
@@ -35,17 +36,51 @@ const dragging = ref(false);
 const input = ref<HTMLInputElement | null>(null);
 const showHistory = ref(false);
 
-function pick(files: FileList | null | undefined): void {
-    const file = files?.[0];
+/** Si la cuenta ya tiene un archivo, se confirma antes de sustituirlo (clic o arrastre). */
+async function confirmReplace(file: File): Promise<boolean> {
+    const current = props.account.upload;
 
-    if (file) {
-        emit('upload', props.account.key, file);
+    if (!current) {
+        return true;
     }
+
+    const r = await swal.fire({
+        icon: 'warning',
+        title: '¿Sustituir el estado de cuenta?',
+        html: `<p>Vas a sustituir <b>«${escapeHtml(current.name)}»</b> (${current.movements} movimiento(s)) por <b>«${escapeHtml(file.name)}»</b>.</p><p style="margin-top:8px">El archivo anterior queda en el historial de cargas y los movimientos de esta cuenta se vuelven a conciliar.</p>`,
+        showCancelButton: true,
+        confirmButtonText: 'Sí, sustituir archivo',
+        cancelButtonText: 'Conservar el actual',
+        focusCancel: true,
+    });
+
+    return r.isConfirmed;
+}
+
+async function pick(files: FileList | null | undefined): Promise<void> {
+    const file = files?.[0];
 
     if (input.value) {
         input.value.value = '';
     }
+
+    if (file && (await confirmReplace(file))) {
+        emit('upload', props.account.key, file);
+    }
 }
+
+/** Estados crudos del historial en español claro. */
+const STATUS_LABEL: Record<string, string> = {
+    reemplazado: 'Sustituido',
+    activo: 'Vigente',
+    vigente: 'Vigente',
+    procesado: 'Procesado',
+    cargado: 'Cargado',
+    rechazado: 'Rechazado',
+};
+const statusLabel = (s: string) =>
+    STATUS_LABEL[s] ??
+    s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ');
 
 function onDrop(e: DragEvent): void {
     dragging.value = false;
@@ -69,10 +104,19 @@ function onDrop(e: DragEvent): void {
                         <FileSpreadsheet class="size-4.5" />
                     </div>
                     <div class="min-w-0">
-                        <p class="truncate text-sm font-semibold">
+                        <p
+                            class="truncate text-sm font-semibold md:line-clamp-2 md:whitespace-normal"
+                            :title="account.label"
+                        >
                             {{ account.label }}
                         </p>
-                        <p class="truncate text-xs text-muted-foreground">
+                        <p
+                            class="truncate text-xs text-muted-foreground md:line-clamp-2 md:whitespace-normal"
+                            :title="
+                                account.upload?.account ??
+                                'Estado de cuenta complementario'
+                            "
+                        >
                             {{
                                 account.upload?.account ??
                                 'Estado de cuenta complementario'
@@ -211,7 +255,7 @@ function onDrop(e: DragEvent): void {
                     uploading
                         ? 'Validando archivo…'
                         : account.upload
-                          ? 'Reemplazar archivo'
+                          ? 'Sustituir archivo (te pediremos confirmar)'
                           : 'Arrastra el Excel aquí o haz clic para elegirlo'
                 }}</span>
                 <span class="text-muted-foreground"
@@ -258,9 +302,10 @@ function onDrop(e: DragEvent): void {
                             :key="h.id"
                             class="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2 py-1"
                         >
-                            <span class="truncate"
-                                >{{ h.name }} · {{ h.movements }} mov. · sha
-                                {{ h.hash }}</span
+                            <span
+                                class="truncate"
+                                :title="`${h.name} · huella del archivo ${h.hash}`"
+                                >{{ h.name }} · {{ h.movements }} mov.</span
                             >
                             <span
                                 class="shrink-0 font-semibold"
@@ -269,7 +314,7 @@ function onDrop(e: DragEvent): void {
                                         ? 'text-muted-foreground line-through'
                                         : 'text-emerald-700 dark:text-emerald-400'
                                 "
-                                >{{ h.status }}</span
+                                >{{ statusLabel(h.status) }}</span
                             >
                         </li>
                     </ul>

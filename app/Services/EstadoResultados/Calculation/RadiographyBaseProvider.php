@@ -3,9 +3,14 @@
 namespace App\Services\EstadoResultados\Calculation;
 
 use App\Models\Period;
+use App\Services\EstadoResultados\Comparatives\InputSignature;
 use App\Services\EstadoResultados\PeriodDataIds;
 use App\Services\Radiography\BranchRadiographyCalculator;
+use Illuminate\Container\Attributes\Scoped;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Base de Radiografía para el nivel 1 (EBITDA sucursales) del Estado de Resultados.
@@ -15,7 +20,16 @@ use Illuminate\Support\Facades\DB;
  *   → sumGlobal($branches, $unassigned)
  * y a los métodos estáticos canónicos (ingresoEbitdaBaseFor/nominaTotalFor/ebitdaFinalFor).
  * No replica ni altera ninguna regla: si Radiografía cambia, el ER la sigue.
+ *
+ * Rendimiento (06-nov-2026):
+ *  - #[Scoped]: una sola instancia por petición/job. Antes cada builder (el del controlador,
+ *    el del resolver, el del servicio de aprobación) tenía su propio proveedor, así que
+ *    session() no abarcaba a los demás y la base se calculaba DOS veces por petición.
+ *  - Caché entre peticiones con la firma determinista de sus insumos
+ *    (InputSignature::radiography): mismo insumo ⇒ misma base, bit a bit (es el resultado
+ *    del mismo cálculo); cualquier cambio de datos, catálogo, código o día ⇒ otra firma.
  */
+#[Scoped]
 class RadiographyBaseProvider
 {
     /**
@@ -30,9 +44,13 @@ class RadiographyBaseProvider
 
     private int $sessionDepth = 0;
 
+    /** Diagnóstico de la petición: cuántas bases salieron de caché y cuántas se calcularon. */
+    public array $stats = ['cache_hit' => 0, 'computed' => 0, 'ms_computing' => 0.0];
+
     public function __construct(
         private readonly BranchRadiographyCalculator $calculator,
         private readonly PeriodDataIds $dataIds,
+        private ?InputSignature $signature = null,
     ) {}
 
     /**
@@ -74,7 +92,61 @@ class RadiographyBaseProvider
         return $this->sessionDepth > 0;
     }
 
+    /**
+     * Base desde la caché firmada o, si no existe, calculada una sola vez (con candado para que
+     * dos peticiones simultáneas del mismo periodo no la calculen en paralelo).
+     */
     private function compute(Period $period): array
+    {
+        if (! config('estado_resultados.cache.base_radiografia', true)) {
+            return $this->calculate($period);
+        }
+
+        $this->signature ??= app(InputSignature::class);
+        $key = 'er:base:'.$period->id.':'.$this->signature->radiography($period);
+        $hit = Cache::get($key);
+        if (is_array($hit)) {
+            $this->stats['cache_hit']++;
+
+            return $hit;
+        }
+
+        $lock = Cache::lock('er:base:calc:'.$period->id, 300);
+        try {
+            $lock->block(120);
+            $hit = Cache::get($key);
+            if (is_array($hit)) {
+                $this->stats['cache_hit']++;
+
+                return $hit;
+            }
+            $base = $this->calculate($period);
+            try {
+                Cache::put($key, $base, max(1, (int) config('estado_resultados.cache.base_ttl_minutos', 720)) * 60);
+            } catch (\Throwable $e) {
+                Log::warning('ER: no se pudo guardar la base de Radiografía en caché', ['period' => $period->id, 'error' => $e->getMessage()]);
+            }
+
+            return $base;
+        } catch (LockTimeoutException) {
+            return $this->calculate($period);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function calculate(Period $period): array
+    {
+        $t = microtime(true);
+        $this->stats['computed']++;
+        try {
+            return $this->build($period);
+        } finally {
+            $this->stats['ms_computing'] += (microtime(true) - $t) * 1000;
+        }
+    }
+
+    private function build(Period $period): array
     {
         $dataIds = $this->dataIds->for($period);
         // Periodos mensuales: el cierre (cartera/mora) usa los mismos dataIds (ver

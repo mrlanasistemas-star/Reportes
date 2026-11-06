@@ -21,6 +21,8 @@ const shownKey = computed(
     () =>
         preview.value ??
         selected.value ??
+        // Por defecto se explica el EBITDA: la utilidad neta ya está en la cabecera.
+        props.dataset.waterfall.find((w) => w.key === 'ebitda')?.key ??
         props.dataset.waterfall.at(-1)?.key ??
         null,
 );

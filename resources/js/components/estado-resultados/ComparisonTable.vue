@@ -205,10 +205,13 @@ const ASSESS: Record<string, string> = {
                             >
                             <Tooltip v-else-if="r.reason">
                                 <TooltipTrigger as-child>
-                                    <span
-                                        class="cursor-help text-xs text-muted-foreground underline decoration-dotted"
-                                        >Sin lectura</span
+                                    <button
+                                        type="button"
+                                        class="cursor-help rounded text-xs text-muted-foreground underline decoration-dotted focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:outline-none"
+                                        :aria-label="`Sin lectura: ${r.reason.message}`"
                                     >
+                                        Sin lectura
+                                    </button>
                                 </TooltipTrigger>
                                 <TooltipContent class="max-w-xs">{{
                                     r.reason.message

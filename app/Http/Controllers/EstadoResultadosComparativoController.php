@@ -73,6 +73,13 @@ class EstadoResultadosComparativoController extends Controller
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
-        return response()->json($payload);
+        $diag = $payload['diagnostics'] ?? [];
+
+        return response()->json($payload)->header('Server-Timing', sprintf(
+            'cmp;desc="Comparativas (%d en cache, %d calculados)";dur=%d',
+            (int) ($diag['periods']['cache_hit'] ?? 0) + (int) ($diag['periods']['snapshot'] ?? 0),
+            (int) ($diag['periods']['cache_miss'] ?? 0),
+            (int) ($diag['ms'] ?? 0),
+        ));
     }
 }

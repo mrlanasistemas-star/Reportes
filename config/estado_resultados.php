@@ -98,4 +98,19 @@ return [
     | procesamiento para saber con qué reglas se clasificó un periodo.
     */
     'rules_version' => '2026-11-06.1',
+
+    /*
+    | Rendimiento (06-nov-2026). La base de Radiografía (lo costoso: ~3 s por periodo) se guarda
+    | en caché con una FIRMA de sus insumos (InputSignature::radiography): cualquier carga,
+    | reproceso, cambio de catálogo o de código produce otra firma y obliga a recalcular. La parte
+    | propia del ER (movimientos, clasificaciones, ajustes) nunca se guarda: siempre es en vivo.
+    | 'precalentar' encola un job que deja listas las comparativas del periodo consultado (y de
+    | sus periodos de contraste) para que nadie espere el cálculo en frío en pantalla.
+    */
+    'cache' => [
+        'base_radiografia' => (bool) env('ER_CACHE_BASE_RADIOGRAFIA', true),
+        'base_ttl_minutos' => (int) env('ER_CACHE_BASE_TTL_MINUTOS', 720),
+        'precalentar' => (bool) env('ER_PRECALENTAR_COMPARATIVAS', true),
+        'precalentar_cola' => env('ER_PRECALENTAR_COLA', 'default'),
+    ],
 ];

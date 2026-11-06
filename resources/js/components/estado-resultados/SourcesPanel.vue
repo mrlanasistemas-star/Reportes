@@ -43,6 +43,21 @@ const simple = computed<
         feeds: 'Depreciación, intereses e ISR (EBIT, EBT y utilidad)',
     },
 ]);
+
+/** Frases técnicas del cálculo traducidas a lenguaje de negocio (sólo presentación). */
+const PLAIN: Array<[RegExp, string]> = [
+    [
+        /el nivel 1 se calcula en vivo con las mismas reglas\.?/i,
+        'los resultados de sucursales se calculan al momento con las mismas reglas de la Radiografía.',
+    ],
+    [
+        /el nivel 1 usa sus mismas reglas\.?/i,
+        'los resultados de sucursales usan sus mismas reglas.',
+    ],
+    [/\bnivel 1\b/gi, 'resultado de sucursales'],
+];
+const plain = (text: string | null | undefined) =>
+    PLAIN.reduce((t, [re, to]) => t.replace(re, to), text ?? '');
 </script>
 
 <template>
@@ -74,7 +89,7 @@ const simple = computed<
                             <StatusBadge :status="s.src.status" />
                         </span>
                         <span class="block text-xs text-muted-foreground">{{
-                            s.src.detail
+                            plain(s.src.detail)
                         }}</span>
                         <span class="block text-[11px] text-muted-foreground/80"
                             >Alimenta: {{ s.feeds }}</span

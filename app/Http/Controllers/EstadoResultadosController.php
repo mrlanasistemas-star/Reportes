@@ -7,7 +7,9 @@ use App\Models\Period;
 use App\Services\Access\DataScopeService;
 use App\Services\EstadoResultados\AdjustmentService;
 use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
+use App\Services\EstadoResultados\Calculation\RadiographyBaseProvider;
 use App\Services\EstadoResultados\Classification\ClassificationService;
+use App\Services\EstadoResultados\Comparatives\ComparativesWarmer;
 use App\Services\EstadoResultados\Comparatives\ComparisonAccessException;
 use App\Services\EstadoResultados\Comparatives\ComparisonService;
 use App\Services\EstadoResultados\EstadoResultadosProcessor;
@@ -26,6 +28,7 @@ use App\Services\EstadoResultados\Reporting\ReportStatus;
 use App\Services\EstadoResultados\Support\ProcessingLockedException;
 use App\Services\EstadoResultados\Support\Treatment;
 use App\Services\Pdf\PdfRenderException;
+use App\Support\TechnicalErrorReference;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -61,9 +64,19 @@ class EstadoResultadosController extends Controller
                 'start' => $p->start_date->format('Y-m-d'), 'end' => $p->end_date->format('Y-m-d'),
             ])->values();
 
+        // Un enlace guardado puede apuntar a un periodo que ya no existe (o que no es mensual):
+        // se abre el más reciente y se avisa, en lugar de un error técnico y un selector vacío.
+        $requested = $request->integer('periodo');
+        $latestId = (int) ($periods->first()['id'] ?? 0);
+        $initialId = $requested && $periods->contains('id', $requested) ? $requested : $latestId;
+        $periodNotice = $requested && $initialId !== $requested && $latestId
+            ? 'El periodo del enlace ya no está disponible; te mostramos '.($periods->first()['label'] ?? 'el más reciente').'.'
+            : null;
+
         return Inertia::render('EstadoResultados/Index', [
             'periods' => $periods,
-            'initialPeriodId' => (int) ($request->integer('periodo') ?: ($periods->first()['id'] ?? 0)),
+            'initialPeriodId' => $initialId,
+            'periodNotice' => $periodNotice,
             'initialScope' => $this->initialScope($request),
             // Alcance de datos por sucursal del usuario (DataScopeService): general = puede ver el consolidado.
             'branchScope' => $request->user() ? $this->dataScope->describe($request->user()) + ['allowed_names' => $this->dataScope->allowedBranchNames($request->user())] : null,
@@ -90,11 +103,22 @@ class EstadoResultadosController extends Controller
         $this->authorizeScope($request, $scope);
 
         try {
-            // Una sola foto de Radiografía para alcances + dataset de esta petición.
-            return $this->builder->session(fn () => response()->json([
+            $t0 = microtime(true);
+            // Una sola foto de Radiografía para alcances + dataset de esta petición
+            // (RadiographyBaseProvider es #[Scoped]: el builder del resolver comparte la sesión).
+            $response = $this->builder->session(fn () => response()->json([
                 'dataset' => $this->resolver->resolve($period, $scope, $request->user(), $version),
                 'scopes' => $this->visibleScopes($request, $this->resolver->scopes($period, $version)),
             ]));
+            // Deja calentando en segundo plano las comparativas que la pantalla pedirá enseguida.
+            if ($version === null) {
+                ComparativesWarmer::dispatchFor($period);
+            }
+            $base = app(RadiographyBaseProvider::class)->stats;
+            $response->headers->set('Server-Timing', sprintf('er;desc="Estado de Resultados";dur=%.0f, base;desc="Radiografia %s";dur=%.0f',
+                (microtime(true) - $t0) * 1000, $base['computed'] > 0 ? 'calculada' : 'en cache', $base['ms_computing']));
+
+            return $response;
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -163,10 +187,15 @@ class EstadoResultadosController extends Controller
             return response()->json(['message' => $e->getMessage(), 'processing' => true], 409);
         } catch (EstadoResultadosLockedException $e) {
             throw $e;
+        } catch (\InvalidArgumentException $e) {
+            // Motivo de negocio redactado para el usuario (p. ej. datos faltantes).
+            return response()->json(['message' => 'No se pudo procesar la conciliación: '.$e->getMessage()], 422);
         } catch (\Throwable $e) {
-            Log::error('estado_resultados.process_failed', ['period_id' => $period->id, 'error' => $e->getMessage()]);
+            // Nunca se muestra el detalle técnico (SQL, rutas): referencia para Sistemas, detalle en el log.
+            $ref = TechnicalErrorReference::forCurrentRequest();
+            Log::error('estado_resultados.process_failed', ['period_id' => $period->id, 'error_ref' => $ref, 'error' => $e->getMessage(), 'exception' => $e::class]);
 
-            return response()->json(['message' => 'No se pudo procesar la conciliación: '.$e->getMessage()], 500);
+            return response()->json(['message' => TechnicalErrorReference::message($ref), 'reference' => $ref], 500);
         }
 
         return response()->json(['message' => 'Conciliación procesada.', 'summary' => $run->summary]);

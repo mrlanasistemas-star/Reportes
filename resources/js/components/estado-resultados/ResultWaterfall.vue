@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { CONCEPT_HELP } from './conceptHelp';
 import { STEP_GROUPS, groupOf } from './storyline';
 import type { StepMeta } from './storyline';
 import { compact, isZero, mxn, num } from './types';
@@ -21,16 +22,16 @@ const emit = defineEmits<{
 /** Etiquetas cortas del eje (la completa va en el tooltip y en aria-label). */
 const SHORT_LABEL: Record<string, string> = {
     ingresos_operativos: 'Ingresos',
-    opex_sucursales: 'Gastos suc.',
-    nomina_sucursales: 'Nómina suc.',
+    opex_sucursales: 'Gastos sucursales',
+    nomina_sucursales: 'Nómina sucursales',
     opex_corporativo: 'Corporativo',
-    nomina_corporativa: 'Nómina corp.',
+    nomina_corporativa: 'Nómina corporativa',
     dg: 'Dirección General',
     ebitda: 'EBITDA',
-    depreciacion_amortizacion: 'D y A',
+    depreciacion_amortizacion: 'Depreciación y amortización',
     ebit: 'EBIT',
-    resultado_financiero_neto: 'Financiero',
-    ebt: 'EBT',
+    resultado_financiero_neto: 'Resultado financiero',
+    ebt: 'Antes de impuestos (EBT)',
     isr: 'ISR',
     utilidad_neta: 'Utilidad neta',
 };
@@ -213,7 +214,7 @@ function onKey(e: KeyboardEvent, i: number): void {
                     class="group/bar relative flex min-w-0 flex-1 flex-col rounded-xl text-left transition-[background-color,opacity] duration-200 focus-visible:ring-3 focus-visible:ring-cyan-500/40 focus-visible:outline-none"
                     :class="[
                         focusKey === b.key
-                            ? 'bg-emerald-50 dark:bg-emerald-950/30'
+                            ? 'bg-cyan-50 dark:bg-cyan-950/30'
                             : 'hover:bg-muted/50',
                         focusKey && focusKey !== b.key ? 'opacity-55' : '',
                     ]"
@@ -283,11 +284,16 @@ function onKey(e: KeyboardEvent, i: number): void {
                                         : 'text-emerald-800 dark:text-emerald-300'
                             "
                             :style="labelPos(b).style"
-                            >{{ compact(b.amount) }}</span
+                            >{{
+                                isZero(b.amount) &&
+                                b.key === 'ingresos_operativos'
+                                    ? 'Sin datos'
+                                    : compact(b.amount)
+                            }}</span
                         >
                         <!-- tooltip: fórmula + fuente + importe exacto -->
                         <span
-                            class="pointer-events-none absolute bottom-[calc(100%+6px)] z-20 w-64 translate-y-1 rounded-xl border bg-popover p-3 text-xs text-popover-foreground opacity-0 shadow-soft-lg transition duration-150 group-hover/bar:translate-y-0 group-hover/bar:opacity-100"
+                            class="pointer-events-none absolute bottom-[calc(100%+6px)] z-20 w-64 translate-y-1 rounded-xl border bg-popover p-3 text-xs text-popover-foreground opacity-0 shadow-soft-lg transition duration-150 group-hover/bar:translate-y-0 group-hover/bar:opacity-100 group-focus-visible/bar:translate-y-0 group-focus-visible/bar:opacity-100"
                             :class="
                                 b.index === 0
                                     ? 'left-0'
@@ -312,6 +318,11 @@ function onKey(e: KeyboardEvent, i: number): void {
                                 }}</span
                             >
                             <span
+                                v-if="CONCEPT_HELP[b.key]"
+                                class="mt-1.5 block leading-snug"
+                                >{{ CONCEPT_HELP[b.key] }}</span
+                            >
+                            <span
                                 v-if="meta[b.key]?.formula"
                                 class="mt-1.5 block text-muted-foreground"
                                 >{{ meta[b.key].formula }}</span
@@ -329,7 +340,8 @@ function onKey(e: KeyboardEvent, i: number): void {
                         </span>
                     </span>
                     <span
-                        class="block min-h-10 px-0.5 pt-2 pb-2 text-center text-[11px] leading-tight"
+                        lang="es"
+                        class="block min-h-10 px-0.5 pt-2 pb-2 text-center text-[11px] leading-tight [overflow-wrap:anywhere] hyphens-auto"
                         :class="
                             b.type === 'delta'
                                 ? 'text-muted-foreground'
@@ -386,7 +398,7 @@ function onKey(e: KeyboardEvent, i: number): void {
                         class="w-full rounded-xl px-3 py-2 text-left transition focus-visible:ring-3 focus-visible:ring-cyan-500/40 focus-visible:outline-none"
                         :class="
                             selected === b.key
-                                ? 'bg-emerald-50 ring-1 ring-emerald-300 dark:bg-emerald-950/30 dark:ring-emerald-800'
+                                ? 'bg-cyan-50 ring-1 ring-cyan-300 dark:bg-cyan-950/30 dark:ring-cyan-800'
                                 : b.type === 'delta'
                                   ? 'bg-muted/40'
                                   : 'bg-card ring-1 ring-border'

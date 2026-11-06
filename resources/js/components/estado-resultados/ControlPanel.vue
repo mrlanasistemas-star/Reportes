@@ -119,7 +119,9 @@ const proc = computed(() => props.dataset.sources.procesamiento);
                     <span
                         v-if="proc.last_run.error"
                         class="block text-rose-600"
-                        >{{ proc.last_run.error }}</span
+                        >El último procesamiento no terminó. Vuelve a
+                        procesar la conciliación; si se repite, avisa a
+                        sistemas.</span
                     >
                 </p>
                 <p v-else class="mt-2 text-xs text-muted-foreground">

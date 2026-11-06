@@ -12,7 +12,7 @@ import {
     ShieldAlert,
     Stamp,
 } from 'lucide-vue-next';
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import {
     Tooltip,
     TooltipContent,
@@ -60,7 +60,7 @@ const STEPS = [
     {
         key: 'aprobado',
         label: 'Aprobado',
-        hint: 'Cifras congeladas en una versión sellada.',
+        hint: 'Cifras congeladas: ya no cambian aunque cambien las fuentes.',
     },
 ];
 
@@ -107,7 +107,26 @@ const groups = computed(() => {
 });
 
 const showBlockers = ref(false);
+const blockersEl = ref<HTMLElement | null>(null);
 const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
+
+/** Aprobar; si aún no se puede, abre y muestra la lista de lo que falta. */
+async function onApprove(): Promise<void> {
+    if (props.approving) {
+        return;
+    }
+
+    if (props.report.approvable) {
+        emit('approve');
+
+        return;
+    }
+
+    showBlockers.value = true;
+    await nextTick();
+    blockersEl.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    blockersEl.value?.focus({ preventScroll: true });
+}
 </script>
 
 <template>
@@ -144,7 +163,7 @@ const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
             <span class="text-xs font-medium opacity-85">
                 {{
                     superseded
-                        ? `Reemplazada el ${report.superseded_at ?? '—'}. Se conserva tal como se aprobó.`
+                        ? `Sustituida el ${report.superseded_at ?? '—'}. Se conserva tal como se aprobó.`
                         : 'Las cifras están congeladas: no cambian aunque cambien las fuentes.'
                 }}
             </span>
@@ -181,12 +200,25 @@ const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
                     <p class="text-xs text-muted-foreground">
                         <template v-if="isSnapshot">
                             Aprobada por {{ report.approved_by ?? '—' }} el
-                            {{ report.approved_at ?? '—' }} · sello
-                            <span
-                                class="tabular-nums"
-                                :title="report.snapshot_hash ?? ''"
-                                >{{ shortHash(report.snapshot_hash) }}</span
-                            >
+                            {{ report.approved_at ?? '—' }}
+                            <Tooltip v-if="report.snapshot_hash">
+                                <TooltipTrigger as-child>
+                                    <button
+                                        type="button"
+                                        class="ml-1 inline-flex items-center gap-1 rounded-md px-1 align-middle font-semibold text-emerald-700 underline decoration-dotted underline-offset-2 hover:text-emerald-900 focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:outline-none dark:text-emerald-400"
+                                    >
+                                        <Stamp class="size-3" /> Comprobante
+                                    </button>
+                                </TooltipTrigger>
+                                <TooltipContent class="max-w-xs">
+                                    Sello de aprobación
+                                    <span class="tabular-nums">{{
+                                        shortHash(report.snapshot_hash)
+                                    }}</span
+                                    >: identifica estas cifras exactas y es el
+                                    mismo en la web, el Excel y el PDF.
+                                </TooltipContent>
+                            </Tooltip>
                         </template>
                         <template v-else>
                             En preparación · se recalcula con cada cambio ·
@@ -265,36 +297,42 @@ const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
             <div class="flex shrink-0 flex-wrap items-center gap-2">
                 <Tooltip v-if="canApprove && !isSnapshot">
                     <TooltipTrigger as-child>
-                        <span tabindex="0" class="inline-flex rounded-xl">
-                            <button
-                                type="button"
-                                class="inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition"
-                                :class="
-                                    report.approvable
-                                        ? 'bg-emerald-700 text-white shadow-[0_6px_16px_-8px_rgb(4_120_87/0.8)] hover:-translate-y-px hover:bg-emerald-800 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400'
-                                        : 'cursor-not-allowed border border-dashed text-muted-foreground'
-                                "
-                                :disabled="!report.approvable || approving"
-                                :aria-disabled="!report.approvable"
-                                @click="emit('approve')"
-                            >
-                                <Loader2
-                                    v-if="approving"
-                                    class="size-4 animate-spin"
-                                />
-                                <BadgeCheck v-else class="size-4" />
-                                Aprobar versión {{ report.version }}
-                            </button>
-                        </span>
+                        <!-- Sin "disabled": sigue enfocable y al pulsarlo muestra qué falta. -->
+                        <button
+                            type="button"
+                            class="inline-flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition focus-visible:ring-3 focus-visible:ring-emerald-500/40 focus-visible:outline-none"
+                            :class="
+                                report.approvable
+                                    ? 'bg-emerald-700 text-white shadow-[0_6px_16px_-8px_rgb(4_120_87/0.8)] hover:-translate-y-px hover:bg-emerald-800 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400'
+                                    : 'border border-dashed text-muted-foreground hover:border-amber-400 hover:text-foreground'
+                            "
+                            :aria-disabled="!report.approvable || approving"
+                            :aria-busy="approving"
+                            @click="onApprove"
+                        >
+                            <Loader2
+                                v-if="approving"
+                                class="size-4 animate-spin"
+                            />
+                            <BadgeCheck v-else class="size-4" />
+                            Aprobar versión {{ report.version }}
+                        </button>
                     </TooltipTrigger>
                     <TooltipContent class="max-w-xs">
                         {{
                             report.approvable
-                                ? 'Congela las cifras de todos los alcances en una versión sellada.'
-                                : `Aún no: ${report.blockers.length} punto(s) por resolver (ver abajo).`
+                                ? 'Congela las cifras de todos los alcances en una versión que ya no cambia.'
+                                : `Aún no se puede aprobar: ${report.blockers.length} punto(s) por resolver. Haz clic para ver cuáles.`
                         }}
                     </TooltipContent>
                 </Tooltip>
+                <p
+                    v-if="!canApprove && !isSnapshot"
+                    class="max-w-xs text-xs text-muted-foreground"
+                >
+                    Solo quien tiene permiso de aprobar (Dirección /
+                    Contraloría) puede aprobar esta versión.
+                </p>
                 <button
                     v-if="
                         canApprove &&
@@ -373,7 +411,12 @@ const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
                     :class="showBlockers ? 'rotate-180' : ''"
                 />
             </button>
-            <div v-show="showBlockers" class="space-y-3 px-4 pb-4">
+            <div
+                v-show="showBlockers"
+                ref="blockersEl"
+                tabindex="-1"
+                class="space-y-3 px-4 pb-4 outline-none"
+            >
                 <ApprovalChecklist
                     v-if="dataset"
                     :dataset="dataset"

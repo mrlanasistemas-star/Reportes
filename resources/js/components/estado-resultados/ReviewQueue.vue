@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { useEventListener } from '@vueuse/core';
 import {
     CheckCheck,
+    FolderInput,
     CornerDownRight,
     Loader2,
     PanelRightOpen,
@@ -27,6 +27,8 @@ const emit = defineEmits<{
     classify: [fingerprints: string[]];
     open: [m: Movement];
     showAll: [];
+    /** Sin estados de cuenta: llevar a la pestaña Fuentes. */
+    goSources: [];
 }>();
 
 /** Pendientes, el de mayor importe primero: lo que más mueve el resultado va antes. */
@@ -56,13 +58,23 @@ const upcoming = computed(() =>
         .slice(0, 4),
 );
 
-const reviewed = computed(() => {
+/** % revisado; null cuando no hay movimientos en el periodo (no se presume 100 %). */
+const reviewed = computed<number | null>(() => {
     const total = props.c.movimientos_en_periodo || 0;
 
     return total === 0
-        ? 100
-        : Math.round(((total - props.c.pendientes.count) / total) * 100);
+        ? null
+        : Math.max(
+              0,
+              Math.round(((total - props.c.pendientes.count) / total) * 100),
+          );
 });
+/** No llegó nada del banco: el estado vacío es neutral, no "todo listo". */
+const noData = computed(
+    () =>
+        (props.c.movimientos_en_periodo || 0) === 0 &&
+        props.c.pendientes.count === 0,
+);
 
 /** Agrupa por sugerencia para resolver en bloque lo que el sistema ya reconoce. */
 const groups = computed(() => {
@@ -106,9 +118,10 @@ function skip(): void {
     skipped.value = next;
 }
 
-function accept(): void {
+/** Con el atajo de teclado se pide confirmación (ask = true); el botón es explícito. */
+function accept(ask = false): void {
     if (current.value?.suggested_treatment && !props.accepting) {
-        emit('accept', [current.value.fingerprint], false);
+        emit('accept', [current.value.fingerprint], ask);
     }
 }
 
@@ -118,8 +131,9 @@ function classify(): void {
     }
 }
 
-// Atajos de la cola: A acepta, C clasifica, S o → salta, D abre el detalle.
-useEventListener(window, 'keydown', (e: KeyboardEvent) => {
+// Atajos de la cola: sólo con el foco DENTRO de la tarjeta (no en toda la ventana).
+// A acepta (con confirmación), C clasifica, S o → salta, D abre el detalle.
+function onKey(e: KeyboardEvent): void {
     const t = e.target as HTMLElement | null;
 
     if (
@@ -127,33 +141,63 @@ useEventListener(window, 'keydown', (e: KeyboardEvent) => {
         e.ctrlKey ||
         e.metaKey ||
         e.altKey ||
-        (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) ||
-        document.querySelector('[role="dialog"]')
+        (t &&
+            (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) ||
+                t.closest('[role="tablist"]')))
     ) {
         return;
     }
 
     const k = e.key.toLowerCase();
+    let handled = true;
 
     if (k === 'a' && props.canClassify) {
-        e.preventDefault();
-        accept();
+        accept(true);
     } else if (k === 'c' && props.canClassify) {
-        e.preventDefault();
         classify();
     } else if (k === 's' || e.key === 'ArrowRight') {
-        e.preventDefault();
         skip();
     } else if (k === 'd') {
-        e.preventDefault();
         emit('open', current.value);
+    } else {
+        handled = false;
     }
-});
+
+    if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+}
 </script>
 
 <template>
     <div
-        v-if="!pending.length"
+        v-if="noData"
+        class="flex flex-col items-center gap-3 rounded-2xl border border-dashed bg-card px-6 py-16 text-center"
+    >
+        <span
+            class="flex size-14 items-center justify-center rounded-full bg-muted text-muted-foreground"
+        >
+            <FolderInput class="size-7" />
+        </span>
+        <p class="text-lg font-extrabold">
+            Aún no hay estados de cuenta cargados
+        </p>
+        <p class="max-w-md text-sm text-muted-foreground">
+            Sin datos todavía: cuando cargues los estados de cuenta del banco,
+            aquí aparecerán los movimientos que necesitan una clasificación.
+        </p>
+        <button
+            type="button"
+            class="mt-1 inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold transition hover:border-emerald-400 hover:bg-emerald-50 focus-visible:ring-3 focus-visible:ring-emerald-500/30 focus-visible:outline-none dark:hover:bg-emerald-950/30"
+            @click="emit('goSources')"
+        >
+            <FolderInput class="size-4" /> Ir a Fuentes
+        </button>
+    </div>
+
+    <div
+        v-else-if="!pending.length"
         class="flex flex-col items-center gap-3 rounded-2xl border bg-card px-6 py-16 text-center shadow-soft-xs"
     >
         <span
@@ -174,19 +218,23 @@ useEventListener(window, 'keydown', (e: KeyboardEvent) => {
     >
         <!-- Movimiento en turno -->
         <section
-            class="relative overflow-hidden rounded-2xl border bg-card shadow-soft-xs"
-            aria-label="Movimiento en turno"
+            class="relative overflow-hidden rounded-2xl border bg-card shadow-soft-xs outline-none focus-visible:ring-3 focus-visible:ring-emerald-500/30"
+            aria-label="Movimiento en turno. Atajos con el foco aquí: A aceptar, C clasificar, S saltar, D ver detalle"
+            tabindex="0"
+            @keydown="onKey"
         >
             <div class="h-1.5 w-full bg-muted">
                 <div
                     class="h-full bg-emerald-500 transition-[width] duration-700"
-                    :style="{ width: `${reviewed}%` }"
+                    :style="{ width: `${reviewed ?? 0}%` }"
                 />
             </div>
             <div class="p-5 md:p-6">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                     <p class="text-xs text-muted-foreground">
-                        <b class="text-foreground">{{ reviewed }}% revisado</b>
+                        <b class="text-foreground">{{
+                            reviewed === null ? '—' : `${reviewed}% revisado`
+                        }}</b>
                         · quedan
                         {{ c.pendientes.count.toLocaleString('es-MX') }} por
                         {{ mxn(c.pendientes.amount) }} que hoy no suman
@@ -194,6 +242,10 @@ useEventListener(window, 'keydown', (e: KeyboardEvent) => {
                     <p class="text-xs text-muted-foreground tabular-nums">
                         {{ position }} de {{ pending.length }} · de mayor a
                         menor importe
+                    </p>
+                    <p class="w-full text-[11px] text-muted-foreground">
+                        Atajos de teclado: haz clic dentro de esta tarjeta y usa
+                        A, C, S o D.
                     </p>
                 </div>
 
@@ -310,7 +362,7 @@ useEventListener(window, 'keydown', (e: KeyboardEvent) => {
                                 type="button"
                                 class="inline-flex h-11 items-center gap-2 rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white shadow-[0_6px_16px_-8px_rgb(4_120_87/0.8)] transition hover:-translate-y-px hover:bg-emerald-800 disabled:opacity-60 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400"
                                 :disabled="accepting"
-                                @click="accept"
+                                @click="accept()"
                             >
                                 <Loader2
                                     v-if="accepting"

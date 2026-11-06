@@ -52,32 +52,49 @@ interface HistoryRow {
 }
 const history = ref<HistoryRow[]>([]);
 const loadingHistory = ref(false);
+const historyError = ref<string | null>(null);
+/** Cada lectura lleva un número; una respuesta vieja (otro movimiento) se descarta. */
+let historyRequest = 0;
 
 const m = computed(() => props.movement);
 
-watch(
-    () => [props.open, props.movement?.fingerprint] as const,
-    async ([open, fp]) => {
-        history.value = [];
+async function loadHistory(): Promise<void> {
+    const id = ++historyRequest;
+    const fp = props.movement?.fingerprint;
+    history.value = [];
+    historyError.value = null;
 
-        if (!open || !fp || !props.movement?.override) {
-            return;
-        }
+    if (!props.open || !fp || !props.movement?.override) {
+        loadingHistory.value = false;
 
-        loadingHistory.value = true;
+        return;
+    }
 
-        try {
-            const res = await apiJson<{ history: HistoryRow[] }>(
-                props.historyUrl(fp),
-            );
+    loadingHistory.value = true;
+
+    try {
+        const res = await apiJson<{ history: HistoryRow[] }>(
+            props.historyUrl(fp),
+        );
+
+        if (id === historyRequest) {
             history.value = res.history;
-        } catch {
-            history.value = [];
-        } finally {
+        }
+    } catch (e) {
+        if (id === historyRequest) {
+            historyError.value =
+                e instanceof Error && e.message
+                    ? e.message
+                    : 'Revisa tu conexión e inténtalo de nuevo.';
+        }
+    } finally {
+        if (id === historyRequest) {
             loadingHistory.value = false;
         }
-    },
-);
+    }
+}
+
+watch(() => [props.open, props.movement?.fingerprint] as const, loadHistory);
 
 const headline = computed(() => {
     const mv = m.value;
@@ -382,10 +399,41 @@ const headline = computed(() => {
                             <History class="size-3.5" /> Historial de
                             clasificación
                         </h3>
-                        <Loader2
+                        <p
                             v-if="loadingHistory"
-                            class="size-4 animate-spin text-emerald-600"
-                        />
+                            class="flex items-center gap-2 text-xs text-muted-foreground"
+                            role="status"
+                        >
+                            <Loader2
+                                class="size-4 animate-spin text-emerald-600"
+                            />
+                            Leyendo el historial…
+                        </p>
+                        <div
+                            v-else-if="historyError"
+                            role="alert"
+                            class="flex flex-wrap items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 p-2.5 text-xs text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200"
+                        >
+                            <span class="min-w-0 flex-1"
+                                ><b>No se pudo cargar el historial.</b>
+                                {{ historyError }}</span
+                            >
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                class="h-7 rounded-lg"
+                                @click="loadHistory"
+                            >
+                                Reintentar
+                            </Button>
+                        </div>
+                        <p
+                            v-else-if="!history.length"
+                            class="text-xs text-muted-foreground"
+                        >
+                            Todavía no hay cambios registrados para este
+                            movimiento.
+                        </p>
                         <ol
                             v-else
                             class="space-y-1.5 border-l-2 border-emerald-200 pl-3 text-xs dark:border-emerald-900"

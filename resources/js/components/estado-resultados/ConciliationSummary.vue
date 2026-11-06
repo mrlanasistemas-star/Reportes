@@ -128,11 +128,15 @@ const extras = computed(() => {
 
     return out;
 });
-const reviewed = computed(() => {
-    const total = props.c.movimientos_en_periodo || 0;
+/** % clasificado; null = no llegó nada del banco (no se presume 100%). */
+const reviewed = computed<number | null>(() => {
+    const total = Math.max(
+        props.c.movimientos_en_periodo || 0,
+        props.c.pendientes.count,
+    );
 
     return total === 0
-        ? 100
+        ? null
         : Math.round(((total - props.c.pendientes.count) / total) * 100);
 });
 </script>
@@ -175,12 +179,20 @@ const reviewed = computed(() => {
                     <p
                         class="text-2xl font-extrabold tabular-nums"
                         :class="
-                            reviewed === 100
-                                ? 'text-emerald-700 dark:text-emerald-400'
-                                : 'text-amber-700 dark:text-amber-400'
+                            reviewed === null
+                                ? 'text-muted-foreground'
+                                : reviewed === 100
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : 'text-amber-700 dark:text-amber-400'
                         "
                     >
-                        {{ reviewed }}%
+                        {{ reviewed === null ? '—' : `${reviewed}%` }}
+                    </p>
+                    <p
+                        v-if="reviewed === null"
+                        class="text-[11px] text-muted-foreground"
+                    >
+                        Sin movimientos todavía
                     </p>
                 </div>
                 <svg
@@ -209,7 +221,7 @@ const reviewed = computed(() => {
                                 ? 'stroke-emerald-500'
                                 : 'stroke-amber-500'
                         "
-                        :stroke-dasharray="`${(reviewed / 100) * 97.4} 97.4`"
+                        :stroke-dasharray="`${((reviewed ?? 0) / 100) * 97.4} 97.4`"
                     />
                 </svg>
             </div>

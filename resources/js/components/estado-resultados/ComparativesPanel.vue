@@ -12,17 +12,23 @@ import {
     Store,
 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
-import { useErComparatives } from '@/composables/estado-resultados/useErComparatives';
+import {
+    tabRequest,
+    useErComparatives,
+} from '@/composables/estado-resultados/useErComparatives';
 import type { CompRequest } from '@/composables/estado-resultados/useErComparatives';
 import BranchComparison from './BranchComparison.vue';
 import type { CompMode } from './comparativas';
 import ComparisonTable from './ComparisonTable.vue';
+import ErInlineLoading from './ErInlineLoading.vue';
 import TrendCharts from './TrendCharts.vue';
 
 const props = defineProps<{
     periodId: number;
     scope: string;
     periods: Array<{ id: number; code: string; label: string }>;
+    /** Revisión de los datos del periodo (huella + estado): al cambiar, se recalcula. */
+    rev?: string | null;
 }>();
 
 /** Modo y periodo de contraste viven en la URL (los sincroniza el orquestador). */
@@ -31,7 +37,9 @@ const contra = defineModel<number | null>('contra', { default: null });
 
 const page = usePage();
 const base = ref((page.props as { base?: string }).base ?? '');
-const comp = useErComparatives(base);
+const comp = useErComparatives(base, { notifyWhenReady: true });
+/** Para que el orquestador (o un botón «Actualizar») pida de nuevo sin caché. */
+defineExpose({ refresh: comp.refresh });
 
 const MODES: Array<{
     key: CompMode;
@@ -93,23 +101,14 @@ const request = computed<CompRequest | null>(() => {
                   modes: ['personalizado'],
                   contra: contra.value,
                   charts: false,
+                  rev: props.rev,
               }
             : null;
     }
 
-    // Una sola consulta trae todos los modos y las gráficas; queda en caché.
-    return {
-        periodId: props.periodId,
-        scope: props.scope,
-        modes: [
-            'anterior',
-            'anio_anterior',
-            'evolucion',
-            'acumulado',
-            'sucursales',
-        ],
-        meses: 6,
-    };
+    // Una sola consulta trae todos los modos y las gráficas; queda en caché (y el
+    // orquestador la precarga con la misma clave al terminar el dataset).
+    return tabRequest(props.periodId, props.scope, props.rev);
 });
 
 watch(
@@ -166,6 +165,27 @@ const samePeriods = computed(
                 <component :is="m.icon" class="size-4" />
                 {{ m.label }}
             </button>
+            <button
+                type="button"
+                class="ml-auto inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-emerald-500/30 focus-visible:outline-none disabled:opacity-50"
+                :disabled="comp.loading.value || !request"
+                :title="
+                    d
+                        ? `Calculado ${d.generated_at}. Vuelve a calcular con los datos más recientes.`
+                        : 'Vuelve a calcular con los datos más recientes.'
+                "
+                @click="comp.refresh()"
+            >
+                <RefreshCw
+                    class="size-4"
+                    :class="
+                        comp.loading.value
+                            ? 'animate-spin motion-reduce:animate-none'
+                            : ''
+                    "
+                />
+                Actualizar
+            </button>
         </nav>
 
         <!-- Personalizado: dos periodos -->
@@ -182,7 +202,7 @@ const samePeriods = computed(
                     class="h-10 rounded-xl border bg-background px-3 text-sm font-semibold text-foreground outline-none focus:border-emerald-500 focus:ring-3 focus:ring-emerald-500/20"
                 >
                     <option v-for="p in periods" :key="p.id" :value="p.id">
-                        {{ p.label }} · {{ p.code }}
+                        {{ p.label }}
                     </option>
                 </select>
             </label>
@@ -206,7 +226,7 @@ const samePeriods = computed(
                 >
                     <option value="" disabled>Elige el periodo…</option>
                     <option v-for="p in periods" :key="p.id" :value="p.id">
-                        {{ p.label }} · {{ p.code }}
+                        {{ p.label }}
                     </option>
                 </select>
             </label>
@@ -223,31 +243,13 @@ const samePeriods = computed(
             </p>
         </div>
 
-        <!-- Cargando: la primera consulta calcula cada periodo y puede tardar -->
-        <div
-            v-if="comp.loading.value"
-            class="flex flex-col items-center gap-3 rounded-2xl border bg-card px-6 py-12 text-center shadow-soft-xs"
-            role="status"
-            aria-live="polite"
-        >
-            <Loader2 class="size-7 animate-spin text-emerald-600" />
-            <p class="font-semibold">{{ comp.stage.value }}</p>
-            <div
-                class="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-muted"
-            >
-                <div
-                    class="h-full rounded-full bg-emerald-500 transition-[width] duration-1000"
-                    :style="{
-                        width: `${Math.min(95, (comp.elapsed.value / 30) * 100)}%`,
-                    }"
-                />
-            </div>
-            <p class="text-xs text-muted-foreground">
-                {{ comp.elapsed.value }} s · la primera vez puede tardar hasta
-                ~30 s; después queda guardado y cambiar de vista es inmediato.
-            </p>
-        </div>
-
+        <!-- Cargando sin datos previos: carga honesta (sin porcentaje), con cancelar. -->
+        <ErInlineLoading
+            v-if="comp.loading.value && !d"
+            :elapsed="comp.elapsed.value"
+            @cancel="comp.cancel()"
+            @retry="request && comp.load(request, true)"
+        />
         <div
             v-else-if="comp.error.value"
             class="flex items-start gap-3 rounded-2xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200"
@@ -269,7 +271,35 @@ const samePeriods = computed(
             </div>
         </div>
 
+        <div
+            v-else-if="!d && request && !comp.loading.value"
+            class="flex flex-col items-center gap-3 rounded-2xl border border-dashed bg-card px-6 py-10 text-center text-sm"
+        >
+            <p class="text-muted-foreground">
+                Dejaste de esperar las comparativas. Puedes calcularlas cuando
+                quieras.
+            </p>
+            <button
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold hover:bg-muted"
+                @click="comp.load(request)"
+            >
+                <RefreshCw class="size-3.5" /> Calcular ahora
+            </button>
+        </div>
+
         <template v-else-if="d">
+            <!-- Recalculando con datos previos a la vista: se atenúan y se indica arriba. -->
+            <p
+                v-if="comp.loading.value"
+                class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"
+                role="status"
+            >
+                <Loader2
+                    class="size-3.5 animate-spin motion-reduce:animate-none"
+                />
+                Actualizando las comparativas… ({{ comp.elapsed.value }} s)
+            </p>
             <p
                 v-if="d.access.message"
                 class="rounded-xl border bg-muted/50 px-4 py-2.5 text-xs font-medium"
