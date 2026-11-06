@@ -13,10 +13,14 @@ use App\Services\Radiography\RadiographySnapshotBuilder;
  */
 class PeriodDataIds
 {
-    private array $cache = [];
-
+    /**
+     * Sin caché por instancia (fase 2.4): el universo depende de la tabla periods
+     * (semanas base) y un servicio reutilizado —worker de cola, procesador— podía
+     * seguir usando un universo viejo. Es una sola consulta; quien necesite reutilizar
+     * el resultado en una operación lo hace a través de RadiographyBaseProvider::session().
+     */
     public function for(Period $period): array
     {
-        return $this->cache[$period->id] ??= app(RadiographySnapshotBuilder::class)->resolveDataIdsPublic($period);
+        return app(RadiographySnapshotBuilder::class)->resolveDataIdsPublic($period);
     }
 }

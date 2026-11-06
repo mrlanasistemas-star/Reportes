@@ -77,6 +77,7 @@ class ClassificationService
         }
 
         return DB::transaction(function () use ($period, $items, $treatment, $notes, $userId) {
+            app(PeriodLockGuard::class)->lockForWrite($period); // re-verificación con la fila del periodo bloqueada
             $count = 0;
             foreach ($items as $item) {
                 if ($item['current'] === $treatment) {

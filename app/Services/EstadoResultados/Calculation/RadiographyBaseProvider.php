@@ -18,7 +18,17 @@ use Illuminate\Support\Facades\DB;
  */
 class RadiographyBaseProvider
 {
+    /**
+     * Caché SÓLO dentro de una sesión explícita (session()). Fuera de ella cada
+     * llamada recalcula: antes el caché vivía por instancia y, en una misma petición,
+     * un worker de cola o un servicio reutilizado, devolvía cifras viejas si
+     * Radiografía/ERP/NOI cambiaban entre dos llamadas (fase 2.4).
+     *
+     * @var array<int, array>
+     */
     private array $cache = [];
+
+    private int $sessionDepth = 0;
 
     public function __construct(
         private readonly BranchRadiographyCalculator $calculator,
@@ -30,7 +40,38 @@ class RadiographyBaseProvider
      */
     public function for(Period $period): array
     {
+        if ($this->sessionDepth === 0) {
+            return $this->compute($period);
+        }
+
         return $this->cache[$period->id] ??= $this->compute($period);
+    }
+
+    /**
+     * Ejecuta $fn reutilizando la base de Radiografía calculada dentro de ella (una sola
+     * foto de datos por operación: p. ej. alcances + dataset de una petición). Al salir
+     * de la sesión más externa el caché se descarta. Re-entrante.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $fn
+     * @return T
+     */
+    public function session(callable $fn): mixed
+    {
+        $this->sessionDepth++;
+        try {
+            return $fn();
+        } finally {
+            if (--$this->sessionDepth === 0) {
+                $this->cache = [];
+            }
+        }
+    }
+
+    public function inSession(): bool
+    {
+        return $this->sessionDepth > 0;
     }
 
     private function compute(Period $period): array

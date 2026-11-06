@@ -220,6 +220,69 @@ final class EstadoResultadosFixtures
         return self::save($book);
     }
 
+    /**
+     * Periodo mensual con año/mes de reporte explícitos (comparativas: anterior, año anterior,
+     * acumulado). sequence alto para no chocar con otros periodos de prueba.
+     * (Agregado por las comparativas; no cambia period().)
+     */
+    public static function monthPeriod(int $year, int $month, string $start, string $end): Period
+    {
+        self::$seq++;
+
+        return Period::query()->create([
+            'name' => 'ER comparativa '.$year.'-'.$month.' #'.self::$seq, 'code' => 'M-ERC-'.self::$seq, 'type' => 'monthly',
+            'year' => $year, 'month' => $month, 'sequence' => 800 + self::$seq,
+            'start_date' => $start, 'end_date' => $end, 'is_closed' => false,
+        ]);
+    }
+
+    /**
+     * Base de Radiografía sintética POR PERIODO (sólo pruebas SQLite).
+     * $map = [period_id => ['SUCURSAL' => overrides sobre emptyBranchSummary(), …]].
+     * Un periodo que no está en el mapa no tiene sucursales ni cifras (= sin datos).
+     * Se puede volver a llamar para cambiar cifras (p. ej. para probar snapshot vs en vivo).
+     * (Agregado por las comparativas; no cambia fakeRadiography().)
+     */
+    public static function fakeRadiographyByPeriod(array $map): void
+    {
+        $calc = app(BranchRadiographyCalculator::class);
+        $bases = [];
+        foreach ($map as $periodId => $branches) {
+            $rows = [];
+            foreach ($branches as $name => $overrides) {
+                $rows[$name] = array_replace($calc->emptyBranchSummary($name), $overrides);
+            }
+            $bases[$periodId] = [
+                'global' => $calc->sumGlobal(array_values($rows), []),
+                'branches' => $rows,
+                'unassigned' => $calc->emptyBranchSummary('SIN ASIGNAR'),
+                'cartera' => ['valor_cartera' => 0.0, 'cartera_vencida' => 0.0],
+                'rotacion' => ['disponible' => false, 'altas' => 0, 'bajas' => 0, 'plantilla' => 0.0, 'indice' => null, 'por_sucursal' => []],
+            ];
+        }
+        $empty = [
+            'global' => $calc->sumGlobal([], []),
+            'branches' => [],
+            'unassigned' => $calc->emptyBranchSummary('SIN ASIGNAR'),
+            'cartera' => ['valor_cartera' => 0.0, 'cartera_vencida' => 0.0],
+            'rotacion' => ['disponible' => false, 'altas' => 0, 'bajas' => 0, 'plantilla' => 0.0, 'indice' => null, 'por_sucursal' => []],
+        ];
+
+        $fake = new class($calc, app(PeriodDataIds::class), $bases, $empty) extends RadiographyBaseProvider
+        {
+            public function __construct(BranchRadiographyCalculator $c, PeriodDataIds $d, private array $bases, private array $empty)
+            {
+                parent::__construct($c, $d);
+            }
+
+            public function for(Period $period): array
+            {
+                return ['data_ids' => app(PeriodDataIds::class)->for($period)] + ($this->bases[$period->id] ?? $this->empty);
+            }
+        };
+        app()->instance(RadiographyBaseProvider::class, $fake);
+    }
+
     private static function save(Spreadsheet $book): string
     {
         $dir = storage_path('framework/testing/er');

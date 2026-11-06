@@ -4,6 +4,7 @@ namespace App\Services\EstadoResultados\Reporting;
 
 use App\Models\EstadoResultados\EstadoResultadosVersion;
 use App\Models\Period;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -45,6 +46,21 @@ class PeriodLockGuard
         if ($version = $this->lockedVersion($period)) {
             throw new EstadoResultadosLockedException($version, $period->label);
         }
+    }
+
+    /**
+     * Para llamar DENTRO de la transacción de una escritura del ER: bloquea la fila del
+     * periodo FOR UPDATE (el mismo bloqueo que toma la aprobación) y vuelve a revisar el
+     * candado de versión. Cierra la carrera "revisé que estaba abierto → otro aprobó →
+     * escribí sobre un periodo ya aprobado": o la escritura termina antes de que la
+     * aprobación lea sus insumos, o espera y ve el periodo cerrado (HTTP 423).
+     *
+     * @throws EstadoResultadosLockedException
+     */
+    public function lockForWrite(Period $period): void
+    {
+        DB::table('periods')->where('id', $period->id)->lockForUpdate()->first();
+        $this->assertUnlocked($period);
     }
 
     /** Sin la migración aplicada no puede existir ninguna versión aprobada. */

@@ -54,8 +54,41 @@ class EstadoResultadosReportResolver
             return $this->fromSnapshot($version, $scope);
         }
 
-        $dataset = $this->builder->build($period, $scope);
+        return $this->withLiveMeta($period, $this->builder->build($period, $scope), $this->guard->latest($period));
+    }
+
+    /**
+     * Recorre VARIOS alcances SIN redacción con una sola foto de datos (comparativos, series).
+     *  - Periodo con versión servida (aprobada vigente o ?version) → itera sus snapshots.
+     *  - En vivo → una sola sesión de Radiografía + EstadoResultadosDatasetBuilder::buildEach.
+     * Cada dataset trae `meta.report` igual que unredacted().
+     *
+     * @param  list<string>|null  $scopes  null = todos los alcances disponibles
+     * @param  callable(string, array): void  $each  ($scopeKey, $dataset)
+     */
+    public function eachUnredacted(Period $period, ?array $scopes, callable $each, ?int $versionNumber = null): void
+    {
+        $version = $this->servedVersion($period, $versionNumber);
+        if ($version) {
+            foreach ((array) $version->scopes as $s) {
+                $key = (string) ($s['key'] ?? '');
+                if ($scopes === null || in_array($key, $scopes, true)) {
+                    $each($key, $this->fromSnapshot($version, $key));
+                }
+            }
+
+            return;
+        }
         $latest = $this->guard->latest($period);
+        $this->builder->session(function () use ($period, $scopes, $each, $latest) {
+            $this->builder->buildEach($period, $scopes, function (string $key, array $dataset) use ($period, $each, $latest) {
+                $each($key, $this->withLiveMeta($period, $dataset, $latest));
+            });
+        });
+    }
+
+    private function withLiveMeta(Period $period, array $dataset, ?EstadoResultadosVersion $latest): array
+    {
         $eval = $this->evaluator->evaluate($dataset);
         $dataset['meta']['report'] = $this->reportMeta($dataset, [
             'status' => $eval['status'],

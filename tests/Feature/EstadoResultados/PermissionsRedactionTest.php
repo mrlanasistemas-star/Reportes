@@ -103,6 +103,12 @@ it('expone las capacidades del usuario a la UI (la autoridad sigue siendo el bac
         ->etc());
 });
 
+/** Modelo de EBITDA único: nómina y DG son categorías de la sección «opex». */
+function prOpexCategory(array $d, string $key): ?array
+{
+    return collect(collect($d['statement'])->firstWhere('key', 'opex')['categories'] ?? [])->firstWhere('key', $key);
+}
+
 it('sin «ver_nomina» se redacta el detalle de nómina en dataset, historial, Excel y PDF; los totales no cambian', function () {
     $period = G::readyPeriod();
     $admin = G::admin();
@@ -122,14 +128,14 @@ it('sin «ver_nomina» se redacta el detalle de nómina en dataset, historial, E
         ->and(json_encode($red))->not->toContain('EMPLEADO CONFIDENCIAL');
 
     foreach (['nomina_sucursales', 'nomina_corporativa'] as $key) {
-        $sec = collect($red['statement'])->firstWhere('key', $key);
-        $orig = collect($full['statement'])->firstWhere('key', $key);
+        $sec = prOpexCategory($red, $key);
+        $orig = prOpexCategory($full, $key);
         expect($sec['lines'])->toHaveCount(1)
             ->and($sec['lines'][0]['state'])->toBe('restringido')
             ->and($sec['lines'][0]['amount'])->toBe($orig['total']['amount'])
             ->and($sec['total'])->toBe($orig['total']);
     }
-    expect(count(collect($full['statement'])->firstWhere('key', 'nomina_sucursales')['lines']))->toBeGreaterThan(1);
+    expect(count(prOpexCategory($full, 'nomina_sucursales')['lines']))->toBeGreaterThan(1);
 
     // Historial y reclasificación de un movimiento de nómina: 403.
     $this->actingAs($user)->getJson("/estado-resultados/{$period->id}/historial-clasificacion?fingerprint={$payroll['fingerprint']}")->assertForbidden();
@@ -171,9 +177,9 @@ it('sin «ver_dg» se redacta el detalle de Dirección General; el EBITDA final 
 
     $full = $this->actingAs($admin)->getJson("/estado-resultados/{$period->id}/dataset")->json('dataset');
     $red = $this->actingAs($user)->getJson("/estado-resultados/{$period->id}/dataset")->json('dataset');
-    $dg = collect($red['statement'])->firstWhere('key', 'dg');
+    $dg = prOpexCategory($red, 'dg');
 
-    expect($full['results']['dg'])->toBe('6000.00')
+    expect($full['controls']['dg'])->toBe('6000.00')
         ->and($red['results'])->toBe($full['results'])
         ->and($dg['lines'])->toHaveCount(1)
         ->and($dg['lines'][0]['amount'])->toBe('6000.00')
@@ -182,7 +188,7 @@ it('sin «ver_dg» se redacta el detalle de Dirección General; el EBITDA final 
         ->and(json_encode($red))->not->toContain('HOTEL EJECUTIVO');
 
     $excel = $this->actingAs($user)->get("/estado-resultados/{$period->id}/exportar/excel")->assertOk();
-    $dgSheet = IOFactory::load($excel->getFile()->getPathname())->getSheetByName('DG');
+    $dgSheet = IOFactory::load($excel->getFile()->getPathname())->getSheetByName('Anexo DG');
     expect((string) $dgSheet->getCell('B6')->getValue())->toContain('restringido');
     $this->actingAs($user)->getJson("/estado-resultados/{$period->id}/historial-clasificacion?fingerprint={$m['fingerprint']}")->assertForbidden();
     $this->actingAs($admin)->getJson("/estado-resultados/{$period->id}/historial-clasificacion?fingerprint={$m['fingerprint']}")->assertOk()->assertJsonCount(1, 'history');
@@ -200,7 +206,7 @@ it('datos incompletos ⇒ PRELIMINAR en dataset, Excel y PDF; nunca muestra un a
     $excel = $this->actingAs($admin)->get("/estado-resultados/{$period->id}/exportar/excel")->assertOk()->assertHeader('X-Report-Preliminary', '1');
     expect($excel->headers->get('content-disposition'))->toContain('_PRELIMINAR.xlsx');
     $book = IOFactory::load($excel->getFile()->getPathname());
-    $ws = $book->getSheetByName('ESTADO RESULTADOS');
+    $ws = $book->getSheetByName('Estado de Resultados');
     $da = null;
     foreach ($ws->getRowIterator() as $row) {
         $r = $row->getRowIndex();
@@ -211,7 +217,7 @@ it('datos incompletos ⇒ PRELIMINAR en dataset, Excel y PDF; nunca muestra un a
     expect((string) $ws->getCell('G1')->getValue())->toBe('PRELIMINAR')
         ->and((string) $ws->getCell('C4')->getValue())->toContain('Versión 1')->toContain('PENDIENTE DE CONCILIACIÓN')
         ->and($da)->toBe('Sin información');
-    $control = $book->getSheetByName('FUENTES Y CONTROL')->toArray(null, false, false, false);
+    $control = $book->getSheetByName('Conciliación y trazabilidad')->toArray(null, false, false, false);
     expect(collect($control)->pluck(1)->filter()->all())->toContain('Motivo PRELIMINAR', 'Criterio gerencial aplicado', 'Versión del reporte', 'Estado del reporte');
 
     $html = (string) file_get_contents($this->actingAs($admin)->get("/estado-resultados/{$period->id}/exportar/pdf")->assertOk()->getFile()->getPathname());
@@ -233,7 +239,7 @@ it('Web, Excel y PDF comparten cifras y hash tanto en vivo como aprobados', func
         expect($x->headers->get('X-Dataset-Hash'))->toBe($web['meta']['dataset_hash'])
             ->and($p->headers->get('X-Dataset-Hash'))->toBe($web['meta']['dataset_hash'])
             ->and($x->headers->get('X-Report-Status'))->toBe($web['meta']['report']['status'])
-            ->and($html)->toContain($money($web['results']['ebitda_final']))
+            ->and($html)->toContain($money($web['results']['ebitda']))
             ->and($html)->toContain($money($web['results']['utilidad_neta']));
 
         return $web;

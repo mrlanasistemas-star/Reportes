@@ -7,6 +7,7 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Versión APROBADA (cierre) del Estado de Resultados de un periodo. Las cifras,
@@ -20,7 +21,7 @@ class EstadoResultadosVersion extends Model
     public const SUSTITUIDO = 'sustituido';
 
     /** Columnas que pueden cambiar después de aprobar (todo lo demás es inmutable). */
-    private const MUTABLE = ['status', 'reopened_at', 'reopened_by', 'reopen_reason', 'superseded_at', 'superseded_by_version_id', 'updated_at'];
+    private const MUTABLE = ['status', 'current_period_id', 'reopened_at', 'reopened_by', 'reopen_reason', 'superseded_at', 'superseded_by_version_id', 'updated_at'];
 
     protected $table = 'estado_resultados_versions';
 
@@ -48,6 +49,18 @@ class EstadoResultadosVersion extends Model
         static::deleting(function () {
             throw new \LogicException('Una versión aprobada del Estado de Resultados no se puede eliminar.');
         });
+    }
+
+    private static ?bool $guarantees = null;
+
+    /** ¿Ya se aplicó la migración 2026_11_06_0000C1 (current_period_id / input_signature)? */
+    public static function hasGuaranteeColumns(): bool
+    {
+        if (app()->runningUnitTests()) {
+            return Schema::hasColumn((new self)->getTable(), 'current_period_id');
+        }
+
+        return self::$guarantees ??= Schema::hasColumn((new self)->getTable(), 'current_period_id');
     }
 
     /** Vigente y cerrada: el periodo no admite cambios. */

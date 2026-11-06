@@ -29,7 +29,7 @@ class EstadoResultadosImportAttempt extends Model
 
     protected $guarded = ['id'];
 
-    protected $casts = ['started_at' => 'datetime', 'finished_at' => 'datetime'];
+    protected $casts = ['started_at' => 'datetime', 'finished_at' => 'datetime', 'validated_at' => 'datetime'];
 
     public function errors(): HasMany
     {
@@ -39,5 +39,10 @@ class EstadoResultadosImportAttempt extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function upload(): BelongsTo
+    {
+        return $this->belongsTo(EstadoResultadosUpload::class, 'upload_id');
     }
 }

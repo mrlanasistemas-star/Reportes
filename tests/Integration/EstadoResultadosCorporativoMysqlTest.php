@@ -32,9 +32,9 @@ it('CORPORATIVO excluido de Radiografía e incluido una sola vez en el Estado de
     app(EstadoResultadosProcessor::class)->process($period);
     $d = app(EstadoResultadosDatasetBuilder::class)->build($period);
 
-    expect($d['results']['opex_sucursales'])->toBe('1200.00')
+    expect($d['controls']['opex_sucursales'])->toBe('1200.00')
         ->and($d['radiography_reconciliation']['difference'])->toBe('0.00')
-        ->and($d['results']['opex_corporativo'])->toBe('5000.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('5000.00')
         ->and($d['conciliation']['conciliados_erp']['count'])->toBe(1)
         ->and($d['conciliation']['incorporado_bancos'])->toBe('0.00')
         ->and(collect($d['checks'])->where('ok', false)->pluck('key')->all())->toBe([]);

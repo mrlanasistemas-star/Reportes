@@ -51,10 +51,10 @@ it('EBITDA sucursales parte de la base canónica de Radiografía: capital recupe
     $d = erBuild($period);
 
     // Ingresos = 80,000 + 12,800 + 4,200 + 1,000 + 1,500 + 300 + 200 = 100,000 (sin capital 900,000 ni colocación 750,000)
-    expect($d['results']['ingresos'])->toBe('100000.00')
-        ->and($d['results']['opex_sucursales'])->toBe('20000.00')
-        ->and($d['results']['nomina_sucursales'])->toBe('30000.00')
-        ->and($d['results']['ebitda_sucursales'])->toBe('50000.00')
+    expect($d['controls']['ingresos'])->toBe('100000.00')
+        ->and($d['controls']['opex_sucursales'])->toBe('20000.00')
+        ->and($d['controls']['nomina_sucursales'])->toBe('30000.00')
+        ->and($d['controls']['ebitda_sucursales'])->toBe('50000.00')
         ->and($d['radiography_reconciliation']['difference'])->toBe('0.00')
         ->and($d['radiography_reconciliation']['ok'])->toBeTrue();
 
@@ -72,10 +72,10 @@ it('CORPORATIVO del ERP participa en el Estado de Resultados (nivel 2) y los tre
 
     $d = erBuild($period);
 
-    expect($d['results']['opex_corporativo'])->toBe('7000.00')
-        ->and($d['results']['nomina_corporativa'])->toBe('3000.00')
-        ->and($d['results']['ebitda_corporativo'])->toBe('40000.00')
-        ->and($d['results']['ebitda_final'])->toBe('40000.00')
+    expect($d['controls']['opex_corporativo'])->toBe('7000.00')
+        ->and($d['controls']['nomina_corporativa'])->toBe('3000.00')
+        ->and($d['controls']['ebitda_corporativo'])->toBe('40000.00')
+        ->and($d['controls']['ebitda_final'])->toBe('40000.00')
         ->and(collect($d['checks'])->where('ok', false)->pluck('key')->all())->toBe([]);
 });
 
@@ -91,7 +91,7 @@ it('un gasto presente en ERP y en el estado de cuenta sólo se cuenta una vez', 
     expect($bank['reconciliation_status'])->toBe('conciliado_erp_exacto')
         ->and($bank['treatment'])->toBe(T::CONCILIADO_ERP)
         ->and($bank['impact']['included'])->toBeFalse()
-        ->and($d['results']['opex_corporativo'])->toBe('5000.00')   // una sola vez (desde el ERP)
+        ->and($d['controls']['opex_corporativo'])->toBe('5000.00')   // una sola vez (desde el ERP)
         ->and($d['conciliation']['incorporado_bancos'])->toBe('0.00');
 });
 
@@ -121,7 +121,7 @@ it('folio con varios pagos concilia 1:N y no duplica el gasto', function () {
 
     expect($rows->pluck('reconciliation_status')->unique()->values()->all())->toBe(['conciliado_erp_agregado'])
         ->and($rows->first()['reconciliation_message'])->toContain('$2,000.00 + $3,000.00 = $5,000.00')
-        ->and($d['results']['opex_corporativo'])->toBe('5000.00');
+        ->and($d['controls']['opex_corporativo'])->toBe('5000.00');
 });
 
 it('traspasos entre cuentas no afectan ingreso ni gasto y se emparejan entre archivos', function () {
@@ -137,8 +137,8 @@ it('traspasos entre cuentas no afectan ingreso ni gasto y se emparejan entre arc
     $transfers = collect($d['movements'])->where('treatment', T::TRANSFERENCIA_INTERNA);
     expect($transfers)->toHaveCount(3)
         ->and($transfers->pluck('transfer_pair')->filter()->unique()->count())->toBe(1)
-        ->and($d['results']['ebitda_final'])->toBe('50000.00')
-        ->and($d['results']['ingresos'])->toBe('100000.00');
+        ->and($d['controls']['ebitda_final'])->toBe('50000.00')
+        ->and($d['controls']['ingresos'])->toBe('100000.00');
 });
 
 it('CAPEX, capital de deuda y movimientos personales no reducen EBITDA; los intereses sí reducen EBT', function () {
@@ -161,10 +161,10 @@ it('CAPEX, capital de deuda y movimientos personales no reducen EBITDA; los inte
     $d = erBuild($period);
 
     expect(erMovement($d, 'PAGO 24 CREDITO LEROM')['treatment'])->toBe(T::CAPITAL_DEUDA)
-        ->and($d['results']['ebitda_corporativo'])->toBe('50000.00')
-        ->and($d['results']['dg'])->toBe('6000.00')
-        ->and($d['results']['ebitda_final'])->toBe('44000.00')     // sólo el DG operativo
-        ->and($d['results']['resultado_financiero_neto'])->toBe('4045.00')
+        ->and($d['controls']['ebitda_corporativo'])->toBe('50000.00')
+        ->and($d['controls']['dg'])->toBe('6000.00')
+        ->and($d['controls']['ebitda_final'])->toBe('44000.00')     // sólo el DG operativo
+        ->and($d['results']['resultado_financiero_neto'])->toBe('-4045.00')   // con signo: gasto financiero neto
         ->and($d['results']['ebt'])->toBe('39955.00')             // capital de deuda NO reduce EBT
         ->and(collect($d['outside']['groups'])->pluck('key')->all())->toContain(T::CAPEX, T::CAPITAL_DEUDA, T::PERSONAL_SOCIOS);
 });
@@ -228,7 +228,7 @@ it('reemplazar el archivo de una cuenta no duplica movimientos y conserva la cla
     expect(EstadoResultadosMovement::query()->where('period_id', $period->id)->count())->toBe(2)
         ->and(EstadoResultadosUpload::query()->where('period_id', $period->id)->where('status', 'reemplazado')->count())->toBe(1)
         ->and(erMovement($d, 'PAGO LIMPIEZA')['treatment'])->toBe(T::OPEX_CORPORATIVO)
-        ->and($d['results']['opex_corporativo'])->toBe('1000.00');
+        ->and($d['controls']['opex_corporativo'])->toBe('1000.00');
 });
 
 it('la clasificación manual no modifica el dato original y guarda historial con valor anterior', function () {
@@ -251,7 +251,7 @@ it('la clasificación manual no modifica el dato original y guarda historial con
         ->and($history[0]['treatment'])->toBe(T::DG_OPERATIVO)
         ->and($history[0]['previous_treatment'])->toBe(T::OPEX_CORPORATIVO)
         ->and(EstadoResultadosClassification::query()->count())->toBe(2)
-        ->and(erBuild($period)['results']['dg'])->toBe('24300.00');
+        ->and(erBuild($period)['controls']['dg'])->toBe('24300.00');
 });
 
 it('un archivo con estructura inválida da un error entendible y no carga datos parciales', function () {
@@ -294,7 +294,7 @@ it('movimientos fuera de las fechas del periodo se conservan pero no suman', fun
     $d = erBuild($period);
 
     expect(erMovement($d, 'NOM QUINCENA 18')['treatment'])->toBe(T::FUERA_PERIODO)
-        ->and($d['results']['nomina_corporativa'])->toBe('100.00')
+        ->and($d['controls']['nomina_corporativa'])->toBe('100.00')
         ->and($d['conciliation']['fuera_periodo'])->toBe(1);
 });
 
@@ -323,19 +323,22 @@ it('Web, Excel y PDF usan exactamente el mismo dataset y exportar dos veces no c
     $html = app(EstadoResultadosPdfExporter::class)->html(erBuild($period));
     $pdfMoney = fn ($v) => ((float) $v < 0 ? '-$' : '$').number_format(abs((float) $v), 2);
 
+    // Modelo de EBITDA único: subtotales y resultados son fórmulas del libro → se lee el valor calculado.
     $readResults = function (string $path): array {
-        $ws = IOFactory::load($path)->getSheetByName('ESTADO RESULTADOS');
+        $book = IOFactory::load($path);
+        $ws = $book->getSheetByName('Estado de Resultados');
         $out = [];
         foreach ($ws->getRowIterator() as $row) {
             $r = $row->getRowIndex();
-            $label = (string) $ws->getCell("B{$r}")->getValue();
-            foreach (['TOTAL INGRESOS OPERATIVOS' => 'ingresos', 'EBITDA SUCURSALES' => 'ebitda_sucursales', 'EBITDA CORPORATIVO' => 'ebitda_corporativo', 'EBITDA FINAL' => 'ebitda_final', 'EBIT' => 'ebit', 'UTILIDAD NETA' => 'utilidad_neta', 'TOTAL OPEX CORPORATIVO' => 'opex_corporativo', 'TOTAL NÓMINA CORPORATIVA' => 'nomina_corporativa'] as $prefix => $key) {
-                if ($label === $prefix || str_starts_with($label, $prefix.' ') || str_starts_with($label, $prefix.'  ')) {
-                    $out[$key] = number_format((float) $ws->getCell("C{$r}")->getValue(), 2, '.', '');
+            $label = trim((string) $ws->getCell("B{$r}")->getValue());
+            foreach (['TOTAL INGRESOS OPERATIVOS' => 'ingresos_operativos', 'TOTAL OPEX' => 'opex_total', 'EBITDA' => 'ebitda', 'EBIT' => 'ebit', 'EBT · UTILIDAD ANTES DE IMPUESTOS' => 'ebt', 'UTILIDAD NETA' => 'utilidad_neta', 'Total gastos corporativos' => 'opex_corporativo', 'Total nómina corporativa' => 'nomina_corporativa'] as $prefix => $key) {
+                $value = $ws->getCell("C{$r}")->getCalculatedValue();
+                if (($label === $prefix || str_starts_with($label, $prefix.'  (')) && is_numeric($value)) {
+                    $out[$key] = number_format((float) $value, 2, '.', '');
                 }
             }
         }
-        $control = IOFactory::load($path)->getSheetByName('FUENTES Y CONTROL')->getCell('C6')->getValue();
+        $control = $book->getSheetByName('Conciliación y trazabilidad')->getCell('C6')->getValue();
 
         return [$out, $control];
     };
@@ -343,16 +346,18 @@ it('Web, Excel y PDF usan exactamente el mismo dataset y exportar dos veces no c
     [$excel2, $hash2] = $readResults($x2);
 
     foreach ($excel1 as $key => $value) {
-        expect($value)->toBe($web['results'][$key], "Excel {$key}");
+        expect($value)->toBe(($web['results'] + $web['controls'])[$key], "Excel {$key}");
     }
-    expect(count($excel1))->toBeGreaterThanOrEqual(7)
+    expect(count($excel1))->toBeGreaterThanOrEqual(6)
         ->and($excel1)->toBe($excel2)
         ->and($hash1)->toBe($web['meta']['dataset_hash'])
         ->and($hash2)->toBe($web['meta']['dataset_hash'])
         ->and($html)->toContain($web['meta']['dataset_hash'])
-        ->and($html)->toContain($pdfMoney($web['results']['ebitda_final']))
-        ->and($html)->toContain($pdfMoney($web['results']['ebitda_corporativo']))
-        ->and($html)->toContain($pdfMoney($web['results']['ebitda_sucursales']));
+        ->and($html)->toContain($pdfMoney($web['results']['ingresos_operativos']))
+        ->and($html)->toContain($pdfMoney($web['results']['opex_total']))
+        ->and($html)->toContain($pdfMoney($web['results']['ebitda']))
+        ->and($html)->toContain($pdfMoney($web['results']['ebit']))
+        ->and($html)->not->toMatch('/EBITDA\s*[123]\b/');
 });
 
 it('todas las validaciones matemáticas terminan en $0.00 con datos mixtos', function () {
@@ -372,7 +377,7 @@ it('todas las validaciones matemáticas terminan en $0.00 con datos mixtos', fun
 
     $failed = collect($d['checks'])->where('ok', false)->map(fn ($c) => $c['key'].': '.$c['difference'])->values()->all();
     expect($failed)->toBe([])
-        ->and($d['results']['ebit'])->toBe(Money::str2(Money::of($d['results']['ebitda_final'])->minus('100.10')))
+        ->and($d['results']['ebit'])->toBe(Money::str2(Money::of($d['controls']['ebitda_final'])->minus('100.10')))
         ->and($d['results']['utilidad_neta'])->toBe(Money::str2(Money::of($d['results']['ebt'])->minus('999.99')));
 });
 
@@ -381,10 +386,11 @@ it('alcance sucursal: sólo nivel 1 conciliado contra la sucursal y sin Corporat
     F::erp($period, 'CORPORATIVO', 'REQ-C1', '7000.00', '2026-09-05', 'Luz', 'LUZ');
     $d = erBuild($period, 'CORDOBA');
 
-    expect($d['results']['ebitda_sucursales'])->toBe('50000.00')
-        ->and($d['results']['opex_corporativo'])->toBe('0.00')
+    expect($d['controls']['ebitda_sucursales'])->toBe('50000.00')
+        ->and($d['controls']['opex_corporativo'])->toBe('0.00')
         ->and($d['radiography_reconciliation']['ok'])->toBeTrue()
-        ->and(collect($d['statement'])->firstWhere('key', 'opex_corporativo')['applies'])->toBeFalse();
+        ->and(collect(collect($d['statement'])->firstWhere('key', 'opex')['categories'])->pluck('key')->all())->toBe(['opex_sucursales', 'nomina_sucursales'])
+        ->and($d['results']['ebitda'])->toBe('50000.00');   // sucursal: EBITDA = ingresos − OPEX directo
 });
 
 it('respeta permisos: sin el módulo no entra; con módulo pero sin acción no puede cargar ni clasificar', function () {

@@ -71,8 +71,21 @@ final class EstadoResultadosGovernanceFixtures
         ]), 'excedentes');
         app(EstadoResultadosProcessor::class)->process($period);
         self::confirmAdjustments($period);
+        self::radiographySummary($period);
 
         return $period;
+    }
+
+    /**
+     * Consolidado de Radiografía vigente (period_summaries) — la aprobación lo exige (lista blanca,
+     * fase 2.1). Fila mínima SINTÉTICA, sólo para pruebas.
+     */
+    public static function radiographySummary(Period $period): void
+    {
+        DB::table('period_summaries')->updateOrInsert(
+            ['period_id' => $period->id],
+            ['status' => 'generated', 'version' => 1, 'generated_at' => now(), 'invalidated_at' => null, 'created_at' => now(), 'updated_at' => now()],
+        );
     }
 
     /** Sustituye Browsershot: el "PDF" generado es el HTML de la vista (permite inspeccionarlo). */

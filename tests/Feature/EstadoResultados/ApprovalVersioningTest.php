@@ -200,7 +200,7 @@ it('después de aprobar, web, Excel y PDF siguen idénticos al snapshot aunque c
         ->and($pdf->headers->get('X-Report-Version'))->toBe('1');
 
     $book = IOFactory::load($excel->getFile()->getPathname());
-    $control = $book->getSheetByName('FUENTES Y CONTROL');
+    $control = $book->getSheetByName('Conciliación y trazabilidad');
     $values = [];
     foreach ($control->getRowIterator(6, 20) as $row) {
         $values[(string) $control->getCell('B'.$row->getRowIndex())->getValue()] = (string) $control->getCell('C'.$row->getRowIndex())->getValue();
@@ -211,18 +211,19 @@ it('después de aprobar, web, Excel y PDF siguen idénticos al snapshot aunque c
         ->and($values['Versión del reporte'])->toBe('1')
         ->and($values['Criterio gerencial aplicado'])->toContain('Criterio gerencial');
 
+    // Modelo de EBITDA único: el renglón «EBITDA» (fórmula Ingresos − OPEX) = results.ebitda del snapshot.
     $ebitdaRow = null;
-    $ws = $book->getSheetByName('ESTADO RESULTADOS');
+    $ws = $book->getSheetByName('Estado de Resultados');
     foreach ($ws->getRowIterator() as $row) {
-        if ((string) $ws->getCell('B'.$row->getRowIndex())->getValue() === 'EBITDA FINAL') {
-            $ebitdaRow = number_format((float) $ws->getCell('C'.$row->getRowIndex())->getValue(), 2, '.', '');
+        if ((string) $ws->getCell('B'.$row->getRowIndex())->getValue() === 'EBITDA') {
+            $ebitdaRow = number_format((float) $ws->getCell('C'.$row->getRowIndex())->getCalculatedValue(), 2, '.', '');
         }
     }
     $html = (string) file_get_contents($pdf->getFile()->getPathname());
     $money = fn ($v) => ((float) $v < 0 ? '-$' : '$').number_format(abs((float) $v), 2);
-    expect($ebitdaRow)->toBe($approved['results']['ebitda_final'])
+    expect($ebitdaRow)->toBe($approved['results']['ebitda'])
         ->and($html)->toContain($approved['meta']['dataset_hash'])
-        ->and($html)->toContain($money($approved['results']['ebitda_final']))
+        ->and($html)->toContain($money($approved['results']['ebitda']))
         ->and($html)->toContain('Versión 1')
         ->and($html)->toContain('Aprobado')
         ->and($html)->not->toContain('PRELIMINAR');

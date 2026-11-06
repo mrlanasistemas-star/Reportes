@@ -6,6 +6,18 @@ return [
     */
     'import' => [
         'max_mb' => (int) env('ER_IMPORT_MAX_MB', 10),
+        // Dimensiones máximas por hoja (se revisan ANTES de cargar el libro).
+        'max_rows' => 50000,
+        'max_columns' => 100,
+        // Contenedor ZIP (.xlsx/.xlsm) — defensa contra bombas ZIP. Calibrado con los
+        // estados de cuenta reales (11–36 partes, 0.5–6 MB descomprimidos).
+        'zip' => [
+            'max_entries' => 2000,
+            'max_uncompressed_mb' => 150,
+            'max_entry_mb' => 100,
+            'max_ratio' => 100,      // razón máxima descomprimido:comprimido…
+            'ratio_min_mb' => 1,     // …aplicada a partes de 1 MB o más
+        ],
     ],
 
     /*
@@ -54,6 +66,15 @@ return [
     */
     'procesamiento' => [
         'lock_segundos' => 600,
+    ],
+
+    /*
+    | Aprobación: vida máxima del candado de aplicación por periodo. Antes de escribir
+    | la versión se verifica que el candado siga siendo del proceso que aprueba; si
+    | expiró (corrida más larga que esto) la aprobación se rechaza con 409.
+    */
+    'aprobacion' => [
+        'lock_segundos' => 900,
     ],
 
     /*

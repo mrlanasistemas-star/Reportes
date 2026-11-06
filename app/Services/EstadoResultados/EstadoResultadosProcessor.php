@@ -20,6 +20,7 @@ use App\Services\EstadoResultados\Support\ProcessingLockedException;
 use App\Services\EstadoResultados\Support\Treatment;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Procesamiento (re-ejecutable e idempotente) de un periodo:
@@ -152,8 +153,9 @@ class EstadoResultadosProcessor
         $links = [];
 
         DB::transaction(function () use ($period, $run, $movements, $uploads, $rec, $allocByMovement, $erpByFp, $reversals, $pairs, $noi, $refunds, $refundTargets, $periodStart, $now, &$counts, &$links) {
-            // Candado a nivel BD (además del Cache::lock): serializa escrituras del periodo.
-            DB::table('periods')->where('id', $period->id)->lockForUpdate()->first();
+            // Candado a nivel BD (además del Cache::lock): serializa escrituras del periodo y
+            // vuelve a revisar que nadie haya aprobado mientras se calculaba la conciliación.
+            app(PeriodLockGuard::class)->lockForWrite($period);
 
             $pairMembers = [];
             foreach ($pairs as $id => $key) {
@@ -308,8 +310,13 @@ class EstadoResultadosProcessor
                 EstadoResultadosReconciliationLink::query()->insert($chunk);
             }
 
-            EstadoResultadosUpload::query()->active()->whereIn('id', $movements->pluck('upload_id')->unique()->all())
-                ->update(['status' => EstadoResultadosUpload::STATUS_PROCESSED]);
+            // Ciclo de vida del archivo: procesado (+ processed_at) — columnas de la migración 0000C2.
+            $uploadIds = $movements->pluck('upload_id')->unique()->values()->all();
+            if (Schema::hasColumn('estado_resultados_uploads', 'lifecycle')) {
+                EstadoResultadosUpload::markProcessed($uploadIds);
+            } else {
+                EstadoResultadosUpload::query()->active()->whereIn('id', $uploadIds)->update(['status' => EstadoResultadosUpload::STATUS_PROCESSED]);
+            }
         });
 
         foreach ($counts as &$group) {
