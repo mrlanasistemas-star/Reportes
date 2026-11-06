@@ -28,6 +28,9 @@ class InputSignature
 {
     private const COMPARATIVES_VERSION = 'cmp-1';
 
+    /** Formato de la base de Radiografía en caché (subir si cambia su estructura). */
+    public const BASE_VERSION = 'base-1';
+
     private static ?string $codeFingerprint = null;
 
     public function __construct(private readonly PeriodDataIds $dataIds) {}
@@ -40,20 +43,8 @@ class InputSignature
         $parts = [
             'v' => self::COMPARATIVES_VERSION.'/'.PeriodSummaryExtractor::VERSION,
             'rules' => (string) config('estado_resultados.rules_version'),
-            'dims' => Dimensions::VERSION,
-            'code' => self::codeFingerprint(),
-            'day' => now('America/Mexico_City')->format('Y-m-d'),
-            'period' => [$period->id, (string) $period->start_date, (string) $period->end_date, (string) $period->updated_at],
             'scope' => $scope,
-            'data_ids' => $ids,
-            'report_uploads' => $ids === [] ? [] : DB::table('report_uploads')->whereIn('period_id', $ids)->orderBy('id')
-                ->get(['id', 'data_source_id', 'status', 'updated_at'])->map(fn ($r) => implode('|', (array) $r))->all(),
-            'fact_expenses' => $agg('fact_expenses', $ids),
-            'fact_noi' => $agg('fact_noi_movements', $ids),
-            'fact_imss' => $agg('fact_imss', $ids),
-            'fact_rotacion' => $agg('fact_rotacion', [$period->id]),
-            'summaries' => $agg('period_summaries', [$period->id]),
-            'branches' => $this->aggregate('branches', null, []),
+            'radiography' => $this->radiographyParts($period, $ids),
             'er_uploads' => DB::table('estado_resultados_uploads')->where('period_id', $period->id)->orderBy('id')
                 ->get(['id', 'account_slot', 'status', 'file_hash', 'updated_at'])->map(fn ($r) => implode('|', (array) $r))->all(),
             'er_movements' => [$agg('estado_resultados_movements', [$period->id]),
@@ -67,6 +58,50 @@ class InputSignature
         ];
 
         return hash('sha256', json_encode($parts, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * Firma SÓLO de los insumos de la base de Radiografía (RadiographyBaseProvider). No cambia al
+     * clasificar, ajustar o procesar estados de cuenta: esas acciones reutilizan la base ya
+     * calculada y sólo recalculan la parte propia del ER, que nunca se guarda en caché.
+     */
+    public function radiography(Period $period): string
+    {
+        return hash('sha256', json_encode(
+            ['v' => self::BASE_VERSION] + $this->radiographyParts($period, $this->dataIds->for($period)),
+            JSON_UNESCAPED_UNICODE,
+        ));
+    }
+
+    /**
+     * Insumos de la base de Radiografía: universo de period_id, cargas de report_uploads (toda
+     * importación o reproceso de recuperaciones, colocación, cartera, ERP, NOI, IMSS… cambia su
+     * id/estado/updated_at), agregados baratos de hechos, catálogos, huella del código y fecha
+     * del día (Radiografía tiene métricas relativas a la fecha: la caché nunca cruza días).
+     *
+     * @param  list<int>  $ids
+     */
+    private function radiographyParts(Period $period, array $ids): array
+    {
+        $agg = fn (string $table, array $ids, string $col = 'period_id') => $this->aggregate($table, $col, $ids);
+
+        return [
+            'dims' => Dimensions::VERSION,
+            'code' => self::codeFingerprint(),
+            'day' => now('America/Mexico_City')->format('Y-m-d'),
+            'period' => [$period->id, (string) $period->start_date, (string) $period->end_date, (string) $period->updated_at],
+            'data_ids' => $ids,
+            'report_uploads' => $ids === [] ? [] : DB::table('report_uploads')->whereIn('period_id', $ids)->orderBy('id')
+                ->get(['id', 'data_source_id', 'status', 'updated_at'])->map(fn ($r) => implode('|', (array) $r))->all(),
+            'fact_expenses' => $agg('fact_expenses', $ids),
+            'fact_noi' => $agg('fact_noi_movements', $ids),
+            'fact_imss' => $agg('fact_imss', $ids),
+            'fact_rotacion' => $agg('fact_rotacion', [$period->id]),
+            'summaries' => $agg('period_summaries', [$period->id]),
+            'branches' => $this->aggregate('branches', null, []),
+            'employee_branch_assignments' => $this->aggregate('employee_branch_assignments', null, []),
+            'data_sources' => $this->aggregate('data_sources', null, []),
+        ];
     }
 
     /** [conteo, id máximo, updated_at máximo] — tolera tablas/columnas ausentes. */

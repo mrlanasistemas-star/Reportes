@@ -711,6 +711,12 @@ export interface Permissions {
     aprobar?: boolean;
     ver_nomina?: boolean;
     ver_dg?: boolean;
+    /** Puede consultar el historial de clasificación (sólo acceso general). */
+    historial_clasificacion?: boolean;
+    /** false = acceso limitado a sus sucursales (no ve el consolidado ni opera el periodo completo). */
+    acceso_general?: boolean;
+    /** Explicación para mostrar en lugar de los controles ocultos por alcance. */
+    motivo_restriccion?: string | null;
 }
 
 export interface UploadRules {
@@ -915,6 +921,52 @@ export class ApiError extends Error {
     }
 }
 
+/**
+ * Mensajes técnicos que el servidor/Laravel manda en inglés o con códigos HTTP: nunca se
+ * muestran tal cual a un usuario de finanzas.
+ */
+const TECHNICAL_MESSAGE =
+    /^(No query results|Not Found|The route|CSRF token mismatch|Unauthenticated|This action is unauthorized|Server Error|Too Many Attempts|Service Unavailable|Error \d+|SQLSTATE|Call to|Undefined|Class ")/i;
+
+/** Mensaje claro en español para un estado HTTP, usando el del servidor si ya es legible. */
+export function friendlyError(status: number, raw?: string | null): string {
+    if (status === 419) {
+        return 'Tu sesión expiró. Recarga la página para continuar.';
+    }
+
+    if (status === 401) {
+        return 'Tu sesión terminó. Vuelve a iniciar sesión para continuar.';
+    }
+
+    const usable = raw && !TECHNICAL_MESSAGE.test(raw.trim()) ? raw : null;
+
+    if (usable) {
+        return usable;
+    }
+
+    if (status === 403) {
+        return 'No tienes permiso para hacer esto. Si lo necesitas, pídelo al administrador del sistema.';
+    }
+
+    if (status === 404) {
+        return 'No encontramos lo que buscas: es posible que el periodo o el registro ya no exista.';
+    }
+
+    if (status === 413) {
+        return 'El archivo es demasiado grande para el servidor.';
+    }
+
+    if (status === 429) {
+        return 'Hiciste muchas solicitudes seguidas. Espera un minuto y vuelve a intentarlo.';
+    }
+
+    if (status === 503) {
+        return 'El sistema está en mantenimiento. Intenta de nuevo en unos minutos.';
+    }
+
+    return 'Ocurrió un problema en el servidor. Intenta de nuevo en un momento; si continúa, avisa a Sistemas.';
+}
+
 async function parseError(res: Response): Promise<ApiError> {
     try {
         const body = (await res.json()) as {
@@ -929,38 +981,49 @@ async function parseError(res: Response): Promise<ApiError> {
                 : null;
 
         return new ApiError(
-            first ?? body.message ?? `Error ${res.status}`,
+            friendlyError(res.status, first ?? body.message),
             body.details ?? [],
             res.status,
             body,
         );
     } catch {
-        return new ApiError(
-            res.status === 413
-                ? 'El archivo es demasiado grande para el servidor.'
-                : `Error ${res.status} del servidor.`,
-            [],
-            res.status,
-        );
+        return new ApiError(friendlyError(res.status), [], res.status);
     }
 }
 
+/** true si el error es una cancelación (petición vieja abortada a propósito). */
+export function isAbortError(e: unknown): boolean {
+    return e instanceof DOMException && e.name === 'AbortError';
+}
 export async function apiJson<T>(
     url: string,
     init: RequestInit = {},
 ): Promise<T> {
     const isForm = init.body instanceof FormData;
-    const res = await fetch(url, {
-        credentials: 'same-origin',
-        ...init,
-        headers: {
-            ...xsrfHeaders(),
-            ...(init.body && !isForm
-                ? { 'Content-Type': 'application/json' }
-                : {}),
-            ...((init.headers as Record<string, string> | undefined) ?? {}),
-        },
-    });
+    let res: Response;
+
+    try {
+        res = await fetch(url, {
+            credentials: 'same-origin',
+            ...init,
+            headers: {
+                Accept: 'application/json',
+                ...xsrfHeaders(),
+                ...(init.body && !isForm
+                    ? { 'Content-Type': 'application/json' }
+                    : {}),
+                ...((init.headers as Record<string, string> | undefined) ?? {}),
+            },
+        });
+    } catch (e) {
+        if (isAbortError(e)) {
+            throw e;
+        }
+
+        throw new ApiError(
+            'No pudimos conectar con el servidor. Revisa tu conexión a internet y vuelve a intentarlo.',
+        );
+    }
 
     if (!res.ok) {
         throw await parseError(res);

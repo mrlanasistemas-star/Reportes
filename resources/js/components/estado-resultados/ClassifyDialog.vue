@@ -77,7 +77,10 @@ const valid = computed(
 </script>
 
 <template>
-    <Dialog :open="open" @update:open="(v: boolean) => emit('update:open', v)">
+    <Dialog
+        :open="open"
+        @update:open="(v: boolean) => !saving && emit('update:open', v)"
+    >
         <DialogContent class="sm:max-w-lg">
             <DialogHeader>
                 <DialogTitle
@@ -160,7 +163,11 @@ const valid = computed(
             </div>
 
             <DialogFooter>
-                <Button variant="outline" @click="emit('update:open', false)">
+                <Button
+                    variant="outline"
+                    :disabled="saving"
+                    @click="emit('update:open', false)"
+                >
                     Cancelar
                 </Button>
                 <Button

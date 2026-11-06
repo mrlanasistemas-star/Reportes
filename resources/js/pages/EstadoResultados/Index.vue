@@ -18,7 +18,7 @@ import {
     LineChart,
     History,
 } from 'lucide-vue-next';
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import AppPageHeader from '@/components/app/AppPageHeader.vue';
 import AdjustmentsPanel from '@/components/estado-resultados/AdjustmentsPanel.vue';
 import ClassifyDialog from '@/components/estado-resultados/ClassifyDialog.vue';
@@ -26,8 +26,9 @@ import CloseRoute from '@/components/estado-resultados/CloseRoute.vue';
 import ComparativesPanel from '@/components/estado-resultados/ComparativesPanel.vue';
 import ConciliationSummary from '@/components/estado-resultados/ConciliationSummary.vue';
 import ControlPanel from '@/components/estado-resultados/ControlPanel.vue';
-import DatasetSkeleton from '@/components/estado-resultados/DatasetSkeleton.vue';
 import ErCommandBar from '@/components/estado-resultados/ErCommandBar.vue';
+import ErLoadingScreen from '@/components/estado-resultados/ErLoadingScreen.vue';
+import ErRefreshIndicator from '@/components/estado-resultados/ErRefreshIndicator.vue';
 import ErTabs from '@/components/estado-resultados/ErTabs.vue';
 import type { ErTab } from '@/components/estado-resultados/ErTabs.vue';
 import IndicatorsPanel from '@/components/estado-resultados/IndicatorsPanel.vue';
@@ -55,10 +56,14 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { useCloseRoute } from '@/composables/estado-resultados/useCloseRoute';
 import type { CloseStep } from '@/composables/estado-resultados/useCloseRoute';
 import { useErActions } from '@/composables/estado-resultados/useErActions';
-import { useErComparatives } from '@/composables/estado-resultados/useErComparatives';
+import {
+    tabRequest,
+    useErComparatives,
+} from '@/composables/estado-resultados/useErComparatives';
 import { useErDataset } from '@/composables/estado-resultados/useErDataset';
 import { useErGovernance } from '@/composables/estado-resultados/useErGovernance';
 import { useErNavigation } from '@/composables/estado-resultados/useErNavigation';
+import { useToast } from '@/composables/useToast';
 
 defineOptions({
     layout: {
@@ -77,6 +82,8 @@ const props = defineProps<{
         end: string;
     }>;
     initialPeriodId: number;
+    /** Aviso si el periodo del enlace ya no existe (se abrió el más reciente). */
+    periodNotice?: string | null;
     initialScope: string;
     slots: Array<{ key: string; label: string }>;
     treatments: TreatmentMeta[];
@@ -123,14 +130,29 @@ const gov = useErGovernance({
 });
 const report = gov.report;
 const lockReason = gov.lockReason;
+/** Versión congelada (aprobada o sustituida): sus cifras ya no son preliminares ni tienen pendientes. */
+const isSnapshot = computed(() => report.value?.source === 'snapshot');
 /** Motivos de "preliminar" según el backend (o la ruta de cierre si no llega). */
 const preliminaryReasons = computed<string[]>(() =>
-    report.value
-        ? report.value.preliminary
-            ? report.value.preliminary_reasons
-            : []
-        : route.blockers.value,
+    isSnapshot.value
+        ? []
+        : report.value
+          ? report.value.preliminary
+              ? report.value.preliminary_reasons
+              : []
+          : route.blockers.value,
 );
+/** Sin estados de cuenta ni movimientos del banco: no hay nada que revisar ni validar todavía. */
+const noBankData = computed(() => {
+    const d = dataset.value;
+
+    return (
+        !!d &&
+        d.conciliation.movimientos_en_periodo === 0 &&
+        d.conciliation.pendientes.count === 0 &&
+        d.sources.cuentas.every((c) => !c.upload)
+    );
+});
 const historyOpen = ref(false);
 /** Versión aprobada con el modelo anterior (sin meta.model): se avisa y se muestra tal cual. */
 const legacyModel = computed(
@@ -140,6 +162,26 @@ const legacyModel = computed(
 // Variación de las tarjetas: comparativa contra el periodo anterior (consulta ligera aparte).
 const base = ref((usePage().props as { base?: string }).base ?? '');
 const kpiComp = useErComparatives(base);
+const compRev = computed(() => {
+    const m = dataset.value?.meta;
+
+    return m
+        ? `${m.dataset_hash}:${m.report?.status ?? ''}:${m.report?.version_id ?? ''}`
+        : null;
+});
+/** Qué se está cargando, para la pantalla de carga y el indicador de actualización. */
+const loadingContext = computed(() => {
+    const p = props.periods.find((x) => x.id === periodId.value);
+    const s = scopes.value.find((x) => x.key === scope.value);
+
+    return [p?.label, s?.label].filter(Boolean).join(' · ') || null;
+});
+const toast = useToast();
+onMounted(() => {
+    if (props.periodNotice) {
+        toast.info(props.periodNotice);
+    }
+});
 const kpiPair = computed(() => kpiComp.data.value?.modes.anterior ?? null);
 const route = useCloseRoute(dataset);
 const nav = useErNavigation();
@@ -204,57 +246,97 @@ const resolve = (key: string) =>
 
 const tabs = computed<ErTab[]>(() => {
     const d = dataset.value;
-    const pend = d?.conciliation.pendientes.count ?? 0;
-    const failed = d?.checks.filter((c) => !c.ok).length ?? 0;
+    // En una versión aprobada o sustituida no hay pendientes que atender: sin insignias.
+    const live = !isSnapshot.value;
+    const pend = live ? (d?.conciliation.pendientes.count ?? 0) : 0;
+    const failed = live ? (d?.checks.filter((c) => !c.ok).length ?? 0) : 0;
     const sourcesStep = route.steps.value.find((s) => s.key === 'fuentes');
-    const noInfo =
-        d?.adjustments.filter((a) => a.state === 'sin_informacion' && a.affects)
-            .length ?? 0;
+    const noInfo = live
+        ? (d?.adjustments.filter(
+              (a) => a.state === 'sin_informacion' && a.affects,
+          ).length ?? 0)
+        : 0;
+    const diffs =
+        live && d?.validation
+            ? d.validation.unresolved.length + d.validation.failed_checks.length
+            : 0;
 
     return [
-        { key: 'resumen', label: 'Resumen', icon: BarChart3 },
-        { key: 'comparativas', label: 'Comparativas', icon: LineChart },
-        { key: 'estado', label: 'Estado de resultados', icon: ListTree },
-        { key: 'conciliacion', label: 'Movimientos', icon: Scale },
+        {
+            key: 'resumen',
+            label: 'Resumen',
+            icon: BarChart3,
+            group: 'analisis',
+        },
+        {
+            key: 'comparativas',
+            label: 'Comparativas',
+            icon: LineChart,
+            group: 'analisis',
+        },
+        {
+            key: 'estado',
+            label: 'Estado de resultados',
+            icon: ListTree,
+            group: 'analisis',
+        },
+        {
+            key: 'indicadores',
+            label: 'Indicadores',
+            icon: Gauge,
+            group: 'analisis',
+        },
+        {
+            key: 'fuentes',
+            label: 'Fuentes',
+            icon: FolderInput,
+            badge: live && sourcesStep && !sourcesStep.done ? '!' : null,
+            badgeLabel: 'faltan fuentes por cargar',
+            tone: 'warn',
+            group: 'cierre',
+        },
+        {
+            key: 'conciliacion',
+            label: 'Movimientos',
+            icon: Scale,
+            group: 'cierre',
+        },
         {
             key: 'revision',
             label: 'Por revisar',
             icon: ListChecks,
             badge: pend || null,
+            badgeLabel: `${pend} por revisar`,
             tone: 'warn',
+            group: 'cierre',
         },
-        { key: 'fuera', label: 'Fuera del ER', icon: Shuffle },
+        { key: 'fuera', label: 'Fuera del ER', icon: Shuffle, group: 'cierre' },
         {
             key: 'ajustes',
             label: 'Ajustes',
             icon: Calculator,
             badge: noInfo || null,
+            badgeLabel: `${noInfo} sin información`,
             tone: 'warn',
-        },
-        { key: 'indicadores', label: 'Indicadores', icon: Gauge },
-        {
-            key: 'fuentes',
-            label: 'Fuentes',
-            icon: FolderInput,
-            badge: sourcesStep && !sourcesStep.done ? '!' : null,
-            tone: 'warn',
+            group: 'cierre',
         },
         {
             key: 'validacion',
             label: 'Validación',
             icon: ScanSearch,
-            badge: d?.validation
-                ? d.validation.unresolved.length +
-                      d.validation.failed_checks.length || null
-                : null,
+            badge: diffs || null,
+            badgeLabel: `${diffs} diferencias`,
             tone: d?.validation?.status === 'con_diferencias' ? 'bad' : 'warn',
+            group: 'cierre',
         },
         {
             key: 'control',
             label: 'Control',
             icon: ShieldCheck,
             badge: failed || null,
+            badgeLabel: `${failed} controles no cuadran`,
             tone: 'bad',
+            group: 'cierre',
         },
     ];
 });
@@ -269,17 +351,26 @@ watch(version, () => {
     }
 });
 // Las tarjetas comparan contra el periodo anterior (sólo cifras en vivo del periodo vigente).
+// La revisión (huella + estado del reporte) entra en la clave de caché: tras clasificar,
+// ajustar, procesar o aprobar, tarjetas y comparativas se recalculan solas.
 watch(
     () =>
-        [dataset.value?.meta.period.id, dataset.value?.meta.scope.key] as const,
-    ([pid, sc]) => {
+        [
+            dataset.value?.meta.period.id,
+            dataset.value?.meta.scope.key,
+            compRev.value,
+        ] as const,
+    async ([pid, sc, rev]) => {
         if (pid && sc) {
-            kpiComp.load({
+            await kpiComp.load({
                 periodId: pid,
                 scope: sc,
                 modes: ['anterior'],
                 charts: false,
+                rev,
             });
+            // Precarga la pestaña Comparativas en segundo plano (misma clave que usa el panel).
+            setTimeout(() => kpiComp.prefetch(tabRequest(pid, sc, rev)), 800);
         }
     },
 );
@@ -373,7 +464,7 @@ const historyUrl = (fp: string) =>
             <AppPageHeader
                 kicker="Análisis financiero"
                 title="Estado de Resultados"
-                subtitle="Ingresos operativos − OPEX = EBITDA → EBIT → EBT → utilidad neta, con banco, ERP y Radiografía conciliados. Cada cifra se puede abrir para ver de dónde sale."
+                subtitle="Cuánto ingresó, cuánto costó operar y cuánto quedó en el mes. Haz clic en cualquier cifra para ver de dónde sale."
             >
                 <template #icon>
                     <Landmark class="size-5" />
@@ -391,6 +482,7 @@ const historyUrl = (fp: string) =>
                 :processing="actions.processing.value"
                 :can="can"
                 :complete="!preliminaryReasons.length"
+                :snapshot="isSnapshot"
                 :blockers="preliminaryReasons"
                 :lock-reason="lockReason"
                 @process="actions.process()"
@@ -411,14 +503,18 @@ const historyUrl = (fp: string) =>
 
             <template v-else>
                 <div
-                    v-if="loadError"
+                    v-if="loadError && dataset"
                     role="alert"
                     class="flex items-start gap-3 rounded-2xl border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200"
                 >
                     <AlertTriangle class="mt-0.5 size-5 shrink-0" />
                     <div>
                         <p class="font-bold">
-                            No se pudo calcular el Estado de Resultados
+                            {{
+                                data.reloadFailed.value
+                                    ? 'No se pudo actualizar: te mostramos lo último que se cargó'
+                                    : 'No se pudo calcular el Estado de Resultados'
+                            }}
                         </p>
                         <p class="mt-0.5">{{ loadError }}</p>
                         <Button
@@ -432,7 +528,16 @@ const historyUrl = (fp: string) =>
                     </div>
                 </div>
 
-                <DatasetSkeleton v-if="!dataset && loading" />
+                <ErLoadingScreen
+                    v-if="!dataset && (loading || loadError)"
+                    :key="`${periodId}|${scope}`"
+                    :context="loadingContext"
+                    :since="data.loadingSince.value"
+                    :error="loading ? null : loadError"
+                    cancellable
+                    @retry="data.loadDataset()"
+                    @cancel="data.abort()"
+                />
 
                 <Transition name="er-fade" mode="out-in">
                     <div
@@ -442,29 +547,10 @@ const historyUrl = (fp: string) =>
                         :class="loading ? 'pointer-events-none opacity-60' : ''"
                         :aria-busy="loading"
                     >
-                        <KpiStrip
-                            :dataset="dataset"
-                            :comparison="dataset.meta.model ? kpiPair : null"
-                            :comparison-loading="kpiComp.loading.value"
-                            :active-step="nav.selectedStep.value"
-                            @select="nav.selectStep"
+                        <ErRefreshIndicator
+                            :active="loading"
+                            :label="loadingContext"
                         />
-
-                        <ReportStatusBar
-                            v-if="report"
-                            :report="report"
-                            :dataset="dataset"
-                            :can-approve="!!can.aprobar"
-                            :approving="gov.approving.value"
-                            :reopening="gov.reopening.value"
-                            :viewing-historic="gov.viewingHistoric.value"
-                            @approve="gov.approve"
-                            @reopen="gov.openNewVersion"
-                            @history="openHistory"
-                            @back-to-current="gov.viewVersion(null)"
-                            @go="(t) => nav.go(t)"
-                        />
-
                         <p
                             v-if="legacyModel"
                             class="flex items-start gap-2 rounded-2xl border border-violet-300 bg-violet-50 px-4 py-3 text-sm text-violet-900 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
@@ -504,12 +590,38 @@ const historyUrl = (fp: string) =>
                             >
                         </p>
 
-                        <CloseRoute
-                            v-if="!lockReason"
-                            :steps="route.steps.value"
-                            :done-count="route.doneCount.value"
-                            @go="onRouteStep"
+                        <KpiStrip
+                            :dataset="dataset"
+                            :comparison="dataset.meta.model ? kpiPair : null"
+                            :comparison-loading="kpiComp.loading.value"
+                            :active-step="nav.selectedStep.value"
+                            @select="nav.selectStep"
                         />
+
+                        <!-- Estado de la versión y ruta de cierre -->
+                        <div class="flex flex-col gap-4">
+                            <ReportStatusBar
+                                v-if="report"
+                                :report="report"
+                                :dataset="dataset"
+                                :can-approve="!!can.aprobar"
+                                :approving="gov.approving.value"
+                                :reopening="gov.reopening.value"
+                                :viewing-historic="gov.viewingHistoric.value"
+                                @approve="gov.approve"
+                                @reopen="gov.openNewVersion"
+                                @history="openHistory"
+                                @back-to-current="gov.viewVersion(null)"
+                                @go="(t) => nav.go(t)"
+                            />
+                            <CloseRoute
+                                v-if="!lockReason"
+                                :steps="route.steps.value"
+                                :done-count="route.doneCount.value"
+                                :no-data="noBankData"
+                                @go="onRouteStep"
+                            />
+                        </div>
 
                         <span id="er-tabs-anchor" class="block scroll-mt-2" />
                         <ErTabs v-model="nav.tab.value" :tabs="tabs" />
@@ -517,8 +629,10 @@ const historyUrl = (fp: string) =>
                         <Transition name="er-fade" mode="out-in">
                             <section
                                 v-if="nav.tab.value === 'resumen'"
+                                id="er-panel-resumen"
                                 key="resumen"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-resumen"
                             >
                                 <SummaryView
                                     v-model:selected="nav.selectedStep.value"
@@ -530,8 +644,10 @@ const historyUrl = (fp: string) =>
 
                             <section
                                 v-else-if="nav.tab.value === 'comparativas'"
+                                id="er-panel-comparativas"
                                 key="comparativas"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-comparativas"
                             >
                                 <ComparativesPanel
                                     v-model:mode="nav.compMode.value"
@@ -539,13 +655,16 @@ const historyUrl = (fp: string) =>
                                     :period-id="dataset.meta.period.id"
                                     :scope="dataset.meta.scope.key"
                                     :periods="periods"
+                                    :rev="compRev"
                                 />
                             </section>
 
                             <section
                                 v-else-if="nav.tab.value === 'estado'"
+                                id="er-panel-estado"
                                 key="estado"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-estado"
                             >
                                 <StatementTable
                                     :blocks="dataset.statement"
@@ -557,8 +676,10 @@ const historyUrl = (fp: string) =>
 
                             <section
                                 v-else-if="nav.tab.value === 'conciliacion'"
+                                id="er-panel-conciliacion"
                                 key="conciliacion"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-conciliacion"
                                 class="space-y-4"
                             >
                                 <ConciliationSummary
@@ -596,8 +717,10 @@ const historyUrl = (fp: string) =>
 
                             <section
                                 v-else-if="nav.tab.value === 'revision'"
+                                id="er-panel-revision"
                                 key="revision"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-revision"
                             >
                                 <ReviewQueue
                                     :movements="dataset.movements"
@@ -609,13 +732,16 @@ const historyUrl = (fp: string) =>
                                     @classify="openClassify"
                                     @open="openDetail"
                                     @show-all="nav.openMovements('pendientes')"
+                                    @go-sources="nav.go('fuentes')"
                                 />
                             </section>
 
                             <section
                                 v-else-if="nav.tab.value === 'fuera'"
+                                id="er-panel-fuera"
                                 key="fuera"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-fuera"
                             >
                                 <OutsidePanel
                                     :outside="dataset.outside"
@@ -625,11 +751,14 @@ const historyUrl = (fp: string) =>
 
                             <section
                                 v-else-if="nav.tab.value === 'ajustes'"
+                                id="er-panel-ajustes"
                                 key="ajustes"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-ajustes"
                             >
                                 <AdjustmentsPanel
                                     :adjustments="dataset.adjustments"
+                                    :draft-key="`${dataset.meta.period.id}:${dataset.meta.scope.key}`"
                                     :can-edit="canWrite.ajustes"
                                     :lock-reason="lockReason"
                                     :saving-key="actions.savingAdjustment.value"
@@ -642,8 +771,10 @@ const historyUrl = (fp: string) =>
 
                             <section
                                 v-else-if="nav.tab.value === 'indicadores'"
+                                id="er-panel-indicadores"
                                 key="indicadores"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-indicadores"
                             >
                                 <IndicatorsPanel
                                     :financial="dataset.indicators.financial"
@@ -655,8 +786,10 @@ const historyUrl = (fp: string) =>
 
                             <section
                                 v-else-if="nav.tab.value === 'fuentes'"
+                                id="er-panel-fuentes"
                                 key="fuentes"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-fuentes"
                             >
                                 <SourcesPanel
                                     :sources="dataset.sources"
@@ -676,8 +809,10 @@ const historyUrl = (fp: string) =>
 
                             <section
                                 v-else-if="nav.tab.value === 'validacion'"
+                                id="er-panel-validacion"
                                 key="validacion"
                                 role="tabpanel"
+                                aria-labelledby="er-tab-validacion"
                             >
                                 <ValidationPanel
                                     v-if="dataset.validation"
@@ -694,7 +829,13 @@ const historyUrl = (fp: string) =>
                                 </p>
                             </section>
 
-                            <section v-else key="control" role="tabpanel">
+                            <section
+                                v-else
+                                id="er-panel-control"
+                                key="control"
+                                role="tabpanel"
+                                aria-labelledby="er-tab-control"
+                            >
                                 <ControlPanel :dataset="dataset" />
                             </section>
                         </Transition>

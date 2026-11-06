@@ -1,9 +1,31 @@
 <script setup lang="ts">
-import { ArrowRight, Check } from 'lucide-vue-next';
+import { ArrowRight, Check, Minus } from 'lucide-vue-next';
+import { computed } from 'vue';
 import type { CloseStep } from '@/composables/estado-resultados/useCloseRoute';
 
-defineProps<{ steps: CloseStep[]; doneCount: number }>();
+const props = defineProps<{
+    steps: CloseStep[];
+    doneCount: number;
+    /** No llegó nada del banco: revisar y validar no pueden darse por buenos. */
+    noData?: boolean;
+}>();
 defineEmits<{ go: [step: CloseStep] }>();
+
+/** Pasos que «pasan» sólo porque no hay datos: se muestran en gris, sin palomita. */
+const EMPTY_OK = ['revisar', 'validar'];
+const view = computed(() =>
+    props.steps.map((s) => {
+        const empty = !!props.noData && s.done && EMPTY_OK.includes(s.key);
+
+        return {
+            ...s,
+            empty,
+            done: s.done && !empty,
+            detail: empty ? 'Sin datos todavía' : s.detail,
+        };
+    }),
+);
+const shownDone = computed(() => view.value.filter((s) => s.done).length);
 </script>
 
 <template>
@@ -15,7 +37,7 @@ defineEmits<{ go: [step: CloseStep] }>();
             <p class="text-sm font-bold">
                 Ruta de cierre
                 <span class="font-medium text-muted-foreground"
-                    >· {{ doneCount }} de {{ steps.length }} pasos listos</span
+                    >· {{ shownDone }} de {{ steps.length }} pasos listos</span
                 >
             </p>
             <p class="text-xs text-muted-foreground">
@@ -25,7 +47,7 @@ defineEmits<{ go: [step: CloseStep] }>();
         </div>
         <ol class="grid gap-2 md:grid-cols-5 md:gap-0">
             <li
-                v-for="(s, i) in steps"
+                v-for="(s, i) in view"
                 :key="s.key"
                 class="relative md:px-1.5 md:first:pl-0 md:last:pr-0"
             >
@@ -62,6 +84,7 @@ defineEmits<{ go: [step: CloseStep] }>();
                             class="size-4.5"
                             stroke-width="3"
                         />
+                        <Minus v-else-if="s.empty" class="size-4" />
                         <template v-else>{{ i + 1 }}</template>
                     </span>
                     <span class="min-w-0 flex-1 md:w-full">
@@ -86,7 +109,7 @@ defineEmits<{ go: [step: CloseStep] }>();
                             >{{ s.detail }}</span
                         >
                         <span
-                            v-if="!s.done"
+                            v-if="!s.done && !s.empty"
                             class="mx-auto mt-1.5 block h-1 w-full max-w-36 overflow-hidden rounded-full bg-muted"
                         >
                             <span

@@ -1,19 +1,12 @@
 <script setup lang="ts">
 import { Lock } from 'lucide-vue-next';
 import { computed } from 'vue';
+import { opexTone } from './palette';
 import { mxn, num, pct } from './types';
 import type { Dataset } from './types';
 
 const props = defineProps<{ dataset: Dataset }>();
 defineEmits<{ open: [blockKey: string] }>();
-
-const COLORS = [
-    'bg-emerald-600',
-    'bg-teal-500',
-    'bg-cyan-500',
-    'bg-sky-600',
-    'bg-slate-500',
-];
 
 /** Categorías del OPEX tal como las trae el estado de resultados (sin inventar). */
 const opex = computed(() => {
@@ -28,9 +21,17 @@ const items = computed(() => {
     const cats = opex.value?.categories ?? [];
     const max = Math.max(1, ...cats.map((c) => Math.abs(num(c.total.amount))));
 
-    return cats.map((c, i) => ({
+    // Mismo tono que en la barra «de cada $100»: por lugar según importe.
+    const rank = [...cats]
+        .sort(
+            (a, b) =>
+                Math.abs(num(b.total.amount)) - Math.abs(num(a.total.amount)),
+        )
+        .map((c) => c.key);
+
+    return cats.map((c) => ({
         ...c,
-        color: COLORS[i % COLORS.length],
+        color: opexTone(rank.indexOf(c.key)),
         width: (Math.abs(num(c.total.amount)) / max) * 100,
     }));
 });

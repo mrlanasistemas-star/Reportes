@@ -20,6 +20,10 @@ Schedule::command('api:query-logs:prune')->dailyAt('03:00');
 // cifrados, PDF/PNG no descargados). Ya no hay ejecuciones persistentes que recuperar.
 Schedule::command('efectividad:limpiar-temporales')->everyTenMinutes()->withoutOverlapping();
 
+// Estado de Resultados (06-nov-2026) — la caché de comparativas/base de Radiografía se firma
+// con la fecha del día; se precalienta antes de la jornada para que nadie espere el cálculo en frío.
+Schedule::command('er:precalentar-comparativas --ultimos=3')->dailyAt('05:30')->withoutOverlapping();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
@@ -27,6 +31,6 @@ Artisan::command('inspire', function () {
 // Aliases for reconcile section commands: reconcile-gastos 5 == reconcile gastos 5
 foreach (['gastos', 'nomina', 'ingresos', 'cartera', 'moras', 'fondeo'] as $section) {
     Artisan::command("reportes:reconcile-{$section} {period_id}", function (int $period_id) use ($section) {
-        $this->call("reportes:reconcile", ['section' => $section, 'period_id' => $period_id]);
+        $this->call('reportes:reconcile', ['section' => $section, 'period_id' => $period_id]);
     })->purpose("Conciliación de {$section} para el periodo dado.");
 }

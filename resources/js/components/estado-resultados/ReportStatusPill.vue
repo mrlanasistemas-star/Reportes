@@ -18,7 +18,9 @@ const props = defineProps<{
 /** Preliminar o definitivo: lo decide el backend (meta.report.preliminary). */
 const view = computed(() => {
     const r = props.report;
-    const preliminary = r ? r.preliminary : !props.complete;
+    // Una versión aprobada o sustituida está congelada: nunca se presenta como preliminar.
+    const preliminary =
+        r?.source === 'snapshot' ? false : r ? r.preliminary : !props.complete;
 
     if (preliminary) {
         return {
@@ -94,9 +96,13 @@ const TONES: Record<string, string> = {
                 <p class="flex items-center gap-2 text-sm font-bold">
                     <component :is="view.icon" class="size-4" />
                     {{
-                        complete
-                            ? 'Todas las fuentes y revisiones están completas'
-                            : 'Por qué las cifras aún pueden cambiar'
+                        report?.source === 'snapshot'
+                            ? report.status === 'aprobado'
+                                ? 'Cifras aprobadas: ya no cambian'
+                                : 'Versión sustituida por una posterior'
+                            : complete
+                              ? 'Todas las fuentes y revisiones están completas'
+                              : 'Por qué las cifras aún pueden cambiar'
                     }}
                 </p>
                 <p
@@ -118,6 +124,13 @@ const TONES: Record<string, string> = {
                     <span>{{ b }}</span>
                 </li>
             </ul>
+            <p
+                v-else-if="report?.source === 'snapshot'"
+                class="px-4 py-3 text-xs text-muted-foreground"
+            >
+                Se muestra tal como quedó al aprobarse. Para corregir algo hay
+                que abrir una versión nueva.
+            </p>
             <p v-else class="px-4 py-3 text-xs text-muted-foreground">
                 Fuentes cargadas, conciliación procesada, sin pendientes,
                 ajustes capturados y validaciones en $0.00.

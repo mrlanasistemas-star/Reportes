@@ -13,6 +13,7 @@ import {
     TooltipContent,
     TooltipTrigger,
 } from '@/components/ui/tooltip';
+import ShareBar from './ShareBar.vue';
 import { isNegative, isZero, mxn, pct } from './types';
 import type { Movement, StatementBlock, StatementLine } from './types';
 
@@ -102,7 +103,7 @@ const RESULT_TONE: Record<string, string> = {
         class="overflow-clip rounded-2xl border bg-card shadow-soft-xs"
     >
         <div
-            class="sticky top-[3.75rem] z-10 grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-b bg-card/95 px-4 py-2.5 text-xs font-semibold text-muted-foreground backdrop-blur sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+            class="sticky top-[3.75rem] z-10 grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-b bg-card/95 px-4 py-2.5 text-xs font-semibold text-muted-foreground backdrop-blur sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
         >
             <span class="flex items-center gap-2">
                 Concepto
@@ -118,6 +119,7 @@ const RESULT_TONE: Record<string, string> = {
                     {{ allCollapsed ? 'Expandir todo' : 'Contraer todo' }}
                 </button>
             </span>
+            <span class="hidden xl:block">Peso sobre los ingresos</span>
             <span class="text-right">Importe MXN</span>
             <span class="hidden text-right sm:block">% ingresos</span>
         </div>
@@ -195,7 +197,7 @@ const RESULT_TONE: Record<string, string> = {
                             "
                         >
                             <div
-                                class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                                class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1.5 text-sm sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
                             >
                                 <span
                                     class="flex min-w-0 items-center gap-1.5 pl-8"
@@ -241,6 +243,11 @@ const RESULT_TONE: Record<string, string> = {
                                         {{ movementCount[c.key] }} mov.
                                     </button>
                                 </span>
+                                <ShareBar
+                                    :pct="c.total.pct"
+                                    tone="cost"
+                                    strong
+                                />
                                 <span
                                     class="text-right font-semibold tabular-nums"
                                     >{{
@@ -264,7 +271,7 @@ const RESULT_TONE: Record<string, string> = {
                                 <div
                                     v-for="l in c.lines"
                                     :key="l.key"
-                                    class="group grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1 text-[13px] transition-colors hover:bg-muted/50 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                                    class="group grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1 text-[13px] transition-colors hover:bg-muted/50 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
                                 >
                                     <span
                                         class="flex min-w-0 items-center gap-1.5 pl-16"
@@ -285,6 +292,7 @@ const RESULT_TONE: Record<string, string> = {
                                             >{{ l.label }}</span
                                         >
                                     </span>
+                                    <ShareBar :pct="l.pct" tone="cost" />
                                     <span
                                         class="text-right tabular-nums"
                                         :class="
@@ -314,7 +322,7 @@ const RESULT_TONE: Record<string, string> = {
                         <div
                             v-for="l in b.lines"
                             :key="l.key"
-                            class="group grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1.5 text-sm transition-colors hover:bg-muted/50 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                            class="group grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-1.5 text-sm transition-colors hover:bg-muted/50 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
                         >
                             <span
                                 class="flex min-w-0 items-center gap-1.5 pl-8"
@@ -356,6 +364,10 @@ const RESULT_TONE: Record<string, string> = {
                                     </TooltipContent>
                                 </Tooltip>
                             </span>
+                            <ShareBar
+                                :pct="l.pct"
+                                :tone="b.key === 'ingresos' ? 'income' : 'cost'"
+                            />
                             <span
                                 class="text-right tabular-nums"
                                 :class="
@@ -381,9 +393,14 @@ const RESULT_TONE: Record<string, string> = {
                 </div>
 
                 <div
-                    class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-t border-dashed px-4 py-2 text-sm font-bold sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                    class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-t border-dashed px-4 py-2 text-sm font-bold sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
                 >
                     <span class="truncate pl-8">{{ b.total.label }}</span>
+                    <ShareBar
+                        :pct="b.total.pct"
+                        :tone="b.key === 'ingresos' ? 'income' : 'cost'"
+                        strong
+                    />
                     <span
                         class="text-right tabular-nums"
                         :class="
@@ -421,7 +438,7 @@ const RESULT_TONE: Record<string, string> = {
             <div
                 v-else
                 :data-er-block="b.key"
-                class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-3.5 transition-shadow duration-700 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem]"
+                class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-3.5 transition-shadow duration-700 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
                 :class="[
                     RESULT_TONE[b.key] ??
                         'bg-slate-800 text-white dark:bg-slate-800/80',
@@ -458,6 +475,7 @@ const RESULT_TONE: Record<string, string> = {
                         {{ b.note }}
                     </p>
                 </div>
+                <ShareBar :pct="b.pct" tone="result" strong />
                 <span
                     v-if="b.amount === null"
                     class="justify-self-end rounded-lg border-2 border-dashed border-amber-300 px-2 py-0.5 text-sm font-extrabold text-amber-200"

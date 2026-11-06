@@ -1,7 +1,10 @@
 <?php
 
+use App\Enums\ReportUploadStatus;
 use App\Http\Middleware\EnsureModuleAccess;
+use App\Models\DataSource;
 use App\Models\Period;
+use App\Models\ReportUpload;
 use App\Models\User;
 use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
 use App\Services\EstadoResultados\Calculation\RadiographyBaseProvider;
@@ -51,6 +54,19 @@ function csSpyProvider(object $state): RadiographyBaseProvider
     return new RadiographyBaseProvider($calc, app(PeriodDataIds::class));
 }
 
+/** Simula una (re)importación de Radiografía: toda carga crea/actualiza un report_upload del periodo. */
+function csReimport(Period $p): void
+{
+    $source = DataSource::query()->firstOrCreate(['code' => 'cs_reimport'], [
+        'name' => 'Reimportación de prueba', 'description' => 'prueba', 'is_active' => true,
+    ]);
+    ReportUpload::query()->create([
+        'period_id' => $p->id, 'data_source_id' => $source->id, 'original_name' => 'reimport.csv',
+        'stored_path' => 'report_uploads/reimport.csv', 'mime_type' => 'text/csv', 'file_size' => 1,
+        'uploaded_at' => now(), 'status' => ReportUploadStatus::Pending,
+    ]);
+}
+
 it('RadiographyBaseProvider: fuera de una sesión nunca devuelve cifras viejas; dentro, una sola foto', function () {
     $p = F::period();
     $state = (object) ['calls' => 0, 'ingresos' => 100.0];
@@ -58,20 +74,49 @@ it('RadiographyBaseProvider: fuera de una sesión nunca devuelve cifras viejas; 
 
     expect($provider->for($p)['global']['interes_recuperado'])->toEqual(100.0);
     $state->ingresos = 250.0; // Radiografía cambia (re-importación) en el mismo worker/instancia
+    csReimport($p);
     expect($provider->for($p)['global']['interes_recuperado'])->toEqual(250.0)
         ->and($state->calls)->toBe(2);
 
     $inside = $provider->session(function () use ($provider, $p, $state) {
         $a = $provider->for($p)['global']['interes_recuperado'];
         $state->ingresos = 999.0;
+        csReimport($p);
         $b = $provider->for($p)['global']['interes_recuperado'];
 
         return [$a, $b, $provider->inSession()];
     });
-    expect($inside)->toEqual([250.0, 250.0, true])          // misma foto dentro de la operación
-        ->and($state->calls)->toBe(3)
+    expect($inside)->toEqual([250.0, 250.0, true])          // misma foto dentro de la operación (sin recalcular)
+        ->and($state->calls)->toBe(2)
         ->and($provider->inSession())->toBeFalse()
         ->and($provider->for($p)['global']['interes_recuperado'])->toEqual(999.0); // al salir se descarta
+});
+
+it('RadiographyBaseProvider: con los mismos insumos reutiliza la base firmada entre peticiones (sin recalcular)', function () {
+    $p = F::period();
+    $state = (object) ['calls' => 0, 'ingresos' => 100.0];
+
+    expect(csSpyProvider($state)->for($p)['global']['interes_recuperado'])->toEqual(100.0);
+    // Otra petición (instancia nueva), mismos insumos: sale de la caché firmada.
+    expect(csSpyProvider($state)->for($p)['global']['interes_recuperado'])->toEqual(100.0)
+        ->and($state->calls)->toBe(1);
+
+    // Cambia el catálogo de sucursales (insumo de la firma) → otra firma → se recalcula.
+    $state->ingresos = 300.0;
+    F::branch('NUEVA SUCURSAL CS');
+    expect(csSpyProvider($state)->for($p)['global']['interes_recuperado'])->toEqual(300.0)
+        ->and($state->calls)->toBe(2);
+
+    // Con la caché desactivada por configuración, siempre se calcula.
+    config(['estado_resultados.cache.base_radiografia' => false]);
+    csSpyProvider($state)->for($p);
+    expect($state->calls)->toBe(3);
+});
+
+it('RadiographyBaseProvider es de alcance de petición: el builder del controlador y el del resolver comparten la sesión', function () {
+    expect(app(RadiographyBaseProvider::class))->toBe(app(RadiographyBaseProvider::class));
+    app()->forgetScopedInstances();
+    expect(app(RadiographyBaseProvider::class))->not->toBe(null);
 });
 
 it('PeriodDataIds no conserva un universo viejo: una semana nueva se ve en la siguiente llamada', function () {
