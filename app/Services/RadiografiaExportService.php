@@ -10,9 +10,12 @@ use App\Services\Pdf\BrowsershotPdfRenderer;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use App\Services\Radiography\RadiographySnapshotBuilder;
 use App\Services\Radiography\RadiographyWorkbookBuilder;
+use Illuminate\Contracts\Cache\Lock;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use RuntimeException;
 
@@ -106,24 +109,148 @@ class RadiografiaExportService
 
     /**
      * Corrida general + estado de proyección (ver RadiographySnapshotBuilder::
-     * buildGeneralState()), cacheada 12 h: la clave cambia sola si el resumen se
-     * regenera o invalida (summary.id/updated_at), igual que el snapshot general.
+     * buildGeneralState()), cacheada 12 h (config radiografia.cache.ttl_horas): la
+     * clave cambia sola si el resumen se regenera o invalida (summary.id/updated_at),
+     * igual que el snapshot general.
+     *
+     * 13-nov-2026 — el cálculo en frío va con candado (ver resolveGeneralState()) y
+     * los meses recientes se mantienen calientes con `radiografia:precalentar`
+     * (scheduler): la API v1 ya no paga los ~10-25 s en su propia petición.
      *
      * @return array{snapshot: array, empGestores: array, gm: array}
      */
     private function generalStateCached(Period $period, PeriodSummary $summary): array
     {
-        $key = sprintf('radiography_general_state:%d:%d:%d', $period->id, $summary->id, $summary->updated_at?->timestamp ?? 0);
+        $key = $this->generalStateKey($period, $summary);
 
         if (!isset($this->generalStateMemo[$key])) {
             // Tope pequeño: en un worker de cola de larga vida el memo nunca debe crecer sin límite.
             if (count($this->generalStateMemo) >= 3) {
                 array_shift($this->generalStateMemo);
             }
-            $this->generalStateMemo[$key] = Cache::remember($key, 43_200, fn () => $this->snapshotBuilder->buildGeneralState($period, $summary));
+            $this->generalStateMemo[$key] = $this->resolveGeneralState($key, $period, $summary);
         }
 
         return $this->generalStateMemo[$key];
+    }
+
+    private function generalStateKey(Period $period, PeriodSummary $summary): string
+    {
+        return sprintf('radiography_general_state:%d:%d:%d', $period->id, $summary->id, $summary->updated_at?->timestamp ?? 0);
+    }
+
+    /**
+     * Lee el estado general de la caché o lo calcula UNA sola vez por clave: quien
+     * llega mientras otro proceso lo calcula espera el candado (espera acotada,
+     * radiografia.cache.lock_espera_segundos) y recibe ese mismo resultado en vez de
+     * repetir la agregación completa en paralelo. Si la espera se agota o el store no
+     * ofrece candados, calcula por su cuenta — exactamente el comportamiento anterior,
+     * nunca un error nuevo. No cambia ningún cálculo: sólo quién lo ejecuta.
+     *
+     * @return array{snapshot: array, empGestores: array, gm: array}
+     */
+    private function resolveGeneralState(string $key, Period $period, PeriodSummary $summary): array
+    {
+        $hit = Cache::get($key);
+        if (is_array($hit)) {
+            return $hit;
+        }
+
+        $lock = $this->generalStateLock($key);
+        $acquired = false;
+        try {
+            if ($lock !== null) {
+                try {
+                    $acquired = (bool) $lock->block(max(0, (int) config('radiografia.cache.lock_espera_segundos', 45)));
+                } catch (LockTimeoutException) {
+                    $acquired = false;
+                }
+            }
+            // Otro proceso pudo terminar el cálculo mientras se esperaba el candado.
+            $hit = Cache::get($key);
+            if (is_array($hit)) {
+                return $hit;
+            }
+
+            $state = $this->snapshotBuilder->buildGeneralState($period, $summary);
+            $this->storeGeneralState($key, $state);
+
+            return $state;
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
+        }
+    }
+
+    private function generalStateLock(string $key): ?Lock
+    {
+        try {
+            return Cache::lock('lock:' . $key, max(30, (int) config('radiografia.cache.lock_segundos', 300)));
+        } catch (\Throwable $e) {
+            // Store sin soporte de candados: se calcula sin candado, como antes.
+            Log::warning('Radiografía: el store de caché no ofrece candados; se calcula sin candado.', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
+    /** Guarda el estado y la marca de cuándo se calculó (la usa el precalentado para refrescar antes de que caduque). */
+    private function storeGeneralState(string $key, array $state): void
+    {
+        $ttl = max(1, (int) config('radiografia.cache.ttl_horas', 12)) * 3600;
+        try {
+            Cache::put($key, $state, $ttl);
+            Cache::put($key . ':calculado_en', now()->getTimestamp(), $ttl);
+        } catch (\Throwable $e) {
+            // El resultado ya está calculado: no se pierde la petición por un fallo al guardar.
+            Log::warning('Radiografía: no se pudo guardar el estado general en caché.', ['key' => $key, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Precalentado idempotente del estado general de un periodo (comando
+     * `radiografia:precalentar`). Devuelve qué hizo:
+     *   - 'caliente'   ya estaba en caché y es reciente: no hace nada.
+     *   - 'calculado'  no estaba en caché: lo calculó y guardó.
+     *   - 'refrescado' estaba en caché pero con más de $refreshAfterSeconds: lo
+     *                  recalculó y reemplazó (mientras tanto se siguió sirviendo el
+     *                  valor anterior — nunca queda un hueco «en frío»).
+     *   - 'ocupado'    otro proceso lo está calculando ahora mismo: no duplica.
+     * Lanza RuntimeException si el periodo no tiene radiografía vigente.
+     *
+     * @param  int|null  $refreshAfterSeconds  null = nunca refrescar un valor presente; 0 = refrescar siempre
+     */
+    public function warmGeneralState(Period $period, ?int $refreshAfterSeconds = null): string
+    {
+        $summary = $this->requireSummary($period);
+        $key = $this->generalStateKey($period, $summary);
+
+        $present = is_array(Cache::get($key));
+        if ($present) {
+            if ($refreshAfterSeconds === null) {
+                return 'caliente';
+            }
+            $computedAt = Cache::get($key . ':calculado_en');
+            if (is_numeric($computedAt) && (now()->getTimestamp() - (int) $computedAt) < $refreshAfterSeconds) {
+                return 'caliente';
+            }
+        }
+
+        $lock = $this->generalStateLock($key);
+        if ($lock !== null && !$lock->get()) {
+            return 'ocupado';
+        }
+        try {
+            if (!$present && is_array(Cache::get($key))) {
+                return 'caliente';
+            }
+            $this->storeGeneralState($key, $this->snapshotBuilder->buildGeneralState($period, $summary));
+
+            return $present ? 'refrescado' : 'calculado';
+        } finally {
+            $lock?->release();
+        }
     }
 
     private function snapshotCacheKey(Period $period, PeriodSummary $summary, array $config): string

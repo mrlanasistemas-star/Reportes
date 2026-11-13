@@ -380,6 +380,11 @@ PDF/PNG de exportaciones interrumpidas. `efectividad:recover-stalled` y
 plano. Revisa con `php artisan schedule:list`. La agenda usa `America/Mexico_City`, que está
 fija en `config/app.php`; no depende de la zona horaria del VPS.
 
+Desde el 13-nov-2026 también corre `radiografia:precalentar` cada 30 min: mantiene en caché la
+corrida general de la radiografía de los últimos meses para que la API v1 no la calcule en frío
+(variables `RADIOGRAFIA_*` de `.env.example`; detalle y verificación en
+`docs/deployment-workers.md` sección 2.1). `er:precalentar-comparativas` corre a las 05:30.
+
 ## 13. Browsershot (PDF de OKR)
 
 ```bash

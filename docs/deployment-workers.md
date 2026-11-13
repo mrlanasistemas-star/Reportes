@@ -66,6 +66,49 @@ Requiere el cron de Laravel estándar en el VPS:
 * * * * * php /ruta/al/proyecto/artisan schedule:run >> /dev/null 2>&1
 ```
 
+### 2.1 Precalentado de la radiografía general (13-nov-2026)
+
+**Por qué:** `GET /api/v1/employees/{id}/financial-summary` y `GET /api/v1/periods/{id}/branches`
+no leen una tabla: proyectan la corrida GENERAL de la radiografía del mes
+(`RadiografiaExportService::generalStateCached()`), que tarda ~10-25 s en frío. Se guardaba 12 h
+sin candado y sólo se calentaba al generar la radiografía, así que pasado ese tiempo la primera
+petición de un sistema externo (Auditoría) la pagaba entera y agotaba su tiempo de espera, y dos
+peticiones simultáneas calculaban lo mismo dos veces.
+
+**Qué cambió (sin tocar cifras ni contratos):**
+
+- El cálculo en frío va con `Cache::lock` por clave: una sola corrida; quien llega mientras
+  tanto espera hasta `RADIOGRAFIA_CACHE_LOCK_ESPERA_SEGUNDOS` (45) y recibe ese resultado. Si la
+  espera se agota calcula por su cuenta, como antes.
+- `radiografia:precalentar` (agendado cada 30 min, `withoutOverlapping` + `onOneServer`, en
+  segundo plano) mantiene en caché los `RADIOGRAFIA_PRECALENTAR_PERIODOS` (3) meses más recientes
+  con radiografía vigente. Si el valor está en caché y tiene menos de
+  `RADIOGRAFIA_PRECALENTAR_REFRESCAR_HORAS` (6) no hace nada; si es más viejo lo recalcula y
+  reemplaza mientras el anterior se sigue sirviendo. Sólo lee datos y escribe en la caché.
+- El TTL sigue en 12 h (`RADIOGRAFIA_CACHE_TTL_HORAS`). **No subirlo a días:** la clave cambia
+  cuando la radiografía se regenera, se invalida o se «toca» el resumen, pero el cálculo también
+  lee `fact_*` y catálogos en vivo; un cambio que no toque `period_summaries` sólo se refleja al
+  recalcular. Con el refresco cada 6 h ese desfase máximo baja de 12 h a ~6,5 h en los meses
+  calientes.
+
+Los meses que NO están entre los N más recientes siguen como antes (12 h, en frío la primera
+vez), ahora con candado. Para calentarlos a mano: `php artisan radiografia:precalentar --periodo=ID`.
+
+**Cómo comprobar en producción que corre:**
+
+```bash
+php artisan schedule:list | grep radiografia        # debe aparecer con su próxima ejecución
+crontab -u www-data -l | grep schedule:run          # el cron de Laravel existe
+php artisan radiografia:precalentar                 # manual: imprime «caliente/calculado/refrescado · ms» por periodo
+grep "radiografia:precalentar" storage/logs/laravel*.log | tail -5   # una línea INFO por corrida, cada 30 min
+```
+
+Si la segunda corrida manual seguida imprime `caliente` en todos los periodos y el log tiene
+entradas cada 30 min, el scheduler está funcionando. Requisitos: el store de caché debe soportar
+candados (el `database` actual usa `cache_locks`; ya existe) y el usuario del cron debe poder
+escribir en `storage/logs`. No necesita worker de colas. El comando sube su `memory_limit` a
+1024M como el resto de las corridas de radiografía.
+
 ## 3. Variables de entorno nuevas de esta sesión
 
 | Variable | Dónde | Por qué |
