@@ -24,6 +24,17 @@ Schedule::command('efectividad:limpiar-temporales')->everyTenMinutes()->withoutO
 // con la fecha del día; se precalienta antes de la jornada para que nadie espere el cálculo en frío.
 Schedule::command('er:precalentar-comparativas --ultimos=3')->dailyAt('05:30')->withoutOverlapping();
 
+// Radiografía (13-nov-2026) — la corrida general del mes (~10-25 s en frío) es la que lee la
+// API v1 (financial-summary, periods/{id}/branches). Se mantiene caliente para los meses
+// recientes: el comando no hace nada si el valor ya está en caché y es reciente, y lo
+// refresca antes de que caduque (RADIOGRAFIA_PRECALENTAR_* en .env.example). En segundo
+// plano para que un cálculo en frío no retrase las demás tareas del mismo minuto.
+Schedule::command('radiografia:precalentar')
+    ->cron((string) config('radiografia.precalentar.cron', '*/30 * * * *'))
+    ->withoutOverlapping(30)
+    ->onOneServer()
+    ->runInBackground();
+
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
