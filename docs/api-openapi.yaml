@@ -272,6 +272,38 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /periods/{periodId}/weekly-activity:
+    get:
+      tags: [exports]
+      summary: Actividad semanal de un MES (colocación y recuperación por semana, sucursal y colaborador)
+      description: >
+        Solo periodos `monthly` con `component_period_ids` (422 en otro caso: las semanas son
+        metadata del mes y los fact_* se etiquetan con el periodo mensual). Reparte los
+        movimientos del mes en sus semanas componentes por fecha (colocación: operation_date;
+        recuperación: payment_date con la regla única recoveryExclusionSql). Lo que no cae en
+        ninguna semana va a `outside_weeks`; Σ semanas + outside_weeks = `month_total`. Por
+        colaborador, `month_official` = KPI oficial de /periods/{id}/employees (paridad por
+        construcción). Sucursal por `branch_id` del movimiento (`attribution: fact_branch_id`).
+        `financial.read`; el bloque `employees` exige además `employees.read`. Sin radiografía
+        vigente → `status: not_available` (semanas listadas, datos vacíos). Ver
+        docs/api-reporteria.md §15.
+      parameters:
+        - $ref: "#/components/parameters/PeriodIdPath"
+        - name: include
+          in: query
+          required: false
+          schema: { type: string, example: "branches,employees" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { description: Periodo no mensual / sin semanas componentes, o include inválido }
+
   /periods/{periodId}/export:
     get:
       tags: [exports]

@@ -147,6 +147,7 @@ respuesta ni valores financieros — solo metadata de QUIÉN pidió QUÉ.
 | GET | `/api/v1/periods/{id}/branches` | `financial.read` |
 | GET | `/api/v1/periods/{id}/export` | `financial.read` (+ `employees.read` para colaboradores), `throttle:api-exports` |
 | GET | `/api/v1/periods/export?from_period_id=&to_period_id=` | ídem |
+| GET | `/api/v1/periods/{id}/weekly-activity?include=branches,employees` | `financial.read` (+ `employees.read` para colaboradores) — ver §15 |
 
 Parámetros comunes: `scope` = `general`\|`branch`\|`employee` (default `general`), `branch_id`,
 `employee_id`, `period_id` (obligatorio en todos los endpoints financieros — la API nunca
@@ -543,3 +544,123 @@ curl -H "Authorization: Bearer <token>" "https://<host>/api/v1/periods/export?fr
 `GET /capabilities` anuncia este contrato con `features.period_kpi_export: true` y
 `features.csv_format: true`, y los recursos `period_employees_kpis`, `employee_periods_kpis`,
 `period_branches_kpis`, `period_export` (cada uno con `required_abilities` y `endpoints`).
+
+## 15. Actividad semanal de un mes — Seguimiento de MR. LANA PEOPLE (2026-11-17)
+
+Objetivo: que PEOPLE (módulo «Seguimiento») muestre datos duros por **sucursal** y por
+**colaborador de campo** semana a semana y en el mes, sin recalcular nada por su cuenta.
+
+### 15.1 Cómo están modelados los periodos (y por qué importa)
+
+- Un periodo `weekly` es una semana de lunes a domingo (`W-2026-23`, `start_date`/`end_date`).
+- Un periodo `monthly` agrupa **sus** semanas en `component_period_ids` (normalmente 4, p. ej.
+  Junio 2026 = semanas 22-25, del 25-may al 21-jun). La pertenencia de una semana a un mes es
+  **esa lista**, nunca el campo `month` ni el nombre de la semana: «Semana 22 - Mayo 2026»
+  pertenece a **Junio** 2026. `GET /periods` y `/periods/{id}` exponen ahora
+  `component_period_ids` (aditivo; `[]` en semanas y periodos sin componentes).
+- Bimestre/trimestre/semestre/año agrupan meses (también por `component_period_ids`).
+- La radiografía y **todos** los `fact_*` se cargan y etiquetan con el periodo **MENSUAL**
+  (`Period::canReceiveUploads()`); las semanas son metadata organizativa. Por eso no existe una
+  "radiografía semanal": la cifra semanal es el mismo conjunto de filas del mes repartido por
+  fecha.
+
+### 15.2 Endpoint
+
+`GET /api/v1/periods/{id}/weekly-activity?include=branches,employees`
+
+- `financial.read`; el bloque `employees` exige además `employees.read` (token **y** consumidor;
+  403 si falta — usa `include=branches`).
+- Solo un periodo `monthly` con `component_period_ids` → si no, **422** (pide el mes que
+  contiene la semana).
+- Sin radiografía vigente → `status: not_available`, semanas listadas, `data: []`,
+  `reconciliation: null` (nunca ceros).
+
+Reparto (fuente: `App\Services\Api\PeriodWeeklyActivityService`):
+
+| KPI | Fecha que decide la semana | Regla |
+|---|---|---|
+| Colocación (`placement.amount`, `operations`) | `fact_placements.operation_date` | `SUM(amount)`/`COUNT(*)`, gestor = `COALESCE(promoter_name, promoter_code)` — igual que `buildEmployeesGestores()` |
+| Recuperación (`recovery.total`) | `fact_recoveries.payment_date` | `BranchRadiographyCalculator::recoveryExclusionSql()['recovery']` (la regla única: PAGO/DESCUENTO, seguros fuera, CRECE solo el 30 % reconocido) |
+
+- Las llaves de gestor se pliegan con el **mismo mapa de fusión** del reporte
+  (`RadiographySnapshotBuilder::lastGestorMergeMap()`), así que Σ semanas + `outside_weeks` =
+  colocación/recuperación **oficial** del mes del colaborador (`month_official`, misma cifra que
+  `/periods/{id}/employees`). Verificado en la BD local con Junio 2026: 136 colaboradores, 0
+  diferencias.
+- Movimientos sin fecha o con fecha fuera de las semanas del mes → `outside_weeks` (auditable,
+  nunca se reparten ni se descartan).
+- Sucursal: `branches.attribution = "fact_branch_id"` (el `branch_id` del propio movimiento;
+  filas sin branch → `branches.unassigned`). Los KPIs **oficiales** mensuales por sucursal siguen
+  siendo `/periods/{id}/branches`, que aplica la atribución de respaldo del reporte (prefijo de
+  contrato, exclusiones de sucursal); pueden diferir de la suma por `branch_id`.
+- Cartera, mora, nómina, OPEX y EBITDA **no** tienen versión semanal (son cierres o cifras
+  mensuales): se toman del mes (`/periods/{id}/employees`, `/periods/{id}/branches`).
+
+Forma (valores reales de Junio 2026, recortados):
+
+```json
+{
+  "period": { "id": 21, "code": "M-2026-06", "type": "monthly", "label": "Junio 2026", "start_date": "2026-05-25", "end_date": "2026-06-21", "is_closed": false, "component_period_ids": [13, 14, 15, 16] },
+  "status": "ok", "message": null, "source": "reporteria.weekly_activity", "definition_version": "v1",
+  "calculated_at": "2026-11-17T10:05:00-06:00", "radiography_version": 2,
+  "granularity": { "base": "weekly", "data_tagging": "monthly", "note": "..." },
+  "weeks": [ { "id": 13, "code": "W-2026-22", "label": "Semana 22 - Mayo 2026", "sequence": 22, "index": 1, "start_date": "2026-05-25", "end_date": "2026-05-31" } ],
+  "branches": {
+    "attribution": "fact_branch_id",
+    "data": [ { "branch_id": 95, "branch": { "id": 95, "code": "ATLACOMULCO", "name": "ATLACOMULCO" }, "sucursal": null, "region": null,
+                "weeks": [ { "period_id": 13, "placement": { "amount": 64000.0, "operations": 15 }, "recovery": { "total": 93889.28 } } ],
+                "outside_weeks": { "placement": { "amount": 0.0, "operations": 0 }, "recovery": { "total": 0.0 } },
+                "month_total": { "placement": { "amount": 316000.0, "operations": 55 }, "recovery": { "total": 429636.69 } } } ],
+    "unassigned": { "weeks": [], "outside_weeks": {}, "month_total": {} }
+  },
+  "employees": {
+    "data": [ { "employee": { "id": 73, "employee_ids": [73], "full_name": "NOMBRE APELLIDO", "report_name": "NOMBRE APELLIDO", "employee_code": "762", "promoter_code": "TLA07553", "position": null, "is_active": true },
+                "assigned_branch_id": 99, "branch": { "id": 99, "code": "TULA", "name": "TULA" }, "branch_status": "known", "sucursal": null, "region": null,
+                "weeks": [ { "period_id": 13, "placement": { "amount": 168000.0, "operations": 7 }, "recovery": { "total": 173434.62 } } ],
+                "outside_weeks": { "placement": { "amount": 0.0, "operations": 0 }, "recovery": { "total": 0.0 } },
+                "month_total": { "placement": { "amount": 461000.0, "operations": 32 }, "recovery": { "total": 537028.43 } },
+                "month_official": { "placement": { "amount": 461000.0, "operations": 32 }, "recovery": { "total": 537028.43 } } } ],
+    "unidentified": [ { "report_name": "...", "promoter_code": null, "report_branch_name": "...", "reason": "sin_identidad", "weeks": [], "outside_weeks": {}, "month_total": {} } ]
+  },
+  "reconciliation": {
+    "placement": { "weeks_sum": 14170074.6, "outside_weeks": 0.0, "month_total": 14170074.6 },
+    "recovery": { "weeks_sum": 17888526.74, "outside_weeks": 0.0, "month_total": 17888526.74 }
+  }
+}
+```
+
+`employees.unidentified[].reason`: `sin_identidad` (fila del reporte sin registro `Employee`,
+igual que en §14.4) o `sin_fila_en_reporte` (movimientos de un gestor que el reporte no lista
+como colaborador). Alcance (§14.6): un consumidor restringido solo recibe colaboradores cuya
+`assigned_branch_id` y sucursales cuyo `branch_id` estén permitidos; `unassigned`,
+`unidentified` y `reconciliation` solo van a consumidores globales (`null` en otro caso).
+
+Caché: 12 h por periodo + versión de la radiografía (igual que §14.2). Medido en local (Junio
+2026, 136 colaboradores): ~7.3 s en frío, ~0.17 s en caliente.
+
+`GET /capabilities` lo anuncia con `features.weekly_activity: true` y el recurso
+`period_weekly_activity` (`required_abilities`, `endpoints`, `employees_block_requires`,
+`period_type: monthly`).
+
+### 15.3 Consumidor MR. LANA PEOPLE (Seguimiento)
+
+```bash
+php artisan api:consumers:create "MR. LANA PEOPLE" "mr-lana-people" \
+    --ability=branches.read --ability=employees.read --ability=periods.read --ability=financial.read
+```
+
+Acceso global (PEOPLE aplica su propio alcance por usuario con `AlcanceOrganizacionalService`).
+El token se imprime una sola vez: va en el `.env` de PEOPLE (`REPORTES_API_TOKEN`), nunca en un
+repositorio. Revocar: `php artisan api:consumers:revoke mr-lana-people --deactivate`.
+
+**Correspondencia de identidades** — vive en PEOPLE (tabla de mapeo auditable), no aquí:
+
+- Colaborador ↔ `employee.id` de Reportería. `employee_code` (clave NOI) **no es único** en
+  Reportería (p. ej. el código `7` pertenece a dos personas distintas), así que nunca se vincula
+  solo por código: PEOPLE sugiere por código + nombre y una persona confirma el vínculo.
+- Sucursal de PEOPLE ↔ `branch.id` (ruta/oficina operativa de Reportería; una sucursal de PEOPLE
+  puede agrupar varias rutas). `branches.sucursal_id` (las 11 sucursales de OKR) hoy está vacío
+  en la BD hasta correr `SucursalSeeder`.
+
+Prueba local (WAMP): `http://localhost/Reportes/public/api/v1/health` responde 200 sin
+`php artisan serve`; la misma base sirve para PEOPLE (`REPORTES_API_URL`).

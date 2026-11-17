@@ -39,6 +39,8 @@ class PeriodController extends Controller
                 'start_date' => optional($period->start_date)->toDateString(),
                 'end_date'   => optional($period->end_date)->toDateString(),
                 'is_closed'  => $period->is_closed,
+                // Aditivo (2026-11-17): semanas que componen un mes (orden del catálogo).
+                'component_period_ids' => array_map('intval', $period->component_period_ids ?? []),
                 'radiography_status' => $summaries->get($period->id)?->status ?? 'missing',
                 'calculated_at'       => optional($summaries->get($period->id)?->updated_at)->toIso8601String(),
             ])->values(),
@@ -64,6 +66,7 @@ class PeriodController extends Controller
             'start_date' => optional($period->start_date)->toDateString(),
             'end_date'   => optional($period->end_date)->toDateString(),
             'is_closed'  => $period->is_closed,
+            'component_period_ids'    => array_map('intval', $period->component_period_ids ?? []),
             'radiography_status'      => $summary?->status ?? 'missing',
             'radiography_invalidated' => (bool) $summary?->invalidated_at,
             'calculated_at'           => optional($summary?->updated_at)->toIso8601String(),

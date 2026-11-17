@@ -43,6 +43,14 @@ class RadiographySnapshotBuilder
     /** Conflictos de identidad detectados en la ÚLTIMA llamada a buildEmployeesGestores() — ver detectEmployeeIdentityConflicts(). */
     private array $lastIdentityConflicts = [];
 
+    /**
+     * Mapa de fusión por variante de escritura (llave normalizada → llave canónica) de la
+     * ÚLTIMA llamada a buildEmployeesGestores() — ver lastGestorMergeMap(). Aditivo
+     * (2026-11-17): lo usa la actividad semanal de la API para plegar las llaves de gestor
+     * EXACTAMENTE como el reporte, sin reconstruir la fusión por otro camino.
+     */
+    private array $lastGestorMergeMap = [];
+
     public function __construct(
         private readonly EmployeeNameCanonicalizer $canonicalizer,
         private readonly BranchRadiographyCalculator $branchCalculator,
@@ -522,6 +530,18 @@ class RadiographySnapshotBuilder
     public function lastIdentityConflicts(): array
     {
         return $this->lastIdentityConflicts;
+    }
+
+    /**
+     * Mapa de fusión de gestores (llave normalizada → llave canónica = `_norm_key` de la
+     * fila) usado en la ÚLTIMA llamada a buildEmployeesGestores() de este builder. Una
+     * llave ausente del mapa se usa tal cual (no se fusionó con nada).
+     *
+     * @return array<string, string>
+     */
+    public function lastGestorMergeMap(): array
+    {
+        return $this->lastGestorMergeMap;
     }
 
     /**
@@ -2753,6 +2773,7 @@ class RadiographySnapshotBuilder
             array_values(array_filter($allUniqueKeys, fn ($k) => !$isSplitKey($k))),
             array_values(array_filter(array_keys($payroll), fn ($k) => !$isSplitKey($k))),
         );
+        $this->lastGestorMergeMap = $mergeMap;
         $mergedIncidents = [];
         foreach (array_unique(array_map(fn ($k) => strstr($k, '#', true), array_filter($allUniqueKeys, $isSplitKey))) as $baseName) {
             $mergedIncidents[] = [

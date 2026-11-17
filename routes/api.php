@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\OkrController;
 use App\Http\Controllers\Api\V1\PeriodController;
 use App\Http\Controllers\Api\V1\PeriodKpiController;
+use App\Http\Controllers\Api\V1\PeriodWeeklyActivityController;
 use Illuminate\Support\Facades\Route;
 
 // Fase 1 — API general de reportería, servidor a servidor (Sanctum personal
@@ -64,6 +65,9 @@ Route::prefix('v1')
 
         Route::middleware('ensure.ability:financial.read')->group(function () {
             Route::get('/periods/{periodId}/branches', [PeriodKpiController::class, 'branches']);
+            // Actividad semanal de un mes (2026-11-17, Seguimiento de MR. LANA PEOPLE):
+            // el bloque de colaboradores exige además employees.read (en el controlador).
+            Route::get('/periods/{periodId}/weekly-activity', [PeriodWeeklyActivityController::class, 'show']);
         });
 
         // Exportación masiva: financial.read + límite de exportaciones; el bloque de
