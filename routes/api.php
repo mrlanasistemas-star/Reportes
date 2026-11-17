@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\V1\EmployeeController;
 use App\Http\Controllers\Api\V1\FinancialController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\OkrController;
+use App\Http\Controllers\Api\V1\PeopleDirectoryController;
 use App\Http\Controllers\Api\V1\PeriodController;
 use App\Http\Controllers\Api\V1\PeriodKpiController;
 use App\Http\Controllers\Api\V1\PeriodWeeklyActivityController;
@@ -27,10 +28,14 @@ Route::prefix('v1')
 
         Route::middleware('ensure.ability:branches.read')->group(function () {
             Route::get('/branches', [BranchController::class, 'index']);
+            // Sucursales oficiales con sus rutas (2026-11-17, aditivo; §16).
+            Route::get('/sucursales', [PeopleDirectoryController::class, 'sucursales']);
         });
 
         Route::middleware('ensure.ability:employees.read')->group(function () {
             Route::get('/employees', [EmployeeController::class, 'index']);
+            // Personas = employees agrupados por identidad, con su sucursal y rutas (2026-11-17, aditivo; §16).
+            Route::get('/people', [PeopleDirectoryController::class, 'people']);
             Route::get('/employees/{employeeId}', [EmployeeController::class, 'show']);
 
             // Fase 2.1 (corrección de seguridad): la ficha financiera de un

@@ -664,3 +664,47 @@ repositorio. Revocar: `php artisan api:consumers:revoke mr-lana-people --deactiv
 
 Prueba local (WAMP): `http://localhost/Reportes/public/api/v1/health` responde 200 sin
 `php artisan serve`; la misma base sirve para PEOPLE (`REPORTES_API_URL`).
+
+## 16. Directorio de personas y sucursales con rutas — Vínculos de MR. LANA PEOPLE (2026-11-17)
+
+Problema que resuelve: `GET /employees` es un catálogo de **registros**, no de personas. En
+producción devolvía ~1,485 filas con la misma persona repetida (alta NOI con clave + altas de
+Lendus cobranza sin clave + variantes de captura, cada una con su ruta), y `GET /branches` mezcla
+sucursales con rutas. PEOPLE (y cualquier consumidor que vincule personas) necesita **una fila por
+persona** con su sucursal, y **una fila por sucursal** con sus rutas. Ambos endpoints son
+**aditivos**: `/employees` y `/branches` no cambian (Auditoría sigue igual).
+
+### 16.1 `GET /api/v1/people` (`employees.read`)
+
+Fuente: `App\Services\Api\PeopleDirectoryService`. Reglas de identidad = las del reporte:
+
+1. Nombre normalizado (`EmployeeNameCanonicalizer::normalize`: sin acentos ni signos, espacios colapsados).
+2. Variantes de captura (`buildCanonicalMap`: Levenshtein ≤ 2 y ≥ 3 palabras de ≥ 3 letras en
+   común; la forma de NOI es la preferente): «EVA CRISITNA…» cae en «EVA CRISTINA…».
+3. Homónimos con rechazo de fusión registrado (`employee_match_rejections`) **nunca** se juntan: el
+   grupo se separa por clave NOI y los registros sin clave se quedan con la primera persona (igual
+   que el reporte).
+
+Cada persona: `id` (registro principal: NOI con clave, el más antiguo), `employee_ids` (todos sus
+registros: úsalos para sumar actividad), `full_name`, `name_variants`, `employee_codes`,
+`position`, `kind` (`person` | `placeholder`) + `placeholder_reason` (`vacante`,
+`cartera_vencida`, `codigo_de_promotor`, `cuenta_operativa`, `nombre_incompleto`, `sin_nombre`),
+`current_branch_id`, `sucursal {code, name, id}` (la de su ruta más reciente) y `routes[]` (todas
+sus rutas, la más reciente primero, con `sucursal_code`). Paginado: `per_page` 1–500 (100 por
+omisión), `include_placeholders=0` para omitir los que no son personas. Caché 6 h con llave que
+cambia sola con cada import (empleados, asignaciones, rechazos, branches).
+
+### 16.2 `GET /api/v1/sucursales` (`branches.read`)
+
+Sucursales oficiales con sus rutas: el branch activo se ubica con el **catálogo oficial ruta →
+sucursal** (`BranchRouteCatalog`, p. ej. JIUTEPEC → CUERNAVACA, COSCOMATEPEC → CORDOBA,
+ORIENTE-SLP → SAN LUIS POTOSI; San Juan del Río y Tenango del Valle como sucursales históricas);
+si no está en el catálogo, con `branches.sucursal_id`; si tampoco, va al último elemento
+`code: null` (nunca se adivina). `code` estable (`SAN_LUIS_POTOSI`), `id` de `sucursales` cuando
+existe, `okr_operative`.
+
+Un consumidor restringido por sucursal solo recibe sus rutas (y las personas con alguna ruta
+permitida). `GET /capabilities` anuncia `features.people_directory: true`.
+
+Medición local (157 registros): `/people?per_page=500` ~0.15 s. Pruebas:
+`tests/Feature/Api/V1/ApiPeopleDirectoryTest.php`.
