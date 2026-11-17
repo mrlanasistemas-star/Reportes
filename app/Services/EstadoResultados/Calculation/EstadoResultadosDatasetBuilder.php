@@ -11,6 +11,7 @@ use App\Models\Period;
 use App\Services\EstadoResultados\AdjustmentService;
 use App\Services\EstadoResultados\Classification\ClassificationService;
 use App\Services\EstadoResultados\Classification\ErpOutsideClassifier;
+use App\Services\EstadoResultados\EstadoResultadosProcessor;
 use App\Services\EstadoResultados\Import\CorporatePayrollUploadService;
 use App\Services\EstadoResultados\Import\EstadoResultadosUploadService;
 use App\Services\EstadoResultados\Reconciliation\CorporatePayrollRepository;
@@ -419,11 +420,16 @@ class EstadoResultadosDatasetBuilder
             'read_cargos' => Money::str2($u->total_cargos), 'read_abonos' => Money::str2($u->total_abonos),
             'movements' => (int) $u->movements_count,
         ])->all();
+        // Movimientos del periodo POR FECHA: pueden venir de archivos subidos en otro periodo
+        // (estados de cuenta por mes calendario vs. periodos de 4 semanas; 17-nov-2026).
         $movements = EstadoResultadosMovement::query()
             ->where('period_id', $period->id)
-            ->whereIn('upload_id', $uploads->keys()->all() ?: [0])
+            ->whereIn('upload_id', EstadoResultadosUpload::query()->active()->select('id'))
             ->orderBy('movement_date')->orderBy('account_slot')->orderBy('source_row')
             ->get();
+        $foreignUploadIds = $movements->pluck('upload_id')->unique()->diff($uploads->keys())->values()->all();
+        $movementUploads = $foreignUploadIds === [] ? $uploads
+            : $uploads->union(EstadoResultadosUpload::query()->whereIn('id', $foreignUploadIds)->get()->keyBy('id'));
         $movByFp = $movements->keyBy('fingerprint');
 
         // Lectura tolerante: antes de aplicar la migración 2026_11_06_0000A1 no hay vínculos (se ve como "sin procesar").
@@ -455,7 +461,7 @@ class EstadoResultadosDatasetBuilder
                 $treatment === T::CUBIERTO_RADIOGRAFIA => 'radiografia',
                 default => null,
             };
-            $upload = $uploads[$m->upload_id] ?? null;
+            $upload = $movementUploads[$m->upload_id] ?? null;
             $recPeriodId = $m->recognition_period_id !== null ? (int) $m->recognition_period_id : ($m->in_period ? $period->id : null);
 
             $items[] = [
@@ -507,7 +513,7 @@ class EstadoResultadosDatasetBuilder
                     'period_id' => $recPeriodId,
                     'period_code' => $recPeriodId !== null ? ($periodCodes[$recPeriodId] ?? null) : null,
                     'basis' => 'fecha_bancaria',
-                    'out_of_period' => $processed ? $m->out_of_period_kind : (! $m->in_period ? ($m->movement_date->format('Y-m-d') < $period->start_date->format('Y-m-d') ? 'fecha_anterior_al_periodo' : 'fecha_posterior_al_periodo') : null),
+                    'out_of_period' => $processed ? $m->out_of_period_kind : (! $m->in_period ? (EstadoResultadosProcessor::parkedKind($m) ?? ($m->movement_date->format('Y-m-d') < $period->start_date->format('Y-m-d') ? 'fecha_anterior_al_periodo' : 'fecha_posterior_al_periodo')) : null),
                 ],
                 'dates' => [
                     'operation' => $m->operation_date?->format('Y-m-d') ?? $m->movement_date->format('Y-m-d'),
@@ -1649,7 +1655,9 @@ class EstadoResultadosDatasetBuilder
         foreach ($adj as $a) {
             $adjCounts[$a['state']]++;
         }
-        $hasBank = $uploads->contains(fn ($u) => $u->status !== EstadoResultadosUpload::STATUS_REPLACED);
+        // También cuenta lo que llegó por fecha desde archivos subidos en otro periodo.
+        $hasBank = $uploads->contains(fn ($u) => $u->status !== EstadoResultadosUpload::STATUS_REPLACED)
+            || array_filter($items, fn ($i) => ($i['source'] ?? null) === 'banco') !== [];
         $stale = $lastRun && $lastRun->status === 'ok' && $lastRun->erp_signature !== $currentSig;
         $unprocessed = $shared['unprocessed'];
         $diag = $shared['diagnosis'] ?? [];

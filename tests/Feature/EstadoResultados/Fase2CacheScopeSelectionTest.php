@@ -193,8 +193,9 @@ it('procesador: un movimiento fuera del periodo se asigna al periodo mensual de 
         ['2026-10-05', 50.00, null, 'S/R', 'PAGO OCT', 'CORPORATIVO'],
     ]));
     app(EstadoResultadosProcessor::class)->process($p);
-    expect(DB::table('estado_resultados_movements')->where('period_id', $p->id)->where('in_period', false)->value('recognition_period_id'))
-        ->toBe(min($a->id, $b->id));
+    // 17-nov-2026: el movimiento de octubre se ASIGNA (por fecha) al periodo de menor id.
+    expect(DB::table('estado_resultados_movements')->where('concept', 'PAGO OCT')->value('period_id'))->toBe(min($a->id, $b->id))
+        ->and(DB::table('estado_resultados_movements')->where('concept', 'PAGO OCT')->value('in_period'))->toBeTruthy();
 });
 
 it('alcance por sucursal: un usuario restringido no consulta el consolidado ni otras sucursales', function () {

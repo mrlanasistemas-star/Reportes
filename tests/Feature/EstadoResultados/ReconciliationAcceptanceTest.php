@@ -320,7 +320,8 @@ it('cambio de periodo no contamina: un folio ERP de un periodo anterior es ajust
     $o = raBuild($oct);
     $late = raMov($o, 'PAGO LUZ ATRASADO');
     $sepAfter = raBuild($sep);
-    $outOfPeriod = raMov($sepAfter, 'PAGO OCTUBRE EN ARCHIVO SEP');
+    // 17-nov-2026: el movimiento de octubre que venía en el archivo de septiembre se suma en OCTUBRE (por su fecha).
+    $octMov = raMov($o, 'PAGO OCTUBRE EN ARCHIVO SEP');
 
     expect($late['reconciliation_status'])->toBe('folio_otro_periodo')
         ->and($late['treatment'])->toBe(T::PENDIENTE)
@@ -329,10 +330,9 @@ it('cambio de periodo no contamina: un folio ERP de un periodo anterior es ajust
         ->and($o['controls']['opex_corporativo'])->toBe('0.00')
         ->and($sepAfter['meta']['dataset_hash'])->toBe($sepBefore['meta']['dataset_hash'])
         ->and($sepAfter['controls']['opex_corporativo'])->toBe('700.00')
-        ->and($outOfPeriod['dimensions']['inclusion']['key'])->toBe('fuera_periodo')
-        ->and($outOfPeriod['dimensions']['recognition']['out_of_period'])->toBe('fecha_posterior_al_periodo')
-        ->and($outOfPeriod['dimensions']['recognition']['period_id'])->toBe($oct->id)
-        ->and($outOfPeriod['amounts']['out_of_period'])->toBe('150.00');
+        ->and(collect($sepAfter['movements'])->pluck('concept')->all())->not->toContain('PAGO OCTUBRE EN ARCHIVO SEP')
+        ->and($octMov['in_period'])->toBeTrue()
+        ->and($octMov['dimensions']['recognition']['period_id'])->toBe($oct->id);
 });
 
 it('dos procesamientos simultáneos del mismo periodo: el segundo se rechaza por candado y no duplica nada', function () {

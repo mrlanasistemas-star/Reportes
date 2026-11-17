@@ -276,12 +276,16 @@ it('un archivo con estructura inválida da un error entendible y no carga datos 
         ->and(EstadoResultadosMovement::query()->count())->toBe(0);
 });
 
-it('rechaza un archivo de la otra cuenta y uno cuyas fechas no pertenecen al periodo', function () {
+it('rechaza un archivo de la otra cuenta pero acepta uno cuyas fechas no pertenecen al periodo', function () {
     $period = F::period();
     expect(fn () => erImport($period, F::excedentesXlsx([['2026-09-01', null, 100.00, 'RETIRO EXCEDENTE', 'ORIZABA', null]]), 'administrativa'))
         ->toThrow(EstadoResultadosImportException::class, 'estructura');
-    expect(fn () => erImport($period, F::adminXlsx([['2026-12-01', 100.00, null, 'S/R', 'PAGO', 'CORPORATIVO']])))
-        ->toThrow(EstadoResultadosImportException::class, 'Ninguna fecha');
+
+    // 17-nov-2026: ya no se rechaza; el movimiento se conserva y se suma cuando exista su periodo.
+    $upload = erImport($period, F::adminXlsx([['2026-12-01', 100.00, null, 'S/R', 'PAGO', 'CORPORATIVO']]));
+    expect($upload->movements_count)->toBe(1)
+        ->and($upload->out_of_period_count)->toBe(1)
+        ->and(implode(' ', $upload->warnings))->toContain('sin periodo mensual');
 });
 
 it('movimientos fuera de las fechas del periodo se conservan pero no suman', function () {

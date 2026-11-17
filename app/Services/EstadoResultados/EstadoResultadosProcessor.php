@@ -8,6 +8,7 @@ use App\Models\EstadoResultados\EstadoResultadosRun;
 use App\Models\EstadoResultados\EstadoResultadosUpload;
 use App\Models\Period;
 use App\Services\EstadoResultados\Classification\MovementClassifier;
+use App\Services\EstadoResultados\Import\MovementPeriodAllocator;
 use App\Services\EstadoResultados\Reconciliation\ErpExpenseRepository;
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
 use App\Services\EstadoResultados\Reconciliation\NoiPayrollRepository;
@@ -92,6 +93,10 @@ class EstadoResultadosProcessor
 
     private function run(Period $period, EstadoResultadosRun $run): array
     {
+        // Todos los archivos cargados (de cualquier periodo) aportan los movimientos cuya FECHA
+        // cae en este periodo; lo repetido entre archivos cuenta una sola vez.
+        app(MovementPeriodAllocator::class)->sync();
+
         $dataIds = $this->dataIds->for($period);
         $erpRows = $this->erp->forDataIds($dataIds);
         $erpByFp = [];
@@ -167,7 +172,7 @@ class EstadoResultadosProcessor
                 $fp = $m->fingerprint;
                 $input = $this->movementInput($m) + [
                     'concept' => $m->concept, 'observations' => $m->observations, 'bank_reference' => $m->bank_reference,
-                    'abono' => $m->abono, 'in_period' => $m->in_period, 'sucursal_raw' => $m->sucursal_raw,
+                    'abono' => $m->abono, 'in_period' => $m->in_period, 'sucursal_raw' => $m->sucursal_raw, 'placement' => $m->placement,
                 ];
                 $r = $rec['results'][$fp] ?? null;
                 $c = $this->classifier->classify($input, $r);
@@ -197,7 +202,7 @@ class EstadoResultadosProcessor
                 $linkedErp = array_map(fn ($a) => $erpByFp[$a['erp']], $allocByMovement[$fp] ?? []);
                 $outKind = null;
                 if (! $m->in_period) {
-                    $outKind = $m->movement_date->format('Y-m-d') < $periodStart ? 'fecha_anterior_al_periodo' : 'fecha_posterior_al_periodo';
+                    $outKind = self::parkedKind($m) ?? ($m->movement_date->format('Y-m-d') < $periodStart ? 'fecha_anterior_al_periodo' : 'fecha_posterior_al_periodo');
                 } elseif ($recStatus === R::FOLIO_OTRO_PERIODO) {
                     $starts = array_filter(array_column((array) ($r['erp_other_periods'] ?? []), 'period_start'));
                     $outKind = $starts !== [] && max($starts) < $periodStart ? 'ajuste_periodo_anterior' : 'erp_periodo_posterior';
@@ -413,6 +418,17 @@ class EstadoResultadosProcessor
     private array $periodCache = [];
 
     /** Periodo MENSUAL cuyo rango contiene la fecha (para movimientos fuera del periodo); null si no existe. */
+    /** Motivo de un movimiento "estacionado" por el reparto por fecha (null = fecha fuera del periodo). */
+    public static function parkedKind(EstadoResultadosMovement $m): ?string
+    {
+        return match ($m->placement ?? null) {
+            MovementPeriodAllocator::DUPLICADO => 'duplicado_otro_archivo',
+            MovementPeriodAllocator::SIN_PERIODO => 'sin_periodo_mensual',
+            MovementPeriodAllocator::PERIODO_CERRADO => 'periodo_destino_aprobado',
+            default => null,
+        };
+    }
+
     private function periodForDate(string $date): ?int
     {
         if (! array_key_exists($date, $this->periodCache)) {
