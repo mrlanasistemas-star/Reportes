@@ -67,6 +67,9 @@ final class Dimensions
     public const OUT_OF_PERIOD = [
         'fecha_anterior_al_periodo' => 'Fecha anterior al periodo',
         'fecha_posterior_al_periodo' => 'Fecha posterior al periodo',
+        'duplicado_otro_archivo' => 'Ya viene en otro archivo cargado (se cuenta una sola vez)',
+        'sin_periodo_mensual' => 'Su fecha no pertenece a ningún periodo mensual creado',
+        'periodo_destino_aprobado' => 'Su fecha cae en un periodo ya aprobado (no se suma)',
         'ajuste_periodo_anterior' => 'Ajuste de periodo anterior (el folio ERP es de un periodo previo)',
         'erp_periodo_posterior' => 'El folio ERP pertenece a un periodo posterior',
     ];

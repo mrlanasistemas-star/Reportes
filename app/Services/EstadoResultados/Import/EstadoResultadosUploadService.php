@@ -22,7 +22,8 @@ use Illuminate\Support\Facades\Storage;
  * Flujo propio (no reutiliza ReportUpload/DataSource de Radiografía):
  *   1. sha256 del archivo → si el MISMO archivo ya está activo en el periodo, se rechaza (idempotencia).
  *   2. BankStatementParser valida TODO el archivo antes de escribir.
- *   3. Valida que la cuenta elegida coincida con la estructura y que haya movimientos dentro del periodo.
+ *   3. Valida que la cuenta elegida coincida con la estructura. Las fechas NO se rechazan: cada
+ *      movimiento se asigna al periodo mensual de su fecha (MovementPeriodAllocator, 17-nov-2026).
  *   4. En una sola transacción: reemplaza la carga anterior de la misma cuenta (sus movimientos se
  *      borran; las clasificaciones manuales viven aparte y se re-aplican por huella) e inserta los nuevos.
  *
@@ -46,6 +47,7 @@ class EstadoResultadosUploadService
     public function __construct(
         private readonly BankStatementParser $parser,
         private readonly SucursalNormalizer $sucursales,
+        private readonly MovementPeriodAllocator $allocator,
     ) {}
 
     public function upload(Period $period, UploadedFile $file, string $slot, ?int $userId): EstadoResultadosUpload
@@ -311,12 +313,10 @@ class EstadoResultadosUploadService
                 $inPeriod++;
             }
         }
-        if ($inPeriod === 0) {
-            throw new EstadoResultadosImportException(
-                'Ninguna fecha del archivo cae dentro del periodo '.$period->label.' ('.$period->start_date->format('d/m/Y').' – '.$period->end_date->format('d/m/Y').').',
-                ['Fechas del archivo: '.min($dates).' a '.max($dates).'. Selecciona el periodo correcto.']
-            );
-        }
+        // 17-nov-2026: ya NO se rechaza un archivo cuyas fechas no caen en el periodo elegido.
+        // Los estados de cuenta van por mes calendario y los periodos son de 4 semanas: cada
+        // movimiento se asigna al periodo de SU fecha (MovementPeriodAllocator) y el aviso de
+        // la carga dice cuántos entran en cada periodo.
 
         $totalCargos = Money::sum(array_column($parsed['movements'], 'cargo'));
         $totalAbonos = Money::sum(array_column($parsed['movements'], 'abono'));
@@ -336,10 +336,6 @@ class EstadoResultadosUploadService
             // INFORMATIVA: sin renglón de control no hay contra qué comparar; queda visible.
             $warnings[] = ['code' => 'sin_totales_control', 'severity' => EstadoResultadosUpload::SEVERITY_INFO, 'message' => 'El archivo no trae renglón de totales de control ("TOTAL EXCEL"); no se pudo validar contra el banco.'];
         }
-        $outOfPeriod = count($parsed['movements']) - $inPeriod;
-        if ($outOfPeriod > 0) {
-            $warnings[] = ['code' => 'fuera_periodo', 'severity' => EstadoResultadosUpload::SEVERITY_INFO, 'message' => "{$outOfPeriod} movimiento(s) tienen fecha fuera del periodo ({$start} a {$end}): se conservan para auditoría pero no se suman en este periodo."];
-        }
         $blocking = count(array_filter($warnings, fn ($w) => $w['severity'] === EstadoResultadosUpload::SEVERITY_BLOCKING));
 
         $storedPath = null;
@@ -351,7 +347,7 @@ class EstadoResultadosUploadService
             Storage::disk(self::DISK)->put($storedPath, (string) file_get_contents($absolutePath));
         }
 
-        return DB::transaction(function () use ($period, $slot, $parsed, $hash, $originalName, $absolutePath, $userId, $storedPath, $totalCargos, $totalAbonos, $controlOk, $warnings, $blocking, $inPeriod, $start, $end, $dates) {
+        return $this->allocator->exclusive(fn () => DB::transaction(function () use ($period, $slot, $parsed, $hash, $originalName, $absolutePath, $userId, $storedPath, $totalCargos, $totalAbonos, $controlOk, $warnings, $blocking, $inPeriod, $start, $end, $dates) {
             // Serializa contra aprobación/procesamiento: fila del periodo bloqueada y RE-CHEQUEO
             // dentro de la transacción (cierra la carrera «se aprobó mientras se leía el archivo»).
             DB::table('periods')->where('id', $period->id)->lockForUpdate()->first();
@@ -398,8 +394,14 @@ class EstadoResultadosUploadService
                 'uploaded_by' => $userId,
             ]);
 
+            $guard = app(PeriodLockGuard::class);
             foreach ($previous as $old) {
-                EstadoResultadosMovement::query()->where('upload_id', $old->id)->delete();
+                // Los movimientos de la carga sustituida que ya viven en un periodo APROBADO se
+                // conservan (el periodo aprobado no cambia); el resto se borra.
+                $lockedIds = EstadoResultadosMovement::query()->where('upload_id', $old->id)->distinct()->pluck('period_id')
+                    ->filter(fn ($pid) => $guard->isLocked((int) $pid))->values()->all();
+                EstadoResultadosMovement::query()->where('upload_id', $old->id)
+                    ->when($lockedIds !== [], fn ($q) => $q->whereNotIn('period_id', $lockedIds))->delete();
                 $old->update([
                     'status' => EstadoResultadosUpload::STATUS_REPLACED,
                     'lifecycle' => EstadoResultadosUpload::LIFECYCLE_REEMPLAZADO,
@@ -410,7 +412,10 @@ class EstadoResultadosUploadService
 
             $now = now();
             $rows = [];
-            foreach ($parsed['movements'] as $m) {
+            $placement = MovementPeriodAllocator::available();
+            // Llave temporal única: el reparto por fecha (abajo) la deja en 0 para el vigente.
+            $tempKey = (1 << 40) + ($upload->id << 20);
+            foreach ($parsed['movements'] as $i => $m) {
                 $branch = $this->sucursales->normalize($m['sucursal_raw']);
                 $rows[] = [
                     'upload_id' => $upload->id,
@@ -442,14 +447,49 @@ class EstadoResultadosUploadService
                     'needs_review' => false,
                     'created_at' => $now,
                     'updated_at' => $now,
-                ];
+                ] + ($placement ? ['placement' => MovementPeriodAllocator::SIN_PERIODO, 'dedup_key' => $tempKey + $i] : []);
             }
             foreach (array_chunk($rows, 200) as $chunk) {
                 EstadoResultadosMovement::query()->insert($chunk);
             }
 
+            if ($placement) {
+                // Cada movimiento va al periodo de SU fecha (sin duplicar lo que ya trae otro archivo).
+                $this->allocator->syncInTransaction();
+                $this->describePlacement($upload, $period);
+            }
+
             return $upload->fresh();
-        });
+        }));
+    }
+
+    /** Agrega a la carga el aviso de en qué periodo quedó cada movimiento (por su fecha). */
+    private function describePlacement(EstadoResultadosUpload $upload, Period $period): void
+    {
+        $messages = [];
+        $outside = 0;
+        foreach ($this->allocator->breakdownForUpload($upload->id) as $b) {
+            $n = $b['count'];
+            if ($b['placement'] === MovementPeriodAllocator::PERIODO && $b['period_id'] === $period->id) {
+                $messages[] = "{$n} movimiento(s) entran en {$period->label} por su fecha.";
+
+                continue;
+            }
+            $outside += $n;
+            $messages[] = match ($b['placement']) {
+                MovementPeriodAllocator::PERIODO => "{$n} movimiento(s) tienen fecha de {$b['label']}: se suman en ese periodo, no en {$period->label}.",
+                MovementPeriodAllocator::DUPLICADO => "{$n} movimiento(s) ya vienen en otro archivo cargado: se cuentan una sola vez (no se duplican).",
+                MovementPeriodAllocator::PERIODO_CERRADO => "{$n} movimiento(s) caen en un periodo ya aprobado: no se suman.",
+                default => "{$n} movimiento(s) tienen fecha sin periodo mensual creado: se sumarán solos cuando exista ese periodo.",
+            };
+        }
+        $extra = array_map(fn ($m) => ['code' => 'asignacion_por_fecha', 'severity' => EstadoResultadosUpload::SEVERITY_INFO, 'message' => $m], $messages);
+        $detail = array_values(array_merge((array) $upload->warnings_detail, $extra));
+        $upload->update([
+            'warnings' => array_values(array_column($detail, 'message')),
+            'warnings_detail' => $detail,
+            'out_of_period_count' => $outside,
+        ]);
     }
 
     private function detectAccountLabel(array $movements, string $originalName): ?string

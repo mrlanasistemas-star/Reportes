@@ -27,7 +27,12 @@ class MovementClassifier
     public function classify(array $m, ?array $rec): array
     {
         if (! ($m['in_period'] ?? true)) {
-            return $this->out(T::FUERA_PERIODO, null, 'fuera_periodo', 'La fecha del movimiento no cae dentro del periodo; se considera en el periodo al que pertenece.');
+            return $this->out(T::FUERA_PERIODO, null, 'fuera_periodo', match ($m['placement'] ?? null) {
+                'duplicado' => 'Este mismo movimiento ya viene en otro archivo cargado: se cuenta una sola vez, en el periodo de su fecha.',
+                'sin_periodo' => 'La fecha del movimiento no pertenece a ningún periodo mensual creado; se sumará cuando exista ese periodo.',
+                'periodo_cerrado' => 'La fecha del movimiento cae en un periodo ya aprobado; no se suma para no alterar la versión aprobada.',
+                default => 'La fecha del movimiento no cae dentro del periodo; se considera en el periodo al que pertenece.',
+            });
         }
 
         $concept = $this->norm($m['concept'] ?? '');
