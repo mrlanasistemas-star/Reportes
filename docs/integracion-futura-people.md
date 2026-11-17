@@ -57,6 +57,17 @@ fuente de verdad de identidad/estado laboral, correlacionada vía
 
 ## 5. Estado actual
 
-Bloqueado/pendiente: no existe todavía un sistema MR Lana People real con el que probar
-esta correspondencia. Esta tabla y este documento son la preparación de la interfaz, no una
-integración funcionando.
+Actualizado 2026-11-17: **MR. LANA PEOPLE ya existe** y consume la API v1 de solo lectura
+para su módulo «Seguimiento» (consumidor `mr-lana-people`, ver `docs/api-reporteria.md` §15:
+`/periods`, `/periods/{id}/branches`, `/periods/{id}/employees` y
+`/periods/{id}/weekly-activity`).
+
+- La correspondencia colaborador ↔ `employee.id` y sucursal ↔ `branch.id` vive **en PEOPLE**
+  (tabla de mapeo auditable, confirmada por una persona). Reportería no escribe ni recibe
+  identidades de PEOPLE; `employee_external_identities` sigue sin poblarse.
+- Llaves: `employee_code` (clave NOI) **no es único** en Reportería (p. ej. el código `7`
+  pertenece a dos personas distintas), por lo que nunca se vincula solo por código; se sugiere
+  por código + nombre y se confirma a mano. Un `branch` de Reportería es una ruta/oficina
+  operativa; una sucursal de PEOPLE puede agrupar varias.
+- Lo descrito en §3-§4 (People como fuente maestra de identidad/estado laboral) sigue pendiente
+  y es una decisión de negocio aparte.

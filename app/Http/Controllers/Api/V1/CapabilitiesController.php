@@ -38,6 +38,8 @@ class CapabilitiesController extends Controller
         'employee_periods_kpis' => ['employees.read', 'financial.read'],
         'period_branches_kpis' => 'financial.read',
         'period_export' => 'financial.read',
+        // Actividad semanal de un mes (2026-11-17): el bloque de colaboradores exige además employees.read.
+        'period_weekly_activity' => 'financial.read',
     ];
 
     /** Endpoints de cada recurso de exportación por periodo (informativo, aditivo). */
@@ -46,6 +48,7 @@ class CapabilitiesController extends Controller
         'employee_periods_kpis' => ['GET /api/v1/employees/{id}/periods'],
         'period_branches_kpis' => ['GET /api/v1/periods/{id}/branches'],
         'period_export' => ['GET /api/v1/periods/{id}/export', 'GET /api/v1/periods/export'],
+        'period_weekly_activity' => ['GET /api/v1/periods/{id}/weekly-activity'],
     ];
 
     /**
@@ -87,6 +90,10 @@ class CapabilitiesController extends Controller
                 $resources[$resource]['required_abilities'] = (array) $abilities;
                 $resources[$resource]['endpoints'] = self::RESOURCE_ENDPOINTS[$resource];
             }
+            if ($resource === 'period_weekly_activity') {
+                $resources[$resource]['employees_block_requires'] = 'employees.read';
+                $resources[$resource]['period_type'] = 'monthly';
+            }
             if ($resource === 'period_export') {
                 // El bloque de colaboradores del export exige además employees.read.
                 $resources[$resource]['employees_block_requires'] = 'employees.read';
@@ -123,6 +130,9 @@ class CapabilitiesController extends Controller
                 // rutas), sucursales, corporativo y consolidado; rango de periodos y CSV.
                 'period_kpi_export' => true,
                 'csv_format' => true,
+                // Actividad semanal: colocación/recuperación de un mes repartidas en
+                // sus semanas componentes, por sucursal y por colaborador (§15).
+                'weekly_activity' => true,
             ],
             'consumer' => [
                 'system_code' => $consumer->system_code,
