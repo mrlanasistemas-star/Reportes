@@ -100,6 +100,118 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /people:
+    get:
+      tags: [employees]
+      summary: Personas (employees agrupados por identidad) con su sucursal y rutas
+      description: >
+        ADITIVO (2026-11-17, §16 de api-reporteria.md). Un mismo colaborador puede tener varios
+        registros `employees` (alta NOI con clave, alta de Lendus sin clave, variantes de captura,
+        uno por ruta). Aquí se agrupan con las reglas de identidad del reporte: nombre normalizado,
+        fusión de variantes (Levenshtein ≤ 2 y ≥ 3 palabras en común, NOI preferente) y separación
+        de homónimos con rechazo de fusión registrado. `id` = registro principal (NOI con clave, el
+        más antiguo); `employee_ids` = todos sus registros. `routes` = rutas (branches) de todas sus
+        asignaciones, la más reciente primero, cada una con `sucursal_code` del catálogo oficial
+        ruta → sucursal; `sucursal` = la de su ruta más reciente. Registros que no son personas
+        (VACANTE…, …VENCIDOS, códigos de promotor) vienen con `kind: placeholder` y
+        `placeholder_reason`. Requiere `employees.read`. Caché 6 h que se invalida con cada import.
+      parameters:
+        - in: query
+          name: per_page
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: include_placeholders
+          schema: { type: boolean, default: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        employee_ids: { type: array, items: { type: integer } }
+                        full_name: { type: string }
+                        name_variants: { type: array, items: { type: string } }
+                        employee_codes: { type: array, items: { type: string } }
+                        position: { type: string, nullable: true }
+                        kind: { type: string, enum: [person, placeholder] }
+                        placeholder_reason: { type: string, nullable: true }
+                        current_branch_id: { type: integer, nullable: true }
+                        sucursal:
+                          type: object
+                          nullable: true
+                          properties:
+                            code: { type: string }
+                            name: { type: string }
+                            id: { type: integer, nullable: true }
+                        routes:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id: { type: integer }
+                              code: { type: string, nullable: true }
+                              name: { type: string }
+                              sucursal_code: { type: string, nullable: true }
+                  meta:
+                    type: object
+                    properties:
+                      current_page: { type: integer }
+                      per_page: { type: integer }
+                      total: { type: integer }
+                      last_page: { type: integer }
+                      grouping: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /sucursales:
+    get:
+      tags: [branches]
+      summary: Sucursales oficiales con sus rutas
+      description: >
+        ADITIVO (2026-11-17, §16). Agrupa los branches activos bajo su sucursal oficial
+        (catálogo ruta → sucursal de Reportería; si la ruta no está en el catálogo, la atribución
+        de la BD). `code` es estable (`SAN_LUIS_POTOSI`); `id` es el de `sucursales` cuando existe.
+        Las rutas sin sucursal se entregan en un último elemento con `code: null`. Requiere
+        `branches.read`; un consumidor restringido solo recibe sus rutas.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, nullable: true }
+                        name: { type: string, nullable: true }
+                        id: { type: integer, nullable: true }
+                        okr_operative: { type: boolean }
+                        routes:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id: { type: integer }
+                              code: { type: string, nullable: true }
+                              name: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /employees/{employeeId}:
     get:
       tags: [employees]

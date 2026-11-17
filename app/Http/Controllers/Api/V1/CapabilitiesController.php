@@ -133,6 +133,8 @@ class CapabilitiesController extends Controller
                 // Actividad semanal: colocación/recuperación de un mes repartidas en
                 // sus semanas componentes, por sucursal y por colaborador (§15).
                 'weekly_activity' => true,
+                // Directorio de personas agrupadas y sucursales con rutas (§16).
+                'people_directory' => true,
             ],
             'consumer' => [
                 'system_code' => $consumer->system_code,
