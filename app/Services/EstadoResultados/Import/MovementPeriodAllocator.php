@@ -25,6 +25,8 @@ use Illuminate\Support\Facades\Schema;
  *    ⇒ se cuenta UNA vez; la copia queda como "duplicado" (no suma).
  *  - Sin periodo mensual que cubra la fecha ⇒ "sin_periodo": se conserva en el periodo
  *    donde se subió como fuera de periodo y entra sola cuando se cree ese periodo.
+ *  - Lo cargado antes de este cambio ("legado") NO se mueve, y a esos periodos de producción
+ *    no se les agregan movimientos de archivos subidos en otro periodo.
  *  - Re-ejecutable: sólo escribe lo que cambia; lo que cambia de periodo queda sin
  *    procesar (processed_at = null) para que el periodo afectado pida reprocesar.
  */
@@ -37,6 +39,12 @@ class MovementPeriodAllocator
     public const DUPLICADO = 'duplicado';
 
     public const PERIODO_CERRADO = 'periodo_cerrado';
+
+    /** Movimiento cargado ANTES del reparto por fecha (17-nov-2026): nunca se mueve. */
+    public const LEGADO = 'legado';
+
+    /** Su fecha cae en un periodo que ya tenía datos en producción: no se le agrega. */
+    public const PERIODO_EXISTENTE = 'periodo_existente';
 
     public static function available(): bool
     {
@@ -114,12 +122,21 @@ class MovementPeriodAllocator
             return null;
         };
 
+        // Periodos que ya estaban en producción (tienen movimientos "legado"): se quedan como
+        // estaban. Sólo reciben los movimientos de archivos subidos EN ellos mismos.
+        $legacyPeriods = [];
+        foreach ($rows as $r) {
+            if ($r->placement === self::LEGADO) {
+                $legacyPeriods[(int) $r->period_id] = true;
+            }
+        }
+
         $desired = [];   // id => [period_id, in_period, placement, owner]
         $candidates = []; // "periodo|fp" => list<row>
         foreach ($rows as $r) {
             $current = (int) $r->period_id;
             // Congelados: periodo aprobado o carga ya reemplazada (sólo sobrevive en periodos aprobados).
-            if (isset($locked[$current]) || $r->upload_status === EstadoResultadosUpload::STATUS_REPLACED) {
+            if (isset($locked[$current]) || $r->upload_status === EstadoResultadosUpload::STATUS_REPLACED || $r->placement === self::LEGADO) {
                 continue;
             }
             $date = substr((string) $r->movement_date, 0, 10);
@@ -130,6 +147,8 @@ class MovementPeriodAllocator
                 $desired[$r->id] = [$home, false, self::SIN_PERIODO, false];
             } elseif (isset($locked[$target])) {
                 $desired[$r->id] = [$home, false, self::PERIODO_CERRADO, false];
+            } elseif (isset($legacyPeriods[$target]) && $target !== (int) $r->upload_period_id) {
+                $desired[$r->id] = [$home, false, self::PERIODO_EXISTENTE, false];
             } else {
                 $candidates[$target.'|'.$r->fingerprint][] = $r;
                 $desired[$r->id] = [$home, false, self::DUPLICADO, false]; // se corrige abajo para el ganador

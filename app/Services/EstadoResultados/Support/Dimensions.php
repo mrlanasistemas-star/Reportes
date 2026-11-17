@@ -70,6 +70,7 @@ final class Dimensions
         'duplicado_otro_archivo' => 'Ya viene en otro archivo cargado (se cuenta una sola vez)',
         'sin_periodo_mensual' => 'Su fecha no pertenece a ningún periodo mensual creado',
         'periodo_destino_aprobado' => 'Su fecha cae en un periodo ya aprobado (no se suma)',
+        'periodo_destino_existente' => 'Su fecha cae en un periodo cargado antes (no se modifica; no se suma)',
         'ajuste_periodo_anterior' => 'Ajuste de periodo anterior (el folio ERP es de un periodo previo)',
         'erp_periodo_posterior' => 'El folio ERP pertenece a un periodo posterior',
     ];
