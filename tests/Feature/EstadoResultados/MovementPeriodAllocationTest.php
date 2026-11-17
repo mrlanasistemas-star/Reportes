@@ -96,3 +96,23 @@ it('reprocesar varias veces no mueve ni duplica nada', function () {
         ->and(paInPeriod(paBuild($mayo)))->toBe($first)
         ->and(paInPeriod(paBuild($abril)))->toBe(['ABRIL 2']);
 });
+
+it('los periodos que ya estaban en producción (legado) no cambian: ni se mueve lo suyo ni reciben de otros archivos', function () {
+    $abril = F::period('2026-03-30', '2026-04-26');
+    $mayo = F::period('2026-04-27', '2026-05-24');
+    // Carga "vieja" de Abril con un movimiento del 28 (fuera de periodo con la regla anterior).
+    paImport($abril, F::adminXlsx([['2026-04-02', 1.00, null, 'S/R', 'ABRIL 2', 'CORPORATIVO'], ['2026-04-28', 40.00, null, 'S/R', 'ABRIL 28 VIEJO', 'CORPORATIVO']]));
+    // Simula el estado de producción antes del cambio (migración 2026_11_17_000002).
+    EstadoResultadosMovement::query()->where('concept', 'ABRIL 28 VIEJO')->update(['period_id' => $abril->id, 'in_period' => false]);
+    EstadoResultadosMovement::query()->update(['placement' => MovementPeriodAllocator::LEGADO]);
+    $before = EstadoResultadosMovement::query()->orderBy('id')->get(['id', 'period_id', 'in_period'])->toArray();
+
+    // Archivo nuevo de MAYO subido en Mayo que trae un día de Abril (legado): no entra a Abril.
+    $up = paImport($mayo, F::adminXlsx([['2026-04-20', 7.00, null, 'S/R', 'DIA DE ABRIL EN ARCHIVO MAYO', 'CORPORATIVO'], ['2026-05-03', 9.00, null, 'S/R', 'MAYO 3', 'CORPORATIVO']]));
+
+    expect(EstadoResultadosMovement::query()->whereIn('id', array_column($before, 'id'))->orderBy('id')->get(['id', 'period_id', 'in_period'])->toArray())->toBe($before)
+        ->and(paInPeriod(paBuild($abril)))->toBe(['ABRIL 2'])
+        ->and(paInPeriod(paBuild($mayo)))->toBe(['MAYO 3'])
+        ->and(implode(' ', $up->fresh()->warnings))->toContain('ya estaba cargado antes')
+        ->and(EstadoResultadosMovement::query()->whereIn('id', array_column($before, 'id'))->orderBy('id')->get(['id', 'period_id', 'in_period'])->toArray())->toBe($before);
+});

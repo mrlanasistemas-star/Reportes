@@ -31,6 +31,7 @@ class MovementClassifier
                 'duplicado' => 'Este mismo movimiento ya viene en otro archivo cargado: se cuenta una sola vez, en el periodo de su fecha.',
                 'sin_periodo' => 'La fecha del movimiento no pertenece a ningún periodo mensual creado; se sumará cuando exista ese periodo.',
                 'periodo_cerrado' => 'La fecha del movimiento cae en un periodo ya aprobado; no se suma para no alterar la versión aprobada.',
+                'periodo_existente' => 'La fecha del movimiento cae en un periodo que ya estaba cargado antes; ese periodo no se modifica.',
                 default => 'La fecha del movimiento no cae dentro del periodo; se considera en el periodo al que pertenece.',
             });
         }

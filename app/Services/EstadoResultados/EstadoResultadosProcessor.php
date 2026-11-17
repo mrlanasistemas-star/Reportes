@@ -425,6 +425,7 @@ class EstadoResultadosProcessor
             MovementPeriodAllocator::DUPLICADO => 'duplicado_otro_archivo',
             MovementPeriodAllocator::SIN_PERIODO => 'sin_periodo_mensual',
             MovementPeriodAllocator::PERIODO_CERRADO => 'periodo_destino_aprobado',
+            MovementPeriodAllocator::PERIODO_EXISTENTE => 'periodo_destino_existente',
             default => null,
         };
     }

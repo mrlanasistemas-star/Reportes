@@ -480,6 +480,7 @@ class EstadoResultadosUploadService
                 MovementPeriodAllocator::PERIODO => "{$n} movimiento(s) tienen fecha de {$b['label']}: se suman en ese periodo, no en {$period->label}.",
                 MovementPeriodAllocator::DUPLICADO => "{$n} movimiento(s) ya vienen en otro archivo cargado: se cuentan una sola vez (no se duplican).",
                 MovementPeriodAllocator::PERIODO_CERRADO => "{$n} movimiento(s) caen en un periodo ya aprobado: no se suman.",
+                MovementPeriodAllocator::PERIODO_EXISTENTE => "{$n} movimiento(s) caen en un periodo que ya estaba cargado antes: ese periodo no se modifica y no se suman.",
                 default => "{$n} movimiento(s) tienen fecha sin periodo mensual creado: se sumarán solos cuando exista ese periodo.",
             };
         }
