@@ -9,10 +9,12 @@ export type ErTabKey =
     | 'revision'
     | 'fuera'
     | 'ajustes'
+    | 'gastos_financieros'
     | 'indicadores'
     | 'fuentes'
     | 'validacion'
-    | 'control';
+    | 'control'
+    | 'catalogo';
 
 const TABS: string[] = [
     'resumen',
@@ -22,10 +24,12 @@ const TABS: string[] = [
     'revision',
     'fuera',
     'ajustes',
+    'gastos_financieros',
     'indicadores',
     'fuentes',
     'validacion',
     'control',
+    'catalogo',
 ];
 const MODES: CompMode[] = [
     'anterior',

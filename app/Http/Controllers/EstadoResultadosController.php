@@ -134,19 +134,33 @@ class EstadoResultadosController extends Controller
         $this->lock->assertUnlocked($period);
         $data = $request->validate([
             'slot' => ['required', 'in:'.implode(',', array_keys(EstadoResultadosUploadService::SLOTS))],
+            // 20-nov-2026: cada cuenta admite archivo 1 (obligatorio) y archivo 2 (opcional).
+            'part' => ['nullable', 'integer', 'in:'.implode(',', array_keys(EstadoResultadosUploadService::PARTS))],
             'file' => ['required', 'file'],
         ], [
             'slot.required' => 'Elige la cuenta del estado de cuenta.',
             'slot.in' => 'Cuenta no válida.',
+            'part.integer' => 'Elige «Archivo 1» o «Archivo 2» de la cuenta.',
+            'part.in' => 'Elige «Archivo 1» o «Archivo 2» de la cuenta.',
             'file.required' => 'Selecciona el archivo del estado de cuenta.',
             'file.file' => 'No se recibió el archivo completo. Vuelve a intentarlo.',
         ]);
+        $part = (int) ($data['part'] ?? 1);
 
         try {
             // Extensión, contenido, tamaño, estructura y celdas se validan en el servicio
             // para que TODO rechazo quede registrado como intento con sus errores por fila.
-            $upload = $service->upload($period, $data['file'], $data['slot'], $request->user()?->id);
+            $upload = $service->upload($period, $data['file'], $data['slot'], $request->user()?->id, $part);
         } catch (EstadoResultadosDuplicateUploadException $e) {
+            if ($e->existing->account_slot === $data['slot'] && (int) ($e->existing->file_part ?? 1) !== $part) {
+                // El mismo archivo no puede ser a la vez el archivo 1 y el 2 de la cuenta.
+                return response()->json([
+                    'message' => 'Ese archivo ya está cargado como «Archivo '.(int) ($e->existing->file_part ?? 1).'» de esta cuenta. El otro archivo debe ser un estado de cuenta distinto.',
+                    'details' => ['No se duplicó ningún movimiento.'],
+                    'errors' => [],
+                    'attempt_id' => $e->attemptId(),
+                ], 422);
+            }
             if ($e->existing->account_slot === $data['slot']) {
                 // Reintento idempotente: mismo archivo, misma cuenta → no se duplica nada.
                 return response()->json([
@@ -165,7 +179,29 @@ class EstadoResultadosController extends Controller
         return response()->json([
             'message' => 'Archivo cargado: '.$upload->movements_count.' movimientos. Presiona "Procesar conciliación" para conciliar y clasificar.',
             'idempotent' => false,
-            'upload' => ['id' => $upload->id, 'warnings' => $upload->warnings ?? [], 'control_ok' => $upload->control_ok],
+            'upload' => ['id' => $upload->id, 'part' => (int) $upload->file_part, 'warnings' => $upload->warnings ?? [], 'control_ok' => $upload->control_ok],
+        ]);
+    }
+
+    /**
+     * Quita el «Archivo 2 (opcional)» de una cuenta (20-nov-2026). El archivo 1 es obligatorio
+     * y sólo se sustituye. La carga queda en el historial como reemplazada.
+     */
+    public function removeUploadPart(Request $request, Period $period, string $slot, int $part, EstadoResultadosUploadService $service): JsonResponse
+    {
+        $this->ensureMonthly($period);
+        $this->dataScope->requireGeneral($request->user(), 'Quitar un estado de cuenta del Estado de Resultados');
+        $this->lock->assertUnlocked($period);
+
+        try {
+            $upload = $service->removePart($period, $slot, $part, $request->user()?->id);
+        } catch (EstadoResultadosImportException $e) {
+            return $this->importError($e);
+        }
+
+        return response()->json([
+            'message' => 'Se quitó el archivo 2 «'.$upload->original_name.'» de '.(EstadoResultadosUploadService::SLOTS[$slot] ?? $slot).'. Queda en el historial y sus movimientos ya no cuentan. Presiona "Procesar conciliación" para volver a cruzar la cuenta.',
+            'upload' => ['id' => $upload->id, 'part' => (int) $upload->file_part],
         ]);
     }
 

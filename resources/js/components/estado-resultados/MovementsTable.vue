@@ -756,6 +756,15 @@ function erpHint(m: Movement): string | null {
                                 >Clasificado a mano</span
                             >
                             <span
+                                v-else-if="
+                                    m.treatment_source === 'catalogo' &&
+                                    m.concept_label
+                                "
+                                class="mt-0.5 block max-w-[200px] truncate text-[10.5px] font-semibold text-emerald-700 dark:text-emerald-400"
+                                :title="`Catálogo de conceptos: ${m.concept_label}`"
+                                >Catálogo · {{ m.concept_label }}</span
+                            >
+                            <span
                                 v-else-if="hasSuggestion(m)"
                                 class="mt-0.5 flex items-center gap-1 truncate text-[10.5px] text-amber-700 dark:text-amber-400"
                                 ><Sparkles class="size-3 shrink-0" />

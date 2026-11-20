@@ -374,7 +374,7 @@ it('sección de validación: partición completa, totales por destino y diferenc
     $d = raBuild($period);
     $v = $d['validation'];
 
-    expect(array_keys($v))->toBe(['status', 'scope_note', 'criterion', 'totals', 'partition', 'differences', 'radiography', 'integrity', 'eliminations', 'noi', 'unresolved', 'failed_checks'])
+    expect(array_keys($v))->toBe(['status', 'scope_note', 'criterion', 'totals', 'partition', 'differences', 'radiography', 'integrity', 'eliminations', 'noi', 'unresolved', 'failed_checks', 'file_control'])
         ->and($v['partition']['all']['ok'])->toBeTrue()
         ->and($v['partition']['bank']['total'])->toBe('2477.89')
         ->and($v['totals']['source']['total'])->toBe($v['totals']['imported']['total'])

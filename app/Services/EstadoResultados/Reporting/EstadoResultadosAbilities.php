@@ -53,6 +53,8 @@ class EstadoResultadosAbilities
             'clasificar' => $whole('clasificar'),
             'reclasificar' => $whole('clasificar'),
             'ajustes' => $can('ajustes'),
+            // Catálogo de conceptos: global (afecta todas las sucursales) ⇒ sólo acceso general.
+            'catalogo' => $whole('catalogo'),
             'editar_ajustes' => $can('ajustes'),
             'aprobar' => $whole('aprobar'),
             'exportar' => $can('exportar'),

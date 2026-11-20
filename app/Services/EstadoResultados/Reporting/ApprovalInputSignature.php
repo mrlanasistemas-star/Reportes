@@ -3,6 +3,8 @@
 namespace App\Services\EstadoResultados\Reporting;
 
 use App\Models\Period;
+use App\Services\EstadoResultados\Classification\ConceptCatalogService;
+use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use App\Services\EstadoResultados\PeriodDataIds;
 use App\Services\EstadoResultados\Reconciliation\ErpExpenseRepository;
 use App\Services\EstadoResultados\Support\RadiographySummary;
@@ -79,6 +81,11 @@ class ApprovalInputSignature
         foreach (self::FACT_TABLES as $table => $extra) {
             $c['fact.'.$table] = $this->aggregate($table, fn ($q) => $q->whereIn('period_id', $dataIds ?: [0]), $extra);
         }
+        // Catálogo de conceptos: sólo si tiene reglas (las firmas de versiones previas no cambian).
+        $catalog = app(ConceptCatalogService::class)->signature();
+        if ($catalog !== ConceptCatalogService::EMPTY_SIGNATURE) {
+            $c['concept_catalog'] = $catalog;
+        }
         // NOI de corporativo: sólo si el periodo tiene cargas (las firmas de versiones previas no cambian).
         if (Schema::hasTable('estado_resultados_payroll_uploads')) {
             $payroll = DB::table('estado_resultados_payroll_uploads')->where('period_id', $pid)->orderBy('id')
@@ -86,6 +93,12 @@ class ApprovalInputSignature
             if ($payroll !== []) {
                 $c['payroll_uploads'] = $payroll;
             }
+        }
+        // Tablas de amortización (intereses LEROM/BBVA): sólo si hay alguna cargada. Una tabla
+        // nueva o sustituida cambia la firma del periodo cuyos renglones abarca.
+        $amortization = app(FinancialExpenseService::class)->signature($period);
+        if ($amortization !== null) {
+            $c['amortization'] = $amortization;
         }
 
         return ['hash' => hash('sha256', json_encode($c, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION)), 'components' => $c];

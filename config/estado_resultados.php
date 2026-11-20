@@ -122,4 +122,18 @@ return [
         'precalentar' => (bool) env('ER_PRECALENTAR_COMPARATIVAS', true),
         'precalentar_cola' => env('ER_PRECALENTAR_COLA', 'default'),
     ],
+
+    /*
+    | Gastos financieros (20-nov-2026): intereses de créditos (LEROM, BBVA) desde su tabla de
+    | amortización. Sólo el INTERÉS va entre EBIT y EBT; el capital no entra al ER.
+    |  - tolerancia_cuadre: diferencia máxima (pesos) para aceptar interés + capital (+ IVA) = pago;
+    |    si no cuadra se avisa, no se rechaza.
+    |  - tolerancia_dias_banco / tolerancia_importe_banco: para vincular cada pago esperado de la
+    |    tabla con el cargo «CREDITO LEROM/BBVA» del estado de cuenta (sólo evidencia).
+    */
+    'gastos_financieros' => [
+        'tolerancia_cuadre' => env('ER_AMORTIZACION_TOLERANCIA_CUADRE', '0.05'),
+        'tolerancia_dias_banco' => (int) env('ER_AMORTIZACION_TOLERANCIA_DIAS', 3),
+        'tolerancia_importe_banco' => env('ER_AMORTIZACION_TOLERANCIA_IMPORTE', '1.00'),
+    ],
 ];

@@ -10,10 +10,13 @@ use App\Models\EstadoResultados\EstadoResultadosUpload;
 use App\Models\Period;
 use App\Services\EstadoResultados\AdjustmentService;
 use App\Services\EstadoResultados\Classification\ClassificationService;
+use App\Services\EstadoResultados\Classification\ConceptCatalogService;
 use App\Services\EstadoResultados\Classification\ErpOutsideClassifier;
+use App\Services\EstadoResultados\Control\MovementControlService;
 use App\Services\EstadoResultados\EstadoResultadosProcessor;
 use App\Services\EstadoResultados\Import\CorporatePayrollUploadService;
 use App\Services\EstadoResultados\Import\EstadoResultadosUploadService;
+use App\Services\EstadoResultados\Import\MovementPeriodAllocator;
 use App\Services\EstadoResultados\Reconciliation\CorporatePayrollRepository;
 use App\Services\EstadoResultados\Reconciliation\ErpExpenseRepository;
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
@@ -87,6 +90,9 @@ class EstadoResultadosDatasetBuilder
 
     /** @var list<array<string,mixed>> resumen de integridad de las cargas activas */
     private array $activeUploads = [];
+
+    /** Control total por archivo (MovementControlService::fileControl): partición de cada carga que aporta. */
+    private array $fileControl = ['uploads' => [], 'totals' => []];
 
     /** NOI del periodo (mismo universo que Radiografía). */
     private array $noiData = [];
@@ -203,6 +209,7 @@ class EstadoResultadosDatasetBuilder
         $base = $ctx['base'];
         $this->activeUploadTotals = $ctx['active_upload_totals'];
         $this->activeUploads = $ctx['active_uploads'];
+        $this->fileControl = $ctx['file_control'];
         $this->noiData = $ctx['noi'];
         $this->linkedApplied = $ctx['linked_applied'];
         $this->currentErpSignature = $ctx['current_erp_signature'];
@@ -412,14 +419,12 @@ class EstadoResultadosDatasetBuilder
         $currentErpSignature = ErpExpenseRepository::signature($erpRows);
 
         $uploads = EstadoResultadosUpload::query()->active()->where('period_id', $period->id)->orderBy('id')->get()->keyBy('id');
-        $activeUploadTotals = $uploads->map(fn ($u) => (string) Money::of($u->total_cargos)->plus(Money::of($u->total_abonos)))->values()->all();
-        $activeUploads = $uploads->values()->map(fn ($u) => [
-            'slot' => $u->account_slot, 'file' => $u->original_name, 'hash' => $u->file_hash, 'control_ok' => $u->control_ok,
-            'control_cargos' => $u->control_total_cargos !== null ? Money::str2($u->control_total_cargos) : null,
-            'control_abonos' => $u->control_total_abonos !== null ? Money::str2($u->control_total_abonos) : null,
-            'read_cargos' => Money::str2($u->total_cargos), 'read_abonos' => Money::str2($u->total_abonos),
-            'movements' => (int) $u->movements_count,
-        ])->all();
+        // 20-nov-2026: conciliación archivo ↔ importado POR MOVIMIENTO REPARTIDO (no por el periodo
+        // donde se subió la carga). Lado archivo = Σ por archivo que aporta (leído − lo guardado en
+        // otros periodos); la diferencia contra lo importado = filas leídas no guardadas.
+        $fileControl = app(MovementControlService::class)->fileControl($period);
+        $activeUploadTotals = array_map(fn ($u) => $u['period_share']['total'], $fileControl['uploads']);
+        $activeUploads = $fileControl['uploads'];
         // Movimientos del periodo POR FECHA: pueden venir de archivos subidos en otro periodo
         // (estados de cuenta por mes calendario vs. periodos de 4 semanas; 17-nov-2026).
         $movements = EstadoResultadosMovement::query()
@@ -430,7 +435,10 @@ class EstadoResultadosDatasetBuilder
         $foreignUploadIds = $movements->pluck('upload_id')->unique()->diff($uploads->keys())->values()->all();
         $movementUploads = $foreignUploadIds === [] ? $uploads
             : $uploads->union(EstadoResultadosUpload::query()->whereIn('id', $foreignUploadIds)->get()->keyBy('id'));
-        $movByFp = $movements->keyBy('fingerprint');
+        // La copia «duplicado» comparte huella con la que sí cuenta: el índice por huella apunta a la vigente.
+        $movByFp = $movements->toBase()->reject(fn ($m) => $m->placement === MovementPeriodAllocator::DUPLICADO)->keyBy('fingerprint')
+            ->union($movements->toBase()->filter(fn ($m) => $m->placement === MovementPeriodAllocator::DUPLICADO)->keyBy('fingerprint'));
+        $fpCounts = $movements->countBy('fingerprint');
 
         // Lectura tolerante: antes de aplicar la migración 2026_11_06_0000A1 no hay vínculos (se ve como "sin procesar").
         $links = Schema::hasTable('estado_resultados_reconciliation_links')
@@ -444,16 +452,25 @@ class EstadoResultadosDatasetBuilder
         $periodCodes = $recognitionIds ? Period::query()->whereIn('id', $recognitionIds)->pluck('code', 'id')->all() : [];
         $periodCodes[$period->id] = $period->code;
 
+        // Control total (20-nov-2026): para cada copia «duplicado», el archivo y la fila que sí cuentan.
+        $controlSvc = app(MovementControlService::class);
+        $dupWinners = $controlSvc->winnersFor($movements->filter(fn ($m) => $m->placement === MovementPeriodAllocator::DUPLICADO)->pluck('id')->map(fn ($v) => (int) $v)->all());
+        $winnerPeriods = $controlSvc->periodLabels(array_merge(array_column($dupWinners, 'period_id'), $movementUploads->pluck('period_id')->all()));
+
         $items = [];
         foreach ($movements as $m) {
+            // Copia apartada de un movimiento que ya trae otro archivo (p. ej. archivo 1 y 2 de la misma
+            // cuenta): llave propia en el dataset para no repetir huella; no hereda clasificación ni vínculos.
+            $parkedCopy = $m->placement === MovementPeriodAllocator::DUPLICADO && ($fpCounts[$m->fingerprint] ?? 0) > 1;
+            $itemFp = $parkedCopy ? $m->fingerprint.'~dup'.$m->id : $m->fingerprint;
             $processed = $m->processed_at !== null;
             $auto = $processed ? (string) $m->auto_treatment : T::PENDIENTE;
-            $ov = $overrides[$m->fingerprint] ?? null;
+            $ov = $overrides[$itemFp] ?? null;
             $treatment = $ov['treatment'] ?? $auto;
             $detail = (array) ($m->reconciliation_detail ?? []); // el cast JSON se decodifica en cada acceso: una sola vez
             $erpMatches = (array) ($detail['erp'] ?? []);
             $applied = $processed ? Money::str2($m->applied_amount ?? 0) : '0.00';
-            $mLinks = $linksByMovement->get($m->fingerprint, collect());
+            $mLinks = $parkedCopy ? collect() : $linksByMovement->get($m->fingerprint, collect());
             $conciliacion = $mLinks->where('link_kind', 'conciliacion');
             $hint = match (true) {
                 $mLinks->contains('link_kind', 'evidencia_noi') => 'noi',
@@ -465,12 +482,18 @@ class EstadoResultadosDatasetBuilder
             $recPeriodId = $m->recognition_period_id !== null ? (int) $m->recognition_period_id : ($m->in_period ? $period->id : null);
 
             $items[] = [
-                'fingerprint' => $m->fingerprint,
+                'fingerprint' => $itemFp,
                 'source' => 'banco',
                 'account_slot' => $m->account_slot,
                 'account_label' => $upload->account_label ?? null,
                 'file' => $upload->original_name ?? null,
                 'source_row' => (int) $m->source_row,
+                // Control total: carga de origen, dónde lo dejó el reparto por fecha y, si es copia, cuál cuenta.
+                'upload_id' => (int) $m->upload_id,
+                'upload_period_label' => $upload ? ($winnerPeriods[(int) $upload->period_id] ?? null) : null,
+                'placement' => $m->placement,
+                'placement_label' => $m->placement !== null ? (MovementControlService::PLACEMENT_LABELS[$m->placement] ?? $m->placement) : null,
+                'duplicate_of' => isset($dupWinners[$m->id]) ? $dupWinners[$m->id] + ['period_label' => $winnerPeriods[$dupWinners[$m->id]['period_id']] ?? null] : null,
                 'date' => $m->movement_date->format('Y-m-d'),
                 'reference' => $m->bank_reference,
                 'folio' => $m->folio_raw,
@@ -493,6 +516,9 @@ class EstadoResultadosDatasetBuilder
                 'suggested_treatment' => $m->suggested_treatment,
                 'rule_code' => $processed ? $m->rule_code : 'sin_procesar',
                 'rule_reason' => $processed ? $m->reason : 'El periodo tiene archivos cargados sin procesar: presione "Procesar conciliación".',
+                // Catálogo de conceptos: regla que clasificó el movimiento en el último procesamiento.
+                'concept_rule_id' => $processed && $m->concept_rule_id ? (int) $m->concept_rule_id : null,
+                'concept_label' => $processed && $m->concept_rule_id ? $m->concept_label : null,
                 'treatment' => $treatment,
                 'override' => $ov,
                 'needs_review' => $treatment === T::PENDIENTE,
@@ -654,7 +680,7 @@ class EstadoResultadosDatasetBuilder
             $byFp[$i['fingerprint']] = $idx;
         }
         foreach ($items as &$i) {
-            $i['treatment_source'] = $i['override'] ? 'manual' : 'regla';
+            $i['treatment_source'] = $i['override'] ? 'manual' : (($i['concept_rule_id'] ?? null) ? 'catalogo' : 'regla');
             if ($i['override'] || $i['rule_code'] !== 'reembolso_vinculado' || $i['refund_of'] === null) {
                 continue;
             }
@@ -687,11 +713,14 @@ class EstadoResultadosDatasetBuilder
                 'recognizing_hint' => $i['recognizing_hint'],
                 'import' => $i['import_status'],
             ]);
+            // Control total: estado (completado/pendiente/repetido/fuera) y señales de concepto a revisar.
+            $i['control'] = $controlSvc->itemControl($i);
         }
         unset($i);
 
         return [
             'items' => $items,
+            'file_control' => $fileControl,
             'corp_payroll' => $corp,
             'noi' => $noiData,
             'current_erp_signature' => $currentErpSignature,
@@ -935,6 +964,11 @@ class EstadoResultadosDatasetBuilder
                 $key = 'noi_corp';
                 $label = 'NOI de corporativo (percepciones del personal de Corporativo)';
                 $source = 'NOI de corporativo (Estado de Resultados → Fuentes)';
+            } elseif (($i['treatment_source'] ?? null) === 'catalogo' && ($i['concept_label'] ?? null)) {
+                // Catálogo de conceptos: cada concepto del usuario es su propia línea.
+                $key = 'banco|concepto:'.$i['concept_rule_id'];
+                $label = 'Bancos · '.$i['concept_label'];
+                $source = 'Estados de cuenta · Catálogo de conceptos';
             } else {
                 $key = 'banco';
                 $label = 'Pagos complementarios (estados de cuenta)';
@@ -965,8 +999,15 @@ class EstadoResultadosDatasetBuilder
             AdjustmentService::CONFIRMADO_CERO => 'Confirmado en $0.00'.($adj['updated_by'] ? ' por '.$adj['updated_by'] : '').'.',
             default => 'Capturado'.($adj['updated_by'] ? ' por '.$adj['updated_by'] : '').($adj['notes'] ? ' · '.$adj['notes'] : ''),
         };
+        // Intereses de crédito alimentados por la tabla de amortización (sólo el interés; el capital no entra).
+        $fromTable = ($adj['origin'] ?? null) === 'tabla_amortizacion';
+        if ($fromTable) {
+            $hint = (string) ($adj['notes'] ?? 'Interés según la tabla de amortización.');
+        } elseif (isset($adj['amortization']['difference']) && $adj['amortization']['difference'] !== null && ! Money::isZeroCents($adj['amortization']['difference'])) {
+            $hint .= ' · Difiere de la tabla de amortización en $'.number_format((float) $adj['amortization']['difference'], 2).' (tabla: $'.number_format((float) $adj['amortization']['interest'], 2).').';
+        }
 
-        return $this->line('adj_'.$adj['key'], $prefix.$adj['label'], $amount, 'Ajuste contable', $hint, $adj['state']);
+        return $this->line('adj_'.$adj['key'], $prefix.$adj['label'], $amount, $fromTable ? 'Tabla de amortización' : 'Ajuste contable', $hint, $adj['state']);
     }
 
     private function sumLines(array $lines): BigDecimal
@@ -1343,8 +1384,10 @@ class EstadoResultadosDatasetBuilder
         $countWith = fn (array $list, string $key) => count(array_filter($list, fn ($i) => ! Money::isZeroCents($i['amounts'][$key])));
         $bucket = fn (array $list, string $key) => ['count' => $countWith($list, $key), 'amount' => $total($list, $key)];
 
-        $srcCargos = Money::sum(array_column($this->activeUploads, 'read_cargos'));
-        $srcAbonos = Money::sum(array_column($this->activeUploads, 'read_abonos'));
+        // Lado archivo POR MOVIMIENTO REPARTIDO: lo leído de cada archivo que aporta, menos lo que
+        // el reparto por fecha guardó en otros periodos (MovementControlService::fileControl).
+        $srcCargos = Money::sum(array_map(fn ($u) => $u['period_share']['cargos'], $this->activeUploads));
+        $srcAbonos = Money::sum(array_map(fn ($u) => $u['period_share']['abonos'], $this->activeUploads));
         $impCargos = Money::sum(array_column($bank, 'cargo'));
         $impAbonos = Money::sum(array_column($bank, 'abono'));
 
@@ -1394,7 +1437,15 @@ class EstadoResultadosDatasetBuilder
         $stale = $lastRun !== null && $currentSig !== null && $lastRun->erp_signature !== $currentSig;
 
         $partitions = ['bank' => $partition($bank), 'erp' => $partition($erp), 'all' => $partition($items)];
-        $failedChecks = array_values(array_map(fn ($c) => ['key' => $c['key'], 'label' => $c['label'], 'difference' => $c['difference']], array_filter($checks, fn ($c) => ! $c['ok'])));
+        // Cada validación fallida trae los movimientos (o archivos) que la explican, no sólo el importe.
+        $control = app(MovementControlService::class);
+        $failedChecks = array_values(array_map(fn ($c) => ['key' => $c['key'], 'label' => $c['label'], 'difference' => $c['difference']]
+            + $control->itemsForCheck($c['key'], $items, $scoped, $this->fileControl, $this->linkedApplied), array_filter($checks, fn ($c) => ! $c['ok'])));
+        if (! $importOk && ! in_array('particion_bancos', array_column($failedChecks, 'key'), true)) {
+            $failedChecks[] = ['key' => 'import_matches_source', 'label' => 'Lo importado del periodo = lo que los archivos aportan al periodo',
+                'difference' => Money::str2($impCargos->plus($impAbonos)->minus($srcCargos->plus($srcAbonos)))]
+                + $control->itemsForCheck('import_matches_source', $items, $scoped, $this->fileControl);
+        }
 
         /*
          * Cada partida sin resolver declara si BLOQUEA la aprobación (`blocking`) y cuánto sigue
@@ -1408,39 +1459,45 @@ class EstadoResultadosDatasetBuilder
          *    el saldo por pagar es un pasivo, no cambia el resultado.
          */
         $unresolved = [];
-        $addUnresolved = function (string $key, string $label, int $count, string $amount, bool $blocking = true, ?array $openItems = null, ?callable $openAmount = null) use (&$unresolved) {
+        // `listed` = movimientos que componen la partida (para «Ver movimientos»); `extra` = archivos/nota.
+        $addUnresolved = function (string $key, string $label, int $count, string $amount, bool $blocking = true, ?array $openItems = null, ?callable $openAmount = null, ?array $listed = null, array $extra = []) use (&$unresolved, $control) {
             if ($count > 0 || ! Money::isZeroCents($amount)) {
                 $openCount = $openItems === null ? $count : count($openItems);
                 $open = $openItems === null ? $amount : Money::str2(Money::sum(array_map($openAmount, $openItems)));
                 $unresolved[] = ['key' => $key, 'label' => $label, 'count' => $count, 'amount' => $amount,
-                    'blocking' => $blocking && ($openCount > 0 || ! Money::isZeroCents($open)), 'open_count' => $openCount, 'open_amount' => $open];
+                    'blocking' => $blocking && ($openCount > 0 || ! Money::isZeroCents($open)), 'open_count' => $openCount, 'open_amount' => $open,
+                    'items' => $extra['items'] ?? $control->refs($listed ?? $openItems ?? []),
+                    'open_items' => $openItems === null ? null : $control->refs($openItems),
+                    'files' => $extra['files'] ?? [], 'note' => $extra['note'] ?? null];
             }
         };
         $isOpen = fn (array $i) => ($i['override'] ?? null) === null || $i['treatment'] === T::PENDIENTE;
         $cargo = fn (array $i) => $i['cargo'];
         $pendingItems = array_values(array_filter($items, fn ($i) => ! Money::isZeroCents($i['amounts']['pending'])));
-        $addUnresolved('pendientes', 'Movimientos pendientes de clasificar (no suman ni se excluyen)', count($pendingItems), $total($pendingItems, 'pending'));
-        $addUnresolved('diferencia_importe', 'Mismo folio con importe diferente al ERP', $byAmount['count'], $byAmount['amount'], true, array_values(array_filter($byStatus([R::FOLIO_MONTO_DIFERENTE]), $isOpen)), $cargo);
-        $addUnresolved('diferencia_fecha', 'Mismo folio e importe con fecha fuera de tolerancia', $byDate['count'], $byDate['amount'], true, array_values(array_filter($byStatus([R::FOLIO_FECHA_DIFERENTE]), $isOpen)), $cargo);
+        $addUnresolved('pendientes', 'Movimientos pendientes de clasificar (no suman ni se excluyen)', count($pendingItems), $total($pendingItems, 'pending'), true, null, null, $pendingItems);
+        $addUnresolved('diferencia_importe', 'Mismo folio con importe diferente al ERP', $byAmount['count'], $byAmount['amount'], true, array_values(array_filter($byStatus([R::FOLIO_MONTO_DIFERENTE]), $isOpen)), $cargo, $byStatus([R::FOLIO_MONTO_DIFERENTE]));
+        $addUnresolved('diferencia_fecha', 'Mismo folio e importe con fecha fuera de tolerancia', $byDate['count'], $byDate['amount'], true, array_values(array_filter($byStatus([R::FOLIO_FECHA_DIFERENTE]), $isOpen)), $cargo, $byStatus([R::FOLIO_FECHA_DIFERENTE]));
         $addUnresolved('diferencia_folio', 'Folio sin ERP, de otro periodo, ya conciliado o ambiguo', $byFolio['count'], $byFolio['amount'], true,
-            array_values(array_filter($byStatus([R::FOLIO_SIN_ERP, R::FOLIO_OTRO_PERIODO, R::FOLIO_YA_CONCILIADO, R::FOLIO_AMBIGUO, R::POSIBLE_DUPLICADO_ERP]), $isOpen)), $cargo);
+            array_values(array_filter($byStatus([R::FOLIO_SIN_ERP, R::FOLIO_OTRO_PERIODO, R::FOLIO_YA_CONCILIADO, R::FOLIO_AMBIGUO, R::POSIBLE_DUPLICADO_ERP]), $isOpen)), $cargo,
+            $byStatus([R::FOLIO_SIN_ERP, R::FOLIO_OTRO_PERIODO, R::FOLIO_YA_CONCILIADO, R::FOLIO_AMBIGUO, R::POSIBLE_DUPLICADO_ERP]));
         $erpPartial = array_values(array_filter($erp, fn ($i) => $i['erp_payment_status'] === 'erp_pago_parcial'));
-        $addUnresolved('erp_saldo_pendiente', 'Saldo ERP sin pago bancario identificado (pagos parciales)', count($erpPartial), Money::str2(Money::sum(array_map(fn ($i) => $i['erp_payment']['pending'], $erpPartial))), false);
+        $addUnresolved('erp_saldo_pendiente', 'Saldo ERP sin pago bancario identificado (pagos parciales)', count($erpPartial), Money::str2(Money::sum(array_map(fn ($i) => $i['erp_payment']['pending'], $erpPartial))), false, null, null, $erpPartial);
         $addUnresolved('traspasos_sin_contraparte', 'Traspasos entre cuentas sin contraparte en la otra cuenta', count($unpairedTraspasos), $gross($unpairedTraspasos), true,
-            array_values(array_filter($unpairedTraspasos, $isOpen)), fn ($i) => $i['amounts']['gross']);
+            array_values(array_filter($unpairedTraspasos, $isOpen)), fn ($i) => $i['amounts']['gross'], $unpairedTraspasos);
         if ($this->corpData['upload'] !== null) {
             // NOI de corporativo: posibles dobles conteos (regla en appendCorporatePayroll()).
             $corpBankErp = array_values(array_filter($items, fn ($i) => in_array($i['source'], ['banco', 'erp'], true) && $i['in_period'] && $i['treatment'] === T::NOMINA_CORPORATIVA));
             $addUnresolved('noi_corporativo_doble_conteo', 'Nómina corporativa desde bancos/ERP además del NOI de corporativo: confirma con una clasificación manual que no es el mismo pago', count($corpBankErp), Money::str2(Money::sum(array_map(fn ($i) => $i['impact']['amount'], $corpBankErp))), true,
-                array_values(array_filter($corpBankErp, fn ($i) => ($i['override'] ?? null) === null)), fn ($i) => $i['impact']['amount']);
+                array_values(array_filter($corpBankErp, fn ($i) => ($i['override'] ?? null) === null)), fn ($i) => $i['impact']['amount'], $corpBankErp);
             $corpInBranch = array_values(array_filter($items, fn ($i) => $i['source'] === 'noi_corp' && $i['rule_code'] === 'nomina_corporativa_ya_en_noi_sucursales' && $i['treatment'] === T::CUBIERTO_RADIOGRAFIA));
-            $addUnresolved('noi_corporativo_en_noi_sucursales', 'Colaboradores del NOI de corporativo que ya están en el NOI de sucursales (Radiografía ya los suma: no se cuentan otra vez)', count($corpInBranch), $total($corpInBranch, 'gross'), false);
+            $addUnresolved('noi_corporativo_en_noi_sucursales', 'Colaboradores del NOI de corporativo que ya están en el NOI de sucursales (Radiografía ya los suma: no se cuentan otra vez)', count($corpInBranch), $total($corpInBranch, 'gross'), false, null, null, $corpInBranch);
         }
         if (! ($radiography['base_ok'] ?? true)) {
             $addUnresolved('radiografia_no_explicada', 'Diferencia NO explicada contra Radiografía', 1, (string) $radiography['difference_base']);
         }
         foreach ($failedChecks as $fc) {
-            $addUnresolved('control_'.$fc['key'], 'Validación con diferencia: '.$fc['label'], 1, $fc['difference']);
+            $addUnresolved('control_'.$fc['key'], 'Validación con diferencia: '.$fc['label'], 1, $fc['difference'], true, null, null, null,
+                ['items' => $fc['items'] ?? [], 'files' => $fc['files'] ?? [], 'note' => $fc['note'] ?? null]);
         }
 
         $noi = $this->noiData;
@@ -1451,7 +1508,7 @@ class EstadoResultadosDatasetBuilder
             'scope_note' => $consolidated ? null : 'Las validaciones de partición cubren todos los movimientos del periodo (no sólo los de la sucursal).',
             'criterion' => Dimensions::criterion(),
             'totals' => [
-                'source' => ['count' => array_sum(array_column($this->activeUploads, 'movements')), 'cargos' => Money::str2($srcCargos), 'abonos' => Money::str2($srcAbonos), 'total' => Money::str2($srcCargos->plus($srcAbonos))],
+                'source' => ['count' => array_sum(array_map(fn ($u) => $u['period_share']['count'], $this->activeUploads)), 'cargos' => Money::str2($srcCargos), 'abonos' => Money::str2($srcAbonos), 'total' => Money::str2($srcCargos->plus($srcAbonos))],
                 'imported' => ['count' => count($bank), 'cargos' => Money::str2($impCargos), 'abonos' => Money::str2($impAbonos), 'total' => Money::str2($impCargos->plus($impAbonos))],
                 'erp_outside' => ['count' => count($erp), 'total' => $total($erp, 'gross')],
                 'conciliated' => $bucket($items, 'conciliated'),
@@ -1470,7 +1527,7 @@ class EstadoResultadosDatasetBuilder
             'integrity' => [
                 'status' => $uploadsOk && $importOk && ! $stale ? 'ok' : 'con_incidencias',
                 'import_matches_source' => $importOk,
-                'uploads' => $this->activeUploads,
+                'uploads' => array_map(fn ($u) => array_intersect_key($u, array_flip(['upload_id', 'slot', 'file', 'hash', 'control_ok', 'control_cargos', 'control_abonos', 'read_cargos', 'read_abonos', 'movements', 'own', 'upload_period'])), $this->activeUploads),
                 'erp_signature' => $currentSig,
                 'erp_signature_last_run' => $lastRun?->erp_signature,
                 'erp_stale' => $stale,
@@ -1495,6 +1552,8 @@ class EstadoResultadosDatasetBuilder
             ],
             'unresolved' => $unresolved,
             'failed_checks' => $failedChecks,
+            // Control total (20-nov-2026): partición completa de cada archivo que aporta al periodo.
+            'file_control' => $this->fileControl,
         ];
     }
 
@@ -1601,6 +1660,8 @@ class EstadoResultadosDatasetBuilder
                     ])->all()
                 : [],
             'unprocessed' => EstadoResultadosMovement::query()->where('period_id', $period->id)->whereNull('processed_at')->exists(),
+            // Firma vigente del catálogo de conceptos (si difiere de la del último procesamiento: reprocesar).
+            'catalog_signature' => app(ConceptCatalogService::class)->signature(),
             'exports' => EstadoResultadosExport::query()->with('user:id,name')
                 ->where('period_id', $period->id)->latest('id')->limit(15)->get()
                 ->map(fn ($e) => [
@@ -1615,35 +1676,61 @@ class EstadoResultadosDatasetBuilder
         ['erp_count' => $erpCount, 'noi_count' => $noiCount, 'imss_count' => $imssCount, 'summary' => $summary,
             'last_run' => $lastRun, 'current_sig' => $currentSig, 'uploads' => $uploads] = $shared;
         $slots = [];
+        $uploadPayload = fn (EstadoResultadosUpload $active, int $pendingReview) => [
+            'id' => $active->id, 'part' => (int) ($active->file_part ?? 1), 'name' => $active->original_name, 'account' => $active->account_label, 'hash' => $active->file_hash,
+            'movements' => $active->movements_count, 'detail_lines' => $active->detail_lines_count, 'out_of_period' => $active->out_of_period_count,
+            'total_cargos' => Money::str2($active->total_cargos), 'total_abonos' => Money::str2($active->total_abonos),
+            'control_ok' => $active->control_ok, 'warnings' => $active->warnings ?? [],
+            // Avisos clasificados (informativa | bloqueante) y ciclo de vida del archivo.
+            'warnings_detail' => $active->warningsDetailed(),
+            'blocking_warnings' => $active->blockingWarningsList(),
+            'lifecycle' => $lifecycle = EstadoResultadosUpload::lifecycleFor((string) $active->status, $active->control_ok, $active->status === EstadoResultadosUpload::STATUS_PROCESSED, $pendingReview, count($active->blockingWarningsList())),
+            'lifecycle_label' => EstadoResultadosUpload::lifecycleLabel($lifecycle),
+            'first_date' => $active->first_movement_date?->format('Y-m-d'), 'last_date' => $active->last_movement_date?->format('Y-m-d'),
+            'uploaded_by' => $active->uploader?->name, 'uploaded_at' => $active->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
+        ];
         foreach (EstadoResultadosUploadService::SLOTS as $slot => $label) {
-            $active = $uploads->first(fn ($u) => $u->account_slot === $slot && $u->status !== EstadoResultadosUpload::STATUS_REPLACED);
+            // 20-nov-2026: cada cuenta tiene archivo 1 (obligatorio) y archivo 2 (opcional).
+            $activeParts = [];
+            foreach (array_keys(EstadoResultadosUploadService::PARTS) as $part) {
+                $activeParts[$part] = $uploads->first(fn ($u) => $u->account_slot === $slot && (int) ($u->file_part ?? 1) === $part && $u->status !== EstadoResultadosUpload::STATUS_REPLACED);
+            }
+            $active = $activeParts[1] ?? null;
+            $loaded = array_values(array_filter($activeParts));
             $pendingReview = count(array_filter($items, fn ($i) => $i['account_slot'] === $slot && $i['in_period'] && $i['treatment'] === T::PENDIENTE));
+            // La cuenta está lista con el archivo 1; el archivo 2, si existe, también debe estar procesado y cuadrar.
             $status = match (true) {
                 ! $active => 'pendiente',
-                $active->status === EstadoResultadosUpload::STATUS_LOADED => 'cargado',
-                $active->control_ok === false || $pendingReview > 0 => 'con_incidencias',
+                array_filter($loaded, fn ($u) => $u->status === EstadoResultadosUpload::STATUS_LOADED) !== [] => 'cargado',
+                array_filter($loaded, fn ($u) => $u->control_ok === false) !== [] || $pendingReview > 0 => 'con_incidencias',
                 default => 'procesado',
             };
+            $parts = [];
+            foreach (EstadoResultadosUploadService::PARTS as $part => $partLabel) {
+                $u = $activeParts[$part];
+                $parts[] = [
+                    'part' => $part,
+                    'label' => $partLabel,
+                    'required' => $part !== EstadoResultadosUploadService::OPTIONAL_PART,
+                    'status' => match (true) {
+                        ! $u => $part === EstadoResultadosUploadService::OPTIONAL_PART ? 'opcional' : 'pendiente',
+                        $u->status === EstadoResultadosUpload::STATUS_LOADED => 'cargado',
+                        $u->control_ok === false || count($u->blockingWarningsList()) > 0 => 'con_incidencias',
+                        default => 'procesado',
+                    },
+                    'upload' => $u ? $uploadPayload($u, $pendingReview) : null,
+                ];
+            }
             $slots[] = [
                 'key' => $slot,
                 'label' => $label,
                 'status' => $status,
-                'upload' => $active ? [
-                    'id' => $active->id, 'name' => $active->original_name, 'account' => $active->account_label, 'hash' => $active->file_hash,
-                    'movements' => $active->movements_count, 'detail_lines' => $active->detail_lines_count, 'out_of_period' => $active->out_of_period_count,
-                    'total_cargos' => Money::str2($active->total_cargos), 'total_abonos' => Money::str2($active->total_abonos),
-                    'control_ok' => $active->control_ok, 'warnings' => $active->warnings ?? [],
-                    // Avisos clasificados (informativa | bloqueante) y ciclo de vida del archivo.
-                    'warnings_detail' => $active->warningsDetailed(),
-                    'blocking_warnings' => $active->blockingWarningsList(),
-                    'lifecycle' => $lifecycle = EstadoResultadosUpload::lifecycleFor((string) $active->status, $active->control_ok, $active->status === EstadoResultadosUpload::STATUS_PROCESSED, $pendingReview, count($active->blockingWarningsList())),
-                    'lifecycle_label' => EstadoResultadosUpload::lifecycleLabel($lifecycle),
-                    'first_date' => $active->first_movement_date?->format('Y-m-d'), 'last_date' => $active->last_movement_date?->format('Y-m-d'),
-                    'uploaded_by' => $active->uploader?->name, 'uploaded_at' => $active->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
-                ] : null,
+                // `upload` = archivo 1 (compatibilidad); `parts` = archivo 1 y archivo 2.
+                'upload' => $active ? $uploadPayload($active, $pendingReview) : null,
+                'parts' => $parts,
                 'pending_review' => $pendingReview,
                 'history' => $uploads->where('account_slot', $slot)->values()->map(fn ($u) => [
-                    'id' => $u->id, 'name' => $u->original_name, 'status' => $u->status, 'hash' => substr($u->file_hash, 0, 12),
+                    'id' => $u->id, 'part' => (int) ($u->file_part ?? 1), 'name' => $u->original_name, 'status' => $u->status, 'hash' => substr($u->file_hash, 0, 12),
                     'lifecycle' => $u->status === EstadoResultadosUpload::STATUS_REPLACED ? EstadoResultadosUpload::LIFECYCLE_REEMPLAZADO : ($u->lifecycle ?? null),
                     'movements' => $u->movements_count, 'uploaded_by' => $u->uploader?->name,
                     'uploaded_at' => $u->created_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
@@ -1659,6 +1746,8 @@ class EstadoResultadosDatasetBuilder
         $hasBank = $uploads->contains(fn ($u) => $u->status !== EstadoResultadosUpload::STATUS_REPLACED)
             || array_filter($items, fn ($i) => ($i['source'] ?? null) === 'banco') !== [];
         $stale = $lastRun && $lastRun->status === 'ok' && $lastRun->erp_signature !== $currentSig;
+        $staleCatalog = $lastRun && $lastRun->status === 'ok'
+            && ($lastRun->summary['catalogo']['firma'] ?? ConceptCatalogService::EMPTY_SIGNATURE) !== ($shared['catalog_signature'] ?? ConceptCatalogService::EMPTY_SIGNATURE);
         $unprocessed = $shared['unprocessed'];
         $diag = $shared['diagnosis'] ?? [];
 
@@ -1691,13 +1780,14 @@ class EstadoResultadosDatasetBuilder
             ],
             'procesamiento' => [
                 'label' => 'Conciliación y clasificación',
-                'status' => ! $hasBank ? 'pendiente' : ($unprocessed || ! $lastRun ? 'cargado' : ($stale || $lastRun->status !== 'ok' ? 'con_incidencias' : 'procesado')),
+                'status' => ! $hasBank ? 'pendiente' : ($unprocessed || ! $lastRun ? 'cargado' : ($stale || $staleCatalog || $lastRun->status !== 'ok' ? 'con_incidencias' : 'procesado')),
                 'last_run' => $lastRun ? [
                     'status' => $lastRun->status, 'user' => $lastRun->user?->name,
                     'at' => $lastRun->finished_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
                     'summary' => $lastRun->summary, 'error' => $lastRun->error, 'rules_version' => $lastRun->rules_version,
                 ] : null,
                 'stale_erp' => $stale,
+                'stale_catalog' => $hasBank && $staleCatalog,
                 'unprocessed' => $unprocessed,
             ],
             'exportaciones' => $shared['exports'],
@@ -1748,6 +1838,7 @@ class EstadoResultadosDatasetBuilder
         $i['treatment_group'] = T::group($i['treatment']);
         $i['treatment_explain'] = T::explain($i['treatment']);
         $i['suggested_label'] = $i['suggested_treatment'] ? T::label($i['suggested_treatment']) : null;
+        $i += ['concept_rule_id' => null, 'concept_label' => null];
 
         $rec = $i['recognition'];
         $i['dimensions'] = Dimensions::present($i['dimensions_raw'], [

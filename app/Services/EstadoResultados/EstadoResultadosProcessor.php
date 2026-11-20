@@ -7,6 +7,7 @@ use App\Models\EstadoResultados\EstadoResultadosReconciliationLink;
 use App\Models\EstadoResultados\EstadoResultadosRun;
 use App\Models\EstadoResultados\EstadoResultadosUpload;
 use App\Models\Period;
+use App\Services\EstadoResultados\Classification\ConceptCatalogService;
 use App\Services\EstadoResultados\Classification\MovementClassifier;
 use App\Services\EstadoResultados\Import\MovementPeriodAllocator;
 use App\Services\EstadoResultados\Reconciliation\ErpExpenseRepository;
@@ -153,11 +154,20 @@ class EstadoResultadosProcessor
         }
 
         $periodStart = $period->start_date->format('Y-m-d');
+
+        // Catálogo de conceptos (global): se lee UNA vez por corrida y su firma queda en el resumen;
+        // si después cambia una regla, el periodo se marca desactualizado hasta reprocesar.
+        $catalog = app(ConceptCatalogService::class);
+        $catalogRules = $catalog->activeRules();
+        $catalogSignature = $catalog->signature($catalogRules);
+        $this->classifier->useCatalog($catalogRules);
+        $hasConceptColumns = Schema::hasColumn('estado_resultados_movements', 'concept_rule_id');
+        $catalogHits = ['movimientos' => 0, 'conflictos' => 0];
         $now = now();
         $counts = ['por_tratamiento' => [], 'por_conciliacion' => [], 'por_inclusion' => [], 'por_tipo_emparejamiento' => []];
         $links = [];
 
-        DB::transaction(function () use ($period, $run, $movements, $uploads, $rec, $allocByMovement, $erpByFp, $reversals, $pairs, $noi, $refunds, $refundTargets, $periodStart, $now, &$counts, &$links) {
+        DB::transaction(function () use ($period, $run, $movements, $uploads, $rec, $allocByMovement, $erpByFp, $reversals, $pairs, $noi, $refunds, $refundTargets, $periodStart, $now, $hasConceptColumns, &$counts, &$links, &$catalogHits) {
             // Candado a nivel BD (además del Cache::lock): serializa escrituras del periodo y
             // vuelve a revisar que nadie haya aprobado mientras se calculaba la conciliación.
             app(PeriodLockGuard::class)->lockForWrite($period);
@@ -173,6 +183,7 @@ class EstadoResultadosProcessor
                 $input = $this->movementInput($m) + [
                     'concept' => $m->concept, 'observations' => $m->observations, 'bank_reference' => $m->bank_reference,
                     'abono' => $m->abono, 'in_period' => $m->in_period, 'sucursal_raw' => $m->sucursal_raw, 'placement' => $m->placement,
+                    'beneficiary' => $m->beneficiary, 'concept_gasto' => $m->concept_gasto,
                 ];
                 $r = $rec['results'][$fp] ?? null;
                 $c = $this->classifier->classify($input, $r);
@@ -266,7 +277,18 @@ class EstadoResultadosProcessor
                     'refund_status' => $refund['status'] ?? null,
                     'noi_employee_id' => $noiEmployee['employee_id'] ?? null,
                     'dimensions_version' => Dimensions::VERSION,
-                ])->save();
+                ]);
+                // Concepto del catálogo SÓLO si la regla de catálogo quedó como resultado final
+                // (un reverso o la evidencia NOI la pueden sustituir).
+                $conceptRule = str_starts_with((string) $c['rule'], ConceptCatalogService::RULE_PREFIX) ? ($c['concept_rule'] ?? null) : null;
+                if ($hasConceptColumns) {
+                    $m->forceFill(['concept_rule_id' => $conceptRule['id'] ?? null, 'concept_label' => $conceptRule['name'] ?? null]);
+                }
+                if ($conceptRule !== null) {
+                    $catalogHits['movimientos']++;
+                    $catalogHits['conflictos'] += $conceptRule['conflicts'] !== [] ? 1 : 0;
+                }
+                $m->save();
 
                 // ── Vínculos con evidencia ─────────────────────────────────
                 foreach ($allocByMovement[$fp] ?? [] as $a) {
@@ -334,7 +356,8 @@ class EstadoResultadosProcessor
 
         return [
             'erp_signature' => $erpSignature,
-            'input_signature' => hash('sha256', implode(',', $input).'#'.$erpSignature.'#'.config('estado_resultados.rules_version').'#'.config('estado_resultados.reconocimiento.version')),
+            'input_signature' => hash('sha256', implode(',', $input).'#'.$erpSignature.'#'.config('estado_resultados.rules_version').'#'.config('estado_resultados.reconocimiento.version')
+                .($catalogSignature !== ConceptCatalogService::EMPTY_SIGNATURE ? '#'.$catalogSignature : '')),
             'summary' => [
                 'movimientos' => $movements->count(),
                 'erp_filas' => count($erpRows),
@@ -345,6 +368,7 @@ class EstadoResultadosProcessor
                 'vinculos' => count($links),
                 'noi' => ['colaboradores' => $noi['employees_count'], 'total' => $noi['total'], 'sin_sucursal_operativa' => $noi['unassigned_total']],
                 'criterio_reconocimiento' => (string) config('estado_resultados.reconocimiento.version'),
+                'catalogo' => ['reglas' => count($catalogRules), 'firma' => $catalogSignature] + $catalogHits,
             ] + $counts,
         ];
     }

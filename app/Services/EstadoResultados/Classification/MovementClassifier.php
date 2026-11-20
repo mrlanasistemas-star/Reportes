@@ -5,7 +5,6 @@ namespace App\Services\EstadoResultados\Classification;
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
 use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\Treatment as T;
-use Illuminate\Support\Str;
 
 /**
  * Reglas AUTOMÁTICAS de clasificación de movimientos complementarios.
@@ -19,6 +18,24 @@ use Illuminate\Support\Str;
  */
 class MovementClassifier
 {
+    /**
+     * Reglas activas del catálogo de conceptos (ConceptCatalogService::activeRules()). El
+     * procesador las carga una vez por corrida. Ganan sobre las reglas automáticas por texto,
+     * nunca sobre: fuera de periodo/duplicado, traspaso entre cuentas propias, conciliación con
+     * ERP (total o parcial), duplicado UUID ni folios con diferencias contra el ERP.
+     *
+     * @var list<array<string,mixed>>
+     */
+    private array $catalog = [];
+
+    /** @param  list<array<string,mixed>>  $rules */
+    public function useCatalog(array $rules): static
+    {
+        $this->catalog = $rules;
+
+        return $this;
+    }
+
     /**
      * @param  array<string,mixed>  $m  movimiento (columnas de estado_resultados_movements)
      * @param  array<string,mixed>|null  $rec  resultado del reconciliador (sólo cargos en periodo)
@@ -51,7 +68,7 @@ class MovementClassifier
         }
 
         if (! $isCargo) {
-            return $this->classifyAbono($concept, $text);
+            return $this->fromCatalog($m) ?? $this->classifyAbono($concept, $text);
         }
 
         // ── Cargos: primero el resultado de conciliación contra ERP ──────
@@ -70,6 +87,10 @@ class MovementClassifier
         }
         if (in_array($status, R::REVISION, true)) {
             return $this->out(T::PENDIENTE, $this->suggestForCargo($concept, $kind, $m), $status, (string) $rec['message'], true);
+        }
+
+        if ($catalog = $this->fromCatalog($m)) {
+            return $catalog;
         }
 
         return $this->classifyCargo($concept, $text, $kind, $m, $status, $rec);
@@ -118,7 +139,7 @@ class MovementClassifier
         }
         // Servicio de deuda bancaria: el pago completo NO es gasto financiero.
         if (preg_match('/CREDITO (LEROM|BBVA)|PAGO \d+ CREDITO|AMORTIZACION (DE )?CREDITO/', $concept)) {
-            return $this->out(T::CAPITAL_DEUDA, null, 'servicio_deuda', 'Pago a acreedor ('.($m['concept'] ?? '').'). El capital no es gasto; los intereses se capturan en Ajustes (Intereses BBVA/LEROM) para no meter el pago completo como gasto financiero.');
+            return $this->out(T::CAPITAL_DEUDA, null, 'servicio_deuda', 'Pago a acreedor ('.($m['concept'] ?? '').'). El capital no es gasto; sólo los intereses entran entre EBIT y EBT, tomados de la tabla de amortización del crédito (pestaña «Gastos financieros»); el pago completo nunca se registra como gasto financiero.');
         }
         // Pólizas cobradas por cuenta de terceros.
         if (preg_match('/POLIZAS? (CRECE|GRUPAL|GALNAG)|PAGO POLIZAS GALNAG/', $concept)) {
@@ -191,11 +212,20 @@ class MovementClassifier
         return (bool) preg_match('/\bDG\b|DIRECCION GENERAL/', $concept);
     }
 
+    /** Regla del catálogo de conceptos que gana para el movimiento (null = ninguna coincide). */
+    private function fromCatalog(array $m): ?array
+    {
+        if ($this->catalog === []) {
+            return null;
+        }
+        $hit = ConceptCatalogService::match($m, $this->catalog);
+
+        return $hit['rule'] !== null ? ConceptCatalogService::outcome($hit['rule'], $hit['others']) : null;
+    }
+
     private function norm(?string $v): string
     {
-        $v = mb_strtoupper(Str::ascii(trim((string) $v)));
-
-        return preg_replace('/\s+/', ' ', $v) ?? $v;
+        return ConceptCatalogService::normalize($v);
     }
 
     private function out(string $treatment, ?string $suggested, string $rule, string $reason, bool $review = false): array

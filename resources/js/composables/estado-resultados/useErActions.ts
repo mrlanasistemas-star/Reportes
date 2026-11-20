@@ -47,6 +47,8 @@ export function useErActions(ctx: Ctx) {
 
     const processing = ref(false);
     const uploadingSlot = ref<string | null>(null);
+    /** Archivo de la cuenta en curso: 1 (obligatorio) o 2 (opcional). */
+    const uploadingPart = ref<number | null>(null);
     /** Sube con cada intento de carga (éxito o rechazo) para refrescar la bitácora. */
     const uploadSeq = ref(0);
     const classifying = ref(false);
@@ -112,7 +114,7 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
-    async function upload(slot: string, file: File): Promise<void> {
+    async function upload(slot: string, file: File, part = 1): Promise<void> {
         if (!(await guard())) {
             return;
         }
@@ -144,6 +146,7 @@ export function useErActions(ctx: Ctx) {
         }
 
         uploadingSlot.value = slot;
+        uploadingPart.value = part;
 
         if (slot === 'noi_corporativo') {
             // NOI de corporativo: fuente propia del ER. Sólo inserta ESTE archivo; no hay que procesar la conciliación.
@@ -181,6 +184,7 @@ export function useErActions(ctx: Ctx) {
                 await showError(e, 'El NOI de corporativo no se cargó');
             } finally {
                 uploadingSlot.value = null;
+                uploadingPart.value = null;
                 uploadSeq.value++;
             }
 
@@ -188,13 +192,14 @@ export function useErActions(ctx: Ctx) {
         }
 
         busy(
-            'Validando archivo…',
+            part === 2 ? 'Validando archivo 2…' : 'Validando archivo…',
             `Revisamos "${file.name}" completo antes de guardarlo: columnas, fechas y totales de control.`,
         );
 
         try {
             const form = new FormData();
             form.append('slot', slot);
+            form.append('part', String(part));
             form.append('file', file);
             const res = await apiJson<{
                 message: string;
@@ -236,6 +241,49 @@ export function useErActions(ctx: Ctx) {
             await showError(e, 'El archivo no se cargó');
         } finally {
             uploadingSlot.value = null;
+            uploadingPart.value = null;
+            uploadSeq.value++;
+        }
+    }
+
+    /** Quita el archivo 2 (opcional) de una cuenta; la confirmación la pide la tarjeta. */
+    async function removePart(slot: string, part: number): Promise<void> {
+        if (!(await guard())) {
+            return;
+        }
+
+        uploadingSlot.value = slot;
+        uploadingPart.value = part;
+        busy(
+            'Quitando archivo 2…',
+            'Retiramos sus movimientos del reporte. Lo repetido con el archivo 1 se sigue contando una vez.',
+        );
+
+        try {
+            const res = await apiJson<{ message: string }>(
+                ctx.url(`/cargas/${encodeURIComponent(slot)}/archivo/${part}`),
+                { method: 'DELETE' },
+            );
+            await ctx.loadDataset();
+            const go = await swal.fire({
+                icon: 'success',
+                title: 'Archivo 2 quitado',
+                html: `<p>${escapeHtml(res.message)}</p>`,
+                showCancelButton: ctx.can.procesar,
+                confirmButtonText: ctx.can.procesar
+                    ? 'Procesar conciliación ahora'
+                    : 'Entendido',
+                cancelButtonText: 'Después',
+            });
+
+            if (go.isConfirmed && ctx.can.procesar) {
+                await process(false);
+            }
+        } catch (e) {
+            await showError(e, 'No se pudo quitar el archivo 2');
+        } finally {
+            uploadingSlot.value = null;
+            uploadingPart.value = null;
             uploadSeq.value++;
         }
     }
@@ -404,6 +452,7 @@ export function useErActions(ctx: Ctx) {
     return {
         processing,
         uploadingSlot,
+        uploadingPart,
         uploadSeq,
         classifying,
         accepting,
@@ -413,6 +462,7 @@ export function useErActions(ctx: Ctx) {
         showError,
         process,
         upload,
+        removePart,
         classify,
         acceptSuggestions,
         saveAdjustment,

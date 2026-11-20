@@ -144,8 +144,12 @@ export interface Movement {
     treatment_label: string;
     treatment_group: string;
     treatment_explain: string;
-    /** manual | regla | reembolso */
+    /** manual | regla | catalogo | reembolso */
     treatment_source: string;
+    /** Regla del catálogo de conceptos que lo clasificó (null = ninguna). */
+    concept_rule_id?: number | null;
+    /** Concepto del catálogo («Renta de oficinas»); el reporte agrupa por él. */
+    concept_label?: string | null;
     override: Override | null;
     needs_review: boolean;
     transfer_pair: string | null;
@@ -264,6 +268,10 @@ export interface Adjustment {
     notes: string | null;
     updated_by: string | null;
     updated_at: string | null;
+    /** manual = captura en Ajustes · tabla_amortizacion = interés de la tabla del crédito. */
+    origin?: 'manual' | 'tabla_amortizacion' | null;
+    /** Intereses de crédito: detalle de la tabla de amortización (pagos, capital excluido, diferencia). */
+    amortization?: import('./financialExpenses').AdjustmentAmortization | null;
 }
 
 export interface Check {
@@ -288,12 +296,28 @@ export interface CountAmount {
     amount: string;
 }
 
+/** Archivo de una cuenta: 1 = obligatorio, 2 = opcional (20-nov-2026). */
+export type AccountFileUpload = NonNullable<AccountSource['upload']>;
+
+export interface AccountFilePart {
+    part: number;
+    label: string;
+    required: boolean;
+    /** pendiente (falta el 1) | opcional (no hay 2) | cargado | con_incidencias | procesado */
+    status: SourceStatus | 'opcional';
+    upload: AccountFileUpload | null;
+}
+
 export interface AccountSource {
     key: string;
     label: string;
     status: SourceStatus;
+    /** Archivo 1 y archivo 2 de la cuenta (ausente en datasets anteriores al 20-nov-2026). */
+    parts?: AccountFilePart[];
+    /** Archivo 1 (compatibilidad). */
     upload: null | {
         id: number;
+        part?: number;
         name: string;
         account: string | null;
         hash: string;
@@ -326,6 +350,7 @@ export interface AccountSource {
     pending_review: number;
     history: Array<{
         id: number;
+        part?: number;
         name: string;
         status: string;
         hash: string;
@@ -382,6 +407,8 @@ export interface ChecklistAction {
     kind: 'upload' | 'carga' | 'tab' | 'process';
     label: string;
     slot?: string;
+    /** Archivo de la cuenta (1 obligatorio, 2 opcional); sin valor = archivo 1. */
+    part?: number;
     tab?: string;
 }
 
@@ -460,6 +487,8 @@ export interface ProcessingSource {
         rules_version: string;
     };
     stale_erp: boolean;
+    /** El catálogo de conceptos cambió desde el último procesamiento. */
+    stale_catalog?: boolean;
     unprocessed: boolean;
 }
 
@@ -813,6 +842,8 @@ export interface Permissions {
     clasificar: boolean;
     ajustes: boolean;
     exportar: boolean;
+    /** Administrar el catálogo de conceptos (global). */
+    catalogo?: boolean;
     consultar?: boolean;
     conciliar?: boolean;
     reclasificar?: boolean;

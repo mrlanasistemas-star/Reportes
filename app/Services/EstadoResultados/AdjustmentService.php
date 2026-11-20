@@ -5,6 +5,7 @@ namespace App\Services\EstadoResultados;
 use App\Models\EstadoResultados\EstadoResultadosAdjustment;
 use App\Models\EstadoResultados\EstadoResultadosAdjustmentLog;
 use App\Models\Period;
+use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
 use App\Services\EstadoResultados\Support\Money;
 use Illuminate\Support\Carbon;
@@ -17,6 +18,11 @@ use Illuminate\Support\Facades\DB;
  *   sin_informacion  → no hay dato; el subtotal afectado se marca "incompleto".
  *   confirmado_cero  → alguien confirmó que el concepto fue $0.00.
  *   capturado        → importe capturado (≥ 0; el signo lo da la sección).
+ *
+ * Origen (20-nov-2026): `origin` = manual | tabla_amortizacion. Los intereses de crédito
+ * (intereses_lerom / intereses_bbva / otros_intereses) se alimentan en el consolidado desde
+ * la tabla de amortización (FinancialExpenseService::overlay) con estado «capturado» y origen
+ * «tabla_amortizacion»; `amortization` trae el detalle (pagos, capital excluido, diferencia).
  */
 class AdjustmentService
 {
@@ -63,10 +69,15 @@ class AdjustmentService
                 'notes' => $row?->notes,
                 'updated_by' => $row?->editor?->name,
                 'updated_at' => $row?->updated_at?->timezone('America/Mexico_City')->format('d/m/Y H:i'),
+                // manual = captura en Ajustes · tabla_amortizacion = interés de la tabla del crédito.
+                'origin' => $row ? FinancialExpenseService::ORIGIN_MANUAL : null,
+                'amortization' => null,
             ];
         }
 
-        return $out;
+        // Intereses LEROM/BBVA/otros: la tabla de amortización alimenta el concepto en el
+        // CONSOLIDADO cuando no hay captura manual (la captura manual gana y se muestra la diferencia).
+        return app(FinancialExpenseService::class)->overlay($periodId, $scopeKey, $out);
     }
 
     public function save(Period $period, string $scopeKey, string $concept, string $state, mixed $amount, ?string $notes, ?int $userId): EstadoResultadosAdjustment

@@ -40,6 +40,17 @@ class EstadoResultadosUploadService
         BankStatementParser::LAYOUT_EXCEDENTES => 'Cuenta de excedentes',
     ];
 
+    /**
+     * Archivos por cuenta (20-nov-2026): el 1 es obligatorio; el 2 es OPCIONAL (nunca se exige,
+     * nunca aparece como faltante). Un movimiento idéntico en ambos se cuenta una sola vez.
+     */
+    public const PARTS = [
+        1 => 'Archivo 1 (obligatorio)',
+        2 => 'Archivo 2 (opcional)',
+    ];
+
+    public const OPTIONAL_PART = 2;
+
     public const DISK = 'local';
 
     public const EXTENSIONS = ['xlsx', 'xlsm', 'xls'];
@@ -50,9 +61,15 @@ class EstadoResultadosUploadService
         private readonly MovementPeriodAllocator $allocator,
     ) {}
 
-    public function upload(Period $period, UploadedFile $file, string $slot, ?int $userId): EstadoResultadosUpload
+    public function upload(Period $period, UploadedFile $file, string $slot, ?int $userId, int $part = 1): EstadoResultadosUpload
     {
-        return $this->importPath($period, (string) $file->getRealPath(), $file->getClientOriginalName(), $slot, $userId, $file);
+        return $this->importPath($period, (string) $file->getRealPath(), $file->getClientOriginalName(), $slot, $userId, $file, $part);
+    }
+
+    /** «Cuenta administrativa / corporativa · Archivo 2 (opcional)». */
+    public static function slotPartLabel(string $slot, int $part): string
+    {
+        return (self::SLOTS[$slot] ?? $slot).' · '.(self::PARTS[$part] ?? 'Archivo '.$part);
     }
 
     /** Máximo permitido por archivo (config `estado_resultados.import.max_mb`, 10 MB por defecto). */
@@ -75,11 +92,12 @@ class EstadoResultadosUploadService
      * original (también si se rechaza). Una carga sólo queda publicada si TODO
      * el archivo es válido y la transacción termina.
      */
-    public function importPath(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file = null): EstadoResultadosUpload
+    public function importPath(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file = null, int $part = 1): EstadoResultadosUpload
     {
         $attempt = EstadoResultadosImportAttempt::query()->create([
             'period_id' => $period->id,
             'account_slot' => mb_substr($slot, 0, 30),
+            'file_part' => isset(self::PARTS[$part]) ? $part : 1,
             'original_name' => mb_substr($originalName, 0, 255),
             'extension' => mb_substr(mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION)), 0, 10) ?: null,
             'mime' => is_file($absolutePath) ? (mb_substr((string) (@mime_content_type($absolutePath) ?: ''), 0, 120) ?: null) : null,
@@ -95,25 +113,28 @@ class EstadoResultadosUploadService
             if (! isset(self::SLOTS[$slot])) {
                 throw new EstadoResultadosImportException('Cuenta no válida. Elige "Cuenta administrativa" o "Cuenta de excedentes".');
             }
+            if (! isset(self::PARTS[$part])) {
+                throw new EstadoResultadosImportException('Archivo no válido. Elige «Archivo 1» o «Archivo 2» de la cuenta.');
+            }
             if ($period->type !== 'monthly') {
                 throw new EstadoResultadosImportException('El Estado de Resultados se carga sobre periodos mensuales. Selecciona un periodo mensual.');
             }
             $this->validateFile($absolutePath, $originalName, $file?->getSize() ?: null);
             $attempt->update(['file_hash' => hash_file('sha256', $absolutePath) ?: null]);
 
-            // Candado por periodo+cuenta ANTES del chequeo de duplicado y del parseo. release() de
+            // Candado por periodo+cuenta+archivo ANTES del chequeo de duplicado y del parseo. release() de
             // Laravel sólo libera si el dueño (token) coincide: un candado vencido y retomado por
             // otra carga no se suelta por error. La consistencia final la garantiza la transacción
             // (fila del periodo bloqueada + re-chequeo de versión aprobada y de duplicado).
-            $lock = Cache::lock('estado_resultados:carga:'.$period->id.':'.$slot, 300);
+            $lock = Cache::lock(self::lockKey($period, $slot, $part), 300);
             if (! $lock->get()) {
                 throw new EstadoResultadosImportException(
-                    'Ya hay una carga en curso para "'.self::SLOTS[$slot].'" de este periodo. Espera a que termine y vuelve a intentarlo.',
+                    'Ya hay una carga en curso para "'.self::slotPartLabel($slot, $part).'" de este periodo. Espera a que termine y vuelve a intentarlo.',
                     [], [], 409,
                 );
             }
             try {
-                $upload = $this->doImport($period, $absolutePath, $originalName, $slot, $userId, $file);
+                $upload = $this->doImport($period, $absolutePath, $originalName, $slot, $userId, $file, $part);
             } finally {
                 $lock->release();
             }
@@ -140,6 +161,85 @@ class EstadoResultadosUploadService
         $this->finishAttempt($attempt, EstadoResultadosImportAttempt::COMPLETADO, 'Archivo cargado: '.$upload->movements_count.' movimientos.'.($upload->blocking_warnings > 0 ? ' Tiene '.$upload->blocking_warnings.' aviso(s) que bloquean la aprobación.' : ''), [], $upload->id, $upload->stored_path);
 
         return $upload;
+    }
+
+    private static function lockKey(Period $period, string $slot, int $part): string
+    {
+        // El archivo 1 conserva la llave de siempre; el 2 tiene la suya (candados independientes).
+        return 'estado_resultados:carga:'.$period->id.':'.$slot.($part === 1 ? '' : ':'.$part);
+    }
+
+    /**
+     * Quita el archivo 2 (opcional) de una cuenta. Igual que una sustitución: la carga queda
+     * como reemplazada (sigue en el historial) y se borran sus movimientos que no estén en un
+     * periodo aprobado. Después se re-sincroniza el reparto por fecha: si el archivo 1 trae
+     * los mismos movimientos (antes «duplicados»), vuelven a contar UNA vez.
+     */
+    public function removePart(Period $period, string $slot, int $part, ?int $userId): EstadoResultadosUpload
+    {
+        app(PeriodLockGuard::class)->assertUnlocked($period);
+        if (! isset(self::SLOTS[$slot])) {
+            throw new EstadoResultadosImportException('Cuenta no válida. Elige "Cuenta administrativa" o "Cuenta de excedentes".');
+        }
+        if ($part !== self::OPTIONAL_PART) {
+            throw new EstadoResultadosImportException('Sólo se puede quitar el «Archivo 2 (opcional)». El archivo 1 es obligatorio: si está mal, sustitúyelo por el correcto.');
+        }
+
+        $lock = Cache::lock(self::lockKey($period, $slot, $part), 300);
+        if (! $lock->get()) {
+            throw new EstadoResultadosImportException(
+                'Ya hay una carga en curso para "'.self::slotPartLabel($slot, $part).'" de este periodo. Espera a que termine y vuelve a intentarlo.',
+                [], [], 409,
+            );
+        }
+        try {
+            return $this->allocator->exclusive(fn () => DB::transaction(function () use ($period, $slot, $part) {
+                DB::table('periods')->where('id', $period->id)->lockForUpdate()->first();
+                app(PeriodLockGuard::class)->assertUnlocked($period);
+                $active = EstadoResultadosUpload::query()->active()
+                    ->where('period_id', $period->id)->where('account_slot', $slot)->where('file_part', $part)
+                    ->lockForUpdate()->get();
+                if ($active->isEmpty()) {
+                    throw new EstadoResultadosImportException('La cuenta «'.self::SLOTS[$slot].'» no tiene «Archivo 2» cargado en este periodo: no hay nada que quitar.', [], [], 404);
+                }
+                $wasProcessed = $active->contains(fn ($u) => $u->status === EstadoResultadosUpload::STATUS_PROCESSED);
+                foreach ($active as $old) {
+                    $this->retire($old, null);
+                }
+                // Lo que estaba conciliado junto con el archivo quitado debe volver a cruzarse:
+                // la cuenta queda «cargada, falta procesar».
+                if ($wasProcessed) {
+                    EstadoResultadosUpload::query()->active()->where('period_id', $period->id)->where('account_slot', $slot)
+                        ->where('status', EstadoResultadosUpload::STATUS_PROCESSED)
+                        ->update(['status' => EstadoResultadosUpload::STATUS_LOADED, 'lifecycle' => EstadoResultadosUpload::LIFECYCLE_VALIDADO]);
+                }
+                if (MovementPeriodAllocator::available()) {
+                    $this->allocator->syncInTransaction();
+                }
+
+                return $active->first()->fresh();
+            }));
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /** Retira una carga (sustituida o quitada): borra sus movimientos no congelados y la marca reemplazada. */
+    private function retire(EstadoResultadosUpload $old, ?int $supersededBy): void
+    {
+        $guard = app(PeriodLockGuard::class);
+        // Los movimientos que ya viven en un periodo APROBADO se conservan (el periodo aprobado
+        // no cambia); el resto se borra.
+        $lockedIds = EstadoResultadosMovement::query()->where('upload_id', $old->id)->distinct()->pluck('period_id')
+            ->filter(fn ($pid) => $guard->isLocked((int) $pid))->values()->all();
+        EstadoResultadosMovement::query()->where('upload_id', $old->id)
+            ->when($lockedIds !== [], fn ($q) => $q->whereNotIn('period_id', $lockedIds))->delete();
+        $old->update([
+            'status' => EstadoResultadosUpload::STATUS_REPLACED,
+            'lifecycle' => EstadoResultadosUpload::LIFECYCLE_REEMPLAZADO,
+            'superseded_at' => now(),
+            'superseded_by_upload_id' => $supersededBy,
+        ]);
     }
 
     /** Extensión permitida, tamaño máximo y contenido real (firma binaria) coherente con la extensión. */
@@ -213,7 +313,10 @@ class EstadoResultadosUploadService
             'has_macros' => (bool) $upload?->has_macros,
             'id' => $a->id,
             'slot' => $a->account_slot,
-            'slot_label' => self::SLOTS[$a->account_slot] ?? ($a->account_slot === CorporatePayrollUploadService::SLOT ? CorporatePayrollUploadService::LABEL : $a->account_slot),
+            'part' => $part = (int) ($a->file_part ?? 1),
+            'slot_label' => isset(self::SLOTS[$a->account_slot])
+                ? ($part === 1 ? self::SLOTS[$a->account_slot] : self::slotPartLabel($a->account_slot, $part))
+                : ($a->account_slot === CorporatePayrollUploadService::SLOT ? CorporatePayrollUploadService::LABEL : $a->account_slot),
             'file' => $a->original_name,
             'file_hash' => $a->file_hash,
             'file_size' => (int) $a->file_size,
@@ -278,7 +381,7 @@ class EstadoResultadosUploadService
         }
     }
 
-    private function doImport(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file): EstadoResultadosUpload
+    private function doImport(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file, int $part = 1): EstadoResultadosUpload
     {
         $hash = hash_file('sha256', $absolutePath) ?: '';
         $duplicate = EstadoResultadosUpload::query()
@@ -347,7 +450,7 @@ class EstadoResultadosUploadService
             Storage::disk(self::DISK)->put($storedPath, (string) file_get_contents($absolutePath));
         }
 
-        return $this->allocator->exclusive(fn () => DB::transaction(function () use ($period, $slot, $parsed, $hash, $originalName, $absolutePath, $userId, $storedPath, $totalCargos, $totalAbonos, $controlOk, $warnings, $blocking, $inPeriod, $start, $end, $dates) {
+        return $this->allocator->exclusive(fn () => DB::transaction(function () use ($period, $slot, $part, $parsed, $hash, $originalName, $absolutePath, $userId, $storedPath, $totalCargos, $totalAbonos, $controlOk, $warnings, $blocking, $inPeriod, $start, $end, $dates) {
             // Serializa contra aprobación/procesamiento: fila del periodo bloqueada y RE-CHEQUEO
             // dentro de la transacción (cierra la carrera «se aprobó mientras se leía el archivo»).
             DB::table('periods')->where('id', $period->id)->lockForUpdate()->first();
@@ -361,12 +464,15 @@ class EstadoResultadosUploadService
                 ->active()
                 ->where('period_id', $period->id)
                 ->where('account_slot', $slot)
+                // Sustituir sólo reemplaza el MISMO archivo (1 o 2) de la cuenta.
+                ->where('file_part', $part)
                 ->lockForUpdate()
                 ->get();
 
             $upload = EstadoResultadosUpload::query()->create([
                 'period_id' => $period->id,
                 'account_slot' => $slot,
+                'file_part' => $part,
                 'account_label' => $this->detectAccountLabel($parsed['movements'], $originalName),
                 'layout' => $parsed['layout'],
                 'original_name' => mb_substr($originalName, 0, 255),
@@ -394,20 +500,8 @@ class EstadoResultadosUploadService
                 'uploaded_by' => $userId,
             ]);
 
-            $guard = app(PeriodLockGuard::class);
             foreach ($previous as $old) {
-                // Los movimientos de la carga sustituida que ya viven en un periodo APROBADO se
-                // conservan (el periodo aprobado no cambia); el resto se borra.
-                $lockedIds = EstadoResultadosMovement::query()->where('upload_id', $old->id)->distinct()->pluck('period_id')
-                    ->filter(fn ($pid) => $guard->isLocked((int) $pid))->values()->all();
-                EstadoResultadosMovement::query()->where('upload_id', $old->id)
-                    ->when($lockedIds !== [], fn ($q) => $q->whereNotIn('period_id', $lockedIds))->delete();
-                $old->update([
-                    'status' => EstadoResultadosUpload::STATUS_REPLACED,
-                    'lifecycle' => EstadoResultadosUpload::LIFECYCLE_REEMPLAZADO,
-                    'superseded_at' => now(),
-                    'superseded_by_upload_id' => $upload->id,
-                ]);
+                $this->retire($old, $upload->id);
             }
 
             $now = now();

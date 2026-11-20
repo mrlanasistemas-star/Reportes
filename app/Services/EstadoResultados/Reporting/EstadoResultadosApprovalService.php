@@ -405,10 +405,11 @@ class EstadoResultadosApprovalService
         'uploads' => 'cargas de estados de cuenta', 'movements' => 'movimientos bancarios', 'links' => 'conciliación',
         'runs' => 'procesamiento', 'classifications' => 'clasificaciones', 'adjustments' => 'ajustes contables',
         'erp_signature' => 'ERP de gastos', 'radiografia_summary' => 'consolidado de Radiografía', 'branches' => 'sucursales',
-        'rotacion' => 'rotación', 'data_ids' => 'semanas del periodo', 'rules' => 'versión de reglas', 'period' => 'fechas del periodo',
+        'rotacion' => 'rotación', 'concept_catalog' => 'catálogo de conceptos', 'data_ids' => 'semanas del periodo', 'rules' => 'versión de reglas', 'period' => 'fechas del periodo',
         'fact.report_uploads' => 'cargas de Radiografía', 'fact.fact_expenses' => 'gastos (ERP/Lendus)', 'fact.fact_noi_movements' => 'nómina NOI',
         'fact.fact_recoveries' => 'recuperación', 'fact.fact_portfolios' => 'cartera', 'fact.fact_placements' => 'colocación',
         'fact.fact_imss' => 'IMSS', 'fact.employee_branch_assignments' => 'asignación de sucursales',
+        'amortization' => 'tablas de amortización (intereses de créditos)',
     ];
 
     /** @param list<string> $keys */

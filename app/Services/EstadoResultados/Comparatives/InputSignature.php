@@ -3,6 +3,8 @@
 namespace App\Services\EstadoResultados\Comparatives;
 
 use App\Models\Period;
+use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
+use App\Services\EstadoResultados\Classification\ConceptCatalogService;
 use App\Services\EstadoResultados\PeriodDataIds;
 use App\Services\EstadoResultados\Support\Dimensions;
 use Illuminate\Support\Facades\DB;
@@ -55,6 +57,8 @@ class InputSignature
             'er_adjustment_logs' => $this->aggregate('estado_resultados_adjustment_logs', null, []),
             'er_runs' => $agg('estado_resultados_runs', [$period->id]),
             'er_versions' => $agg('estado_resultados_versions', [$period->id]),
+            // Catálogo de conceptos (global): cambiar una regla invalida lo calculado en caché.
+            'er_concept_catalog' => app(ConceptCatalogService::class)->signature(),
         ];
         // NOI de corporativo (fuente propia del ER): sólo entra a la firma si el periodo tiene cargas.
         if (Schema::hasTable('estado_resultados_payroll_uploads')) {
@@ -63,6 +67,11 @@ class InputSignature
             if ($payroll !== []) {
                 $parts['er_payroll'] = $payroll;
             }
+        }
+        // Tablas de amortización (intereses de créditos): sólo si hay alguna cargada.
+        $amortization = app(FinancialExpenseService::class)->signature($period);
+        if ($amortization !== null) {
+            $parts['er_amortization'] = $amortization;
         }
 
         return hash('sha256', json_encode($parts, JSON_UNESCAPED_UNICODE));

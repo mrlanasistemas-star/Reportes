@@ -88,6 +88,8 @@ class ActionPermissionService
             'procesar' => ['label' => 'Conciliar (procesar conciliación)', 'column' => 'editar', 'description' => 'Conciliar contra ERP y aplicar las reglas de clasificación.'],
             'clasificar' => ['label' => 'Reclasificar movimientos', 'column' => 'autorizar', 'description' => 'Asignar o corregir el tratamiento financiero de un movimiento (queda en la bitácora).'],
             'ajustes' => ['label' => 'Editar ajustes contables', 'column' => 'editar', 'description' => 'Depreciación, amortización, intereses, ISR, CAPEX y capital de deuda.'],
+            // 20-nov-2026 — catálogo de conceptos (global): texto del estado de cuenta → concepto del reporte.
+            'catalogo' => ['label' => 'Administrar catálogo de conceptos', 'column' => 'editar', 'description' => 'Crear, editar, desactivar o borrar las reglas «texto del estado de cuenta → concepto del reporte» (aplican al procesar la conciliación).'],
             'aprobar' => ['label' => 'Aprobar y abrir nueva versión', 'column' => 'autorizar', 'description' => 'Aprobar (congelar) el Estado de Resultados del periodo y, con motivo, abrir una nueva versión.'],
             'exportar' => ['label' => 'Exportar Excel/PDF', 'column' => 'exportar', 'description' => 'Descargar el Estado de Resultados en Excel o PDF.'],
         ],

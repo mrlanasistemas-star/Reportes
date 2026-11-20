@@ -78,6 +78,9 @@ class ReportStatusEvaluator
             if (! empty($proc['stale_erp'])) {
                 $add($reconciliation, 'procesamiento', 'El ERP de gastos cambió después del último procesamiento: vuelve a procesar la conciliación.');
             }
+            if (! empty($proc['stale_catalog'])) {
+                $add($reconciliation, 'procesamiento', 'El catálogo de conceptos cambió después del último procesamiento: vuelve a procesar la conciliación para aplicarlo.');
+            }
             $runStatus = $proc['last_run']['status'] ?? null;
             $noBank = ($proc['status'] ?? null) === 'pendiente'; // sin estados de cuenta: lo reporta «datos faltantes»
             if ($runStatus === null && $noBank) {
