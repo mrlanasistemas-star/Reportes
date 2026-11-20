@@ -13,6 +13,8 @@ const props = defineProps<{
     sources: Dataset['sources'];
     canUpload: boolean;
     uploadingSlot: string | null;
+    /** Archivo (1 | 2) de `uploadingSlot` que se está cargando o quitando. */
+    uploadingPart?: number | null;
     uploadRules?: UploadRules | null;
     lockReason?: string | null;
     /** URL de intentos de carga (sólo con permiso de cargar). */
@@ -24,7 +26,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-    upload: [slot: string, file: File];
+    upload: [slot: string, file: File, part?: number];
+    removePart: [slot: string, part: number];
     tab: [tab: string];
     process: [];
 }>();
@@ -65,12 +68,18 @@ const plain = (text: string | null | undefined) =>
     PLAIN.reduce((t, [re, to]) => t.replace(re, to), text ?? '');
 
 /** «Súbelo aquí»: lleva a la tarjeta y abre el selector de archivo. */
-async function goUpload(slot: string): Promise<void> {
+async function goUpload(slot: string, part?: number): Promise<void> {
     await nextTick();
     document
         .getElementById(`er-slot-${slot}`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    document.getElementById(`er-slot-input-${slot}`)?.click();
+    document
+        .getElementById(
+            part && part > 1
+                ? `er-slot-input-${slot}-${part}`
+                : `er-slot-input-${slot}`,
+        )
+        ?.click();
 }
 </script>
 
@@ -97,7 +106,9 @@ async function goUpload(slot: string): Promise<void> {
                 <p class="text-xs text-muted-foreground">
                     Estados de cuenta del banco y NOI de corporativo. Cada
                     archivo se agrega solo: no se vuelve a cargar ni a
-                    recalcular lo que ya está.
+                    recalcular lo que ya está. Cada cuenta lleva su archivo 1
+                    (obligatorio) y, si el mes viene partido, un archivo 2
+                    opcional.
                 </p>
             </div>
             <div class="grid content-start gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -106,10 +117,15 @@ async function goUpload(slot: string): Promise<void> {
                     :key="acc.key"
                     :account="acc"
                     :can-upload="canUpload"
-                    :uploading="uploadingSlot === acc.key"
+                    :uploading-part="
+                        uploadingSlot === acc.key ? (uploadingPart ?? 1) : null
+                    "
                     :upload-rules="uploadRules"
                     :lock-reason="lockReason"
-                    @upload="(slot, file) => emit('upload', slot, file)"
+                    @upload="
+                        (slot, file, part) => emit('upload', slot, file, part)
+                    "
+                    @remove="(slot, part) => emit('removePart', slot, part)"
                 />
                 <PayrollUploadCard
                     v-if="sources.noi_corporativo"

@@ -23,7 +23,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-    upload: [slot: string];
+    upload: [slot: string, part?: number];
     tab: [tab: string];
     process: [];
 }>();
@@ -80,7 +80,7 @@ function canAct(i: ChecklistItem): boolean {
 
 function act(i: ChecklistItem): void {
     if (i.action.kind === 'upload' && i.action.slot) {
-        emit('upload', i.action.slot);
+        emit('upload', i.action.slot, i.action.part);
     } else if (i.action.kind === 'tab' && i.action.tab) {
         emit('tab', i.action.tab);
     } else if (i.action.kind === 'process') {

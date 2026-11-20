@@ -125,9 +125,16 @@ class MovementPeriodAllocator
         // Periodos que ya estaban en producción (tienen movimientos "legado"): se quedan como
         // estaban. Sólo reciben los movimientos de archivos subidos EN ellos mismos.
         $legacyPeriods = [];
+        // Huellas que un movimiento "legado" vigente (dedup_key = 0) ya ocupa en su periodo: una
+        // copia idéntica que llegue después (p. ej. el archivo 2 de la misma cuenta, 20-nov-2026)
+        // queda como duplicado y no choca con la llave única (period_id, fingerprint, dedup_key).
+        $legacyOwned = [];
         foreach ($rows as $r) {
             if ($r->placement === self::LEGADO) {
                 $legacyPeriods[(int) $r->period_id] = true;
+                if ((int) $r->dedup_key === 0) {
+                    $legacyOwned[(int) $r->period_id.'|'.$r->fingerprint] = true;
+                }
             }
         }
 
@@ -156,6 +163,9 @@ class MovementPeriodAllocator
         }
 
         foreach ($candidates as $key => $group) {
+            if (isset($legacyOwned[$key])) {
+                continue; // ya cuenta el movimiento legado: todas las copias quedan como duplicado
+            }
             $target = (int) strstr($key, '|', true);
             usort($group, function ($a, $b) use ($target) {
                 // 1) el archivo subido en ese mismo periodo, 2) el que ya era vigente, 3) la carga más reciente.

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
     ArrowLeftRight,
+    BookMarked,
     CheckCircle2,
     CircleSlash,
     History,
@@ -34,6 +35,8 @@ const props = defineProps<{
     lookup: (fingerprint: string) => Movement | null;
     /** Motivo de solo lectura (versión aprobada / histórica). */
     lockReason?: string | null;
+    /** Puede crear reglas del catálogo de conceptos. */
+    canCreateRule?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -41,6 +44,7 @@ const emit = defineEmits<{
     classify: [fingerprints: string[]];
     acceptSuggestion: [fingerprint: string];
     openMovement: [m: Movement];
+    createRule: [m: Movement];
 }>();
 
 interface HistoryRow {
@@ -338,7 +342,9 @@ const headline = computed(() => {
                             <span class="text-[11px] text-muted-foreground">{{
                                 m.treatment_source === 'manual'
                                     ? 'Clasificación manual'
-                                    : 'Regla automática'
+                                    : m.treatment_source === 'catalogo'
+                                      ? `Catálogo de conceptos · ${m.concept_label ?? ''}`
+                                      : 'Regla automática'
                             }}</span>
                         </div>
                         <p class="text-xs leading-relaxed">
@@ -382,6 +388,21 @@ const headline = computed(() => {
                             @click="emit('classify', [m.fingerprint])"
                         >
                             <Tags class="size-3.5" /> Clasificar / corregir
+                        </Button>
+                        <Button
+                            v-if="
+                                canCreateRule &&
+                                m.source === 'banco' &&
+                                !m.redacted &&
+                                (m.concept || m.observations)
+                            "
+                            size="sm"
+                            variant="outline"
+                            class="ml-2"
+                            @click="emit('createRule', m)"
+                        >
+                            <BookMarked class="size-3.5" /> Crear regla de
+                            catálogo con este texto
                         </Button>
                         <p
                             v-if="lockReason"

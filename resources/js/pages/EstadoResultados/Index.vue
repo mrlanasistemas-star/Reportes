@@ -3,7 +3,9 @@ import { Head, usePage } from '@inertiajs/vue3';
 import {
     AlertTriangle,
     BarChart3,
+    BookMarked,
     Calculator,
+    Percent,
     FolderInput,
     Gauge,
     Inbox,
@@ -24,6 +26,9 @@ import AdjustmentsPanel from '@/components/estado-resultados/AdjustmentsPanel.vu
 import ClassifyDialog from '@/components/estado-resultados/ClassifyDialog.vue';
 import CloseRoute from '@/components/estado-resultados/CloseRoute.vue';
 import ComparativesPanel from '@/components/estado-resultados/ComparativesPanel.vue';
+import { draftFromMovement } from '@/components/estado-resultados/conceptCatalog';
+import type { RuleDraft } from '@/components/estado-resultados/conceptCatalog';
+import ConceptCatalogPanel from '@/components/estado-resultados/ConceptCatalogPanel.vue';
 import ConciliationSummary from '@/components/estado-resultados/ConciliationSummary.vue';
 import ControlPanel from '@/components/estado-resultados/ControlPanel.vue';
 import ErCommandBar from '@/components/estado-resultados/ErCommandBar.vue';
@@ -31,6 +36,7 @@ import ErLoadingScreen from '@/components/estado-resultados/ErLoadingScreen.vue'
 import ErRefreshIndicator from '@/components/estado-resultados/ErRefreshIndicator.vue';
 import ErTabs from '@/components/estado-resultados/ErTabs.vue';
 import type { ErTab } from '@/components/estado-resultados/ErTabs.vue';
+import FinancialExpensesPanel from '@/components/estado-resultados/FinancialExpensesPanel.vue';
 import IndicatorsPanel from '@/components/estado-resultados/IndicatorsPanel.vue';
 import KpiStrip from '@/components/estado-resultados/KpiStrip.vue';
 import MissingSourcesBanner from '@/components/estado-resultados/MissingSourcesBanner.vue';
@@ -232,6 +238,8 @@ const detailOpen = ref(false);
 const detailMovement = ref<Movement | null>(null);
 const classifyOpen = ref(false);
 const classifyItems = ref<Movement[]>([]);
+/** Alta de regla del catálogo precargada desde el detalle de un movimiento. */
+const catalogPrefill = ref<Partial<RuleDraft> | null>(null);
 
 const toneOf = (t: string) => {
     const meta = props.treatments.find((x) => x.key === t);
@@ -324,6 +332,12 @@ const tabs = computed<ErTab[]>(() => {
             group: 'cierre',
         },
         {
+            key: 'gastos_financieros',
+            label: 'Gastos financieros',
+            icon: Percent,
+            group: 'cierre',
+        },
+        {
             key: 'validacion',
             label: 'Validación',
             icon: ScanSearch,
@@ -339,6 +353,12 @@ const tabs = computed<ErTab[]>(() => {
             badge: failed || null,
             badgeLabel: `${failed} controles no cuadran`,
             tone: 'bad',
+            group: 'cierre',
+        },
+        {
+            key: 'catalogo',
+            label: 'Catálogo de conceptos',
+            icon: BookMarked,
             group: 'cierre',
         },
     ];
@@ -418,6 +438,15 @@ async function submitClassify(payload: {
         classifyOpen.value = false;
         table.value?.clearSelection();
     }
+}
+
+function createRuleFrom(m: Movement): void {
+    detailOpen.value = false;
+    catalogPrefill.value = draftFromMovement(
+        m,
+        props.treatments.filter((t) => t.assignable).map((t) => t.key),
+    );
+    nav.go('catalogo');
 }
 
 async function accept(fingerprints: string[], ask: boolean): Promise<void> {
@@ -780,6 +809,25 @@ const historyUrl = (fp: string) =>
                                     :logs-loading="actions.logsLoading.value"
                                     @save="actions.saveAdjustment"
                                     @load-logs="actions.loadLogs"
+                                    @open-financial="nav.go('gastos_financieros')"
+                                />
+                            </section>
+
+                            <section
+                                v-else-if="nav.tab.value === 'gastos_financieros'"
+                                id="er-panel-gastos_financieros"
+                                key="gastos_financieros"
+                                role="tabpanel"
+                                aria-labelledby="er-tab-gastos_financieros"
+                            >
+                                <FinancialExpensesPanel
+                                    :base="base"
+                                    :period-id="dataset.meta.period.id"
+                                    :consolidated="dataset.meta.scope.consolidated"
+                                    :can-upload="can.ajustes"
+                                    :rev="compRev"
+                                    :reload-dataset="data.loadDataset"
+                                    @go-adjustments="nav.go('ajustes')"
                                 />
                             </section>
 
@@ -811,6 +859,9 @@ const historyUrl = (fp: string) =>
                                     :uploading-slot="
                                         actions.uploadingSlot.value
                                     "
+                                    :uploading-part="
+                                        actions.uploadingPart.value
+                                    "
                                     :upload-rules="uploadRules"
                                     :lock-reason="lockReason"
                                     :attempts-url="attemptsUrl"
@@ -821,6 +872,7 @@ const historyUrl = (fp: string) =>
                                     :period-label="dataset.meta.period.label"
                                     :can-process="can.procesar"
                                     @upload="actions.upload"
+                                    @remove-part="actions.removePart"
                                     @tab="(t: string) => nav.go(t)"
                                     @process="actions.process()"
                                 />
@@ -836,7 +888,14 @@ const historyUrl = (fp: string) =>
                                 <ValidationPanel
                                     v-if="dataset.validation"
                                     :validation="dataset.validation"
+                                    :movements="dataset.movements"
+                                    :can-classify="can.clasificar"
+                                    :can-export="can.exportar"
+                                    :lock-reason="lockReason"
+                                    :url="data.url"
+                                    :scope-query="data.scopeQuery"
                                     @open="openByFingerprint"
+                                    @classify="openClassify"
                                 />
                                 <p
                                     v-else
@@ -846,6 +905,26 @@ const historyUrl = (fp: string) =>
                                     existiera la pantalla de validación: no trae
                                     ese detalle.
                                 </p>
+                            </section>
+
+                            <section
+                                v-else-if="nav.tab.value === 'catalogo'"
+                                id="er-panel-catalogo"
+                                key="catalogo"
+                                role="tabpanel"
+                                aria-labelledby="er-tab-catalogo"
+                            >
+                                <ConceptCatalogPanel
+                                    :period-id="periodId"
+                                    :period-label="dataset.meta.period.label"
+                                    :treatments="treatments"
+                                    :can-edit="!!can.catalogo"
+                                    :can-process="can.procesar"
+                                    :lock-reason="lockReason"
+                                    :prefill="catalogPrefill"
+                                    :process="() => actions.process(false)"
+                                    @prefill-used="catalogPrefill = null"
+                                />
                             </section>
 
                             <section
@@ -881,6 +960,8 @@ const historyUrl = (fp: string) =>
             :tone-of="toneOf"
             @classify="openClassify"
             @open-movement="openDetail"
+            :can-create-rule="!!can.catalogo"
+            @create-rule="createRuleFrom"
             @accept-suggestion="(fp) => accept([fp], false)"
         />
         <ClassifyDialog

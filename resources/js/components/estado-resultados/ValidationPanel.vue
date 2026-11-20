@@ -9,15 +9,79 @@ import {
     Users,
     XCircle,
 } from 'lucide-vue-next';
-import { computed } from 'vue';
+import { computed, nextTick } from 'vue';
+import { useMovementControl } from '@/composables/estado-resultados/useMovementControl';
+import FileControlTable from './FileControlTable.vue';
+import type {
+    ControlFileRef,
+    ControlFilter,
+    ControlRef,
+    ControlValidation,
+    ControlledMovement,
+} from './movementControl';
+import MovementControlList from './MovementControlList.vue';
 import { isZero, mxn, num } from './types';
-import type { PartitionCheck, Validation } from './types';
+import type { Movement, PartitionCheck, Validation } from './types';
+import UnresolvedList from './UnresolvedList.vue';
 import ValidationDifferences from './ValidationDifferences.vue';
 
-const props = defineProps<{ validation: Validation }>();
-const emit = defineEmits<{ open: [fingerprint: string] }>();
+const props = withDefaults(
+    defineProps<{
+        validation: Validation;
+        /** Movimientos del dataset (ya redactados): la lista de control filtra sobre ellos. */
+        movements?: Movement[];
+        canClassify?: boolean;
+        canExport?: boolean;
+        lockReason?: string | null;
+        /** `/estado-resultados/{periodo}` + path, y la consulta de alcance/versión. */
+        url?: (path: string) => string;
+        scopeQuery?: () => string;
+    }>(),
+    {
+        movements: () => [],
+        canClassify: false,
+        canExport: false,
+        lockReason: null,
+        url: undefined,
+        scopeQuery: () => '',
+    },
+);
+const emit = defineEmits<{
+    open: [fingerprint: string];
+    classify: [fingerprints: string[]];
+}>();
 
-const v = computed(() => props.validation);
+const v = computed(() => props.validation as unknown as ControlValidation);
+
+// ── Control total: lista de movimientos por estado / partida / archivo ──
+const control = useMovementControl({
+    movements: () => props.movements as ControlledMovement[],
+    url: (path) => (props.url ? props.url(path) : path),
+    scopeQuery: () => props.scopeQuery(),
+});
+
+async function showList(opts: {
+    title: string;
+    note?: string | null;
+    items?: ControlRef[];
+    files?: ControlFileRef[];
+    filter?: ControlFilter;
+    uploadId?: number | null;
+}): Promise<void> {
+    control.focusOn(opts);
+    await nextTick();
+    document
+        .getElementById('er-control-movimientos')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function scrollToFiles(): void {
+    document
+        .getElementById('er-control-archivos')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+const fileControl = computed(() => v.value.file_control ?? null);
 
 const STATUS = {
     ok: {
@@ -121,72 +185,8 @@ const importOk = computed(
             </div>
         </div>
 
-        <!-- Sin resolver -->
-        <section
-            v-if="v.unresolved.length || v.failed_checks.length"
-            class="rounded-2xl border border-rose-300 bg-card shadow-soft-xs dark:border-rose-900"
-            aria-label="Diferencias sin resolver"
-        >
-            <header
-                class="flex items-center gap-2 border-b border-rose-200 px-5 py-3 dark:border-rose-900"
-            >
-                <XCircle class="size-4 text-rose-600" />
-                <h3
-                    class="text-sm font-extrabold text-rose-800 dark:text-rose-300"
-                >
-                    Sin resolver ({{ v.unresolved.length }})
-                </h3>
-            </header>
-            <ul class="divide-y divide-rose-100 dark:divide-rose-950">
-                <li
-                    v-for="u in v.unresolved"
-                    :key="u.key"
-                    class="flex items-center gap-3 px-5 py-2.5 text-sm"
-                >
-                    <span class="size-2 shrink-0 rounded-full bg-rose-500" />
-                    <span class="min-w-0 flex-1 font-medium">{{
-                        u.label
-                    }}</span>
-                    <span
-                        v-if="u.blocking !== undefined"
-                        class="shrink-0 rounded-full px-2 py-px text-[10.5px] font-bold"
-                        :class="
-                            u.blocking
-                                ? 'bg-rose-600 text-white'
-                                : 'bg-muted text-muted-foreground'
-                        "
-                        :title="
-                            u.blocking
-                                ? 'Impide aprobar la versión.'
-                                : 'Informativo: no impide aprobar.'
-                        "
-                        >{{
-                            u.blocking ? 'Bloquea la aprobación' : 'Informativo'
-                        }}</span
-                    >
-                    <span
-                        class="shrink-0 text-xs text-muted-foreground tabular-nums"
-                        :title="
-                            u.open_count !== undefined ? 'Abiertas / total' : ''
-                        "
-                        >{{ (u.open_count ?? u.count).toLocaleString('es-MX')
-                        }}<template
-                            v-if="
-                                u.open_count !== undefined &&
-                                u.open_count !== u.count
-                            "
-                        >
-                            de {{ u.count.toLocaleString('es-MX') }}</template
-                        >
-                        abiertas</span
-                    >
-                    <span
-                        class="w-32 shrink-0 text-right font-bold text-rose-700 tabular-nums dark:text-rose-400"
-                        >{{ mxn(u.open_amount ?? u.amount) }}</span
-                    >
-                </li>
-            </ul>
-        </section>
+        <!-- Sin resolver: cada partida abre los movimientos que la explican -->
+        <UnresolvedList :unresolved="v.unresolved" @show="(p) => showList(p)" />
 
         <!-- Embudo: archivo → importado → destinos -->
         <section class="rounded-2xl border bg-card p-5 shadow-soft-xs">
@@ -207,6 +207,15 @@ const importOk = computed(
                         abonos
                         {{ mxn(v.totals.source.abonos) }}
                     </p>
+                    <button
+                        v-if="fileControl && fileControl.totals.files"
+                        type="button"
+                        class="mt-1 text-xs font-semibold text-sky-700 underline-offset-2 hover:underline dark:text-sky-400"
+                        @click="scrollToFiles"
+                    >
+                        Lo que aportan {{ fileControl.totals.files }} archivo(s)
+                        a este periodo (por fecha) · ver partición
+                    </button>
                 </div>
                 <span class="hidden items-center md:flex" aria-hidden="true">
                     <ArrowRight class="size-5 text-muted-foreground" />
@@ -246,6 +255,18 @@ const importOk = computed(
                         class="mt-1 text-xs font-bold text-rose-700 dark:text-rose-300"
                     >
                         Lo importado no coincide con el archivo.
+                        <button
+                            type="button"
+                            class="ml-1 underline underline-offset-2"
+                            @click="
+                                showList({
+                                    title: 'Filas leídas del archivo y no guardadas',
+                                    filter: 'no_guardado',
+                                })
+                            "
+                        >
+                            Ver filas no guardadas
+                        </button>
                     </p>
                 </div>
                 <span class="hidden items-center 2xl:flex" aria-hidden="true">
@@ -335,6 +356,30 @@ const importOk = computed(
                 </div>
             </div>
         </section>
+
+        <!-- Control total: partición de cada archivo y lista de movimientos por estado -->
+        <FileControlTable
+            v-if="fileControl"
+            :control="fileControl"
+            @drill="
+                (d) =>
+                    showList({
+                        title: d.title,
+                        filter: d.filter,
+                        uploadId: d.uploadId,
+                    })
+            "
+        />
+        <MovementControlList
+            v-if="url !== undefined"
+            :control="control"
+            :can-classify="canClassify"
+            :can-export="canExport"
+            :lock-reason="lockReason"
+            :not-saved-count="fileControl?.totals.not_saved.count ?? 0"
+            @open="(fp) => emit('open', fp)"
+            @classify="(fps) => emit('classify', fps)"
+        />
 
         <ValidationDifferences
             :differences="v.differences"

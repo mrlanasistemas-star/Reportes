@@ -68,7 +68,15 @@ const emit = defineEmits<{
         },
     ];
     loadLogs: [];
+    /** Ir a la pestaña «Gastos financieros» (tabla de amortización). */
+    openFinancial: [];
 }>();
+
+/** Conceptos de interés de crédito que alimenta la tabla de amortización. */
+const CREDIT_INTEREST = ['intereses_lerom', 'intereses_bbva', 'otros_intereses'];
+const fromTable = (a: Adjustment) => a.origin === 'tabla_amortizacion';
+const showsTable = (a: Adjustment) =>
+    CREDIT_INTEREST.includes(a.key) && (fromTable(a) || !!a.amortization);
 
 const drafts = reactive<Record<string, Draft>>(
     (STORE[props.draftKey ?? 'default'] ??= {}),
@@ -287,6 +295,46 @@ const SECTION_LABEL: Record<string, string> = {
                                     : mxn(a.amount)
                             }}
                         </p>
+                    </div>
+
+                    <div
+                        v-if="showsTable(a)"
+                        class="rounded-xl border px-3 py-2 text-[11px]"
+                        :class="
+                            fromTable(a)
+                                ? 'border-emerald-200 bg-emerald-50/70 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-100'
+                                : 'border-amber-200 bg-amber-50/70 text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100'
+                        "
+                    >
+                        <p v-if="fromTable(a)" class="font-semibold">
+                            Viene de la tabla de amortización:
+                            {{ a.amortization?.payments ?? 0 }} pago(s), capital
+                            excluido {{ mxn(a.amortization?.principal_excluded) }}.
+                            Si capturas un importe aquí, tu captura gana.
+                        </p>
+                        <p v-else-if="a.amortization?.covered" class="font-semibold">
+                            Captura manual. La tabla de amortización da
+                            {{ mxn(a.amortization.interest) }}<template
+                                v-if="
+                                    a.amortization.difference &&
+                                    Number(a.amortization.difference) !== 0
+                                "
+                            >
+                                · diferencia
+                                {{ mxn(a.amortization.difference) }}</template
+                            >.
+                        </p>
+                        <p v-else class="font-semibold">
+                            La tabla de amortización no cubre las fechas de este
+                            periodo.
+                        </p>
+                        <button
+                            type="button"
+                            class="mt-1 font-bold underline underline-offset-2"
+                            @click="emit('openFinancial')"
+                        >
+                            Ver en Gastos financieros
+                        </button>
                     </div>
 
                     <template v-if="drafts[a.key]">

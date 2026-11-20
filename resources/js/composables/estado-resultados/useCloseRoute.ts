@@ -108,6 +108,12 @@ export function useCloseRoute(dataset: Ref<Dataset | null>) {
             );
         }
 
+        if (proc.stale_catalog) {
+            procBlockers.push(
+                'El catálogo de conceptos cambió después del último procesamiento: vuelve a procesar para aplicarlo.',
+            );
+        }
+
         // 3 · Pendientes
         const pend = d.conciliation.pendientes.count;
         const inPeriod = d.conciliation.movimientos_en_periodo;

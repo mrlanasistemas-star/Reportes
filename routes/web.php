@@ -13,6 +13,9 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EfectividadCalculadoraController;
 use App\Http\Controllers\EstadoResultadosController;
 use App\Http\Controllers\EstadoResultadosComparativoController;
+use App\Http\Controllers\EstadoResultadosControlController;
+use App\Http\Controllers\EstadoResultadosConceptCatalogController;
+use App\Http\Controllers\EstadoResultadosFinancialExpensesController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ApiDocumentationController;
 use App\Http\Controllers\SeoController;
@@ -222,6 +225,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::get('/{period}/ajustes/historial', 'adjustmentLogs')->name('adjustment-logs');
             Route::post('/{period}/cargas', 'upload')->middleware(['throttle:30,1', 'permission:estado_resultados,cargar'])->name('upload');
             Route::post('/{period}/cargas/noi-corporativo', 'uploadPayroll')->middleware(['throttle:30,1', 'permission:estado_resultados,cargar'])->name('upload-payroll');
+            // 20-nov-2026 — quitar el «Archivo 2 (opcional)» de una cuenta (el archivo 1 sólo se sustituye).
+            Route::delete('/{period}/cargas/{slot}/archivo/{part}', 'removeUploadPart')->whereIn('slot', ['administrativa', 'excedentes'])->whereNumber('part')->middleware(['throttle:30,1', 'permission:estado_resultados,cargar'])->name('remove-upload-part');
             Route::post('/{period}/procesar', 'process')->middleware(['throttle:20,1', 'permission:estado_resultados,procesar'])->name('process');
             Route::post('/{period}/clasificar', 'classify')->middleware('permission:estado_resultados,clasificar')->name('classify');
             Route::post('/{period}/aceptar-sugerencias', 'acceptSuggestions')->middleware('permission:estado_resultados,clasificar')->name('accept-suggestions');
@@ -238,6 +243,23 @@ Route::middleware(['auth', 'verified'])->group(function () {
             // 06-nov-2026 — comparativas (anterior, año anterior, evolución, acumulado, sucursales,
             // personalizado) + series de gráficas: fuente única para web, PDF y Excel.
             Route::get('/{period}/comparativas', [EstadoResultadosComparativoController::class, 'show'])->middleware('throttle:60,1')->name('comparatives');
+            // 20-nov-2026 — control total de la Validación: filas de los archivos que aportan al periodo
+            // fuera de su dataset (otro periodo, repetidas, sin periodo, no guardadas) + Excel de la lista.
+            Route::get('/{period}/control-movimientos', [EstadoResultadosControlController::class, 'movements'])->whereNumber('period')->middleware('throttle:60,1')->name('control-movements');
+            Route::get('/{period}/control-movimientos/exportar', [EstadoResultadosControlController::class, 'export'])->whereNumber('period')->middleware(['throttle:20,1', 'permission:estado_resultados,exportar'])->name('control-movements-export');
+            // 20-nov-2026 — catálogo de conceptos (GLOBAL): texto del estado de cuenta → concepto del reporte.
+            // Lectura con el módulo; escritura y vista previa con estado_resultados,catalogo. Se aplica al procesar.
+            Route::get('/catalogo-conceptos', [EstadoResultadosConceptCatalogController::class, 'index'])->name('concept-catalog.index');
+            Route::post('/catalogo-conceptos', [EstadoResultadosConceptCatalogController::class, 'store'])->middleware('permission:estado_resultados,catalogo')->name('concept-catalog.store');
+            Route::put('/catalogo-conceptos/{rule}', [EstadoResultadosConceptCatalogController::class, 'update'])->whereNumber('rule')->middleware('permission:estado_resultados,catalogo')->name('concept-catalog.update');
+            Route::patch('/catalogo-conceptos/{rule}/estado', [EstadoResultadosConceptCatalogController::class, 'toggle'])->whereNumber('rule')->middleware('permission:estado_resultados,catalogo')->name('concept-catalog.toggle');
+            Route::delete('/catalogo-conceptos/{rule}', [EstadoResultadosConceptCatalogController::class, 'destroy'])->whereNumber('rule')->middleware('permission:estado_resultados,catalogo')->name('concept-catalog.destroy');
+            Route::get('/catalogo-conceptos/{rule}/historial', [EstadoResultadosConceptCatalogController::class, 'logs'])->whereNumber('rule')->name('concept-catalog.logs');
+            Route::post('/{period}/catalogo-conceptos/vista-previa', [EstadoResultadosConceptCatalogController::class, 'preview'])->middleware(['throttle:60,1', 'permission:estado_resultados,catalogo'])->name('concept-catalog.preview');
+            // 20-nov-2026 — gastos financieros: intereses LEROM/BBVA desde la tabla de amortización.
+            Route::get('/{period}/gastos-financieros', [EstadoResultadosFinancialExpensesController::class, 'show'])->whereNumber('period')->name('financial-expenses');
+            Route::get('/creditos/plantilla-amortizacion', [EstadoResultadosFinancialExpensesController::class, 'template'])->middleware('throttle:30,1')->name('amortization-template');
+            Route::post('/creditos/{credit}/amortizacion', [EstadoResultadosFinancialExpensesController::class, 'upload'])->where('credit', '[a-z0-9_]+')->middleware(['throttle:30,1', 'permission:estado_resultados,ajustes'])->name('amortization-upload');
         });
 
     // Administración (prioridad 8): Usuarios y Roles y permisos — módulos propios,

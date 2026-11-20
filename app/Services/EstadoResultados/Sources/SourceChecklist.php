@@ -103,6 +103,24 @@ final class SourceChecklist
                     'Revisa los avisos de la tarjeta «'.$label.'» y, si hace falta, sustituye el archivo.', ['kind' => 'upload', 'label' => 'Sustituir archivo', 'slot' => $slot]],
                 default => ['lista', ($upload['movements'] ?? 0).' movimientos de «'.($upload['name'] ?? '').'», procesados.', null, ['kind' => 'upload', 'label' => 'Sustituir archivo', 'slot' => $slot]],
             };
+            // Archivo 2 (opcional, 20-nov-2026): nunca «falta»; pero si está cargado y su control
+            // no cuadra o trae avisos bloqueantes, se reporta como cualquier archivo cargado.
+            if ($state === 'lista') {
+                foreach ((array) ($c['parts'] ?? []) as $p2) {
+                    $u2 = $p2['upload'] ?? null;
+                    if (($p2['required'] ?? true) || ! $u2) {
+                        continue;
+                    }
+                    $name2 = (string) ($u2['name'] ?? '');
+                    if (($u2['control_ok'] ?? null) === false) {
+                        [$state, $message, $fix, $action] = ['con_problemas', 'Los totales del archivo 2 «'.$name2.'» no cuadran con el renglón de control del banco («TOTAL EXCEL»).',
+                            'Revisa el archivo del banco y sustitúyelo (o quítalo) en la tarjeta «'.$label.'» → Archivo 2.', ['kind' => 'upload', 'label' => 'Sustituir archivo 2', 'slot' => $slot, 'part' => 2]];
+                    } elseif (($u2['blocking_warnings'] ?? []) !== []) {
+                        [$state, $message, $fix, $action] = ['con_problemas', 'El archivo 2 «'.$name2.'» tiene avisos que impiden aprobar.',
+                            'Revisa los avisos del archivo 2 en la tarjeta «'.$label.'» y, si hace falta, sustitúyelo o quítalo.', ['kind' => 'upload', 'label' => 'Sustituir archivo 2', 'slot' => $slot, 'part' => 2]];
+                    }
+                }
+            }
             $items[] = self::item($slot, 'Estado de cuenta: '.$label, 'er', $state, true, $message, $fix, $affects, $action, $p,
                 $state === 'falta' ? 'Falta el estado de cuenta «'.$label.'» de '.$p.' → '.$fix : null);
         }
