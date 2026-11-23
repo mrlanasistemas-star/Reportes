@@ -5,6 +5,7 @@ namespace App\Services\Radiography;
 use App\Models\Branch;
 use App\Models\Period;
 use App\Services\OpexClassificationService;
+use App\Services\TemporaryOpexAdjustmentService;
 use Illuminate\Support\Facades\DB;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
@@ -67,24 +68,36 @@ class EmployeesHistoricoExportService
     /** Encabezados porcentuales. */
     private const PERCENT_HEADERS = ['MORA %', 'MARGEN EBITDA %'];
 
+    /**
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Fuente canónica de filas por colaborador y métricas financieras.
+     * @param  OpexClassificationService  $opexClassifier  Clasificación canónica de conceptos OPEX.
+     * @param  TemporaryOpexAdjustmentService  $temporaryAdjustment  Reparte el ajuste manual efímero entre colaboradores.
+     */
     public function __construct(
         private readonly RadiographySnapshotBuilder $snapshotBuilder,
         private readonly OpexClassificationService $opexClassifier,
-        private readonly \App\Services\TemporaryOpexAdjustmentService $temporaryAdjustment,
-    ) {
-    }
+        private readonly TemporaryOpexAdjustmentService $temporaryAdjustment,
+    ) {}
 
     /**
+     * Construye el libro "Colaboradores" del periodo: hoja principal con una fila
+     * por colaborador (recuperación, colocación, cartera, mora, OPEX automático,
+     * gasto manual, nómina, EBITDA, margen, estado activo/baja), hoja "Detalle de
+     * Gastos", hoja "Gráficas" y, si hay ajuste manual, hoja "Resumen".
+     * No escribe en BD (el ajuste manual es efímero).
+     *
      * @param  array{branch_id?:int|null}  $filters  Filtros a respetar (ademas de periodo).
-     *                                                Deliberadamente NO incluye employee_id.
+     *                                               Deliberadamente NO incluye employee_id.
      * @param  array{mode?:string,employee_id?:int|null,branch_id?:int|null,amount_per_employee?:float,notes?:string}  $manualAdjustment
-     *         Ajuste manual EFÍMERO de esta descarga (cierre 17-sep-2026, ronda 2 —
-     *         TemporaryOpexAdjustmentService es la fuente única) — nunca BD.
-     *         mode='employee' suma solo a la fila de ese colaborador.
-     *         mode='branch_each_employee' suma amount_per_employee a CADA fila
-     *         canónica de esa sucursal (multiplicado por el número de colaboradores).
-     *         mode='all_each_employee' suma amount_per_employee a CADA fila del
-     *         periodo completo.
+     *                                                                                                                                    Ajuste manual EFÍMERO de esta descarga (cierre 17-sep-2026, ronda 2 —
+     *                                                                                                                                    TemporaryOpexAdjustmentService es la fuente única) — nunca BD.
+     *                                                                                                                                    mode='employee' suma solo a la fila de ese colaborador.
+     *                                                                                                                                    mode='branch_each_employee' suma amount_per_employee a CADA fila
+     *                                                                                                                                    canónica de esa sucursal (multiplicado por el número de colaboradores).
+     *                                                                                                                                    mode='all_each_employee' suma amount_per_employee a CADA fila del
+     *                                                                                                                                    periodo completo.
+     * @param  Period  $period  Periodo a exportar.
+     * @return Spreadsheet Libro listo para descargar.
      */
     public function build(Period $period, array $filters = [], array $manualAdjustment = []): Spreadsheet
     {
@@ -99,7 +112,7 @@ class EmployeesHistoricoExportService
         $rows = $allRows;
         $dataIds = $this->snapshotBuilder->resolveDataIdsPublic($period);
 
-        if (!empty($filters['branch_id'])) {
+        if (! empty($filters['branch_id'])) {
             // buildEmployeesGestores() solo trae el NOMBRE de sucursal por fila (nunca
             // un branch_id numerico) - se resuelve el nombre una sola vez y se compara
             // insensible a mayusculas/espacios, igual que el resto del pipeline
@@ -133,11 +146,11 @@ class EmployeesHistoricoExportService
         // = false), aunque tuvieran employee_id por error de otro flujo.
         // Detalle por (employee_id, concepto) — misma clasificación, se conserva la
         // fila individual (no solo el acumulado) para poblar "Detalle de Gastos".
-        $opexByEmployee     = [];
+        $opexByEmployee = [];
         $detailItemsByEmployee = [];
         foreach ($expenseRows as $r) {
             $classification = $this->opexClassifier->classify($r->category, $r->concept, OpexClassificationService::SOURCE_LENDUS);
-            if (!$classification['eligible_for_attribution']) {
+            if (! $classification['eligible_for_attribution']) {
                 continue;
             }
             $eid = (int) $r->employee_id;
@@ -167,7 +180,7 @@ class EmployeesHistoricoExportService
             ->groupBy('employee_id')
             ->pluck('total', 'employee_id');
 
-        $spreadsheet = new Spreadsheet();
+        $spreadsheet = new Spreadsheet;
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->setTitle('Colaboradores');
 
@@ -192,38 +205,38 @@ class EmployeesHistoricoExportService
         $sheet->freezePane('A2');
 
         $estadoColIdx = array_search('ESTADO ACTIVO/BAJA', $headers, true) + 1;
-        $estadoCol    = Coordinate::stringFromColumnIndex($estadoColIdx);
+        $estadoCol = Coordinate::stringFromColumnIndex($estadoColIdx);
 
         $r = 2;
         $exportedRowsCount = 0;
         $chartRows = [];
         $detailRows = [];
-        $totalOpexBase   = 0.0; // suma de OPEX TOTAL de cada fila (oficial, nunca incluye el ajuste general)
+        $totalOpexBase = 0.0; // suma de OPEX TOTAL de cada fila (oficial, nunca incluye el ajuste general)
         $totalEbitdaBase = 0.0; // suma de EBITDA de cada fila (oficial)
         foreach ($rows as $row) {
             $employeeIds = $row['_employee_ids'] ?? [];
-            $primaryId   = $employeeIds[0] ?? null;
-            if (!$primaryId) {
+            $primaryId = $employeeIds[0] ?? null;
+            if (! $primaryId) {
                 continue; // fila sin identidad resuelta - no se puede exportar como colaborador
             }
 
-            $opexAuto        = 0.0;
-            $percep          = 0.0;
-            $deduc           = 0.0;
+            $opexAuto = 0.0;
+            $percep = 0.0;
+            $deduc = 0.0;
             foreach ($employeeIds as $eid) {
                 $opexAuto += (float) ($opexByEmployee[$eid] ?? 0.0);
-                $percep   += (float) ($percepcionesByEmployee[$eid] ?? 0.0);
-                $deduc    += (float) ($deduccionesByEmployee[$eid] ?? 0.0);
+                $percep += (float) ($percepcionesByEmployee[$eid] ?? 0.0);
+                $deduc += (float) ($deduccionesByEmployee[$eid] ?? 0.0);
                 // Desglose "Detalle de Gastos" — un registro por (colaborador, concepto).
                 // MISMA fuente que compone $opexAuto (nunca un segundo cálculo) — su suma
                 // por colaborador reconcilia exacto contra OPEX AUTOMÁTICO de arriba.
                 foreach ($detailItemsByEmployee[$eid] ?? [] as $item) {
                     $detailRows[] = [
-                        'name'     => $row['name'] ?? '-',
-                        'branch'   => $row['branch'] ?? 'Sin asignar',
+                        'name' => $row['name'] ?? '-',
+                        'branch' => $row['branch'] ?? 'Sin asignar',
                         'category' => $item['category'],
-                        'concept'  => $item['concept'],
-                        'amount'   => $item['amount'],
+                        'concept' => $item['concept'],
+                        'amount' => $item['amount'],
                     ];
                 }
             }
@@ -247,9 +260,9 @@ class EmployeesHistoricoExportService
             // real (recuperación/colocación) O gasto OPEX automático > 0. El gasto manual
             // y el Nómina-empleado (finiquito/médico — normalmente señal de BAJA, no de
             // actividad) nunca activan por sí solos.
-            $hasIncome  = round((float) ($row['recuperacion'] ?? 0), 2) > 0 || round((float) ($row['colocacion'] ?? 0), 2) > 0;
+            $hasIncome = round((float) ($row['recuperacion'] ?? 0), 2) > 0 || round((float) ($row['colocacion'] ?? 0), 2) > 0;
             $hasExpense = round($opexAuto, 2) > 0;
-            $estado     = ($hasIncome || $hasExpense) ? 'ACTIVO' : 'BAJA';
+            $estado = ($hasIncome || $hasExpense) ? 'ACTIVO' : 'BAJA';
 
             $values = [
                 $period->label,
@@ -296,16 +309,16 @@ class EmployeesHistoricoExportService
             ]);
 
             $chartRows[] = [
-                'name'          => $row['name'] ?? '-',
-                'ebitda'        => round($metrics['ebitda'], 2),
-                'opex_total'    => round($metrics['opex_total'], 2),
-                'cartera'       => round($metrics['cartera'], 2),
-                'vencida'       => round($metrics['vencida'], 2),
-                'recuperacion'  => round((float) ($row['recuperacion'] ?? 0), 2),
-                'colocacion'    => round((float) ($row['colocacion'] ?? 0), 2),
+                'name' => $row['name'] ?? '-',
+                'ebitda' => round($metrics['ebitda'], 2),
+                'opex_total' => round($metrics['opex_total'], 2),
+                'cartera' => round($metrics['cartera'], 2),
+                'vencida' => round($metrics['vencida'], 2),
+                'recuperacion' => round((float) ($row['recuperacion'] ?? 0), 2),
+                'colocacion' => round((float) ($row['colocacion'] ?? 0), 2),
             ];
 
-            $totalOpexBase   += round($metrics['opex_total'], 2);
+            $totalOpexBase += round($metrics['opex_total'], 2);
             $totalEbitdaBase += round($metrics['ebitda'], 2);
 
             $r++;
@@ -324,13 +337,13 @@ class EmployeesHistoricoExportService
             $sheet->setAutoFilter("A1:{$lastCol}{$lastDataRow}");
         }
 
-        if (!empty($chartRows)) {
+        if (! empty($chartRows)) {
             $this->addChartsSheet($spreadsheet, $chartRows);
         }
 
         // Desglose "Detalle de Gastos" (ronda 3, 07-sep-2026) — una fila por
         // (colaborador, concepto) de todo lo que compone su OPEX AUTOMÁTICO.
-        if (!empty($detailRows)) {
+        if (! empty($detailRows)) {
             $this->addDetailSheet($spreadsheet, $detailRows);
         }
 
@@ -368,6 +381,13 @@ class EmployeesHistoricoExportService
      * ajustadas) — aquí solo se resta/suma el total conocido (monto ×
      * colaboradores afectados) para mostrar el comparativo base vs
      * proyectado, sin recalcular nada.
+     *
+     * @param  Spreadsheet  $spreadsheet  Libro en construcción.
+     * @param  float  $opexConAjuste  OPEX total ya con el ajuste aplicado.
+     * @param  float  $ebitdaConAjuste  EBITDA total ya con el ajuste aplicado.
+     * @param  float  $amountPerEmployee  Monto del ajuste por colaborador.
+     * @param  int  $employeeCount  Colaboradores alcanzados por el ajuste.
+     * @param  string  $notes  Notas capturadas para el ajuste.
      */
     private function addResumenAllSheet(Spreadsheet $spreadsheet, float $opexConAjuste, float $ebitdaConAjuste, float $amountPerEmployee, int $employeeCount, string $notes): void
     {
@@ -375,8 +395,8 @@ class EmployeesHistoricoExportService
         $sheet->setTitle('Resumen');
 
         $totalAdjustment = round($amountPerEmployee * $employeeCount, 2);
-        $opexBase        = round($opexConAjuste - $totalAdjustment, 2);
-        $ebitdaBase      = round($ebitdaConAjuste + $totalAdjustment, 2);
+        $opexBase = round($opexConAjuste - $totalAdjustment, 2);
+        $ebitdaBase = round($ebitdaConAjuste + $totalAdjustment, 2);
 
         $rows = [
             ['AJUSTE MANUAL POR COLABORADOR (c/u)', $amountPerEmployee],
@@ -416,8 +436,8 @@ class EmployeesHistoricoExportService
         $sheet->getColumnDimension('A')->setAutoSize(true);
         $sheet->getColumnDimension('B')->setAutoSize(true);
 
-        $sheet->setCellValue('A' . ($r + 1), 'Este ajuste es TEMPORAL — se aplicó a CADA colaborador de esta descarga. Nunca se guardó en la base de datos.');
-        $sheet->mergeCells('A' . ($r + 1) . ':B' . ($r + 1));
+        $sheet->setCellValue('A'.($r + 1), 'Este ajuste es TEMPORAL — se aplicó a CADA colaborador de esta descarga. Nunca se guardó en la base de datos.');
+        $sheet->mergeCells('A'.($r + 1).':B'.($r + 1));
     }
 
     /**
@@ -428,6 +448,9 @@ class EmployeesHistoricoExportService
      * filas de un colaborador aquí reconcilia EXACTO contra su columna OPEX
      * AUTOMÁTICO — nunca incluye conceptos filtrados (Nómina/IMSS/Deducciones/
      * Fondeo/Excedentes/Pólizas, ya excluidos antes de llegar aquí).
+     *
+     * @param  Spreadsheet  $spreadsheet  Libro en construcción.
+     * @param  array  $detailRows  Filas (colaborador, concepto, monto) del OPEX automático.
      */
     private function addDetailSheet(Spreadsheet $spreadsheet, array $detailRows): void
     {
@@ -436,7 +459,7 @@ class EmployeesHistoricoExportService
 
         $headers = ['COLABORADOR', 'SUCURSAL', 'CATEGORÍA', 'CONCEPTO', 'MONTO'];
         foreach ($headers as $i => $h) {
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($i + 1) . '1', $h);
+            $sheet->setCellValue(Coordinate::stringFromColumnIndex($i + 1).'1', $h);
         }
         $lastCol = Coordinate::stringFromColumnIndex(count($headers));
         $sheet->getStyle("A1:{$lastCol}1")->applyFromArray([
@@ -483,6 +506,9 @@ class EmployeesHistoricoExportService
      * recibe como primer argumento — por eso los datos se replican aquí (una
      * mini-tabla local en la propia hoja "Gráficas"), en vez de referenciar la
      * hoja "Colaboradores" desde otra hoja.
+     *
+     * @param  Spreadsheet  $spreadsheet  Libro en construcción.
+     * @param  array  $chartRows  Filas por colaborador con las métricas a graficar.
      */
     private function addChartsSheet(Spreadsheet $spreadsheet, array $chartRows): void
     {
@@ -498,7 +524,7 @@ class EmployeesHistoricoExportService
         $dataStartCol = 35; // AI
         $dataHeaders = ['Colaborador', 'EBITDA', 'OPEX TOTAL', 'VALOR CARTERA', 'CARTERA VENCIDA', 'RECUPERACIÓN', 'COLOCACIÓN'];
         foreach ($dataHeaders as $i => $h) {
-            $chartSheet->setCellValue(Coordinate::stringFromColumnIndex($dataStartCol + $i) . '1', $h);
+            $chartSheet->setCellValue(Coordinate::stringFromColumnIndex($dataStartCol + $i).'1', $h);
         }
         [$colName, $colEbitda, $colOpex, $colCartera, $colVencida, $colRecup, $colColoc] = array_map(
             fn ($i) => Coordinate::stringFromColumnIndex($dataStartCol + $i),
@@ -530,12 +556,12 @@ class EmployeesHistoricoExportService
         }
 
         $metrics = [
-            $colEbitda  => ['EBITDA por colaborador', RadiographyStyleHelper::BG_ACCENT],
-            $colOpex    => ['OPEX total por colaborador', RadiographyStyleHelper::BG_ALERT_RED],
+            $colEbitda => ['EBITDA por colaborador', RadiographyStyleHelper::BG_ACCENT],
+            $colOpex => ['OPEX total por colaborador', RadiographyStyleHelper::BG_ALERT_RED],
             $colCartera => ['Valor de cartera por colaborador', RadiographyStyleHelper::BG_PRIMARY_DARK],
             $colVencida => ['Cartera vencida por colaborador', RadiographyStyleHelper::FG_RED],
-            $colRecup   => ['Recuperación por colaborador', RadiographyStyleHelper::BG_POSITIVE],
-            $colColoc   => ['Colocación por colaborador', RadiographyStyleHelper::BG_SECTION_HDR],
+            $colRecup => ['Recuperación por colaborador', RadiographyStyleHelper::BG_POSITIVE],
+            $colColoc => ['Colocación por colaborador', RadiographyStyleHelper::BG_SECTION_HDR],
         ];
 
         // Gráficas en grid 2×3 (ronda 3, 07-sep-2026 — "mejora las gráficas", tamaño/
@@ -544,10 +570,10 @@ class EmployeesHistoricoExportService
         // angosta relativamente y mucho scroll vertical) — lectura tipo dashboard,
         // todo visible con menos desplazamiento. Cada gráfica ocupa 26 filas de alto
         // (antes 22) para verse más grande y legible.
-        $leftColStart  = 'A';   // A .. P  (16 cols)
-        $leftColEnd    = 'P';
+        $leftColStart = 'A';   // A .. P  (16 cols)
+        $leftColEnd = 'P';
         $rightColStart = 'R';   // R .. AG (16 cols, con 1 col de separación en Q)
-        $rightColEnd   = 'AG';
+        $rightColEnd = 'AG';
         $chartHeightRows = 26;
         $rowGap = 2;
 
@@ -570,7 +596,7 @@ class EmployeesHistoricoExportService
                 "\${$col}\$2:\${$col}\${$lastRow}",
                 $rowCount,
                 "{$pos['col']}{$pos['row']}",
-                $pos['end'] . ($pos['row'] + $chartHeightRows - 1),
+                $pos['end'].($pos['row'] + $chartHeightRows - 1),
                 $color,
             );
             $i++;

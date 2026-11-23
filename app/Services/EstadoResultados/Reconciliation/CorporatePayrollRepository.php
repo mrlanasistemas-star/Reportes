@@ -15,6 +15,10 @@ use Illuminate\Support\Facades\Schema;
 class CorporatePayrollRepository
 {
     /**
+     * NOI de corporativo vigente del periodo (última carga activa de tipo noi_corporativo) con
+     * sus colaboradores agregados (percepciones, deducciones y número de renglones). Sólo lectura.
+     *
+     * @param  int  $periodId  periodo
      * @return array{upload:?EstadoResultadosPayrollUpload, employees:list<array{key:string, name:string, code:?string, percepciones:string, deducciones:string, lines:int}>}
      */
     public function forPeriod(int $periodId): array

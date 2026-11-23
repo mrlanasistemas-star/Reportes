@@ -17,8 +17,19 @@ use Illuminate\Support\Facades\DB;
  */
 class EfectividadV4FingerprintService
 {
+    /** @param  EfectividadV4DataAdapter  $adapter  ventana de cálculo del periodo */
     public function __construct(private readonly EfectividadV4DataAdapter $adapter) {}
 
+    /**
+     * Huella SHA-256 de fotografías activas del rango (id + fecha de importación) y agregados de
+     * los ingresos que afectan el corte. Sólo lectura.
+     *
+     * @param  Period  $period  periodo semanal
+     * @param  int|null  $branchId  sucursal
+     * @param  string  $mode  modo
+     * @param  string|null  $cutoff  día de corte
+     * @return string|null null si el periodo no admite cálculo V4
+     */
     public function compute(Period $period, ?int $branchId, string $mode, ?string $cutoff): ?string
     {
         try {
@@ -48,6 +59,11 @@ class EfectividadV4FingerprintService
         return hash('sha256', sprintf('v4|%s|%s|fotos:%s|ingresos:%d:%d:%d', $w['modo'], $w['fecha_corte'], $fotos, $ing->c ?? 0, $ing->max_id ?? 0, $ing->uploads ?? 0));
     }
 
+    /**
+     * ¿La ejecución quedó obsoleta? (sin periodo o huella guardada ⇒ sí).
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     */
     public function isStale(EfectividadCobranzaRun $run): bool
     {
         if (! $run->period || ! $run->source_fingerprint) {

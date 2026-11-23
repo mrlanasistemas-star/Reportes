@@ -22,6 +22,9 @@ namespace App\Services\Catalog;
  *
  * Los nombres de sucursal coinciden con `branches.name` (sin acentos donde la
  * BD no los tiene: CORDOBA, MIACATLAN, SAN LUIS POTOSI).
+ *
+ * Clase estática y sin BD: todo el catálogo vive en constantes; el índice
+ * normalizado se arma una vez por proceso.
  */
 final class BranchRouteCatalog
 {
@@ -134,10 +137,19 @@ final class BranchRouteCatalog
         'TENANGO' => 'TENANGO DEL VALLE', 'TENANGO DEL VALLE' => 'TENANGO DEL VALLE',
     ];
 
-    /** @var array<string, array{route:string, branch:string, active:bool}>|null */
+    /**
+     * Índice ruta normalizada (incluye ALIASES) => datos de la ruta; memo por proceso.
+     *
+     * @var array<string, array{route:string, branch:string, active:bool}>|null
+     */
     private static ?array $index = null;
 
-    /** Clave comparable: mayúsculas, sin acentos, sin "(INACTIVA)", espacios colapsados y uniformes en guiones/diagonales. */
+    /**
+     * Clave comparable: mayúsculas, sin acentos, sin "(INACTIVA)", espacios colapsados y uniformes en guiones/diagonales.
+     *
+     * @param  string|null  $value  Texto capturado (ruta o sucursal).
+     * @return string Clave normalizada ('' si viene vacío).
+     */
     public static function normalize(?string $value): string
     {
         $value = mb_strtoupper(trim((string) $value), 'UTF-8');
@@ -149,7 +161,12 @@ final class BranchRouteCatalog
         return trim(preg_replace('/\s+/', ' ', $value) ?? $value);
     }
 
-    /** @return array<string, array{route:string, branch:string, active:bool}> */
+    /**
+     * Construye (una vez) el índice normalizado de rutas; los alias verificados
+     * apuntan a la misma entrada que su ruta oficial sin sobrescribir rutas reales.
+     *
+     * @return array<string, array{route:string, branch:string, active:bool}>
+     */
     private static function index(): array
     {
         if (self::$index !== null) {
@@ -169,7 +186,12 @@ final class BranchRouteCatalog
         return self::$index = $index;
     }
 
-    /** @return array{route:string, branch:string, active:bool}|null */
+    /**
+     * Busca una ruta en el catálogo (por clave normalizada o alias verificado).
+     *
+     * @param  string|null  $raw  Ruta tal como viene en la fuente.
+     * @return array{route:string, branch:string, active:bool}|null null si es desconocida o vacía.
+     */
     public static function route(?string $raw): ?array
     {
         $key = self::normalize($raw);
@@ -177,7 +199,11 @@ final class BranchRouteCatalog
         return $key === '' ? null : (self::index()[$key] ?? null);
     }
 
-    /** Sucursal oficial de una ruta del catálogo, o null si la ruta es desconocida. */
+    /**
+     * Sucursal oficial de una ruta del catálogo, o null si la ruta es desconocida.
+     *
+     * @param  string|null  $raw  Ruta capturada.
+     */
     public static function branchForRoute(?string $raw): ?string
     {
         return self::route($raw)['branch'] ?? null;
@@ -186,6 +212,10 @@ final class BranchRouteCatalog
     /**
      * Sucursal oficial para un nombre que puede ser ruta O sucursal (p. ej.
      * "CHOL", "Córdoba", "ATLIX-GTE"). Null si no está en el catálogo.
+     *
+     * Orden: alias de sucursal, nombre de sucursal del catálogo y, al final, ruta.
+     *
+     * @param  string|null  $raw  Ruta o sucursal capturada.
      */
     public static function officialBranchFor(?string $raw): ?string
     {
@@ -205,6 +235,11 @@ final class BranchRouteCatalog
         return self::branchForRoute($raw);
     }
 
+    /**
+     * ¿Es una ruta conocida marcada como INACTIVA? (rutas desconocidas = false).
+     *
+     * @param  string|null  $raw  Ruta capturada.
+     */
     public static function isInactiveRoute(?string $raw): bool
     {
         $route = self::route($raw);
@@ -212,6 +247,11 @@ final class BranchRouteCatalog
         return $route !== null && $route['active'] === false;
     }
 
+    /**
+     * ¿La sucursal es una de las 11 operativas de OKR? (compara normalizado).
+     *
+     * @param  string|null  $branchName  Nombre de sucursal.
+     */
     public static function isOkrOperative(?string $branchName): bool
     {
         $key = self::normalize($branchName);
@@ -219,13 +259,22 @@ final class BranchRouteCatalog
         return $key !== '' && in_array($key, array_map([self::class, 'normalize'], self::OKR_BRANCHES), true);
     }
 
-    /** @return array<string, bool> rutas de una sucursal (ruta => activa). */
+    /**
+     * Rutas de una sucursal (acepta nombre, alias o incluso una ruta de ella).
+     *
+     * @param  string  $branch  Sucursal.
+     * @return array<string, bool> rutas de una sucursal (ruta => activa); [] si no está en el catálogo.
+     */
     public static function routesFor(string $branch): array
     {
         return self::ROUTES[self::officialBranchFor($branch) ?? ''] ?? [];
     }
 
-    /** @return array<string, array<string, bool>> */
+    /**
+     * Catálogo completo tal cual.
+     *
+     * @return array<string, array<string, bool>> sucursal => [ruta => activa].
+     */
     public static function all(): array
     {
         return self::ROUTES;

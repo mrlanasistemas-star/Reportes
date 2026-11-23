@@ -69,8 +69,11 @@ final class V12ColumnMap
     ];
 
     /**
+     * Resuelve el índice de columna de cada campo comparando los encabezados normalizados con
+     * los grupos de alias del mapa (FOTO o INGRESOS).
+     *
      * @param  list<mixed>  $encabezados  fila de encabezados del archivo
-     * @param  array<string, list<list<string>>>  $mapa
+     * @param  array<string, list<list<string>>>  $mapa  campo ⇒ grupos de alias
      * @return array<string,int> campo => índice de columna (0-based)
      */
     public static function resolver(array $encabezados, array $mapa): array

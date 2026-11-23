@@ -6,38 +6,63 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-interbranch-loans` — auditoría de préstamos intersucursales en
+ * `fact_expenses` (categorías que contienen INTERSUCURSAL/FONDEO): activos (quien fondea),
+ * pasivos (quien recibe) y neto. Como ambos lados son de la misma empresa, la regla aplicada
+ * es Activos = Pasivos y Neto = $0.00 siempre; el reporte debe mostrar el neto, no los activos.
+ *
+ * Opciones:
+ *   --compare-reference  compara contra la referencia fija de Abril 2026 (REF_*).
+ *   --detail             detalle por sucursal que fondea.
+ *
+ * Escribe en BD: NO — solo lectura. Usa REGEXP (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:audit-interbranch-loans 5 --compare-reference --detail
+ */
 class AuditInterbranchLoansCommand extends Command
 {
-    protected $signature   = 'reportes:audit-interbranch-loans
+    protected $signature = 'reportes:audit-interbranch-loans
                                 {period_id}
                                 {--compare-reference : comparar contra referencia Abril 2026}
                                 {--detail            : mostrar detalle por transacción}';
+
     protected $description = 'Auditoría de préstamos intersucursales: activos, pasivos, neto por sucursal';
 
     private const REF_ACTIVOS = 449_425.00;
-    private const REF_PASIVOS = 449_425.00;
-    private const REF_NETO    = 0.00;
 
+    private const REF_PASIVOS = 449_425.00;
+
+    private const REF_NETO = 0.00;
+
+    /**
+     * Agrupa los registros intersucursales por sucursal, concepto y fuente; calcula activos,
+     * pasivos y neto e imprime el comparativo y el detalle según las opciones.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         $this->line('');
-        $this->info("════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA PRÉSTAMOS INTERSUCURSALES — {$period->label} (ID {$period->id})");
-        $this->info("  Regla: Total neto = Activos (fondea) − Pasivos (recibe)");
-        $this->info("  Para Abril 2026: Activos = Pasivos → Neto = $0.00");
-        $this->info("════════════════════════════════════════════════════════════════");
+        $this->info('  Regla: Total neto = Activos (fondea) − Pasivos (recibe)');
+        $this->info('  Para Abril 2026: Activos = Pasivos → Neto = $0.00');
+        $this->info('════════════════════════════════════════════════════════════════');
 
         // ── Registros en fact_expenses con categoría intersucursal ────────────
         $this->line('');
@@ -63,22 +88,22 @@ class AuditInterbranchLoansCommand extends Command
 
         $totalActivos = 0.0;
         $totalPasivos = 0.0;
-        $fondeaMap    = [];
-        $recibeMap    = [];
+        $fondeaMap = [];
+        $recibeMap = [];
 
-        $this->line(str_pad('Sucursal', 24) . str_pad('Concepto', 30) . str_pad('Fuente', 14) . str_pad('Monto', 16) . 'Regs');
+        $this->line(str_pad('Sucursal', 24).str_pad('Concepto', 30).str_pad('Fuente', 14).str_pad('Monto', 16).'Regs');
         $this->line(str_repeat('─', 90));
 
         foreach ($rows as $r) {
             $this->line(
-                str_pad(mb_substr($r->sucursal, 0, 22), 24) .
-                str_pad(mb_substr($r->concept ?? '—', 0, 28), 30) .
-                str_pad($r->fuente, 14) .
-                str_pad('$' . number_format((float)$r->total, 2), 16) .
-                (string)$r->cnt
+                str_pad(mb_substr($r->sucursal, 0, 22), 24).
+                str_pad(mb_substr($r->concept ?? '—', 0, 28), 30).
+                str_pad($r->fuente, 14).
+                str_pad('$'.number_format((float) $r->total, 2), 16).
+                (string) $r->cnt
             );
-            $fondeaMap[$r->sucursal] = ($fondeaMap[$r->sucursal] ?? 0) + (float)$r->total;
-            $totalActivos += (float)$r->total;
+            $fondeaMap[$r->sucursal] = ($fondeaMap[$r->sucursal] ?? 0) + (float) $r->total;
+            $totalActivos += (float) $r->total;
         }
 
         // ── B. Totales activos / pasivos / neto ───────────────────────────────
@@ -88,11 +113,11 @@ class AuditInterbranchLoansCommand extends Command
         // For intersucursal: each transaction is an asset for the lender and liability for receiver.
         // Since both sides are in the same company, Activos = Pasivos → Neto = 0.
         $totalPasivos = $totalActivos;
-        $totalNeto    = $totalActivos - $totalPasivos;
+        $totalNeto = $totalActivos - $totalPasivos;
 
-        $this->line("  Activos (fondea):  $" . number_format($totalActivos, 2));
-        $this->line("  Pasivos (recibe):  $" . number_format($totalPasivos, 2));
-        $this->line("  Total neto:        $" . number_format($totalNeto, 2));
+        $this->line('  Activos (fondea):  $'.number_format($totalActivos, 2));
+        $this->line('  Pasivos (recibe):  $'.number_format($totalPasivos, 2));
+        $this->line('  Total neto:        $'.number_format($totalNeto, 2));
 
         if ($this->option('compare-reference')) {
             $this->line('');
@@ -100,12 +125,12 @@ class AuditInterbranchLoansCommand extends Command
 
             $diffA = $totalActivos - self::REF_ACTIVOS;
             $diffP = $totalPasivos - self::REF_PASIVOS;
-            $diffN = $totalNeto    - self::REF_NETO;
+            $diffN = $totalNeto - self::REF_NETO;
 
             $matchA = abs($diffA) < 1 ? '✓ EXACTO' : '✗ DIFERENCIA';
             $matchN = abs($diffN) < 1 ? '✓ EXACTO' : '✗ DIFERENCIA';
 
-            $this->line(str_pad('Métrica', 26) . str_pad('Referencia', 18) . str_pad('Sistema', 18) . str_pad('Diferencia', 16) . 'Estado');
+            $this->line(str_pad('Métrica', 26).str_pad('Referencia', 18).str_pad('Sistema', 18).str_pad('Diferencia', 16).'Estado');
             $this->line(str_repeat('─', 82));
             $items = [
                 ['Activos (fondea)',  self::REF_ACTIVOS, $totalActivos, $diffA, $matchA],
@@ -114,13 +139,16 @@ class AuditInterbranchLoansCommand extends Command
             ];
             foreach ($items as [$lbl, $ref, $sys, $diff, $match]) {
                 $sign = $diff >= 0 ? '+' : '';
-                $line = str_pad($lbl, 26) .
-                    str_pad('$' . number_format($ref, 2), 18) .
-                    str_pad('$' . number_format($sys, 2), 18) .
-                    str_pad($sign . '$' . number_format(abs($diff), 2), 16) .
+                $line = str_pad($lbl, 26).
+                    str_pad('$'.number_format($ref, 2), 18).
+                    str_pad('$'.number_format($sys, 2), 18).
+                    str_pad($sign.'$'.number_format(abs($diff), 2), 16).
                     $match;
-                if ($match === '✓ EXACTO') $this->info("  {$line}");
-                else $this->warn("  {$line}");
+                if ($match === '✓ EXACTO') {
+                    $this->info("  {$line}");
+                } else {
+                    $this->warn("  {$line}");
+                }
             }
         }
 
@@ -128,7 +156,7 @@ class AuditInterbranchLoansCommand extends Command
             $this->line('');
             $this->info('════ D. DETALLE POR SUCURSAL ════');
             foreach ($fondeaMap as $suc => $amt) {
-                $this->line("  " . str_pad($suc, 28) . 'Activo: $' . number_format($amt, 2) . '  Pasivo: $' . number_format($amt, 2) . '  Neto: $0.00');
+                $this->line('  '.str_pad($suc, 28).'Activo: $'.number_format($amt, 2).'  Pasivo: $'.number_format($amt, 2).'  Neto: $0.00');
             }
         }
 

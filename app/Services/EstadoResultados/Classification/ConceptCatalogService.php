@@ -32,10 +32,13 @@ use Illuminate\Support\Str;
  */
 class ConceptCatalogService
 {
+    /** Prefijo del rule_code de un movimiento clasificado por el catálogo («catalogo:{id}»). */
     public const RULE_PREFIX = 'catalogo:';
 
+    /** Firma cuando no hay reglas activas (no altera firmas históricas). */
     public const EMPTY_SIGNATURE = 'sin_catalogo';
 
+    /** Modos de coincidencia del texto. */
     public const MODES = [
         'contiene' => 'Contiene',
         'empieza' => 'Empieza con',
@@ -51,17 +54,24 @@ class ConceptCatalogService
         'bank_reference' => 'Referencia bancaria',
     ];
 
+    /** Campos donde se busca si la regla no indica ninguno. */
     public const DEFAULT_FIELDS = ['concept', 'observations'];
 
+    /** Sentido del movimiento al que aplica la regla. */
     public const DIRECTIONS = [
         'cualquiera' => 'Cargos y abonos',
         'cargo' => 'Sólo cargos (salidas)',
         'abono' => 'Sólo abonos (entradas)',
     ];
 
+    /** Longitud mínima del texto normalizado (evita reglas que atrapen de más). */
     public const MIN_TEXT = 3;
 
-    /** Misma normalización que MovementClassifier: MAYÚSCULAS, sin acentos, espacios simples. */
+    /**
+     * Misma normalización que MovementClassifier: MAYÚSCULAS, sin acentos, espacios simples.
+     *
+     * @param  string|null  $v  texto
+     */
     public static function normalize(?string $v): string
     {
         $v = mb_strtoupper(Str::ascii(trim((string) $v)));
@@ -69,6 +79,9 @@ class ConceptCatalogService
         return preg_replace('/\s+/', ' ', $v) ?? $v;
     }
 
+    /**
+     * ¿Existe la tabla del catálogo? (memorizado por proceso; sin migración no hay catálogo).
+     */
     public static function available(): bool
     {
         static $ok = null;
@@ -111,7 +124,12 @@ class ConceptCatalogService
         return self::sortByPrecedence($rules);
     }
 
-    /** Firma de las reglas vigentes (lo que cambia la clasificación). Sin reglas ⇒ EMPTY_SIGNATURE. */
+    /**
+     * Firma de las reglas vigentes (lo que cambia la clasificación). Sin reglas ⇒ EMPTY_SIGNATURE.
+     *
+     * @param  array|null  $rules  reglas compiladas (null = activeRules())
+     * @return string SHA-256 de las reglas ordenadas por id
+     */
     public function signature(?array $rules = null): string
     {
         $rules ??= $this->activeRules();
@@ -124,7 +142,12 @@ class ConceptCatalogService
         return hash('sha256', json_encode($parts, JSON_UNESCAPED_UNICODE));
     }
 
-    /** @return list<array<string,mixed>> */
+    /**
+     * Bitácora de cambios de una regla (más reciente primero) con antes/después.
+     *
+     * @param  EstadoResultadosConceptRule  $rule  regla
+     * @return list<array<string,mixed>>
+     */
     public function logs(EstadoResultadosConceptRule $rule): array
     {
         return EstadoResultadosConceptRuleLog::query()->with('user:id,name')->where('rule_id', $rule->id)->orderByDesc('id')->get()
@@ -162,7 +185,12 @@ class ConceptCatalogService
         return ['rule' => $hits[0], 'others' => array_slice($hits, 1)];
     }
 
-    /** ¿La regla coincide con el movimiento? (filtros de cuenta y sentido + texto en algún campo). */
+    /**
+     * ¿La regla coincide con el movimiento? (filtros de cuenta y sentido + texto en algún campo).
+     *
+     * @param  array  $m  columnas del movimiento
+     * @param  array  $r  regla compilada
+     */
     public static function matches(array $m, array $r): bool
     {
         if ($r['account_slot'] !== null && $r['account_slot'] !== ($m['account_slot'] ?? null)) {
@@ -190,7 +218,12 @@ class ConceptCatalogService
         return false;
     }
 
-    /** Mayor prioridad primero; empate ⇒ texto más largo (más específico); luego la más antigua. */
+    /**
+     * Mayor prioridad primero; empate ⇒ texto más largo (más específico); luego la más antigua.
+     *
+     * @param  array  $rules  reglas compiladas
+     * @return array reglas ordenadas
+     */
     public static function sortByPrecedence(array $rules): array
     {
         usort($rules, fn ($a, $b) => [$b['priority'], mb_strlen($b['norm']), $a['id']] <=> [$a['priority'], mb_strlen($a['norm']), $b['id']]);
@@ -198,7 +231,14 @@ class ConceptCatalogService
         return $rules;
     }
 
-    /** Resultado de clasificación (mismo formato que MovementClassifier::out) para la regla ganadora. */
+    /**
+     * Resultado de clasificación (mismo formato que MovementClassifier::out) para la regla ganadora.
+     * Una regla que manda a «pendiente» marca el movimiento para revisión.
+     *
+     * @param  array  $rule  regla ganadora
+     * @param  array  $others  otras reglas que también coinciden (se citan en el motivo)
+     * @return array{treatment:string, suggested:null, rule:string, reason:string, review:bool, concept_rule:array}
+     */
     public static function outcome(array $rule, array $others = []): array
     {
         $reason = 'Catálogo de conceptos: “'.$rule['text'].'” → '.$rule['name'].' ('.Treatment::label($rule['treatment']).').';
@@ -221,7 +261,15 @@ class ConceptCatalogService
      * Vista previa: movimientos del periodo que coinciden con una regla (guardada o en captura)
      * y si de verdad se aplicaría al procesar (o por qué no).
      *
+     * Sólo lectura. Un movimiento coincide pero «no aplica» si está bloqueado (fuera de periodo,
+     * manual, conciliado, duplicado UUID, en revisión ERP, traspaso o reverso) o si otra regla de
+     * mayor precedencia lo gana. «amount» suma sólo los que sí aplicarían.
+     *
+     * @param  Period  $period  periodo cuyos movimientos se revisan
      * @param  array<string,mixed>  $draft  datos de la regla (mismo formato que create/update)
+     * @param  int|null  $ruleId  id de la regla si ya existe (se excluye de las «otras»)
+     * @param  int  $limit  máximo de items devueltos
+     * @param  callable|null  $hidden  decide si una fila se oculta por permisos (nómina/DG)
      * @return array{total:int, applies:int, blocked:int, amount:string, items:list<array<string,mixed>>, truncated:bool}
      */
     public function preview(Period $period, array $draft, ?int $ruleId = null, int $limit = 200, ?callable $hidden = null): array
@@ -276,7 +324,12 @@ class ConceptCatalogService
         ];
     }
 
-    /** Por qué el catálogo NO tocaría este movimiento al procesar (null = sí lo toca). */
+    /**
+     * Por qué el catálogo NO tocaría este movimiento al procesar (null = sí lo toca).
+     *
+     * @param  EstadoResultadosMovement  $m  movimiento
+     * @param  bool  $hasOverride  tiene clasificación manual en el periodo
+     */
     private function blockedReason(EstadoResultadosMovement $m, bool $hasOverride): ?string
     {
         $status = (string) $m->reconciliation_status;
@@ -297,6 +350,14 @@ class ConceptCatalogService
     // Escritura (con bitácora)
     // ───────────────────────────────────────────────────────────────────
 
+    /**
+     * Crea una regla validada y registra «creada» en la bitácora (transacción).
+     *
+     * @param  array  $input  datos del formulario
+     * @param  int|null  $userId  usuario
+     *
+     * @throws \InvalidArgumentException datos inválidos (ver validated())
+     */
     public function create(array $input, ?int $userId): EstadoResultadosConceptRule
     {
         $data = $this->validated($input);
@@ -309,6 +370,16 @@ class ConceptCatalogService
         });
     }
 
+    /**
+     * Edita una regla; si nada cambia no guarda ni registra (no invalida periodos). Si cambia,
+     * registra «editada» con antes/después. Nota: 'active' viene de sanitize() (true si no se envía).
+     *
+     * @param  EstadoResultadosConceptRule  $rule  regla
+     * @param  array  $input  datos del formulario
+     * @param  int|null  $userId  usuario
+     *
+     * @throws \InvalidArgumentException datos inválidos
+     */
     public function update(EstadoResultadosConceptRule $rule, array $input, ?int $userId): EstadoResultadosConceptRule
     {
         $data = $this->validated($input);
@@ -326,6 +397,13 @@ class ConceptCatalogService
         });
     }
 
+    /**
+     * Activa o desactiva una regla (sin cambio ⇒ no hace nada) y lo registra en la bitácora.
+     *
+     * @param  EstadoResultadosConceptRule  $rule  regla
+     * @param  bool  $active  nuevo estado
+     * @param  int|null  $userId  usuario
+     */
     public function setActive(EstadoResultadosConceptRule $rule, bool $active, ?int $userId): EstadoResultadosConceptRule
     {
         if ($rule->active === $active) {
@@ -341,6 +419,12 @@ class ConceptCatalogService
         });
     }
 
+    /**
+     * Borrado lógico de una regla (registra quién la borró y la acción «borrada»).
+     *
+     * @param  EstadoResultadosConceptRule  $rule  regla
+     * @param  int|null  $userId  usuario
+     */
     public function delete(EstadoResultadosConceptRule $rule, ?int $userId): void
     {
         DB::transaction(function () use ($rule, $userId) {
@@ -351,7 +435,12 @@ class ConceptCatalogService
         });
     }
 
-    /** Presentación para la pantalla (etiquetas legibles incluidas). */
+    /**
+     * Presentación para la pantalla (etiquetas legibles incluidas).
+     *
+     * @param  EstadoResultadosConceptRule  $r  regla
+     * @return array<string, mixed>
+     */
     public function present(EstadoResultadosConceptRule $r): array
     {
         $fields = array_values((array) $r->fields);
@@ -382,7 +471,11 @@ class ConceptCatalogService
         ];
     }
 
-    /** Opciones para el formulario. */
+    /**
+     * Opciones para el formulario (modos, campos, sentidos, cuentas y texto mínimo).
+     *
+     * @return array<string, mixed>
+     */
     public static function options(): array
     {
         $pairs = fn (array $map) => array_map(fn ($k, $v) => ['key' => $k, 'label' => $v], array_keys($map), $map);
@@ -397,7 +490,13 @@ class ConceptCatalogService
         ];
     }
 
-    /** Normaliza la entrada SIN exigir que esté completa (vista previa). */
+    /**
+     * Normaliza la entrada SIN exigir que esté completa (vista previa): recorta longitudes,
+     * descarta valores fuera de catálogo (con sus valores por defecto) y acota la prioridad 0–1000.
+     *
+     * @param  array  $in  entrada cruda
+     * @return array<string, mixed>
+     */
     private function sanitize(array $in): array
     {
         $fields = array_values(array_intersect(array_keys(self::FIELDS), (array) ($in['fields'] ?? [])));
@@ -421,7 +520,14 @@ class ConceptCatalogService
         ];
     }
 
-    /** Entrada completa y válida para guardar (mensajes en español). */
+    /**
+     * Entrada completa y válida para guardar (mensajes en español).
+     *
+     * @param  array  $in  entrada cruda
+     * @return array<string, mixed>
+     *
+     * @throws \InvalidArgumentException nombre < 3, texto < MIN_TEXT o tratamiento no asignable
+     */
     private function validated(array $in): array
     {
         $data = $this->sanitize($in);
@@ -438,6 +544,13 @@ class ConceptCatalogService
         return $data;
     }
 
+    /**
+     * Regla del modelo → arreglo compilado para el clasificador (texto normalizado y valores
+     * por defecto para modo, campos y sentido).
+     *
+     * @param  EstadoResultadosConceptRule  $r  regla
+     * @return array<string, mixed>
+     */
     private function compile(EstadoResultadosConceptRule $r): array
     {
         return [
@@ -449,11 +562,26 @@ class ConceptCatalogService
         ];
     }
 
+    /**
+     * Foto de los campos editables de una regla para la bitácora.
+     *
+     * @param  EstadoResultadosConceptRule  $r  regla
+     * @return array<string, mixed>
+     */
     private function snapshot(EstadoResultadosConceptRule $r): array
     {
         return $r->only(['name', 'match_text', 'match_mode', 'fields', 'account_slot', 'direction', 'treatment', 'priority', 'active', 'notes']);
     }
 
+    /**
+     * Inserta un evento en la bitácora append-only del catálogo.
+     *
+     * @param  EstadoResultadosConceptRule  $rule  regla
+     * @param  string  $action  creada | editada | activada | desactivada | borrada
+     * @param  array|null  $before  estado anterior
+     * @param  array|null  $after  estado nuevo
+     * @param  int|null  $userId  usuario
+     */
     private function log(EstadoResultadosConceptRule $rule, string $action, ?array $before, ?array $after, ?int $userId): void
     {
         EstadoResultadosConceptRuleLog::query()->create([

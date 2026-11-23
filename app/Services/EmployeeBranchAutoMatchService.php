@@ -9,31 +9,53 @@ use App\Models\EmployeeBranchAssignment;
 use App\Models\NoiMovement;
 use App\Models\Period;
 use App\Models\ReportUpload;
-use App\Services\BranchResolverService;
-use App\Services\PersonIdentityResolverService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 /**
- * Resolves branch assignments for employees detected in NOI / NOI Fiscal.
+ * Asignación automática de sucursal ("automatch") para los colaboradores
+ * detectados en NOI / NOI Fiscal de cada periodo.
  *
- * Performance contract: this service must run in O(cobranza_rows + placements_rows +
- * portfolios_rows + expenses_rows + employees) per period — NEVER O(employees × cobranza_rows).
- * All candidate sources (cobranza, colocación, cartera, gastos, directorio Lendus,
- * histórico, alias, empleados canónicos) are preindexed ONCE before the employee loop.
- * The employee loop itself performs only in-memory hash lookups and, as a last resort,
- * fuzzy comparisons against a small reduced candidate pool (distinct normalized names
- * seen in cobranza/colocación/directorio — typically a few hundred, never the raw
- * row count).
+ * Para qué sirve en el negocio: la nómina (NOI) no trae la sucursal operativa
+ * del colaborador; este servicio la infiere con evidencia de operación
+ * (cobranza, colocación, cartera, gastos, directorio Lendus, histórico, alias y
+ * registros canónicos) y la guarda en employee_branch_assignments, que después
+ * usan la radiografía, el roster del periodo y los reportes por colaborador.
+ * Nunca sobrescribe una asignación manual confirmada. Lo invocan el comando de
+ * automatch y el flujo de actualización de base de datos del periodo.
+ *
+ * Contrato de rendimiento: debe correr en O(filas_cobranza + filas_colocación +
+ * filas_cartera + filas_gastos + empleados) por periodo — NUNCA
+ * O(empleados × filas_cobranza). Todas las fuentes candidatas se preindexan UNA
+ * vez antes del ciclo de empleados. El ciclo solo hace búsquedas en memoria por
+ * hash y, como último recurso, comparaciones difusas contra un conjunto reducido
+ * de nombres distintos (vistos en cobranza/colocación/directorio — normalmente
+ * unos cientos, nunca el número crudo de filas).
  */
 class EmployeeBranchAutoMatchService
 {
+    /**
+     * @param  PersonIdentityResolverService  $resolver  Calcula la similitud difusa entre nombres.
+     * @param  BranchResolverService  $branchResolver  Provee las sucursales operativas oficiales y resuelve sucursal por código Lendus.
+     */
     public function __construct(
         private PersonIdentityResolverService $resolver,
         private BranchResolverService $branchResolver,
     ) {}
 
+    /**
+     * Ejecuta el automatch para un periodo o para todos (del más reciente al más antiguo).
+     *
+     * Activa temporalmente el query log de Laravel para contar consultas (solo si
+     * no estaba activo; lo desactiva al terminar) en vez de un listener permanente,
+     * para no fugar memoria en workers de larga vida.
+     *
+     * @param  int|null  $periodId  Periodo a procesar; null = todos los periodos.
+     * @param  callable|null  $progress  Callback opcional fn(int $porcentaje, string $etapa, string $detalle) para reportar avance.
+     * @return array<string, int> Totales acumulados (ver emptyStats()) más duration_ms y query_count.
+     */
     public function handle(?int $periodId = null, ?callable $progress = null): array
     {
         $periods = Period::query()
@@ -44,12 +66,12 @@ class EmployeeBranchAutoMatchService
             ->get();
 
         $totals = $this->emptyStats();
-        $start  = microtime(true);
+        $start = microtime(true);
 
         // Scoped query counting via Laravel's query log (not DB::listen — a permanent
         // listener would leak memory across repeated calls in a long-lived worker process).
         $wasLogging = DB::logging();
-        if (!$wasLogging) {
+        if (! $wasLogging) {
             DB::enableQueryLog();
         }
         $queryCountBefore = count(DB::getQueryLog());
@@ -65,41 +87,65 @@ class EmployeeBranchAutoMatchService
 
         $totals['duration_ms'] = (int) round((microtime(true) - $start) * 1000);
         $totals['query_count'] = count(DB::getQueryLog()) - $queryCountBefore;
-        if (!$wasLogging) {
+        if (! $wasLogging) {
             DB::disableQueryLog();
         }
 
         return $totals;
     }
 
+    /**
+     * Estructura de contadores en cero que se acumula por periodo y en total.
+     *
+     * @return array<string, int> processed, unique_persons, matched, unmatched, ambiguous, manual_kept, contadores por método, duration_ms, query_count.
+     */
     private function emptyStats(): array
     {
         return [
-            'processed'        => 0,
-            'unique_persons'   => 0,
-            'matched'          => 0,
-            'unmatched'        => 0,
-            'ambiguous'        => 0,
-            'manual_kept'      => 0,
+            'processed' => 0,
+            'unique_persons' => 0,
+            'matched' => 0,
+            'unmatched' => 0,
+            'ambiguous' => 0,
+            'manual_kept' => 0,
             'exact_identifier' => 0,
-            'historical'       => 0,
-            'exact_name'       => 0,
-            'majority'         => 0,
-            'fuzzy'            => 0,
-            'duration_ms'      => 0,
-            'query_count'      => 0,
+            'historical' => 0,
+            'exact_name' => 0,
+            'majority' => 0,
+            'fuzzy' => 0,
+            'duration_ms' => 0,
+            'query_count' => 0,
         ];
     }
 
+    /**
+     * Resuelve y guarda la sucursal de todos los colaboradores NOI de un periodo.
+     *
+     * Pasos: determina semanas cubiertas y uploads NOI/NOI Fiscal/cobranza,
+     * obtiene empleados, preindexa todas las fuentes, agrupa los duplicados
+     * NOI vs NOI Fiscal por nombre normalizado (los homónimos con rechazo de
+     * fusión quedan en grupos separados) y resuelve UNA sucursal por persona real.
+     * Reglas: (A) una asignación manual confirmada en el grupo se conserva y se
+     * hereda a los demás registros del grupo; si no, se usa
+     * resolveCandidateForGroup(); sin candidato queda como Unmatched (branch_id null).
+     *
+     * Efecto en BD: upsert por lotes de 200 en employee_branch_assignments
+     * (llave period_id + employee_id), siempre con was_manual_reviewed = false;
+     * las filas manuales existentes no se incluyen en el upsert.
+     *
+     * @param  Period  $period  Periodo a procesar.
+     * @param  callable|null  $progress  Callback de avance (55-100 %).
+     * @return array<string, int> Contadores del periodo.
+     */
     private function processPeriod(Period $period, ?callable $progress = null): array
     {
         $stats = $this->emptyStats();
 
-        $coveredWeekIds    = $this->resolveCoveredWeekIds($period);
-        $noiUploadIds      = $this->resolveUploadIdsForSource('noi_nomina', $coveredWeekIds);
-        $fiscalUploadIds   = $this->resolveUploadIdsForSource('noi_nomina_fiscal', $coveredWeekIds);
+        $coveredWeekIds = $this->resolveCoveredWeekIds($period);
+        $noiUploadIds = $this->resolveUploadIdsForSource('noi_nomina', $coveredWeekIds);
+        $fiscalUploadIds = $this->resolveUploadIdsForSource('noi_nomina_fiscal', $coveredWeekIds);
         $cobranzaUploadIds = $this->resolveUploadIdsForSource('lendus_ingresos_cobranza', $coveredWeekIds);
-        $allNoiUploadIds   = array_values(array_unique(array_merge($noiUploadIds, $fiscalUploadIds)));
+        $allNoiUploadIds = array_values(array_unique(array_merge($noiUploadIds, $fiscalUploadIds)));
 
         $employees = $this->resolveEmployeesForPeriod($period, $allNoiUploadIds);
 
@@ -107,7 +153,7 @@ class EmployeeBranchAutoMatchService
             return $stats;
         }
 
-        $employeeIds    = $employees->pluck('id')->all();
+        $employeeIds = $employees->pluck('id')->all();
         $operativeNames = array_map('strtoupper', $this->branchResolver->operativeFinancialBranches());
 
         $progress && $progress(55, 'Preparando índices', 'Agrupando cobranza, colocación, cartera y directorio Lendus una sola vez para todo el periodo.');
@@ -119,25 +165,25 @@ class EmployeeBranchAutoMatchService
             ->get()
             ->keyBy('employee_id');
 
-        $cobranzaIndex   = $this->buildCobranzaIndex($cobranzaUploadIds, $operativeNames);
+        $cobranzaIndex = $this->buildCobranzaIndex($cobranzaUploadIds, $operativeNames);
         $placementsIndex = $this->buildPlacementsIndex($period->id);
         $portfoliosIndex = $this->buildPortfoliosIndex($period->id, $operativeNames);
-        $expensesIndex   = $this->buildExpensesIndex($period->id, $employeeIds, $operativeNames);
-        $lendusIndex     = $this->buildLendusIndex();
+        $expensesIndex = $this->buildExpensesIndex($period->id, $employeeIds, $operativeNames);
+        $lendusIndex = $this->buildLendusIndex();
         $historicalIndex = $this->buildHistoricalIndex($period->id, $employeeIds, $operativeNames);
-        $aliasIndex      = $this->buildAliasIndex($employees, $operativeNames);
+        $aliasIndex = $this->buildAliasIndex($employees, $operativeNames);
         // Cierre 2026-10: homónimos con rechazo de fusión explícito son personas distintas —
         // cada uno es su propio grupo y no hereda la sucursal del otro por nombre.
-        $homonymKeys     = $this->homonymGroupKeys($employees);
-        $canonicalIndex  = $this->buildCanonicalIndex($employees, $operativeNames, array_values(array_unique(array_map(fn ($k) => strstr($k, '#', true), $homonymKeys))));
+        $homonymKeys = $this->homonymGroupKeys($employees);
+        $canonicalIndex = $this->buildCanonicalIndex($employees, $operativeNames, array_values(array_unique(array_map(fn ($k) => strstr($k, '#', true), $homonymKeys))));
 
         $progress && $progress(65, 'Coincidencias exactas', 'Resolviendo por historial confirmado y nombre exacto.');
 
         // ── Unify NOI + NOI Fiscal duplicates: resolve branch ONCE per real person ──
-        $groups = $employees->groupBy(fn (Employee $e) => $homonymKeys[$e->id] ?? ($e->normalized_name ?: ('id:' . $e->id)));
+        $groups = $employees->groupBy(fn (Employee $e) => $homonymKeys[$e->id] ?? ($e->normalized_name ?: ('id:'.$e->id)));
 
-        $upserts     = [];
-        $groupsDone  = 0;
+        $upserts = [];
+        $groupsDone = 0;
         $totalGroups = max(1, $groups->count());
 
         foreach ($groups as $normName => $groupEmployees) {
@@ -161,6 +207,7 @@ class EmployeeBranchAutoMatchService
                     $existing = $existingAssignments->get($e->id);
                     if ($existing && $existing->was_manual_reviewed && $existing->match_type?->value === MatchType::Manual->value && $existing->branch_id) {
                         $stats['manual_kept']++;
+
                         continue; // untouched — never overwrite a manual assignment
                     }
                     $upserts[] = $this->buildUpsertRow(
@@ -171,6 +218,7 @@ class EmployeeBranchAutoMatchService
                     );
                     $stats['matched']++;
                 }
+
                 continue;
             }
 
@@ -188,7 +236,7 @@ class EmployeeBranchAutoMatchService
             );
 
             $isAmbiguous = is_array($candidate) && $candidate['branch_id'] === null;
-            $isMatched   = is_array($candidate) && $candidate['branch_id'] !== null;
+            $isMatched = is_array($candidate) && $candidate['branch_id'] !== null;
 
             foreach ($groupEmployees as $e) {
                 if ($isMatched) {
@@ -232,6 +280,19 @@ class EmployeeBranchAutoMatchService
         return $stats;
     }
 
+    /**
+     * Arma una fila para el upsert de employee_branch_assignments.
+     *
+     * @param  int  $periodId  Periodo de la asignación.
+     * @param  int  $employeeId  Colaborador.
+     * @param  int|null  $branchId  Sucursal resuelta; null cuando no hubo coincidencia.
+     * @param  SourceType  $sourceType  Origen de la evidencia (Lendus, Manual...).
+     * @param  string|null  $sourceReference  Tabla/fuente concreta usada como evidencia.
+     * @param  MatchType  $matchType  Método de coincidencia aplicado.
+     * @param  float  $confidence  Confianza 0-1.
+     * @param  string  $notes  Explicación legible para la revisión manual.
+     * @return array<string, mixed> Fila lista para upsert (was_manual_reviewed siempre false).
+     */
     private function buildUpsertRow(
         int $periodId,
         int $employeeId,
@@ -243,22 +304,47 @@ class EmployeeBranchAutoMatchService
         string $notes,
     ): array {
         return [
-            'period_id'           => $periodId,
-            'employee_id'         => $employeeId,
-            'branch_id'           => $branchId,
-            'source_type'         => $sourceType->value,
-            'source_reference'    => $sourceReference,
-            'match_type'          => $matchType->value,
-            'confidence'          => $confidence,
+            'period_id' => $periodId,
+            'employee_id' => $employeeId,
+            'branch_id' => $branchId,
+            'source_type' => $sourceType->value,
+            'source_reference' => $sourceReference,
+            'match_type' => $matchType->value,
+            'confidence' => $confidence,
             'was_manual_reviewed' => false,
-            'notes'               => $notes,
-            'created_at'          => now(),
-            'updated_at'          => now(),
+            'notes' => $notes,
+            'created_at' => now(),
+            'updated_at' => now(),
         ];
     }
 
     /**
+     * Elige la sucursal de una persona (grupo de registros NOI) con la evidencia
+     * preindexada, en orden de prioridad:
+     *  1. Histórico: última sucursal operativa confirmada en otro periodo (0.85).
+     *  2. Cobranza: sucursal única (exacta, 1.00) o mayoría clara (0.85).
+     *  3. Colocación y 4. Cartera: mayoría clara (0.82).
+     *  5. Gastos por employee_id: mayoría clara (0.80).
+     *  6. Directorio Lendus: sucursal inferida (0.88) o por código Lendus (0.85).
+     *  7. Alias confirmado (0.95) y 8. otro registro con el mismo nombre normalizado (0.98).
+     *  9. Fuzzy contra el conjunto reducido de nombres: acepta con ≥85 % y
+     *     margen ≥8 puntos sobre el segundo lugar.
+     * Un empate en cualquier fuente o un fuzzy plausible (≥70 %) sin confianza
+     * marca el caso como ambiguo, pero se siguen probando las demás fuentes.
+     * Puede hacer una consulta puntual a branches al resolver por código Lendus.
+     *
+     * @param  string  $normName  Nombre normalizado del grupo (sin sufijo de homónimo).
+     * @param  Collection  $groupEmployees  Registros Employee de la misma persona.
+     * @param  array  $cobranzaIndex  Índice de buildCobranzaIndex().
+     * @param  array  $placementsIndex  Índice de buildPlacementsIndex().
+     * @param  array  $portfoliosIndex  Índice de buildPortfoliosIndex().
+     * @param  array  $expensesIndex  Índice de buildExpensesIndex().
+     * @param  array  $lendusIndex  Índice de buildLendusIndex().
+     * @param  array  $historicalIndex  Índice de buildHistoricalIndex().
+     * @param  array  $aliasIndex  Índice de buildAliasIndex().
+     * @param  array  $canonicalIndex  Índice de buildCanonicalIndex().
      * @return array{branch_id:int,source_type:SourceType,source_reference:string,match_type:MatchType,confidence:float,notes:string,stat_key:string}|null
+     *                                                                                                                                                     Candidato resuelto; array con branch_id null (stat_key 'ambiguous') si es ambiguo; null si no hay evidencia.
      */
     private function resolveCandidateForGroup(
         string $normName,
@@ -277,13 +363,13 @@ class EmployeeBranchAutoMatchService
         foreach ($groupEmployees as $e) {
             if (isset($historicalIndex[$e->id])) {
                 return [
-                    'branch_id'        => $historicalIndex[$e->id],
-                    'source_type'      => SourceType::Lendus,
+                    'branch_id' => $historicalIndex[$e->id],
+                    'source_type' => SourceType::Lendus,
                     'source_reference' => 'employee_branch_assignments (histórico)',
-                    'match_type'       => MatchType::Historical,
-                    'confidence'       => 0.85,
-                    'notes'            => 'Sucursal heredada de la última asignación confirmada en un periodo anterior.',
-                    'stat_key'         => 'historical',
+                    'match_type' => MatchType::Historical,
+                    'confidence' => 0.85,
+                    'notes' => 'Sucursal heredada de la última asignación confirmada en un periodo anterior.',
+                    'stat_key' => 'historical',
                 ];
             }
         }
@@ -294,9 +380,9 @@ class EmployeeBranchAutoMatchService
         if (isset($cobranzaIndex['byName'][$normName])) {
             $branches = $cobranzaIndex['byName'][$normName];
             arsort($branches);
-            $branchIds   = array_keys($branches);
-            $topBranch   = $branchIds[0];
-            $topCount    = $branches[$topBranch];
+            $branchIds = array_keys($branches);
+            $topBranch = $branchIds[0];
+            $topCount = $branches[$topBranch];
             $secondCount = isset($branchIds[1]) ? $branches[$branchIds[1]] : 0;
 
             if (count($branches) === 1) {
@@ -322,10 +408,10 @@ class EmployeeBranchAutoMatchService
 
         // G) Colocación (placements) — exact name, clear majority
         if (isset($placementsIndex['byName'][$normName])) {
-            $list   = $placementsIndex['byName'][$normName];
-            $top    = $list[0];
+            $list = $placementsIndex['byName'][$normName];
+            $top = $list[0];
             $second = $list[1] ?? null;
-            if (!$second || $top['cnt'] > $second['cnt']) {
+            if (! $second || $top['cnt'] > $second['cnt']) {
                 return [
                     'branch_id' => $top['branch_id'], 'source_type' => SourceType::Lendus,
                     'source_reference' => 'fact_placements', 'match_type' => MatchType::Majority,
@@ -338,10 +424,10 @@ class EmployeeBranchAutoMatchService
 
         // Cartera (portfolios)
         if (isset($portfoliosIndex['byName'][$normName])) {
-            $list   = $portfoliosIndex['byName'][$normName];
-            $top    = $list[0];
+            $list = $portfoliosIndex['byName'][$normName];
+            $top = $list[0];
             $second = $list[1] ?? null;
-            if (!$second || $top['cnt'] > $second['cnt']) {
+            if (! $second || $top['cnt'] > $second['cnt']) {
                 return [
                     'branch_id' => $top['branch_id'], 'source_type' => SourceType::Lendus,
                     'source_reference' => 'fact_portfolios', 'match_type' => MatchType::Majority,
@@ -355,10 +441,10 @@ class EmployeeBranchAutoMatchService
         // Gastos (expenses) — keyed by employee_id, not name
         foreach ($groupEmployees as $e) {
             if (isset($expensesIndex['byEmployee'][$e->id])) {
-                $list   = $expensesIndex['byEmployee'][$e->id];
-                $top    = $list[0];
+                $list = $expensesIndex['byEmployee'][$e->id];
+                $top = $list[0];
                 $second = $list[1] ?? null;
-                if (!$second || $top['cnt'] > $second['cnt']) {
+                if (! $second || $top['cnt'] > $second['cnt']) {
                     return [
                         'branch_id' => $top['branch_id'], 'source_type' => SourceType::Lendus,
                         'source_reference' => 'fact_expenses', 'match_type' => MatchType::Majority,
@@ -422,16 +508,17 @@ class EmployeeBranchAutoMatchService
             $lendusIndex['distinctNames'] ?? [],
         ));
 
-        if (!empty($pool)) {
+        if (! empty($pool)) {
             // Cheap bucket by first token to shrink the comparison set further.
             $firstToken = strtok($normName, ' ') ?: $normName;
             $bucket = array_filter($pool, function ($candidateName) use ($firstToken, $normName) {
                 $candidateFirstToken = strtok($candidateName, ' ') ?: $candidateName;
+
                 return $candidateFirstToken === $firstToken
                     || str_starts_with($candidateName, $firstToken)
                     || str_starts_with($normName, $candidateFirstToken);
             });
-            $searchPool = !empty($bucket) ? $bucket : $pool;
+            $searchPool = ! empty($bucket) ? $bucket : $pool;
 
             $bestName = null;
             $bestScore = 0.0;
@@ -441,8 +528,8 @@ class EmployeeBranchAutoMatchService
                 $score = $this->resolver->scoreNameSimilarity($normName, $candidateName);
                 if ($score > $bestScore) {
                     $secondScore = $bestScore;
-                    $bestScore   = $score;
-                    $bestName    = $candidateName;
+                    $bestScore = $score;
+                    $bestName = $candidateName;
                 } elseif ($score > $secondScore) {
                     $secondScore = $score;
                 }
@@ -482,14 +569,21 @@ class EmployeeBranchAutoMatchService
         if ($ambiguous) {
             return [
                 'branch_id' => null,
-                'stat_key'  => 'ambiguous',
-                'notes'     => 'Se detectaron varias sucursales candidatas sin mayoría clara (cobranza, colocación, cartera o gastos empatados, o similitud de nombre insuficiente). Requiere revisión manual.',
+                'stat_key' => 'ambiguous',
+                'notes' => 'Se detectaron varias sucursales candidatas sin mayoría clara (cobranza, colocación, cartera o gastos empatados, o similitud de nombre insuficiente). Requiere revisión manual.',
             ];
         }
 
         return null;
     }
 
+    /**
+     * IDs de las semanas cubiertas por el periodo: él mismo si es semanal, o las
+     * semanas que se traslapan con sus fechas si es mensual.
+     *
+     * @param  Period  $period  Periodo a evaluar.
+     * @return array<int, int> IDs de periodos semanales ordenados por fecha de inicio.
+     */
     private function resolveCoveredWeekIds(Period $period): array
     {
         if ($period->type === 'weekly') {
@@ -507,6 +601,14 @@ class EmployeeBranchAutoMatchService
             ->all();
     }
 
+    /**
+     * IDs de report_uploads de una fuente cuyo covered_period_ids (JSON)
+     * contiene alguna de las semanas indicadas.
+     *
+     * @param  string  $sourceCode  Código de data_sources (noi_nomina, noi_nomina_fiscal, lendus_ingresos_cobranza...).
+     * @param  array<int, int>  $coveredWeekIds  Semanas cubiertas por el periodo.
+     * @return array<int, int> IDs de uploads; [] si no hay semanas.
+     */
     private function resolveUploadIdsForSource(string $sourceCode, array $coveredWeekIds): array
     {
         if (empty($coveredWeekIds)) {
@@ -526,11 +628,19 @@ class EmployeeBranchAutoMatchService
             ->all();
     }
 
+    /**
+     * Colaboradores con movimientos NOI en el periodo: por uploads NOI cuando
+     * existen; si no, por noi_movements.period_id.
+     *
+     * @param  Period  $period  Periodo procesado.
+     * @param  array<int, int>  $noiUploadIds  Uploads NOI y NOI Fiscal del periodo.
+     * @return Collection<int, Employee> Empleados ordenados por nombre completo.
+     */
     private function resolveEmployeesForPeriod(Period $period, array $noiUploadIds): Collection
     {
         $employeeIds = collect();
 
-        if (!empty($noiUploadIds)) {
+        if (! empty($noiUploadIds)) {
             $employeeIds = $employeeIds->merge(
                 NoiMovement::query()
                     ->whereIn('report_upload_id', $noiUploadIds)
@@ -559,8 +669,14 @@ class EmployeeBranchAutoMatchService
     }
 
     /**
-     * Aggregate the full cobranza row set (tens of thousands of rows) into a
-     * normalized-name → [branch_id => count] map, computed exactly once per period.
+     * Agrega todas las filas de cobranza (decenas de miles) en un mapa
+     * nombre_normalizado_del_promotor → [branch_id => conteo], calculado una sola
+     * vez por periodo. Solo considera sucursales operativas oficiales y toma el
+     * nombre de raw_payload.promoter_name.
+     *
+     * @param  array<int, int>  $cobranzaUploadIds  Uploads de lendus_ingresos_cobranza del periodo.
+     * @param  array<int, string>  $operativeNames  Nombres en mayúsculas de las sucursales operativas.
+     * @return array{byName: array<string, array<int, int>>, distinctNames: array<int, string>}
      */
     private function buildCobranzaIndex(array $cobranzaUploadIds, array $operativeNames): array
     {
@@ -581,7 +697,7 @@ class EmployeeBranchAutoMatchService
         foreach ($rows as $row) {
             $payload = is_string($row->raw_payload) ? json_decode($row->raw_payload, true) : (array) $row->raw_payload;
             $promoterRaw = $payload['promoter_name'] ?? null;
-            if (!$promoterRaw) {
+            if (! $promoterRaw) {
                 continue;
             }
 
@@ -596,6 +712,14 @@ class EmployeeBranchAutoMatchService
         return ['byName' => $byName, 'distinctNames' => array_keys($byName)];
     }
 
+    /**
+     * Índice de colocación del periodo: nombre normalizado del promotor →
+     * lista de sucursales con su conteo, ordenada de mayor a menor.
+     * (No filtra por sucursales operativas, a diferencia de los demás índices.)
+     *
+     * @param  int  $periodId  Periodo procesado.
+     * @return array{byName: array<string, array<int, array{branch_id:int, cnt:int}>>, distinctNames: array<int, string>}
+     */
     private function buildPlacementsIndex(int $periodId): array
     {
         $rows = DB::table('fact_placements as p')
@@ -618,6 +742,14 @@ class EmployeeBranchAutoMatchService
         return ['byName' => $byName, 'distinctNames' => array_keys($byName)];
     }
 
+    /**
+     * Índice de cartera del periodo (solo sucursales operativas): nombre
+     * normalizado del promotor → sucursales con conteo, de mayor a menor.
+     *
+     * @param  int  $periodId  Periodo procesado.
+     * @param  array<int, string>  $operativeNames  Sucursales operativas en mayúsculas.
+     * @return array{byName: array<string, array<int, array{branch_id:int, cnt:int}>>}
+     */
     private function buildPortfoliosIndex(int $periodId, array $operativeNames): array
     {
         $rows = DB::table('fact_portfolios as p')
@@ -646,6 +778,15 @@ class EmployeeBranchAutoMatchService
         return ['byName' => $byName];
     }
 
+    /**
+     * Índice de gastos del periodo por employee_id (solo sucursales operativas):
+     * sucursales con conteo de gastos, de mayor a menor.
+     *
+     * @param  int  $periodId  Periodo procesado.
+     * @param  array<int, int>  $employeeIds  Colaboradores del periodo.
+     * @param  array<int, string>  $operativeNames  Sucursales operativas en mayúsculas.
+     * @return array{byEmployee: array<int, array<int, array{branch_id:int, cnt:int}>>}
+     */
     private function buildExpensesIndex(int $periodId, array $employeeIds, array $operativeNames): array
     {
         if (empty($employeeIds)) {
@@ -674,6 +815,11 @@ class EmployeeBranchAutoMatchService
         return ['byEmployee' => $byEmployee];
     }
 
+    /**
+     * Índice del directorio de empleados Lendus (solo operativos) por nombre normalizado.
+     *
+     * @return array{byName: array<string, object>, distinctNames: array<int, string>} Registros con codigo, nombre, puesto e inferred_branch_id.
+     */
     private function buildLendusIndex(): array
     {
         $rows = DB::table('lendus_employee_directory')
@@ -690,8 +836,14 @@ class EmployeeBranchAutoMatchService
     }
 
     /**
-     * Most recent operative branch_id per employee from a PRIOR period (never the
-     * period being processed, to avoid a run feeding off its own not-yet-saved result).
+     * Sucursal operativa más reciente por colaborador tomada de OTRO periodo
+     * (nunca el que se procesa, para que una corrida no se alimente de su propio
+     * resultado previo). "Más reciente" = mayor period_id.
+     *
+     * @param  int  $currentPeriodId  Periodo en proceso (excluido).
+     * @param  array<int, int>  $employeeIds  Colaboradores del periodo.
+     * @param  array<int, string>  $operativeNames  Sucursales operativas en mayúsculas.
+     * @return array<int, int> employee_id => branch_id.
      */
     private function buildHistoricalIndex(int $currentPeriodId, array $employeeIds, array $operativeNames): array
     {
@@ -715,7 +867,7 @@ class EmployeeBranchAutoMatchService
 
         $byEmployee = [];
         foreach ($rows as $r) {
-            if (!isset($byEmployee[$r->employee_id])) {
+            if (! isset($byEmployee[$r->employee_id])) {
                 $byEmployee[$r->employee_id] = (int) $r->branch_id; // first hit = most recent (orderByDesc)
             }
         }
@@ -723,6 +875,15 @@ class EmployeeBranchAutoMatchService
         return $byEmployee;
     }
 
+    /**
+     * Índice nombre normalizado → sucursal, heredada del colaborador canónico
+     * al que apunta un alias confirmado (employee_aliases). Usa la asignación
+     * operativa de mayor period_id del canónico.
+     *
+     * @param  Collection  $employees  Colaboradores del periodo.
+     * @param  array<int, string>  $operativeNames  Sucursales operativas en mayúsculas.
+     * @return array<string, int> normalized_alias => branch_id.
+     */
     private function buildAliasIndex(Collection $employees, array $operativeNames): array
     {
         $normNames = $employees->pluck('normalized_name')->filter()->unique()->values()->all();
@@ -764,8 +925,15 @@ class EmployeeBranchAutoMatchService
     }
 
     /**
-     * Other Employee rows sharing the same normalized_name (duplicate records from
-     * NOI vs NOI Fiscal that were never unified) that already carry a branch.
+     * Índice nombre normalizado → sucursal tomada de otros registros Employee con
+     * el mismo normalized_name (duplicados NOI vs NOI Fiscal nunca unificados) que
+     * ya tienen sucursal operativa asignada. Excluye nombres de homónimos con
+     * rechazo de fusión explícito.
+     *
+     * @param  Collection  $employees  Colaboradores del periodo.
+     * @param  array<int, string>  $operativeNames  Sucursales operativas en mayúsculas.
+     * @param  array<int, string>  $homonymNames  Nombres normalizados que no deben heredar sucursal.
+     * @return array<string, int> normalized_name => branch_id.
      */
     private function buildCanonicalIndex(Collection $employees, array $operativeNames, array $homonymNames = []): array
     {
@@ -777,9 +945,9 @@ class EmployeeBranchAutoMatchService
 
         $operativeIds = DB::table('branches')->whereIn(DB::raw('UPPER(TRIM(name))'), $operativeNames)->pluck('id')->all();
 
-        $siblings   = DB::table('employees')->whereIn('normalized_name', $normNames)->select('id', 'normalized_name')->get();
-        $idsByName  = $siblings->groupBy('normalized_name')->map(fn ($g) => $g->pluck('id')->all());
-        $allIds     = $siblings->pluck('id')->all();
+        $siblings = DB::table('employees')->whereIn('normalized_name', $normNames)->select('id', 'normalized_name')->get();
+        $idsByName = $siblings->groupBy('normalized_name')->map(fn ($g) => $g->pluck('id')->all());
+        $allIds = $siblings->pluck('id')->all();
 
         $branchByEmployee = DB::table('employee_branch_assignments')
             ->whereIn('employee_id', $allIds)
@@ -807,24 +975,26 @@ class EmployeeBranchAutoMatchService
     /**
      * employee_id → llave de grupo para homónimos con rechazo de fusión explícito
      * ("nombre#idMenor" por persona). Vacío si no hay rechazos: agrupación sin cambios.
+     * Usa CanonicalEmployeeResolver para agrupar y consulta employee_match_rejections.
      *
+     * @param  Collection  $employees  Colaboradores del periodo.
      * @return array<int, string>
      */
     private function homonymGroupKeys(Collection $employees): array
     {
-        if (!\Illuminate\Support\Facades\Schema::hasTable('employee_match_rejections') || !DB::table('employee_match_rejections')->exists()) {
+        if (! Schema::hasTable('employee_match_rejections') || ! DB::table('employee_match_rejections')->exists()) {
             return [];
         }
 
         $keys = [];
-        $groups = app(\App\Services\CanonicalEmployeeResolver::class)->canonicalize($employees);
+        $groups = app(CanonicalEmployeeResolver::class)->canonicalize($employees);
         foreach ($groups->groupBy(fn ($g) => (string) $employees->firstWhere('id', $g->id)?->normalized_name) as $name => $sameName) {
             if ($name === '' || $sameName->count() < 2) {
                 continue;
             }
             foreach ($sameName as $g) {
                 foreach ($g->employee_ids as $id) {
-                    $keys[(int) $id] = $name . '#' . min($g->employee_ids);
+                    $keys[(int) $id] = $name.'#'.min($g->employee_ids);
                 }
             }
         }
@@ -832,6 +1002,13 @@ class EmployeeBranchAutoMatchService
         return $keys;
     }
 
+    /**
+     * Normaliza un nombre de persona para comparar: ASCII, minúsculas, solo
+     * letras/dígitos y espacios simples.
+     *
+     * @param  string|null  $value  Nombre crudo.
+     * @return string Nombre normalizado ('' si viene vacío).
+     */
     public static function normalizeHumanName(?string $value): string
     {
         return Str::of((string) $value)

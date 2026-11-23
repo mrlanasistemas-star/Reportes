@@ -8,10 +8,15 @@ use App\Models\OkrObjective;
 use App\Models\OkrPlacementMovement;
 use App\Models\OkrPlacementUpload;
 use App\Models\User;
+use App\Services\Catalog\BranchRouteCatalog;
+use Carbon\Carbon;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Shared\Date;
 
 /**
  * Parte 6/7 del cierre (04-oct-2026) — carga semanal de colocación por
@@ -32,35 +37,55 @@ class OkrPlacementImportService
 {
     /** Encabezados reconocidos (minúsculas). contract/branch/movement_type son opcionales. */
     private const ALIASES = [
-        'employee'      => ['colaborador', 'gestor', 'promotor', 'empleado', 'nombre', 'asesor', 'nombre gestor', 'gestor asignado'],
-        'amount'        => ['colocacion', 'colocación', 'monto', 'importe', 'monto colocado', 'amount', 'monto otorgado', 'importe otorgado', 'monto prestado'],
-        'date'          => ['fecha', 'fecha operacion', 'fecha de operación', 'fecha operación', 'operation_date', 'fecha otorgamiento', 'fecha de otorgamiento', 'fecha de entrega'],
-        'contract'      => ['contrato', 'no. contrato', 'no contrato', 'numero de contrato', 'número de contrato', 'folio', 'credito', 'crédito', 'id credito', 'prestamo', 'préstamo'],
+        'employee' => ['colaborador', 'gestor', 'promotor', 'empleado', 'nombre', 'asesor', 'nombre gestor', 'gestor asignado'],
+        'amount' => ['colocacion', 'colocación', 'monto', 'importe', 'monto colocado', 'amount', 'monto otorgado', 'importe otorgado', 'monto prestado'],
+        'date' => ['fecha', 'fecha operacion', 'fecha de operación', 'fecha operación', 'operation_date', 'fecha otorgamiento', 'fecha de otorgamiento', 'fecha de entrega'],
+        'contract' => ['contrato', 'no. contrato', 'no contrato', 'numero de contrato', 'número de contrato', 'folio', 'credito', 'crédito', 'id credito', 'prestamo', 'préstamo'],
         // Oficina = Sucursal (las 13 oficiales). Ruta es distinta: pertenece a una
         // sucursal según las equivalencias verificadas de Reportería.
-        'branch'        => ['sucursal', 'oficina'],
-        'route'         => ['ruta', 'nombre ruta', 'ruta lendus'],
+        'branch' => ['sucursal', 'oficina'],
+        'route' => ['ruta', 'nombre ruta', 'ruta lendus'],
         'movement_type' => ['tipo', 'tipo de movimiento', 'tipo movimiento', 'movimiento', 'estatus', 'status', 'estado'],
         // 16-oct-2026 — número de empleado / código de promotor Lendus (p. ej.
         // ATLX12513): si viene, identifica al gestor ANTES que el nombre.
         'employee_code' => ['codigo', 'código', 'codigo gestor', 'código gestor', 'codigo promotor', 'código promotor', 'numero de empleado', 'número de empleado', 'no. empleado', 'clave promotor'],
     ];
 
+    /**
+     * @param  OkrCalendarService  $calendar  Inicio/fin de la semana cargada.
+     * @param  OkrTrackingPeriodResolver  $periodResolver  Periodo mensual para verificar cobertura contra el roster.
+     */
     public function __construct(
         private readonly OkrCalendarService $calendar,
         private readonly OkrTrackingPeriodResolver $periodResolver,
-    ) {
-    }
+    ) {}
 
     /**
-     * @throws OkrPlacementUploadConflictException si ya existe una carga ACTIVA
-     *         para este Objective/semana y $confirmReplace es false (6.7).
-     */
-    /**
+     * Importa el archivo de colocación de UNA semana de UN Objective: guarda
+     * el archivo, lo interpreta (parseFile), determina la cobertura, cuenta
+     * movimientos repetidos de otras semanas y persiste carga + movimientos
+     * bajo candado por OKR y transacción. Si hay una carga activa de esa
+     * semana, la reemplaza solo con $confirmReplace (la anterior queda
+     * "superseded"). Ante cualquier fallo borra el archivo y compensa lo escrito.
+     *
+     * Efecto: archivo en disco 'local' (okr-placement-uploads/{objective}/),
+     * INSERT en okr_placement_uploads y okr_placement_movements, UPDATE de la
+     * carga reemplazada.
+     *
+     * @param  OkrObjective  $objective  Objective (sucursal o individual) al que se carga.
+     * @param  int  $weekNumber  Semana del OKR que representa el archivo.
+     * @param  UploadedFile  $file  Excel/CSV subido.
+     * @param  User  $user  Usuario que carga.
+     * @param  bool  $confirmReplace  true para reemplazar una carga activa existente.
      * @param  bool  $declaredComplete  14-oct-2026: quien sube el archivo de SUCURSAL declara que es el
-     *         reporte COMPLETO de movimientos de la semana (así es el reporte de Lendus: solo lista
-     *         créditos otorgados, un gestor sin colocación no aparece). Con esa declaración la ausencia
-     *         de filas de un gestor es un $0 real; sin ella se conserva la regla 18 (dato faltante).
+     *                                  reporte COMPLETO de movimientos de la semana (así es el reporte de Lendus: solo lista
+     *                                  créditos otorgados, un gestor sin colocación no aparece). Con esa declaración la ausencia
+     *                                  de filas de un gestor es un $0 real; sin ella se conserva la regla 18 (dato faltante).
+     * @return OkrPlacementUpload Carga creada.
+     *
+     * @throws OkrPlacementUploadConflictException si ya existe una carga ACTIVA
+     *                                             para este Objective/semana y $confirmReplace es false (6.7).
+     * @throws \RuntimeException si el archivo no tiene encabezados reconocibles o filas válidas.
      */
     public function import(OkrObjective $objective, int $weekNumber, UploadedFile $file, User $user, bool $confirmReplace = false, bool $declaredComplete = false): OkrPlacementUpload
     {
@@ -70,15 +95,15 @@ class OkrPlacementImportService
             ->where('status', OkrPlacementUpload::STATUS_ACTIVE)
             ->first();
 
-        if ($existing && !$confirmReplace) {
+        if ($existing && ! $confirmReplace) {
             throw new OkrPlacementUploadConflictException($existing);
         }
 
         $weekStart = $this->calendar->weekStart($objective->start_date, $weekNumber);
-        $weekEnd   = $this->calendar->weekEnd($objective->start_date, $weekNumber);
+        $weekEnd = $this->calendar->weekEnd($objective->start_date, $weekNumber);
 
         $disk = 'local';
-        $path = $file->store('okr-placement-uploads/' . $objective->id, $disk);
+        $path = $file->store('okr-placement-uploads/'.$objective->id, $disk);
         $absolutePath = Storage::disk($disk)->path($path);
 
         // 4.9 (19-oct-2026): si el archivo no se puede leer o la carga no se
@@ -97,14 +122,14 @@ class OkrPlacementImportService
                 : $this->resolveCoverageStatus($objective, $weekStart, $weekEnd, $parsed['employee_ids_seen']);
             $parsed['rows_duplicated'] = $this->countDuplicatedAgainstOtherWeeks($objective, $weekNumber, $parsed['rows']);
 
-            return app(OkrDocumentIssuer::class)->exclusively('okr-placement:' . $objective->id, fn () => DB::transaction(function () use ($objective, $weekNumber, $weekStart, $weekEnd, $file, $path, $disk, $user, $parsed, $coverageStatus, $confirmReplace, $declaredComplete, $isBranchFile, $state) {
+            return app(OkrDocumentIssuer::class)->exclusively('okr-placement:'.$objective->id, fn () => DB::transaction(function () use ($objective, $weekNumber, $weekStart, $weekEnd, $file, $path, $disk, $user, $parsed, $coverageStatus, $confirmReplace, $declaredComplete, $isBranchFile, $state) {
                 // Concurrencia: dos cargas simultáneas de la MISMA semana. Se
                 // bloquea el OKR y se vuelve a leer la carga activa dentro de la
                 // transacción; el índice okr_uploads_one_current es la red final.
                 OkrObjective::query()->whereKey($objective->id)->lockForUpdate()->first();
                 $existing = OkrPlacementUpload::query()->where('okr_objective_id', $objective->id)
                     ->where('week_number', $weekNumber)->where('status', OkrPlacementUpload::STATUS_ACTIVE)->lockForUpdate()->first();
-                if ($existing && !$confirmReplace) {
+                if ($existing && ! $confirmReplace) {
                     throw new OkrPlacementUploadConflictException($existing);
                 }
 
@@ -113,7 +138,7 @@ class OkrPlacementImportService
         } catch (\Throwable $e) {
             Storage::disk($disk)->delete($path);
             $this->compensate($state);
-            if (\App\Services\Okr\OkrDocumentIssuer::isCurrentGuardViolation($e)) {
+            if (OkrDocumentIssuer::isCurrentGuardViolation($e)) {
                 $winner = OkrPlacementUpload::query()->where('okr_objective_id', $objective->id)
                     ->where('week_number', $weekNumber)->where('status', OkrPlacementUpload::STATUS_ACTIVE)->first();
                 if ($winner) {
@@ -124,7 +149,13 @@ class OkrPlacementImportService
         }
     }
 
-    /** Deshace una carga a medias (movimientos, carga nueva y reemplazo). */
+    /**
+     * Deshace una carga a medias (movimientos, carga nueva y reemplazo): borra
+     * movimientos y carga nueva y reactiva la carga que se había marcado como
+     * reemplazada. Necesario con tablas MyISAM; los errores solo se registran en log.
+     *
+     * @param  \ArrayObject  $state  ['upload_id' => ?int, 'superseded_id' => ?int].
+     */
     private function compensate(\ArrayObject $state): void
     {
         try {
@@ -136,10 +167,30 @@ class OkrPlacementImportService
                 OkrPlacementUpload::query()->whereKey($state['superseded_id'])->first()?->update(['status' => OkrPlacementUpload::STATUS_ACTIVE]);
             }
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::error('OKR: no se pudo deshacer una carga de colocación fallida', ['state' => $state->getArrayCopy(), 'error' => $e->getMessage()]);
+            Log::error('OKR: no se pudo deshacer una carga de colocación fallida', ['state' => $state->getArrayCopy(), 'error' => $e->getMessage()]);
         }
     }
 
+    /**
+     * Escribe la carga y sus movimientos: marca la carga anterior como
+     * reemplazada (si existe), crea la nueva con totales y contadores del
+     * análisis y un movimiento por fila. Registra ids en $state para compensar.
+     *
+     * @param  OkrObjective  $objective  Objective de la carga.
+     * @param  int  $weekNumber  Semana.
+     * @param  \Illuminate\Support\Carbon  $weekStart  Inicio de la semana.
+     * @param  \Illuminate\Support\Carbon  $weekEnd  Fin de la semana.
+     * @param  UploadedFile  $file  Archivo original (nombre).
+     * @param  string  $path  Ruta guardada en el disco.
+     * @param  string  $disk  Disco de almacenamiento.
+     * @param  User  $user  Usuario que carga.
+     * @param  OkrPlacementUpload|null  $existing  Carga activa a reemplazar.
+     * @param  array  $parsed  Resultado de parseFile() (+ rows_duplicated).
+     * @param  string  $coverageStatus  OkrPlacementUpload::COVERAGE_*.
+     * @param  bool|null  $declaredComplete  Declaración de reporte completo (solo sucursal; null en individual).
+     * @param  \ArrayObject  $state  Estado compartido para la compensación.
+     * @return OkrPlacementUpload Carga creada.
+     */
     private function persistUpload(OkrObjective $objective, int $weekNumber, \Illuminate\Support\Carbon $weekStart, \Illuminate\Support\Carbon $weekEnd, UploadedFile $file, string $path, string $disk, User $user, ?OkrPlacementUpload $existing, array $parsed, string $coverageStatus, ?bool $declaredComplete, \ArrayObject $state): OkrPlacementUpload
     {
         if ($existing) {
@@ -148,42 +199,42 @@ class OkrPlacementImportService
         }
 
         $upload = OkrPlacementUpload::query()->create([
-            'okr_objective_id'         => $objective->id,
-            'week_number'              => $weekNumber,
-            'week_start'                => $weekStart,
-            'week_end'                  => $weekEnd,
-            'original_filename'        => $file->getClientOriginalName(),
-            'stored_path'               => $path,
-            'disk'                      => $disk,
-            'uploaded_by'               => $user->id,
-            'status'                    => OkrPlacementUpload::STATUS_ACTIVE,
-            'replaced_upload_id'        => $existing?->id,
-            'total_amount'              => $parsed['total_amount'],
-            'rows_count'                => count($parsed['rows']),
-            'unattributed_amount'       => $parsed['unattributed_amount'],
-            'rows_outside_week_range'   => $parsed['rows_outside_week_range'],
-            'coverage_status'           => $coverageStatus,
-            'declared_complete'         => $declaredComplete,
-            'rows_duplicated'           => $parsed['rows_duplicated'],
-            'rows_other_branch'         => $parsed['rows_other_branch'],
-            'rows_cancelled'            => $parsed['rows_cancelled'],
+            'okr_objective_id' => $objective->id,
+            'week_number' => $weekNumber,
+            'week_start' => $weekStart,
+            'week_end' => $weekEnd,
+            'original_filename' => $file->getClientOriginalName(),
+            'stored_path' => $path,
+            'disk' => $disk,
+            'uploaded_by' => $user->id,
+            'status' => OkrPlacementUpload::STATUS_ACTIVE,
+            'replaced_upload_id' => $existing?->id,
+            'total_amount' => $parsed['total_amount'],
+            'rows_count' => count($parsed['rows']),
+            'unattributed_amount' => $parsed['unattributed_amount'],
+            'rows_outside_week_range' => $parsed['rows_outside_week_range'],
+            'coverage_status' => $coverageStatus,
+            'declared_complete' => $declaredComplete,
+            'rows_duplicated' => $parsed['rows_duplicated'],
+            'rows_other_branch' => $parsed['rows_other_branch'],
+            'rows_cancelled' => $parsed['rows_cancelled'],
             'rows_out_of_objective_range' => $parsed['rows_out_of_objective_range'],
-            'rows_pending_attribution'  => $parsed['rows_pending_attribution'],
+            'rows_pending_attribution' => $parsed['rows_pending_attribution'],
         ]);
         $state['upload_id'] = $upload->id;
 
         foreach ($parsed['rows'] as $row) {
             OkrPlacementMovement::query()->create([
                 'okr_placement_upload_id' => $upload->id,
-                'employee_id'             => $row['employee_id'],
-                'employee_name_raw'       => $row['employee_name_raw'],
-                'attribution_status'      => $row['attribution_status'],
-                'attribution_method'      => $row['attribution_method'],
-                'attribution_note'        => $row['attribution_note'],
-                'amount'                  => $row['amount'],
-                'operation_date'          => $row['operation_date'],
-                'fingerprint'             => $row['fingerprint'],
-                'raw_payload'             => $row['raw_payload'],
+                'employee_id' => $row['employee_id'],
+                'employee_name_raw' => $row['employee_name_raw'],
+                'attribution_status' => $row['attribution_status'],
+                'attribution_method' => $row['attribution_method'],
+                'attribution_note' => $row['attribution_note'],
+                'amount' => $row['amount'],
+                'operation_date' => $row['operation_date'],
+                'fingerprint' => $row['fingerprint'],
+                'raw_payload' => $row['raw_payload'],
             ]);
         }
 
@@ -191,7 +242,24 @@ class OkrPlacementImportService
     }
 
     /**
-     * @return array{rows: array<int, array{employee_id:?int, employee_name_raw:?string, amount:float, operation_date:?string, fingerprint:string, raw_payload:array}>, total_amount:float, unattributed_amount:?float, rows_outside_week_range:int}
+     * Lee la hoja activa del archivo y convierte cada fila en movimiento.
+     * Descarta (contando el motivo): filas de otra sucursal o ruta sin
+     * equivalencia, montos 0/vacíos, cancelados/revertidos, filas de otro
+     * colaborador en un OKR individual, fechas fuera del plazo del OKR y
+     * duplicados dentro del mismo archivo. Cada fila se atribuye con
+     * OkrPlacementAttributionResolver y recibe una huella (contrato+importe+fecha
+     * o gestor+importe+fecha, anclada a la semana si no hay contrato ni fecha).
+     *
+     * Efecto: solo lectura del archivo y consultas de atribución.
+     *
+     * @param  string  $absolutePath  Ruta absoluta del archivo guardado.
+     * @param  OkrObjective  $objective  Objective de la carga.
+     * @param  \Illuminate\Support\Carbon  $weekStart  Inicio de la semana.
+     * @param  \Illuminate\Support\Carbon  $weekEnd  Fin de la semana.
+     * @param  int  $weekNumber  Semana (para anclar huellas sin fecha).
+     * @return array{rows: array<int, array{employee_id:?int, employee_name_raw:?string, amount:float, operation_date:?string, fingerprint:string, raw_payload:array}>, total_amount:float, unattributed_amount:?float, rows_outside_week_range:int, rows_other_branch:int, rows_cancelled:int, rows_out_of_objective_range:int, rows_pending_attribution:int, employee_ids_seen:int[]}
+     *
+     * @throws \RuntimeException Sin encabezados reconocibles o sin ninguna fila válida.
      */
     private function parseFile(string $absolutePath, OkrObjective $objective, \Illuminate\Support\Carbon $weekStart, \Illuminate\Support\Carbon $weekEnd, int $weekNumber): array
     {
@@ -261,7 +329,7 @@ class OkrPlacementImportService
             // La columna Oficina/Sucursal también pasa por el catálogo oficial
             // (acentos, o una ruta capturada ahí) — 16-oct-2026.
             $rowBranch = $branchRaw !== null
-                ? (\App\Services\Catalog\BranchRouteCatalog::officialBranchFor($branchRaw) ?? $branchRaw)
+                ? (BranchRouteCatalog::officialBranchFor($branchRaw) ?? $branchRaw)
                 : ($routeRaw !== null ? ($this->officialBranchForRoute($routeRaw) ?? '__ruta_sin_equivalencia__') : null);
 
             // Fila de OTRA sucursal (solo si el archivo trae la columna): nunca se
@@ -293,7 +361,7 @@ class OkrPlacementImportService
                 continue;
             }
 
-            if ($restrictToEmployeeIds !== null && !in_array($employeeId, $restrictToEmployeeIds, true)) {
+            if ($restrictToEmployeeIds !== null && ! in_array($employeeId, $restrictToEmployeeIds, true)) {
                 continue; // fila de otro colaborador — nunca se suma a este Objective individual
             }
 
@@ -329,15 +397,15 @@ class OkrPlacementImportService
             $seenFingerprints[$fingerprint] = true;
 
             $rows[] = [
-                'employee_id'       => $employeeId,
+                'employee_id' => $employeeId,
                 'employee_name_raw' => $employeeNameRaw,
                 'attribution_status' => $attribution['status'],
                 'attribution_method' => $attribution['method'],
-                'attribution_note'  => $attribution['note'] !== null ? mb_substr($attribution['note'], 0, 600) : null,
-                'amount'            => $amount,
-                'operation_date'    => $operationDate,
-                'fingerprint'       => $fingerprint,
-                'raw_payload'       => array_filter([
+                'attribution_note' => $attribution['note'] !== null ? mb_substr($attribution['note'], 0, 600) : null,
+                'amount' => $amount,
+                'operation_date' => $operationDate,
+                'fingerprint' => $fingerprint,
+                'raw_payload' => array_filter([
                     'employee_name_raw' => $employeeNameRaw, 'amount' => $amount, 'operation_date' => $operationDate,
                     'contract' => $contract, 'branch' => $branchRaw, 'route' => $routeRaw, 'movement_type' => $movementType,
                     'employee_code' => $employeeCode,
@@ -376,21 +444,35 @@ class OkrPlacementImportService
      * equivalencias VERIFICADAS de Reportería (BranchResolverService) —
      * 15-oct-2026. Oficina = Sucursal (13 oficiales); una ruta es distinta y solo
      * se traduce con esa tabla. Ruta desconocida → null (nunca por aproximación).
+     *
+     * @param  string  $route  Ruta tal como viene en el archivo.
+     * @return string|null Sucursal oficial o null.
      */
     private function officialBranchForRoute(string $route): ?string
     {
-        return \App\Services\Catalog\BranchRouteCatalog::officialBranchFor($route);
+        return BranchRouteCatalog::officialBranchFor($route);
     }
 
+    /**
+     * Normaliza un nombre de sucursal para comparar: sin acentos, mayúsculas y espacios compactados.
+     *
+     * @param  string  $value  Nombre de sucursal.
+     * @return string Nombre normalizado.
+     */
     private function normalizeBranch(string $value): string
     {
-        return preg_replace('/\s+/', ' ', trim(\Illuminate\Support\Str::of($value)->ascii()->upper()->value())) ?? '';
+        return preg_replace('/\s+/', ' ', trim(Str::of($value)->ascii()->upper()->value())) ?? '';
     }
 
     /**
      * Movimientos de este archivo que YA están en la carga activa de OTRA
      * semana del mismo OKR (informativo — el conteo autoritativo sin
      * duplicados lo hace OkrWeeklyPlacementResolver al acumular).
+     *
+     * @param  OkrObjective  $objective  Objective de la carga.
+     * @param  int  $weekNumber  Semana de este archivo (se excluye).
+     * @param  array  $rows  Filas parseadas (con fingerprint).
+     * @return int Número de huellas distintas ya presentes en otras semanas.
      */
     private function countDuplicatedAgainstOtherWeeks(OkrObjective $objective, int $weekNumber, array $rows): int
     {
@@ -415,6 +497,13 @@ class OkrPlacementImportService
      * Si no se puede resolver un periodo real (mes todavía sin radiografía
      * generada) o la sucursal no tiene roster registrado, se devuelve
      * UNKNOWN — nunca se asume cobertura que no se pudo verificar.
+     * El roster excluye empleados inactivos y bajas fuera de la nómina vigente.
+     *
+     * @param  OkrObjective  $objective  Objective de la carga.
+     * @param  \Illuminate\Support\Carbon  $weekStart  Inicio de la semana.
+     * @param  \Illuminate\Support\Carbon  $weekEnd  Fin de la semana.
+     * @param  int[]  $employeeIdsSeen  Empleados mencionados en el archivo (aunque sea con $0).
+     * @return string OkrPlacementUpload::COVERAGE_FULL|PARTIAL|UNKNOWN.
      */
     private function resolveCoverageStatus(OkrObjective $objective, \Illuminate\Support\Carbon $weekStart, \Illuminate\Support\Carbon $weekEnd, array $employeeIdsSeen): string
     {
@@ -448,10 +537,17 @@ class OkrPlacementImportService
         return $missing->isEmpty() ? OkrPlacementUpload::COVERAGE_FULL : OkrPlacementUpload::COVERAGE_PARTIAL;
     }
 
+    /**
+     * Busca, en las primeras 20 filas, la fila de encabezados que tenga a la vez
+     * una columna de colaborador y una de monto (coincidencia exacta con ALIASES).
+     *
+     * @param  array  $rows  Filas de la hoja.
+     * @return int|null Índice de la fila de encabezados, o null si no hay.
+     */
     private function detectHeaderRowIndex(array $rows): ?int
     {
         $employeeAliases = self::ALIASES['employee'];
-        $amountAliases   = self::ALIASES['amount'];
+        $amountAliases = self::ALIASES['amount'];
 
         foreach (array_slice($rows, 0, 20, true) as $index => $row) {
             $hasEmployee = false;
@@ -473,6 +569,12 @@ class OkrPlacementImportService
         return null;
     }
 
+    /**
+     * Mapa campo lógico => índice de columna según ALIASES (primera coincidencia por campo).
+     *
+     * @param  array  $headerRow  Fila de encabezados.
+     * @return array<string, int|string> Por ejemplo ['employee' => 0, 'amount' => 3].
+     */
     private function buildColumnMap(array $headerRow): array
     {
         $aliases = self::ALIASES;
@@ -491,6 +593,12 @@ class OkrPlacementImportService
         return $map;
     }
 
+    /**
+     * Convierte una celda a importe (quita "$", comas y espacios), redondeado a 2 decimales.
+     *
+     * @param  mixed  $value  Valor de la celda.
+     * @return float|null Importe o null si no es numérico.
+     */
     private function toDecimal(mixed $value): ?float
     {
         if ($value === null || $value === '') {
@@ -504,6 +612,12 @@ class OkrPlacementImportService
         return is_numeric($clean) ? round((float) $clean, 2) : null;
     }
 
+    /**
+     * Convierte una celda a fecha Y-m-d (número serial de Excel o texto interpretable por Carbon).
+     *
+     * @param  mixed  $value  Valor de la celda.
+     * @return string|null Fecha o null si no se puede interpretar.
+     */
     private function toDate(mixed $value): ?string
     {
         if ($value === null || $value === '') {
@@ -511,18 +625,24 @@ class OkrPlacementImportService
         }
         if (is_numeric($value)) {
             try {
-                return \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject((float) $value)->format('Y-m-d');
+                return Date::excelToDateTimeObject((float) $value)->format('Y-m-d');
             } catch (\Throwable) {
                 return null;
             }
         }
         try {
-            return \Carbon\Carbon::parse((string) $value)->format('Y-m-d');
+            return Carbon::parse((string) $value)->format('Y-m-d');
         } catch (\Throwable) {
             return null;
         }
     }
 
+    /**
+     * Texto recortado de una celda; vacío → null.
+     *
+     * @param  mixed  $value  Valor de la celda.
+     * @return string|null Texto o null.
+     */
     private function str(mixed $value): ?string
     {
         if ($value === null) {
@@ -533,6 +653,12 @@ class OkrPlacementImportService
         return $v === '' ? null : $v;
     }
 
+    /**
+     * ¿Todas las celdas de la fila están vacías?
+     *
+     * @param  array  $row  Fila de la hoja.
+     * @return bool true si la fila no tiene contenido.
+     */
     private function isEmptyRow(array $row): bool
     {
         foreach ($row as $cell) {

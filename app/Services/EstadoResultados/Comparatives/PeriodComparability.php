@@ -53,6 +53,12 @@ class PeriodComparability
     public const UNAFFECTED_BY_COVERAGE = ['ingresos_operativos', 'depreciacion_amortizacion', 'isr'];
 
     /**
+     * Dictamina la comparabilidad de dos entradas (actual vs comparación): nivel, motivos,
+     * advertencias, faltantes exactos (qué fuente, de qué periodo y dónde se carga) y conceptos
+     * no afectados por la diferencia. Función pura (no consulta BD).
+     *
+     * @param  array  $a  entrada del periodo actual (period, status, availability, report, complete)
+     * @param  array  $b  entrada del periodo de comparación (misma forma)
      * @return array{comparable:bool, level:string, level_label:string, headline:string, reasons:list<array{code:string,message:string}>,
      *               warnings:list<array{code:string,message:string}>, missing:list<array<string,mixed>>, unaffected:list<string>}
      */
@@ -162,6 +168,18 @@ class PeriodComparability
         return $this->result($reasons === [] ? 'comparable' : 'con_reservas', $reasons, $warnings, $missing, $reasons === [] ? [] : $unaffected, $la, $lb);
     }
 
+    /**
+     * Arma el dictamen final con su titular (headline) en español según el nivel.
+     *
+     * @param  string  $level  comparable | con_reservas | no_comparable
+     * @param  array  $reasons  motivos que determinan el nivel
+     * @param  array  $warnings  advertencias que no cambian el nivel
+     * @param  array  $missing  fuentes faltantes (con mensaje y dónde se cargan)
+     * @param  array  $unaffected  conceptos que conservan su lectura normal
+     * @param  string  $la  etiqueta del periodo actual
+     * @param  string  $lb  etiqueta del periodo de comparación
+     * @return array<string, mixed>
+     */
     private function result(string $level, array $reasons, array $warnings, array $missing, array $unaffected, string $la, string $lb): array
     {
         $headline = match ($level) {

@@ -28,8 +28,19 @@ class ImportPortfolioSnapshotJob implements ShouldQueue
 
     public int $tries = 1;
 
+    /**
+     * @param  int  $uploadId  Id del upload (fotografía de cartera) a importar.
+     */
     public function __construct(public int $uploadId) {}
 
+    /**
+     * Importa la fotografía con ReportAnalysisService. Si el upload no existe
+     * termina sin error. Una falla NO se relanza (no reintenta): analyze() ya dejó
+     * el upload en `failed` con el motivo en process_runs.log; aquí solo se
+     * registra un warning. Lo despacha EfectividadCobranzaFuentesController.
+     *
+     * @param  ReportAnalysisService  $service  Servicio de importación.
+     */
     public function handle(ReportAnalysisService $service): void
     {
         $upload = ReportUpload::snapshots()->with('dataSource')->find($this->uploadId);

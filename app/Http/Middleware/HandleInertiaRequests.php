@@ -2,15 +2,23 @@
 
 namespace App\Http\Middleware;
 
+use App\Services\Access\ActionPermissionService;
+use App\Services\Access\DataScopeService;
 use App\Services\Access\ModuleAccessService;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 use Symfony\Component\HttpFoundation\Response;
 
+/**
+ * Middleware de Inertia: define la plantilla raíz, la versión de assets y los
+ * props compartidos por TODAS las páginas Vue (usuario, módulos visibles,
+ * permisos, alcance por sucursal, mensajes flash, estado del sidebar y
+ * contador de notificaciones). Además evita que el navegador cachee el HTML.
+ */
 class HandleInertiaRequests extends Middleware
 {
     /**
-     * The root template that's loaded on the first page visit.
+     * Plantilla Blade raíz que se carga en la primera visita (resources/views/app.blade.php).
      *
      * @see https://inertiajs.com/server-side-setup#root-template
      *
@@ -19,9 +27,14 @@ class HandleInertiaRequests extends Middleware
     protected $rootView = 'app';
 
     /**
-     * Determines the current asset version.
+     * Versión actual de los assets. Se usa el hash MD5 del manifest de Vite
+     * para que Inertia fuerce una recarga completa cuando se recompila el JS;
+     * si no hay manifest (o falla la lectura) se usa la versión por defecto.
      *
      * @see https://inertiajs.com/asset-versioning
+     *
+     * @param  Request  $request  Petición entrante.
+     * @return string|null Hash del manifest o versión por defecto de Inertia.
      */
     public function version(Request $request): ?string
     {
@@ -31,15 +44,20 @@ class HandleInertiaRequests extends Middleware
         if (file_exists($manifest)) {
             return md5_file($manifest) ?: parent::version($request);
         }
+
         return parent::version($request);
     }
 
     /**
-     * Define the props that are shared by default.
+     * Props compartidos por defecto con todas las páginas. Los marcados como
+     * closures (permissions, dataScope, flash, backgroundActivity) se evalúan
+     * de forma perezosa por Inertia. Ocultar módulos/botones aquí es solo UX:
+     * la autorización real vive en los middlewares de cada ruta.
      *
      * @see https://inertiajs.com/shared-data
      *
-     * @return array<string, mixed>
+     * @param  Request  $request  Petición entrante.
+     * @return array<string, mixed> Props compartidos.
      */
     public function share(Request $request): array
     {
@@ -58,10 +76,10 @@ class HandleInertiaRequests extends Middleware
                 'modules' => app(ModuleAccessService::class)->modulesFor($request->user()),
                 // Acciones permitidas "modulo.accion" (prioridad 9) — solo para ocultar
                 // botones; la autorización real es el middleware permission:* en cada ruta.
-                'permissions' => fn () => app(\App\Services\Access\ActionPermissionService::class)->flatFor($request->user()),
+                'permissions' => fn () => app(ActionPermissionService::class)->flatFor($request->user()),
                 // Fase 6.4 — alcance por sucursal (general o lista). Solo UX; el control
                 // real está en EnsureBranchScope y DataScopeService en cada controlador.
-                'dataScope' => fn () => $request->user() ? app(\App\Services\Access\DataScopeService::class)->describe($request->user()) : null,
+                'dataScope' => fn () => $request->user() ? app(DataScopeService::class)->describe($request->user()) : null,
             ],
             // Mensajes de sesión (14-oct-2026, módulo OKR): resultado de acciones
             // como la activación en cascada de OKR individuales.
@@ -81,10 +99,19 @@ class HandleInertiaRequests extends Middleware
         ];
     }
 
+    /**
+     * Datos de la campana de la cabecera: trabajos activos (siempre 0, ya no
+     * hay trabajos persistentes de Efectividad) y notificaciones no leídas del
+     * usuario (un COUNT a la tabla notifications). Cualquier error (p.ej. tabla
+     * aún no migrada) devuelve ceros para no romper la página.
+     *
+     * @param  Request  $request  Petición entrante.
+     * @return array{active_count:int, unread_count:int}|null Null si no hay usuario autenticado.
+     */
     private function backgroundActivity(Request $request): ?array
     {
         $user = $request->user();
-        if (!$user) {
+        if (! $user) {
             return null;
         }
 
@@ -100,15 +127,21 @@ class HandleInertiaRequests extends Middleware
     }
 
     /**
-     * Ensure HTML responses are never cached by the browser.
-     * Assets (with content hashes) can be cached long-term; only the HTML shell must be fresh.
+     * Ejecuta el middleware de Inertia y, en cargas de página completas (sin
+     * cabecera X-Inertia), agrega cabeceras para que el navegador nunca cachee
+     * el HTML. Los assets con hash sí pueden cachearse a largo plazo; solo el
+     * "cascarón" HTML debe estar siempre fresco.
+     *
+     * @param  Request  $request  Petición entrante.
+     * @param  \Closure  $next  Siguiente capa del pipeline.
+     * @return Response Respuesta con cabeceras anti-caché cuando aplica.
      */
     public function handle(Request $request, \Closure $next): Response
     {
         $response = parent::handle($request, $next);
 
         // Only apply to full page loads (not Inertia XHR partials)
-        if (!$request->header('X-Inertia')) {
+        if (! $request->header('X-Inertia')) {
             $response->headers->set('Cache-Control', 'no-cache, no-store, must-revalidate');
             $response->headers->set('Pragma', 'no-cache');
             $response->headers->set('Expires', '0');

@@ -2,20 +2,33 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Branch;
 use App\Models\Period;
 use App\Services\BranchResolverService;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use Illuminate\Console\Command;
+use Illuminate\Support\Str;
 
 /**
- * Displays the 12 operative branches with key metrics for a given period,
- * and flags any unexpected inclusions or exclusions.
+ * Comando `reportes:debug-operational-branches` — lista las sucursales operativas con sus
+ * métricas clave del periodo (vía BranchRadiographyCalculator) y alerta si alguna aparece vacía
+ * o falta, o si hay inclusiones/exclusiones inesperadas.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-operational-branches 21
  */
 class DebugOperationalBranchesCommand extends Command
 {
-    protected $signature   = 'reportes:debug-operational-branches {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-operational-branches {period_id : ID del periodo mensual}';
+
     protected $description = 'Lista las 12 sucursales operativas con métricas clave para el periodo dado. Alerta si alguna aparece vacía o falta.';
 
+    /**
+     * @param  BranchRadiographyCalculator  $calculator  Calculador oficial de la Radiografía.
+     * @param  BranchResolverService  $resolver  Resolvedor de sucursales operativas.
+     */
     public function __construct(
         private readonly BranchRadiographyCalculator $calculator,
         private readonly BranchResolverService $resolver,
@@ -23,19 +36,26 @@ class DebugOperationalBranchesCommand extends Command
         parent::__construct();
     }
 
+    /**
+     * Calcula las métricas por sucursal y compara la lista explícita de sucursales esperadas
+     * contra las encontradas.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -44,7 +64,7 @@ class DebugOperationalBranchesCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG OPERATIONAL BRANCHES — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         $operative = $this->resolver->operativeFinancialBranches();
@@ -64,7 +84,7 @@ class DebugOperationalBranchesCommand extends Command
         $this->line(sprintf('  Total incluidas: <fg=green>%d</>   Total excluidas conocidas: <fg=red>2</>', count($operative)));
         $this->line('');
 
-        $result   = $this->calculator->buildBranches($period, $dataIds);
+        $result = $this->calculator->buildBranches($period, $dataIds);
         $branches = $result['branches'];
 
         $warnings = 0;
@@ -74,13 +94,13 @@ class DebugOperationalBranchesCommand extends Command
             '  %-26s  %14s  %14s  %14s  %8s',
             'SUCURSAL', 'CARTERA', 'COLOCACIÓN', 'RECUPERACIÓN', 'MORA %'
         ));
-        $this->line('  ' . str_repeat('─', 82));
+        $this->line('  '.str_repeat('─', 82));
 
         foreach ($branches as $b) {
-            $cartera      = (float) ($b['valor_cartera'] ?? 0);
-            $colocacion   = (float) ($b['colocacion'] ?? 0);
+            $cartera = (float) ($b['valor_cartera'] ?? 0);
+            $colocacion = (float) ($b['colocacion'] ?? 0);
             $recuperacion = (float) ($b['recuperacion_total'] ?? 0);
-            $mora         = $cartera > 0 ? ((float) ($b['mora_total'] ?? 0) / $cartera * 100) : 0.0;
+            $mora = $cartera > 0 ? ((float) ($b['mora_total'] ?? 0) / $cartera * 100) : 0.0;
 
             $allZero = ($cartera + $colocacion + $recuperacion) < 1.0;
             if ($allZero) {
@@ -91,9 +111,9 @@ class DebugOperationalBranchesCommand extends Command
             $this->line(sprintf(
                 '  %-26s  %14s  %14s  %14s  %7.2f%%%s',
                 mb_strimwidth($b['sucursal'], 0, 26, '…'),
-                '$' . number_format($cartera, 0),
-                '$' . number_format($colocacion, 0),
-                '$' . number_format($recuperacion, 0),
+                '$'.number_format($cartera, 0),
+                '$'.number_format($colocacion, 0),
+                '$'.number_format($recuperacion, 0),
                 $mora,
                 $flag
             ));
@@ -101,18 +121,18 @@ class DebugOperationalBranchesCommand extends Command
 
         // Global totals
         $global = $this->calculator->sumGlobal($branches, $result['unassigned'] ?? []);
-        $gCartera      = (float) ($global['valor_cartera'] ?? 0);
-        $gColocacion   = (float) ($global['colocacion'] ?? 0);
+        $gCartera = (float) ($global['valor_cartera'] ?? 0);
+        $gColocacion = (float) ($global['colocacion'] ?? 0);
         $gRecuperacion = (float) ($global['recuperacion_total'] ?? 0);
-        $gMora         = $gCartera > 0 ? ((float) ($global['mora_total'] ?? 0) / $gCartera * 100) : 0.0;
+        $gMora = $gCartera > 0 ? ((float) ($global['mora_total'] ?? 0) / $gCartera * 100) : 0.0;
 
-        $this->line('  ' . str_repeat('─', 82));
+        $this->line('  '.str_repeat('─', 82));
         $this->line(sprintf(
             '  %-26s  %14s  %14s  %14s  %7.2f%%',
-            'GLOBAL (' . count($branches) . ' sucursales)',
-            '$' . number_format($gCartera, 0),
-            '$' . number_format($gColocacion, 0),
-            '$' . number_format($gRecuperacion, 0),
+            'GLOBAL ('.count($branches).' sucursales)',
+            '$'.number_format($gCartera, 0),
+            '$'.number_format($gColocacion, 0),
+            '$'.number_format($gRecuperacion, 0),
             $gMora
         ));
         $this->line('');
@@ -144,22 +164,22 @@ class DebugOperationalBranchesCommand extends Command
         // ni a una exclusión conocida. Routes como "ORIZABA SUR" no cuentan porque
         // resolveRealBranchFromRoute("ORIZABA SUR") → "ORIZABA" (operativa).
         $this->info('── Ubicaciones pendientes de clasificación ───────────────────────────');
-        $operativeNorm  = array_map(
-            fn ($s) => (string) \Illuminate\Support\Str::ascii(mb_strtoupper($s)),
+        $operativeNorm = array_map(
+            fn ($s) => (string) Str::ascii(mb_strtoupper($s)),
             $this->resolver->operativeFinancialBranches(),
         );
-        $exclusionNorm  = array_map(
-            fn ($s) => (string) \Illuminate\Support\Str::ascii(mb_strtoupper($s)),
+        $exclusionNorm = array_map(
+            fn ($s) => (string) Str::ascii(mb_strtoupper($s)),
             ['SAN JUAN DEL RÍO', 'CORPORATIVO'],
         );
         $allKnownNorm = array_merge($operativeNorm, $exclusionNorm);
-        $normalize    = fn (string $s) => (string) \Illuminate\Support\Str::ascii(mb_strtoupper($s));
+        $normalize = fn (string $s) => (string) Str::ascii(mb_strtoupper($s));
 
-        $allBranchNames = \App\Models\Branch::pluck('name')->all();
-        $pendingFound   = [];
+        $allBranchNames = Branch::pluck('name')->all();
+        $pendingFound = [];
         foreach ($allBranchNames as $branchName) {
             // Try to resolve to real branch via route map
-            $resolved     = $this->resolver->resolveRealBranchFromRoute($branchName);
+            $resolved = $this->resolver->resolveRealBranchFromRoute($branchName);
             $resolvedNorm = $resolved ? $normalize($resolved) : null;
 
             if ($resolvedNorm && in_array($resolvedNorm, $allKnownNorm, true)) {
@@ -172,7 +192,7 @@ class DebugOperationalBranchesCommand extends Command
             }
 
             // No se puede resolver → pendiente
-            if (!in_array($branchName, $pendingFound, true)) {
+            if (! in_array($branchName, $pendingFound, true)) {
                 $pendingFound[] = $branchName;
             }
         }
@@ -190,6 +210,7 @@ class DebugOperationalBranchesCommand extends Command
 
         if ($warnings > 0) {
             $this->warn("Se encontraron {$warnings} advertencia(s). Revisa los datos cargados para este periodo.");
+
             return self::FAILURE;
         }
 

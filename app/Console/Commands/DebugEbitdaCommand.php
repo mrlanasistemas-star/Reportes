@@ -6,16 +6,34 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-ebitda` — muestra el cálculo crudo de EBITDA (antes "Utilidad") con
+ * el modelo de caja histórico (Ingresos − Otorgamientos − Gastos Totales, sin filtros de
+ * sucursal ni exclusiones de seguros) y la lista de etiquetas que deben decir "EBITDA".
+ * Es un diagnóstico rápido; las cifras oficiales salen del calculador / Estado de Resultados.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-ebitda 14
+ */
 class DebugEbitdaCommand extends Command
 {
-    protected $signature   = 'reportes:debug-ebitda {period_id}';
+    protected $signature = 'reportes:debug-ebitda {period_id}';
+
     protected $description = 'Muestra cálculo de EBITDA (antes Utilidad) para un periodo';
 
+    /**
+     * Imprime el cálculo y el checklist de etiquetas.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
@@ -35,11 +53,17 @@ class DebugEbitdaCommand extends Command
         return 0;
     }
 
+    /**
+     * Calcula directamente de las tablas de hechos ingresos, otorgamientos, gastos operativos,
+     * nómina neta NOI, EBITDA, envío a corporativo y diferencia, y los imprime.
+     *
+     * @param  Period  $period  Periodo a calcular.
+     */
     private function calcFromDb(Period $period): void
     {
-        $allPeriods = \App\Models\Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $allPeriods = Period::all();
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -69,9 +93,9 @@ class DebugEbitdaCommand extends Command
             ->whereRaw("concept REGEXP '^D(094|010|113|123|004)'")
             ->sum('amount');
 
-        $nomNeta     = $nomPercep - $nomDesctos;
+        $nomNeta = $nomPercep - $nomDesctos;
         $gastosTotal = $gastosOp + $nomNeta;
-        $ebitda      = $rec - $otorgamientos - $gastosTotal;
+        $ebitda = $rec - $otorgamientos - $gastosTotal;
 
         $envio = (float) DB::table('fact_expenses')
             ->whereIn('period_id', $dataIds)
@@ -83,18 +107,18 @@ class DebugEbitdaCommand extends Command
 
         $this->line('');
         $this->info('─── EBITDA = Ingresos − Otorgamientos − Gastos Totales ───');
-        $this->line(str_pad('Ingresos (recuperación):', 38) . ' $' . number_format($rec, 2));
-        $this->line(str_pad('Menos: Otorgamientos:',    38) . '−$' . number_format($otorgamientos, 2));
-        $this->line(str_pad('Menos: Gastos totales:',   38) . '−$' . number_format($gastosTotal, 2));
-        $this->line(str_pad('  Gastos operativos:',     38) . '  $' . number_format($gastosOp, 2));
-        $this->line(str_pad('  Nómina neta NOI:',       38) . '  $' . number_format($nomNeta, 2));
-        $this->line(str_pad('    Percepciones:',        38) . '   $' . number_format($nomPercep, 2));
-        $this->line(str_pad('    Descuentos NOI:',      38) . '  −$' . number_format($nomDesctos, 2));
+        $this->line(str_pad('Ingresos (recuperación):', 38).' $'.number_format($rec, 2));
+        $this->line(str_pad('Menos: Otorgamientos:', 38).'−$'.number_format($otorgamientos, 2));
+        $this->line(str_pad('Menos: Gastos totales:', 38).'−$'.number_format($gastosTotal, 2));
+        $this->line(str_pad('  Gastos operativos:', 38).'  $'.number_format($gastosOp, 2));
+        $this->line(str_pad('  Nómina neta NOI:', 38).'  $'.number_format($nomNeta, 2));
+        $this->line(str_pad('    Percepciones:', 38).'   $'.number_format($nomPercep, 2));
+        $this->line(str_pad('    Descuentos NOI:', 38).'  −$'.number_format($nomDesctos, 2));
         $this->line(str_repeat('-', 55));
-        $this->line(str_pad('EBITDA:',                  38) . ' $' . number_format($ebitda, 2));
+        $this->line(str_pad('EBITDA:', 38).' $'.number_format($ebitda, 2));
         $this->line('');
-        $this->line(str_pad('Envío a corporativo:',     38) . '−$' . number_format($envio, 2));
+        $this->line(str_pad('Envío a corporativo:', 38).'−$'.number_format($envio, 2));
         $this->line(str_repeat('-', 55));
-        $this->line(str_pad('Diferencia:',              38) . ' $' . number_format($diferencia, 2));
+        $this->line(str_pad('Diferencia:', 38).' $'.number_format($diferencia, 2));
     }
 }

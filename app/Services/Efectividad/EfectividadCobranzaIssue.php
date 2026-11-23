@@ -44,6 +44,14 @@ final class EfectividadCobranzaIssue
     public const CATEGORY_WORKER_STALLED = 'worker_stalled';
 
     /**
+     * Construye una incidencia estructurada (código, severidad, categoría, mensaje, acción
+     * sugerida y contexto de archivo/columna) con todas las claves presentes.
+     *
+     * @param  string  $code  código estable de la incidencia
+     * @param  string  $severity  severidad (crítica / advertencia / informativa)
+     * @param  string  $category  categoría (CATEGORY_*)
+     * @param  string  $message  mensaje en español
+     * @param  string  $action  qué debe hacer el usuario
      * @param  array<string,mixed>  $context  file, upload_id, period, sheet, original_header,
      *                                        expected_column, affected_rows, record_count, source
      * @return array<string,mixed>

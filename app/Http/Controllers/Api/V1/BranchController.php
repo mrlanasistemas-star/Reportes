@@ -9,15 +9,29 @@ use App\Services\Api\ApiValidation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
+/**
+ * GET /api/v1/branches — catálogo de rutas/sucursales (tabla branches) visible
+ * para el consumidor de la API autenticado (ApiConsumer vía Sanctum).
+ *
+ * Respeta el alcance por sucursal del consumidor: sin acceso → lista vacía;
+ * restringido → solo sus branches autorizados.
+ */
 class BranchController extends Controller
 {
     /**
+     * Lista paginada de branches activos (is_active = true), ordenados por nombre.
+     *
      * Fase 2.4 — un consumidor restringido por sucursal ve SOLO su catálogo
      * autorizado, salvo que tenga además la ability independiente
      * `branches.read.global` (caso excepcional: un consumidor que necesita el
      * catálogo completo para otro propósito, sin que eso implique acceso
      * financiero/OKR a esas sucursales — esa autorización se sigue validando
      * aparte, por endpoint, nunca aquí).
+     *
+     * Solo lectura; precarga la relación `sucursal` para la atribución.
+     *
+     * @param  Request  $request  Petición autenticada; `per_page` controla la paginación (ApiValidation::perPage).
+     * @return JsonResponse {data: [{id, code, name, sucursal, region, active}], meta: paginación}.
      */
     public function index(Request $request): JsonResponse
     {

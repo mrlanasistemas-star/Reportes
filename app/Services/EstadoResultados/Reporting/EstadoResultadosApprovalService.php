@@ -47,9 +47,12 @@ use Illuminate\Support\Facades\Schema;
  *   5. BD: UNIQUE(period_id, version) y UNIQUE(current_period_id) (una sola vigente).
  *   6. Tras insertar, cada snapshot se relee y se verifica sha256(JSON) = payload_hash y
  *      dataset_hash = el validado; cualquier diferencia revierte la transacción.
+ *
+ * Lo usa EstadoResultadosController (endpoints de previsualizar/aprobar/abrir versión/historial).
  */
 class EstadoResultadosApprovalService
 {
+    /** Etiquetas en español de las acciones registradas en la bitácora de versiones. */
     public const ACTION_LABELS = [
         'aprobado' => 'Versión aprobada',
         'nueva_version' => 'Nueva versión abierta',
@@ -57,6 +60,14 @@ class EstadoResultadosApprovalService
         'aprobacion_rechazada' => 'Aprobación rechazada (datos cambiaron o conflicto)',
     ];
 
+    /**
+     * @param  EstadoResultadosDatasetBuilder  $builder  construye los datasets de todos los alcances
+     * @param  ReportStatusEvaluator  $evaluator  evalúa estado/bloqueos de cada dataset
+     * @param  PeriodLockGuard  $guard  candado de versión aprobada
+     * @param  ErpExpenseRepository  $erp  gastos ERP (firma de insumos)
+     * @param  PeriodDataIds  $dataIds  universo de period_id de Radiografía
+     * @param  ApprovalInputSignature  $signature  firma de insumos antes/dentro de la transacción
+     */
     public function __construct(
         private readonly EstadoResultadosDatasetBuilder $builder,
         private readonly ReportStatusEvaluator $evaluator,
@@ -66,6 +77,11 @@ class EstadoResultadosApprovalService
         private readonly ApprovalInputSignature $signature,
     ) {}
 
+    /**
+     * Clave del candado de caché que serializa las aprobaciones de un periodo.
+     *
+     * @param  int  $periodId  id del periodo
+     */
     public static function lockKey(int $periodId): string
     {
         return 'estado_resultados:aprobacion:'.$periodId;
@@ -77,6 +93,10 @@ class EstadoResultadosApprovalService
      * MISMA foto de datos (EstadoResultadosDatasetBuilder::buildEach) y no se guardan
      * los arreglos completos: sólo el JSON que se congelaría y sus hashes.
      *
+     * En el consolidado bloquea todo lo que el evaluador marque como bloqueo; en sucursales sólo
+     * las validaciones matemáticas que no cuadran.
+     *
+     * @param  Period  $period  periodo a evaluar
      * @return array{approvable:bool, blockers:list<array<string,string>>, evaluations:array<string,array>,
      *               scopes:list<array{key:string,label:string}>, hashes:array<string,string>,
      *               snapshots:array<string,array{scope_key:string,scope_label:string,dataset:string,dataset_hash:string,payload_hash:string}>,
@@ -129,6 +149,26 @@ class EstadoResultadosApprovalService
         ];
     }
 
+    /**
+     * Aprueba (congela) el Estado de Resultados del periodo creando la versión N+1 con los
+     * snapshots de todos los alcances, aplicando las 6 garantías de consistencia de la clase.
+     *
+     * Efectos: toma un Cache::lock por periodo (config estado_resultados.aprobacion.lock_segundos,
+     * mínimo 60 s); dentro de una transacción bloquea la fila del periodo FOR UPDATE, sustituye la
+     * versión anterior, inserta versión + snapshots + bitácora. Los rechazos 409 se registran en la
+     * bitácora (aprobacion_rechazada).
+     *
+     * @param  Period  $period  periodo a aprobar
+     * @param  User  $user  usuario que aprueba
+     * @param  string|null  $notes  notas de aprobación (máx. 2000 caracteres)
+     * @param  string|null  $expectedHash  dataset_hash del consolidado que el usuario revisó
+     * @return EstadoResultadosVersion versión aprobada recién creada
+     *
+     * @throws EstadoResultadosGovernanceException 409 (aprobación en curso, datos cambiaron, versión cambió,
+     *                                             candado expirado, hash revisado distinto, duplicada) o 422 (bloqueos)
+     * @throws EstadoResultadosLockedException si el periodo ya está aprobado (423)
+     * @throws \RuntimeException si un snapshot guardado no coincide (se revierte la transacción)
+     */
     public function approve(Period $period, User $user, ?string $notes = null, ?string $expectedHash = null): EstadoResultadosVersion
     {
         $lock = Cache::lock(self::lockKey($period->id), max(60, (int) config('estado_resultados.aprobacion.lock_segundos', 900)));
@@ -201,6 +241,18 @@ class EstadoResultadosApprovalService
         }
     }
 
+    /**
+     * Reabre un periodo aprobado para preparar la versión N+1: marca la versión vigente como
+     * reabierta (reopened_at/by/reason) y lo registra en la bitácora. Desde ese momento el
+     * periodo admite cambios de nuevo. Transacción con bloqueo FOR UPDATE del periodo y versión.
+     *
+     * @param  Period  $period  periodo aprobado
+     * @param  User  $user  usuario con permiso «aprobar»
+     * @param  string  $reason  motivo obligatorio (mínimo 10 caracteres, se guarda hasta 2000)
+     * @return EstadoResultadosVersion versión reabierta (recargada)
+     *
+     * @throws EstadoResultadosGovernanceException 422 si el motivo es corto, no hay versión aprobada o ya está reabierta
+     */
     public function openNewVersion(Period $period, User $user, string $reason): EstadoResultadosVersion
     {
         $reason = trim($reason);
@@ -230,7 +282,12 @@ class EstadoResultadosApprovalService
         });
     }
 
-    /** @return array{locked:bool, current:?array, draft_version:?int, versions:list<array>, logs:list<array>} */
+    /**
+     * Historial de versiones y bitácora (últimos 100 eventos) del periodo para la UI.
+     *
+     * @param  Period  $period  periodo
+     * @return array{locked:bool, current:?array, draft_version:?int, versions:list<array>, logs:list<array>}
+     */
     public function history(Period $period): array
     {
         $versions = EstadoResultadosVersion::query()->with(['approver:id,name', 'reopener:id,name'])
@@ -255,6 +312,13 @@ class EstadoResultadosApprovalService
         ];
     }
 
+    /**
+     * Resumen público de una versión (estado aprobado/sustituido, hashes, alcances, quién y
+     * cuándo aprobó, reapertura y sustitución) con fechas en hora de Ciudad de México.
+     *
+     * @param  EstadoResultadosVersion  $v  versión
+     * @return array<string, mixed>
+     */
     public static function summary(EstadoResultadosVersion $v): array
     {
         $tz = 'America/Mexico_City';
@@ -283,6 +347,20 @@ class EstadoResultadosApprovalService
         ];
     }
 
+    /**
+     * Escribe la versión aprobada (se llama DENTRO de la transacción de approve()): sustituye la
+     * anterior (liberando current_period_id antes de insertar), crea la versión con fuentes,
+     * clasificaciones, ajustes y evaluación, inserta un snapshot por alcance, los verifica y
+     * registra «sustituido» y «aprobado» en la bitácora.
+     *
+     * @param  Period  $period  periodo
+     * @param  User  $user  aprobador
+     * @param  string|null  $notes  notas de aprobación
+     * @param  array  $preview  resultado de preview()
+     * @param  string  $inputSignature  hash de la firma de insumos validada
+     *
+     * @throws EstadoResultadosLockedException si la última versión ya está bloqueada
+     */
     private function persist(Period $period, User $user, ?string $notes, array $preview, string $inputSignature): EstadoResultadosVersion
     {
         $previous = EstadoResultadosVersion::query()->where('period_id', $period->id)->orderByDesc('version')->lockForUpdate()->first();
@@ -359,7 +437,14 @@ class EstadoResultadosApprovalService
         return $version->fresh();
     }
 
-    /** Relee lo guardado: cada snapshot debe ser byte a byte el dataset validado. */
+    /**
+     * Relee lo guardado: cada snapshot debe ser byte a byte el dataset validado.
+     *
+     * @param  EstadoResultadosVersion  $version  versión recién creada
+     * @param  array  $expected  snapshots esperados (payload_hash y dataset_hash)
+     *
+     * @throws \RuntimeException si falta un alcance o un hash no coincide (revierte la aprobación)
+     */
     private function verifyStoredSnapshots(EstadoResultadosVersion $version, array $expected): void
     {
         $stored = EstadoResultadosVersionSnapshot::query()->where('version_id', $version->id)->get()->keyBy('scope_key');
@@ -382,6 +467,13 @@ class EstadoResultadosApprovalService
         return $v ? implode('|', [$v->id, $v->version, $v->status, $v->reopened_at?->toIso8601String()]) : null;
     }
 
+    /**
+     * Verifica que el candado de aprobación siga siendo de este proceso (si el driver lo permite).
+     *
+     * @param  Lock  $lock  candado tomado al iniciar approve()
+     *
+     * @throws EstadoResultadosGovernanceException 409 candado_expirado
+     */
     private function assertLockOwned(Lock $lock): void
     {
         if (method_exists($lock, 'isOwnedByCurrentProcess') && ! $lock->isOwnedByCurrentProcess()) {
@@ -393,6 +485,12 @@ class EstadoResultadosApprovalService
         }
     }
 
+    /**
+     * ¿La excepción es una violación de índice UNIQUE? (SQLSTATE 23000/23505, MySQL 1062,
+     * SQLite 19 o mensaje con «unique»).
+     *
+     * @param  QueryException  $e  error de BD
+     */
     private function isUniqueViolation(QueryException $e): bool
     {
         $state = (string) ($e->errorInfo[0] ?? $e->getCode());
@@ -401,6 +499,7 @@ class EstadoResultadosApprovalService
         return $state === '23000' || $state === '23505' || $driver === 1062 || $driver === 19 || str_contains(mb_strtolower($e->getMessage()), 'unique');
     }
 
+    /** Nombre de negocio de cada componente de la firma de insumos (mensajes de rechazo). */
     private const SIGNATURE_LABELS = [
         'uploads' => 'cargas de estados de cuenta', 'movements' => 'movimientos bancarios', 'links' => 'conciliación',
         'runs' => 'procesamiento', 'classifications' => 'clasificaciones', 'adjustments' => 'ajustes contables',
@@ -412,12 +511,25 @@ class EstadoResultadosApprovalService
         'amortization' => 'tablas de amortización (intereses de créditos)',
     ];
 
-    /** @param list<string> $keys */
+    /**
+     * Traduce componentes de firma a nombres de negocio (sin repetir); ['insumos'] si no hay.
+     *
+     * @param  list<string>  $keys  componentes que cambiaron
+     * @return list<string>
+     */
     private function humanDiff(array $keys): array
     {
         return array_values(array_unique(array_map(fn ($k) => self::SIGNATURE_LABELS[$k] ?? $k, $keys))) ?: ['insumos'];
     }
 
+    /**
+     * Registra en la bitácora una aprobación rechazada por conflicto (409). Nunca lanza: si la
+     * escritura falla se ignora para no ocultar el motivo real.
+     *
+     * @param  Period  $period  periodo
+     * @param  User  $user  usuario que intentó aprobar
+     * @param  EstadoResultadosGovernanceException  $e  rechazo
+     */
     private function logRejection(Period $period, User $user, EstadoResultadosGovernanceException $e): void
     {
         try {
@@ -431,6 +543,14 @@ class EstadoResultadosApprovalService
         }
     }
 
+    /**
+     * Insumos que se congelan con la versión: cargas bancarias activas (con sha256 y ruta),
+     * firma ERP, universo de periodos, última corrida, consolidado de Radiografía vigente y, si
+     * existen, cargas de NOI de corporativo.
+     *
+     * @param  Period  $period  periodo
+     * @return array<string, mixed>
+     */
     private function sources(Period $period): array
     {
         $dataIds = $this->dataIds->for($period);

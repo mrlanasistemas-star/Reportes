@@ -36,6 +36,10 @@ class EfectividadCobranzaRunHealthService
     public const QUEUE_UNKNOWN = 'unknown';   // driver sin inspección (sync/redis/…)
 
     /**
+     * Estado visible de una ejecución según su estado persistido, minutos sin actividad
+     * (heartbeat) y estado del Job en la cola (config efectividad.*_minutes). Sólo lectura.
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
      * @return array{state:string, label:string, message:?string, queue_state:string, minutes_since_activity:?int}
      */
     public function assess(EfectividadCobranzaRun $run): array
@@ -159,6 +163,11 @@ class EfectividadCobranzaRunHealthService
         return self::QUEUE_ABSENT;
     }
 
+    /**
+     * Etiqueta en español de un estado visible.
+     *
+     * @param  string  $state  estado visible
+     */
     public static function label(string $state): string
     {
         return match ($state) {
@@ -190,6 +199,15 @@ class EfectividadCobranzaRunHealthService
         return $rest > 0 ? "{$hours} h {$rest} min" : "{$hours} h";
     }
 
+    /**
+     * Resultado de assess() con su etiqueta.
+     *
+     * @param  string  $state  estado visible
+     * @param  string|null  $message  explicación para el usuario
+     * @param  string  $queueState  estado del Job en la cola (QUEUE_*)
+     * @param  int|null  $minutesSince  minutos desde la última actividad
+     * @return array{state:string, label:string, message:?string, queue_state:string, minutes_since_activity:?int}
+     */
     private function result(string $state, ?string $message, string $queueState, ?int $minutesSince): array
     {
         return [

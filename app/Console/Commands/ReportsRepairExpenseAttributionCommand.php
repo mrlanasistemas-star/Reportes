@@ -35,24 +35,34 @@ class ReportsRepairExpenseAttributionCommand extends Command
 
     protected $description = 'Aplica (o simula) la atribución de OPEX a colaboradores vía Observación/Justificación para un periodo ya importado.';
 
+    /**
+     * Corre el matcher de atribución (dry-run si no hay `--apply`), opcionalmente exporta la
+     * propuesta a CSV y, con `--apply`, escribe employee_id dentro de una transacción verificando
+     * las invariantes (conteo, sumas y total OPEX) antes del commit; si alguna cambia hace ROLLBACK.
+     *
+     * @param  ExpenseObservationAttributionService  $service  Matcher de gastos por colaborador.
+     * @param  OpexClassificationService  $opexClassifier  Clasificador canónico de OPEX (invariante de total).
+     * @return int 0 si terminó (o simuló) correctamente; distinto de 0 si el periodo no existe o una invariante se violó.
+     */
     public function handle(ExpenseObservationAttributionService $service, OpexClassificationService $opexClassifier): int
     {
         $period = Period::find((int) $this->argument('period'));
-        if (!$period) {
-            $this->error('No existe el periodo ID=' . $this->argument('period'));
+        if (! $period) {
+            $this->error('No existe el periodo ID='.$this->argument('period'));
+
             return 1;
         }
 
         $apply = (bool) $this->option('apply');
-        if (!$apply && !$this->option('dry-run')) {
+        if (! $apply && ! $this->option('dry-run')) {
             $this->comment('Ni --dry-run ni --apply indicados — corriendo en modo dry-run por seguridad.');
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
 
-        $this->info(($apply ? 'APLICANDO' : 'DRY-RUN — sin escribir nada') . " sobre periodo {$period->label} (ID {$period->id})");
+        $this->info(($apply ? 'APLICANDO' : 'DRY-RUN — sin escribir nada')." sobre periodo {$period->label} (ID {$period->id})");
         $this->newLine();
 
         // ── Snapshot ANTES — count, sum(amount), sum(paid_amount) y total OPEX
@@ -63,9 +73,9 @@ class ReportsRepairExpenseAttributionCommand extends Command
         $violation = null;
         try {
             DB::transaction(function () use ($period, $dataIds, $service, $apply, $opexClassifier, $before, &$results, &$violation) {
-                $results = $service->attributeForPeriod($period, $dataIds, dryRun: !$apply);
+                $results = $service->attributeForPeriod($period, $dataIds, dryRun: ! $apply);
 
-                if (!$apply) {
+                if (! $apply) {
                     return; // dry-run: nada que verificar dentro de la transacción, no hubo escritura
                 }
 
@@ -87,52 +97,53 @@ class ReportsRepairExpenseAttributionCommand extends Command
                     throw new \RuntimeException($violation);
                 }
                 if (abs($after['sum_amount'] - $before['sum_amount']) > 0.01) {
-                    $violation = 'SUM(amount) cambió de $' . number_format($before['sum_amount'], 2) . ' a $' . number_format($after['sum_amount'], 2) . '.';
+                    $violation = 'SUM(amount) cambió de $'.number_format($before['sum_amount'], 2).' a $'.number_format($after['sum_amount'], 2).'.';
                     throw new \RuntimeException($violation);
                 }
                 if (abs($after['sum_paid_amount'] - $before['sum_paid_amount']) > 0.01) {
-                    $violation = 'SUM(paid_amount) cambió de $' . number_format($before['sum_paid_amount'], 2) . ' a $' . number_format($after['sum_paid_amount'], 2) . '.';
+                    $violation = 'SUM(paid_amount) cambió de $'.number_format($before['sum_paid_amount'], 2).' a $'.number_format($after['sum_paid_amount'], 2).'.';
                     throw new \RuntimeException($violation);
                 }
                 if (abs($after['opex_total'] - $before['opex_total']) > 0.01) {
-                    $violation = 'Total OPEX (clasificación canónica) cambió de $' . number_format($before['opex_total'], 2) . ' a $' . number_format($after['opex_total'], 2) . ' — la reatribución dimensional NUNCA debe mover el total financiero.';
+                    $violation = 'Total OPEX (clasificación canónica) cambió de $'.number_format($before['opex_total'], 2).' a $'.number_format($after['opex_total'], 2).' — la reatribución dimensional NUNCA debe mover el total financiero.';
                     throw new \RuntimeException($violation);
                 }
             });
         } catch (\RuntimeException $e) {
             $this->error('INVARIANTE VIOLADA — TRANSACCIÓN REVERTIDA (ROLLBACK), ningún cambio quedó guardado.');
-            $this->error('  ' . ($violation ?? $e->getMessage()));
+            $this->error('  '.($violation ?? $e->getMessage()));
+
             return 1;
         }
 
-        $atribuido  = array_values(array_filter($results, fn ($r) => $r['estado'] === 'atribuido'));
+        $atribuido = array_values(array_filter($results, fn ($r) => $r['estado'] === 'atribuido'));
         $yaCorrecto = array_values(array_filter($results, fn ($r) => $r['estado'] === 'ya_correcto'));
         $conflictos = array_values(array_filter($results, fn ($r) => $r['estado'] === 'conflicto'));
-        $ambiguos   = array_values(array_filter($results, fn ($r) => $r['estado'] === 'ambiguo'));
+        $ambiguos = array_values(array_filter($results, fn ($r) => $r['estado'] === 'ambiguo'));
         $branchGeneral = array_values(array_filter($results, fn ($r) => $r['estado'] === 'branch_general'));
 
-        $this->line('Evaluados: ' . count($results)
-            . ' | Atribuidos ahora: ' . count($atribuido)
-            . ' | Ya correctos: ' . count($yaCorrecto)
-            . ' | General de sucursal: ' . count($branchGeneral)
-            . ' | Conflictos (NEEDS_REVIEW): ' . count($conflictos)
-            . ' | Ambiguos (NEEDS_REVIEW): ' . count($ambiguos));
+        $this->line('Evaluados: '.count($results)
+            .' | Atribuidos ahora: '.count($atribuido)
+            .' | Ya correctos: '.count($yaCorrecto)
+            .' | General de sucursal: '.count($branchGeneral)
+            .' | Conflictos (NEEDS_REVIEW): '.count($conflictos)
+            .' | Ambiguos (NEEDS_REVIEW): '.count($ambiguos));
         $this->newLine();
 
         foreach ($atribuido as $r) {
-            $this->line("  + fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$" . number_format($r['amount'], 2)
-                . " → employee_id={$r['employee_id']} ({$r['employee_name']}) @ " . ($r['branch_name'] ?? 'sin sucursal')
-                . " (método={$r['fuente']}_{$r['metodo']}, confianza=" . number_format((float) $r['confianza'], 2) . ')');
+            $this->line("  + fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$".number_format($r['amount'], 2)
+                ." → employee_id={$r['employee_id']} ({$r['employee_name']}) @ ".($r['branch_name'] ?? 'sin sucursal')
+                ." (método={$r['fuente']}_{$r['metodo']}, confianza=".number_format((float) $r['confianza'], 2).')');
         }
 
-        if (!empty($conflictos)) {
+        if (! empty($conflictos)) {
             $this->newLine();
             $this->comment('Conflictos — requieren revisión manual, NO se tocaron:');
             foreach ($conflictos as $r) {
                 $this->error("  ! fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | Observación=\"{$r['observation']}\" | Justificación=\"{$r['justification']}\"");
             }
         }
-        if (!empty($ambiguos)) {
+        if (! empty($ambiguos)) {
             $this->newLine();
             $this->comment('Ambiguos — requieren revisión manual, NO se tocaron:');
             foreach ($ambiguos as $r) {
@@ -144,7 +155,7 @@ class ReportsRepairExpenseAttributionCommand extends Command
         $this->newLine();
         if ($apply) {
             $after = $this->snapshotInvariants($dataIds, $opexClassifier);
-            $this->info('Invariante OK — count/sum(amount)/sum(paid_amount)/total OPEX sin cambios tras aplicar: $' . number_format($after['sum_paid_amount'], 2));
+            $this->info('Invariante OK — count/sum(amount)/sum(paid_amount)/total OPEX sin cambios tras aplicar: $'.number_format($after['sum_paid_amount'], 2));
         } else {
             $this->comment('DRY-RUN — no se verificó invariante post-escritura porque no se escribió nada. Usa --apply para aplicar (con guardas duras) o --export para revisar los cambios propuestos antes.');
         }
@@ -161,6 +172,11 @@ class ReportsRepairExpenseAttributionCommand extends Command
     }
 
     /**
+     * Toma las invariantes de `fact_expenses` de los periodos de datos que la reparación nunca debe
+     * cambiar.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  OpexClassificationService  $opexClassifier  Clasificador para calcular el total OPEX.
      * @return array{count:int, sum_amount:float, sum_paid_amount:float, opex_total:float}
      */
     private function snapshotInvariants(array $dataIds, OpexClassificationService $opexClassifier): array
@@ -179,10 +195,10 @@ class ReportsRepairExpenseAttributionCommand extends Command
         }
 
         return [
-            'count'           => $rows->count(),
-            'sum_amount'      => (float) $rows->sum('amount'),
+            'count' => $rows->count(),
+            'sum_amount' => (float) $rows->sum('amount'),
             'sum_paid_amount' => (float) $rows->sum('paid_amount'),
-            'opex_total'      => round($opexTotal, 2),
+            'opex_total' => round($opexTotal, 2),
         ];
     }
 

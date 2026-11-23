@@ -43,12 +43,24 @@ class ApprovalInputSignature
         'employee_branch_assignments' => ['branch_ck' => 'SUM(id * COALESCE(branch_id, 0))'],
     ];
 
+    /**
+     * @param  PeriodDataIds  $dataIds  universo de period_id de Radiografía del periodo
+     * @param  ErpExpenseRepository  $erp  gastos ERP del universo (para su firma)
+     */
     public function __construct(
         private readonly PeriodDataIds $dataIds,
         private readonly ErpExpenseRepository $erp,
     ) {}
 
-    /** @return array{hash:string, components:array<string,mixed>} */
+    /**
+     * Calcula la firma de insumos del periodo: hash SHA-256 de todos los componentes y los
+     * componentes mismos (para poder explicar qué cambió con diff()). Sólo lectura de BD.
+     * Los componentes opcionales (catálogo, NOI corporativo, amortización) sólo se agregan si
+     * tienen datos, para no alterar firmas de versiones aprobadas antes de existir.
+     *
+     * @param  Period  $period  periodo a aprobar
+     * @return array{hash:string, components:array<string,mixed>}
+     */
     public function compute(Period $period): array
     {
         $dataIds = $this->dataIds->for($period);
@@ -104,7 +116,13 @@ class ApprovalInputSignature
         return ['hash' => hash('sha256', json_encode($c, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION)), 'components' => $c];
     }
 
-    /** Nombres de los componentes que difieren entre dos firmas (para el mensaje y la bitácora). */
+    /**
+     * Nombres de los componentes que difieren entre dos firmas (para el mensaje y la bitácora).
+     *
+     * @param  array  $before  firma calculada antes (resultado de compute())
+     * @param  array  $after  firma calculada después
+     * @return list<string> claves de componentes distintos
+     */
     public static function diff(array $before, array $after): array
     {
         $keys = array_unique(array_merge(array_keys($before['components'] ?? []), array_keys($after['components'] ?? [])));
@@ -118,8 +136,19 @@ class ApprovalInputSignature
         return $out;
     }
 
+    /** Memo por proceso: ¿existe la tabla? */
     private static array $tableCache = [];
 
+    /**
+     * Agregados de control de una tabla: COUNT, MAX(id), MAX(updated_at) opcional y expresiones
+     * extra (sumas de importes / checksums de sucursal o colaborador).
+     *
+     * @param  string  $table  tabla
+     * @param  callable  $where  recibe el query builder y aplica el filtro
+     * @param  array<string,string>  $extra  alias ⇒ expresión SQL adicional
+     * @param  bool  $withUpdated  incluir MAX(updated_at)
+     * @return array|null valores como cadenas; null si la tabla no existe
+     */
     private function aggregate(string $table, callable $where, array $extra, bool $withUpdated = true): ?array
     {
         if (! (self::$tableCache[$table] ??= Schema::hasTable($table))) {

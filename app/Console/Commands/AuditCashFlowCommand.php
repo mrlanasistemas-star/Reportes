@@ -6,50 +6,77 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-cash-flow` — auditoría del flujo de caja de un periodo:
+ * Utilidad = Saldo inicial + Ingresos − Otorgamientos − Gastos.
+ *
+ * Calcula ingresos (recuperación PAGO/DESCUENTO sin cobertura Savehearts + comisión por
+ * apertura), otorgamientos (DESEMBOLSO/REFINANCIAMIENTO, bruto), gastos operativos (sin nómina,
+ * envío a corporativo ni préstamos intersucursales) más nómina neta NOI, y el envío de utilidad
+ * a corporativo. Con `--compare-reference` compara contra los valores fijos de Abril 2026 (REF)
+ * y al final imprime un checklist.
+ *
+ * Cuándo usarlo: para cuadrar el bloque de flujo de caja de la Radiografía.
+ * Escribe en BD: NO — solo lectura (solo sugiere comandos tinker para capturar saldos de caja).
+ * Nota: usa JSON_EXTRACT/JSON_UNQUOTE, por lo que requiere MySQL.
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-cash-flow 5
+ *   php artisan reportes:audit-cash-flow 5 --compare-reference
+ */
 class AuditCashFlowCommand extends Command
 {
-    protected $signature   = 'reportes:audit-cash-flow
+    protected $signature = 'reportes:audit-cash-flow
                                 {period_id}
                                 {--compare-reference : comparar contra referencia Abril 2026}
                                 {--detail            : mostrar desglose de cada componente}';
+
     protected $description = 'Auditoría de flujo de caja: saldo inicial, utilidad, envío corporativo, diferencia';
 
     // Referencia Abril 2026
     private const REF = [
-        'saldo_inicial'       => 646_672.52,
-        'ingresos_totales'    => 18_332_149.55,
-        'otorgamientos'       => 13_351_612.00,
-        'gastos_totales'      => 3_222_315.50,
-        'utilidad'            => 2_404_894.57,
-        'saldo_final'         => 494_827.52,
-        'envio_corporativo'   => 3_076_800.00,
+        'saldo_inicial' => 646_672.52,
+        'ingresos_totales' => 18_332_149.55,
+        'otorgamientos' => 13_351_612.00,
+        'gastos_totales' => 3_222_315.50,
+        'utilidad' => 2_404_894.57,
+        'saldo_final' => 494_827.52,
+        'envio_corporativo' => 3_076_800.00,
     ];
 
+    /**
+     * Resuelve los periodos de datos, calcula cada componente del flujo, imprime la tabla
+     * (opcionalmente contra la referencia) y el checklist; advierte si faltan saldo_inicial_caja
+     * o saldo_final_caja en el periodo.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         $this->line('');
-        $this->info("════════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA FLUJO DE CAJA — {$period->label} (ID {$period->id})");
-        $this->info("  Fórmula: Utilidad = Saldo inicial + Ingresos − Otorgamientos − Gastos");
-        $this->info("════════════════════════════════════════════════════════════════════");
+        $this->info('  Fórmula: Utilidad = Saldo inicial + Ingresos − Otorgamientos − Gastos');
+        $this->info('════════════════════════════════════════════════════════════════════');
 
         $lendusId = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
 
         // ── Saldo inicial ─────────────────────────────────────────────────────
-        $saldoInicial = (float)($period->saldo_inicial_caja ?? 0);
-        $saldoFinal   = $period->saldo_final_caja !== null ? (float)$period->saldo_final_caja : null;
+        $saldoInicial = (float) ($period->saldo_inicial_caja ?? 0);
+        $saldoFinal = $period->saldo_final_caja !== null ? (float) $period->saldo_final_caja : null;
 
         // ── Ingresos (capital + interés + impuesto + cargos + comisión apertura) ──
         $ingresos = (float) DB::table('fact_recoveries')
@@ -116,27 +143,34 @@ class AuditCashFlowCommand extends Command
             ['Envío utilidad corporativo',   $envio,          self::REF['envio_corporativo']],
         ];
 
-        $this->line(str_pad('Concepto', 36) . str_pad('Sistema', 20) . ($this->option('compare-reference') ? str_pad('Referencia', 20) . 'Diferencia' : ''));
+        $this->line(str_pad('Concepto', 36).str_pad('Sistema', 20).($this->option('compare-reference') ? str_pad('Referencia', 20).'Diferencia' : ''));
         $this->line(str_repeat('─', $this->option('compare-reference') ? 80 : 56));
 
         foreach ($items as [$lbl, $sys, $ref]) {
             $isDetail = str_starts_with($lbl, '  (');
-            $sysStr = '$' . number_format($sys, 2);
+            $sysStr = '$'.number_format($sys, 2);
             if ($this->option('compare-reference') && $ref !== null) {
                 $diff = $sys - $ref;
                 $sign = $diff >= 0 ? '+' : '';
                 $match = abs($diff) < 1 ? '✓' : '✗';
-                $line = str_pad($lbl, 36) .
-                    str_pad($sysStr, 20) .
-                    str_pad('$' . number_format($ref, 2), 20) .
-                    "{$sign}$" . number_format(abs($diff), 2) . " {$match}";
-                if ($match === '✓') $this->info("  {$line}");
-                elseif ($isDetail) $this->line("    {$line}");
-                else $this->warn("  {$line}");
+                $line = str_pad($lbl, 36).
+                    str_pad($sysStr, 20).
+                    str_pad('$'.number_format($ref, 2), 20).
+                    "{$sign}$".number_format(abs($diff), 2)." {$match}";
+                if ($match === '✓') {
+                    $this->info("  {$line}");
+                } elseif ($isDetail) {
+                    $this->line("    {$line}");
+                } else {
+                    $this->warn("  {$line}");
+                }
             } else {
-                $line = str_pad($lbl, 36) . $sysStr;
-                if ($isDetail) $this->line("    {$line}");
-                else $this->line("  {$line}");
+                $line = str_pad($lbl, 36).$sysStr;
+                if ($isDetail) {
+                    $this->line("    {$line}");
+                } else {
+                    $this->line("  {$line}");
+                }
             }
         }
 
@@ -145,10 +179,10 @@ class AuditCashFlowCommand extends Command
         $this->info('════ CHECKLIST ════');
         $this->printCheck($saldoInicial > 0, "Saldo inicial > 0 (\${$saldoInicial})");
         $this->printCheck($saldoFinal !== null, 'Saldo final configurado en el periodo (saldo_final_caja)');
-        $this->printCheck(abs($otorgamientos - self::REF['otorgamientos']) < 1, 'Otorgamientos = $' . number_format(self::REF['otorgamientos'], 2));
-        $this->printCheck(abs($ingresosTotal - self::REF['ingresos_totales']) < 10, 'Ingresos totales ≈ $' . number_format(self::REF['ingresos_totales'], 2));
-        $this->printCheck(abs($envio - self::REF['envio_corporativo']) < 1, 'Envío corporativo = $' . number_format(self::REF['envio_corporativo'], 2));
-        $this->printCheck(abs($utilidad - self::REF['utilidad']) < 100, 'Utilidad ≈ $' . number_format(self::REF['utilidad'], 2));
+        $this->printCheck(abs($otorgamientos - self::REF['otorgamientos']) < 1, 'Otorgamientos = $'.number_format(self::REF['otorgamientos'], 2));
+        $this->printCheck(abs($ingresosTotal - self::REF['ingresos_totales']) < 10, 'Ingresos totales ≈ $'.number_format(self::REF['ingresos_totales'], 2));
+        $this->printCheck(abs($envio - self::REF['envio_corporativo']) < 1, 'Envío corporativo = $'.number_format(self::REF['envio_corporativo'], 2));
+        $this->printCheck(abs($utilidad - self::REF['utilidad']) < 100, 'Utilidad ≈ $'.number_format(self::REF['utilidad'], 2));
 
         if ($saldoInicial == 0) {
             $this->line('');
@@ -163,11 +197,20 @@ class AuditCashFlowCommand extends Command
         return 0;
     }
 
+    /**
+     * Imprime una línea de checklist con ✓ (info) o ✗ (warn).
+     *
+     * @param  bool  $ok  Resultado de la verificación.
+     * @param  string  $label  Descripción de la verificación.
+     */
     private function printCheck(bool $ok, string $label): void
     {
         $icon = $ok ? '✓' : '✗';
-        $msg  = "  [{$icon}] {$label}";
-        if ($ok) $this->info($msg);
-        else     $this->warn($msg);
+        $msg = "  [{$icon}] {$label}";
+        if ($ok) {
+            $this->info($msg);
+        } else {
+            $this->warn($msg);
+        }
     }
 }

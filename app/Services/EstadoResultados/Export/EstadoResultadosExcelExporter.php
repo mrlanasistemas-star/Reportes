@@ -35,6 +35,7 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
  */
 class EstadoResultadosExcelExporter
 {
+    /** Hojas principales: clave ⇒ título de la pestaña. */
     public const SHEETS = [
         'indice' => 'Índice',
         'resumen' => 'Resumen ejecutivo',
@@ -67,6 +68,7 @@ class EstadoResultadosExcelExporter
         'conciliacion' => 'Fuentes, validaciones y control del documento',
     ];
 
+    /** Formatos numéricos de Excel (moneda, variaciones, porcentajes, puntos y control ✓). */
     private const MONEY = '$#,##0.00;[Red]-$#,##0.00;$0.00';
 
     /** Variaciones: la flecha indica la dirección; el color lo da la evaluación (favorable / desfavorable). */
@@ -82,6 +84,7 @@ class EstadoResultadosExcelExporter
 
     private const CONTROL = '0.00;-0.00;"✓"';
 
+    /** Tipografía y paleta de la marca (RGB sin #). */
     private const FONT = 'Montserrat';
 
     private const TEAL = '0F766E';
@@ -110,6 +113,7 @@ class EstadoResultadosExcelExporter
 
     private const BAD = 'B91C1C';
 
+    /** Color de cada serie en las gráficas. */
     private const SERIES = [
         'ingresos_operativos' => '10B981', 'opex_total' => 'F97316', 'ebitda' => '0F766E', 'ebit' => '0891B2',
         'ebt' => '7C3AED', 'utilidad_neta' => 'D97706', 'margen_ebitda' => '0F766E', 'margen_ebit' => '0891B2', 'margen_neto' => 'D97706',
@@ -131,8 +135,10 @@ class EstadoResultadosExcelExporter
         'sin_consolidado' => 'Fuera de tu alcance',
     ];
 
+    /** Dataset resuelto de la exportación en curso. */
     private array $d;
 
+    /** Contexto de presentación (EstadoResultadosExportContext::make) de la exportación en curso. */
     private array $x;
 
     /** Celda (en «Estado de Resultados») de cada resultado del modelo: key => 'C12'. */
@@ -141,8 +147,20 @@ class EstadoResultadosExcelExporter
     /** Fila (en «Estado de Resultados») de cada paso, también en el modelo anterior: key => 12. */
     private array $erRows = [];
 
+    /** @param  EstadoResultadosExportContext  $context  contexto de presentación compartido con el PDF */
     public function __construct(private readonly EstadoResultadosExportContext $context) {}
 
+    /**
+     * Genera el libro completo (hojas principales, anexos e índice) y lo guarda en disco.
+     * El ER se escribe primero porque el resumen y el índice referencian sus celdas. Crea el
+     * directorio de salida si no existe y usa precision = -1 al guardar (lo restaura después).
+     *
+     * @param  array  $dataset  dataset resuelto (ya redactado)
+     * @param  string  $outputPath  ruta del .xlsx a generar
+     * @param  array|null  $comparisons  payload de ComparisonService (o null)
+     * @param  string|null  $comparisonsError  motivo si no hay comparativas
+     * @return string ruta del archivo generado
+     */
     public function export(array $dataset, string $outputPath, ?array $comparisons = null, ?string $comparisonsError = null): string
     {
         $this->d = $dataset;
@@ -205,6 +223,11 @@ class EstadoResultadosExcelExporter
 
     // ── Índice (portada navegable) ─────────────────────────────────────
 
+    /**
+     * Hoja «Índice»: portada con resultados clave y ligas a cada hoja y anexo.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetIndex(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 30, 'C' => 2, 'D' => 30, 'E' => 2, 'F' => 30, 'G' => 2, 'H' => 30, 'I' => 2], false);
@@ -325,6 +348,17 @@ class EstadoResultadosExcelExporter
         }
     }
 
+    /**
+     * Renglón del índice con número, título enlazado a la hoja y descripción.
+     *
+     * @param  Worksheet  $ws  hoja índice
+     * @param  int  $r  fila
+     * @param  string  $num  número/prefijo
+     * @param  string  $title  título visible
+     * @param  string  $desc  descripción breve
+     * @param  bool  $main  hoja principal (estilo destacado) o anexo
+     * @param  string|null  $sheet  hoja destino (por defecto el título)
+     */
     private function tocRow(Worksheet $ws, int $r, string $num, string $title, string $desc, bool $main, ?string $sheet = null): void
     {
         $sheet ??= $title;
@@ -346,6 +380,13 @@ class EstadoResultadosExcelExporter
 
     // ── 2 · Estado de Resultados ────────────────────────────────────────
 
+    /**
+     * Hoja «Estado de Resultados»: renglón por renglón del ingreso a la utilidad neta, con
+     * subtotales como FÓRMULAS sobre el libro y columna ✓ contra la cifra del dataset. Registra
+     * en $erCells/$erRows la celda/fila de cada paso para que otras hojas la referencien.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetStatement(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 60, 'C' => 20, 'D' => 13, 'E' => 6, 'F' => 32, 'G' => 2]);
@@ -495,7 +536,17 @@ class EstadoResultadosExcelExporter
         $ws->getPageSetup()->setPrintArea('A1:G'.($r + 1));
     }
 
-    /** @return array{int,int,int} [primera fila, última fila, siguiente fila] */
+    /**
+     * Escribe las líneas de una sección (etiqueta con sangría, importe o «Sin información»,
+     * fuente) y acumula las filas que llevan % sobre ingresos.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  int  $r  fila inicial
+     * @param  array  $lines  líneas de la sección
+     * @param  string  $indent  sangría de la etiqueta
+     * @param  array  $pctRows  filas con porcentaje (por referencia)
+     * @return array{int,int,int} [primera fila, última fila, siguiente fila]
+     */
     private function writeLines(Worksheet $ws, int $r, array $lines, string $indent, array &$pctRows): array
     {
         $first = $r;
@@ -548,6 +599,12 @@ class EstadoResultadosExcelExporter
 
     // ── 1 · Resumen ejecutivo ──────────────────────────────────────────
 
+    /**
+     * Hoja «Resumen ejecutivo»: resultados clave (referenciando el ER), márgenes, variación
+     * contra el periodo anterior y gráficas nativas.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetSummary(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 42, 'C' => 19, 'D' => 19, 'E' => 21, 'F' => 15, 'G' => 16, 'H' => 30, 'I' => 3, 'J' => 22, 'K' => 16, 'L' => 16, 'M' => 16, 'N' => 16, 'O' => 16]);
@@ -696,6 +753,16 @@ class EstadoResultadosExcelExporter
         return [null, null, $up ? $pos : null, $up ? null : $pos, $negPart];
     }
 
+    /**
+     * Celdas D–G de comparación de un concepto: anterior, variación ($ o pp), variación % y
+     * lectura (favorable/desfavorable) o el motivo breve si no se calcula.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  int  $r  fila
+     * @param  array|null  $row  fila de comparación de ComparisonService
+     * @param  array|null  $pair  modo de comparación (null = no disponible)
+     * @param  bool  $isMargin  el concepto es un margen (pp en lugar de $)
+     */
     private function comparisonCells(Worksheet $ws, int $r, ?array $row, ?array $pair, bool $isMargin): void
     {
         foreach (['D', 'E', 'F'] as $c) {
@@ -742,6 +809,11 @@ class EstadoResultadosExcelExporter
         };
     }
 
+    /**
+     * Motivo breve para dirección (SHORT_REASONS) o el mensaje completo si no hay versión corta.
+     *
+     * @param  array  $reason  {code, message}
+     */
     private function shortReason(array $reason): string
     {
         return self::SHORT_REASONS[$reason['code'] ?? ''] ?? (string) ($reason['message'] ?? '');
@@ -749,6 +821,12 @@ class EstadoResultadosExcelExporter
 
     // ── 3 · Comparativa mensual ────────────────────────────────────────
 
+    /**
+     * Hoja «Comparativa mensual»: mes anterior, mismo mes del año pasado, personalizado y
+     * acumulado, con comparabilidad y categorías OPEX. Si no hay comparativas, sólo el aviso.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetComparative(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 42, 'C' => 19, 'D' => 19, 'E' => 21, 'F' => 15, 'G' => 16, 'H' => 30, 'I' => 3, 'J' => 18, 'K' => 16, 'L' => 16]);
@@ -854,6 +932,12 @@ class EstadoResultadosExcelExporter
 
     // ── 4 · Evolución histórica ────────────────────────────────────────
 
+    /**
+     * Hoja «Evolución histórica»: tabla por mes (meses sin datos como «Sin datos», nunca $0) y
+     * gráficas de tendencia.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetEvolution(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 18, 'C' => 26, 'D' => 17, 'E' => 17, 'F' => 17, 'G' => 17, 'H' => 17, 'I' => 17, 'J' => 13, 'K' => 13, 'L' => 13, 'M' => 3, 'N' => 16, 'O' => 15, 'P' => 15, 'Q' => 15, 'R' => 15, 'S' => 15, 'T' => 15, 'U' => 12, 'V' => 12, 'W' => 12]);
@@ -977,6 +1061,12 @@ class EstadoResultadosExcelExporter
 
     // ── 5 · Sucursales ─────────────────────────────────────────────────
 
+    /**
+     * Hoja «Sucursales»: ingresos, OPEX directo, EBITDA y margen por sucursal, participación,
+     * variación contra el mes anterior, gastos centralizados y conciliación con el consolidado.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetBranches(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 30, 'C' => 24, 'D' => 18, 'E' => 18, 'F' => 18, 'G' => 13, 'H' => 14, 'I' => 18, 'J' => 19, 'K' => 15, 'L' => 3, 'M' => 22, 'N' => 16, 'O' => 16, 'P' => 16]);
@@ -1132,6 +1222,12 @@ class EstadoResultadosExcelExporter
 
     // ── 6 · Conciliación y trazabilidad ────────────────────────────────
 
+    /**
+     * Hoja «Conciliación y trazabilidad»: datos de control del documento (versión, hash,
+     * criterio), estado de fuentes, validaciones y conciliación con Radiografía.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetControl(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 50, 'C' => 24, 'D' => 22, 'E' => 18, 'F' => 60]);
@@ -1301,6 +1397,11 @@ class EstadoResultadosExcelExporter
         $ws->freezePane('A5');
     }
 
+    /**
+     * Símbolo del estado de una fuente (✓ procesado, ○ pendiente, ⚠ incidencias, ● otro).
+     *
+     * @param  string  $status  estado
+     */
     private function sourceGlyph(string $status): string
     {
         return match ($status) {
@@ -1308,6 +1409,11 @@ class EstadoResultadosExcelExporter
         };
     }
 
+    /**
+     * Color RGB del estado de una fuente.
+     *
+     * @param  string  $status  estado
+     */
     private function sourceColor(string $status): string
     {
         return match ($status) {
@@ -1317,6 +1423,11 @@ class EstadoResultadosExcelExporter
 
     // ── Anexos ─────────────────────────────────────────────────────────
 
+    /**
+     * Anexo «Indicadores»: financieros e informativos (no afectan el resultado).
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetIndicators(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 52, 'C' => 22, 'D' => 30]);
@@ -1361,6 +1472,14 @@ class EstadoResultadosExcelExporter
         return $out;
     }
 
+    /**
+     * Anexo de líneas por concepto de las secciones/categorías indicadas (importe, % de
+     * ingresos y fuente).
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $title  título
+     * @param  list<string>  $keys  claves de sección/categoría
+     */
     private function sheetLines(Worksheet $ws, string $title, array $keys): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 56, 'C' => 20, 'D' => 14, 'E' => 40]);
@@ -1398,6 +1517,15 @@ class EstadoResultadosExcelExporter
         $ws->freezePane('A7');
     }
 
+    /**
+     * Anexo con la tabla de movimientos que cumplen $filter; si el detalle está redactado para
+     * el usuario ($restrictedKey) sólo muestra el aviso.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $title  título
+     * @param  callable  $filter  movimiento ⇒ bool
+     * @param  string|null  $restrictedKey  clave de meta.redactions (p. ej. 'dg')
+     */
     private function sheetItems(Worksheet $ws, string $title, callable $filter, ?string $restrictedKey = null): void
     {
         $this->setup($ws, $this->movementWidths());
@@ -1414,12 +1542,25 @@ class EstadoResultadosExcelExporter
         $this->movementTable($ws, 8, $items);
     }
 
+    /**
+     * Aviso destacado de detalle restringido por permisos.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  int  $row  fila
+     * @param  string  $text  texto
+     */
     private function restrictedNote(Worksheet $ws, int $row, string $text): void
     {
         $this->put($ws, "B{$row}", '⚠  '.$text);
         $ws->getStyle("B{$row}")->applyFromArray(['font' => ['bold' => true, 'color' => ['rgb' => self::AMBER]]]);
     }
 
+    /**
+     * Anexo «Nómina»: líneas de nómina de sucursales y corporativa y, si el usuario tiene
+     * permiso, el detalle de movimientos de nómina.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetPayroll(Worksheet $ws): void
     {
         $this->sheetLines($ws, 'Detalle · Nómina y capital humano', ['nomina_sucursales', 'nomina_corporativa']);
@@ -1442,6 +1583,11 @@ class EstadoResultadosExcelExporter
         }
     }
 
+    /**
+     * Anexo «Movimientos»: resumen de la conciliación bancaria y tabla completa de movimientos.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetMovements(Worksheet $ws): void
     {
         $this->setup($ws, $this->movementWidths());
@@ -1479,6 +1625,12 @@ class EstadoResultadosExcelExporter
         $this->movementTable($ws, $r + 1, (array) ($this->d['movements'] ?? []));
     }
 
+    /**
+     * Anexo «Ajustes»: cada ajuste contable con su estado, importe, efecto y notas («Sin
+     * información» nunca equivale a $0.00).
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetAdjustments(Worksheet $ws): void
     {
         $this->setup($ws, ['A' => 2, 'B' => 46, 'C' => 18, 'D' => 20, 'E' => 40, 'F' => 40]);
@@ -1512,6 +1664,11 @@ class EstadoResultadosExcelExporter
         $ws->freezePane('A8');
     }
 
+    /**
+     * Anexo «Fuera del ER»: grupos por tratamiento con cantidad, cargos, abonos y explicación.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function sheetOutside(Worksheet $ws): void
     {
         $this->setup($ws, $this->movementWidths());
@@ -1538,6 +1695,11 @@ class EstadoResultadosExcelExporter
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
+    /**
+     * Anchos de columna de las tablas de movimientos.
+     *
+     * @return array<string, int>
+     */
     private function movementWidths(): array
     {
         return ['A' => 2, 'B' => 11, 'C' => 18, 'D' => 34, 'E' => 12, 'F' => 14, 'G' => 26, 'H' => 30, 'I' => 16, 'J' => 14, 'K' => 14, 'L' => 13, 'M' => 14, 'N' => 12, 'O' => 30, 'P' => 28, 'Q' => 14, 'R' => 60];
@@ -1593,6 +1755,13 @@ class EstadoResultadosExcelExporter
         }
     }
 
+    /**
+     * Configuración común de la hoja: sin cuadrícula, anchos de columna y página de impresión.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array<string, int|float>  $widths  columna ⇒ ancho
+     * @param  bool  $landscape  orientación horizontal
+     */
     private function setup(Worksheet $ws, array $widths, bool $landscape = true): void
     {
         $ws->setShowGridlines(false);
@@ -1677,6 +1846,13 @@ class EstadoResultadosExcelExporter
         $fill->getEndColor()->setRGB(self::CYAN);
     }
 
+    /**
+     * Estilo de fila de encabezado de tabla (fondo de marca, texto blanco en negrita).
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $range  rango (p. ej. «B7:F7»)
+     * @param  bool  $wrap  ajustar texto
+     */
     private function headerRow(Worksheet $ws, string $range, bool $wrap = false): void
     {
         $style = $ws->getStyle($range);
@@ -1716,6 +1892,14 @@ class EstadoResultadosExcelExporter
         $ws->getStyle($cell)->applyFromArray(['font' => ['bold' => true, 'size' => 9, 'color' => ['rgb' => self::TEAL]]]);
     }
 
+    /**
+     * Nota en cursiva pequeña.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $cell  celda
+     * @param  string  $text  texto
+     * @param  string  $color  color RGB
+     */
     private function note(Worksheet $ws, string $cell, string $text, string $color = self::MUTED): void
     {
         $this->put($ws, $cell, $text);
@@ -1749,6 +1933,14 @@ class EstadoResultadosExcelExporter
         }
     }
 
+    /**
+     * Liga «Ver detalle» a otra hoja del libro.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $cell  celda
+     * @param  string  $sheet  hoja destino
+     * @param  string  $text  texto de la liga
+     */
     private function detailLink(Worksheet $ws, string $cell, string $sheet, string $text = 'Ver detalle  ›'): void
     {
         $this->put($ws, $cell, $text);
@@ -1756,6 +1948,13 @@ class EstadoResultadosExcelExporter
         $ws->getStyle($cell)->applyFromArray(['font' => ['bold' => true, 'italic' => false, 'size' => 8, 'color' => ['rgb' => self::TEAL]]]);
     }
 
+    /**
+     * Formato condicional de barra de datos (de 0 al máximo del rango).
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $range  rango
+     * @param  string  $color  color RGB
+     */
     private function dataBar(Worksheet $ws, string $range, string $color): void
     {
         $bar = new ConditionalDataBar;
@@ -1767,6 +1966,12 @@ class EstadoResultadosExcelExporter
         $ws->getStyle($range)->setConditionalStyles([$cond]);
     }
 
+    /**
+     * Porcentaje como texto con sufijo («40.00% de ingresos»); «—» si no hay dato.
+     *
+     * @param  string|null  $pct  porcentaje (0–100)
+     * @param  string  $suffix  sufijo
+     */
     private function pctText(?string $pct, string $suffix): string
     {
         return $pct === null ? '—' : ErFormat::pct($pct).' '.$suffix;
@@ -1799,6 +2004,12 @@ class EstadoResultadosExcelExporter
         }
     }
 
+    /**
+     * ¿El texto podría interpretarse como fórmula en Excel (inyección CSV/fórmula)? Empieza con
+     * =, +, -, @, tabulador o retorno de carro.
+     *
+     * @param  string  $text  texto
+     */
     public static function isDangerous(string $text): bool
     {
         return $text !== '' && in_array($text[0], ['=', '+', '-', '@', "\t", "\r"], true);
@@ -1834,6 +2045,13 @@ class EstadoResultadosExcelExporter
         return number_format(round((float) $v, 2), 2, '.', '');
     }
 
+    /**
+     * Escribe un importe con formato de moneda (redondeado a 2 decimales); vacío ⇒ no escribe.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $cell  celda
+     * @param  mixed  $value  importe
+     */
     private function money(Worksheet $ws, string $cell, mixed $value): void
     {
         if ($value === null || $value === '') {
@@ -1843,6 +2061,14 @@ class EstadoResultadosExcelExporter
         $ws->getStyle($cell)->getNumberFormat()->setFormatCode(self::MONEY);
     }
 
+    /**
+     * Escribe un porcentaje (el dato viene en 0–100 y se guarda como fracción /100 con formato
+     * %); vacío ⇒ «—».
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $cell  celda
+     * @param  mixed  $value  porcentaje 0–100
+     */
     private function pct(Worksheet $ws, string $cell, mixed $value): void
     {
         if ($value === null || $value === '') {
@@ -1855,6 +2081,13 @@ class EstadoResultadosExcelExporter
         $ws->getStyle($cell)->getNumberFormat()->setFormatCode(self::PCT);
     }
 
+    /**
+     * Valor de un indicador según su unidad; sin valor ⇒ «Sin información».
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $cell  celda
+     * @param  array  $ind  indicador {value, unit, …}
+     */
     private function indicatorValue(Worksheet $ws, string $cell, array $ind): void
     {
         if ($ind['value'] === null) {

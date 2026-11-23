@@ -8,18 +8,26 @@ use App\Services\BranchResolverService;
 use App\Services\EmployeeNameCanonicalizer;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
- * Fusiona de forma segura colaboradores duplicados (mismo nombre normalizado, o
- * variantes conservadoras detectadas por EmployeeNameCanonicalizer — typo/acento/
- * espacio, nunca personas distintas). Por defecto corre en modo --dry-run: solo
- * imprime el plan. --apply ejecuta la fusión dentro de una transacción, moviendo
- * cada relación (employee_branch_assignments, fact_noi_movements,
- * fact_period_employee_summary, fact_expenses, employee_aliases,
- * employee_match_rejections, period_radiography_runs, period_employee_rosters)
- * al registro canónico antes de borrar el redundante. Nunca hace DELETE sin mover
- * primero las relaciones, y nunca fusiona un par que el usuario ya rechazó
+ * Comando `employees:normalize` — fusiona de forma segura colaboradores duplicados (mismo
+ * nombre normalizado, o variantes conservadoras detectadas por EmployeeNameCanonicalizer —
+ * typo/acento/espacio, nunca personas distintas). Por defecto corre en modo dry-run: solo
+ * imprime el plan. --apply ejecuta la fusión dentro de una transacción, moviendo cada relación
+ * (employee_branch_assignments, fact_noi_movements, fact_period_employee_summary,
+ * fact_expenses, employee_aliases, employee_match_rejections, period_radiography_runs,
+ * period_employee_rosters) al registro canónico antes de borrar el redundante. Nunca hace
+ * DELETE sin mover primero las relaciones, y nunca fusiona un par que el usuario ya rechazó
  * explícitamente en employee_match_rejections.
+ *
+ * Cuándo usarlo: después de revisar `employees:audit-identities`.
+ * Escribe en BD: SÍ con `--apply` (relaciones de empleados y borrado de `employees` duplicados);
+ * irreversible, hacer respaldo antes.
+ *
+ * Ejemplos:
+ *   php artisan employees:normalize
+ *   php artisan employees:normalize --apply
  */
 class EmployeesNormalizeCommand extends Command
 {
@@ -33,6 +41,15 @@ class EmployeesNormalizeCommand extends Command
         'fact_period_employee_summary',
     ];
 
+    /**
+     * Agrupa los empleados por nombre canónico, descarta pares rechazados, elige el canónico de cada
+     * grupo (más asignaciones a sucursal operativa → más asignaciones resueltas → más movimientos
+     * NOI → id más antiguo), imprime el plan y, con `--apply`, fusiona en una transacción.
+     *
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Construye el mapa nombre → canónico.
+     * @param  BranchResolverService  $branchResolver  Indica si una sucursal es operativa.
+     * @return int Siempre self::SUCCESS.
+     */
     public function handle(EmployeeNameCanonicalizer $canonicalizer, BranchResolverService $branchResolver): int
     {
         $apply = (bool) $this->option('apply');
@@ -44,7 +61,9 @@ class EmployeesNormalizeCommand extends Command
         // Agrupar TODOS los employee_id (no solo nombres únicos) bajo su nombre canónico.
         $byCanonical = [];
         foreach ($employees as $e) {
-            if (!$e->normalized_name) continue;
+            if (! $e->normalized_name) {
+                continue;
+            }
             $canonicalName = $canonicalMap[$e->normalized_name] ?? $e->normalized_name;
             $byCanonical[$canonicalName][] = $e;
         }
@@ -53,20 +72,27 @@ class EmployeesNormalizeCommand extends Command
 
         $plans = [];
         foreach ($byCanonical as $canonicalName => $group) {
-            if (count($group) < 2) continue;
+            if (count($group) < 2) {
+                continue;
+            }
 
             // Nunca fusionar un par que el usuario rechazó explícitamente.
             $group = collect($group)->reject(function ($e) use ($group, $rejectedPairs) {
                 foreach ($group as $other) {
-                    if ($other->id === $e->id) continue;
+                    if ($other->id === $e->id) {
+                        continue;
+                    }
                     if ($rejectedPairs->has(EmployeeMatchRejection::pairKey($e->id, $other->id))) {
                         return true;
                     }
                 }
+
                 return false;
             })->values();
 
-            if ($group->count() < 2) continue;
+            if ($group->count() < 2) {
+                continue;
+            }
 
             // Canónico = quien tenga más asignaciones a sucursal OPERATIVA (nunca una ruta
             // como "CENTRO C" — ver sección 19-20 de la spec: una ruta jamás debe ganarle a
@@ -86,13 +112,20 @@ class EmployeesNormalizeCommand extends Command
             usort($sorted, function ($a, $b) use ($operativeAssignCount) {
                 $aOp = $operativeAssignCount($a->id);
                 $bOp = $operativeAssignCount($b->id);
-                if ($aOp !== $bOp) return $bOp <=> $aOp;
+                if ($aOp !== $bOp) {
+                    return $bOp <=> $aOp;
+                }
                 $aAssign = DB::table('employee_branch_assignments')->where('employee_id', $a->id)->whereNotNull('branch_id')->count();
                 $bAssign = DB::table('employee_branch_assignments')->where('employee_id', $b->id)->whereNotNull('branch_id')->count();
-                if ($aAssign !== $bAssign) return $bAssign <=> $aAssign;
+                if ($aAssign !== $bAssign) {
+                    return $bAssign <=> $aAssign;
+                }
                 $aMov = DB::table('fact_noi_movements')->where('employee_id', $a->id)->count();
                 $bMov = DB::table('fact_noi_movements')->where('employee_id', $b->id)->count();
-                if ($aMov !== $bMov) return $bMov <=> $aMov;
+                if ($aMov !== $bMov) {
+                    return $bMov <=> $aMov;
+                }
+
                 return $a->id <=> $b->id;
             });
 
@@ -107,19 +140,21 @@ class EmployeesNormalizeCommand extends Command
 
         if (empty($plans)) {
             $this->info('No se encontraron duplicados fusionables (o todos los pares detectados fueron rechazados previamente).');
+
             return self::SUCCESS;
         }
 
-        $this->info(($apply ? 'Aplicando' : '[DRY RUN] Plan de') . ' fusión de ' . count($plans) . ' grupo(s) de colaboradores duplicados:');
+        $this->info(($apply ? 'Aplicando' : '[DRY RUN] Plan de').' fusión de '.count($plans).' grupo(s) de colaboradores duplicados:');
         foreach ($plans as $plan) {
             $canonical = $plan['canonical'];
             $dupLabels = collect($plan['duplicates'])->map(fn ($d) => "#{$d->id} \"{$d->full_name}\"")->implode(', ');
             $this->line("  → CANÓNICO #{$canonical->id} \"{$canonical->full_name}\"  ⟵  {$dupLabels}");
         }
 
-        if (!$apply) {
+        if (! $apply) {
             $this->line('');
             $this->comment('Ejecuta con --apply para aplicar esta fusión (transaccional, mueve relaciones antes de borrar).');
+
             return self::SUCCESS;
         }
 
@@ -135,9 +170,19 @@ class EmployeesNormalizeCommand extends Command
         });
 
         $this->info("Fusión completada: {$merged} colaborador(es) duplicado(s) fusionado(s) hacia su registro canónico.");
+
         return self::SUCCESS;
     }
 
+    /**
+     * Fusiona un duplicado en el canónico: registra el alias, repunta aliases, mueve filas de las
+     * tablas con UNIQUE(period_id, employee_id) conservando las del canónico ante colisión,
+     * reasigna tablas sin restricción, repunta rechazos e identidades externas, borra el roster
+     * derivado del duplicado y al final elimina el registro duplicado. Escribe en BD.
+     *
+     * @param  Employee  $canonical  Registro que sobrevive.
+     * @param  Employee  $dup  Registro duplicado que se elimina.
+     */
     private function mergeInto(Employee $canonical, Employee $dup): void
     {
         // 1) Alias — preserva la variante de escritura para que el sistema la reconozca
@@ -183,6 +228,7 @@ class EmployeesNormalizeCommand extends Command
                 $other = $row->employee_id_a === $dup->id ? $row->employee_id_b : $row->employee_id_a;
                 if ($other === $canonical->id) {
                     DB::table('employee_match_rejections')->where('id', $row->id)->delete();
+
                     return;
                 }
                 $newKey = EmployeeMatchRejection::pairKey($canonical->id, $other);
@@ -193,7 +239,7 @@ class EmployeesNormalizeCommand extends Command
                     DB::table('employee_match_rejections')->where('id', $row->id)->update([
                         'employee_id_a' => min($canonical->id, $other),
                         'employee_id_b' => max($canonical->id, $other),
-                        'pair_key'      => $newKey,
+                        'pair_key' => $newKey,
                     ]);
                 }
             });
@@ -201,7 +247,7 @@ class EmployeesNormalizeCommand extends Command
         // 4b) Identidades explícitas (clave NOI por sistema, IDs externos): se mueven al
         //     canónico — cada clave es única, así que nunca colisiona; sin esto el
         //     borrado en cascada perdería el vínculo por clave del duplicado.
-        if (\Illuminate\Support\Facades\Schema::hasTable('employee_external_identities')) {
+        if (Schema::hasTable('employee_external_identities')) {
             DB::table('employee_external_identities')->where('employee_id', $dup->id)->update(['employee_id' => $canonical->id, 'updated_at' => now()]);
         }
 

@@ -9,9 +9,20 @@ use App\Models\PeriodSummary;
 use App\Services\Radiography\RadiographySnapshotBuilder;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:debug-ui-options` — muestra exactamente qué sucursales, empleados y
+ * periodos se envían al frontend para el periodo (opciones de filtros) y cómo queda el filtro
+ * del comparativo.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-ui-options 21
+ */
 class DebugUiOptionsCommand extends Command
 {
-    protected $signature   = 'reportes:debug-ui-options {period_id}';
+    protected $signature = 'reportes:debug-ui-options {period_id}';
+
     protected $description = 'Muestra exactamente qué branches, employees y periods se envían al frontend para el periodo dado.';
 
     private const OPERATIVE_BRANCH_NAMES = [
@@ -20,12 +31,18 @@ class DebugUiOptionsCommand extends Command
         'SAN LUIS POTOSI', 'TENANGO DEL VALLE', 'TLAXCALA', 'TULA',
     ];
 
+    /**
+     * Imprime las listas de sucursales, empleados, periodos y el filtro de comparativo.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
-        if (!$period) {
+        $period = Period::find($periodId);
+        if (! $period) {
             $this->error("Periodo {$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -35,7 +52,7 @@ class DebugUiOptionsCommand extends Command
         $snapshot = null;
         if ($summary) {
             $snapshot = app(RadiographySnapshotBuilder::class)->build($period, $summary);
-            $this->line('<fg=green>✓</> Snapshot encontrado (summary ID=' . $summary->id . ')');
+            $this->line('<fg=green>✓</> Snapshot encontrado (summary ID='.$summary->id.')');
         } else {
             $this->line('<fg=yellow>⚠</> Sin snapshot generado para este periodo.');
         }
@@ -47,12 +64,12 @@ class DebugUiOptionsCommand extends Command
             ->orderBy('name')
             ->get(['id', 'name']);
 
-        $this->line('  Encontradas: ' . $branches->count() . ' de 13');
+        $this->line('  Encontradas: '.$branches->count().' de 13');
         if ($branches->count() !== 13) {
-            $this->line('  <fg=red>ERROR: Se esperaban 13, se encontraron ' . $branches->count() . '</>');
+            $this->line('  <fg=red>ERROR: Se esperaban 13, se encontraron '.$branches->count().'</>');
             $missing = array_diff(self::OPERATIVE_BRANCH_NAMES, $branches->pluck('name')->toArray());
             foreach ($missing as $m) {
-                $this->line('    <fg=red>✗ Falta en DB:</> ' . $m);
+                $this->line('    <fg=red>✗ Falta en DB:</> '.$m);
             }
         }
         $this->table(['ID', 'Nombre'], $branches->map(fn ($b) => [$b->id, $b->name])->toArray());
@@ -60,10 +77,10 @@ class DebugUiOptionsCommand extends Command
         // ── EMPLOYEES ────────────────────────────────────────────────────────
         $this->line("\n<fg=cyan>GESTORES enviados al frontend</>");
         if ($snapshot) {
-            $gestores  = $snapshot['sections']['employees_gestores'] ?? [];
-            $this->line('  employees_gestores en snapshot: ' . count($gestores));
+            $gestores = $snapshot['sections']['employees_gestores'] ?? [];
+            $this->line('  employees_gestores en snapshot: '.count($gestores));
 
-            $empNames  = array_unique(array_column($gestores, 'name'));
+            $empNames = array_unique(array_column($gestores, 'name'));
             $allEmpIds = Employee::orderBy('full_name')->get(['id', 'full_name'])
                 ->keyBy(fn ($e) => strtoupper(trim($e->full_name)));
 
@@ -77,16 +94,16 @@ class DebugUiOptionsCommand extends Command
                     $unmatched[] = $name;
                 }
             }
-            $this->line('  Con match en DB employees: ' . $matched . ' de ' . count($empNames));
-            if (!empty($unmatched)) {
+            $this->line('  Con match en DB employees: '.$matched.' de '.count($empNames));
+            if (! empty($unmatched)) {
                 $this->line('  <fg=yellow>Sin match (primeros 10):</>');
                 foreach (array_slice($unmatched, 0, 10) as $u) {
-                    $this->line('    - ' . $u);
+                    $this->line('    - '.$u);
                 }
             }
         } else {
             $total = Employee::count();
-            $this->line('  Sin snapshot — fallback: todos los employees (' . $total . ')');
+            $this->line('  Sin snapshot — fallback: todos los employees ('.$total.')');
         }
 
         // ── ALL PERIODS ──────────────────────────────────────────────────────
@@ -97,11 +114,11 @@ class DebugUiOptionsCommand extends Command
 
         $byType = $allPeriods->groupBy('type');
         foreach ($byType as $type => $ps) {
-            $this->line("  {$type}: " . $ps->count() . " periodos, con snapshot: " .
+            $this->line("  {$type}: ".$ps->count().' periodos, con snapshot: '.
                 $ps->filter(fn ($p) => $periodsWithSnap->has($p->id))->count());
         }
 
-        $this->line('  Total: ' . $allPeriods->count() . ' periodos');
+        $this->line('  Total: '.$allPeriods->count().' periodos');
 
         // ── COMPARATIVO FILTER ────────────────────────────────────────────────
         $this->line("\n<fg=cyan>FILTRO COMPARATIVO</>");
@@ -114,6 +131,7 @@ class DebugUiOptionsCommand extends Command
 
         $this->newLine();
         $this->info('══════ FIN DEBUG UI OPTIONS ══════');
+
         return self::SUCCESS;
     }
 }

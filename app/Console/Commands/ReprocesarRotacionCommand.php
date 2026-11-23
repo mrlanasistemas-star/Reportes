@@ -9,6 +9,20 @@ use App\Services\Imports\RotacionExcelImportService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:reprocesar-rotacion` — limpia `fact_rotacion` del periodo y re-importa
+ * desde el último archivo de rotación ya cargado (PDF, XLS, XLSX o XLSM) con
+ * RotacionExcelImportService; valida que no hayan quedado etiquetas de métrica (ALTAS, BAJAS,
+ * PLANTILLA, ÍNDICE…) como nombre de sucursal y lista lo insertado.
+ *
+ * ADVERTENCIA: borra TODAS las filas de `fact_rotacion` del periodo, incluidas las derivadas de
+ * NOI (source = derived_noi, fuente oficial actual); después conviene correr
+ * `reportes:rebuild-derived-noi`.
+ * Escribe en BD: SÍ (`fact_rotacion`).
+ *
+ * Ejemplo:
+ *   php artisan reportes:reprocesar-rotacion 21
+ */
 class ReprocesarRotacionCommand extends Command
 {
     protected $signature = 'reportes:reprocesar-rotacion
@@ -16,31 +30,40 @@ class ReprocesarRotacionCommand extends Command
 
     protected $description = 'Limpia fact_rotacion del periodo y re-importa desde el archivo ya cargado (PDF, XLS, XLSX o XLSM). Valida que no existan etiquetas de métrica como sucursal.';
 
+    /**
+     * Localiza el upload de rotación, borra la rotación del periodo, reimporta, valida etiquetas e
+     * imprime los registros resultantes.
+     *
+     * @param  BranchResolverService  $branchResolver  Resolvedor de sucursales para el importador.
+     * @return int SUCCESS si se reimportó sin etiquetas inválidas; FAILURE si falta el periodo/upload, falló la importación o hay etiquetas de métrica como sucursal.
+     */
     public function handle(BranchResolverService $branchResolver): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $this->line('');
-        $this->info("══════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════');
         $this->info("  REPROCESAR ROTACIÓN — {$period->label} (ID {$periodId})");
-        $this->info("══════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════');
 
         // Find the rotación upload for this period
         $upload = ReportUpload::query()
-            ->whereHas('dataSource', fn($q) => $q->where('code', 'rotacion'))
+            ->whereHas('dataSource', fn ($q) => $q->where('code', 'rotacion'))
             ->where('period_id', $periodId)
             ->latest()
             ->first();
 
-        if (!$upload) {
+        if (! $upload) {
             $this->error("No existe un upload de rotación para el periodo #{$periodId}.");
-            $this->line("Sube primero el archivo desde Carga de archivos.");
+            $this->line('Sube primero el archivo desde Carga de archivos.');
+
             return self::FAILURE;
         }
 
@@ -53,17 +76,18 @@ class ReprocesarRotacionCommand extends Command
         $this->warn("  → fact_rotacion eliminados para periodo {$periodId}: {$deleted} registros");
 
         // Step 2: Re-import
-        $this->line("  → Iniciando importación…");
+        $this->line('  → Iniciando importación…');
         $service = new RotacionExcelImportService($branchResolver);
 
         try {
             $result = $service->handle($upload);
         } catch (\Throwable $e) {
-            $this->error("Error al importar: " . $e->getMessage());
+            $this->error('Error al importar: '.$e->getMessage());
+
             return self::FAILURE;
         }
 
-        $this->info("  → Importación completada:");
+        $this->info('  → Importación completada:');
         $this->line("      Insertadas : {$result['rows_inserted']}");
         $this->line("      Omitidas   : {$result['rows_skipped']}");
         $this->line("      Errores    : {$result['rows_with_errors']}");
@@ -71,7 +95,7 @@ class ReprocesarRotacionCommand extends Command
         $this->line('');
 
         // Step 3: Validate — no metric labels as sucursal
-        $this->line("  → Validando registros insertados…");
+        $this->line('  → Validando registros insertados…');
         $bad = DB::table('fact_rotacion')
             ->where('period_id', $periodId)
             ->whereRaw("UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(sucursal_nombre,'Á','A'),'É','E'),'Í','I'),'Ó','O'),'Ú','U')) REGEXP '^(ALTAS?|BAJAS?|PLANTILLA|ROTACI|PROMEDIO|INDICE)'")
@@ -80,6 +104,7 @@ class ReprocesarRotacionCommand extends Command
         if ($bad > 0) {
             $this->error("  ✗ ATENCIÓN: existen {$bad} registros con etiquetas de métrica como sucursal_nombre.");
             $this->line("    Ejecuta: php artisan reportes:audit-rotacion {$periodId} --detail");
+
             return self::FAILURE;
         }
 
@@ -92,11 +117,11 @@ class ReprocesarRotacionCommand extends Command
             ->get();
 
         $this->info("  ✓ Registros válidos en BD ({$rows->count()}):");
-        $this->line(sprintf("  %-25s %-8s %5s %5s %8s", 'SUCURSAL', 'MES', 'BAJAS', 'PLANT', 'ÍNDICE%'));
-        $this->line("  " . str_repeat('─', 58));
+        $this->line(sprintf('  %-25s %-8s %5s %5s %8s', 'SUCURSAL', 'MES', 'BAJAS', 'PLANT', 'ÍNDICE%'));
+        $this->line('  '.str_repeat('─', 58));
         foreach ($rows as $r) {
             $this->line(sprintf(
-                "  %-25s %-8s %5s %5s %8s%%",
+                '  %-25s %-8s %5s %5s %8s%%',
                 mb_substr($r->sucursal_nombre, 0, 25),
                 $r->mes,
                 $r->bajas,
@@ -106,7 +131,7 @@ class ReprocesarRotacionCommand extends Command
         }
 
         $this->line('');
-        $this->info("  ✓ Rotación reprocesada correctamente. No existen etiquetas de métrica como sucursal.");
+        $this->info('  ✓ Rotación reprocesada correctamente. No existen etiquetas de métrica como sucursal.');
 
         return self::SUCCESS;
     }

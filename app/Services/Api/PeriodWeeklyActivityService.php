@@ -57,13 +57,23 @@ class PeriodWeeklyActivityService
     /** @var array<int, array> memo por petición */
     private array $memo = [];
 
+    /**
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Filas de gestores, mapa de fusión y periodos de datos del reporte.
+     * @param  EmployeePeriodKpiService  $employeeKpis  KPIs oficiales del mes por colaborador y radiografía vigente.
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Normaliza nombres de gestor.
+     */
     public function __construct(
         private readonly RadiographySnapshotBuilder $snapshotBuilder,
         private readonly EmployeePeriodKpiService $employeeKpis,
         private readonly EmployeeNameCanonicalizer $canonicalizer,
     ) {}
 
-    /** ¿El periodo admite desglose semanal? Solo un mes con semanas componentes. */
+    /**
+     * ¿El periodo admite desglose semanal? Solo un mes con semanas componentes.
+     *
+     * @param  Period  $period  Periodo a evaluar.
+     * @return bool true si es mensual y tiene component_period_ids.
+     */
     public static function supports(Period $period): bool
     {
         return $period->isMonthly() && ! empty($period->component_period_ids);
@@ -72,6 +82,10 @@ class PeriodWeeklyActivityService
     /**
      * Semanas componentes del mes, en orden cronológico.
      *
+     * Lee de BD los periodos de tipo weekly listados en component_period_ids;
+     * `index` es la posición 1-based de la semana dentro del mes.
+     *
+     * @param  Period  $period  Periodo mensual.
      * @return list<array{id:int, code:?string, label:string, sequence:?int, index:int, start_date:?string, end_date:?string}>
      */
     public static function weeksFor(Period $period): array
@@ -106,6 +120,12 @@ class PeriodWeeklyActivityService
     /**
      * Resultado SIN filtrar por consumidor (el controlador aplica alcance e include).
      *
+     * Sin radiografía vigente → not_available (con las semanas, sin cifras).
+     * Con radiografía: cachea 12 h el resultado de compute() con llave por
+     * periodo + id/updated_at de la radiografía vigente, y lo memoiza en la
+     * instancia.
+     *
+     * @param  Period  $period  Periodo mensual consultado.
      * @return array{status:string, message:?string, calculated_at:?string, radiography_version:?int, weeks:list<array>, branches:list<array>, unassigned:?array, employees:list<array>, unidentified:list<array>, reconciliation:?array}
      */
     public function forPeriod(Period $period): array
@@ -148,6 +168,13 @@ class PeriodWeeklyActivityService
      * ['id' => ?int, 'start_date' => 'Y-m-d', 'end_date' => 'Y-m-d']; lo que no cae en
      * ningún corte va a `outside_weeks`. Devuelve null si el periodo no tiene
      * radiografía vigente (sin ella no hay lista de colaboradores ni mapa de fusión).
+     *
+     * Cachea 12 h con llave que incluye un hash de los cortes; no memoiza en
+     * la instancia. Lo usa NaturalMonthActivityService.
+     *
+     * @param  Period  $period  Periodo cuyos datos se reparten.
+     * @param  array  $slots  Cortes de fecha [{id, start_date, end_date}].
+     * @return array|null Mismo formato que forPeriod() (con `weeks` = cortes), o null sin radiografía vigente.
      */
     public function forPeriodSlots(Period $period, array $slots): ?array
     {
@@ -174,6 +201,27 @@ class PeriodWeeklyActivityService
         return Cache::remember($key, self::CACHE_TTL, fn () => $this->compute($period, (int) $summary->id, $slots));
     }
 
+    /**
+     * Cálculo sin caché del reparto por cortes de fecha.
+     *
+     * 1) Obtiene las filas de gestores del reporte, su mapa de fusión y los
+     *    periodos de datos (misma construcción que la radiografía).
+     * 2) Suma colocación (fact_placements por fecha de operación) y
+     *    recuperación (fact_recoveries por fecha de pago, con la regla de
+     *    exclusión del reporte) por corte, por sucursal del movimiento, sin
+     *    sucursal y por gestor normalizado/fusionado.
+     * 3) Empata cada fila del reporte con su KPI oficial del mes; las que no
+     *    tienen identidad o los gestores sin fila en el reporte van a
+     *    `unidentified`.
+     * 4) Arma conciliación Σ cortes + fuera de cortes = total.
+     *
+     * Solo lectura sobre BD.
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @param  int  $radiographyVersion  ID de la radiografía vigente (se devuelve como versión).
+     * @param  array  $weeks  Cortes (semanas del mes o meses naturales) con start_date/end_date.
+     * @return array<string, mixed> Resultado completo con status ok.
+     */
     private function compute(Period $period, int $radiographyVersion, array $weeks): array
     {
         // Filas del reporte + mapa de fusión de ESTA misma construcción.
@@ -367,7 +415,16 @@ class PeriodWeeklyActivityService
 
     // ── Acumuladores ───────────────────────────────────────────────────────
 
-    /** Índice 0-based de la semana que contiene la fecha, o null (sin fecha / fuera del mes). */
+    /**
+     * Índice 0-based de la semana que contiene la fecha, o null (sin fecha / fuera del mes).
+     *
+     * Compara como texto Y-m-d (primeros 10 caracteres) con los límites
+     * inclusivos de cada corte; si hubiera traslape gana el primero.
+     *
+     * @param  array  $weeks  Cortes con start_date/end_date.
+     * @param  mixed  $date  Fecha del movimiento.
+     * @return int|null Índice del corte, o null.
+     */
     private function slotFor(array $weeks, mixed $date): ?int
     {
         if ($date === null || $date === '') {
@@ -383,6 +440,12 @@ class PeriodWeeklyActivityService
         return null;
     }
 
+    /**
+     * Acumulador vacío: un bucket por corte más uno para "fuera de cortes".
+     *
+     * @param  int  $weeks  Número de cortes.
+     * @return array{weeks: list<array>, outside: array}
+     */
     private function emptyAccumulator(int $weeks): array
     {
         return [
@@ -391,6 +454,15 @@ class PeriodWeeklyActivityService
         ];
     }
 
+    /**
+     * Suma colocación (monto y operaciones) al corte indicado, o a "fuera de
+     * cortes" si el slot es null. Modifica el acumulador por referencia.
+     *
+     * @param  array  $acc  Acumulador (por referencia).
+     * @param  int|null  $slot  Índice del corte.
+     * @param  float  $amount  Monto colocado.
+     * @param  int  $ops  Número de operaciones.
+     */
     private function addPlacement(array &$acc, ?int $slot, float $amount, int $ops): void
     {
         if ($slot === null) {
@@ -402,6 +474,14 @@ class PeriodWeeklyActivityService
         }
     }
 
+    /**
+     * Suma recuperación al corte indicado, o a "fuera de cortes" si el slot es
+     * null. Modifica el acumulador por referencia.
+     *
+     * @param  array  $acc  Acumulador (por referencia).
+     * @param  int|null  $slot  Índice del corte.
+     * @param  float  $amount  Monto recuperado (ya con exclusiones).
+     */
     private function addRecovery(array &$acc, ?int $slot, float $amount): void
     {
         if ($slot === null) {
@@ -411,7 +491,14 @@ class PeriodWeeklyActivityService
         }
     }
 
-    /** @return array{weeks:list<array>, outside_weeks:array, month_total:array} */
+    /**
+     * Convierte un acumulador en la forma pública: cifras por corte (con su
+     * period_id), fuera de cortes y total (= cortes + fuera), redondeadas.
+     *
+     * @param  array  $acc  Acumulador.
+     * @param  array  $weeks  Cortes (para tomar el id de cada uno).
+     * @return array{weeks:list<array>, outside_weeks:array, month_total:array}
+     */
     private function finalize(array $acc, array $weeks): array
     {
         $bucket = fn (array $b) => [

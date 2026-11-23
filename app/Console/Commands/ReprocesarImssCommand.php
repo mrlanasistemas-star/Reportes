@@ -8,6 +8,19 @@ use App\Models\ReportUpload;
 use App\Services\ReportAnalysisService;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:reprocesar-imss` — elimina los gastos de categoría IMSS del periodo y
+ * re-importa desde el último archivo IMSS ya cargado (PDF, XLS, XLSX o XLSM), sin afectar las
+ * demás fuentes ni reiniciar la base de datos; al final lista los registros IMSS por sucursal y
+ * advierte los que quedaron sin sucursal.
+ *
+ * Nota: corresponde al IMSS LEGACY por archivo; el IMSS oficial hoy se deriva de NOI Fiscal
+ * (ver `reportes:rebuild-derived-noi`).
+ * Escribe en BD: SÍ (borra y reinserta `fact_expenses` con category = IMSS del periodo).
+ *
+ * Ejemplo:
+ *   php artisan reportes:reprocesar-imss 21
+ */
 class ReprocesarImssCommand extends Command
 {
     protected $signature = 'reportes:reprocesar-imss
@@ -15,13 +28,21 @@ class ReprocesarImssCommand extends Command
 
     protected $description = 'Elimina los gastos IMSS del periodo y re-importa desde el archivo ya cargado (PDF, XLS, XLSX o XLSM), sin afectar las demás fuentes ni reiniciar la base de datos.';
 
+    /**
+     * Localiza el upload IMSS más reciente del periodo, borra los gastos IMSS, reimporta el archivo
+     * e imprime el resultado.
+     *
+     * @param  ReportAnalysisService  $analysisService  Importador de archivos subidos.
+     * @return int SUCCESS si se reimportó; FAILURE si falta el periodo/upload o la importación falló.
+     */
     public function handle(ReportAnalysisService $analysisService): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -36,9 +57,10 @@ class ReprocesarImssCommand extends Command
             ->latest()
             ->first();
 
-        if (!$upload) {
+        if (! $upload) {
             $this->error("No existe un upload de IMSS para el periodo #{$periodId}.");
             $this->line('Sube primero el archivo desde Carga de archivos.');
+
             return self::FAILURE;
         }
 
@@ -57,7 +79,8 @@ class ReprocesarImssCommand extends Command
         try {
             $run = $analysisService->analyze($upload);
         } catch (\Throwable $e) {
-            $this->error('Error al importar: ' . $e->getMessage());
+            $this->error('Error al importar: '.$e->getMessage());
+
             return self::FAILURE;
         }
 
@@ -78,14 +101,14 @@ class ReprocesarImssCommand extends Command
         $total = 0.0;
         $this->info("  ✓ Registros IMSS en BD ({$rows->count()}):");
         $this->line(sprintf('  %-25s %12s', 'SUCURSAL', 'CUOTA MENSUAL'));
-        $this->line('  ' . str_repeat('─', 40));
+        $this->line('  '.str_repeat('─', 40));
         foreach ($rows as $r) {
             $suc = $r->branch?->name ?? ($r->observations ?: 'Sin sucursal');
-            $this->line(sprintf('  %-25s %12s', mb_substr($suc, 0, 25), '$' . number_format((float) $r->amount, 2)));
+            $this->line(sprintf('  %-25s %12s', mb_substr($suc, 0, 25), '$'.number_format((float) $r->amount, 2)));
             $total += (float) $r->amount;
         }
-        $this->line('  ' . str_repeat('─', 40));
-        $this->info(sprintf('  %-25s %12s', 'TOTAL', '$' . number_format($total, 2)));
+        $this->line('  '.str_repeat('─', 40));
+        $this->info(sprintf('  %-25s %12s', 'TOTAL', '$'.number_format($total, 2)));
 
         $sinSucursal = $rows->whereNull('branch_id')->count();
         if ($sinSucursal > 0) {

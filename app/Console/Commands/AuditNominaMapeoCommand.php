@@ -7,10 +7,17 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Auditoría de mapeo de nómina: para cada código NOI (P.../D...) y cada concepto de
- * fact_expenses bajo "Nómina y Capital Humano", muestra a qué línea del reporte se
- * destina (o por qué se excluye), para que nunca quede un monto bajo una etiqueta
- * genérica "Otros" sin saber exactamente de dónde viene.
+ * Comando `reportes:audit-nomina-mapeo` — auditoría de mapeo de nómina: para cada código NOI
+ * (P…/D…) y cada concepto de `fact_expenses` bajo "Nómina y Capital Humano" (más Gasolina y
+ * Financiamiento Celular) muestra a qué línea del reporte se destina o por qué se excluye,
+ * para que nunca quede un monto bajo una etiqueta genérica "Otros" sin saber de dónde viene.
+ *
+ * Nota: filtra por `period_id` exacto (no expande semanas base) y usa reflexión sobre
+ * BranchRadiographyCalculator::canonicalNominaExpense().
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:audit-nomina-mapeo 21
  */
 class AuditNominaMapeoCommand extends Command
 {
@@ -20,7 +27,8 @@ class AuditNominaMapeoCommand extends Command
 
     // Mismo whitelist que BranchRadiographyCalculator::accumulateNomina()
     private const NOI_PERCEPCION_CODES = ['P001', 'P002', 'P009', 'P010', 'P108', 'P109', 'P120', 'P123'];
-    private const NOI_DEDUCCION_CODES  = ['D094', 'D010', 'D113', 'D123', 'D111', 'D137', 'D004'];
+
+    private const NOI_DEDUCCION_CODES = ['D094', 'D010', 'D113', 'D123', 'D111', 'D137', 'D004'];
 
     // Concepts de fact_expenses (Nómina y Capital Humano) que se excluyen a propósito
     // porque ya están cubiertos por otra fuente (NOI o el detalle por sucursal de gastos_lendus).
@@ -29,6 +37,11 @@ class AuditNominaMapeoCommand extends Command
         'PAGO DE IMSS', 'GASTOS EMERGENTES', 'GASTOS POR TRANSPORTE',
     ];
 
+    /**
+     * Ejecuta la sección A (códigos NOI) y la B (conceptos de gasto de nómina).
+     *
+     * @return int Siempre self::SUCCESS.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
@@ -44,6 +57,12 @@ class AuditNominaMapeoCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Agrupa `fact_noi_movements` por código (4 primeros caracteres del concepto) y tipo, y marca
+     * cada código como Mapeado o Pendiente de clasificar según la whitelist del calculador.
+     *
+     * @param  int  $periodId  ID del periodo.
+     */
     private function auditNoiCodes(int $periodId): void
     {
         $this->info('── A. Códigos NOI (fact_noi_movements) ──');
@@ -59,25 +78,32 @@ class AuditNominaMapeoCommand extends Command
         $table = [];
         foreach ($rows as $r) {
             $estado = in_array($r->code, $whitelist, true) ? 'Mapeado' : 'Pendiente de clasificar';
-            $table[] = [$r->code, $r->concept_type, '$' . number_format((float) $r->total, 2), $r->cnt, $estado];
+            $table[] = [$r->code, $r->concept_type, '$'.number_format((float) $r->total, 2), $r->cnt, $estado];
         }
 
         $this->table(['Código', 'Tipo', 'Monto', '# Movs', 'Estado'], $table);
 
         $pendientes = array_filter($table, fn ($row) => $row[4] === 'Pendiente de clasificar');
-        if (!empty($pendientes)) {
+        if (! empty($pendientes)) {
             $this->warn('⚠ Hay códigos NOI sin clasificar — revisar BranchRadiographyCalculator::accumulateNomina().');
         } else {
             $this->line('✓ Todos los códigos NOI de este periodo están mapeados.');
         }
     }
 
+    /**
+     * Agrupa los gastos de nómina por fuente, categoría y concepto y determina su destino: detalle
+     * por sucursal (Excel Lendus), excluido por estar cubierto por NOI, o la etiqueta canónica que
+     * le asigna el calculador (o Pendiente si cae en "Sin clasificar").
+     *
+     * @param  int  $periodId  ID del periodo.
+     */
     private function auditExpenseConcepts(int $periodId): void
     {
         $this->info('── B. Conceptos de gasto bajo "Nómina y Capital Humano" (fact_expenses) ──');
 
         $calc = app(BranchRadiographyCalculator::class);
-        $ref  = new \ReflectionClass($calc);
+        $ref = new \ReflectionClass($calc);
         $canonicalMethod = $ref->getMethod('canonicalNominaExpense');
         $canonicalMethod->setAccessible(true);
 
@@ -108,17 +134,17 @@ class AuditNominaMapeoCommand extends Command
             } elseif (in_array($conceptUpper, self::EXPENSE_EXCLUDED_CONCEPTS, true)) {
                 $estado = 'Excluido correctamente (cubierto por NOI)';
             } else {
-                $label  = $canonicalMethod->invoke($calc, $r->category, $r->concept);
+                $label = $canonicalMethod->invoke($calc, $r->category, $r->concept);
                 $estado = str_starts_with($label, 'Sin clasificar:') ? "Pendiente de clasificar → {$label}" : "Mapeado → {$label}";
             }
 
-            $table[] = [$r->fuente, $r->category, $r->concept, '$' . number_format((float) $r->total, 2), $r->cnt, $estado];
+            $table[] = [$r->fuente, $r->category, $r->concept, '$'.number_format((float) $r->total, 2), $r->cnt, $estado];
         }
 
         $this->table(['Fuente', 'Categoría', 'Concepto', 'Monto', '# Regs', 'Estado'], $table);
 
         $pendientes = array_filter($table, fn ($row) => str_starts_with($row[5], 'Pendiente de clasificar'));
-        if (!empty($pendientes)) {
+        if (! empty($pendientes)) {
             $this->warn('⚠ Hay conceptos de gasto de nómina sin clasificar — revisar canonicalNominaExpense().');
         } else {
             $this->line('✓ Todos los conceptos de gasto de nómina de este periodo están mapeados o excluidos a propósito.');

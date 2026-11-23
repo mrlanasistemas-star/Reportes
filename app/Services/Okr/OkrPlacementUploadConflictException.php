@@ -13,6 +13,11 @@ use RuntimeException;
  */
 class OkrPlacementUploadConflictException extends RuntimeException
 {
+    /**
+     * Crea la excepción conservando la carga activa que provoca el conflicto.
+     *
+     * @param  OkrPlacementUpload  $existingUpload  Carga activa ya registrada para el mismo Objective/semana; la UI la muestra para ofrecer reemplazo.
+     */
     public function __construct(public readonly OkrPlacementUpload $existingUpload)
     {
         parent::__construct('Ya existe colocación cargada para esta semana.');

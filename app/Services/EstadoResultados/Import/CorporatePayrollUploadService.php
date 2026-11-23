@@ -27,21 +27,45 @@ use Illuminate\Support\Facades\Storage;
  */
 class CorporatePayrollUploadService
 {
+    /** Tipo/slot de la carga (también se usa en los intentos de carga). */
     public const SLOT = EstadoResultadosPayrollUpload::KIND_NOI_CORPORATIVO;
 
+    /** Nombre de la fuente para la UI. */
     public const LABEL = 'NOI de corporativo';
 
+    /**
+     * @param  NoiPayrollParser  $parser  lector del Excel de NOI
+     * @param  EstadoResultadosUploadService  $files  validaciones de archivo compartidas
+     */
     public function __construct(
         private readonly NoiPayrollParser $parser,
         private readonly EstadoResultadosUploadService $files,
     ) {}
 
+    /**
+     * Carga un NOI de corporativo subido desde la web.
+     *
+     * @param  Period  $period  periodo mensual
+     * @param  UploadedFile  $file  archivo subido
+     * @param  int|null  $userId  usuario
+     * @return array{upload:EstadoResultadosPayrollUpload, idempotent:bool}
+     */
     public function upload(Period $period, UploadedFile $file, ?int $userId): array
     {
         return $this->importPath($period, (string) $file->getRealPath(), $file->getClientOriginalName(), $userId, $file);
     }
 
     /**
+     * Carga un NOI de corporativo desde una ruta: registra un intento de carga, valida periodo
+     * (abierto y mensual) y archivo, detecta el mismo archivo ya vigente (idempotente), toma un
+     * candado por periodo (300 s), lee y guarda. Cada desenlace queda en el intento (completado,
+     * duplicado o rechazado con sus errores).
+     *
+     * @param  Period  $period  periodo mensual
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $originalName  nombre original
+     * @param  int|null  $userId  usuario
+     * @param  UploadedFile|null  $file  archivo subido (para guardarlo en el disco)
      * @return array{upload:EstadoResultadosPayrollUpload, idempotent:bool}
      *
      * @throws EstadoResultadosImportException|EstadoResultadosLockedException
@@ -108,6 +132,22 @@ class CorporatePayrollUploadService
         return ['upload' => $upload, 'idempotent' => false];
     }
 
+    /**
+     * Guarda el archivo en el disco del ER (antes de la transacción) y, dentro de una
+     * transacción con la fila del periodo bloqueada, crea la carga nueva, borra SÓLO los
+     * renglones de la carga anterior, la marca «reemplazada» e inserta los renglones nuevos.
+     *
+     * @param  Period  $period  periodo
+     * @param  array  $parsed  resultado de NoiPayrollParser::parse
+     * @param  string  $hash  sha256 del archivo
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $originalName  nombre original
+     * @param  int|null  $userId  usuario
+     * @param  UploadedFile|null  $file  archivo subido
+     * @return EstadoResultadosPayrollUpload carga creada
+     *
+     * @throws EstadoResultadosLockedException si el periodo se aprobó mientras tanto
+     */
     private function store(Period $period, array $parsed, string $hash, string $absolutePath, string $originalName, ?int $userId, ?UploadedFile $file): EstadoResultadosPayrollUpload
     {
         $ext = pathinfo($originalName, PATHINFO_EXTENSION) ?: 'xlsx';
@@ -158,6 +198,16 @@ class CorporatePayrollUploadService
         });
     }
 
+    /**
+     * Cierra el intento de carga: guarda hasta 1000 errores (en bloques de 200) y actualiza
+     * estado, ciclo de vida, mensaje y fechas (los valores null no se sobrescriben).
+     *
+     * @param  EstadoResultadosImportAttempt  $attempt  intento
+     * @param  string  $status  completado | duplicado | rechazado
+     * @param  string  $message  mensaje en español
+     * @param  array  $errors  errores [{row, column, message}]
+     * @param  string|null  $storedPath  ruta guardada del archivo (si se completó)
+     */
     private function finish(EstadoResultadosImportAttempt $attempt, string $status, string $message, array $errors = [], ?string $storedPath = null): void
     {
         $now = now();

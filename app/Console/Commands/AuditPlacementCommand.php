@@ -6,33 +6,60 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-placements` — auditoría de Colocación/Otorgamientos
+ * (`fact_placements`, Ministraciones). KPI de colocación = SUM(Monto desembolsado) BRUTO de
+ * DESEMBOLSO + REFINANCIAMIENTO; excluye REESTRUCTURACIÓN y UNIFICACIÓN. El Seguro
+ * CRECE/COMADRES es SOLO informativo y NO se resta. Compara contra la referencia confirmada de
+ * Abril 2026 (REF_COLOCACION $13,351,612.00 y REF_SEGURO $11,391.72).
+ *
+ * Secciones: A) totales por columna de raw_payload (cuál usar y cuál no); B) por Origen
+ * crédito (`--by-origin`); C/D) por producto y detalle CRECE/COMADRES (`--by-product`);
+ * E) por sucursal (`--by-branch`); F) total excluido; G) resultado final y checklist.
+ * `--detail` muestra todas las secciones.
+ *
+ * Escribe en BD: NO — solo lectura. Usa JSON_EXTRACT (requiere MySQL).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-placements 14
+ *   php artisan reportes:audit-placements 14 --detail
+ */
 class AuditPlacementCommand extends Command
 {
-    protected $signature   = 'reportes:audit-placements
+    protected $signature = 'reportes:audit-placements
                                 {period_id}
                                 {--compare-reference : comparar contra referencia manual confirmada}
                                 {--by-branch         : comparativo por sucursal}
                                 {--by-origin         : totales por Origen crédito}
                                 {--by-product        : totales por producto + detalle CRECE/COMADRES}
                                 {--detail            : mostrar todas las secciones}';
+
     protected $description = 'Auditoría de Colocación/Otorgamientos: columnas, origen crédito, producto, seguro CRECE/COMADRES (informativo), comparativo por sucursal';
 
     // Referencia confirmada manualmente — Abril 2026 (periodo 14)
     // KPI de Colocación = bruto (Monto desembolsado). El Seguro CRECE/COMADRES es SOLO informativo, NO se resta.
     private const REF_COLOCACION = 13_351_612.00; // SUM(Monto desembolsado), DESEMBOLSO+REFINANCIAMIENTO — KPI oficial
-    private const REF_SEGURO     = 11_391.72;     // Seguro CRECE/COMADRES — informativo
 
+    private const REF_SEGURO = 11_391.72;     // Seguro CRECE/COMADRES — informativo
+
+    /**
+     * Resuelve los periodos de datos, calcula el KPI de colocación y el seguro informativo e
+     * imprime las secciones solicitadas y el checklist final.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -41,36 +68,36 @@ class AuditPlacementCommand extends Command
         $showAll = $this->option('detail');
 
         $this->line('');
-        $this->info("════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA COLOCACIÓN / OTORGAMIENTOS — {$period->label} (ID {$period->id})");
-        $this->info("  DataIds: [" . implode(', ', $dataIds) . "]");
-        $this->info("  KPI Colocación = SUM(Monto desembolsado) | Incluye: DESEMBOLSO + REFINANCIAMIENTO");
-        $this->info("  Excluye: REESTRUCTURACIÓN + UNIFICACIÓN");
-        $this->info("  Seguro CRECE/COMADRES: SOLO INFORMATIVO — NO se resta del KPI de colocación.");
-        $this->info("════════════════════════════════════════════════════════════════");
+        $this->info('  DataIds: ['.implode(', ', $dataIds).']');
+        $this->info('  KPI Colocación = SUM(Monto desembolsado) | Incluye: DESEMBOLSO + REFINANCIAMIENTO');
+        $this->info('  Excluye: REESTRUCTURACIÓN + UNIFICACIÓN');
+        $this->info('  Seguro CRECE/COMADRES: SOLO INFORMATIVO — NO se resta del KPI de colocación.');
+        $this->info('════════════════════════════════════════════════════════════════');
 
         // ── A) TOTALES POR COLUMNA ────────────────────────────────────────────
         $this->line('');
         $this->info('════ A. TOTALES POR COLUMNA (desde raw_payload) ════');
 
         $totalRows = DB::table('fact_placements')->whereIn('period_id', $dataIds)->count();
-        $this->line("  Filas totales en BD: " . number_format($totalRows));
+        $this->line('  Filas totales en BD: '.number_format($totalRows));
         $this->line('');
 
         $jsonCols = [
-            'monto_desembolsado'         => 'Monto desembolsado   ← USAR como KPI de colocación',
-            'efectivo_desembolsado'      => '$ Desembolsado       ← NO usar',
-            'cuota_total'                => 'Cuota total          ← NO usar',
-            'interes_total'              => 'Interés total crédito ← NO usar',
-            'impuesto_total'             => 'Impuesto total crédito ← NO usar',
-            'adeudo_total'               => 'Adeudo Total          ← NO usar',
-            'seguro'                     => 'Seguro                ← informativo, NO se resta del KPI',
-            'apertura'                   => 'Apertura              ← NO usar',
+            'monto_desembolsado' => 'Monto desembolsado   ← USAR como KPI de colocación',
+            'efectivo_desembolsado' => '$ Desembolsado       ← NO usar',
+            'cuota_total' => 'Cuota total          ← NO usar',
+            'interes_total' => 'Interés total crédito ← NO usar',
+            'impuesto_total' => 'Impuesto total crédito ← NO usar',
+            'adeudo_total' => 'Adeudo Total          ← NO usar',
+            'seguro' => 'Seguro                ← informativo, NO se resta del KPI',
+            'apertura' => 'Apertura              ← NO usar',
             'descuento_refinanciamiento' => 'Desc. refinanciamiento ← NO usar',
-            'descuento_subproductos'     => 'Desc. subproductos    ← NO usar',
+            'descuento_subproductos' => 'Desc. subproductos    ← NO usar',
         ];
 
-        $this->line(str_pad('Columna', 46) . 'Total');
+        $this->line(str_pad('Columna', 46).'Total');
         $this->line(str_repeat('─', 90));
 
         foreach ($jsonCols as $key => $label) {
@@ -79,7 +106,7 @@ class AuditPlacementCommand extends Command
                  FROM fact_placements WHERE period_id IN ({$dataIdsSql})"
             )?->tot ?? 0;
 
-            $this->line(str_pad(mb_substr($label, 0, 44), 46) . '$' . number_format($val, 2));
+            $this->line(str_pad(mb_substr($label, 0, 44), 46).'$'.number_format($val, 2));
         }
 
         // ── B) TOTALES POR ORIGEN CRÉDITO ────────────────────────────────────
@@ -112,27 +139,31 @@ class AuditPlacementCommand extends Command
                 WHERE period_id IN ({$dataIdsSql})"
             );
 
-            $desembolso = (float)($byOrigin->desembolso ?? 0);
-            $refi       = (float)($byOrigin->refi       ?? 0);
-            $restr      = (float)($byOrigin->restr      ?? 0);
-            $unif       = (float)($byOrigin->unif       ?? 0);
-            $sinOrigen  = (float)($byOrigin->sin_origen ?? 0);
+            $desembolso = (float) ($byOrigin->desembolso ?? 0);
+            $refi = (float) ($byOrigin->refi ?? 0);
+            $restr = (float) ($byOrigin->restr ?? 0);
+            $unif = (float) ($byOrigin->unif ?? 0);
+            $sinOrigen = (float) ($byOrigin->sin_origen ?? 0);
 
             $origins = [
-                ['DESEMBOLSO',       $desembolso, (int)($byOrigin->cnt_desembolso ?? 0), 'INCLUIDO'],
-                ['REFINANCIAMIENTO', $refi,       (int)($byOrigin->cnt_refi       ?? 0), 'INCLUIDO'],
-                ['REESTRUCTURACIÓN', $restr,      (int)($byOrigin->cnt_restr      ?? 0), 'EXCLUIDO'],
-                ['UNIFICACIÓN',      $unif,       (int)($byOrigin->cnt_unif       ?? 0), 'EXCLUIDO'],
+                ['DESEMBOLSO',       $desembolso, (int) ($byOrigin->cnt_desembolso ?? 0), 'INCLUIDO'],
+                ['REFINANCIAMIENTO', $refi,       (int) ($byOrigin->cnt_refi ?? 0), 'INCLUIDO'],
+                ['REESTRUCTURACIÓN', $restr,      (int) ($byOrigin->cnt_restr ?? 0), 'EXCLUIDO'],
+                ['UNIFICACIÓN',      $unif,       (int) ($byOrigin->cnt_unif ?? 0), 'EXCLUIDO'],
                 ['Sin origen',       $sinOrigen,  0,                                     'SIN ORIGEN'],
             ];
 
-            $this->line(str_pad('Origen crédito', 22) . str_pad('Registros', 12) . str_pad('Monto', 22) . 'Estado');
+            $this->line(str_pad('Origen crédito', 22).str_pad('Registros', 12).str_pad('Monto', 22).'Estado');
             $this->line(str_repeat('─', 72));
             foreach ($origins as [$lbl, $val, $cnt, $estado]) {
-                $line = str_pad($lbl, 22) . str_pad(number_format($cnt), 12) . str_pad('$' . number_format($val, 2), 22) . $estado;
-                if ($estado === 'INCLUIDO') $this->info("  {$line}");
-                elseif ($estado === 'EXCLUIDO') $this->warn("  {$line}");
-                else $this->line("  {$line}");
+                $line = str_pad($lbl, 22).str_pad(number_format($cnt), 12).str_pad('$'.number_format($val, 2), 22).$estado;
+                if ($estado === 'INCLUIDO') {
+                    $this->info("  {$line}");
+                } elseif ($estado === 'EXCLUIDO') {
+                    $this->warn("  {$line}");
+                } else {
+                    $this->line("  {$line}");
+                }
             }
 
             $this->line('');
@@ -193,23 +224,24 @@ class AuditPlacementCommand extends Command
                 ->orderByDesc('monto')
                 ->get();
 
-            $this->line(str_pad('Producto', 16) . str_pad('Cttos', 8) . str_pad('Colocación (KPI)', 22) . 'Seguro (informativo)');
+            $this->line(str_pad('Producto', 16).str_pad('Cttos', 8).str_pad('Colocación (KPI)', 22).'Seguro (informativo)');
             $this->line(str_repeat('─', 70));
-            $totMonto = 0; $totSeguro = 0;
+            $totMonto = 0;
+            $totSeguro = 0;
             foreach ($byProduct as $p) {
-                $monto  = (float) $p->monto;
+                $monto = (float) $p->monto;
                 $seguro = (float) $p->seguro;
                 $totMonto += $monto;
                 $totSeguro += $seguro;
                 $this->line(
-                    str_pad($p->grupo, 16) .
-                    str_pad(number_format($p->cnt), 8) .
-                    str_pad('$' . number_format($monto, 2), 22) .
-                    ($seguro > 0 ? '$' . number_format($seguro, 2) : '—')
+                    str_pad($p->grupo, 16).
+                    str_pad(number_format($p->cnt), 8).
+                    str_pad('$'.number_format($monto, 2), 22).
+                    ($seguro > 0 ? '$'.number_format($seguro, 2) : '—')
                 );
             }
             $this->line(str_repeat('─', 70));
-            $this->line(str_pad('TOTAL', 24) . str_pad('$' . number_format($totMonto, 2), 22) . '$' . number_format($totSeguro, 2));
+            $this->line(str_pad('TOTAL', 24).str_pad('$'.number_format($totMonto, 2), 22).'$'.number_format($totSeguro, 2));
 
             // ── D) Detalle CRECE / COMADRES por sucursal+producto ───────────
             $this->line('');
@@ -232,16 +264,16 @@ class AuditPlacementCommand extends Command
                 ->orderBy('p.product_name')
                 ->get();
 
-            $this->line(str_pad('Sucursal', 22) . str_pad('Producto', 18) . str_pad('Colocación (KPI)', 18) . str_pad('Seguro (info)', 14) . 'Reg.');
+            $this->line(str_pad('Sucursal', 22).str_pad('Producto', 18).str_pad('Colocación (KPI)', 18).str_pad('Seguro (info)', 14).'Reg.');
             $this->line(str_repeat('─', 90));
             foreach ($detalle as $d) {
                 $monto = (float) $d->monto;
-                $seg   = (float) $d->seguro;
+                $seg = (float) $d->seguro;
                 $this->line(
-                    str_pad(mb_substr($d->sucursal, 0, 20), 22) .
-                    str_pad(mb_substr($d->producto, 0, 16), 18) .
-                    str_pad('$' . number_format($monto, 2), 18) .
-                    str_pad('$' . number_format($seg, 2), 14) .
+                    str_pad(mb_substr($d->sucursal, 0, 20), 22).
+                    str_pad(mb_substr($d->producto, 0, 16), 18).
+                    str_pad('$'.number_format($monto, 2), 18).
+                    str_pad('$'.number_format($seg, 2), 14).
                     (string) $d->cnt
                 );
             }
@@ -270,26 +302,27 @@ class AuditPlacementCommand extends Command
                 ->orderByDesc('monto')
                 ->get();
 
-            $this->line(str_pad('Sucursal', 22) . str_pad('Colocación (KPI)', 20) . str_pad('Seguro (informativo)', 22) . 'Reg.');
+            $this->line(str_pad('Sucursal', 22).str_pad('Colocación (KPI)', 20).str_pad('Seguro (informativo)', 22).'Reg.');
             $this->line(str_repeat('─', 80));
-            $totMonto = 0; $totSeguro = 0;
+            $totMonto = 0;
+            $totSeguro = 0;
             foreach ($byBranch as $b) {
                 $monto = (float) $b->monto;
-                $seg   = (float) $b->seguro;
+                $seg = (float) $b->seguro;
                 $totMonto += $monto;
                 $totSeguro += $seg;
                 $this->line(
-                    str_pad(mb_substr($b->sucursal, 0, 20), 22) .
-                    str_pad('$' . number_format($monto, 2), 20) .
-                    str_pad(($seg > 0 ? '$' . number_format($seg, 2) : '—'), 22) .
+                    str_pad(mb_substr($b->sucursal, 0, 20), 22).
+                    str_pad('$'.number_format($monto, 2), 20).
+                    str_pad(($seg > 0 ? '$'.number_format($seg, 2) : '—'), 22).
                     (string) $b->cnt
                 );
             }
             $this->line(str_repeat('─', 80));
             $this->line(
-                str_pad('TOTAL', 22) .
-                str_pad('$' . number_format($totMonto, 2), 20) .
-                '$' . number_format($totSeguro, 2)
+                str_pad('TOTAL', 22).
+                str_pad('$'.number_format($totMonto, 2), 20).
+                '$'.number_format($totSeguro, 2)
             );
         }
 
@@ -301,7 +334,7 @@ class AuditPlacementCommand extends Command
             ->whereIn('period_id', $dataIds)
             ->whereRaw("UPPER(JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(raw_payload), '$.credit_origin'))) IN ('REESTRUCTURACIÓN', 'REESTRUCTURACION', 'UNIFICACIÓN', 'UNIFICACION')")
             ->sum('amount');
-        $this->line("  Total excluido: $" . number_format($totalExcluido, 2));
+        $this->line('  Total excluido: $'.number_format($totalExcluido, 2));
 
         // ── G) RESULTADO FINAL ──────────────────────────────────────────────────
         $this->line('');
@@ -312,18 +345,21 @@ class AuditPlacementCommand extends Command
             ['Seguro CRECE/COMADRES (informativo, NO se resta)',       $seguroCreceComadres, self::REF_SEGURO],
         ];
 
-        $this->line(str_pad('Concepto', 56) . str_pad('Sistema', 20) . str_pad('Referencia', 20) . 'Diferencia');
+        $this->line(str_pad('Concepto', 56).str_pad('Sistema', 20).str_pad('Referencia', 20).'Diferencia');
         $this->line(str_repeat('─', 110));
         foreach ($rows as [$label, $sys, $ref]) {
             $diff = $sys - $ref;
             $sign = $diff >= 0 ? '+' : '';
             $match = abs($diff) < 1 ? '✓ EXACTO' : (abs($diff) < 500 ? '≈ CERCANO' : '✗ DIFERENCIA');
-            $line = str_pad($label, 56) . str_pad('$' . number_format($sys, 2), 20) . str_pad('$' . number_format($ref, 2), 20) . "{$sign}\$" . number_format(abs($diff), 2) . "  {$match}";
-            if (abs($diff) < 1) $this->info("  {$line}");
-            else $this->warn("  {$line}");
+            $line = str_pad($label, 56).str_pad('$'.number_format($sys, 2), 20).str_pad('$'.number_format($ref, 2), 20)."{$sign}\$".number_format(abs($diff), 2)."  {$match}";
+            if (abs($diff) < 1) {
+                $this->info("  {$line}");
+            } else {
+                $this->warn("  {$line}");
+            }
         }
         $this->line('');
-        $this->line("  Registros CRECE/COMADRES (solo para el dato informativo de seguro): " . number_format($cntCreceComadres) . " (ref: 76)");
+        $this->line('  Registros CRECE/COMADRES (solo para el dato informativo de seguro): '.number_format($cntCreceComadres).' (ref: 76)');
 
         // ── RESULTADO FINAL — CHECKLIST ────────────────────────────────────────
         $this->line('');
@@ -333,8 +369,8 @@ class AuditPlacementCommand extends Command
         $this->printCheck(true, 'Incluye solo DESEMBOLSO + REFINANCIAMIENTO');
         $this->printCheck(true, 'Excluye REESTRUCTURACIÓN + UNIFICACIÓN');
         $this->printCheck(true, 'Seguro CRECE/COMADRES NO se resta del KPI — solo se muestra informativo');
-        $this->printCheck(abs($colocacion - self::REF_COLOCACION) < 1, 'Colocación (KPI) = $' . number_format(self::REF_COLOCACION, 2));
-        $this->printCheck(abs($seguroCreceComadres - self::REF_SEGURO) < 1, 'Seguro CRECE/COMADRES informativo = $' . number_format(self::REF_SEGURO, 2));
+        $this->printCheck(abs($colocacion - self::REF_COLOCACION) < 1, 'Colocación (KPI) = $'.number_format(self::REF_COLOCACION, 2));
+        $this->printCheck(abs($seguroCreceComadres - self::REF_SEGURO) < 1, 'Seguro CRECE/COMADRES informativo = $'.number_format(self::REF_SEGURO, 2));
 
         if (abs($colocacion - self::REF_COLOCACION) >= 1) {
             $this->line('');
@@ -344,11 +380,20 @@ class AuditPlacementCommand extends Command
         return 0;
     }
 
+    /**
+     * Imprime una línea de checklist con ✓ (info) o ✗ (warn).
+     *
+     * @param  bool  $ok  Resultado de la verificación.
+     * @param  string  $label  Descripción.
+     */
     private function printCheck(bool $ok, string $label): void
     {
         $icon = $ok ? '✓' : '✗';
-        $msg  = "  [{$icon}] {$label}";
-        if ($ok) $this->info($msg);
-        else     $this->warn($msg);
+        $msg = "  [{$icon}] {$label}";
+        if ($ok) {
+            $this->info($msg);
+        } else {
+            $this->warn($msg);
+        }
     }
 }

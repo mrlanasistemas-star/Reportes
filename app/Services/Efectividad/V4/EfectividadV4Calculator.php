@@ -118,12 +118,19 @@ class EfectividadV4Calculator
     private bool $conTraza = false;
 
     /**
+     * Generar_Efectividad_Cobranza: valida parámetros y fuentes (errores 901–910), arma el mapa
+     * ruta → promotor, procesa cada fotografía diaria (estado, stocks y cuotas Sano), clasifica
+     * los cobros del historial y genera el reporte con subtotales e incidencias. Función pura.
+     *
      * @param  array{modo:string, domingo_base:mixed, fecha_corte:mixed}  $parametros
      * @param  array<int, array{columnas: list<string>, filas: iterable<array<string,mixed>>, nombre?: string}>  $fotos
      *                                                                                                                   índice = días desde el domingo base (0 = domingo base … 7 = domingo corte)
      * @param  array{columnas: list<string>, filas: iterable<array<string,mixed>>}  $ingresos  INGRESOS del corte (solo para el mapa de ruta)
      * @param  array{columnas: list<string>, filas: iterable<array<string,mixed>>}  $historial  _HIST_INGRESOS (histórico + corte, sin duplicar fechas)
+     * @param  bool  $conTraza  conservar el detalle de movimientos clasificados
      * @return array{engine_version:string, parametros:array<string,string>, filas:list<array<string,mixed>>, incidencias:list<array<string,mixed>>, estadisticas:array<string,int>, sin_movimientos:bool}
+     *
+     * @throws EfectividadV4Exception con código EC-V4-9xx ante parámetros o columnas inválidos
      */
     public function calculate(array $parametros, array $fotos, array $ingresos, array $historial, bool $conTraza = false): array
     {
@@ -236,6 +243,14 @@ class EfectividadV4Calculator
     // CrearMapaResponsableRuta — promotor con más movimientos por ruta
     // ==================================================================
 
+    /**
+     * Llena $rutaPromo con el promotor de más movimientos válidos por ruta en [fechaIni,
+     * fechaFin]; si faltan columnas el mapa queda vacío (igual que la macro).
+     *
+     * @param  array  $ingresos  INGRESOS del corte {columnas, filas}
+     * @param  int  $fechaIni  día inicial
+     * @param  int  $fechaFin  día final
+     */
     private function crearMapaResponsableRuta(array $ingresos, int $fechaIni, int $fechaFin): void
     {
         $cols = $ingresos['columnas'];
@@ -330,6 +345,12 @@ class EfectividadV4Calculator
         }
     }
 
+    /**
+     * Promotor responsable de la ruta (o el original si la ruta no está en el mapa).
+     *
+     * @param  string  $oficina  ruta
+     * @param  string  $promotorOriginal  promotor de la fila
+     */
     private function obtenerPromotorRuta(string $oficina, string $promotorOriginal): string
     {
         $ruta = $this->normalizar($oficina);
@@ -344,6 +365,19 @@ class EfectividadV4Calculator
     // ProcesarFoto — estado diario, stocks del corte y cuotas Sano
     // ==================================================================
 
+    /**
+     * ProcesarFoto: de una fotografía diaria registra estado por contrato/día, atrasos, stocks
+     * de Atraso/Vencido del corte y proyecta las cuotas Sano de la semana (los contratos
+     * VENCIDOS no generan cuotas sanas; Total atrasado manda sobre los componentes).
+     *
+     * @param  array  $foto  fotografía {columnas, filas}
+     * @param  string  $nombre  nombre de la hoja (mensajes)
+     * @param  int  $fFoto  día de la fotografía
+     * @param  int  $fSemanaIni  inicio de la semana evaluada
+     * @param  int  $fSemanaFin  fin de la semana evaluada
+     *
+     * @throws EfectividadV4Exception EC-V4-920 si faltan columnas obligatorias
+     */
     private function procesarFoto(array $foto, string $nombre, int $fFoto, int $fSemanaIni, int $fSemanaFin): void
     {
         $cols = array_flip($foto['columnas']);
@@ -524,6 +558,18 @@ class EfectividadV4Calculator
     // ProcesarCobros — clasificación de pagos del historial
     // ==================================================================
 
+    /**
+     * ProcesarCobros: clasifica cada pago del historial (whitelist, sin moratorios, importe =
+     * capital + interés + impuesto + cargos de calendario) reconociéndolo en max(transacción,
+     * cuota); Sano/Atraso/Vencido según la foto del día de reconocimiento (o la última previa);
+     * el contrato debe aparecer en alguna foto; renovaciones sólo en su semana.
+     *
+     * @param  array  $historial  _HIST_INGRESOS {columnas, filas}
+     * @param  int  $fSemanaIni  inicio de la semana
+     * @param  int  $fSemanaFin  fin de la semana
+     * @param  int  $fRepIni  inicio del periodo reportado
+     * @param  int  $fRepFin  fin del periodo reportado
+     */
     private function procesarCobros(array $historial, int $fSemanaIni, int $fSemanaFin, int $fRepIni, int $fRepFin): void
     {
         $cols = array_flip($historial['columnas']);
@@ -692,7 +738,12 @@ class EfectividadV4Calculator
     // GenerarReporte — orden, subtotales por oficina y GRAN TOTAL
     // ==================================================================
 
-    /** @return array{0: list<array<string,mixed>>, 1: bool} */
+    /**
+     * GenerarReporte: ordena grupos por oficina/promotor, omite los vacíos y agrega subtotales
+     * por oficina y GRAN TOTAL.
+     *
+     * @return array{0: list<array<string,mixed>>, 1: bool} [filas, sin movimientos]
+     */
     private function generarReporte(): array
     {
         if (! $this->grupos) {
@@ -842,11 +893,21 @@ class EfectividadV4Calculator
         return $filas;
     }
 
+    /**
+     * Acumulador de totales en cero.
+     *
+     * @return array<string, float>
+     */
     private function totalesVacios(): array
     {
         return ['sano_pc' => 0.0, 'sano_cob' => 0.0, 'atraso_pc' => 0.0, 'atraso_cob' => 0.0, 'vencido_pc' => 0.0, 'vencido_cob' => 0.0];
     }
 
+    /**
+     * ¿El grupo tiene algún importe mayor a la tolerancia?
+     *
+     * @param  string  $g  grupo
+     */
     private function grupoTieneDatos(string $g): bool
     {
         foreach ([$this->sanoPC, $this->cobSano, $this->atrasoPC, $this->cobAtraso, $this->vencidoPC, $this->cobVencido] as $dic) {
@@ -862,6 +923,13 @@ class EfectividadV4Calculator
     // Incidencias (_AUDITORIA_EFECTIVIDAD)
     // ==================================================================
 
+    /**
+     * Registra una incidencia de auditoría una sola vez por clave («CODIGO|…»).
+     *
+     * @param  string  $clave  clave única
+     * @param  string  $descripcion  descripción
+     * @param  array  $extra  datos adicionales
+     */
     private function incidencia(string $clave, string $descripcion, array $extra = []): void
     {
         if (! array_key_exists($clave, $this->incidencias)) {
@@ -869,7 +937,11 @@ class EfectividadV4Calculator
         }
     }
 
-    /** @return list<array<string,mixed>> */
+    /**
+     * Incidencias en formato de lista con código, contrato y referencia extraídos de la clave.
+     *
+     * @return list<array<string,mixed>>
+     */
     private function incidenciasEstructuradas(): array
     {
         $out = [];
@@ -904,6 +976,9 @@ class EfectividadV4Calculator
     // Helpers con la misma semántica que la macro
     // ==================================================================
 
+    /**
+     * Reinicia todos los diccionarios de estado (la instancia puede reutilizarse).
+     */
     private function reset(): void
     {
         foreach (['rutaPromo', 'grupos', 'oficinaDe', 'promotorDe', 'nombreGrupo', 'contratoGrupo', 'contratoVenc', 'firmaContrato',
@@ -913,6 +988,12 @@ class EfectividadV4Calculator
         }
     }
 
+    /**
+     * Sólo «PAGO A CONTRATO / PAGO» y «REFINANCIAMIENTO / DESCUENTO».
+     *
+     * @param  string  $op  operación normalizada
+     * @param  string  $tr  transacción normalizada
+     */
     private function pasaWhitelist(string $op, string $tr): bool
     {
         return ($op === 'PAGO A CONTRATO' && $tr === 'PAGO') || ($op === 'REFINANCIAMIENTO' && $tr === 'DESCUENTO');
@@ -945,11 +1026,23 @@ class EfectividadV4Calculator
         return $clave;
     }
 
+    /**
+     * Grupo asignado al contrato ('' si no tiene).
+     *
+     * @param  string  $claveContrato  contrato normalizado
+     */
     private function grupoContrato(string $claveContrato): string
     {
         return $this->contratoGrupo[$claveContrato] ?? '';
     }
 
+    /**
+     * Suma un importe a la clave del diccionario (clave vacía se ignora).
+     *
+     * @param  array  $dic  diccionario (por referencia)
+     * @param  string  $clave  clave
+     * @param  float  $importe  importe
+     */
     private function sumarDic(array &$dic, string $clave, float $importe): void
     {
         if ($clave === '') {
@@ -958,6 +1051,11 @@ class EfectividadV4Calculator
         $dic[$clave] = array_key_exists($clave, $dic) ? $dic[$clave] + $importe : $importe;
     }
 
+    /**
+     * Día representado por los últimos 8 caracteres (Ymd) de una clave «…|Ymd».
+     *
+     * @param  string  $clave  clave
+     */
     private function fechaDeClave(string $clave): int
     {
         return $this->diaDesdeYmd(substr($clave, -8));
@@ -1044,6 +1142,12 @@ class EfectividadV4Calculator
         return (string) $valor;
     }
 
+    /**
+     * Conversión numérica con la semántica de la macro (Val/CDbl tolerante a formato).
+     *
+     * @param  mixed  $valor  valor
+     * @return float 0 si vacío o no numérico
+     */
     public function numero(mixed $valor): float
     {
         if ($valor === null || $valor === '') {
@@ -1092,6 +1196,11 @@ class EfectividadV4Calculator
         return $s + $err;
     }
 
+    /**
+     * numero() acotado a ≥ 0.
+     *
+     * @param  mixed  $valor  valor
+     */
     private function positivo(mixed $valor): float
     {
         $n = $this->numero($valor);
@@ -1130,21 +1239,41 @@ class EfectividadV4Calculator
         return null;
     }
 
+    /**
+     * Fecha en texto (Ymd o Y-m-d) → número de día (días desde 1970-01-01 UTC).
+     *
+     * @param  string  $ymd  fecha
+     */
     private function diaDesdeYmd(string $ymd): int
     {
         return intdiv((int) (new DateTimeImmutable($ymd, new DateTimeZone('UTC')))->getTimestamp(), 86400);
     }
 
+    /**
+     * Número de día → Ymd.
+     *
+     * @param  int  $dia  día
+     */
     private function ymdCompacto(int $dia): string
     {
         return gmdate('Ymd', $dia * 86400);
     }
 
+    /**
+     * Número de día → Y-m-d.
+     *
+     * @param  int  $dia  día
+     */
     public function ymd(int $dia): string
     {
         return gmdate('Y-m-d', $dia * 86400);
     }
 
+    /**
+     * Número de día → d/m/Y.
+     *
+     * @param  int  $dia  día
+     */
     private function dmy(int $dia): string
     {
         return gmdate('d/m/Y', $dia * 86400);
@@ -1156,11 +1285,21 @@ class EfectividadV4Calculator
         return (int) gmdate('N', $dia * 86400);
     }
 
+    /**
+     * Materializa un iterable en arreglo (sin conservar llaves).
+     *
+     * @param  iterable  $filas  filas
+     */
     private function aArreglo(iterable $filas): array
     {
         return is_array($filas) ? $filas : iterator_to_array($filas, false);
     }
 
+    /**
+     * ¿Alguna fila tiene contrato?
+     *
+     * @param  array  $filas  filas
+     */
     private function tieneContratos(array $filas): bool
     {
         foreach ($filas as $row) {

@@ -9,15 +9,44 @@ use App\Models\MonthlyEmployeeSummary;
 use App\Models\NoiMovement;
 use App\Models\Period;
 use App\Models\ReportUpload;
+use App\Services\Access\DataScopeService;
 use Inertia\Inertia;
 use Inertia\Response;
 
-class ValidationController extends Controller {
-
-    public function index(): Response {
+/**
+ * Tablero de "Validaciones" (página Inertia Validaciones/Index): lista de
+ * pendientes de calidad de datos que impiden o ensucian la radiografía
+ * financiera — personas con NOI sin sucursal, asignaciones sin match, gastos
+ * sin empleado/sucursal, cargas fallidas y resúmenes excluidos del consolidado.
+ *
+ * Es de solo lectura: no corrige nada, solo arma la lista para que el equipo
+ * de Finanzas sepa qué revisar. Solo disponible para usuarios con alcance
+ * general (ve todas las sucursales).
+ */
+class ValidationController extends Controller
+{
+    /**
+     * Construye la lista de validaciones abiertas de TODOS los periodos y la
+     * envía a la vista ordenada de la más reciente a la más antigua.
+     *
+     * Revisa siete reglas: (1) movimientos NOI con empleado sin asignación de
+     * sucursal en ese periodo, (2) asignaciones sin sucursal o con match_type
+     * "unmatched", (3) gastos sin empleado, (4) gastos sin sucursal, (5) cargas
+     * de archivo con status "failed", (6) resúmenes mensuales con
+     * included_in_report=false y (7) periodos que tienen al menos un resumen
+     * excluido. Cada elemento lleva tipo, título, descripción, severidad
+     * (high/medium) y fecha de última actualización.
+     *
+     * @return Response Página Inertia con la prop `validations`.
+     *
+     * Lanza 403 (vía DataScopeService::requireGeneral) si el usuario está
+     * restringido a una sucursal. Solo lectura, no escribe en BD.
+     */
+    public function index(): Response
+    {
         // Fase 6.4 — validaciones de calidad de datos de TODAS las sucursales (incluye
         // personas sin sucursal): solo alcance general.
-        app(\App\Services\Access\DataScopeService::class)->requireGeneral(request()->user(), 'El tablero de validaciones');
+        app(DataScopeService::class)->requireGeneral(request()->user(), 'El tablero de validaciones');
 
         $items = collect();
         /*
@@ -31,7 +60,7 @@ class ValidationController extends Controller {
             ->whereNotNull('employee_id')
             ->get()
             ->filter(function (NoiMovement $movement) {
-                return !EmployeeBranchAssignment::query()
+                return ! EmployeeBranchAssignment::query()
                     ->where('period_id', $movement->period_id)
                     ->where('employee_id', $movement->employee_id)
                     ->whereNotNull('branch_id')
@@ -39,7 +68,7 @@ class ValidationController extends Controller {
             });
         foreach ($noiWithoutAssignment as $movement) {
             $items->push([
-                'id' => 'noi-no-branch-' . $movement->id,
+                'id' => 'noi-no-branch-'.$movement->id,
                 'type' => 'NOI sin sucursal',
                 'title' => 'Empleado con NOI sin sucursal asignada',
                 'description' => 'El empleado tiene movimientos NOI en el periodo, pero no tiene sucursal asignada.',
@@ -69,7 +98,7 @@ class ValidationController extends Controller {
         foreach ($pendingAssignments as $assignment) {
             $isUnmatched = $assignment->match_type?->value === MatchType::Unmatched->value;
             $items->push([
-                'id' => 'assignment-' . $assignment->id,
+                'id' => 'assignment-'.$assignment->id,
                 'type' => 'Asignación de sucursal',
                 'title' => $isUnmatched
                     ? 'Empleado sin match de sucursal'
@@ -96,7 +125,7 @@ class ValidationController extends Controller {
             ->get();
         foreach ($expensesWithoutEmployee as $expense) {
             $items->push([
-                'id' => 'expense-no-employee-' . $expense->id,
+                'id' => 'expense-no-employee-'.$expense->id,
                 'type' => 'Gasto sin empleado',
                 'title' => 'Gasto sin empleado relacionado',
                 'description' => 'Se importó un gasto, pero no se pudo relacionar con ningún empleado.',
@@ -122,7 +151,7 @@ class ValidationController extends Controller {
             ->get();
         foreach ($expensesWithoutBranch as $expense) {
             $items->push([
-                'id' => 'expense-no-branch-' . $expense->id,
+                'id' => 'expense-no-branch-'.$expense->id,
                 'type' => 'Gasto sin sucursal',
                 'title' => 'Gasto sin sucursal relacionada',
                 'description' => 'Se importó un gasto, pero no se pudo relacionar con ninguna sucursal.',
@@ -148,7 +177,7 @@ class ValidationController extends Controller {
             ->get();
         foreach ($failedUploads as $upload) {
             $items->push([
-                'id' => 'upload-' . $upload->id,
+                'id' => 'upload-'.$upload->id,
                 'type' => 'Carga de archivo',
                 'title' => 'Archivo con error de procesamiento',
                 'description' => $upload->dataSource?->name
@@ -176,7 +205,7 @@ class ValidationController extends Controller {
             ->get();
         foreach ($excludedSummaries as $summary) {
             $items->push([
-                'id' => 'summary-excluded-' . $summary->id,
+                'id' => 'summary-excluded-'.$summary->id,
                 'type' => 'Resumen excluido',
                 'title' => 'Empleado excluido del consolidado',
                 'description' => $summary->exclusion_reason ?: 'El empleado fue excluido del reporte consolidado.',
@@ -204,7 +233,7 @@ class ValidationController extends Controller {
                 ->count();
             if ($excludedCount > 0) {
                 $items->push([
-                    'id' => 'period-excluded-' . $period->id,
+                    'id' => 'period-excluded-'.$period->id,
                     'type' => 'Periodo con exclusiones',
                     'title' => 'Periodo consolidado con empleados excluidos',
                     'description' => "El periodo {$period->label} tiene {$excludedCount} fila(s) excluida(s) del reporte final.",
@@ -217,15 +246,16 @@ class ValidationController extends Controller {
                 ]);
             }
         }
+
         return Inertia::render('Validaciones/Index', [
             'validations' => $items
                 ->sortByDesc('timestamp')
                 ->map(function (array $item) {
                     unset($item['timestamp']);
+
                     return $item;
                 })
                 ->values(),
         ]);
     }
-
 }

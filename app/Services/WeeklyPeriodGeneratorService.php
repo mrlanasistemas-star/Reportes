@@ -6,12 +6,28 @@ use App\Models\Period;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
-class WeeklyPeriodGeneratorService {
-
+/**
+ * Genera los periodos semanales (type = 'weekly') de un mes calendario.
+ *
+ * Regla de corte: la semana 1 va del día 1 al primer domingo; las siguientes son
+ * bloques de 7 días; la última se recorta al último día del mes. Se usa al dar de
+ * alta periodos para que las cargas y reportes semanales tengan su contenedor.
+ */
+class WeeklyPeriodGeneratorService
+{
     /**
-     * @return Collection<int, Period>
+     * Crea o actualiza (updateOrCreate por type/year/month/sequence) las semanas del mes.
+     *
+     * Efectos en BD: escribe en `periods` el nombre ("Semana N - Mes AAAA"), el código
+     * W-AAAA-MM-NN, las fechas de inicio/fin y deja is_closed = false (también reabre
+     * una semana existente que estuviera cerrada).
+     *
+     * @param  int  $year  Año del mes a generar.
+     * @param  int  $month  Mes (1-12).
+     * @return Collection<int, Period> Semanas del mes en orden de secuencia.
      */
-    public function generateForMonth(int $year, int $month): Collection {
+    public function generateForMonth(int $year, int $month): Collection
+    {
         $cursor = Carbon::create($year, $month, 1)->startOfDay();
         $monthEnd = $cursor->copy()->endOfMonth()->startOfDay();
 
@@ -56,5 +72,4 @@ class WeeklyPeriodGeneratorService {
 
         return $periods;
     }
-
 }

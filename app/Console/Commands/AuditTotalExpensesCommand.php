@@ -6,19 +6,33 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-total-expenses` — auditoría de Gastos Totales del modelo histórico:
+ * Gastos operativos (fact_expenses sin Nómina/Envío/Fondeo) + Nómina y Capital Humano
+ * (percepciones NOI) + Créditos personal (fact_recoveries con operación/concepto CREDITO
+ * PERSONAL), comparables contra la referencia fija de Abril 2026. Con `--detail` desglosa los
+ * gastos operativos por categoría contra referencias por categoría.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-total-expenses 14
+ *   php artisan reportes:audit-total-expenses 14 --compare-reference --detail
+ */
 class AuditTotalExpensesCommand extends Command
 {
-    protected $signature   = 'reportes:audit-total-expenses
+    protected $signature = 'reportes:audit-total-expenses
                                 {period_id}
                                 {--compare-reference : comparar contra referencia Abril 2026}
                                 {--detail            : desglose de cada componente por fuente}';
+
     protected $description = 'Auditoría de gastos totales: operativos + nómina + créditos personal → total usado en utilidad';
 
     private const REF = [
-        'gastos_operativos'  => 837_384.28,
-        'nomina_capital'     => 2_501_589.43,
-        'creditos_personal'  => 66_285.30,
-        'gastos_totales'     => 3_222_315.50,
+        'gastos_operativos' => 837_384.28,
+        'nomina_capital' => 2_501_589.43,
+        'creditos_personal' => 66_285.30,
+        'gastos_totales' => 3_222_315.50,
     ];
 
     private const EXCL_CATS = [
@@ -27,25 +41,31 @@ class AuditTotalExpensesCommand extends Command
         'Préstamos Intersucursales',
     ];
 
+    /**
+     * Calcula cada componente (A–C), el total (D) y el desglose por categoría (E, con `--detail`).
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         $this->line('');
-        $this->info("════════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA GASTOS TOTALES — {$period->label} (ID {$period->id})");
-        $this->info("  Gastos Totales = Gastos Operativos + Nómina y Capital Humano + Créditos Personal");
-        $this->info("════════════════════════════════════════════════════════════════════");
+        $this->info('  Gastos Totales = Gastos Operativos + Nómina y Capital Humano + Créditos Personal');
+        $this->info('════════════════════════════════════════════════════════════════════');
 
         // ── A. Gastos operativos (de fact_expenses, excl. categorías especiales) ──
         $this->line('');
@@ -66,11 +86,11 @@ class AuditTotalExpensesCommand extends Command
 
         $gastosOp = 0.0;
         foreach ($gastosOpBySource as $row) {
-            $this->line("  {$row->fuente}: \$" . number_format((float)$row->total, 2) . " ({$row->cnt} regs)");
-            $gastosOp += (float)$row->total;
+            $this->line("  {$row->fuente}: \$".number_format((float) $row->total, 2)." ({$row->cnt} regs)");
+            $gastosOp += (float) $row->total;
         }
 
-        $this->line("  TOTAL gastos operativos: \$" . number_format($gastosOp, 2));
+        $this->line('  TOTAL gastos operativos: $'.number_format($gastosOp, 2));
         $this->printDiff('Gastos operativos', $gastosOp, self::REF['gastos_operativos']);
 
         // ── B. Nómina y Capital Humano (from NOI) ─────────────────────────────
@@ -89,9 +109,9 @@ class AuditTotalExpensesCommand extends Command
             ->whereRaw("LOWER(COALESCE(concept_type,'')) IN ('deduccion','descuento')")
             ->sum('amount');
 
-        $this->line("  Percepciones (NOI):   \$" . number_format($nomina, 2));
-        $this->line("  Deducciones (NOI):    \$" . number_format($deducciones, 2));
-        $this->line("  Neto NOI:             \$" . number_format($nomina - $deducciones, 2));
+        $this->line('  Percepciones (NOI):   $'.number_format($nomina, 2));
+        $this->line('  Deducciones (NOI):    $'.number_format($deducciones, 2));
+        $this->line('  Neto NOI:             $'.number_format($nomina - $deducciones, 2));
         $this->printDiff('Nómina y Capital Humano', $nomina, self::REF['nomina_capital']);
 
         // Also check expenses labeled as Nómina y Capital Humano in fact_expenses
@@ -102,7 +122,7 @@ class AuditTotalExpensesCommand extends Command
             ->sum(DB::raw('COALESCE(NULLIF(fe.paid_amount,0),fe.amount)'));
 
         if ($nominaExpenses > 0) {
-            $this->line("  Nómina en fact_expenses: \$" . number_format($nominaExpenses, 2));
+            $this->line('  Nómina en fact_expenses: $'.number_format($nominaExpenses, 2));
         }
 
         // ── C. Créditos personal ──────────────────────────────────────────────
@@ -115,7 +135,7 @@ class AuditTotalExpensesCommand extends Command
                      OR UPPER(COALESCE(concept,''))   LIKE '%CREDITO%PERSONAL%'")
             ->sum('total_amount');
 
-        $this->line("  Créditos personal detectados: \$" . number_format($creditosPersonal, 2));
+        $this->line('  Créditos personal detectados: $'.number_format($creditosPersonal, 2));
         $this->printDiff('Créditos personal', $creditosPersonal, self::REF['creditos_personal']);
 
         // ── D. TOTAL ─────────────────────────────────────────────────────────
@@ -124,30 +144,33 @@ class AuditTotalExpensesCommand extends Command
 
         $gastosTotal = $gastosOp + $nomina + $creditosPersonal;
 
-        $this->line(str_pad('Componente', 32) . str_pad('Sistema', 18) . ($this->option('compare-reference') ? str_pad('Referencia', 18) . 'Diferencia' : ''));
+        $this->line(str_pad('Componente', 32).str_pad('Sistema', 18).($this->option('compare-reference') ? str_pad('Referencia', 18).'Diferencia' : ''));
         $this->line(str_repeat('─', 70));
 
         $rows = [
             ['Gastos operativos',     $gastosOp,         self::REF['gastos_operativos']],
-            ['Nómina y Capital Humano',$nomina,           self::REF['nomina_capital']],
+            ['Nómina y Capital Humano', $nomina,           self::REF['nomina_capital']],
             ['Créditos personal',     $creditosPersonal, self::REF['creditos_personal']],
             ['TOTAL GASTOS',          $gastosTotal,      self::REF['gastos_totales']],
         ];
 
         foreach ($rows as [$lbl, $sys, $ref]) {
-            $sysStr = '$' . number_format($sys, 2);
+            $sysStr = '$'.number_format($sys, 2);
             if ($this->option('compare-reference')) {
-                $diff  = $sys - $ref;
-                $sign  = $diff >= 0 ? '+' : '';
+                $diff = $sys - $ref;
+                $sign = $diff >= 0 ? '+' : '';
                 $match = abs($diff) < 1 ? '✓' : '✗';
-                $line  = str_pad($lbl, 32) .
-                    str_pad($sysStr, 18) .
-                    str_pad('$' . number_format($ref, 2), 18) .
-                    "{$sign}$" . number_format(abs($diff), 2) . " {$match}";
-                if ($match === '✓') $this->info("  {$line}");
-                else $this->warn("  {$line}");
+                $line = str_pad($lbl, 32).
+                    str_pad($sysStr, 18).
+                    str_pad('$'.number_format($ref, 2), 18).
+                    "{$sign}$".number_format(abs($diff), 2)." {$match}";
+                if ($match === '✓') {
+                    $this->info("  {$line}");
+                } else {
+                    $this->warn("  {$line}");
+                }
             } else {
-                $this->line("  " . str_pad($lbl, 32) . $sysStr);
+                $this->line('  '.str_pad($lbl, 32).$sysStr);
             }
         }
 
@@ -170,27 +193,27 @@ class AuditTotalExpensesCommand extends Command
                 ->get();
 
             $refs = [
-                'Renta Oficina'          => 159_792.01,
-                'Pólizas'                => 197_200.00,
-                'Emergentes'             => 290_800.80,
-                'Recargas Telefónicas'   => 20_800.00,
-                'Viáticos'               => 59_570.00,
-                'Señora Limpieza'        => 41_800.00,
-                'Gastos Operativos'      => 290_800.80,
+                'Renta Oficina' => 159_792.01,
+                'Pólizas' => 197_200.00,
+                'Emergentes' => 290_800.80,
+                'Recargas Telefónicas' => 20_800.00,
+                'Viáticos' => 59_570.00,
+                'Señora Limpieza' => 41_800.00,
+                'Gastos Operativos' => 290_800.80,
             ];
 
-            $this->line(str_pad('Categoría', 34) . str_pad('Sistema', 16) . str_pad('Referencia', 16) . 'Diferencia');
+            $this->line(str_pad('Categoría', 34).str_pad('Sistema', 16).str_pad('Referencia', 16).'Diferencia');
             $this->line(str_repeat('─', 80));
             foreach ($byCat as $row) {
-                $cat    = (string)$row->categoria;
-                $sys    = (float)$row->total;
-                $ref    = $refs[$cat] ?? null;
-                $refStr = $ref !== null ? '$' . number_format($ref, 2) : '—';
-                $diffStr = $ref !== null ? (($sys - $ref) >= 0 ? '+' : '') . '$' . number_format(abs($sys - $ref), 2) : '';
+                $cat = (string) $row->categoria;
+                $sys = (float) $row->total;
+                $ref = $refs[$cat] ?? null;
+                $refStr = $ref !== null ? '$'.number_format($ref, 2) : '—';
+                $diffStr = $ref !== null ? (($sys - $ref) >= 0 ? '+' : '').'$'.number_format(abs($sys - $ref), 2) : '';
                 $this->line(
-                    str_pad(mb_substr($cat, 0, 32), 34) .
-                    str_pad('$' . number_format($sys, 2), 16) .
-                    str_pad($refStr, 16) .
+                    str_pad(mb_substr($cat, 0, 32), 34).
+                    str_pad('$'.number_format($sys, 2), 16).
+                    str_pad($refStr, 16).
                     $diffStr
                 );
             }
@@ -198,21 +221,33 @@ class AuditTotalExpensesCommand extends Command
             $this->line('');
             $this->warn('  ⚠ Si "Emergentes" está inflado vs referencia:');
             $this->warn('  → Los gastos con concepto específico (RENTA, VIATICO, etc.) están cayendo al fallback "Emergentes".');
-            $this->warn('  → Ejecutar: php artisan reportes:audit-expenses ' . $period->id . ' --by-concept --detail');
+            $this->warn('  → Ejecutar: php artisan reportes:audit-expenses '.$period->id.' --by-concept --detail');
             $this->warn('  → para ver cuáles conceptos no matchean en canonicalGastoConcept().');
         }
 
         return 0;
     }
 
+    /**
+     * Si se pidió `--compare-reference`, imprime Sistema/Referencia/Diferencia con ✓ o ✗.
+     *
+     * @param  string  $label  Etiqueta del componente.
+     * @param  float  $sys  Valor del sistema.
+     * @param  float  $ref  Valor de referencia.
+     */
     private function printDiff(string $label, float $sys, float $ref): void
     {
-        if (!$this->option('compare-reference')) return;
-        $diff  = $sys - $ref;
-        $sign  = $diff >= 0 ? '+' : '';
+        if (! $this->option('compare-reference')) {
+            return;
+        }
+        $diff = $sys - $ref;
+        $sign = $diff >= 0 ? '+' : '';
         $match = abs($diff) < 1 ? '✓ OK' : '✗ DIFERENCIA';
-        $msg   = "  [{$match}] {$label}: Sistema \$" . number_format($sys, 2) . " | Ref \$" . number_format($ref, 2) . " | {$sign}\$" . number_format(abs($diff), 2);
-        if (str_starts_with($match, '✓')) $this->info($msg);
-        else $this->warn($msg);
+        $msg = "  [{$match}] {$label}: Sistema \$".number_format($sys, 2).' | Ref $'.number_format($ref, 2)." | {$sign}\$".number_format(abs($diff), 2);
+        if (str_starts_with($match, '✓')) {
+            $this->info($msg);
+        } else {
+            $this->warn($msg);
+        }
     }
 }

@@ -11,7 +11,7 @@ use DateTimeImmutable;
  * extraído con `oletools.olevba` (lectura de macro, nunca ejecutada) y
  * verificado línea por línea contra el dump real — no contra los antecedentes
  * históricos previamente documentados, que resultaron ser una aproximación
- * incompleta (ver docs/efectividad-cobranza-aprobada.md).
+ * incompleta (ver docs/MANUAL-DESARROLLADOR.md).
  *
  * Esta clase es deliberadamente independiente de Eloquent/DB: recibe arrays
  * asociativos con los nombres de campo documentados (coinciden con los
@@ -25,28 +25,42 @@ use DateTimeImmutable;
  * fechaIni/fechaFin se reciben explícitas, porque Reportería siempre conoce
  * el Period exacto que se está evaluando — nunca se adivina. La clasificación
  * Sano/Atraso/Vencido y las fórmulas de negocio son IDÉNTICAS al VBA.
+ *
+ * Lo usa EfectividadCobranzaAprobadaReportService (con datos de EfectividadCobranzaAprobadaDataAdapter).
+ * Flujo: mapa ruta → promotor responsable del periodo → CARTERA (por cobrar Sano/Atraso/Vencido) →
+ * INGRESOS (cobrado por tipo) → reporte por oficina/promotor con totales.
  */
 class EfectividadCobranzaAprobadaCalculator
 {
+    /** Tolerancia (en pesos) para considerar un importe distinto de cero, igual que el VBA. */
     private const TOL = 0.01;
 
     /**
+     * Calcula el reporte de efectividad de cobranza del periodo [fechaIni, fechaFin].
+     *
+     * Función pura (sin BD). Resultado: filas por promotor (agrupadas por oficina) con por
+     * cobrar y cobrado Sano/Atraso/Vencido, porcentajes sobre el Sano por cobrar, cobranza
+     * total y mora; una fila «TOTAL OFICINA — …» por oficina y «GRAN TOTAL» al final.
+     *
      * @param  iterable<array<string,mixed>>  $cartera  filas CARTERA (saldos por cliente)
      * @param  iterable<array<string,mixed>>  $ingresos  filas INGRESOS/_HIST_INGRESOS (histórico completo, no solo el periodo actual)
+     * @param  DateTimeImmutable  $fechaIni  inicio del periodo evaluado
+     * @param  DateTimeImmutable  $fechaFin  fin del periodo evaluado
+     * @return list<array<string,mixed>> filas del reporte (columnas de calcularFila() + oficina / es_total)
      */
     public function calculate(iterable $cartera, iterable $ingresos, DateTimeImmutable $fechaIni, DateTimeImmutable $fechaFin): array
     {
-        $cartera  = is_array($cartera) ? $cartera : iterator_to_array($cartera);
+        $cartera = is_array($cartera) ? $cartera : iterator_to_array($cartera);
         $ingresos = is_array($ingresos) ? $ingresos : iterator_to_array($ingresos);
 
         $rutaPromotor = $this->crearMapaResponsableRuta($ingresos, $fechaIni, $fechaFin);
 
-        $grupos        = []; // grupoKey => true (grupo conocido/registrado)
+        $grupos = []; // grupoKey => true (grupo conocido/registrado)
         $oficinaDeGrupo = [];
         $promotorDeGrupo = [];
-        $nombreGrupo    = [];
-        $contratoGrupo  = []; // contrato normalizado => grupoKey (primer grupo que lo tocó)
-        $contratoVenc   = []; // contrato normalizado => DateTimeImmutable (vencimiento, desde CARTERA, incluso de cerrados)
+        $nombreGrupo = [];
+        $contratoGrupo = []; // contrato normalizado => grupoKey (primer grupo que lo tocó)
+        $contratoVenc = []; // contrato normalizado => DateTimeImmutable (vencimiento, desde CARTERA, incluso de cerrados)
 
         $sanoPC = $atrasoPC = $vencidoPC = [];
         $cobSano = $cobAtraso = $cobVencido = [];
@@ -73,7 +87,15 @@ class EfectividadCobranzaAprobadaCalculator
     // 1. RESOLUCIÓN DE RUTA (CrearMapaResponsableRuta)
     // ==================================================================
 
-    /** @return array<string,string> oficinaNormalizada => nombre de promotor responsable actual */
+    /**
+     * Responsable de cada ruta (oficina) = el promotor con MÁS movimientos de pago válidos
+     * (whitelist) en el periodo actual; en empate gana el primero que alcanzó el máximo.
+     *
+     * @param  array  $ingresos  filas de INGRESOS
+     * @param  DateTimeImmutable  $fechaIni  inicio del periodo
+     * @param  DateTimeImmutable  $fechaFin  fin del periodo
+     * @return array<string,string> oficinaNormalizada => nombre de promotor responsable actual
+     */
     private function crearMapaResponsableRuta(array $ingresos, DateTimeImmutable $fechaIni, DateTimeImmutable $fechaFin): array
     {
         $conteo = []; // "oficina|promotor" => count
@@ -86,7 +108,7 @@ class EfectividadCobranzaAprobadaCalculator
                 continue; // CrearMapaResponsableRuta solo mira movimientos del periodo ACTUAL
             }
 
-            if (!$this->pasaWhitelist($row)) {
+            if (! $this->pasaWhitelist($row)) {
                 continue;
             }
 
@@ -98,7 +120,7 @@ class EfectividadCobranzaAprobadaCalculator
 
             $rutaN = $this->normalizar($oficina);
             $promoN = $this->normalizar($promotor);
-            $clave = $rutaN . '|' . $promoN;
+            $clave = $rutaN.'|'.$promoN;
 
             $conteo[$clave] = ($conteo[$clave] ?? 0) + 1;
             $nombreReal[$clave] = $promotor;
@@ -109,7 +131,7 @@ class EfectividadCobranzaAprobadaCalculator
         $resultado = [];
         foreach ($conteo as $clave => $n) {
             $rutaN = $rutaDeClave[$clave];
-            if (!array_key_exists($rutaN, $max) || $n > $max[$rutaN]) {
+            if (! array_key_exists($rutaN, $max) || $n > $max[$rutaN]) {
                 $max[$rutaN] = $n;
                 $resultado[$rutaN] = $nombreReal[$clave];
             }
@@ -118,6 +140,14 @@ class EfectividadCobranzaAprobadaCalculator
         return $resultado;
     }
 
+    /**
+     * Promotor responsable de la ruta en el periodo; si la ruta no tuvo movimientos, el
+     * promotor original de la fila.
+     *
+     * @param  string  $oficina  oficina/ruta
+     * @param  string  $promotorOriginal  promotor de la fila
+     * @param  array<string,string>  $rutaPromotor  mapa de crearMapaResponsableRuta()
+     */
     private function obtenerPromotorRuta(string $oficina, string $promotorOriginal, array $rutaPromotor): string
     {
         $rutaN = $this->normalizar($oficina);
@@ -129,6 +159,30 @@ class EfectividadCobranzaAprobadaCalculator
     // 2. CARTERA → por-cobrar (CargarCartera)
     // ==================================================================
 
+    /**
+     * Recorre CARTERA y acumula por grupo (oficina + promotor) el por cobrar:
+     *  - Atraso: subestatus VIGENTE con total_atrasado > TOL (y pagos_atrasados > 0 si existe);
+     *  - Vencido: subestatus VENCIDO, Σ saldos positivos (o total_pendiente si no hay componentes);
+     *  - Sano: proyección de cuotas futuras desde la primera/siguiente fecha de pago, hasta el
+     *    vencimiento o fin del periodo, sumando las que caen en el periodo (nunca en VENCIDO).
+     * Cerrados/inactivos se excluyen, pero su vencimiento se guarda para clasificar pagos.
+     * Todos los acumuladores se modifican por referencia.
+     *
+     * @param  array  $cartera  filas CARTERA
+     * @param  DateTimeImmutable  $fechaIni  inicio del periodo
+     * @param  DateTimeImmutable  $fechaFin  fin del periodo
+     * @param  array  $rutaPromotor  responsable por ruta
+     * @param  array  $grupos  grupos registrados
+     * @param  array  $oficinaDeGrupo  oficina por grupo
+     * @param  array  $promotorDeGrupo  promotor por grupo
+     * @param  array  $nombreGrupo  nombre por grupo
+     * @param  array  $contratoGrupo  contrato ⇒ grupo
+     * @param  array  $contratoVenc  contrato ⇒ fecha de vencimiento
+     * @param  array  $sanoPC  Sano por cobrar por grupo
+     * @param  array  $atrasoPC  Atraso por cobrar por grupo
+     * @param  array  $vencidoPC  Vencido por cobrar por grupo
+     * @param  array  $programado  «contrato|Ymd» ⇒ cuota proyectada
+     */
     private function cargarCartera(
         array $cartera, DateTimeImmutable $fechaIni, DateTimeImmutable $fechaFin, array $rutaPromotor,
         array &$grupos, array &$oficinaDeGrupo, array &$promotorDeGrupo, array &$nombreGrupo,
@@ -144,7 +198,7 @@ class EfectividadCobranzaAprobadaCalculator
 
             $fVenc = $this->leerFecha($row['fecha_vencimiento'] ?? null);
             $tieneVenc = $fVenc !== null;
-            if ($tieneVenc && !array_key_exists($claveContrato, $contratoVenc)) {
+            if ($tieneVenc && ! array_key_exists($claveContrato, $contratoVenc)) {
                 // Se guarda el vencimiento INCLUSO de contratos cerrados/inactivos que se excluyen
                 // abajo — ProcesarIngresos lo necesita como fallback para clasificar pagos históricos.
                 $contratoVenc[$claveContrato] = $fVenc;
@@ -162,7 +216,7 @@ class EfectividadCobranzaAprobadaCalculator
             $promo = $this->obtenerPromotorRuta($oficina, $promoOriginal, $rutaPromotor);
 
             $grupo = $this->registrarGrupo($oficina, $promo, $grupos, $oficinaDeGrupo, $promotorDeGrupo, $nombreGrupo);
-            if (!array_key_exists($claveContrato, $contratoGrupo)) {
+            if (! array_key_exists($claveContrato, $contratoGrupo)) {
                 $contratoGrupo[$claveContrato] = $grupo;
             }
 
@@ -188,7 +242,7 @@ class EfectividadCobranzaAprobadaCalculator
 
                 $saltarVencido = $tienePendienteCol && $totalPendiente <= self::TOL;
 
-                if (!$saltarVencido) {
+                if (! $saltarVencido) {
                     $vencidoPCFila = 0.0;
                     $componentesDisponibles = false;
                     foreach (['saldo_capital', 'saldo_interes', 'saldo_impuesto', 'saldo_cargo_calendario', 'saldo_impuesto_cargo_calendario'] as $campo) {
@@ -198,7 +252,7 @@ class EfectividadCobranzaAprobadaCalculator
                         }
                     }
 
-                    if (!$componentesDisponibles && $totalPendiente > self::TOL) {
+                    if (! $componentesDisponibles && $totalPendiente > self::TOL) {
                         $vencidoPCFila = $totalPendiente;
                     }
 
@@ -243,7 +297,7 @@ class EfectividadCobranzaAprobadaCalculator
                 if ($fCuota >= $fechaIni && $fCuota <= $fechaFin) {
                     $this->sumarDic($sanoPC, $grupo, $cuota);
 
-                    $claveProgramada = $claveContrato . '|' . $fCuota->format('Ymd');
+                    $claveProgramada = $claveContrato.'|'.$fCuota->format('Ymd');
                     $programado[$claveProgramada] = ($programado[$claveProgramada] ?? 0.0) + $cuota;
                 }
 
@@ -260,6 +314,31 @@ class EfectividadCobranzaAprobadaCalculator
     // 3. INGRESOS/_HIST_INGRESOS → cobrado (ProcesarIngresos)
     // ==================================================================
 
+    /**
+     * Recorre INGRESOS (whitelist de operaciones) y clasifica lo cobrado por grupo según la
+     * fecha de reconocimiento = max(transacción, cuota) dentro del periodo:
+     *  - pago en o antes de la fecha de cuota ⇒ Sano;
+     *  - pago posterior al vencimiento del contrato (fila o CARTERA) ⇒ Vencido;
+     *  - otro pago tardío ⇒ Atraso.
+     * Importe = capital + interés + impuesto (+ cargos de calendario). Además reconstruye el Sano
+     * por cobrar de cuotas del periodo que CARTERA no proyectó (contratos que ya no están).
+     *
+     * @param  array  $ingresos  filas de INGRESOS (histórico)
+     * @param  DateTimeImmutable  $fechaIni  inicio del periodo
+     * @param  DateTimeImmutable  $fechaFin  fin del periodo
+     * @param  array  $rutaPromotor  responsable por ruta
+     * @param  array  $grupos  grupos registrados (por referencia)
+     * @param  array  $oficinaDeGrupo  oficina por grupo (por referencia)
+     * @param  array  $promotorDeGrupo  promotor por grupo (por referencia)
+     * @param  array  $nombreGrupo  nombre por grupo (por referencia)
+     * @param  array  $contratoGrupo  contrato ⇒ grupo (por referencia)
+     * @param  array  $contratoVenc  contrato ⇒ vencimiento
+     * @param  array  $sanoPC  Sano por cobrar (por referencia; recibe la reconstrucción)
+     * @param  array  $programado  cuotas proyectadas por cargarCartera()
+     * @param  array  $cobSano  cobrado Sano (por referencia)
+     * @param  array  $cobAtraso  cobrado Atraso (por referencia)
+     * @param  array  $cobVencido  cobrado Vencido (por referencia)
+     */
     private function procesarIngresos(
         array $ingresos, DateTimeImmutable $fechaIni, DateTimeImmutable $fechaFin, array $rutaPromotor,
         array &$grupos, array &$oficinaDeGrupo, array &$promotorDeGrupo, array &$nombreGrupo,
@@ -275,7 +354,7 @@ class EfectividadCobranzaAprobadaCalculator
                 continue;
             }
 
-            if (!$this->pasaWhitelist($row)) {
+            if (! $this->pasaWhitelist($row)) {
                 continue;
             }
 
@@ -310,12 +389,12 @@ class EfectividadCobranzaAprobadaCalculator
 
             // --- reconstruir Sano si el contrato ya no está en CARTERA ---
             if ($fCuota >= $fechaIni && $fCuota <= $fechaFin) {
-                $claveProgramada = $claveContrato . '|' . $fCuota->format('Ymd');
+                $claveProgramada = $claveContrato.'|'.$fCuota->format('Ymd');
 
-                if (!array_key_exists($claveProgramada, $programado)) {
+                if (! array_key_exists($claveProgramada, $programado)) {
                     $acreditado = $this->normalizar($row['acreditado'] ?? '');
                     $numCuota = $this->normalizar($row['numero_cuota'] ?? '');
-                    $claveFallback = $claveContrato . '|' . $acreditado . '|' . $numCuota . '|' . $fCuota->format('Ymd');
+                    $claveFallback = $claveContrato.'|'.$acreditado.'|'.$numCuota.'|'.$fCuota->format('Ymd');
 
                     $fallbackMonto[$claveFallback] = ($fallbackMonto[$claveFallback] ?? 0.0) + $importe;
                     $fallbackGrupo[$claveFallback] = $grupo;
@@ -331,12 +410,13 @@ class EfectividadCobranzaAprobadaCalculator
             // --- Sano / Atraso / Vencido ---
             if ($fTrans <= $fCuota) {
                 $this->sumarDic($cobSano, $grupo, $importe);
+
                 continue;
             }
 
             $fVenc = $this->leerFecha($row['fecha_vencimiento'] ?? null);
             $tieneVenc = $fVenc !== null;
-            if (!$tieneVenc && array_key_exists($claveContrato, $contratoVenc)) {
+            if (! $tieneVenc && array_key_exists($claveContrato, $contratoVenc)) {
                 $fVenc = $contratoVenc[$claveContrato];
                 $tieneVenc = true;
             }
@@ -356,6 +436,23 @@ class EfectividadCobranzaAprobadaCalculator
         }
     }
 
+    /**
+     * Grupo de un ingreso: el del contrato si ya se conoce (CARTERA u otro ingreso); si no, se
+     * registra con la oficina del ingreso y el responsable de la ruta. $esMovimientoActual no
+     * se usa (se conserva por paridad con el VBA).
+     *
+     * @param  string  $contrato  contrato
+     * @param  string  $oficina  oficina
+     * @param  string  $promoOriginal  promotor de la fila
+     * @param  bool  $esMovimientoActual  la transacción cae en el periodo
+     * @param  array  $rutaPromotor  responsable por ruta
+     * @param  array  $grupos  grupos (por referencia)
+     * @param  array  $oficinaDeGrupo  oficina por grupo (por referencia)
+     * @param  array  $promotorDeGrupo  promotor por grupo (por referencia)
+     * @param  array  $contratoGrupo  contrato ⇒ grupo (por referencia)
+     * @param  array  $nombreGrupo  nombre por grupo (por referencia)
+     * @return string|null clave del grupo
+     */
     private function grupoDesdeIngreso(string $contrato, string $oficina, string $promoOriginal, bool $esMovimientoActual, array $rutaPromotor, array &$grupos, array &$oficinaDeGrupo, array &$promotorDeGrupo, array &$contratoGrupo, array &$nombreGrupo): ?string
     {
         $claveContrato = $this->normalizar($contrato);
@@ -375,6 +472,21 @@ class EfectividadCobranzaAprobadaCalculator
     // 4. REPORTE (GenerarReporte) — agrupación, totales, porcentajes
     // ==================================================================
 
+    /**
+     * Arma las filas del reporte ordenadas por oficina y promotor (normalizados), omitiendo
+     * grupos sin datos, con subtotal por oficina y gran total.
+     *
+     * @param  array  $grupos  grupos
+     * @param  array  $oficinaDeGrupo  oficina por grupo
+     * @param  array  $promotorDeGrupo  promotor por grupo
+     * @param  array  $sanoPC  Sano por cobrar
+     * @param  array  $atrasoPC  Atraso por cobrar
+     * @param  array  $vencidoPC  Vencido por cobrar
+     * @param  array  $cobSano  cobrado Sano
+     * @param  array  $cobAtraso  cobrado Atraso
+     * @param  array  $cobVencido  cobrado Vencido
+     * @return list<array<string,mixed>>
+     */
     private function generarReporte(array $grupos, array $oficinaDeGrupo, array $promotorDeGrupo, array $sanoPC, array $atrasoPC, array $vencidoPC, array $cobSano, array $cobAtraso, array $cobVencido): array
     {
         $claves = array_keys($grupos);
@@ -387,7 +499,7 @@ class EfectividadCobranzaAprobadaCalculator
         $oficinasEmitidas = [];
 
         foreach ($claves as $grupo) {
-            if (!$this->grupoTieneDatos($grupo, $sanoPC, $atrasoPC, $vencidoPC, $cobSano, $cobAtraso, $cobVencido)) {
+            if (! $this->grupoTieneDatos($grupo, $sanoPC, $atrasoPC, $vencidoPC, $cobSano, $cobAtraso, $cobVencido)) {
                 continue;
             }
 
@@ -395,7 +507,7 @@ class EfectividadCobranzaAprobadaCalculator
             $promotor = $promotorDeGrupo[$grupo];
 
             if ($oficinaActual !== null && $this->normalizar($oficina) !== $this->normalizar($oficinaActual)) {
-                $filas[] = $this->filaTotal('TOTAL OFICINA — ' . $oficinaActual, $totalesOficina);
+                $filas[] = $this->filaTotal('TOTAL OFICINA — '.$oficinaActual, $totalesOficina);
                 $totalesOficina = $this->totalesVacios();
             }
             $oficinaActual = $oficina;
@@ -410,7 +522,7 @@ class EfectividadCobranzaAprobadaCalculator
         }
 
         if ($oficinaActual !== null) {
-            $filas[] = $this->filaTotal('TOTAL OFICINA — ' . $oficinaActual, $totalesOficina);
+            $filas[] = $this->filaTotal('TOTAL OFICINA — '.$oficinaActual, $totalesOficina);
         }
 
         $filas[] = $this->filaTotal('GRAN TOTAL', $totalesGenerales);
@@ -418,16 +530,34 @@ class EfectividadCobranzaAprobadaCalculator
         return $filas;
     }
 
+    /**
+     * Clave de orden «OFICINA|PROMOTOR» normalizada.
+     *
+     * @param  string  $grupo  grupo
+     * @param  array  $oficinaDeGrupo  oficina por grupo
+     * @param  array  $promotorDeGrupo  promotor por grupo
+     */
     private function claveOrden(string $grupo, array $oficinaDeGrupo, array $promotorDeGrupo): string
     {
-        return $this->normalizar($oficinaDeGrupo[$grupo]) . '|' . $this->normalizar($promotorDeGrupo[$grupo]);
+        return $this->normalizar($oficinaDeGrupo[$grupo]).'|'.$this->normalizar($promotorDeGrupo[$grupo]);
     }
 
+    /**
+     * Acumulador de totales en cero.
+     *
+     * @return array<string, float>
+     */
     private function totalesVacios(): array
     {
         return ['sano_pc' => 0.0, 'sano_cob' => 0.0, 'atraso_pc' => 0.0, 'atraso_cob' => 0.0, 'vencido_pc' => 0.0, 'vencido_cob' => 0.0];
     }
 
+    /**
+     * Suma los importes de una fila al acumulador.
+     *
+     * @param  array  $totales  acumulador (por referencia)
+     * @param  array  $fila  fila de calcularFila()
+     */
     private function acumularTotales(array &$totales, array $fila): void
     {
         $totales['sano_pc'] += $fila['sano_pc'];
@@ -438,6 +568,13 @@ class EfectividadCobranzaAprobadaCalculator
         $totales['vencido_cob'] += $fila['vencido_cob'];
     }
 
+    /**
+     * Fila de total (porcentajes recalculados sobre los totales, no promediados).
+     *
+     * @param  string  $etiqueta  texto de la fila
+     * @param  array  $t  acumulador
+     * @return array<string, mixed>
+     */
     private function filaTotal(string $etiqueta, array $t): array
     {
         $fila = $this->calcularFila($etiqueta, $t['sano_pc'], $t['atraso_pc'], $t['vencido_pc'], $t['sano_cob'], $t['atraso_cob'], $t['vencido_cob']);
@@ -446,7 +583,21 @@ class EfectividadCobranzaAprobadaCalculator
         return $fila;
     }
 
-    /** Columnas A-M exactas de la hoja EFECTIVIDAD real (ver docs/efectividad-cobranza-aprobada.md). */
+    /**
+     * Columnas A-M exactas de la hoja EFECTIVIDAD real (ver docs/MANUAL-DESARROLLADOR.md).
+     *
+     * Todos los porcentajes se calculan sobre el SANO por cobrar (0 si no hay); mora = Sano por
+     * cobrar − cobranza total.
+     *
+     * @param  string  $promotor  promotor o etiqueta de total
+     * @param  float  $sanoPC  Sano por cobrar
+     * @param  float  $atrasoPC  Atraso por cobrar
+     * @param  float  $vencidoPC  Vencido por cobrar
+     * @param  float  $sanoCob  cobrado Sano
+     * @param  float  $atrasoCob  cobrado Atraso
+     * @param  float  $vencidoCob  cobrado Vencido
+     * @return array<string, mixed>
+     */
     private function calcularFila(string $promotor, float $sanoPC, float $atrasoPC, float $vencidoPC, float $sanoCob, float $atrasoCob, float $vencidoCob): array
     {
         $totalCob = $sanoCob + $atrasoCob + $vencidoCob;
@@ -462,23 +613,34 @@ class EfectividadCobranzaAprobadaCalculator
         }
 
         return [
-            'promotor'      => $promotor,
-            'sano_pc'       => $sanoPC,
-            'sano_cob'      => $sanoCob,
-            'sano_pct'      => $pctSano,
-            'atraso_pc'     => $atrasoPC,
-            'atraso_cob'    => $atrasoCob,
-            'atraso_pct'    => $pctAtraso,
-            'vencido_pc'    => $vencidoPC,
-            'vencido_cob'   => $vencidoCob,
-            'vencido_pct'   => $pctVencido,
+            'promotor' => $promotor,
+            'sano_pc' => $sanoPC,
+            'sano_cob' => $sanoCob,
+            'sano_pct' => $pctSano,
+            'atraso_pc' => $atrasoPC,
+            'atraso_cob' => $atrasoCob,
+            'atraso_pct' => $pctAtraso,
+            'vencido_pc' => $vencidoPC,
+            'vencido_cob' => $vencidoCob,
+            'vencido_pct' => $pctVencido,
             'cobranza_total' => $totalCob,
-            'pct_total'     => $pctTotal,
-            'mora'          => $mora,
-            'es_total'      => false,
+            'pct_total' => $pctTotal,
+            'mora' => $mora,
+            'es_total' => false,
         ];
     }
 
+    /**
+     * ¿El grupo tiene algún importe por cobrar o cobrado mayor a la tolerancia?
+     *
+     * @param  string  $grupo  grupo
+     * @param  array  $sanoPC  Sano por cobrar
+     * @param  array  $atrasoPC  Atraso por cobrar
+     * @param  array  $vencidoPC  Vencido por cobrar
+     * @param  array  $cobSano  cobrado Sano
+     * @param  array  $cobAtraso  cobrado Atraso
+     * @param  array  $cobVencido  cobrado Vencido
+     */
     private function grupoTieneDatos(string $grupo, array $sanoPC, array $atrasoPC, array $vencidoPC, array $cobSano, array $cobAtraso, array $cobVencido): bool
     {
         foreach ([$sanoPC, $atrasoPC, $vencidoPC, $cobSano, $cobAtraso, $cobVencido] as $dic) {
@@ -494,6 +656,11 @@ class EfectividadCobranzaAprobadaCalculator
     // Helpers compartidos
     // ==================================================================
 
+    /**
+     * Sólo cuentan «PAGO A CONTRATO / PAGO» y «REFINANCIAMIENTO / DESCUENTO» (igual que el VBA).
+     *
+     * @param  array  $row  fila de INGRESOS
+     */
     private function pasaWhitelist(array $row): bool
     {
         $operacion = $this->normalizar($row['operacion'] ?? '');
@@ -503,11 +670,21 @@ class EfectividadCobranzaAprobadaCalculator
             || ($operacion === 'REFINANCIAMIENTO' && $transaccion === 'DESCUENTO');
     }
 
+    /**
+     * Registra (si no existe) el grupo «OFICINA|NOM|PROMOTOR» y devuelve su clave.
+     *
+     * @param  string  $oficina  oficina
+     * @param  string  $promotor  promotor responsable
+     * @param  array  $grupos  grupos (por referencia)
+     * @param  array  $oficinaDeGrupo  oficina por grupo (por referencia)
+     * @param  array  $promotorDeGrupo  promotor por grupo (por referencia)
+     * @param  array  $nombreGrupo  nombre por grupo (por referencia)
+     */
     private function registrarGrupo(string $oficina, string $promotor, array &$grupos, array &$oficinaDeGrupo, array &$promotorDeGrupo, array &$nombreGrupo): string
     {
-        $clave = $this->normalizar($oficina) . '|NOM|' . $this->normalizar($promotor);
+        $clave = $this->normalizar($oficina).'|NOM|'.$this->normalizar($promotor);
 
-        if (!isset($grupos[$clave])) {
+        if (! isset($grupos[$clave])) {
             $grupos[$clave] = true;
             $oficinaDeGrupo[$clave] = $oficina;
             $promotorDeGrupo[$clave] = $promotor;
@@ -517,11 +694,24 @@ class EfectividadCobranzaAprobadaCalculator
         return $clave;
     }
 
+    /**
+     * Suma un monto a la clave de un diccionario (equivalente al Scripting.Dictionary del VBA).
+     *
+     * @param  array  $dic  diccionario (por referencia)
+     * @param  string  $clave  clave
+     * @param  float  $monto  monto
+     */
     private function sumarDic(array &$dic, string $clave, float $monto): void
     {
         $dic[$clave] = ($dic[$clave] ?? 0.0) + $monto;
     }
 
+    /**
+     * Normaliza texto como el VBA: mayúsculas, sin acentos/Ñ, espacios duros y saltos a espacio,
+     * espacios dobles colapsados.
+     *
+     * @param  mixed  $valor  texto
+     */
     public function normalizar(mixed $valor): string
     {
         if ($valor === null) {
@@ -537,6 +727,11 @@ class EfectividadCobranzaAprobadaCalculator
         return $s;
     }
 
+    /**
+     * Convierte a número: quita «$», comas y espacios; paréntesis = negativo; inválido ⇒ 0.
+     *
+     * @param  mixed  $valor  valor
+     */
     public function numero(mixed $valor): float
     {
         if ($valor === null || $valor === '') {
@@ -556,12 +751,17 @@ class EfectividadCobranzaAprobadaCalculator
 
         $s = str_replace(['$', ',', ' '], '', $s);
         if (str_starts_with($s, '(') && str_ends_with($s, ')')) {
-            $s = '-' . substr($s, 1, -1);
+            $s = '-'.substr($s, 1, -1);
         }
 
         return is_numeric($s) ? (float) $s : 0.0;
     }
 
+    /**
+     * numero() acotado a ≥ 0.
+     *
+     * @param  mixed  $valor  valor
+     */
     public function positivo(mixed $valor): float
     {
         $n = $this->numero($valor);
@@ -569,13 +769,19 @@ class EfectividadCobranzaAprobadaCalculator
         return $n > 0 ? $n : 0.0;
     }
 
+    /**
+     * Fecha (sin hora) desde DateTime, número de serie de Excel (> 1) o texto interpretable
+     * por DateTimeImmutable; null si no es fecha.
+     *
+     * @param  mixed  $valor  valor
+     */
     private function leerFecha(mixed $valor): ?DateTimeImmutable
     {
         if ($valor === null || $valor === '') {
             return null;
         }
         if ($valor instanceof \DateTimeInterface) {
-            return (new DateTimeImmutable($valor->format('Y-m-d')));
+            return new DateTimeImmutable($valor->format('Y-m-d'));
         }
         if (is_numeric($valor)) {
             // Serial de fecha Excel.
@@ -584,7 +790,7 @@ class EfectividadCobranzaAprobadaCalculator
                 return null;
             }
 
-            return (new DateTimeImmutable('1899-12-30'))->modify('+' . (int) $days . ' days');
+            return (new DateTimeImmutable('1899-12-30'))->modify('+'.(int) $days.' days');
         }
 
         try {
@@ -594,6 +800,13 @@ class EfectividadCobranzaAprobadaCalculator
         }
     }
 
+    /**
+     * Siguiente fecha de cuota según la periodicidad: diaria (siguiente día hábil L–V),
+     * quincenal/catorcenal (+14 días), mensual (+1 mes) o semanal por defecto (+7 días).
+     *
+     * @param  DateTimeImmutable  $fecha  fecha de la cuota actual
+     * @param  string  $periodicidad  texto de periodicidad
+     */
     private function siguienteFechaCuota(DateTimeImmutable $fecha, string $periodicidad): DateTimeImmutable
     {
         $p = $this->normalizar($periodicidad);

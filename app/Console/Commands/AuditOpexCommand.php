@@ -5,9 +5,24 @@ namespace App\Console\Commands;
 use App\Models\Period;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-opex` — auditoría de OPEX (ERP + Lendus) por sucursal y concepto con
+ * la misma fuente que Dashboard/Excel/PDF (BranchRadiographyCalculator), contra las
+ * referencias fijas REF_ERP, REF_LENDUS y REF_OPEX (cierre de junio 2026).
+ *
+ * Opciones:
+ *   --by-branch  OPEX por sucursal oficial (ERP, Lendus, total, % del total).
+ *   --detail     detalle por concepto canónico (por sucursal si se combina con --by-branch).
+ *   --export     CSV resumen por sucursal y CSV concepto × sucursal en storage/app/auditorias/.
+ *
+ * Escribe en BD: NO (solo CSV con `--export`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-opex 21
+ *   php artisan reportes:audit-opex 21 --by-branch --detail --export
+ */
 class AuditOpexCommand extends Command
 {
     protected $signature = 'reportes:audit-opex
@@ -18,32 +33,41 @@ class AuditOpexCommand extends Command
 
     protected $description = 'Auditoría OPEX — ERP + Lendus por sucursal y concepto — misma fuente que Dashboard/Excel/PDF';
 
-    private const REF_ERP    = 448_549.95;
-    private const REF_LENDUS = 557_561.29;
-    private const REF_OPEX   = 1_006_111.24;
+    private const REF_ERP = 448_549.95;
 
+    private const REF_LENDUS = 557_561.29;
+
+    private const REF_OPEX = 1_006_111.24;
+
+    /**
+     * Calcula el resultado del calculador para el periodo, imprime totales globales contra la
+     * referencia y los desgloses/exportación solicitados.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         /** @var BranchRadiographyCalculator $calc */
-        $calc   = app(BranchRadiographyCalculator::class);
+        $calc = app(BranchRadiographyCalculator::class);
         $result = $calc->buildBranches($period, $dataIds, []);
         $global = $calc->sumGlobal($result['branches'], $result['unassigned']);
 
-        $opexTotal  = (float) $global['gastos_operativos'];
-        $erpTotal   = (float) $global['gastos_erp_total'];
-        $lendusTotal= (float) $global['gastos_lendus_total'];
+        $opexTotal = (float) $global['gastos_operativos'];
+        $erpTotal = (float) $global['gastos_erp_total'];
+        $lendusTotal = (float) $global['gastos_lendus_total'];
 
         $this->line('');
         $this->info('════════════════════════════════════════════════════════════════════════════');
@@ -64,10 +88,10 @@ class AuditOpexCommand extends Command
             $this->info('════ OPEX POR SUCURSAL OFICIAL ════');
             $this->line(
                 str_pad('Sucursal', 26)
-                . str_pad('ERP', 17)
-                . str_pad('Lendus', 17)
-                . str_pad('OPEX Total', 17)
-                . '% del global'
+                .str_pad('ERP', 17)
+                .str_pad('Lendus', 17)
+                .str_pad('OPEX Total', 17)
+                .'% del global'
             );
             $this->line(str_repeat('─', 90));
 
@@ -75,29 +99,29 @@ class AuditOpexCommand extends Command
             $branches = collect($result['branches'])->sortByDesc('gastos_operativos');
 
             foreach ($branches as $b) {
-                $erp    = (float) $b['gastos_erp_total'];
+                $erp = (float) $b['gastos_erp_total'];
                 $lendus = (float) $b['gastos_lendus_total'];
-                $opex   = (float) $b['gastos_operativos'];
-                $pct    = $opexTotal > 0 ? round($opex / $opexTotal * 100, 2) : 0;
-                $totErp    += $erp;
+                $opex = (float) $b['gastos_operativos'];
+                $pct = $opexTotal > 0 ? round($opex / $opexTotal * 100, 2) : 0;
+                $totErp += $erp;
                 $totLendus += $lendus;
-                $totOpex   += $opex;
+                $totOpex += $opex;
 
                 $this->line(
                     str_pad(mb_substr($b['sucursal'], 0, 24), 26)
-                    . str_pad('$' . number_format($erp, 2), 17)
-                    . str_pad('$' . number_format($lendus, 2), 17)
-                    . str_pad('$' . number_format($opex, 2), 17)
-                    . $pct . '%'
+                    .str_pad('$'.number_format($erp, 2), 17)
+                    .str_pad('$'.number_format($lendus, 2), 17)
+                    .str_pad('$'.number_format($opex, 2), 17)
+                    .$pct.'%'
                 );
             }
 
             $this->line(str_repeat('─', 90));
             $this->info(
                 str_pad('TOTAL SUCURSALES', 26)
-                . str_pad('$' . number_format($totErp, 2), 17)
-                . str_pad('$' . number_format($totLendus, 2), 17)
-                . str_pad('$' . number_format($totOpex, 2), 17)
+                .str_pad('$'.number_format($totErp, 2), 17)
+                .str_pad('$'.number_format($totLendus, 2), 17)
+                .str_pad('$'.number_format($totOpex, 2), 17)
             );
         }
 
@@ -113,22 +137,22 @@ class AuditOpexCommand extends Command
                         continue;
                     }
                     $this->line('');
-                    $this->info("  ── {$b['sucursal']} (ERP: \$" . number_format((float) $b['gastos_erp_total'], 2)
-                        . "  Lendus: \$" . number_format((float) $b['gastos_lendus_total'], 2) . ") ──");
+                    $this->info("  ── {$b['sucursal']} (ERP: \$".number_format((float) $b['gastos_erp_total'], 2)
+                        .'  Lendus: $'.number_format((float) $b['gastos_lendus_total'], 2).') ──');
                     arsort($b['gastos_detalle']);
                     foreach ($b['gastos_detalle'] as $concept => $amount) {
-                        $this->line("    " . str_pad(mb_substr((string) $concept, 0, 50), 54)
-                            . '$' . number_format((float) $amount, 2));
+                        $this->line('    '.str_pad(mb_substr((string) $concept, 0, 50), 54)
+                            .'$'.number_format((float) $amount, 2));
                     }
                 }
             } else {
                 // Global concept breakdown
                 $globalDetail = $global['gastos_detalle'] ?? [];
                 arsort($globalDetail);
-                $this->line(str_pad('Concepto', 55) . 'Monto');
+                $this->line(str_pad('Concepto', 55).'Monto');
                 $this->line(str_repeat('─', 75));
                 foreach ($globalDetail as $concept => $amount) {
-                    $this->line(str_pad(mb_substr((string) $concept, 0, 53), 55) . '$' . number_format((float) $amount, 2));
+                    $this->line(str_pad(mb_substr((string) $concept, 0, 53), 55).'$'.number_format((float) $amount, 2));
                 }
             }
         }
@@ -140,31 +164,47 @@ class AuditOpexCommand extends Command
         return 0;
     }
 
+    /**
+     * Imprime una línea Etiqueta/Sistema/Referencia/Diferencia con estado EXACTO, CERCANO
+     * (< $20,000) o REVISAR.
+     *
+     * @param  string  $label  Etiqueta.
+     * @param  float  $value  Valor del sistema.
+     * @param  float  $ref  Valor de referencia.
+     */
     private function printRefLine(string $label, float $value, float $ref): void
     {
-        $diff   = $value - $ref;
-        $sign   = $diff >= 0 ? '+' : '';
+        $diff = $value - $ref;
+        $sign = $diff >= 0 ? '+' : '';
         $status = abs($diff) < 1 ? '✓ EXACTO' : (abs($diff) < 20_000 ? '≈ CERCANO' : '⚠ REVISAR');
         $this->line(
-            "  " . str_pad($label, 14)
-            . str_pad('$' . number_format($value, 2), 20)
-            . "ref: \$" . number_format($ref, 2)
-            . "  diff: {$sign}\$" . number_format(abs($diff), 2)
-            . "  {$status}"
+            '  '.str_pad($label, 14)
+            .str_pad('$'.number_format($value, 2), 20)
+            .'ref: $'.number_format($ref, 2)
+            ."  diff: {$sign}\$".number_format(abs($diff), 2)
+            ."  {$status}"
         );
     }
 
+    /**
+     * Escribe el CSV resumen por sucursal (ERP, Lendus, OPEX) con fila GLOBAL y el CSV de
+     * conceptos con una columna por sucursal más GLOBAL.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $branches  Filas por sucursal del calculador.
+     * @param  array  $global  Resultado global del calculador.
+     */
     private function exportCsv(int $periodId, array $branches, array $global): void
     {
         $dir = 'auditorias';
-        $ts  = now()->format('Ymd_His');
+        $ts = now()->format('Ymd_His');
 
         // Branch summary CSV
         $summaryFile = "opex_por_sucursal_periodo_{$periodId}_{$ts}.csv";
         $lines = [implode(',', ['Sucursal', 'ERP', 'Lendus', 'OPEX Total'])];
         foreach ($branches as $b) {
             $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $b['sucursal']) . '"',
+                '"'.str_replace('"', '""', $b['sucursal']).'"',
                 number_format((float) $b['gastos_erp_total'], 2, '.', ''),
                 number_format((float) $b['gastos_lendus_total'], 2, '.', ''),
                 number_format((float) $b['gastos_operativos'], 2, '.', ''),
@@ -183,7 +223,7 @@ class AuditOpexCommand extends Command
         $detailFile = "opex_conceptos_periodo_{$periodId}_{$ts}.csv";
         $branchNames = array_map(fn ($b) => $b['sucursal'], $branches);
         $dheaders = array_merge(['Concepto'], $branchNames, ['GLOBAL']);
-        $dlines   = [implode(',', $dheaders)];
+        $dlines = [implode(',', $dheaders)];
 
         // Collect all concepts
         $allConcepts = [];
@@ -194,7 +234,7 @@ class AuditOpexCommand extends Command
         }
 
         foreach (array_keys($allConcepts) as $concept) {
-            $row = ['"' . str_replace('"', '""', $concept) . '"'];
+            $row = ['"'.str_replace('"', '""', $concept).'"'];
             foreach ($branches as $b) {
                 $row[] = number_format((float) ($b['gastos_detalle'][$concept] ?? 0), 2, '.', '');
             }

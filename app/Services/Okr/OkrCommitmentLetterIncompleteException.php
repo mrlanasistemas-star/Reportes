@@ -13,7 +13,12 @@ use RuntimeException;
  */
 class OkrCommitmentLetterIncompleteException extends RuntimeException
 {
-    /** @param array<string, string> $missing */
+    /**
+     * Crea la excepción con el mensaje para el usuario y el detalle de faltantes.
+     *
+     * @param  string  $message  Mensaje en español que se muestra (respuesta 422).
+     * @param  array<string, string>  $missing  Campos faltantes (clave técnica => etiqueta legible) para el botón "Completar información".
+     */
     public function __construct(string $message, public readonly array $missing = [])
     {
         parent::__construct($message);

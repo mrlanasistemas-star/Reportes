@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Okr\StoreKpiRequest;
 use App\Models\OkrKpi;
 use App\Services\Okr\OkrKpiProviderRegistry;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\RedirectResponse;
 use Inertia\Inertia;
@@ -20,6 +21,14 @@ class KpiController extends Controller
 {
     use AuthorizesRequests;
 
+    /**
+     * Página Inertia `Okr/KpiCatalog` con el catálogo KPI y los proveedores
+     * (provider_key) registrados que pueden asignarse.
+     *
+     * @return Response Página con `kpis` y `availableProviders`.
+     *
+     * @throws AuthorizationException Si no tiene `okr.kpi.manage`.
+     */
     public function index(): Response
     {
         $this->authorize('okr.kpi.manage');
@@ -30,6 +39,13 @@ class KpiController extends Controller
         ]);
     }
 
+    /**
+     * Crea un KPI del catálogo (escribe en okr_kpis). La autorización y la
+     * validación viven en StoreKpiRequest.
+     *
+     * @param  StoreKpiRequest  $request  Datos validados del KPI.
+     * @return RedirectResponse Regresa con mensaje de éxito.
+     */
     public function store(StoreKpiRequest $request): RedirectResponse
     {
         OkrKpi::query()->create($request->validated());
@@ -37,6 +53,13 @@ class KpiController extends Controller
         return back()->with('success', 'KPI creado.');
     }
 
+    /**
+     * Actualiza un KPI existente del catálogo (escribe en okr_kpis).
+     *
+     * @param  StoreKpiRequest  $request  Datos validados del KPI.
+     * @param  OkrKpi  $kpi  KPI a modificar.
+     * @return RedirectResponse Regresa con mensaje de éxito.
+     */
     public function update(StoreKpiRequest $request, OkrKpi $kpi): RedirectResponse
     {
         $kpi->update($request->validated());

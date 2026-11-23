@@ -3,27 +3,44 @@
 namespace App\Console\Commands;
 
 use App\Models\Period;
-use Carbon\Carbon;
 use Illuminate\Console\Command;
-use Illuminate\Support\Collection;
 
+/**
+ * Comando `reportes:audit-operational-periods` — valida la cadena continua de meses operativos
+ * de un año: sin huecos entre meses, sin semanas duplicadas entre meses, sin semanas huérfanas
+ * dentro del rango activo, rangos esperados de 2026 (EXPECTED_RANGES_2026, fijos) y que los
+ * periodos derivados (bimestres, trimestres, semestres, año) existan solo cuando están
+ * completos sus meses y apunten a meses (no a semanas).
+ *
+ * Escribe en BD: NO — solo lectura. Devuelve 1 si encontró problemas (útil en scripts).
+ *
+ * Ejemplo:
+ *   php artisan reportes:audit-operational-periods 2026
+ */
 class AuditOperationalPeriodsCommand extends Command
 {
     protected $signature = 'reportes:audit-operational-periods {year}';
+
     protected $description = 'Valida la cadena continua de meses operativos: sin huecos, sin duplicados, sin semanas huérfanas';
 
     private const EXPECTED_RANGES_2026 = [
-        4  => ['start' => '2026-03-30', 'end' => '2026-04-26', 'label' => 'Abril'],
-        5  => ['start' => '2026-04-27', 'end' => '2026-05-24', 'label' => 'Mayo'],
-        6  => ['start' => '2026-05-25', 'end' => '2026-06-21', 'label' => 'Junio'],
-        7  => ['start' => '2026-06-22', 'end' => '2026-07-19', 'label' => 'Julio'],
-        8  => ['start' => '2026-07-20', 'end' => '2026-08-16', 'label' => 'Agosto'],
-        9  => ['start' => '2026-08-17', 'end' => '2026-09-13', 'label' => 'Septiembre'],
+        4 => ['start' => '2026-03-30', 'end' => '2026-04-26', 'label' => 'Abril'],
+        5 => ['start' => '2026-04-27', 'end' => '2026-05-24', 'label' => 'Mayo'],
+        6 => ['start' => '2026-05-25', 'end' => '2026-06-21', 'label' => 'Junio'],
+        7 => ['start' => '2026-06-22', 'end' => '2026-07-19', 'label' => 'Julio'],
+        8 => ['start' => '2026-07-20', 'end' => '2026-08-16', 'label' => 'Agosto'],
+        9 => ['start' => '2026-08-17', 'end' => '2026-09-13', 'label' => 'Septiembre'],
         10 => ['start' => '2026-09-14', 'end' => '2026-10-11', 'label' => 'Octubre'],
         11 => ['start' => '2026-10-12', 'end' => '2026-11-08', 'label' => 'Noviembre'],
         12 => ['start' => '2026-11-09', 'end' => '2026-12-06', 'label' => 'Diciembre'],
     ];
 
+    /**
+     * Carga los meses y semanas del año, ejecuta las 6 verificaciones e imprime tablas y el
+     * listado final de problemas.
+     *
+     * @return int 0 si todo es correcto; 1 si hay al menos un problema.
+     */
     public function handle(): int
     {
         $year = (int) $this->argument('year');
@@ -43,10 +60,10 @@ class AuditOperationalPeriodsCommand extends Command
             ->where('type', 'weekly')
             ->where(function ($q) use ($year) {
                 $q->where('year', $year)
-                  ->orWhere(function ($q2) use ($year) {
-                      // Include Dec of previous year (start may be in prev year)
-                      $q2->where('year', $year - 1)->where('month', 12);
-                  });
+                    ->orWhere(function ($q2) use ($year) {
+                        // Include Dec of previous year (start may be in prev year)
+                        $q2->where('year', $year - 1)->where('month', 12);
+                    });
             })
             ->orderBy('start_date')
             ->get();
@@ -56,7 +73,7 @@ class AuditOperationalPeriodsCommand extends Command
         $this->line('  MESES OPERATIVOS CONFIGURADOS:');
         $this->line('');
 
-        $rows   = [];
+        $rows = [];
         $errors = [];
         $allUsedIds = collect();
 
@@ -77,32 +94,32 @@ class AuditOperationalPeriodsCommand extends Command
             $duplicates = $componentIds->intersect($allUsedIds);
             if ($duplicates->isNotEmpty()) {
                 $status = '❌ SEMANAS DUPLICADAS';
-                $errors[] = "Mes {$monthly->month} ({$monthly->name}): semanas duplicadas con meses anteriores: IDs " . $duplicates->implode(', ');
+                $errors[] = "Mes {$monthly->month} ({$monthly->name}): semanas duplicadas con meses anteriores: IDs ".$duplicates->implode(', ');
             }
 
             // Check expected range for 2026
             if ($year === 2026 && isset(self::EXPECTED_RANGES_2026[$monthly->month])) {
                 $expected = self::EXPECTED_RANGES_2026[$monthly->month];
                 $actualStart = optional($monthly->start_date)->format('Y-m-d');
-                $actualEnd   = optional($monthly->end_date)->format('Y-m-d');
+                $actualEnd = optional($monthly->end_date)->format('Y-m-d');
 
                 if ($actualStart !== $expected['start'] || $actualEnd !== $expected['end']) {
                     $status = '⚠️  RANGO INCORRECTO';
                     $errors[] = "Mes {$monthly->month} ({$monthly->name}): "
-                        . "esperado {$expected['start']} → {$expected['end']}, "
-                        . "actual {$actualStart} → {$actualEnd}";
+                        ."esperado {$expected['start']} → {$expected['end']}, "
+                        ."actual {$actualStart} → {$actualEnd}";
                 }
             }
 
             $allUsedIds = $allUsedIds->concat($componentIds);
 
             $rows[] = [
-                'Mes'      => sprintf('%02d', $monthly->month) . " {$monthly->name}",
-                'Inicio'   => optional($monthly->start_date)->format('Y-m-d') ?? '—',
-                'Fin'      => optional($monthly->end_date)->format('Y-m-d') ?? '—',
-                'Semanas'  => $weekCount,
-                'Días'     => $days ?? '—',
-                'Estado'   => $status,
+                'Mes' => sprintf('%02d', $monthly->month)." {$monthly->name}",
+                'Inicio' => optional($monthly->start_date)->format('Y-m-d') ?? '—',
+                'Fin' => optional($monthly->end_date)->format('Y-m-d') ?? '—',
+                'Semanas' => $weekCount,
+                'Días' => $days ?? '—',
+                'Estado' => $status,
             ];
         }
 
@@ -122,13 +139,15 @@ class AuditOperationalPeriodsCommand extends Command
             $prev = $sortedMonthly[$i - 1];
             $curr = $sortedMonthly[$i];
 
-            if (!$prev->end_date || !$curr->start_date) continue;
+            if (! $prev->end_date || ! $curr->start_date) {
+                continue;
+            }
 
             $expectedNext = $prev->end_date->copy()->addDay();
-            if (!$expectedNext->isSameDay($curr->start_date)) {
+            if (! $expectedNext->isSameDay($curr->start_date)) {
                 $gap = $prev->end_date->diffInDays($curr->start_date) - 1;
                 $gapErrors[] = "  ❌ HUECO de {$gap} día(s) entre {$prev->name} "
-                    . "({$prev->end_date->format('Y-m-d')}) y {$curr->name} ({$curr->start_date->format('Y-m-d')})";
+                    ."({$prev->end_date->format('Y-m-d')}) y {$curr->name} ({$curr->start_date->format('Y-m-d')})";
                 $errors[] = "Hueco entre {$prev->name} y {$curr->name}";
             }
         }
@@ -146,10 +165,10 @@ class AuditOperationalPeriodsCommand extends Command
         $this->line('  SEMANAS HUÉRFANAS (no asignadas a ningún mes operativo):');
 
         $firstMonthly = $monthlyPeriods->sortBy('start_date')->first();
-        $lastMonthly  = $monthlyPeriods->sortByDesc('end_date')->first();
+        $lastMonthly = $monthlyPeriods->sortByDesc('end_date')->first();
 
-        $orphanWeeks  = $allWeekly->whereNotIn('id', $allUsedIds->all());
-        $activeRange  = collect();
+        $orphanWeeks = $allWeekly->whereNotIn('id', $allUsedIds->all());
+        $activeRange = collect();
 
         if ($firstMonthly && $lastMonthly) {
             $activeRange = $orphanWeeks->filter(function (Period $w) use ($firstMonthly, $lastMonthly) {
@@ -201,13 +220,14 @@ class AuditOperationalPeriodsCommand extends Command
             foreach (self::EXPECTED_RANGES_2026 as $month => $expected) {
                 $monthly = $monthlyByMonth->get($month);
 
-                if (!$monthly) {
+                if (! $monthly) {
                     $this->warn(sprintf('  ⚠️  Mes %02d (%s): AÚN NO CREADO', $month, $expected['label']));
+
                     continue;
                 }
 
                 $actualStart = optional($monthly->start_date)->format('Y-m-d');
-                $actualEnd   = optional($monthly->end_date)->format('Y-m-d');
+                $actualEnd = optional($monthly->end_date)->format('Y-m-d');
                 $ok = $actualStart === $expected['start'] && $actualEnd === $expected['end'];
 
                 $this->line(sprintf(
@@ -230,29 +250,29 @@ class AuditOperationalPeriodsCommand extends Command
         $monthlyByMonth = $monthlyPeriods->keyBy('month');
 
         $derivedBlocks = [
-            'bimonthly'  => [
-                'label'  => 'Bimestre',
+            'bimonthly' => [
+                'label' => 'Bimestre',
                 'blocks' => [
                     1 => [1, 2], 2 => [3, 4],  3 => [5, 6],
                     4 => [7, 8], 5 => [9, 10], 6 => [11, 12],
                 ],
             ],
-            'quarterly'  => [
-                'label'  => 'Trimestre',
+            'quarterly' => [
+                'label' => 'Trimestre',
                 'blocks' => [
                     1 => [1, 2, 3], 2 => [4, 5, 6],
                     3 => [7, 8, 9], 4 => [10, 11, 12],
                 ],
             ],
             'semiannual' => [
-                'label'  => 'Semestre',
+                'label' => 'Semestre',
                 'blocks' => [
                     1 => [1, 2, 3, 4, 5, 6],
                     2 => [7, 8, 9, 10, 11, 12],
                 ],
             ],
-            'annual'     => [
-                'label'  => 'Año',
+            'annual' => [
+                'label' => 'Año',
                 'blocks' => [1 => range(1, 12)],
             ],
         ];
@@ -261,7 +281,7 @@ class AuditOperationalPeriodsCommand extends Command
 
         foreach ($derivedBlocks as $type => $config) {
             foreach ($config['blocks'] as $seq => $months) {
-                $seqLabel   = $type === 'annual' ? (string) $year : "{$config['label']} {$seq}";
+                $seqLabel = $type === 'annual' ? (string) $year : "{$config['label']} {$seq}";
                 $monthNames = [
                     1 => 'Ene', 2 => 'Feb', 3 => 'Mar', 4 => 'Abr',
                     5 => 'May', 6 => 'Jun', 7 => 'Jul', 8 => 'Ago',
@@ -269,7 +289,7 @@ class AuditOperationalPeriodsCommand extends Command
                 ];
                 $required = implode('+', array_map(fn ($m) => $monthNames[$m], $months));
 
-                $missing      = [];
+                $missing = [];
                 $presentMonths = collect();
                 foreach ($months as $m) {
                     $mp = $monthlyByMonth->get($m);
@@ -289,11 +309,11 @@ class AuditOperationalPeriodsCommand extends Command
                 if (empty($missing)) {
                     // Debe existir
                     $start = optional($presentMonths->sortBy('start_date')->first()?->start_date)->format('Y-m-d') ?? '?';
-                    $end   = optional($presentMonths->sortByDesc('end_date')->first()?->end_date)->format('Y-m-d') ?? '?';
+                    $end = optional($presentMonths->sortByDesc('end_date')->first()?->end_date)->format('Y-m-d') ?? '?';
 
                     if ($existing) {
                         // Verificar que los component_period_ids apuntan a mensuales
-                        $compIds  = collect($existing->component_period_ids ?? []);
+                        $compIds = collect($existing->component_period_ids ?? []);
                         $allMonthly = $compIds->every(function ($id) {
                             return Period::where('id', $id)->where('type', 'monthly')->exists();
                         });
@@ -303,12 +323,12 @@ class AuditOperationalPeriodsCommand extends Command
 
                         if ($allMonthly && $rangeOk) {
                             $derivedRows[] = ['Nombre' => $seqLabel, 'Componentes' => $required, 'Rango' => "{$start} → {$end}", 'Estado' => '✅ OK'];
-                        } elseif (!$allMonthly) {
+                        } elseif (! $allMonthly) {
                             $derivedRows[] = ['Nombre' => $seqLabel, 'Componentes' => $required, 'Rango' => "{$start} → {$end}", 'Estado' => '❌ USA SEMANAS'];
                             $errors[] = "{$seqLabel}: component_period_ids contiene IDs de semanas, no meses operativos";
                         } else {
                             $actualStart = optional($existing->start_date)->format('Y-m-d');
-                            $actualEnd   = optional($existing->end_date)->format('Y-m-d');
+                            $actualEnd = optional($existing->end_date)->format('Y-m-d');
                             $derivedRows[] = ['Nombre' => $seqLabel, 'Componentes' => $required, 'Rango' => "{$actualStart} → {$actualEnd}", 'Estado' => '❌ RANGO MAL'];
                             $errors[] = "{$seqLabel}: rango incorrecto (esperado {$start}→{$end})";
                         }
@@ -319,10 +339,10 @@ class AuditOperationalPeriodsCommand extends Command
                 } else {
                     // Faltan meses → no debe existir
                     if ($existing) {
-                        $derivedRows[] = ['Nombre' => $seqLabel, 'Componentes' => "FALTA: " . implode(',', $missing), 'Rango' => '—', 'Estado' => '❌ EXISTE SIN MESES'];
-                        $errors[] = "{$seqLabel}: existe en BD aunque faltan meses operativos (" . implode(',', $missing) . ")";
+                        $derivedRows[] = ['Nombre' => $seqLabel, 'Componentes' => 'FALTA: '.implode(',', $missing), 'Rango' => '—', 'Estado' => '❌ EXISTE SIN MESES'];
+                        $errors[] = "{$seqLabel}: existe en BD aunque faltan meses operativos (".implode(',', $missing).')';
                     } else {
-                        $derivedRows[] = ['Nombre' => $seqLabel, 'Componentes' => "FALTA: " . implode(',', $missing), 'Rango' => '—', 'Estado' => '✅ No aplica'];
+                        $derivedRows[] = ['Nombre' => $seqLabel, 'Componentes' => 'FALTA: '.implode(',', $missing), 'Rango' => '—', 'Estado' => '✅ No aplica'];
                     }
                 }
             }
@@ -337,9 +357,9 @@ class AuditOperationalPeriodsCommand extends Command
         if (empty($errors)) {
             $this->info('  ✅ RESULTADO: Todos los periodos operativos son correctos.');
         } else {
-            $this->error('  ❌ RESULTADO: Se encontraron ' . count($errors) . ' problema(s):');
+            $this->error('  ❌ RESULTADO: Se encontraron '.count($errors).' problema(s):');
             foreach ($errors as $i => $e) {
-                $this->error('    ' . ($i + 1) . '. ' . $e);
+                $this->error('    '.($i + 1).'. '.$e);
             }
         }
 

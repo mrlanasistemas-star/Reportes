@@ -13,6 +13,7 @@ use App\Services\Pdf\BrowsershotPdfRenderer;
 use App\Services\Pdf\PdfRenderException;
 use App\Services\RadiografiaExportService;
 use App\Services\Reporting\OperativeBranchService;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,6 +21,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
  * Dashboard principal (cierre 17-sep-2026, ronda 4/5) — antes una página estática de
@@ -48,13 +50,28 @@ use Inertia\Response;
  */
 class DashboardController extends Controller
 {
+    /**
+     * Inyecta los servicios de cálculo: snapshot/gráficas de la radiografía, la
+     * tendencia cacheada y el catálogo de las 13 sucursales operativas.
+     */
     public function __construct(
         private readonly RadiografiaExportService $exportService,
         private readonly DashboardTrendService $trendService,
         private readonly OperativeBranchService $operativeBranches,
-    ) {
-    }
+    ) {}
 
+    /**
+     * Renderiza la página Inertia "Dashboard" de forma diferida: solo envía el
+     * catálogo de periodos con radiografía generada, las sucursales del alcance
+     * del usuario y el periodo inicial (el más reciente). Los KPI y gráficas
+     * llegan vacíos (`deferred=true`) y Dashboard.vue los pide a data().
+     *
+     * @param  Request  $request  Puede traer `branch_id` (sucursal a filtrar).
+     * @return Response Página Inertia; `hasData=false` si no hay ningún periodo generado.
+     *
+     * Efectos: sube memory_limit/tiempo de ejecución; resolveBranch() puede
+     * lanzar 403 si el usuario pide una sucursal fuera de su alcance.
+     */
     public function index(Request $request): Response
     {
         // buildSnapshot() es una operación pesada (agregaciones financieras completas) —
@@ -65,7 +82,7 @@ class DashboardController extends Controller
         $periods = $this->availablePeriods();
         $latestPeriod = $periods->first();
 
-        if (!$latestPeriod) {
+        if (! $latestPeriod) {
             return Inertia::render('Dashboard', ['hasData' => false, 'periods' => [], 'branches' => $this->branchOptions()]);
         }
 
@@ -90,7 +107,15 @@ class DashboardController extends Controller
         ]);
     }
 
-    /** JSON para el selector de periodo/sucursal en vivo — nunca recarga la página. Un solo snapshot, rápido. */
+    /**
+     * JSON para el selector de periodo/sucursal en vivo — nunca recarga la página.
+     * Construye un solo snapshot (el del periodo pedido) vía payloadForPeriod().
+     *
+     * @param  Request  $request  `period_id` (si no existe o no está generado, se usa
+     *                            el más reciente) y `branch_id` opcional.
+     * @return JsonResponse KPIs, gráficas y alcance; `hasData=false` si no hay periodos.
+     *                      Respuesta con Cache-Control no-store.
+     */
     public function data(Request $request): JsonResponse
     {
         @ini_set('memory_limit', '512M');
@@ -99,7 +124,7 @@ class DashboardController extends Controller
         $periods = $this->availablePeriods();
         $period = $periods->firstWhere('id', (int) $request->integer('period_id')) ?? $periods->first();
 
-        if (!$period) {
+        if (! $period) {
             return response()->json(['hasData' => false], 200, ['Cache-Control' => 'no-store, no-cache, must-revalidate']);
         }
 
@@ -117,6 +142,9 @@ class DashboardController extends Controller
      * auditoría, 15-oct-2026) — SOLO las 13 operativas, misma fuente que ya usa
      * Reportes mensuales/OKR (OperativeBranchService). Nunca una lista inventada
      * aparte.
+     */
+    /**
+     * @return array<int, array{id:int, name:string}> Sucursales operativas visibles para el usuario actual.
      */
     private function branchOptions(): array
     {
@@ -143,6 +171,9 @@ class DashboardController extends Controller
      * eso el mismo margen de tiempo/memoria que index()/data(), y por eso
      * GenerateRadiographyJob dispara WarmDashboardTrendCacheJob al terminar: casi
      * nunca debería tocarle a un usuario pagar ese costo en frío.
+     *
+     * @param  Request  $request  `branch_id` opcional (sucursal; vacío = consolidado).
+     * @return JsonResponse `trend` (puntos por periodo) y `scope` (sucursal y etiqueta).
      */
     public function trend(Request $request): JsonResponse
     {
@@ -171,6 +202,14 @@ class DashboardController extends Controller
      * reporte, de muchas páginas. Ahora genera un documento con EXACTAMENTE los
      * KPI y gráficas que el Dashboard muestra para el periodo/sucursal elegidos,
      * desde el mismo payloadForPeriod() (ningún cálculo nuevo).
+     *
+     * @param  Request  $request  `period_id` (obligatorio, debe tener radiografía generada) y `branch_id` opcional.
+     * @param  BrowsershotPdfRenderer  $renderer  Motor Chrome headless que convierte la vista Blade a PDF.
+     * @param  DashboardPdfChartBuilder  $chart  Ayudante que dibuja las gráficas dentro de la vista.
+     * @return BinaryFileResponse|\Illuminate\Http\Response
+     *                                                      Descarga del PDF (el temporal en storage/app/tmp se borra tras enviarse), o
+     *                                                      HTML de error 404 (periodo sin radiografía) / 500 (fallo de render, con
+     *                                                      referencia DASH-PDF-* registrada en el log).
      */
     public function exportPdf(Request $request, BrowsershotPdfRenderer $renderer, DashboardPdfChartBuilder $chart)
     {
@@ -179,9 +218,9 @@ class DashboardController extends Controller
 
         $periods = $this->availablePeriods();
         $period = $periods->firstWhere('id', (int) $request->integer('period_id'));
-        if (!$period) {
+        if (! $period) {
             return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px">'
-                . '<p><strong>No hay radiografía generada para el periodo solicitado.</strong></p><p>Elige un periodo con radiografía generada en el Dashboard e intenta de nuevo.</p></body>', 404)
+                .'<p><strong>No hay radiografía generada para el periodo solicitado.</strong></p><p>Elige un periodo con radiografía generada en el Dashboard e intenta de nuevo.</p></body>', 404)
                 ->header('Content-Type', 'text/html; charset=UTF-8');
         }
 
@@ -189,7 +228,7 @@ class DashboardController extends Controller
         $payload = $this->payloadForPeriod($period, $branchId);
         $branchName = $branchId ? ($payload['scope']['branch_name'] ?? Branch::query()->whereKey($branchId)->value('name')) : null;
 
-        $path = storage_path('app/tmp/dashboard-' . $period->id . '-' . ($branchId ?? 'general') . '-' . uniqid() . '.pdf');
+        $path = storage_path('app/tmp/dashboard-'.$period->id.'-'.($branchId ?? 'general').'-'.uniqid().'.pdf');
         try {
             $renderer->renderViewToFile('reports.dashboard-pdf', [
                 'kpis' => $payload['kpis'],
@@ -203,17 +242,17 @@ class DashboardController extends Controller
                 'generatedAt' => now(),
                 'generatedBy' => $request->user()?->name,
                 'chart' => $chart,
-            ], $path, ['footer_left' => config('pdf.branding.app_name') . ' · Dashboard ' . $period->label . ($branchName ? ' · ' . $branchName : '')]);
+            ], $path, ['footer_left' => config('pdf.branding.app_name').' · Dashboard '.$period->label.($branchName ? ' · '.$branchName : '')]);
         } catch (PdfRenderException $e) {
-            $ref = 'DASH-PDF-' . now()->format('ymdHis') . '-' . strtoupper(Str::random(4));
+            $ref = 'DASH-PDF-'.now()->format('ymdHis').'-'.strtoupper(Str::random(4));
             Log::error('Dashboard: fallo generando el PDF', ['ref' => $ref, 'period_id' => $period->id, 'branch_id' => $branchId, 'code' => $e->code(), 'error' => $e->getMessage()]);
 
             return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#7f1d1d">'
-                . '<p><strong>No pudimos generar el PDF del Dashboard.</strong></p><p>Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: <strong>' . e($ref) . '</strong>.</p></body>', 500)
+                .'<p><strong>No pudimos generar el PDF del Dashboard.</strong></p><p>Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: <strong>'.e($ref).'</strong>.</p></body>', 500)
                 ->header('Content-Type', 'text/html; charset=UTF-8');
         }
 
-        $filename = 'dashboard-' . Str::slug($period->label) . ($branchName ? '-' . Str::slug($branchName) : '-todas-las-sucursales') . '.pdf';
+        $filename = 'dashboard-'.Str::slug($period->label).($branchName ? '-'.Str::slug($branchName) : '-todas-las-sucursales').'.pdf';
 
         return response()->download($path, $filename, ['Content-Type' => 'application/pdf'])->deleteFileAfterSend();
     }
@@ -224,6 +263,12 @@ class DashboardController extends Controller
      * resumen ejecutivo + hoja de desglose, montos en formato moneda MXN y gráficas
      * nativas de Excel (RadiographyStyleHelper, el motor de gráficas que ya usa la
      * Reportería). Antes el botón "Exportar Excel" descargaba la Radiografía completa.
+     *
+     * @param  Request  $request  `period_id` (obligatorio, con radiografía generada) y `branch_id` opcional.
+     * @param  DashboardExcelExporter  $exporter  Genera el .xlsx en storage/app/tmp.
+     * @return BinaryFileResponse|\Illuminate\Http\Response
+     *                                                      Descarga del Excel (archivo temporal borrado tras enviarse), o HTML de
+     *                                                      error 404 / 500 (referencia DASH-XLSX-* en el log).
      */
     public function exportExcel(Request $request, DashboardExcelExporter $exporter)
     {
@@ -232,9 +277,9 @@ class DashboardController extends Controller
 
         $periods = $this->availablePeriods();
         $period = $periods->firstWhere('id', (int) $request->integer('period_id'));
-        if (!$period) {
+        if (! $period) {
             return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px">'
-                . '<p><strong>No hay radiografía generada para el periodo solicitado.</strong></p><p>Elige un periodo con radiografía generada en el Dashboard e intenta de nuevo.</p></body>', 404)
+                .'<p><strong>No hay radiografía generada para el periodo solicitado.</strong></p><p>Elige un periodo con radiografía generada en el Dashboard e intenta de nuevo.</p></body>', 404)
                 ->header('Content-Type', 'text/html; charset=UTF-8');
         }
 
@@ -251,22 +296,27 @@ class DashboardController extends Controller
                 'branchName' => $branchName,
                 'generatedAt' => now(),
                 'generatedBy' => $request->user()?->name,
-            ], storage_path('app/tmp/dashboard-' . $period->id . '-' . ($branchId ?? 'general') . '-' . uniqid() . '.xlsx'));
+            ], storage_path('app/tmp/dashboard-'.$period->id.'-'.($branchId ?? 'general').'-'.uniqid().'.xlsx'));
         } catch (\Throwable $e) {
-            $ref = 'DASH-XLSX-' . now()->format('ymdHis') . '-' . strtoupper(Str::random(4));
+            $ref = 'DASH-XLSX-'.now()->format('ymdHis').'-'.strtoupper(Str::random(4));
             Log::error('Dashboard: fallo generando el Excel', ['ref' => $ref, 'period_id' => $period->id, 'branch_id' => $branchId, 'error' => $e->getMessage()]);
 
             return response('<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#7f1d1d">'
-                . '<p><strong>No pudimos generar el Excel del Dashboard.</strong></p><p>Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: <strong>' . e($ref) . '</strong>.</p></body>', 500)
+                .'<p><strong>No pudimos generar el Excel del Dashboard.</strong></p><p>Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: <strong>'.e($ref).'</strong>.</p></body>', 500)
                 ->header('Content-Type', 'text/html; charset=UTF-8');
         }
 
-        $filename = 'dashboard-' . Str::slug($period->label) . ($branchName ? '-' . Str::slug($branchName) : '-todas-las-sucursales') . '.xlsx';
+        $filename = 'dashboard-'.Str::slug($period->label).($branchName ? '-'.Str::slug($branchName) : '-todas-las-sucursales').'.xlsx';
 
         return response()->download($path, $filename, ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])->deleteFileAfterSend();
     }
 
-    /** Periodos mensuales reales (nunca de prueba/migración) con radiografía generada, más reciente primero. */
+    /**
+     * Periodos mensuales reales (nunca de prueba/migración) con radiografía generada
+     * (period_summaries.status = generated), más reciente primero.
+     *
+     * @return Collection<int, Period>
+     */
     private function availablePeriods()
     {
         $generatedPeriodIds = PeriodSummary::query()->where('status', 'generated')->pluck('period_id');
@@ -289,6 +339,14 @@ class DashboardController extends Controller
      * asignaciones inventadas. Con sucursal seleccionada, `$snapshot['summary']`
      * trae EXACTAMENTE las mismas claves que en alcance general (ver
      * RadiographySnapshotBuilder) — los KPIs de abajo no cambian de forma.
+     *
+     * Colaboradores activos = filas de period_employee_rosters con
+     * is_active_for_period del periodo (y sucursal, si se filtra).
+     *
+     * @param  Period  $period  Periodo mensual con radiografía generada.
+     * @param  int|null  $branchId  Sucursal ya autorizada; null = consolidado general.
+     * @return array{hasData:bool, scopeUnavailable:bool, scope:array, kpis:?array, charts:?array}
+     *                                                                                             `scopeUnavailable=true` cuando la sucursal no tiene radiografía en el periodo.
      */
     private function payloadForPeriod(Period $period, ?int $branchId = null): array
     {
@@ -300,7 +358,7 @@ class DashboardController extends Controller
         // Sucursal sin radiografía en este periodo — nunca una pantalla vacía sin
         // explicación (sección 5 de la auditoría): se distingue de "sin datos en
         // absoluto" (hasData=false, cuando no hay NINGÚN periodo generado).
-        if ($branchId && !($scope['available'] ?? true)) {
+        if ($branchId && ! ($scope['available'] ?? true)) {
             return [
                 'hasData' => true,
                 'scopeUnavailable' => true,
@@ -321,28 +379,28 @@ class DashboardController extends Controller
         $activeCollaborators = (int) $rosterQuery->count();
 
         $kpis = [
-            'period_label'  => $period->label,
-            'period_id'     => $period->id,
-            'ebitda'        => round((float) ($sum['ebitda_final'] ?? 0), 2),
+            'period_label' => $period->label,
+            'period_id' => $period->id,
+            'ebitda' => round((float) ($sum['ebitda_final'] ?? 0), 2),
             'margen_ebitda' => round((float) ($sum['margen_ebitda'] ?? 0), 2),
-            'opex'          => round((float) ($sum['opex_total'] ?? 0), 2),
-            'colocacion'    => round((float) ($sum['placement_total'] ?? 0), 2),
-            'recuperacion'  => round((float) ($sum['recovery_total'] ?? 0), 2),
-            'cartera'       => round((float) ($sum['portfolio_total'] ?? 0), 2),
-            'mora_pct'      => round((float) ($sum['mora_index'] ?? 0), 2),
+            'opex' => round((float) ($sum['opex_total'] ?? 0), 2),
+            'colocacion' => round((float) ($sum['placement_total'] ?? 0), 2),
+            'recuperacion' => round((float) ($sum['recovery_total'] ?? 0), 2),
+            'cartera' => round((float) ($sum['portfolio_total'] ?? 0), 2),
+            'mora_pct' => round((float) ($sum['mora_index'] ?? 0), 2),
             'colaboradores' => $activeCollaborators,
         ];
 
         return [
             'hasData' => true,
             'scopeUnavailable' => false,
-            'scope'   => $scope,
-            'kpis'    => $kpis,
+            'scope' => $scope,
+            'kpis' => $kpis,
             // Comparativo entre sucursales no aplica con una sola sucursal
             // seleccionada — buildExecutiveChartsData() regresa null en ese caso
             // (requiere branch_radiography.branches con más de una fila); el
             // frontend oculta esas gráficas en vez de mostrarlas vacías.
-            'charts'  => $this->exportService->buildExecutiveChartsData($snapshot),
+            'charts' => $this->exportService->buildExecutiveChartsData($snapshot),
         ];
     }
 }

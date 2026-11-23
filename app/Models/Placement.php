@@ -5,8 +5,24 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class Placement extends Model {
-
+/**
+ * Colocación (crédito otorgado / ministración) importada de Lendus.
+ *
+ * Tabla: `fact_placements`. Cada fila es un crédito colocado en el periodo,
+ * importado por LendusMinistracionesImportService. Es la base del KPI de
+ * colocación de la radiografía (monto bruto) y de la productividad por gestor.
+ *
+ * Columnas clave:
+ * - `client_name`/`normalized_client_name`: acreditado.
+ * - `promoter_name`/`promoter_code`/`normalized_promoter_name`: gestor que colocó.
+ * - `coordinator_name`: coordinador.
+ * - `product_name`/`financial_product_id`: producto financiero.
+ * - `amount` (decimal:2): monto colocado.
+ * - `operation_date` (date): fecha de la operación.
+ * - `raw_payload` (array): fila original.
+ */
+class Placement extends Model
+{
     protected $table = 'fact_placements';
 
     protected $fillable = [
@@ -32,20 +48,27 @@ class Placement extends Model {
         'raw_payload' => 'array',
     ];
 
-    public function period(): BelongsTo {
+    /** Periodo de la colocación. */
+    public function period(): BelongsTo
+    {
         return $this->belongsTo(Period::class);
     }
 
-    public function reportUpload(): BelongsTo {
+    /** Archivo cargado del que proviene. */
+    public function reportUpload(): BelongsTo
+    {
         return $this->belongsTo(ReportUpload::class);
     }
 
-    public function branch(): BelongsTo {
+    /** Sucursal que colocó el crédito. */
+    public function branch(): BelongsTo
+    {
         return $this->belongsTo(Branch::class);
     }
 
-    public function financialProduct(): BelongsTo {
+    /** Producto financiero del crédito. */
+    public function financialProduct(): BelongsTo
+    {
         return $this->belongsTo(FinancialProduct::class);
     }
-
 }

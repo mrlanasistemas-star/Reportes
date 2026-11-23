@@ -11,6 +11,11 @@ use RuntimeException;
  */
 class EfectividadV4Exception extends RuntimeException
 {
+    /**
+     * @param  string  $codigo  código estable (EC-V4-9xx)
+     * @param  string  $message  mensaje en español
+     * @param  array  $contexto  datos adicionales
+     */
     public function __construct(
         public readonly string $codigo,
         string $message,

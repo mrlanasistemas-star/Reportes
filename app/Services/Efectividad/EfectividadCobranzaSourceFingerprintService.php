@@ -22,6 +22,13 @@ use Illuminate\Support\Facades\DB;
  */
 class EfectividadCobranzaSourceFingerprintService
 {
+    /**
+     * Huella SHA-256 de conteo, id máximo y updated_at máximo de CARTERA (period_id del periodo)
+     * e INGRESOS (global), filtrados por sucursal si se indica. Sólo lectura.
+     *
+     * @param  Period  $period  periodo evaluado
+     * @param  int|null  $branchId  sucursal (null = todas)
+     */
     public function compute(Period $period, ?int $branchId): string
     {
         $carteraQuery = Portfolio::query()->where('period_id', $period->id);
@@ -57,6 +64,13 @@ class EfectividadCobranzaSourceFingerprintService
         return hash('sha256', $raw);
     }
 
+    /**
+     * ¿Las fuentes cambiaron desde que se generó la ejecución? Sin huella guardada ⇒ obsoleta.
+     *
+     * @param  Period  $period  periodo
+     * @param  int|null  $branchId  sucursal
+     * @param  string|null  $storedFingerprint  huella guardada en la ejecución
+     */
     public function isStale(Period $period, ?int $branchId, ?string $storedFingerprint): bool
     {
         if ($storedFingerprint === null) {

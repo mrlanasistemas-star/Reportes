@@ -19,9 +19,16 @@ use Brick\Math\BigDecimal;
  * Aquí sólo se comparan, suman (acumulado) y ordenan cifras ya calculadas.
  *
  * Modos: anterior · anio_anterior · evolucion · acumulado · sucursales · personalizado.
+ *
+ * Lo usan EstadoResultadosComparativoController / EstadoResultadosController (endpoints), los
+ * exportadores PDF/Excel (vía EstadoResultadosExportContext) y ComparativesWarmer (precalentado).
+ * Flujo: valida periodo mensual → resuelve permisos (nómina/DG) y alcance de sucursales →
+ * arma la entrada del periodo actual → calcula cada modo solicitado → gráficas → diagnósticos.
+ * Regla clave: un mes sin datos se representa como null («Sin datos»), nunca como $0.00.
  */
 class ComparisonService
 {
+    /** Versión del contrato JSON que consumen web, PDF y Excel; cambiarla rompe a los consumidores. */
     public const CONTRACT_VERSION = 'er-comparativas/1';
 
     public const MODES = ['anterior', 'anio_anterior', 'evolucion', 'acumulado', 'sucursales', 'personalizado'];
@@ -44,12 +51,22 @@ class ComparisonService
         'margen_ebitda' => 'Margen EBITDA',
     ];
 
+    /** Clave del alcance consolidado (todas las sucursales + centralizados). */
     private const CONSOLIDADO = 'CONSOLIDADO';
 
+    /** ¿El usuario de la petición en curso puede ver el detalle de nómina? (se fija en build()). */
     private bool $canNomina = true;
 
+    /** ¿El usuario de la petición en curso puede ver el detalle de Dirección General? (se fija en build()). */
     private bool $canDg = true;
 
+    /**
+     * @param  PeriodSummaryRepository  $repo  resúmenes por periodo/alcance (snapshot aprobado o cálculo en vivo, con caché)
+     * @param  PeriodCalendar  $calendar  navegación entre periodos mensuales (anterior, año anterior, rejillas)
+     * @param  PeriodComparability  $comparability  dictamina si dos periodos son comparables o «con reservas»
+     * @param  DataScopeService  $dataScope  sucursales permitidas para el usuario
+     * @param  EstadoResultadosAbilities  $abilities  permisos finos del módulo (ver_nomina, ver_dg)
+     */
     public function __construct(
         private readonly PeriodSummaryRepository $repo,
         private readonly PeriodCalendar $calendar,
@@ -59,7 +76,17 @@ class ComparisonService
     ) {}
 
     /**
+     * Construye el payload completo de comparativas (contrato er-comparativas/1) para un periodo.
+     *
+     * Reglas: sólo periodos mensuales; si se pasa «contra» se agrega el modo personalizado; la
+     * evolución se limita a 1–13 meses (6 por defecto). Sólo lee datos (no escribe BD); el
+     * repositorio puede poblar caché de resúmenes. Incluye diagnósticos de tiempo y memoria.
+     *
+     * @param  Period  $period  periodo mensual que se analiza (el «actual»)
+     * @param  string|null  $scope  alcance pedido: 'CONSOLIDADO', nombre de sucursal o null (por defecto según permisos)
+     * @param  User|null  $user  usuario que consulta; null = proceso interno sin restricciones
      * @param  array{modes?:list<string>, contra?:?Period, meses?:int, desde?:?Period, hasta?:?Period, charts?:bool}  $options
+     * @return array<string, mixed> payload con period, scope, access, concepts, catalogs, current, modes, charts y diagnostics
      *
      * @throws ComparisonAccessException alcance fuera del alcance de sucursales del usuario
      * @throws \InvalidArgumentException parámetros no válidos
@@ -145,6 +172,14 @@ class ComparisonService
 
     // ── Acceso / alcance ─────────────────────────────────────────────
 
+    /**
+     * Calcula qué alcances puede ver el usuario. Un usuario con sucursales limitadas nunca ve el
+     * CONSOLIDADO (ni totales consolidados ni gastos centralizados).
+     *
+     * @param  User|null  $user  usuario consultante (null = sin restricción)
+     * @param  array  $scopes  alcances disponibles en el periodo (cada uno con 'key' y 'label')
+     * @return array{restricted:bool, visible:list<string>, public:array} datos internos + bloque público para el frontend
+     */
     private function access(?User $user, array $scopes): array
     {
         $names = $user ? $this->dataScope->allowedBranchNames($user) : null;
@@ -167,6 +202,18 @@ class ComparisonService
         ];
     }
 
+    /**
+     * Normaliza y valida el alcance solicitado. Sin alcance: CONSOLIDADO si el usuario no está
+     * restringido, o su primera sucursal visible en caso contrario.
+     *
+     * @param  string|null  $scope  alcance pedido (vacío = por defecto)
+     * @param  array  $access  resultado de access()
+     * @param  array  $scopes  alcances existentes en el periodo
+     * @return string clave del alcance final
+     *
+     * @throws ComparisonAccessException si el usuario no tiene sucursales o no puede ver ese alcance
+     * @throws \InvalidArgumentException si el alcance no existe en el periodo
+     */
     private function resolveScope(?string $scope, array $access, array $scopes): string
     {
         if ($scope !== null) {
@@ -194,6 +241,13 @@ class ComparisonService
         return $scope;
     }
 
+    /**
+     * Descripción pública del alcance elegido (clave, etiqueta y si es consolidado).
+     *
+     * @param  string  $scope  clave del alcance ya resuelto
+     * @param  array  $scopes  alcances del periodo (para tomar la etiqueta)
+     * @return array{key:string, label:string, consolidated:bool}
+     */
     private function scopeInfo(string $scope, array $scopes): array
     {
         $label = collect($scopes)->firstWhere('key', $scope)['label'] ?? $scope;
@@ -205,6 +259,15 @@ class ComparisonService
 
     /**
      * Entrada pública de un periodo/alcance. $cell describe un mes sin periodo en el sistema.
+     *
+     * Si no hay periodo devuelve una entrada vacía «sin_periodo»; si el alcance no existe en el
+     * periodo, una vacía «alcance_no_disponible» (con el error del repositorio si lo hubo).
+     *
+     * @param  Period|null  $period  periodo a consultar (null = mes sin periodo)
+     * @param  string  $scope  alcance (CONSOLIDADO o sucursal)
+     * @param  array|null  $cell  ['year','month'] del mes cuando no hay periodo
+     * @param  bool  $withLines  incluir el detalle de líneas por categoría OPEX (sólo para el periodo actual)
+     * @return array<string, mixed> entrada con period, available, status, values, margins, complete, opex_categories…
      */
     private function entryFor(?Period $period, string $scope, ?array $cell, bool $withLines = false): array
     {
@@ -232,6 +295,14 @@ class ComparisonService
         return $this->publicEntry($s, $p, $bundle['cache'] ?? null, $withLines);
     }
 
+    /**
+     * Entrada «sin datos»: todos los importes y márgenes en null (nunca $0.00) y completitud en false.
+     *
+     * @param  array  $p  datos del periodo (id, code, label, fechas, year, month)
+     * @param  string  $code  código del motivo de no disponibilidad (sin_periodo, alcance_no_disponible…)
+     * @param  string  $message  mensaje en español para el usuario
+     * @return array<string, mixed>
+     */
     private function emptyEntry(array $p, string $code, string $message): array
     {
         return [
@@ -251,6 +322,16 @@ class ComparisonService
         ];
     }
 
+    /**
+     * Convierte un resumen interno (PeriodSummaryExtractor) en la entrada pública: calcula márgenes
+     * y aplica la restricción de nómina/DG a las categorías OPEX.
+     *
+     * @param  array  $s  resumen del periodo/alcance
+     * @param  array  $p  datos del periodo
+     * @param  string|null  $cache  estado de caché reportado por el repositorio (diagnóstico)
+     * @param  bool  $withLines  incluir líneas de detalle por categoría
+     * @return array<string, mixed>
+     */
     private function publicEntry(array $s, array $p, ?string $cache, bool $withLines): array
     {
         $available = $s['status'] !== 'sin_datos';
@@ -274,6 +355,15 @@ class ComparisonService
         ];
     }
 
+    /**
+     * Categoría OPEX pública con su % sobre el OPEX total. Si es sensible (nómina o DG) y el
+     * usuario no tiene permiso, se marca 'restricted' y sus líneas se vacían (el importe se conserva).
+     *
+     * @param  array  $c  categoría del resumen (key, label, amount, centralized, sensitive, lines)
+     * @param  string|null  $opexTotal  OPEX total del periodo para el porcentaje
+     * @param  bool  $withLines  incluir líneas de detalle
+     * @return array<string, mixed>
+     */
     private function publicCategory(array $c, ?string $opexTotal, bool $withLines): array
     {
         $restricted = ($c['sensitive'] === 'nomina' && ! $this->canNomina) || ($c['sensitive'] === 'dg' && ! $this->canDg);
@@ -303,6 +393,18 @@ class ComparisonService
 
     // ── Comparación de pares ─────────────────────────────────────────
 
+    /**
+     * Modo de comparación de dos periodos (anterior, año anterior o personalizado).
+     *
+     * @param  string  $mode  clave del modo (de MODE_LABELS)
+     * @param  array  $current  entrada del periodo actual
+     * @param  Period|null  $other  periodo contra el que se compara (null = no existe en el sistema)
+     * @param  string  $scope  alcance
+     * @param  array|null  $cell  ['year','month'] esperado cuando $other no existe (para la etiqueta)
+     * @return array<string, mixed> resultado de pair()
+     *
+     * @throws \InvalidArgumentException si se compara contra el mismo periodo o contra uno no mensual
+     */
     private function pairMode(string $mode, array $current, ?Period $other, string $scope, ?array $cell): array
     {
         if ($other && $other->id === ($current['period']['id'] ?? null)) {
@@ -319,7 +421,19 @@ class ComparisonService
         return $this->pair($mode, self::MODE_LABELS[$mode], $current, $cmp);
     }
 
-    /** Comparación concepto por concepto entre dos entradas (o agregados con la misma forma). */
+    /**
+     * Comparación concepto por concepto entre dos entradas (o agregados con la misma forma).
+     *
+     * Evalúa la comparabilidad, arma una fila por concepto (ComparisonConcepts::ORDER) y una por
+     * cada categoría OPEX presente en cualquiera de los dos lados (ausente con datos = 0.00).
+     *
+     * @param  string  $key  clave del modo
+     * @param  string  $label  etiqueta del modo
+     * @param  array  $current  entrada/agregado actual
+     * @param  array  $cmp  entrada/agregado de comparación
+     * @param  bool  $checkDuration  false en acumulados: no se valida duración en días
+     * @return array<string, mixed>
+     */
     private function pair(string $key, string $label, array $current, array $cmp, bool $checkDuration = true): array
     {
         $a = $this->forComparability($current);
@@ -358,6 +472,12 @@ class ComparisonService
         ];
     }
 
+    /**
+     * Subconjunto de la entrada que necesita PeriodComparability::evaluate().
+     *
+     * @param  array  $e  entrada pública
+     * @return array{period:array, status:string, status_label:string, availability:array, report:array, complete:array}
+     */
     private function forComparability(array $e): array
     {
         return [
@@ -372,6 +492,18 @@ class ComparisonService
         return array_intersect_key($e, array_flip(['period', 'available', 'status', 'status_label', 'unavailable_reason', 'source', 'source_label', 'report', 'months']));
     }
 
+    /**
+     * Fila de comparación de un concepto. Los márgenes se comparan en puntos porcentuales (pp) y
+     * sin variación %; los importes se delegan a amountRow(). Si hay un motivo (sin datos,
+     * pendiente, base cero, no comparable, incompleto) no se emite lectura (assessment).
+     *
+     * @param  string  $k  clave del concepto
+     * @param  array  $meta  metadatos del concepto (label, kind, of)
+     * @param  array  $cur  entrada actual
+     * @param  array  $cmp  entrada de comparación
+     * @param  array  $comp  dictamen de comparabilidad
+     * @return array<string, mixed>
+     */
     private function row(string $k, array $meta, array $cur, array $cmp, array $comp): array
     {
         if ($meta['kind'] === ComparisonConcepts::MARGIN) {
@@ -414,6 +546,10 @@ class ComparisonService
     /**
      * «Con reservas» para un concepto: sólo cuando los periodos no comparten fuentes/duración y el
      * concepto depende de esa diferencia (PeriodComparability::$unaffected lista los que no).
+     *
+     * @param  string  $k  clave del concepto
+     * @param  array  $comp  dictamen de comparabilidad
+     * @return array|null motivo con_reservas / con_reservas_duracion, o null si no aplica
      */
     private function reservation(string $k, array $comp): ?array
     {
@@ -425,6 +561,23 @@ class ComparisonService
         return Figures::reason(in_array('duracion_distinta', $codes, true) && ! in_array('cobertura_distinta', $codes, true) ? 'con_reservas_duracion' : 'con_reservas');
     }
 
+    /**
+     * Fila de comparación de un importe en MXN: variación en pesos, variación % (sólo sin motivo)
+     * y lectura favorable/desfavorable según el tipo (ingreso/gasto). Con base anterior cero hay
+     * variación y lectura pero no porcentaje.
+     *
+     * @param  string  $k  clave del concepto o categoría
+     * @param  string  $label  etiqueta
+     * @param  string  $kind  tipo de concepto (ComparisonConcepts::INCOME/EXPENSE/RESULT…)
+     * @param  string|null  $a  importe actual (string decimal) o null si pendiente
+     * @param  string|null  $b  importe de comparación o null
+     * @param  bool  $availA  el periodo actual tiene datos
+     * @param  bool  $availB  el periodo de comparación tiene datos
+     * @param  bool  $okA  el importe actual está completo
+     * @param  bool  $okB  el importe de comparación está completo
+     * @param  array  $comp  dictamen de comparabilidad
+     * @return array<string, mixed>
+     */
     private function amountRow(string $k, string $label, string $kind, ?string $a, ?string $b, bool $availA, bool $availB, bool $okA, bool $okB, array $comp): array
     {
         $delta = Figures::sub($a, $b);
@@ -457,6 +610,18 @@ class ComparisonService
 
     // ── Evolución ─────────────────────────────────────────────────────
 
+    /**
+     * Modo «evolución mensual»: series por concepto, margen y categoría OPEX sobre una rejilla de
+     * meses (los N meses que terminan en $period, o el rango desde–hasta con tope de 24 meses).
+     * Meses sin datos = null.
+     *
+     * @param  Period  $period  periodo final de la rejilla por defecto
+     * @param  string  $scope  alcance
+     * @param  int  $months  número de meses (ya acotado a 1–13 por build())
+     * @param  Period|null  $from  inicio del rango personalizado
+     * @param  Period|null  $to  fin del rango personalizado
+     * @return array<string, mixed>
+     */
     private function evolution(Period $period, string $scope, int $months, ?Period $from, ?Period $to): array
     {
         $grid = $from && $to ? $this->calendar->range($from, $to, 24) : $this->calendar->grid($period, $months);
@@ -501,6 +666,15 @@ class ComparisonService
 
     // ── Acumulado anual ───────────────────────────────────────────────
 
+    /**
+     * Modo «acumulado anual»: suma enero..mes actual del año y la compara contra los MISMOS meses
+     * con datos del año anterior. Si los meses no coinciden, la comparación queda «con reservas»
+     * y se anulan porcentaje, lectura y variación de márgenes.
+     *
+     * @param  Period  $period  periodo mensual de corte
+     * @param  string  $scope  alcance
+     * @return array<string, mixed>
+     */
     private function ytd(Period $period, string $scope): array
     {
         $year = (int) $period->year;
@@ -545,6 +719,15 @@ class ComparisonService
     /**
      * Suma los periodos mensuales del $year con mes ≤ $month (o sólo los meses $only).
      * Concepto con algún periodo pendiente ⇒ null (pendiente). Márgenes recalculados sobre la suma.
+     *
+     * El estado del agregado es el «peor» de sus meses (parcial si falta alguno); el origen es
+     * 'mixto' cuando combina periodos aprobados y en vivo.
+     *
+     * @param  int  $year  año a acumular
+     * @param  int  $month  último mes incluido (1–12)
+     * @param  list<int>|null  $only  si se indica, sólo estos números de mes (para igualar el año anterior)
+     * @param  string  $scope  alcance
+     * @return array<string, mixed> agregado con la misma forma que una entrada pública + month_numbers/missing_months
      */
     private function aggregate(int $year, int $month, ?array $only, string $scope): array
     {
@@ -622,6 +805,17 @@ class ComparisonService
 
     // ── Sucursales ────────────────────────────────────────────────────
 
+    /**
+     * Modo «comparativo por sucursal»: por cada sucursal visible, ingresos, OPEX directo, EBITDA
+     * de sucursal, margen y variación contra el mes anterior; participación en ingresos (sólo con
+     * consolidado visible) y en EBITDA (sólo si el total es positivo). Para usuarios sin
+     * restricción añade consolidado, centralizados (Corporativo/DG, nunca asignados a sucursal)
+     * y la conciliación Σ EBITDA sucursales − centralizados vs EBITDA consolidado.
+     *
+     * @param  Period  $period  periodo mensual
+     * @param  array  $access  resultado de access()
+     * @return array<string, mixed>
+     */
     private function branches(Period $period, array $access): array
     {
         $bundle = $this->repo->bundle($period);
@@ -736,6 +930,15 @@ class ComparisonService
 
     // ── Gráficas ─────────────────────────────────────────────────────
 
+    /**
+     * Definiciones de gráficas compartidas por web, PDF y Excel (cascada del periodo actual,
+     * líneas de evolución, barras por sucursal…), construidas sólo con cifras ya calculadas.
+     *
+     * @param  array  $current  entrada del periodo actual
+     * @param  array|null  $evo  resultado del modo evolución (null si no se pidió)
+     * @param  array|null  $branches  resultado del modo sucursales (null si no se pidió)
+     * @return array<string, mixed>
+     */
     private function charts(array $current, ?array $evo, ?array $branches): array
     {
         $line = fn (array $keys) => $evo ? array_map(fn ($k) => ['key' => $k, 'label' => ComparisonConcepts::meta($k)['label'], 'data' => $evo['series'][$k]], $keys) : [];

@@ -19,11 +19,21 @@ use Illuminate\Support\Facades\Schema;
  */
 class ExcludePortfolioSnapshotUploadsScope implements Scope
 {
+    /** Nombre con el que se registra el scope global (para quitarlo con withoutGlobalScope). */
     public const NAME = 'exclude_portfolio_snapshot_uploads';
 
     /** Solo se memoriza el resultado positivo: antes de migrar, el scope no hace nada. */
     private static bool $columnaExiste = false;
 
+    /**
+     * Agrega `snapshot_date IS NULL` a la consulta para excluir las fotografías
+     * diarias de cartera. Si la columna aún no existe (BD sin migrar) no filtra nada.
+     *
+     * Efecto secundario: la primera vez consulta el esquema de la BD (Schema::hasColumn).
+     *
+     * @param  Builder  $builder  Consulta de ReportUpload a la que se aplica el filtro.
+     * @param  Model  $model  Instancia del modelo (para tabla y conexión).
+     */
     public function apply(Builder $builder, Model $model): void
     {
         if (! self::$columnaExiste) {

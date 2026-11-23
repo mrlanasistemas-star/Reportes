@@ -13,13 +13,22 @@ use Illuminate\Support\Str;
  */
 class RefundMatcher
 {
+    /** @param  string  $pattern  alternativas regex (sin delimitadores) que identifican un reembolso */
     public function __construct(private readonly string $pattern = 'DEVOLUCION|REEMBOLSO|REINTEGRO') {}
 
+    /**
+     * Instancia con el patrón de config estado_resultados.reembolsos.patron.
+     */
     public static function fromConfig(): self
     {
         return new self((string) config('estado_resultados.reembolsos.patron', 'DEVOLUCION|REEMBOLSO|REINTEGRO'));
     }
 
+    /**
+     * ¿El movimiento es un abono cuyo concepto/observaciones indican reembolso?
+     *
+     * @param  array  $m  movimiento (abono, concept, observations)
+     */
     public function isRefund(array $m): bool
     {
         return Money::cents($m['abono'] ?? 0) > 0
@@ -27,6 +36,10 @@ class RefundMatcher
     }
 
     /**
+     * Busca el gasto que reembolsa un abono: mismo folio y gasto ≥ abono. Candidato único de
+     * Radiografía ⇒ 'radiografia' (requiere decisión explícita); único ⇒ 'vinculado'; varios ⇒
+     * 'ambiguo'; ninguno o sin folio ⇒ 'sin_vinculo'. Orden determinista por huella.
+     *
      * @param  array{fingerprint:string, folio_normalized:?string, abono:string}  $refund
      * @param  list<array{fingerprint:string, folio_normalized:?string, amount:string, source:string, universe:?string}>  $targets  gastos candidatos
      * @return array{status:'vinculado'|'ambiguo'|'sin_vinculo'|'radiografia', target:?array, candidates:list<string>}

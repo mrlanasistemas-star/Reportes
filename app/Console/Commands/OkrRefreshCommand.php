@@ -9,11 +9,19 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 
 /**
- * Módulo OKR (08-sep-2026) — recalcula el progreso de todos los Objectives
- * activos (sección 55/56 del pedido): pide el valor real a Reportería vía
- * OkrKpiValueResolver, actualiza snapshots y genera alertas. Idempotente
- * (snapshot semanal se actualiza, nunca duplica) — seguro de correr por
- * scheduler o manualmente si el cron no corrió.
+ * Comando `okr:refresh` — Módulo OKR (08-sep-2026): recalcula el progreso de todos los
+ * Objectives activos (sección 55/56 del pedido): pide el valor real a Reportería vía
+ * OkrKpiValueResolver, actualiza snapshots, rellena semanas históricas faltantes y genera
+ * alertas. Idempotente (el snapshot semanal se actualiza, nunca se duplica) — seguro de correr
+ * por scheduler o manualmente si el cron no corrió. Registra `okr:last_refresh_at` en caché.
+ *
+ * Cuándo usarlo: lo ejecuta el scheduler diario a las 06:00; también existe el botón
+ * "Recalcular" en la pantalla de seguimiento.
+ * Escribe en BD: SÍ (snapshots y alertas de OKR) y una clave de caché.
+ *
+ * Ejemplos:
+ *   php artisan okr:refresh
+ *   php artisan okr:refresh --objective=12
  */
 class OkrRefreshCommand extends Command
 {
@@ -21,6 +29,14 @@ class OkrRefreshCommand extends Command
 
     protected $description = 'Recalcula el progreso de los OKR activos desde Reportería (snapshots + alertas).';
 
+    /**
+     * Evalúa cada Objective activo (o solo el indicado), rellena huecos de semanas anteriores y
+     * genera sus alertas.
+     *
+     * @param  OkrSnapshotService  $snapshotService  Calcula y guarda los snapshots de progreso.
+     * @param  OkrAlertService  $alertService  Genera las alertas del Objective.
+     * @return int Siempre 0.
+     */
     public function handle(OkrSnapshotService $snapshotService, OkrAlertService $alertService): int
     {
         $query = OkrObjective::query()->where('lifecycle_status', OkrObjective::STATUS_ACTIVE);
@@ -38,7 +54,7 @@ class OkrRefreshCommand extends Command
             // duplica, nunca toca el cache de la semana actual).
             $backfilled = $snapshotService->backfillMissingWeeks($objective);
             $alertService->generateForObjective($objective->fresh());
-            $this->line("  ✓ #{$objective->id} {$objective->title}" . ($backfilled ? " (backfill: {$backfilled} semana(s))" : ''));
+            $this->line("  ✓ #{$objective->id} {$objective->title}".($backfilled ? " (backfill: {$backfilled} semana(s))" : ''));
         }
 
         // Parte 17 del cierre (04-oct-2026) — marca de "último refresh" para

@@ -6,27 +6,44 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-products-report` — valida que RECURSOS PROPIOS (y demás patrones
+ * especiales/reestructura de EXCLUDE, espejo de RadiographySnapshotBuilder) no aparezcan como
+ * productos operativos en el reporte.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-products-report 21
+ */
 class DebugProductsReportCommand extends Command
 {
-    protected $signature   = 'reportes:debug-products-report {period_id}';
+    protected $signature = 'reportes:debug-products-report {period_id}';
+
     protected $description = 'Valida que RECURSOS PROPIOS no aparece como producto operativo en el reporte';
 
     // Matches RadiographySnapshotBuilder::PRODUCT_SPECIAL_PATTERN + PRODUCT_RESTRUCTURE_PATTERN
     private const EXCLUDE = 'A LA MEDIDA|DIARIO|CREDITO CONSUMO|REESTRUCTURA|UNIFICACION|MIGRACION|INSOLUTOS|SEGURO|RECURSOS PROPIOS';
 
+    /**
+     * Lista los productos del periodo separando los que pasarían como operativos y los excluidos.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $this->info("Periodo: {$period->label} (ID {$period->id})");
 
-        $allPeriods = \App\Models\Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $allPeriods = Period::all();
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -34,7 +51,7 @@ class DebugProductsReportCommand extends Command
         // Check if RECURSOS PROPIOS appears in placements
         $rrpp = DB::table('fact_placements')
             ->whereIn('period_id', $dataIds)
-            ->whereRaw("product_name REGEXP ?", ['RECURSOS PROPIOS'])
+            ->whereRaw('product_name REGEXP ?', ['RECURSOS PROPIOS'])
             ->selectRaw('product_name, COUNT(*) as ops, SUM(amount) as total')
             ->groupBy('product_name')
             ->get();
@@ -45,14 +62,14 @@ class DebugProductsReportCommand extends Command
         } else {
             $this->warn('! RECURSOS PROPIOS encontrado en ministraciones (esperado — debe estar excluido del reporte):');
             foreach ($rrpp as $row) {
-                $this->line("  {$row->product_name}: {$row->ops} ops, $" . number_format((float)$row->total, 2));
+                $this->line("  {$row->product_name}: {$row->ops} ops, $".number_format((float) $row->total, 2));
             }
         }
 
         // Show what WILL appear as operativo products (after exclusion)
         $operativos = DB::table('fact_placements')
             ->whereIn('period_id', $dataIds)
-            ->whereRaw("(product_name NOT REGEXP ? OR product_name IS NULL)", [self::EXCLUDE])
+            ->whereRaw('(product_name NOT REGEXP ? OR product_name IS NULL)', [self::EXCLUDE])
             ->selectRaw('COALESCE(NULLIF(product_name,""),"Sin producto") as producto, COUNT(*) as ops, SUM(amount) as total')
             ->groupBy('product_name')
             ->orderByDesc('total')
@@ -61,10 +78,10 @@ class DebugProductsReportCommand extends Command
 
         $this->line('');
         $this->info('Productos operativos que SÍ aparecerán en el reporte:');
-        $this->line(str_pad('Producto', 40) . str_pad('Ops', 8) . 'Colocación');
+        $this->line(str_pad('Producto', 40).str_pad('Ops', 8).'Colocación');
         $this->line(str_repeat('-', 70));
         foreach ($operativos as $p) {
-            $this->line(str_pad($p->producto, 40) . str_pad($p->ops, 8) . '$' . number_format((float)$p->total, 2));
+            $this->line(str_pad($p->producto, 40).str_pad($p->ops, 8).'$'.number_format((float) $p->total, 2));
         }
 
         return 0;

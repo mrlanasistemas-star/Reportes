@@ -6,14 +6,29 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-gastos-sources` — compara Gastos Lendus vs ERP categoría por
+ * categoría: totales brutos por fuente, categorías de cada fuente (ERP con estatus), resumen
+ * combinado, solapamiento en categorías compartidas (LENDUS_PRESENT_CATS, regla anterior de
+ * deduplicación), gastos operativos por sucursal deduplicados y diferencias contra los targets
+ * fijos de Abril 2026 (gastos operativos, excedentes y fondeo).
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-gastos-sources 14
+ */
 class DebugGastosSourcesCommand extends Command
 {
-    protected $signature   = 'reportes:debug-gastos-sources {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-gastos-sources {period_id : ID del periodo mensual}';
+
     protected $description = 'Gastos: Lendus vs ERP categoría por categoría, deduplicación y totales vs targets Abril 2026.';
 
-    private const TARGET_GASTOS_OP  = 837_384.28;
+    private const TARGET_GASTOS_OP = 837_384.28;
+
     private const TARGET_EXCEDENTES = 3_076_800.00;
-    private const TARGET_FONDEO     = 449_425.00;
+
+    private const TARGET_FONDEO = 449_425.00;
 
     // Categories present in Lendus → ERP rows with these cats are EXCLUDED to avoid double-count
     private const LENDUS_PRESENT_CATS = [
@@ -31,19 +46,25 @@ class DebugGastosSourcesCommand extends Command
         'Nómina y Capital Humano',
     ];
 
+    /**
+     * Resuelve los periodos de datos e imprime las secciones 1–6 del diagnóstico.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -52,7 +73,7 @@ class DebugGastosSourcesCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG GASTOS SOURCES — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── Fuentes disponibles ───────────────────────────────────────────────
@@ -74,13 +95,13 @@ class DebugGastosSourcesCommand extends Command
             ->join('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
             ->whereIn('e.period_id', $dataIds)
             ->whereIn('ds.code', ['gastos_lendus', 'gastos_lendus_excel', 'gastos_erp'])
-            ->selectRaw("ds.code, COUNT(*) as filas, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+            ->selectRaw('ds.code, COUNT(*) as filas, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
             ->groupBy('ds.id', 'ds.code')
             ->orderByDesc('total')
             ->get();
 
         foreach ($bySource as $s) {
-            $this->line(sprintf('  %-25s : %4d filas  $%s', $s->code, $s->filas, number_format((float)$s->total, 2)));
+            $this->line(sprintf('  %-25s : %4d filas  $%s', $s->code, $s->filas, number_format((float) $s->total, 2)));
         }
         $this->line('');
 
@@ -95,15 +116,15 @@ class DebugGastosSourcesCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $lendusGastosOp   = 0.0;
+        $lendusGastosOp = 0.0;
         $lendusExcedentes = 0.0;
-        $lendusFondeo     = 0.0;
-        $lendusNomina     = 0.0;
+        $lendusFondeo = 0.0;
+        $lendusNomina = 0.0;
 
         foreach ($lendusCats as $r) {
-            $cat    = (string) $r->cat;
-            $catUp  = mb_strtoupper($cat, 'UTF-8');
-            $total  = (float) $r->total;
+            $cat = (string) $r->cat;
+            $catUp = mb_strtoupper($cat, 'UTF-8');
+            $total = (float) $r->total;
 
             if ($cat === 'Envío de utilidad a corporativo' || str_contains($catUp, 'EXCEDENTE')) {
                 $tag = ' [excedentes]';
@@ -142,14 +163,14 @@ class DebugGastosSourcesCommand extends Command
                 ->get();
         }
 
-        $erpGastosOp    = 0.0;
-        $erpExcedentes  = 0.0;
-        $erpFondeo      = 0.0;
-        $erpNomina      = 0.0;
-        $erpExcluido    = 0.0;
+        $erpGastosOp = 0.0;
+        $erpExcedentes = 0.0;
+        $erpFondeo = 0.0;
+        $erpNomina = 0.0;
+        $erpExcluido = 0.0;
 
         foreach ($erpCats as $r) {
-            $cat   = (string) $r->cat;
+            $cat = (string) $r->cat;
             $catUp = mb_strtoupper($cat, 'UTF-8');
             $total = (float) $r->total;
 
@@ -191,13 +212,13 @@ class DebugGastosSourcesCommand extends Command
 
         // ── 4. Resumen combinado ──────────────────────────────────────────────
         $this->info('── 4. Resumen — deduplicado final ──');
-        $totalGastosOp   = $lendusGastosOp + $erpGastosOp;
+        $totalGastosOp = $lendusGastosOp + $erpGastosOp;
         $totalExcedentes = $lendusExcedentes + $erpExcedentes;
-        $totalFondeo     = $lendusFondeo + $erpFondeo;
+        $totalFondeo = $lendusFondeo + $erpFondeo;
 
-        $this->printDiff('Gastos operativos (Lendus+ERP dedupl.)', $totalGastosOp,   self::TARGET_GASTOS_OP);
-        $this->printDiff('Excedentes (utilidad corp.)',              $totalExcedentes, self::TARGET_EXCEDENTES);
-        $this->printDiff('Fondeo (préstamos intersuc.)',             $totalFondeo,     self::TARGET_FONDEO);
+        $this->printDiff('Gastos operativos (Lendus+ERP dedupl.)', $totalGastosOp, self::TARGET_GASTOS_OP);
+        $this->printDiff('Excedentes (utilidad corp.)', $totalExcedentes, self::TARGET_EXCEDENTES);
+        $this->printDiff('Fondeo (préstamos intersuc.)', $totalFondeo, self::TARGET_FONDEO);
         $this->line('');
 
         // ── 5. Solapamiento Lendus/ERP en categorías compartidas ─────────────
@@ -208,20 +229,20 @@ class DebugGastosSourcesCommand extends Command
                 ->whereIn('e.period_id', $dataIds)
                 ->whereIn('ru.data_source_id', $lendusIds)
                 ->where('e.category', $cat)
-                ->selectRaw("SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+                ->selectRaw('SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
                 ->value('total');
             $eAmt = $erpId ? DB::table('fact_expenses as e')
                 ->join('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
                 ->whereIn('e.period_id', $dataIds)
                 ->where('ru.data_source_id', $erpId)
                 ->where('e.category', $cat)
-                ->selectRaw("SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+                ->selectRaw('SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
                 ->value('total') : 0;
 
             $this->line(sprintf('  %-35s  Lendus=$%-12s  ERP=$%-12s  (ERP excluido)',
                 mb_substr($cat, 0, 35),
-                number_format((float)($lAmt ?? 0), 2),
-                number_format((float)($eAmt ?? 0), 2)));
+                number_format((float) ($lAmt ?? 0), 2),
+                number_format((float) ($eAmt ?? 0), 2)));
         }
         $this->line('');
 
@@ -233,7 +254,7 @@ class DebugGastosSourcesCommand extends Command
             ->whereIn('e.period_id', $dataIds)
             ->whereIn('ru.data_source_id', $lendusIds)
             ->whereNotIn('e.category', array_merge(self::SKIP_CATS, ['']))
-            ->selectRaw("b.name as sucursal, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+            ->selectRaw('b.name as sucursal, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
             ->groupBy('b.id', 'b.name')
             ->get()
             ->keyBy('sucursal') : collect();
@@ -244,7 +265,7 @@ class DebugGastosSourcesCommand extends Command
             ->whereIn('e.period_id', $dataIds)
             ->where('ru.data_source_id', $erpId)
             ->whereNotIn('e.category', array_merge(self::LENDUS_PRESENT_CATS, self::SKIP_CATS))
-            ->selectRaw("b.name as sucursal, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+            ->selectRaw('b.name as sucursal, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
             ->groupBy('b.id', 'b.name')
             ->get()
             ->keyBy('sucursal') : collect();
@@ -257,9 +278,9 @@ class DebugGastosSourcesCommand extends Command
 
         $sucRows = [];
         foreach ($allBranches as $suc) {
-            $l = (float)($lendusRows->get($suc)?->total ?? 0);
-            $e = (float)($erpRows->get($suc)?->total ?? 0);
-            $sucRows[] = [mb_substr($suc, 0, 30), '$' . number_format($l, 2), '$' . number_format($e, 2), '$' . number_format($l + $e, 2)];
+            $l = (float) ($lendusRows->get($suc)?->total ?? 0);
+            $e = (float) ($erpRows->get($suc)?->total ?? 0);
+            $sucRows[] = [mb_substr($suc, 0, 30), '$'.number_format($l, 2), '$'.number_format($e, 2), '$'.number_format($l + $e, 2)];
         }
         $this->table(['Sucursal', 'Lendus', 'ERP (excl. solapados)', 'Total'], $sucRows);
         $this->line('');
@@ -270,10 +291,17 @@ class DebugGastosSourcesCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Imprime calculado vs target con diferencia y porcentaje coloreado (verde < 1%, amarillo < 5%).
+     *
+     * @param  string  $label  Etiqueta.
+     * @param  float  $calc  Valor calculado.
+     * @param  float  $target  Valor objetivo.
+     */
     private function printDiff(string $label, float $calc, float $target): void
     {
-        $diff  = $calc - $target;
-        $pct   = $target > 0 ? abs($diff / $target) * 100 : 0;
+        $diff = $calc - $target;
+        $pct = $target > 0 ? abs($diff / $target) * 100 : 0;
         $color = $pct < 1 ? 'green' : ($pct < 5 ? 'yellow' : 'red');
         $this->line(sprintf("  %-38s  calc=\$%-13s  tgt=\$%-13s  <fg={$color}>dif=%+.2f (%.2f%%)</>",
             $label,

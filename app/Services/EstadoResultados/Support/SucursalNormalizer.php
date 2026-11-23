@@ -30,11 +30,18 @@ class SucursalNormalizer
         'OFICINA' => 'CORPORATIVO',
     ];
 
+    /** Memo por instancia: texto en mayúsculas ⇒ resultado. */
     private array $cache = [];
 
+    /** @param  BranchResolverService  $resolver  catálogo oficial de rutas/sucursales */
     public function __construct(private readonly BranchResolverService $resolver) {}
 
-    /** @return array{name: ?string, kind: string} */
+    /**
+     * Normaliza el texto de la columna SUCURSAL (memorizado por valor).
+     *
+     * @param  string|null  $raw  texto tal como viene en el estado de cuenta
+     * @return array{name: ?string, kind: string} kind: operativa | corporativo | agrupado | desconocida | vacia
+     */
     public function normalize(?string $raw): array
     {
         $key = mb_strtoupper(trim((string) $raw));
@@ -45,6 +52,14 @@ class SucursalNormalizer
         return $this->cache[$key] ??= $this->resolve($key);
     }
 
+    /**
+     * Resuelve un texto no vacío: «SUCURSALES»/«TODAS»/varias sucursales separadas por guion ⇒
+     * agrupado; CORPORATIVO ⇒ corporativo; sucursal de Radiografía ⇒ operativa; sucursal real no
+     * operativa o texto no reconocido ⇒ desconocida.
+     *
+     * @param  string  $key  texto en mayúsculas
+     * @return array{name: ?string, kind: string}
+     */
     private function resolve(string $key): array
     {
         $ascii = mb_strtoupper(Str::ascii($key));
@@ -72,6 +87,13 @@ class SucursalNormalizer
         return ['name' => $single, 'kind' => 'desconocida'];
     }
 
+    /**
+     * Nombre oficial de UNA sucursal a partir de un texto: alias conocidos, ruta del catálogo,
+     * código corto (≤ 3 caracteres) o nombre de sucursal operativa sin acentos.
+     *
+     * @param  string  $ascii  texto en mayúsculas sin acentos
+     * @return string|null nombre oficial, 'CORPORATIVO' o null si no se reconoce
+     */
     private function single(string $ascii): ?string
     {
         if ($ascii === '') {

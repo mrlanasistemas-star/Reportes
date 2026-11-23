@@ -2,6 +2,7 @@
 
 namespace App\Services\Api;
 
+use App\Models\ApiConsumer;
 use App\Models\EmployeeBranchAssignment;
 use App\Models\Period;
 
@@ -25,7 +26,20 @@ use App\Models\Period;
  */
 class EmployeeBranchHistoryResolver
 {
-    /** @return array{branch_id: ?int, status: string} status ∈ known|unknown */
+    /**
+     * Resuelve la sucursal histórica del colaborador en un periodo.
+     *
+     * Primero busca la asignación del `period_id` exacto; si no existe y el
+     * periodo es compuesto, toma la asignación del periodo componente con el
+     * id más alto (el más reciente dentro del rango). Si no hay ninguna,
+     * devuelve status "unknown" sin caer a la asignación más reciente global.
+     *
+     * Solo lectura sobre employee_branch_assignments.
+     *
+     * @param  int  $employeeId  ID del colaborador.
+     * @param  Period  $period  Periodo consultado (semanal o compuesto).
+     * @return array{branch_id: ?int, status: string} status ∈ known|unknown
+     */
     public function resolveForPeriod(int $employeeId, Period $period): array
     {
         $direct = EmployeeBranchAssignment::query()
@@ -38,7 +52,7 @@ class EmployeeBranchHistoryResolver
         }
 
         $componentIds = collect($period->component_period_ids ?? [])->map(fn ($id) => (int) $id)->all();
-        if (!empty($componentIds)) {
+        if (! empty($componentIds)) {
             $viaComponent = EmployeeBranchAssignment::query()
                 ->where('employee_id', $employeeId)
                 ->whereIn('period_id', $componentIds)
@@ -58,6 +72,12 @@ class EmployeeBranchHistoryResolver
      * catálogos/identificación (p. ej. "¿a qué sucursal pertenece hoy este
      * colaborador?"). Nunca usarla para atribuir datos financieros de un
      * periodo específico — para eso usar resolveForPeriod().
+     *
+     * Toma la asignación con el `id` más alto (la última registrada), no la
+     * del periodo más reciente por fecha.
+     *
+     * @param  int  $employeeId  ID del colaborador.
+     * @return int|null ID de sucursal, o null si el colaborador no tiene asignaciones.
      */
     public function resolveCurrent(int $employeeId): ?int
     {
@@ -72,10 +92,15 @@ class EmployeeBranchHistoryResolver
      * colaborador EN ESTE PERIODO. Un consumidor sin restricción (global)
      * siempre puede. Un consumidor restringido NUNCA se autoriza por una
      * sucursal desconocida — "unknown" se trata como NO autorizado.
+     *
+     * @param  ApiConsumer  $consumer  Consumidor autenticado de la API.
+     * @param  int  $employeeId  Colaborador solicitado.
+     * @param  Period  $period  Periodo de la consulta.
+     * @return bool true si el consumidor puede ver al colaborador en ese periodo.
      */
-    public function isEmployeeAllowedForConsumer(\App\Models\ApiConsumer $consumer, int $employeeId, Period $period): bool
+    public function isEmployeeAllowedForConsumer(ApiConsumer $consumer, int $employeeId, Period $period): bool
     {
-        if (!$consumer->isRestrictedToBranches() && !$consumer->hasNoBranchAccess()) {
+        if (! $consumer->isRestrictedToBranches() && ! $consumer->hasNoBranchAccess()) {
             return true; // acceso global
         }
 

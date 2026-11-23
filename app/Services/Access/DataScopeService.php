@@ -8,6 +8,7 @@ use App\Services\Okr\OkrEmployeeBranchResolver;
 use App\Services\Reporting\OperativeBranchService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Alcance de DATOS por sucursal (Fase 6.4) — fuente ÚNICA de "¿de qué
@@ -32,10 +33,16 @@ use Illuminate\Support\Facades\Schema;
  *
  * Sin caché entre peticiones a propósito: un cambio de alcance aplica en la
  * siguiente petición del usuario (sin privilegios residuales).
+ *
+ * Lo usan controladores de reportes, Dashboard, OKR, API y el módulo Usuarios
+ * (ver/editar alcance). Lee/escribe `users.branch_scope` y `user_branch_scopes`.
  */
 class DataScopeService
 {
+    /** users.branch_scope: alcance general (todas las sucursales). */
     public const MODE_ALL = 'all';
+
+    /** users.branch_scope: solo las sucursales listadas en user_branch_scopes. */
     public const MODE_BRANCHES = 'branches';
 
     /** @var array<int, ?list<int>> memo por instancia (una petición). */
@@ -44,21 +51,37 @@ class DataScopeService
     /** @var array<string, list<string>> nombres por conjunto de ids (una petición). */
     private array $namesMemo = [];
 
-    public function __construct(private readonly OperativeBranchService $operative)
-    {
-    }
+    /**
+     * @param  OperativeBranchService  $operative  Lista de las sucursales operativas (las que tienen radiografía).
+     */
+    public function __construct(private readonly OperativeBranchService $operative) {}
 
+    /**
+     * ¿El usuario tiene alcance general (todas las sucursales)?
+     *
+     * @param  User|null  $user  Usuario autenticado (null = false).
+     */
     public function isGeneral(?User $user): bool
     {
         return $user !== null && $this->allowedBranchIds($user) === null;
     }
 
+    /**
+     * ¿El usuario existe y su alcance está restringido a ciertas sucursales?
+     *
+     * @param  User|null  $user  Usuario autenticado (null = false).
+     */
     public function isRestricted(?User $user): bool
     {
         return $user !== null && ! $this->isGeneral($user);
     }
 
-    /** @return list<int>|null null = todas las sucursales (alcance general). */
+    /**
+     * Sucursales que el usuario puede consultar (memo por instancia).
+     *
+     * @param  User  $user  Usuario.
+     * @return list<int>|null null = todas las sucursales (alcance general).
+     */
     public function allowedBranchIds(User $user): ?array
     {
         if (array_key_exists($user->id, $this->memo)) {
@@ -74,7 +97,8 @@ class DataScopeService
      * fila. Mismas reglas que computeAllowed(); solo llena el memo de ESTA
      * instancia (sigue sin haber caché entre peticiones).
      *
-     * @param iterable<User> $users
+     * @param  iterable<User>  $users  Usuarios de la tabla.
+     * @param  OkrEmployeeBranchResolver|null  $resolver  Resolver de sucursal vigente a reutilizar (si no, se toma del contenedor).
      */
     public function preload(iterable $users, ?OkrEmployeeBranchResolver $resolver = null): void
     {
@@ -118,7 +142,15 @@ class DataScopeService
         }
     }
 
-    /** @return list<int>|null */
+    /**
+     * Calcula (sin memo) las sucursales permitidas aplicando las reglas de la clase:
+     * admin o 'all' = null; 'branches' = las guardadas; NULL heredado =
+     * gerencial → null, colaborador → sucursal vigente de su colaborador
+     * vinculado (OkrEmployeeBranchResolver) o ninguna.
+     *
+     * @param  User  $user  Usuario.
+     * @return list<int>|null
+     */
     private function computeAllowed(User $user): ?array
     {
         if ($user->isAdmin()) {
@@ -150,6 +182,12 @@ class DataScopeService
         return [];
     }
 
+    /**
+     * Modo de alcance guardado en `users.branch_scope`.
+     *
+     * @param  User  $user  Usuario.
+     * @return string|null MODE_ALL, MODE_BRANCHES o null (heredado / valor desconocido / esquema sin migrar).
+     */
     public function modeOf(User $user): ?string
     {
         if (! $this->schemaReady()) {
@@ -160,7 +198,12 @@ class DataScopeService
         return in_array($mode, [self::MODE_ALL, self::MODE_BRANCHES], true) ? $mode : null;
     }
 
-    /** @return list<int> */
+    /**
+     * Sucursales guardadas en `user_branch_scopes` para el usuario (consulta BD).
+     *
+     * @param  User  $user  Usuario.
+     * @return list<int> Ids ordenados; [] si el esquema no está migrado.
+     */
     public function storedBranchIds(User $user): array
     {
         if (! $this->schemaReady()) {
@@ -171,6 +214,13 @@ class DataScopeService
             ->orderBy('branch_id')->pluck('branch_id')->map(fn ($id) => (int) $id)->values()->all();
     }
 
+    /**
+     * ¿La sucursal está dentro del alcance? Con alcance general siempre true;
+     * restringido y branchId null = false.
+     *
+     * @param  User  $user  Usuario.
+     * @param  int|null  $branchId  Sucursal consultada.
+     */
     public function allows(User $user, ?int $branchId): bool
     {
         $allowed = $this->allowedBranchIds($user);
@@ -178,7 +228,16 @@ class DataScopeService
         return $allowed === null || ($branchId !== null && in_array((int) $branchId, $allowed, true));
     }
 
-    /** 403 con mensaje claro si la sucursal no está en el alcance del usuario. */
+    /**
+     * 403 con mensaje claro si la sucursal no está en el alcance del usuario.
+     *
+     * branchId null no se valida (pasa). Consulta el nombre de la sucursal para el mensaje.
+     *
+     * @param  User  $user  Usuario.
+     * @param  int|null  $branchId  Sucursal solicitada.
+     *
+     * @throws HttpException 403
+     */
     public function authorizeBranch(User $user, ?int $branchId): void
     {
         if ($branchId === null || $this->allows($user, $branchId)) {
@@ -188,10 +247,17 @@ class DataScopeService
         $name = Branch::query()->whereKey($branchId)->value('name') ?? 'la sucursal solicitada';
 
         abort(403, "No tienes acceso a la información de {$name}. Tu alcance autorizado: {$this->label($user)}. "
-            . 'Si necesitas consultarla, pide a un administrador que amplíe tu alcance en Usuarios.');
+            .'Si necesitas consultarla, pide a un administrador que amplíe tu alcance en Usuarios.');
     }
 
-    /** Vistas/exportes que agregan TODAS las sucursales: solo alcance general. */
+    /**
+     * Vistas/exportes que agregan TODAS las sucursales: solo alcance general.
+     *
+     * @param  User  $user  Usuario.
+     * @param  string  $what  Sujeto del mensaje de error (p. ej. "El consolidado").
+     *
+     * @throws HttpException 403 si el alcance es restringido.
+     */
     public function requireGeneral(User $user, string $what = 'Este reporte'): void
     {
         if ($this->isGeneral($user)) {
@@ -199,13 +265,19 @@ class DataScopeService
         }
 
         abort(403, "{$what} incluye todas las sucursales y solo está disponible para usuarios con alcance general. "
-            . "Consulta la información de tus sucursales ({$this->label($user)}) o pide a un administrador que amplíe tu alcance.");
+            ."Consulta la información de tus sucursales ({$this->label($user)}) o pide a un administrador que amplíe tu alcance.");
     }
 
     /**
      * Sucursal efectiva para pantallas con selector opcional (Dashboard): general
      * sin selección → null (todas); restringido sin selección → su primera
      * sucursal; una sucursal fuera del alcance → 403.
+     *
+     * @param  User  $user  Usuario.
+     * @param  int|null  $requested  Sucursal elegida en el selector (null/0 = sin selección).
+     * @return int|null Sucursal efectiva o null = todas.
+     *
+     * @throws HttpException 403 si está fuera de alcance o no tiene sucursales.
      */
     public function resolveBranch(User $user, ?int $requested): ?int
     {
@@ -227,6 +299,13 @@ class DataScopeService
         return $default;
     }
 
+    /**
+     * Sucursal por defecto de un usuario restringido: la primera operativa de su
+     * alcance en orden alfabético; si ninguna es operativa, la primera de su lista.
+     *
+     * @param  User  $user  Usuario.
+     * @return int|null null si tiene alcance general o ninguna sucursal.
+     */
     public function defaultBranchId(User $user): ?int
     {
         $allowed = $this->allowedBranchIds($user);
@@ -244,7 +323,10 @@ class DataScopeService
      * Filtra un catálogo de sucursales (arreglos/objetos con id) al alcance del usuario.
      *
      * @template T
-     * @param iterable<T> $options
+     *
+     * @param  User  $user  Usuario.
+     * @param  iterable<T>  $options  Opciones del selector.
+     * @param  string  $key  Llave/propiedad que contiene el id de sucursal.
      * @return list<T>
      */
     public function filterBranchOptions(User $user, iterable $options, string $key = 'id'): array
@@ -261,7 +343,12 @@ class DataScopeService
         return $out;
     }
 
-    /** @return list<string>|null null = todas. Nombres en mayúsculas tal como están en branches.name. */
+    /**
+     * Nombres de las sucursales del alcance (para filtrar datos que se guardan por nombre).
+     *
+     * @param  User  $user  Usuario.
+     * @return list<string>|null null = todas. Nombres en mayúsculas tal como están en branches.name.
+     */
     public function allowedBranchNames(User $user): ?array
     {
         $allowed = $this->allowedBranchIds($user);
@@ -276,6 +363,13 @@ class DataScopeService
         return $this->namesMemo[$key] ??= Branch::query()->whereIn('id', $allowed)->orderBy('name')->pluck('name')->all();
     }
 
+    /**
+     * ¿El nombre de sucursal está en el alcance? Compara sin distinguir
+     * mayúsculas y sin espacios extremos; nombre vacío = false si es restringido.
+     *
+     * @param  User  $user  Usuario.
+     * @param  string|null  $name  Nombre de sucursal.
+     */
     public function allowsBranchName(User $user, ?string $name): bool
     {
         $names = $this->allowedBranchNames($user);
@@ -293,6 +387,12 @@ class DataScopeService
     /**
      * Sucursal del colaborador: la de su roster del periodo; si no, su
      * asignación del periodo; si no, su sucursal vigente (misma fuente que OKR).
+     *
+     * Consulta period_employee_rosters y employee_branch_assignments.
+     *
+     * @param  int  $employeeId  Colaborador.
+     * @param  int|null  $periodId  Periodo (null = solo sucursal vigente).
+     * @return int|null Sucursal o null si no se puede determinar.
      */
     public function employeeBranchId(int $employeeId, ?int $periodId = null): ?int
     {
@@ -314,6 +414,15 @@ class DataScopeService
         return $current ? (int) $current : null;
     }
 
+    /**
+     * ¿Puede ver datos del colaborador? Sí con alcance general, si es su propio
+     * colaborador vinculado, o si la sucursal del colaborador (employeeBranchId())
+     * está en su alcance.
+     *
+     * @param  User  $user  Usuario.
+     * @param  int  $employeeId  Colaborador.
+     * @param  int|null  $periodId  Periodo para resolver la sucursal.
+     */
     public function allowsEmployee(User $user, int $employeeId, ?int $periodId = null): bool
     {
         if ($this->isGeneral($user)) {
@@ -327,6 +436,15 @@ class DataScopeService
         return $branchId !== null && $this->allows($user, $branchId);
     }
 
+    /**
+     * Igual que allowsEmployee() pero aborta con 403 y mensaje en español.
+     *
+     * @param  User  $user  Usuario.
+     * @param  int  $employeeId  Colaborador.
+     * @param  int|null  $periodId  Periodo para resolver la sucursal.
+     *
+     * @throws HttpException 403
+     */
     public function authorizeEmployee(User $user, int $employeeId, ?int $periodId = null): void
     {
         if ($this->allowsEmployee($user, $employeeId, $periodId)) {
@@ -334,10 +452,16 @@ class DataScopeService
         }
 
         abort(403, "Ese colaborador no pertenece a tus sucursales autorizadas ({$this->label($user)}). "
-            . 'Si necesitas consultarlo, pide a un administrador que amplíe tu alcance en Usuarios.');
+            .'Si necesitas consultarlo, pide a un administrador que amplíe tu alcance en Usuarios.');
     }
 
-    /** Texto legible del alcance: "Todas las sucursales" o la lista de nombres. */
+    /**
+     * Texto legible del alcance: "Todas las sucursales" o la lista de nombres.
+     *
+     * Para colaboradores heredados (sin branch_scope) muestra "Solo lo propio".
+     *
+     * @param  User  $user  Usuario.
+     */
     public function label(User $user): string
     {
         $names = $this->allowedBranchNames($user);
@@ -347,13 +471,18 @@ class DataScopeService
 
         // Colaborador previo a la Fase 6.4: «solo lo propio» (su sucursal vigente, si tiene).
         if (! $user->isAdmin() && $this->modeOf($user) === null && ! $user->isGerencial()) {
-            return $names === [] ? 'Solo lo propio' : 'Solo lo propio (' . implode(', ', $names) . ')';
+            return $names === [] ? 'Solo lo propio' : 'Solo lo propio ('.implode(', ', $names).')';
         }
 
         return $names === [] ? 'ninguna sucursal asignada' : implode(', ', $names);
     }
 
-    /** Resumen para la UI (tabla de Usuarios, props compartidas). */
+    /**
+     * Resumen para la UI (tabla de Usuarios, props compartidas).
+     *
+     * @param  User  $user  Usuario.
+     * @return array{mode:string, general:bool, branch_ids:list<int>, label:string} mode = admin | all | branches | legacy.
+     */
     public function describe(User $user): array
     {
         $allowed = $this->allowedBranchIds($user);
@@ -366,7 +495,11 @@ class DataScopeService
         ];
     }
 
-    /** Catálogo de sucursales asignables (las 13 operativas). @return list<array{id:int,name:string}> */
+    /**
+     * Catálogo de sucursales asignables (las 13 operativas).
+     *
+     * @return list<array{id:int,name:string}>
+     */
     public function assignableBranches(): array
     {
         return Branch::query()->whereIn('name', $this->operative->names())->orderBy('name')
@@ -378,7 +511,9 @@ class DataScopeService
      * propio — un actor restringido solo asigna subconjuntos de sus sucursales y
      * nunca "todas".
      *
-     * @param list<int> $branchIds
+     * @param  User  $actor  Usuario que concede.
+     * @param  string  $mode  MODE_ALL o MODE_BRANCHES.
+     * @param  list<int>  $branchIds  Sucursales a conceder.
      */
     public function canGrant(User $actor, string $mode, array $branchIds): bool
     {
@@ -393,7 +528,14 @@ class DataScopeService
         return array_diff(array_map('intval', $branchIds), $own) === [];
     }
 
-    /** ¿El alcance del objetivo cabe dentro del del actor? (para administrarlo sin escalar). */
+    /**
+     * ¿El alcance del objetivo cabe dentro del del actor? (para administrarlo sin escalar).
+     *
+     * Un objetivo con alcance general solo cabe en un actor con alcance general.
+     *
+     * @param  User  $actor  Usuario que administra.
+     * @param  User  $target  Usuario administrado.
+     */
     public function contains(User $actor, User $target): bool
     {
         if ($this->isGeneral($actor)) {
@@ -411,7 +553,18 @@ class DataScopeService
      * Guarda el alcance de un usuario (valida delegación). Devuelve el texto
      * legible del alcance nuevo.
      *
-     * @param list<int> $branchIds
+     * Valida que las sucursales sean operativas (422) y que el actor pueda
+     * concederlas (403). En transacción: actualiza users.branch_scope y
+     * reemplaza las filas de user_branch_scopes (con granted_by). Limpia el
+     * memo del usuario objetivo.
+     *
+     * @param  User  $target  Usuario cuyo alcance se cambia.
+     * @param  string  $mode  MODE_ALL o MODE_BRANCHES.
+     * @param  list<int>  $branchIds  Sucursales (solo se guardan con MODE_BRANCHES).
+     * @param  User  $actor  Usuario que hace el cambio.
+     * @return string Texto legible del nuevo alcance.
+     *
+     * @throws HttpException 422/403
      */
     public function save(User $target, string $mode, array $branchIds, User $actor): string
     {
@@ -442,8 +595,13 @@ class DataScopeService
         return $this->label($target->fresh());
     }
 
+    /** Resultado memorizado (por proceso) de la verificación de esquema. */
     private static ?bool $schemaReady = null;
 
+    /**
+     * ¿Existen la tabla user_branch_scopes y la columna users.branch_scope?
+     * Se verifica una sola vez por proceso.
+     */
     private function schemaReady(): bool
     {
         return self::$schemaReady ??= Schema::hasTable('user_branch_scopes') && Schema::hasColumn('users', 'branch_scope');

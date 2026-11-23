@@ -7,6 +7,19 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-venta` — auditoría de la Venta real usada como base del Margen
+ * EBITDA: Venta = recuperación filtrada − capital − impuestos (es decir, intereses +
+ * moratorios + comisión de apertura). La recuperación filtrada excluye coberturas/seguros
+ * (salvo el 30% CRECE reconocido), unificaciones y condonaciones, con la misma regla que
+ * BranchRadiographyCalculator. Con `--detail` desglosa por tipo de operación.
+ *
+ * Escribe en BD: NO (solo CSV con `--export`; sin `--detail` el CSV sale solo con encabezados).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-venta 21
+ *   php artisan reportes:audit-venta 21 --detail --export
+ */
 class AuditVentaCommand extends Command
 {
     protected $signature = 'reportes:audit-venta
@@ -16,17 +29,24 @@ class AuditVentaCommand extends Command
 
     protected $description = 'Auditoría Venta real: Intereses + Moratorios + Comisión apertura (excluye Capital, Impuestos, Seguros, Unificación, Condonaciones)';
 
+    /**
+     * Calcula en una sola consulta los totales de recuperación bruta/filtrada y sus componentes,
+     * deriva la venta y muestra el desglose por operación si se pide.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
@@ -68,15 +88,15 @@ class AuditVentaCommand extends Command
             ->first();
 
         $recuperacionFiltrada = (float) ($totales->recuperacion_filtrada ?? 0);
-        $recuperacionBruta    = (float) ($totales->recuperacion_bruta ?? 0);
-        $capitalTotal         = (float) ($totales->capital_total ?? 0);
-        $interesTotal         = (float) ($totales->interes_total ?? 0);
-        $impuestoTotal        = (float) ($totales->impuesto_total ?? 0);
-        $cargosTotal          = (float) ($totales->cargos_total ?? 0);
-        $creceReconocido      = (float) ($totales->crece_reconocido ?? 0);
-        $unificacionExcluida  = (float) ($totales->unificacion_excluida ?? 0);
-        $condonacionExcluida  = (float) ($totales->condonacion_excluida ?? 0);
-        $segurosPuente        = (float) ($totales->seguros_puente ?? 0);
+        $recuperacionBruta = (float) ($totales->recuperacion_bruta ?? 0);
+        $capitalTotal = (float) ($totales->capital_total ?? 0);
+        $interesTotal = (float) ($totales->interes_total ?? 0);
+        $impuestoTotal = (float) ($totales->impuesto_total ?? 0);
+        $cargosTotal = (float) ($totales->cargos_total ?? 0);
+        $creceReconocido = (float) ($totales->crece_reconocido ?? 0);
+        $unificacionExcluida = (float) ($totales->unificacion_excluida ?? 0);
+        $condonacionExcluida = (float) ($totales->condonacion_excluida ?? 0);
+        $segurosPuente = (float) ($totales->seguros_puente ?? 0);
 
         // Venta = recuperacion_filtrada - capital - impuesto
         $ventaCalculada = max(0.0, $recuperacionFiltrada - $capitalTotal - $impuestoTotal);
@@ -84,26 +104,26 @@ class AuditVentaCommand extends Command
         $this->line('');
         $this->info('════ DESGLOSE RECUPERACIÓN / INGRESOS ════');
         $this->line('');
-        $this->line(str_pad('Recuperación bruta (total cobrado):',         46) . '$' . number_format($recuperacionBruta, 2));
-        $this->line(str_pad('(-) Seguros puente (Savehearts/Comadres):',   46) . '-$' . number_format($segurosPuente, 2));
-        $this->line(str_pad('(-) Unificación cartera excluida:',           46) . '-$' . number_format($unificacionExcluida, 2));
-        $this->line(str_pad('(-) Condonaciones excluidas:',                46) . '-$' . number_format($condonacionExcluida, 2));
-        $this->line(str_pad('(+) CRECE 30% reconocido:',                   46) . '+$' . number_format($creceReconocido, 2));
+        $this->line(str_pad('Recuperación bruta (total cobrado):', 46).'$'.number_format($recuperacionBruta, 2));
+        $this->line(str_pad('(-) Seguros puente (Savehearts/Comadres):', 46).'-$'.number_format($segurosPuente, 2));
+        $this->line(str_pad('(-) Unificación cartera excluida:', 46).'-$'.number_format($unificacionExcluida, 2));
+        $this->line(str_pad('(-) Condonaciones excluidas:', 46).'-$'.number_format($condonacionExcluida, 2));
+        $this->line(str_pad('(+) CRECE 30% reconocido:', 46).'+$'.number_format($creceReconocido, 2));
         $this->line(str_repeat('─', 62));
-        $this->info(str_pad('Recuperación final (filtrada):',              46) . '$' . number_format($recuperacionFiltrada, 2));
+        $this->info(str_pad('Recuperación final (filtrada):', 46).'$'.number_format($recuperacionFiltrada, 2));
         $this->line('');
         $this->info('════ CÁLCULO DE VENTA (base Margen EBITDA) ════');
         $this->line('');
-        $this->line(str_pad('Recuperación filtrada:',                      46) . '$' . number_format($recuperacionFiltrada, 2));
-        $this->line(str_pad('(-) Capital recuperado:',                     46) . '-$' . number_format($capitalTotal, 2));
-        $this->line(str_pad('(-) Impuesto/IVA recuperado:',                46) . '-$' . number_format($impuestoTotal, 2));
+        $this->line(str_pad('Recuperación filtrada:', 46).'$'.number_format($recuperacionFiltrada, 2));
+        $this->line(str_pad('(-) Capital recuperado:', 46).'-$'.number_format($capitalTotal, 2));
+        $this->line(str_pad('(-) Impuesto/IVA recuperado:', 46).'-$'.number_format($impuestoTotal, 2));
         $this->line(str_repeat('─', 62));
-        $this->info(str_pad('VENTA REAL (para Margen EBITDA):',            46) . '$' . number_format($ventaCalculada, 2));
+        $this->info(str_pad('VENTA REAL (para Margen EBITDA):', 46).'$'.number_format($ventaCalculada, 2));
         $this->line('');
-        $this->line(str_pad('Desglose componentes:',                       46));
-        $this->line(str_pad('  Intereses recuperados:',                    46) . '$' . number_format($interesTotal, 2));
-        $this->line(str_pad('  Moratorios / cargos (charges_due):',        46) . '$' . number_format($cargosTotal, 2));
-        $this->line(str_pad('  Verificar: Interés + Cargos =',             46) . '$' . number_format($interesTotal + $cargosTotal, 2));
+        $this->line(str_pad('Desglose componentes:', 46));
+        $this->line(str_pad('  Intereses recuperados:', 46).'$'.number_format($interesTotal, 2));
+        $this->line(str_pad('  Moratorios / cargos (charges_due):', 46).'$'.number_format($cargosTotal, 2));
+        $this->line(str_pad('  Verificar: Interés + Cargos =', 46).'$'.number_format($interesTotal + $cargosTotal, 2));
 
         // Detalle por operación
         if ($this->option('detail')) {
@@ -126,12 +146,12 @@ class AuditVentaCommand extends Command
                 ->get();
 
             $this->line(
-                str_pad('Operación', 34) .
-                str_pad('Registros', 12) .
-                str_pad('Total bruto', 18) .
-                str_pad('Capital', 18) .
-                str_pad('Interés', 18) .
-                str_pad('Impuesto', 14) .
+                str_pad('Operación', 34).
+                str_pad('Registros', 12).
+                str_pad('Total bruto', 18).
+                str_pad('Capital', 18).
+                str_pad('Interés', 18).
+                str_pad('Impuesto', 14).
                 'Cargos'
             );
             $this->line(str_repeat('─', 130));
@@ -139,22 +159,22 @@ class AuditVentaCommand extends Command
             $detailRows = [];
             foreach ($byOp as $row) {
                 $this->line(
-                    str_pad(mb_substr((string)$row->operacion, 0, 32), 34) .
-                    str_pad((int)$row->registros, 12) .
-                    str_pad('$' . number_format((float)$row->total_bruto, 2), 18) .
-                    str_pad('$' . number_format((float)$row->capital, 2), 18) .
-                    str_pad('$' . number_format((float)$row->interes, 2), 18) .
-                    str_pad('$' . number_format((float)$row->impuesto, 2), 14) .
-                    '$' . number_format((float)$row->cargos, 2)
+                    str_pad(mb_substr((string) $row->operacion, 0, 32), 34).
+                    str_pad((int) $row->registros, 12).
+                    str_pad('$'.number_format((float) $row->total_bruto, 2), 18).
+                    str_pad('$'.number_format((float) $row->capital, 2), 18).
+                    str_pad('$'.number_format((float) $row->interes, 2), 18).
+                    str_pad('$'.number_format((float) $row->impuesto, 2), 14).
+                    '$'.number_format((float) $row->cargos, 2)
                 );
                 $detailRows[] = [
-                    'operacion' => (string)$row->operacion,
-                    'registros' => (int)$row->registros,
-                    'total_bruto' => (float)$row->total_bruto,
-                    'capital' => (float)$row->capital,
-                    'interes' => (float)$row->interes,
-                    'impuesto' => (float)$row->impuesto,
-                    'cargos' => (float)$row->cargos,
+                    'operacion' => (string) $row->operacion,
+                    'registros' => (int) $row->registros,
+                    'total_bruto' => (float) $row->total_bruto,
+                    'capital' => (float) $row->capital,
+                    'interes' => (float) $row->interes,
+                    'impuesto' => (float) $row->impuesto,
+                    'cargos' => (float) $row->cargos,
                 ];
             }
 
@@ -166,24 +186,30 @@ class AuditVentaCommand extends Command
         }
 
         $this->line('');
-        $this->info("Venta real para Margen EBITDA: \$" . number_format($ventaCalculada, 2));
+        $this->info('Venta real para Margen EBITDA: $'.number_format($ventaCalculada, 2));
 
         return 0;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV del desglose por operación.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $rows  Filas por operación (puede ir vacío).
+     */
     private function exportCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $file = "venta_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "venta_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
 
-        $lines   = [];
+        $lines = [];
         $headers = ['Operación', 'Registros', 'Total Bruto', 'Capital', 'Interés', 'Impuesto', 'Cargos'];
         $lines[] = implode(',', $headers);
 
         foreach ($rows as $r) {
             $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $r['operacion']) . '"',
+                '"'.str_replace('"', '""', $r['operacion']).'"',
                 $r['registros'],
                 number_format($r['total_bruto'], 2, '.', ''),
                 number_format($r['capital'], 2, '.', ''),

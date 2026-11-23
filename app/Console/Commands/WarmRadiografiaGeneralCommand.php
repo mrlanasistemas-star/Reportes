@@ -9,17 +9,26 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Mantiene caliente la corrida GENERAL de la radiografía de los periodos mensuales
- * más recientes (13-nov-2026). Esa corrida (~10-25 s en frío) es la que leen la API v1
- * (/employees/{id}/financial-summary, /periods/{id}/branches), el Dashboard, el
- * comparativo y OKR; antes sólo se calentaba al generar la radiografía y caducaba a
- * las 12 h, así que la primera consulta de un sistema externo la pagaba entera y
- * agotaba su tiempo de espera.
+ * Comando `radiografia:precalentar` — mantiene caliente la corrida GENERAL de la Radiografía de
+ * los periodos mensuales más recientes (13-nov-2026). Esa corrida (~10-25 s en frío) es la que
+ * leen la API v1 (/employees/{id}/financial-summary, /periods/{id}/branches), el Dashboard, el
+ * comparativo y OKR; antes sólo se calentaba al generar la radiografía y caducaba a las 12 h,
+ * así que la primera consulta de un sistema externo la pagaba entera y agotaba su tiempo de
+ * espera.
  *
- * Idempotente: si el valor ya está en caché y es reciente no hace nada; si le falta
- * poco para caducar lo recalcula y reemplaza (el anterior se sigue sirviendo mientras
- * tanto); si otro proceso lo está calculando, no lo duplica. Sólo LEE datos y escribe
- * en la caché: no genera, regenera ni modifica radiografías.
+ * Idempotente: si el valor ya está en caché y es reciente no hace nada; si le falta poco para
+ * caducar lo recalcula y reemplaza (el anterior se sigue sirviendo mientras tanto); si otro
+ * proceso lo está calculando, no lo duplica. Sólo LEE datos y escribe en la caché: no genera,
+ * regenera ni modifica radiografías. Lo ejecuta el scheduler según
+ * `radiografia.precalentar.cron` (cada 30 min por defecto); RADIOGRAFIA_PRECALENTAR=false
+ * apaga solo la corrida automática.
+ *
+ * Escribe en BD: NO (caché y log).
+ *
+ * Ejemplos:
+ *   php artisan radiografia:precalentar
+ *   php artisan radiografia:precalentar --periodo=21 --forzar
+ *   php artisan radiografia:precalentar --ultimos=6
  */
 class WarmRadiografiaGeneralCommand extends Command
 {
@@ -30,6 +39,14 @@ class WarmRadiografiaGeneralCommand extends Command
 
     protected $description = 'Radiografía: deja en caché la corrida general de los periodos mensuales recientes (la que consume la API v1)';
 
+    /**
+     * Respeta el interruptor de configuración, elige los periodos con radiografía vigente
+     * (explícitos o los N más recientes), calienta cada uno con el umbral de refresco (0 con
+     * `--forzar`) y deja un resumen en el log.
+     *
+     * @param  RadiografiaExportService  $exportService  Servicio que calcula y guarda la corrida general.
+     * @return int Siempre self::SUCCESS (los errores por periodo se reportan sin abortar).
+     */
     public function handle(RadiografiaExportService $exportService): int
     {
         $explicitIds = array_values(array_filter(array_map('intval', (array) $this->option('periodo'))));

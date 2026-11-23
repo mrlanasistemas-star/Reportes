@@ -8,25 +8,48 @@ use App\Services\PeriodDerivedDataCleaner;
 use App\Services\ReportAnalysisService;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:reimportar-periodo` — limpia TODOS los datos derivados del periodo y
+ * re-importa de forma síncrona (sin cola) cada archivo subido, en orden de dependencia (saldos,
+ * ministraciones, cobranza, NOI, gastos), mostrando filas leídas/insertadas/omitidas/errores.
+ * No regenera la Radiografía: hacerlo después desde la UI o con `reportes:generar-radiografia`.
+ *
+ * Escribe en BD: SÍ (borra y vuelve a llenar las tablas fact_* del periodo). Pesado; usar con
+ * cuidado en producción.
+ *
+ * Ejemplo:
+ *   php artisan reportes:reimportar-periodo 21
+ */
 class ReimportarPeriodoCommand extends Command
 {
-    protected $signature   = 'reportes:reimportar-periodo {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:reimportar-periodo {period_id : ID del periodo mensual}';
+
     protected $description = 'Limpia y re-importa todas las fuentes de un periodo de forma sincrónica (sin queue).';
 
+    /**
+     * @param  PeriodDerivedDataCleaner  $cleaner  Limpia los datos derivados del periodo.
+     * @param  ReportAnalysisService  $service  Importa (analiza) cada archivo subido.
+     */
     public function __construct(
         private readonly PeriodDerivedDataCleaner $cleaner,
-        private readonly ReportAnalysisService    $service,
+        private readonly ReportAnalysisService $service,
     ) {
         parent::__construct();
     }
 
+    /**
+     * Limpia el periodo y reimporta sus uploads en orden, acumulando los errores.
+     *
+     * @return int SUCCESS si todo se importó; FAILURE si falta el periodo, no hay uploads o algún archivo falló.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -37,6 +60,7 @@ class ReimportarPeriodoCommand extends Command
 
         if ($uploads->isEmpty()) {
             $this->warn("No hay uploads para periodo #{$periodId}.");
+
             return self::FAILURE;
         }
 
@@ -45,9 +69,9 @@ class ReimportarPeriodoCommand extends Command
         $this->line("  Uploads encontrados: {$uploads->count()}");
         $this->line('');
 
-        $this->info("── Limpiando datos previos del periodo...");
+        $this->info('── Limpiando datos previos del periodo...');
         $this->cleaner->clearForPeriod($period);
-        $this->line("  <fg=green>Datos anteriores eliminados.</>");
+        $this->line('  <fg=green>Datos anteriores eliminados.</>');
         $this->line('');
 
         $order = [
@@ -69,20 +93,20 @@ class ReimportarPeriodoCommand extends Command
 
         foreach ($sorted as $upload) {
             $source = $upload->dataSource?->name ?? "Upload #{$upload->id}";
-            $code   = $upload->dataSource?->code ?? '?';
+            $code = $upload->dataSource?->code ?? '?';
             $this->line("  Procesando: <fg=cyan>{$source}</> ({$code})");
 
             try {
                 $run = $this->service->analyze($upload);
                 $this->line(sprintf(
-                    "    <fg=green>✓</> leídas=%d  insertadas=%d  omitidas=%d  errores=%d",
+                    '    <fg=green>✓</> leídas=%d  insertadas=%d  omitidas=%d  errores=%d',
                     $run->rows_read ?? 0,
                     $run->rows_inserted ?? 0,
                     $run->rows_skipped ?? 0,
                     $run->rows_with_errors ?? 0,
                 ));
                 if ($run->log) {
-                    $this->line("    Log: " . mb_strimwidth($run->log, 0, 150, '…'));
+                    $this->line('    Log: '.mb_strimwidth($run->log, 0, 150, '…'));
                 }
             } catch (\Throwable $e) {
                 $msg = mb_strimwidth($e->getMessage(), 0, 200);
@@ -93,17 +117,19 @@ class ReimportarPeriodoCommand extends Command
             $this->line('');
         }
 
-        if (!empty($errores)) {
-            $this->warn("══════ COMPLETADO CON " . count($errores) . " ERROR(ES) ══════");
+        if (! empty($errores)) {
+            $this->warn('══════ COMPLETADO CON '.count($errores).' ERROR(ES) ══════');
             foreach ($errores as $e) {
                 $this->line("  • {$e}");
             }
+
             return self::FAILURE;
         }
 
         $this->info("══════ REIMPORT COMPLETO — {$period->label} ══════");
         $this->line('  Ahora regenera la radiografía desde la UI o con el job correspondiente.');
         $this->line('');
+
         return self::SUCCESS;
     }
 }

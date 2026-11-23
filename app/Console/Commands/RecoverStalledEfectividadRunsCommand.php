@@ -12,22 +12,30 @@ use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Support\Facades\Cache;
 
 /**
- * Procedimiento SEGURO para ejecuciones de Efectividad de Cobranza huérfanas.
+ * Comando `efectividad:recover-stalled` — procedimiento SEGURO para ejecuciones de Efectividad
+ * de Cobranza huérfanas.
  *
  * Por defecto solo DIAGNOSTICA (no modifica nada). Con `--apply`:
- *  - Solo actúa sobre ejecuciones `stalled` — es decir, con evidencia REAL de
- *    la cola de que el Job ya no existe (no está en `jobs`, o terminó en
- *    `failed_jobs`) además de no tener actividad reciente. Un Job que sigue
- *    en `jobs` (pendiente o reservado por un worker) NUNCA se toca: eso es un
- *    worker detenido/lento, no un huérfano, y re-encolarlo lo duplicaría.
- *  - Sin `--requeue`: la ejecución se cierra como `failed` (worker_stalled) y
- *    se notifica al solicitante — nunca se queda "Procesando" indefinidamente.
- *  - Con `--requeue`: se vuelve a encolar la MISMA ejecución (misma fila, mismo
- *    ID; sin crear otra), bajo el mismo lock de identidad que usa el
- *    controlador, para que no se dupliquen ejecuciones.
+ *  - Solo actúa sobre ejecuciones `stalled` — es decir, con evidencia REAL de la cola de que el
+ *    Job ya no existe (no está en `jobs`, o terminó en `failed_jobs`) además de no tener
+ *    actividad reciente. Un Job que sigue en `jobs` (pendiente o reservado por un worker) NUNCA
+ *    se toca: eso es un worker detenido/lento, no un huérfano, y re-encolarlo lo duplicaría.
+ *  - Si el usuario ya había pedido cancelar, se cierra como `cancelled`.
+ *  - Sin `--requeue`: la ejecución se cierra como `failed` (worker_stalled) y se notifica al
+ *    solicitante — nunca se queda "Procesando" indefinidamente.
+ *  - Con `--requeue`: se vuelve a encolar la MISMA ejecución (misma fila, mismo ID; sin crear
+ *    otra), bajo el mismo lock de identidad que usa el controlador, para que no se dupliquen.
  *
- * También libera correos atascados en `sending` (proceso interrumpido a mitad
+ * También libera correos atascados en `sending` más de 15 minutos (proceso interrumpido a mitad
  * de envío) para que `efectividad:retry-notifications` los reintente.
+ *
+ * Escribe en BD: solo con `--apply` (`efectividad_cobranza_runs`) y puede encolar jobs y enviar
+ * notificaciones.
+ *
+ * Ejemplos:
+ *   php artisan efectividad:recover-stalled
+ *   php artisan efectividad:recover-stalled --apply
+ *   php artisan efectividad:recover-stalled --apply --requeue --run=42
  */
 class RecoverStalledEfectividadRunsCommand extends Command
 {
@@ -38,6 +46,15 @@ class RecoverStalledEfectividadRunsCommand extends Command
 
     protected $description = 'Diagnostica y recupera ejecuciones de Efectividad de Cobranza sin actividad del worker, sin duplicarlas.';
 
+    /**
+     * Evalúa la salud de cada ejecución activa (o de `--run`), decide la acción y la aplica solo con
+     * `--apply`; luego revisa los correos atascados en `sending`.
+     *
+     * @param  EfectividadCobranzaRunHealthService  $health  Diagnostica actividad y estado en la cola.
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Notifica al solicitante al cerrar.
+     * @param  Dispatcher  $dispatcher  Despachador de jobs para re-encolar.
+     * @return int Siempre self::SUCCESS.
+     */
     public function handle(EfectividadCobranzaRunHealthService $health, EfectividadCobranzaRunNotifier $notifier, Dispatcher $dispatcher): int
     {
         $apply = (bool) $this->option('apply');
@@ -99,6 +116,15 @@ class RecoverStalledEfectividadRunsCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Cierra la ejecución como fallida por worker sin actividad, agrega la incidencia
+     * EC-WRK-SIN-ACTIVIDAD y notifica al solicitante. Escribe en BD.
+     *
+     * @param  EfectividadCobranzaRun  $run  Ejecución huérfana.
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Notificador.
+     * @param  string|null  $reason  Mensaje del diagnóstico que se agrega a la incidencia.
+     * @return string Descripción de la acción realizada.
+     */
     private function closeAsStalled(EfectividadCobranzaRun $run, EfectividadCobranzaRunNotifier $notifier, ?string $reason): string
     {
         $issues = $run->issues ?? [];
@@ -125,6 +151,14 @@ class RecoverStalledEfectividadRunsCommand extends Command
         return 'cerrada como fallida (worker sin actividad)';
     }
 
+    /**
+     * Cierra como cancelada una ejecución huérfana cuya cancelación ya había pedido el usuario y
+     * notifica. Escribe en BD.
+     *
+     * @param  EfectividadCobranzaRun  $run  Ejecución huérfana con cancelación solicitada.
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Notificador.
+     * @return string Descripción de la acción realizada.
+     */
     private function closeAsCancelled(EfectividadCobranzaRun $run, EfectividadCobranzaRunNotifier $notifier): string
     {
         $run->forceFill([
@@ -140,6 +174,14 @@ class RecoverStalledEfectividadRunsCommand extends Command
         return 'cerrada como cancelada (solicitud del usuario, worker sin actividad)';
     }
 
+    /**
+     * Bajo el lock de identidad periodo/sucursal, reinicia el estado de la MISMA ejecución a
+     * `queued` y despacha de nuevo GenerateEfectividadCobranzaAprobadaJob, guardando el id del job.
+     *
+     * @param  EfectividadCobranzaRun  $run  Ejecución a re-encolar.
+     * @param  Dispatcher  $dispatcher  Despachador de jobs.
+     * @return string Descripción de la acción realizada.
+     */
     private function requeue(EfectividadCobranzaRun $run, Dispatcher $dispatcher): string
     {
         $lockKey = "efectividad-cobranza-generate-{$run->period_id}-".($run->branch_id ?? 'general');

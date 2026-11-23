@@ -22,9 +22,13 @@ use Illuminate\Support\Facades\DB;
  * `column` ubica la acción en la matriz visual Ver/Crear/Editar/Eliminar/
  * Exportar/Autorizar (Ver = acceso al módulo). Una celda puede tener varias
  * acciones (p. ej. OKR); una celda sin acciones se muestra como "—".
+ *
+ * Persiste en `role_action_permissions` (rol, módulo, acción) con caché
+ * permanente (CACHE_KEY) que se invalida al guardar o borrar.
  */
 class ActionPermissionService
 {
+    /** Columnas de la matriz visual de permisos (clave => encabezado). */
     public const COLUMNS = [
         // 27-oct-2026 — alcance de CONSULTA dentro del módulo (p. ej. reportes
         // propios vs de todos). Distinto de "Ver" (= acceso al módulo).
@@ -142,6 +146,7 @@ class ActionPermissionService
         'carga' => ['eliminar'], 'periodos' => ['eliminar'], 'reportes' => ['exportar'], 'colaboradores' => ['exportar'],
     ];
 
+    /** Roles configurables de respaldo si el catálogo de roles no devuelve ninguno. */
     public const CONFIGURABLE_ROLES = [User::ROLE_GERENCIAL, User::ROLE_COLABORADOR];
 
     /**
@@ -174,9 +179,17 @@ class ActionPermissionService
         ],
     ];
 
+    /** Clave de caché de la matriz rol → módulo → acciones. */
     private const CACHE_KEY = 'role_action_permissions.v1';
 
-    /** @return array<string, array<string, list<string>>> rol => módulo => acciones permitidas. */
+    /**
+     * Matriz rol → módulo → acciones permitidas según BD (con caché).
+     *
+     * Solo roles configurables y acciones existentes en ACTIONS (en orden del
+     * catálogo). Si la tabla no existe devuelve LEVEL_DEFAULTS.
+     *
+     * @return array<string, array<string, list<string>>> rol => módulo => acciones permitidas.
+     */
     public function matrix(): array
     {
         try {
@@ -200,7 +213,17 @@ class ActionPermissionService
         return $matrix;
     }
 
-    /** Nunca confiar solo en la UI — el backend vuelve a comprobar esto en cada endpoint sensible. */
+    /**
+     * ¿El usuario puede ejecutar la acción del módulo?
+     *
+     * Nunca confiar solo en la UI — el backend vuelve a comprobar esto en cada
+     * endpoint sensible (middleware EnsureActionPermission). Admin = siempre;
+     * sin usuario = nunca; resto según la matriz de su rol (o nivel base).
+     *
+     * @param  User|null  $user  Usuario autenticado.
+     * @param  string  $module  Clave del módulo.
+     * @param  string  $action  Clave de la acción.
+     */
     public function canAction(?User $user, string $module, string $action): bool
     {
         if (! $user) {
@@ -213,7 +236,12 @@ class ActionPermissionService
         return in_array($action, $this->matrix()[$this->permissionKeyFor($user)][$module] ?? [], true);
     }
 
-    /** @return array<string, list<string>> módulo => acciones del usuario (admin: todas). */
+    /**
+     * Acciones del usuario agrupadas por módulo.
+     *
+     * @param  User|null  $user  Usuario autenticado.
+     * @return array<string, list<string>> módulo => acciones del usuario (admin: todas).
+     */
     public function actionsFor(?User $user): array
     {
         if (! $user) {
@@ -226,7 +254,12 @@ class ActionPermissionService
         return $this->matrix()[$this->permissionKeyFor($user)] ?? [];
     }
 
-    /** Lista plana "modulo.accion" — se comparte al frontend para ocultar botones (solo UX). @return list<string> */
+    /**
+     * Lista plana "modulo.accion" — se comparte al frontend para ocultar botones (solo UX).
+     *
+     * @param  User|null  $user  Usuario autenticado.
+     * @return list<string>
+     */
     public function flatFor(?User $user): array
     {
         $out = [];
@@ -239,6 +272,12 @@ class ActionPermissionService
         return $out;
     }
 
+    /**
+     * Clave de permisos del usuario: su propio rol si es configurable; si no, su nivel base.
+     *
+     * @param  User  $user  Usuario no administrador.
+     * @return string Clave de rol a buscar en la matriz.
+     */
     private function permissionKeyFor(User $user): string
     {
         return in_array($user->role, $this->configurableRoles(), true)
@@ -246,13 +285,22 @@ class ActionPermissionService
             : ($user->isGerencial() ? User::ROLE_GERENCIAL : User::ROLE_COLABORADOR);
     }
 
-    /** 16-oct-2026 — roles del sistema + personalizados (todos menos admin). @return list<string> */
+    /**
+     * 16-oct-2026 — roles del sistema + personalizados (todos menos admin).
+     *
+     * @return list<string>
+     */
     private function configurableRoles(): array
     {
         return app(RoleCatalogService::class)->configurableKeys() ?: self::CONFIGURABLE_ROLES;
     }
 
-    /** @param array<string, list<string>> $actions módulo => acciones (los módulos no enviados se conservan) */
+    /**
+     * Guarda acciones de un rol solo para los módulos enviados (atajo de save()).
+     *
+     * @param  string  $role  Clave del rol.
+     * @param  array<string, list<string>>  $actions  módulo => acciones (los módulos no enviados se conservan)
+     */
     public function saveRole(string $role, array $actions): void
     {
         $this->save([$role => $actions]);
@@ -263,7 +311,8 @@ class ActionPermissionService
      * sin acciones) — usado por el asistente de roles para que no queden
      * privilegios residuales de un módulo que se quitó.
      *
-     * @param array<string, list<string>> $actions
+     * @param  string  $role  Clave del rol.
+     * @param  array<string, list<string>>  $actions  módulo => acciones.
      */
     public function replaceRole(string $role, array $actions): void
     {
@@ -274,6 +323,11 @@ class ActionPermissionService
         $this->save([$role => $full]);
     }
 
+    /**
+     * Borra todas las acciones de un rol (al eliminar el rol) e invalida la caché.
+     *
+     * @param  string  $role  Clave del rol.
+     */
     public function deleteRole(string $role): void
     {
         DB::table('role_action_permissions')->where('role', $role)->delete();
@@ -284,7 +338,11 @@ class ActionPermissionService
      * Por cada rol enviado, reemplaza las acciones SOLO de los módulos enviados
      * (un payload parcial nunca borra permisos de módulos que no incluye).
      *
-     * @param array<string, array<string, list<string>>> $matrix
+     * Corre en transacción sobre `role_action_permissions`, descarta roles no
+     * configurables y acciones inexistentes, agrega las dependencias de
+     * REQUIRES (withRequired()) e invalida la caché.
+     *
+     * @param  array<string, array<string, list<string>>>  $matrix  rol => módulo => acciones.
      */
     public function save(array $matrix): void
     {
@@ -311,7 +369,13 @@ class ActionPermissionService
         Cache::forget(self::CACHE_KEY);
     }
 
-    /** Catálogo para la UI: lista plana de [module, action, label, column, description]. */
+    /**
+     * Catálogo para la UI: lista plana de [module, action, label, column, description].
+     *
+     * Incluye además `requires` (acciones de las que depende).
+     *
+     * @return list<array<string, mixed>>
+     */
     public function catalog(): array
     {
         $out = [];
@@ -324,7 +388,15 @@ class ActionPermissionService
         return $out;
     }
 
-    /** Validación de un payload módulo => acciones: devuelve solo pares existentes. @return array<string, list<string>> */
+    /**
+     * Validación de un payload módulo => acciones: devuelve solo pares existentes.
+     *
+     * Devuelve TODOS los módulos del catálogo (vacíos si no se enviaron) y
+     * agrega las acciones requeridas.
+     *
+     * @param  array<string, mixed>  $actions  Payload recibido de la UI.
+     * @return array<string, list<string>>
+     */
     public function sanitize(array $actions): array
     {
         $clean = [];
@@ -339,8 +411,9 @@ class ActionPermissionService
      * Agrega las acciones requeridas (REQUIRES, transitivo) y devuelve la lista
      * en el orden del catálogo. Nunca quita nada.
      *
-     * @param list<string> $actions
-     * @return list<string>
+     * @param  string  $module  Clave del módulo.
+     * @param  list<string>  $actions  Acciones elegidas.
+     * @return list<string> Acciones elegidas + requeridas, en orden del catálogo.
      */
     public static function withRequired(string $module, array $actions): array
     {
@@ -359,6 +432,12 @@ class ActionPermissionService
         return array_values(array_filter(array_keys(self::ACTIONS[$module] ?? []), fn ($a) => isset($set[$a])));
     }
 
+    /**
+     * ¿La acción está declarada en el catálogo ACTIONS?
+     *
+     * @param  string  $module  Clave del módulo.
+     * @param  string  $action  Clave de la acción.
+     */
     public static function exists(string $module, string $action): bool
     {
         return isset(self::ACTIONS[$module][$action]);

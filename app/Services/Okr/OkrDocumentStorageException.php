@@ -12,8 +12,14 @@ use App\Services\Pdf\PdfRenderException;
  */
 class OkrDocumentStorageException extends PdfRenderException
 {
+    /** Código técnico que identifica el fallo de almacenamiento del PDF. */
     public const STORAGE_FAILED = 'PDF_STORAGE_FAILED';
 
+    /**
+     * Crea la excepción con el código fijo STORAGE_FAILED.
+     *
+     * @param  string  $message  Detalle técnico del fallo (escritura/validación del archivo).
+     */
     public function __construct(string $message)
     {
         parent::__construct(self::STORAGE_FAILED, $message);

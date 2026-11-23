@@ -9,10 +9,18 @@ namespace App\Services\EstadoResultados\Export;
  */
 final class ErFormat
 {
+    /** Texto para un importe pendiente (sin información). */
     public const PENDING = 'Pendiente';
 
+    /** Texto para un periodo sin datos. */
     public const NO_DATA = 'Sin datos';
 
+    /**
+     * Importe de presentación «$1,234.56» / «-$1,234.56» (redondeo a 2 decimales).
+     *
+     * @param  mixed  $v  importe
+     * @param  string  $null  texto cuando no hay valor
+     */
     public static function money(mixed $v, string $null = self::PENDING): string
     {
         if ($v === null || $v === '') {
@@ -45,6 +53,12 @@ final class ErFormat
         return ($signed && $f > 0 ? '+' : '').number_format($f, 2).'%';
     }
 
+    /**
+     * Variación en puntos porcentuales con signo («+1.25 pp»).
+     *
+     * @param  mixed  $v  puntos
+     * @param  string  $null  texto cuando no hay valor
+     */
     public static function points(mixed $v, string $null = '—'): string
     {
         if ($v === null || $v === '') {

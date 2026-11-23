@@ -4,9 +4,9 @@ namespace App\Http\Controllers\Okr;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Okr\Concerns\ResolvesOperativeBranches;
-use App\Models\Branch;
 use App\Models\OkrObjective;
 use App\Services\Okr\OkrObjectiveVisibilityService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -15,8 +15,21 @@ use Inertia\Response;
 /** Módulo OKR (08-sep-2026) — histórico de OKR cerrados (sección 33 del pedido). */
 class HistoryController extends Controller
 {
-    use ResolvesOperativeBranches, AuthorizesRequests;
+    use AuthorizesRequests, ResolvesOperativeBranches;
 
+    /**
+     * Página Inertia `Okr/History`: OKR cerrados visibles para el usuario,
+     * paginados de 20 en 20 por fecha de cierre descendente.
+     *
+     * Filtros opcionales por query string: `branch_id`, `employee_id` y
+     * `final_status`. El scope de visibilidad se aplica antes que los filtros.
+     *
+     * @param  Request  $request  Filtros y usuario autenticado.
+     * @param  OkrObjectiveVisibilityService  $visibility  Scope central de visibilidad OKR.
+     * @return Response Página con `objectives`, `filters.branches` y `query`.
+     *
+     * @throws AuthorizationException Si no tiene `okr.history.view`.
+     */
     public function index(Request $request, OkrObjectiveVisibilityService $visibility): Response
     {
         $this->authorize('okr.history.view');
@@ -46,7 +59,7 @@ class HistoryController extends Controller
         return Inertia::render('Okr/History', [
             'objectives' => $objectives,
             'filters' => [
-                'branches'  => $this->filterBranches(),
+                'branches' => $this->filterBranches(),
                 // Colaborador ya NO se precarga completo — se busca bajo demanda
                 // vía GET /okr/employees-lookup (mismo criterio que el dashboard).
             ],

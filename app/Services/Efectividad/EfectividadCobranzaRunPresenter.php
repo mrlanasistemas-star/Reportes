@@ -18,6 +18,11 @@ use Illuminate\Support\Facades\Storage;
  */
 class EfectividadCobranzaRunPresenter
 {
+    /**
+     * @param  EfectividadCobranzaRunHealthService  $health  estado visible (cola / heartbeat)
+     * @param  EfectividadCobranzaSourceFingerprintService  $fingerprints  obsolescencia del motor aprobado
+     * @param  EfectividadV4FingerprintService  $v4Fingerprints  obsolescencia del motor V4
+     */
     public function __construct(
         private readonly EfectividadCobranzaRunHealthService $health,
         private readonly EfectividadCobranzaSourceFingerprintService $fingerprints,
@@ -183,8 +188,11 @@ class EfectividadCobranzaRunPresenter
     }
 
     /**
-     * @param  Collection<int,EfectividadCobranzaRun>  $runs
-     * @return array<string,int>
+     * Para las identidades presentes en $runs, el id de la ejecución exitosa más reciente (para
+     * marcar como «obsoleto» lo que tiene una versión más nueva). Una sola consulta agrupada.
+     *
+     * @param  Collection<int,EfectividadCobranzaRun>  $runs  ejecuciones a presentar
+     * @return array<string,int> identityKey ⇒ id máximo exitoso
      */
     public function latestSuccessMap(Collection $runs): array
     {
@@ -221,6 +229,13 @@ class EfectividadCobranzaRunPresenter
         return Storage::disk('local')->exists($stored) ? Storage::disk('local')->path($stored) : null;
     }
 
+    /**
+     * Enum de la etapa actual según el motor (aprobado/periódica o V4); null si no hay o no se
+     * reconoce.
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     * @param  bool  $isPeriodica  motor de la calculadora periódica/aprobada
+     */
     private function resolveStage(EfectividadCobranzaRun $run, bool $isPeriodica): EfectividadCobranzaStage|EfectividadAprobadaStage|null
     {
         if (! $run->current_stage) {

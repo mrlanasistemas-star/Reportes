@@ -16,6 +16,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Módulo ROLES Y PERMISOS (prioridad 8) — página propia en /roles, separada de
@@ -28,15 +29,32 @@ use Inertia\Response;
  */
 class RoleController extends Controller
 {
+    /**
+     * @param  RoleCatalogService  $catalog  Catálogo de roles (tabla `roles`, con caché que se limpia con forget()).
+     * @param  ModuleAccessService  $modules  Módulos visibles por rol.
+     * @param  ActionPermissionService  $actions  Acciones permitidas por rol y módulo.
+     * @param  AccessDelegationGuard  $guard  Impide otorgar permisos que el actor no tiene.
+     * @param  UserAccessAuditLogger  $audit  Bitácora de cambios de acceso.
+     */
     public function __construct(
         private readonly RoleCatalogService $catalog,
         private readonly ModuleAccessService $modules,
         private readonly ActionPermissionService $actions,
         private readonly AccessDelegationGuard $guard,
         private readonly UserAccessAuditLogger $audit,
-    ) {
-    }
+    ) {}
 
+    /**
+     * Página Inertia `roles/Index`: cada rol con sus módulos, acciones, usuarios
+     * asignados, resumen legible y si el actor puede editarlo/eliminarlo; además
+     * los catálogos de módulos/acciones y lo que el actor puede otorgar.
+     *
+     * Un no admin solo puede editar roles distintos al suyo y que no excedan sus
+     * propios permisos. No escribe en BD.
+     *
+     * @param  Request  $request  Usuario autenticado (actor).
+     * @return Response Página de roles y permisos.
+     */
     public function index(Request $request): Response
     {
         $actor = $request->user();
@@ -78,6 +96,18 @@ class RoleController extends Controller
         ]);
     }
 
+    /**
+     * Crea un rol personalizado (no del sistema).
+     *
+     * En una transacción inserta la fila en `roles` (clave generada del nombre)
+     * y guarda sus módulos y acciones; limpia la caché del catálogo y registra
+     * `role_created` en la bitácora de accesos.
+     *
+     * @param  Request  $request  Nombre, descripción, nivel base, módulos y acciones.
+     * @return RedirectResponse Regresa con el resumen del rol creado.
+     *
+     * @throws ValidationException Si los datos no son válidos, el nombre está repetido o se otorga más de lo que tiene el actor.
+     */
     public function store(Request $request): RedirectResponse
     {
         $data = $this->validated($request);
@@ -102,6 +132,21 @@ class RoleController extends Controller
         return back()->with('success', "Rol «{$data['name']}» creado. {$summary}");
     }
 
+    /**
+     * Actualiza nombre, descripción, nivel base (solo roles no del sistema),
+     * módulos y acciones de un rol. Las acciones se reemplazan completas (sin
+     * privilegios residuales). Limpia la caché del catálogo y registra
+     * `role_updated`.
+     *
+     * Un no admin no puede editar su propio rol ni uno con permisos que él no tiene.
+     *
+     * @param  Request  $request  Datos del rol.
+     * @param  string  $role  Clave (`key`) del rol.
+     * @return RedirectResponse Regresa con el resumen actualizado.
+     *
+     * @throws HttpException 403/404/422 según findEditable() y las reglas de delegación.
+     * @throws ValidationException Si los datos no son válidos.
+     */
     public function update(Request $request, string $role): RedirectResponse
     {
         $current = $this->findEditable($role);
@@ -137,6 +182,17 @@ class RoleController extends Controller
         return back()->with('success', "Rol «{$data['name']}» actualizado. {$summary}");
     }
 
+    /**
+     * Elimina un rol personalizado sin usuarios asignados: borra sus módulos,
+     * acciones y la fila en `roles` (transacción), limpia la caché y registra
+     * `role_deleted`. Los roles del sistema no se eliminan.
+     *
+     * @param  Request  $request  Usuario autenticado.
+     * @param  string  $role  Clave (`key`) del rol.
+     * @return RedirectResponse Regresa con éxito o con el error de negocio.
+     *
+     * @throws HttpException 403 si es su propio rol; 404/422 desde findEditable().
+     */
     public function destroy(Request $request, string $role): RedirectResponse
     {
         $current = $this->findEditable($role);
@@ -162,7 +218,14 @@ class RoleController extends Controller
         return back()->with('success', "Rol «{$current->name}» eliminado.");
     }
 
-    /** "Gerente de Sucursal puede utilizar 4 módulos y tiene 12 acciones permitidas." */
+    /**
+     * Resumen legible del rol: "Gerente de Sucursal puede utilizar 4 módulos y
+     * tiene 12 acciones permitidas." Solo cuenta acciones de módulos asignados.
+     *
+     * @param  string  $name  Nombre del rol.
+     * @param  array  $modules  Claves de módulos.
+     * @param  array  $actions  Mapa módulo → acciones.
+     */
     private function summary(string $name, array $modules, array $actions): string
     {
         $m = count($modules);
@@ -176,14 +239,31 @@ class RoleController extends Controller
         return sprintf('%s puede utilizar %d %s y tiene %d %s.', $name, $m, $m === 1 ? 'módulo' : 'módulos', $a, $a === 1 ? 'acción permitida' : 'acciones permitidas');
     }
 
+    /**
+     * Verifica con AccessDelegationGuard que el actor no otorgue módulos o
+     * acciones que su propio rol no tiene.
+     *
+     * @param  User  $actor  Usuario que crea/edita el rol.
+     * @param  array  $data  Datos validados (`modules`, `actions`).
+     *
+     * @throws ValidationException Con la lista de permisos excedentes.
+     */
     private function assertGrantable(User $actor, array $data): void
     {
         $missing = $this->guard->excess($actor, $data['modules'], $data['actions']);
         if ($missing !== []) {
-            throw ValidationException::withMessages(['modules' => 'No puedes otorgar permisos que tu propio rol no tiene: ' . implode(', ', $missing) . '.']);
+            throw ValidationException::withMessages(['modules' => 'No puedes otorgar permisos que tu propio rol no tiene: '.implode(', ', $missing).'.']);
         }
     }
 
+    /**
+     * Busca un rol configurable por su clave en la tabla `roles`.
+     *
+     * @param  string  $key  Clave del rol.
+     * @return object Fila cruda de `roles`.
+     *
+     * @throws HttpException 404 si no existe; 422 si es Administrador.
+     */
     private function findEditable(string $key): object
     {
         $role = DB::table('roles')->where('key', $key)->first();
@@ -193,7 +273,18 @@ class RoleController extends Controller
         return $role;
     }
 
-    /** @return array{name:string, description:?string, base_level:string, modules:list<string>, actions:array<string,list<string>>} */
+    /**
+     * Valida y normaliza los datos de un rol: nombre único (sin distinguir
+     * mayúsculas, excluyendo el rol actual), nivel base (obligatorio salvo en
+     * roles del sistema), módulos sin duplicados y acciones saneadas y
+     * limitadas a los módulos elegidos.
+     *
+     * @param  Request  $request  Datos enviados.
+     * @param  object|null  $current  Rol que se edita (null al crear).
+     * @return array{name:string, description:?string, base_level:string, modules:list<string>, actions:array<string,list<string>>}
+     *
+     * @throws ValidationException Si los datos no son válidos o el nombre ya existe.
+     */
     private function validated(Request $request, ?object $current = null): array
     {
         $actionRules = [];

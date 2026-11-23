@@ -22,11 +22,16 @@ use Illuminate\Support\Facades\Schema;
  * Todas las búsquedas por persona usan la llave de identidad del roster
  * (employee_key) Y los employee_id del grupo — nunca solo el nombre: dos
  * homónimos con llaves distintas no comparten historial.
+ *
+ * Mantiene memo por instancia de la línea de tiempo de directorios y de la
+ * disponibilidad de la bitácora de conciliación.
  */
 class RosterMovementEvidenceCollector
 {
+    /** Fragmentos de concepto NOI que indican finiquito/indemnización. */
     private const FINIQUITO_PATTERNS = ['FINIQUITO', 'INDEMNIZ', 'LIQUIDACION', 'LIQUIDACIÓN', 'PRIMA DE ANTIG', 'PRIMA ANTIG'];
 
+    /** Fragmentos de puesto que identifican personal comercial (se espera colocación). */
     private const COMMERCIAL_POSITIONS = ['GESTOR', 'PROMOTOR', 'ASESOR', 'EJECUTIVO'];
 
     /**
@@ -36,12 +41,14 @@ class RosterMovementEvidenceCollector
      */
     public const DIRECTORY_GRACE_DAYS = 31;
 
+    /** Procedencia del directorio respecto al periodo: vigente, anterior o posterior. */
     public const DIR_PERIOD = 'periodo';
 
     public const DIR_PRIOR = 'anterior';
 
     public const DIR_LATER = 'posterior';
 
+    /** Memo de directoryTimeline(). */
     private ?array $timeline = null;
 
     /**
@@ -52,6 +59,10 @@ class RosterMovementEvidenceCollector
      * no puede ser anterior a la última alta que trae. Esto detecta un archivo
      * reciente cargado en un periodo viejo (caso real: el "directorio de Mayo"
      * trae ingresos al 30/06/2026; es una foto de finales de junio).
+     *
+     * content_after_declared = el archivo trae altas posteriores a fin del
+     * periodo declarado + DIRECTORY_GRACE_DAYS. Ordenado por corte e id de carga.
+     * Consulta lendus_employee_directory + report_uploads + periods (una vez por instancia).
      *
      * @return array<int, array{upload_id:int, file:string, declared_period_id:?int, declared_period:?string, declared_start:?string, declared_end:?string, max_hire_date:?string, uploaded_at:?string, effective_cut:?string, content_after_declared:bool, rows:int}>
      */
@@ -105,6 +116,7 @@ class RosterMovementEvidenceCollector
      *   - later: el primer directorio con corte POSTERIOR a la ventana — solo
      *     informativo: nunca confirma una baja ni crea contradicciones.
      *
+     * @param  Period  $period  Periodo evaluado (sin fechas = sin evidencia).
      * @return array{valid: ?array, later: ?array, timeline: array}
      */
     public function directoryEvidenceFor(Period $period): array
@@ -141,12 +153,23 @@ class RosterMovementEvidenceCollector
     /**
      * Compatibilidad: carga del directorio VÁLIDA para el periodo, o null.
      * Nunca devuelve un directorio posterior.
+     *
+     * @param  Period  $period  Periodo evaluado.
+     * @return array<string, mixed>|null Descripción del directorio (ver describe()).
      */
     public function directorySnapshotFor(Period $period): ?array
     {
         return $this->directoryEvidenceFor($period)['valid'];
     }
 
+    /**
+     * Arma la descripción de una carga de directorio para la UI (etiqueta con
+     * archivo, periodo de carga, corte estimado y procedencia).
+     *
+     * @param  array<string, mixed>  $d  Elemento de directoryTimeline().
+     * @param  string  $kind  DIR_PERIOD, DIR_PRIOR o DIR_LATER.
+     * @return array{upload_id:int, kind:string, label:string, end_date:?string, effective_cut:?string, declared_period:?string, content_after_declared:bool}
+     */
     private function describe(array $d, string $kind): array
     {
         $cut = $d['effective_cut'] ? date('d/m/Y', strtotime($d['effective_cut'])) : 's/f';
@@ -173,8 +196,9 @@ class RosterMovementEvidenceCollector
      * alguna fila ACTIVO, si no INACTIVO; además puesto, códigos y si el nombre
      * corresponde a más de un número de empleado (homónimo en el directorio).
      *
-     * @param  string[]  $names
-     * @return array<string, array{status:string, puesto:?string, codes:string[], ambiguous:bool}>
+     * @param  array<string, mixed>|null  $snapshot  Directorio elegido (debe traer upload_id); null = sin evidencia.
+     * @param  string[]  $names  Nombres normalizados a buscar.
+     * @return array<string, array{status:string, puesto:?string, codes:string[], ambiguous:bool}> Solo nombres con estatus ACTIVO/INACTIVO.
      */
     public function directoryStatusByName(?array $snapshot, array $names): array
     {
@@ -217,7 +241,10 @@ class RosterMovementEvidenceCollector
     /**
      * Empleados con concepto de finiquito/indemnización en NOI en los periodos dados.
      *
-     * @param  int[]  $dataIds
+     * Busca en fact_noi_movements por FINIQUITO_PATTERNS (LIKE, mayúsculas).
+     * Si un empleado tiene varios conceptos, queda el último leído.
+     *
+     * @param  int[]  $dataIds  Periodos de datos a revisar.
      * @return array<int, string> employee_id => concepto
      */
     public function finiquitoEmployees(array $dataIds): array
@@ -247,7 +274,10 @@ class RosterMovementEvidenceCollector
     /**
      * Actividad comercial (colocación Lendus) en los periodos dados.
      *
-     * @param  int[]  $dataIds
+     * Lee nombres normalizados y códigos de promotor distintos de fact_placements.
+     * loaded = hubo colocación cargada (si no, la falta de actividad no significa nada).
+     *
+     * @param  int[]  $dataIds  Periodos de datos a revisar.
      * @return array{names: array<string,bool>, codes: array<string,bool>, loaded: bool}
      */
     public function placementActivity(array $dataIds): array
@@ -276,6 +306,14 @@ class RosterMovementEvidenceCollector
         return ['names' => $names, 'codes' => $codes, 'loaded' => $rows->isNotEmpty()];
     }
 
+    /**
+     * ¿La persona colocó en el periodo? Coincide por nombre normalizado o por
+     * cualquiera de sus códigos de empleado.
+     *
+     * @param  array{names: array<string,bool>, codes: array<string,bool>}  $activity  Resultado de placementActivity().
+     * @param  string  $name  Nombre normalizado.
+     * @param  string[]  $codes  Códigos (en mayúsculas).
+     */
     public function hasCommercialActivity(array $activity, string $name, array $codes): bool
     {
         if (isset($activity['names'][$name])) {
@@ -290,6 +328,11 @@ class RosterMovementEvidenceCollector
         return false;
     }
 
+    /**
+     * ¿El puesto es comercial (gestor, promotor, asesor, ejecutivo)?
+     *
+     * @param  string|null  $puesto  Puesto del directorio.
+     */
     public function isCommercialPosition(?string $puesto): bool
     {
         $p = mb_strtoupper((string) $puesto);
@@ -305,6 +348,7 @@ class RosterMovementEvidenceCollector
     /**
      * Primer periodo POSTERIOR en el que la persona vuelve a estar en nómina.
      *
+     * @param  Period  $period  Periodo evaluado.
      * @param  array<string, int[]>  $identities  employee_key => employee_ids
      * @return array<string, string> employee_key => etiqueta del periodo
      */
@@ -333,6 +377,7 @@ class RosterMovementEvidenceCollector
      * cada persona: sirve para distinguir reingreso (última fila = baja
      * confirmada) de regreso tras ausencia (última fila = activo/ausencia).
      *
+     * @param  Period  $period  Periodo evaluado.
      * @param  array<string, int[]>  $identities  employee_key => employee_ids
      * @return array<string, array{status:string, confirmed_baja:bool, period:string}>
      */
@@ -366,8 +411,12 @@ class RosterMovementEvidenceCollector
      * employee_id del grupo o por la misma llave (filas antiguas, cuya llave
      * era el nombre). Conserva el orden de la consulta.
      *
-     * @param  array<string, int[]>  $identities
-     * @return array<string, array<int, object>>
+     * Consulta period_employee_rosters + periods en bloques de 400 llaves.
+     *
+     * @param  array<string, int[]>  $identities  employee_key => employee_ids.
+     * @param  \Closure  $scope  Recibe el query builder para agregar filtros y orden.
+     * @param  string[]  $columns  Columnas extra a seleccionar.
+     * @return array<string, array<int, object>> employee_key => filas.
      */
     private function rosterRowsFor(array $identities, \Closure $scope, array $columns): array
     {
@@ -397,9 +446,14 @@ class RosterMovementEvidenceCollector
         return $out;
     }
 
+    /** Memo de reviewsAvailable(). */
     private ?bool $reviewsAvailable = null;
 
-    /** La migración puede no haberse corrido aún (despliegue en curso): nunca romper la lectura. */
+    /**
+     * ¿Existe la tabla period_employee_movement_reviews?
+     *
+     * La migración puede no haberse corrido aún (despliegue en curso): nunca romper la lectura.
+     */
     public function reviewsAvailable(): bool
     {
         return $this->reviewsAvailable ??= Schema::hasTable('period_employee_movement_reviews');
@@ -410,7 +464,8 @@ class RosterMovementEvidenceCollector
      * nombre_normalizado de la bitácora guarda la llave de identidad del
      * roster (igual al nombre salvo homónimos separados).
      *
-     * @return array<string, object>
+     * @param  Period  $period  Periodo evaluado.
+     * @return array<string, object> employee_key => última revisión (con nombre del revisor).
      */
     public function latestReviews(Period $period): array
     {

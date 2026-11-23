@@ -12,7 +12,7 @@ return new class extends Migration
      * duplicar el check-in de una semana (evita doble captura por doble clic o
      * dos pestañas). `actual_value_snapshot` es informativo (lo que el sistema
      * mostraba al momento del check-in) — NUNCA sobrescribe el dato automático
-     * de Reportería (ver docs/OKR.md "KPI automático vs manual").
+     * de Reportería (ver docs/MANUAL-DESARROLLADOR.md "KPI automático vs manual").
      */
     public function up(): void
     {

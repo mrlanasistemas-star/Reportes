@@ -41,6 +41,15 @@ class ReportsAuditScopesCommand extends Command
 
     private const TOLERANCE = 0.01;
 
+    /**
+     * Recorre los periodos indicados (o todos) y, para el alcance general, cada sucursal operativa y
+     * cada colaborador del roster (filtrables con `--branch`/`--employee`), proyecta el snapshot y
+     * evalúa sus invariantes; imprime cada fila y el resumen (o JSON con `--json`). Solo lectura.
+     *
+     * @param  RadiographySnapshotBuilder  $builder  Pipeline canónico del snapshot (build/projectScope).
+     * @param  PeriodEmployeeRosterService  $rosterService  Roster de colaboradores de cada periodo.
+     * @return int 0 al terminar; 1 si no se encontró el periodo indicado.
+     */
     public function handle(RadiographySnapshotBuilder $builder, PeriodEmployeeRosterService $rosterService): int
     {
         $periods = $this->option('period')
@@ -49,19 +58,20 @@ class ReportsAuditScopesCommand extends Command
 
         if ($periods->isEmpty()) {
             $this->error('No se encontró el periodo indicado.');
+
             return 1;
         }
 
         $employeeFilter = $this->option('employee') ? (int) $this->option('employee') : null;
-        $branchFilter   = $this->option('branch') ? (int) $this->option('branch') : null;
-        $errorsOnly     = (bool) $this->option('errors-only');
-        $asJson         = (bool) $this->option('json');
+        $branchFilter = $this->option('branch') ? (int) $this->option('branch') : null;
+        $errorsOnly = (bool) $this->option('errors-only');
+        $asJson = (bool) $this->option('json');
 
         $allBranchesByName = Branch::query()->get(['id', 'name'])
             ->keyBy(fn ($b) => strtoupper(trim($b->name)));
 
         $rows = [];
-        $bar  = $asJson ? null : $this->output->createProgressBar($periods->count());
+        $bar = $asJson ? null : $this->output->createProgressBar($periods->count());
 
         foreach ($periods as $period) {
             $summary = PeriodSummary::where('period_id', $period->id)->latest('id')->first();
@@ -71,15 +81,16 @@ class ReportsAuditScopesCommand extends Command
             // financiera — simplemente nunca se generó (o ya no es válida) su radiografía.
             // Marcarlo como ERROR_* infla el conteo de "errores" con periodos que ni siquiera
             // aplican, y le resta señal a los errores reales. Ver PARTE B del cierre.
-            if (!$summary || $summary->status !== 'generated' || $summary->invalidated_at) {
-                $reason = !$summary
+            if (! $summary || $summary->status !== 'generated' || $summary->invalidated_at) {
+                $reason = ! $summary
                     ? 'No existe PeriodSummary para este periodo — la radiografía nunca se generó.'
                     : ($summary->invalidated_at
-                        ? 'El PeriodSummary fue invalidado (' . ($summary->invalidated_reason ?: 'sin motivo registrado') . ') — no representa una radiografía vigente.'
+                        ? 'El PeriodSummary fue invalidado ('.($summary->invalidated_reason ?: 'sin motivo registrado').') — no representa una radiografía vigente.'
                         : "El PeriodSummary existe pero su status es '{$summary->status}', nunca llegó a 'generated'.");
                 $rows[] = $this->baseRow($period, 'general', null, null)
                     + ['status' => 'SKIPPED_NO_GENERATED_RADIOGRAPHY', 'modules' => [], 'detail' => ['reason' => $reason]];
                 $bar?->advance();
+
                 continue;
             }
 
@@ -87,12 +98,13 @@ class ReportsAuditScopesCommand extends Command
                 $general = $builder->build($period, $summary, ['scope' => 'general']);
             } catch (\Throwable $e) {
                 $rows[] = $this->baseRow($period, 'general', null, null)
-                    + ['status' => 'ERROR_PERIOD_MAPPING', 'modules' => [], 'detail' => ['reason' => 'build(general) lanzó una excepción: ' . $e->getMessage()]];
+                    + ['status' => 'ERROR_PERIOD_MAPPING', 'modules' => [], 'detail' => ['reason' => 'build(general) lanzó una excepción: '.$e->getMessage()]];
                 $bar?->advance();
+
                 continue;
             }
 
-            if (!$employeeFilter && !$branchFilter) {
+            if (! $employeeFilter && ! $branchFilter) {
                 $rows[] = $this->evaluate($general, $period, 'general', null, null, $general);
             }
 
@@ -103,18 +115,22 @@ class ReportsAuditScopesCommand extends Command
                 $rows[] = $this->baseRow($period, 'employee', null, $conflict['normalized_name'])
                     + ['status' => 'IDENTITY_CONFLICT', 'modules' => ['IDENTITY' => 'IDENTITY_CONFLICT'], 'detail' => [
                         'employee_ids' => implode(',', $conflict['employee_ids']),
-                        'branch_ids'   => json_encode($conflict['branch_ids']),
-                        'reason'       => 'Mismo nombre normalizado, sucursales operativas distintas y contradictorias en el mismo periodo — no se fusionó automáticamente.',
+                        'branch_ids' => json_encode($conflict['branch_ids']),
+                        'reason' => 'Mismo nombre normalizado, sucursales operativas distintas y contradictorias en el mismo periodo — no se fusionó automáticamente.',
                     ]];
             }
 
             // ── Sucursales ──────────────────────────────────────────────────
-            if (!$employeeFilter) {
+            if (! $employeeFilter) {
                 foreach ($general['branch_radiography']['branches'] ?? [] as $branchRow) {
                     $name = strtoupper(trim($branchRow['sucursal'] ?? ''));
                     $branch = $allBranchesByName->get($name);
-                    if (!$branch) continue;
-                    if ($branchFilter && (int) $branch->id !== $branchFilter) continue;
+                    if (! $branch) {
+                        continue;
+                    }
+                    if ($branchFilter && (int) $branch->id !== $branchFilter) {
+                        continue;
+                    }
 
                     $scoped = $builder->projectScope($general, $period, ['scope' => 'branch', 'branch_id' => $branch->id]);
                     $rows[] = $this->evaluate($scoped, $period, 'branch', (int) $branch->id, $branch->name, $general);
@@ -122,11 +138,13 @@ class ReportsAuditScopesCommand extends Command
             }
 
             // ── Colaboradores del roster ────────────────────────────────────
-            if (!$branchFilter) {
+            if (! $branchFilter) {
                 $roster = $rosterService->rosterRowsForSelector($period)['rows'] ?? [];
                 foreach ($roster as $emp) {
                     $empId = (int) $emp['employee_id'];
-                    if ($employeeFilter && $empId !== $employeeFilter) continue;
+                    if ($employeeFilter && $empId !== $employeeFilter) {
+                        continue;
+                    }
 
                     $scoped = $builder->projectScope($general, $period, ['scope' => 'employee', 'employee_id' => $empId]);
                     $rows[] = $this->evaluate($scoped, $period, 'employee', $empId, $emp['name'], $general);
@@ -136,7 +154,9 @@ class ReportsAuditScopesCommand extends Command
             $bar?->advance();
         }
         $bar?->finish();
-        if (!$asJson) $this->newLine(2);
+        if (! $asJson) {
+            $this->newLine(2);
+        }
 
         if ($errorsOnly) {
             $rows = array_values(array_filter($rows, fn ($r) => $this->rowHasError($r)));
@@ -144,6 +164,7 @@ class ReportsAuditScopesCommand extends Command
 
         if ($asJson) {
             $this->line(json_encode(['rows' => $rows, 'tally' => $this->tally($rows)], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
             return 0;
         }
 
@@ -156,17 +177,32 @@ class ReportsAuditScopesCommand extends Command
         return 0;
     }
 
+    /**
+     * Construye las llaves de identificación de una fila de auditoría.
+     *
+     * @param  Period  $period  Periodo auditado.
+     * @param  string  $scopeType  general | branch | employee.
+     * @param  int|null  $refId  ID de la sucursal o colaborador (null en general).
+     * @param  string|null  $refName  Nombre de la sucursal o colaborador.
+     * @return array<string,mixed> Fila base.
+     */
     private function baseRow(Period $period, string $scopeType, ?int $refId, ?string $refName): array
     {
         return [
-            'period_id'    => $period->id,
+            'period_id' => $period->id,
             'period_label' => $period->label,
-            'scope_type'   => $scopeType,
-            'ref_id'       => $refId,
-            'ref_name'     => $refName,
+            'scope_type' => $scopeType,
+            'ref_id' => $refId,
+            'ref_name' => $refName,
         ];
     }
 
+    /**
+     * @param  float  $a  Valor A.
+     * @param  float  $b  Valor B.
+     * @param  float  $tol  Tolerancia absoluta (por defecto TOLERANCE).
+     * @return bool true si |a − b| ≤ tolerancia.
+     */
     private function approx(float $a, float $b, float $tol = self::TOLERANCE): bool
     {
         return abs($a - $b) <= $tol;
@@ -179,13 +215,13 @@ class ReportsAuditScopesCommand extends Command
      */
     private function evaluate(array $scoped, Period $period, string $scopeType, ?int $refId, ?string $refName, array $general): array
     {
-        $summary  = $scoped['summary'] ?? [];
+        $summary = $scoped['summary'] ?? [];
         $sections = $scoped['sections'] ?? [];
         $scopeMeta = $scoped['scope'] ?? [];
         $available = (bool) ($scopeMeta['available'] ?? true);
 
         $modules = [];
-        $detail  = [];
+        $detail = [];
 
         // ── IDENTITY ──────────────────────────────────────────────────────
         if ($scopeType === 'employee') {
@@ -193,7 +229,7 @@ class ReportsAuditScopesCommand extends Command
             // Item 12 del cierre: quiero que fuzzy sea excepcional — se registra SIEMPRE
             // (no solo en el caso de error) para poder tallarlo en el resumen final.
             $detail['identity_resolution'] = $resolution;
-            if (!$available) {
+            if (! $available) {
                 $modules['IDENTITY'] = 'NOT_ATTRIBUTABLE';
                 $detail['identity'] = "Sin fila fusionada para employee_id={$refId} este periodo (roster lo lista, fact tables no aportaron datos atribuibles). resolution={$resolution}";
             } elseif (in_array($resolution, ['name_fallback_exact', 'name_fallback_substring'], true)) {
@@ -204,12 +240,12 @@ class ReportsAuditScopesCommand extends Command
             }
         }
 
-        if (!$available) {
+        if (! $available) {
             // Sin datos para este alcance — no tiene sentido evaluar el resto de módulos.
             return array_merge($this->baseRow($period, $scopeType, $refId, $refName), [
-                'status'  => $modules['IDENTITY'] ?? 'NOT_ATTRIBUTABLE',
+                'status' => $modules['IDENTITY'] ?? 'NOT_ATTRIBUTABLE',
                 'modules' => $modules + ['RECOVERY' => 'NOT_ATTRIBUTABLE', 'PLACEMENT' => 'NOT_ATTRIBUTABLE', 'PORTFOLIO' => 'NOT_ATTRIBUTABLE', 'PAYROLL' => 'NOT_ATTRIBUTABLE', 'EBITDA' => 'NOT_ATTRIBUTABLE'],
-                'detail'  => $detail,
+                'detail' => $detail,
             ]);
         }
 
@@ -218,23 +254,23 @@ class ReportsAuditScopesCommand extends Command
         $modules['RECOVERY'] = 'OK';
         if ($scopeType !== 'general') {
             $rc = $sections['recovery_components'] ?? null;
-            if (is_array($rc) && !($rc['not_attributable'] ?? false) && !empty($rc)) {
+            if (is_array($rc) && ! ($rc['not_attributable'] ?? false) && ! empty($rc)) {
                 $sum = round(array_sum(array_map('floatval', $rc)), 2);
-                if (!$this->approx($sum, $recoveryTotal)) {
+                if (! $this->approx($sum, $recoveryTotal)) {
                     $modules['RECOVERY'] = 'ERROR_RECOVERY_RECONCILIATION';
                     $detail['recovery_components_sum'] = $sum;
-                    $detail['recovery_total']           = $recoveryTotal;
+                    $detail['recovery_total'] = $recoveryTotal;
                 }
             }
             $byProductKey = $scopeType === 'employee' ? 'recovery_by_product_scope' : null;
             if ($byProductKey && $modules['RECOVERY'] === 'OK') {
                 $rbp = $sections[$byProductKey] ?? null;
-                if (is_array($rbp) && !($rbp['not_attributable'] ?? false) && !empty($rbp)) {
+                if (is_array($rbp) && ! ($rbp['not_attributable'] ?? false) && ! empty($rbp)) {
                     $sum2 = round(array_sum(array_column($rbp, 'recuperacion')), 2);
-                    if (!$this->approx($sum2, $recoveryTotal)) {
+                    if (! $this->approx($sum2, $recoveryTotal)) {
                         $modules['RECOVERY'] = 'ERROR_RECOVERY_RECONCILIATION';
                         $detail['recovery_by_product_sum'] = $sum2;
-                        $detail['recovery_total']          = $recoveryTotal;
+                        $detail['recovery_total'] = $recoveryTotal;
                     }
                 }
             }
@@ -245,12 +281,12 @@ class ReportsAuditScopesCommand extends Command
         $modules['PLACEMENT'] = 'OK';
         if ($scopeType === 'employee' || $scopeType === 'branch') {
             $products = $sections['products'] ?? null;
-            if (is_array($products) && !($products['not_attributable'] ?? false) && !empty($products)) {
+            if (is_array($products) && ! ($products['not_attributable'] ?? false) && ! empty($products)) {
                 $sum = round(array_sum(array_column($products, 'colocacion')), 2);
-                if (!$this->approx($sum, $placementTotal)) {
+                if (! $this->approx($sum, $placementTotal)) {
                     $modules['PLACEMENT'] = 'ERROR_PLACEMENT_RECONCILIATION';
                     $detail['placement_products_sum'] = $sum;
-                    $detail['placement_total']         = $placementTotal;
+                    $detail['placement_total'] = $placementTotal;
                 }
             }
         }
@@ -262,25 +298,25 @@ class ReportsAuditScopesCommand extends Command
         $overdue = round((float) ($summary['overdue_portfolio'] ?? 0), 2);
         $modules['PORTFOLIO'] = 'OK';
         $buckets = $sections['portfolio_buckets'] ?? null;
-        if (is_array($buckets) && !($buckets['not_attributable'] ?? false) && !empty($buckets) && array_is_list($buckets)) {
+        if (is_array($buckets) && ! ($buckets['not_attributable'] ?? false) && ! empty($buckets) && array_is_list($buckets)) {
             $sum = round((float) array_sum(array_column($buckets, 'vencida')), 2);
-            if (!$this->approx($sum, $overdue)) {
+            if (! $this->approx($sum, $overdue)) {
                 $modules['PORTFOLIO'] = 'ERROR_MORA_RECONCILIATION';
-                $detail['mora_buckets_sum']  = $sum;
+                $detail['mora_buckets_sum'] = $sum;
                 $detail['overdue_portfolio'] = $overdue;
             }
         }
 
         // ── PAYROLL ───────────────────────────────────────────────────────
         $payrollTotal = round((float) ($summary['nomina_capital_humano_total'] ?? 0), 2);
-        $noiPercep    = round((float) ($summary['noi_percepciones'] ?? 0), 2);
-        $noiDeduc     = round((float) ($summary['noi_deducciones'] ?? 0), 2);
+        $noiPercep = round((float) ($summary['noi_percepciones'] ?? 0), 2);
+        $noiDeduc = round((float) ($summary['noi_deducciones'] ?? 0), 2);
         $modules['PAYROLL'] = 'OK';
         if ($payrollTotal > self::TOLERANCE && $noiPercep <= self::TOLERANCE && $noiDeduc <= self::TOLERANCE) {
             $modules['PAYROLL'] = 'ERROR_PAYROLL_SOURCE_MISMATCH';
-            $detail['payroll_total']    = $payrollTotal;
+            $detail['payroll_total'] = $payrollTotal;
             $detail['noi_percepciones'] = $noiPercep;
-            $detail['noi_deducciones']  = $noiDeduc;
+            $detail['noi_deducciones'] = $noiDeduc;
             if ($scopeType === 'employee') {
                 $detail['noi_rows_raw_employee_id'] = DB::table('fact_noi_movements')
                     ->where('employee_id', $refId)
@@ -291,27 +327,27 @@ class ReportsAuditScopesCommand extends Command
         } elseif ($scopeType === 'employee') {
             $payrollDetail = $sections['payroll_detail'] ?? null;
             if (is_array($payrollDetail) && isset($payrollDetail['percepciones_total'], $payrollDetail['deducciones_total'])) {
-                if (!$this->approx((float) $payrollDetail['percepciones_total'], $noiPercep)
-                    || !$this->approx((float) $payrollDetail['deducciones_total'], $noiDeduc)) {
+                if (! $this->approx((float) $payrollDetail['percepciones_total'], $noiPercep)
+                    || ! $this->approx((float) $payrollDetail['deducciones_total'], $noiDeduc)) {
                     $modules['PAYROLL'] = 'ERROR_PAYROLL_RECONCILIATION';
                     $detail['payroll_detail_percepciones'] = $payrollDetail['percepciones_total'];
-                    $detail['noi_percepciones']             = $noiPercep;
-                    $detail['payroll_detail_deducciones']  = $payrollDetail['deducciones_total'];
-                    $detail['noi_deducciones']              = $noiDeduc;
+                    $detail['noi_percepciones'] = $noiPercep;
+                    $detail['payroll_detail_deducciones'] = $payrollDetail['deducciones_total'];
+                    $detail['noi_deducciones'] = $noiDeduc;
                 }
             }
         }
 
         // ── EBITDA ────────────────────────────────────────────────────────
-        $ingresoBase   = round((float) ($summary['ingreso_ebitda_base'] ?? 0), 2);
+        $ingresoBase = round((float) ($summary['ingreso_ebitda_base'] ?? 0), 2);
         $gastosTotales = round((float) ($summary['gastos_totales'] ?? 0), 2);
-        $ebitdaFinal   = round((float) ($summary['ebitda_final'] ?? 0), 2);
-        $expected      = round($ingresoBase - $gastosTotales, 2);
+        $ebitdaFinal = round((float) ($summary['ebitda_final'] ?? 0), 2);
+        $expected = round($ingresoBase - $gastosTotales, 2);
         $modules['EBITDA'] = 'OK';
-        if (!$this->approx($expected, $ebitdaFinal)) {
+        if (! $this->approx($expected, $ebitdaFinal)) {
             $modules['EBITDA'] = 'ERROR_EBITDA_RECONCILIATION';
             $detail['ebitda_expected'] = $expected;
-            $detail['ebitda_final']    = $ebitdaFinal;
+            $detail['ebitda_final'] = $ebitdaFinal;
         }
 
         // ── GLOBAL LEAK ───────────────────────────────────────────────────
@@ -319,13 +355,13 @@ class ReportsAuditScopesCommand extends Command
         if ($scopeType !== 'general') {
             $generalSummary = $general['summary'] ?? [];
             foreach (['recovery_total', 'placement_total', 'portfolio_total', 'nomina_capital_humano_total'] as $field) {
-                $scopedVal  = (float) ($summary[$field] ?? 0);
+                $scopedVal = (float) ($summary[$field] ?? 0);
                 $generalVal = (float) ($generalSummary[$field] ?? 0);
                 if ($scopedVal > $generalVal + self::TOLERANCE) {
                     $modules['GLOBAL_LEAK'] = 'ERROR_GLOBAL_DATA_LEAK';
-                    $detail['leak_field']        = $field;
+                    $detail['leak_field'] = $field;
                     $detail['leak_scoped_value'] = round($scopedVal, 2);
-                    $detail['leak_general_value']= round($generalVal, 2);
+                    $detail['leak_general_value'] = round($generalVal, 2);
                     break;
                 }
             }
@@ -334,51 +370,80 @@ class ReportsAuditScopesCommand extends Command
         $status = $this->overallStatus($modules);
 
         return array_merge($this->baseRow($period, $scopeType, $refId, $refName), [
-            'status'  => $status,
+            'status' => $status,
             'modules' => $modules,
-            'detail'  => $detail,
+            'detail' => $detail,
         ]);
     }
 
+    /**
+     * @param  Period  $period  Periodo.
+     * @return array<int> IDs de semanas base más el propio periodo.
+     */
     private function dataIdsFor(Period $period): array
     {
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+
         return array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
     }
 
+    /**
+     * Devuelve el primer estado ERROR_* de los módulos o "OK" si no hay ninguno.
+     *
+     * @param  array<string,string>  $modules  Módulo => estado.
+     * @return string Estado global de la fila.
+     */
     private function overallStatus(array $modules): string
     {
         foreach ($modules as $status) {
-            if (str_starts_with($status, 'ERROR_')) return $status;
+            if (str_starts_with($status, 'ERROR_')) {
+                return $status;
+            }
         }
+
         return 'OK';
     }
 
+    /**
+     * @param  array  $row  Fila evaluada.
+     * @return bool true si su estado empieza con ERROR_.
+     */
     private function rowHasError(array $row): bool
     {
         return str_starts_with($row['status'] ?? '', 'ERROR_');
     }
 
+    /**
+     * Imprime una fila: periodo, alcance, estado por módulo (coloreado) y detalle.
+     *
+     * @param  array  $r  Fila evaluada.
+     */
     private function printRow(array $r): void
     {
-        $header = strtoupper($r['scope_type']) . ($r['ref_name'] ? " — {$r['ref_name']}" : '');
+        $header = strtoupper($r['scope_type']).($r['ref_name'] ? " — {$r['ref_name']}" : '');
         $this->line("PERIODO: {$r['period_label']} (ID {$r['period_id']})  |  {$header}");
 
         foreach ($r['modules'] as $mod => $status) {
             $color = str_starts_with($status, 'ERROR_') ? 'error' : ($status === 'OK' ? 'info' : 'comment');
-            $this->line('  ' . str_pad($mod, 14) . "<{$color}>{$status}</{$color}>");
+            $this->line('  '.str_pad($mod, 14)."<{$color}>{$status}</{$color}>");
         }
 
-        if (!empty($r['detail'])) {
+        if (! empty($r['detail'])) {
             $this->line('  Detalle:');
             foreach ($r['detail'] as $k => $v) {
-                $this->line("    {$k}: " . (is_scalar($v) ? $v : json_encode($v, JSON_UNESCAPED_UNICODE)));
+                $this->line("    {$k}: ".(is_scalar($v) ? $v : json_encode($v, JSON_UNESCAPED_UNICODE)));
             }
         }
         $this->newLine();
     }
 
+    /**
+     * Cuenta las filas por estado.
+     *
+     * @param  array  $rows  Filas evaluadas.
+     * @return array<string,int> ['total' => n] + conteo por estado.
+     */
     private function tally(array $rows): array
     {
         $tally = [];
@@ -386,23 +451,34 @@ class ReportsAuditScopesCommand extends Command
             $tally[$r['status']] = ($tally[$r['status']] ?? 0) + 1;
         }
         ksort($tally);
+
         return ['total' => count($rows)] + $tally;
     }
 
+    /**
+     * Imprime el resumen por estado y, para filas de colaborador, cómo se resolvió la identidad
+     * (employee_id, nombre exacto, fuzzy…).
+     *
+     * @param  array  $rows  Filas evaluadas.
+     */
     private function printTally(array $rows): void
     {
         $this->info('════ RESUMEN ════');
-        $this->line('Total filas auditadas: ' . count($rows));
+        $this->line('Total filas auditadas: '.count($rows));
         foreach ($this->tally($rows) as $status => $count) {
-            if ($status === 'total') continue;
-            $this->line('  ' . str_pad($status, 32) . $count);
+            if ($status === 'total') {
+                continue;
+            }
+            $this->line('  '.str_pad($status, 32).$count);
         }
 
         // Item 12 del cierre: quiero que fuzzy sea excepcional — desglose de CÓMO se
         // resolvió la identidad en cada fila employee (nunca solo "OK"/"ERROR").
         $resolutionCounts = [];
         foreach ($rows as $r) {
-            if (($r['scope_type'] ?? null) !== 'employee') continue;
+            if (($r['scope_type'] ?? null) !== 'employee') {
+                continue;
+            }
             $resolution = $r['detail']['identity_resolution'] ?? 'not_applicable';
             $label = match ($resolution) {
                 'employee_id' => 'resolved_by_employee_id',
@@ -412,12 +488,12 @@ class ReportsAuditScopesCommand extends Command
             };
             $resolutionCounts[$label] = ($resolutionCounts[$label] ?? 0) + 1;
         }
-        if (!empty($resolutionCounts)) {
+        if (! empty($resolutionCounts)) {
             ksort($resolutionCounts);
             $this->newLine();
             $this->info('════ IDENTIDAD (colaboradores) ════');
             foreach ($resolutionCounts as $label => $count) {
-                $this->line('  ' . str_pad($label, 32) . $count);
+                $this->line('  '.str_pad($label, 32).$count);
             }
         }
     }

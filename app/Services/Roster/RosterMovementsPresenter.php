@@ -13,16 +13,30 @@ use Illuminate\Support\Facades\Schema;
  * partir de period_employee_rosters — la MISMA fuente que Rotación y OKR,
  * nunca un segundo cálculo. Separa hechos confirmados de pendientes de
  * conciliación: una ausencia de nómina nunca se muestra como baja confirmada.
+ *
+ * Solo lectura (period_employee_rosters). La usa el controlador de Colaboradores.
  */
 class RosterMovementsPresenter
 {
+    /** Memo: ¿existe la columna movement_evidence? */
     private ?bool $hasEvidence = null;
 
+    /**
+     * @param  RosterMovementEvidenceCollector  $evidence  Evidencia de directorio laboral vigente/posterior del periodo.
+     */
     public function __construct(private readonly RosterMovementEvidenceCollector $evidence) {}
 
     /**
-     * @param Collection<int, Period> $monthlyPeriods
-     * @param list<int>|null $branchIds Fase 6.4 — alcance por sucursal (null = todas).
+     * Sección laboral completa de un periodo: resumen de plantilla, activos,
+     * movimientos confirmados, pendientes de conciliación y contadores.
+     *
+     * Reglas: "bajas" solo cuenta bajas confirmadas; mass_drop_detected se
+     * enciende si la plantilla anterior era ≥10 y cayó ≥20%.
+     *
+     * @param  Period  $period  Periodo mensual consultado.
+     * @param  Collection<int, Period>  $monthlyPeriods  Periodos mensuales (para ubicar el anterior).
+     * @param  list<int>|null  $branchIds  Fase 6.4 — alcance por sucursal (null = todas).
+     * @return array{roster:array<string,mixed>, active:Collection, movements:array<string,Collection>, pending:Collection, counts:array<string,int>}
      */
     public function forPeriod(Period $period, Collection $monthlyPeriods, ?array $branchIds = null): array
     {
@@ -112,6 +126,7 @@ class RosterMovementsPresenter
      *
      * @param  Collection<int, Period>  $monthlyPeriods
      * @param  list<int>|null  $branchIds  Fase 6.4 — alcance por sucursal (null = todas).
+     * @return list<array{period_id:int, label:string, calculado:bool, plantilla:int, altas:int, bajas_confirmadas:int, pendientes:int}>
      */
     public function history(Collection $monthlyPeriods, ?array $branchIds = null): array
     {
@@ -146,6 +161,19 @@ class RosterMovementsPresenter
         })->values()->all();
     }
 
+    /**
+     * Convierte una fila del roster en el elemento que consume el frontend.
+     *
+     * Resuelve la categoría efectiva, decodifica la evidencia JSON, reemplaza
+     * la nota en filas SIN_CLASIFICAR y marca requires_review / can_review
+     * (solo ausencias pendientes se pueden conciliar). Las ausencias se
+     * etiquetan con el periodo anterior (último en que cobró).
+     *
+     * @param  object  $r  Fila de period_employee_rosters.
+     * @param  Period  $period  Periodo consultado.
+     * @param  Period|null  $prevPeriod  Periodo mensual anterior.
+     * @return array<string, mixed>
+     */
     private function item(object $r, Period $period, ?Period $prevPeriod): array
     {
         $active = (bool) $r->is_active_for_period;
@@ -180,6 +208,9 @@ class RosterMovementsPresenter
         ];
     }
 
+    /**
+     * ¿Existe la columna period_employee_rosters.movement_evidence? (memo por instancia).
+     */
     private function hasEvidence(): bool
     {
         return $this->hasEvidence ??= Schema::hasColumn('period_employee_rosters', 'movement_evidence');

@@ -6,9 +6,21 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-employee-branch-assignments` — tabla completa de asignaciones de
+ * sucursal por empleado del periodo, resumen, diagnóstico persona por persona de quienes no
+ * tienen sucursal (qué fuentes podrían resolverla) y verificación de asignaciones que apuntan a
+ * sucursales no operativas (fuera de OPERATIVE_BRANCHES + ALLOWED_EXTRAS).
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-employee-branch-assignments 21
+ */
 class DebugEmployeeBranchAssignmentsCommand extends Command
 {
-    protected $signature   = 'reportes:debug-employee-branch-assignments {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-employee-branch-assignments {period_id : ID del periodo}';
+
     protected $description = 'Muestra asignaciones de sucursal por empleado y diagnóstico detallado de personas sin sucursal.';
 
     private const OPERATIVE_BRANCHES = [
@@ -19,32 +31,38 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
 
     private const ALLOWED_EXTRAS = ['CORPORATIVO', 'SAN JUAN DEL RÍO', 'SAN JUAN DEL RIO'];
 
+    /**
+     * Imprime las secciones A–D del diagnóstico de asignaciones.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
 
         $this->line('');
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG EMPLOYEE BRANCH ASSIGNMENTS — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // Employees in NOI with their branch assignment
         $rows = DB::table('employees as e')
             ->leftJoin('employee_branch_assignments as eba', function ($j) use ($dataIds, $periodId) {
                 $j->on('eba.employee_id', '=', 'e.id')
-                  ->whereIn('eba.period_id', array_merge([$periodId], $dataIds));
+                    ->whereIn('eba.period_id', array_merge([$periodId], $dataIds));
             })
             ->leftJoin('branches as b', 'eba.branch_id', '=', 'b.id')
             ->join('fact_noi_movements as n', function ($j) use ($dataIds) {
@@ -71,6 +89,7 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
 
         if ($rows->isEmpty()) {
             $this->warn('  Sin empleados en NOI para este periodo.');
+
             return self::SUCCESS;
         }
 
@@ -91,7 +110,7 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
 
         // ── A. Full assignments table ─────────────────────────────────────────
         $this->info('── A. ASIGNACIONES COMPLETAS ─────────────────────────────────────────');
-        $headers   = ['Nombre', 'Fuente', 'Sucursal', 'Método', 'Conf.', 'Manual', 'Movs.', 'Total NOI'];
+        $headers = ['Nombre', 'Fuente', 'Sucursal', 'Método', 'Conf.', 'Manual', 'Movs.', 'Total NOI'];
         $tableRows = [];
 
         foreach ($rows as $r) {
@@ -103,7 +122,7 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
                 $r->confidence !== null ? number_format((float) $r->confidence, 2) : '—',
                 $r->was_manual_reviewed ? 'SÍ' : 'no',
                 (int) $r->movements,
-                '$' . number_format((float) $r->total_amount, 2),
+                '$'.number_format((float) $r->total_amount, 2),
             ];
         }
 
@@ -111,15 +130,15 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
         $this->line('');
 
         // ── B. Summary ────────────────────────────────────────────────────────
-        $total    = $rows->count();
-        $conSuc   = $rows->filter(fn ($r) => $r->branch_name !== '<sin sucursal>')->count();
-        $sinSuc   = $total - $conSuc;
-        $manual   = $rows->filter(fn ($r) => $r->was_manual_reviewed)->count();
+        $total = $rows->count();
+        $conSuc = $rows->filter(fn ($r) => $r->branch_name !== '<sin sucursal>')->count();
+        $sinSuc = $total - $conSuc;
+        $manual = $rows->filter(fn ($r) => $r->was_manual_reviewed)->count();
         $montoSin = $rows->filter(fn ($r) => $r->branch_name === '<sin sucursal>')->sum('total_amount');
 
         $this->info('── B. RESUMEN ────────────────────────────────────────────────────────');
         $this->line("  Total empleados en NOI: {$total}  |  Con sucursal: {$conSuc}  |  Sin sucursal: {$sinSuc}");
-        $this->line("  Manuales: {$manual}  |  Monto expuesto sin sucursal: $" . number_format((float) $montoSin, 2));
+        $this->line("  Manuales: {$manual}  |  Monto expuesto sin sucursal: $".number_format((float) $montoSin, 2));
         $this->line('');
 
         // ── C. Per-person diagnosis for sin-sucursal ──────────────────────────
@@ -174,16 +193,16 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
                 ->pluck('cnt', 'promoter_name');
 
             $diagHeaders = ['Nombre', 'emp_id', 'Fuente', 'Cód Emp', 'En Lendus Dir', 'Cód Lendus', 'Suc Inferida', 'En Plac.', 'En Cobr.', 'En Saldos', 'Razón no asignó'];
-            $diagRows    = [];
+            $diagRows = [];
 
             foreach ($sinSucRows as $r) {
                 $normName = $normalize($r->full_name);
 
                 // Lendus directory lookup
-                $lendusRecord     = $lendusDir->get($normName);
-                $enLendus         = $lendusRecord ? 'SÍ' : 'NO';
-                $codigoLendus     = $lendusRecord ? ($lendusRecord->codigo ?? 'N/D') : 'N/D';
-                $sucInferida      = 'N/D';
+                $lendusRecord = $lendusDir->get($normName);
+                $enLendus = $lendusRecord ? 'SÍ' : 'NO';
+                $codigoLendus = $lendusRecord ? ($lendusRecord->codigo ?? 'N/D') : 'N/D';
+                $sucInferida = 'N/D';
                 if ($lendusRecord && $lendusRecord->inferred_branch_id) {
                     $sucInferida = $branchNames[$lendusRecord->inferred_branch_id] ?? "branch_id:{$lendusRecord->inferred_branch_id}";
                 } elseif ($lendusRecord && $lendusRecord->codigo) {
@@ -202,16 +221,22 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
 
                 // Build diagnosis reason
                 $reasons = [];
-                if (!$lendusRecord) {
+                if (! $lendusRecord) {
                     $reasons[] = 'No en directorio Lendus';
-                } elseif (!$lendusRecord->inferred_branch_id && !$lendusRecord->codigo) {
+                } elseif (! $lendusRecord->inferred_branch_id && ! $lendusRecord->codigo) {
                     $reasons[] = 'Lendus sin código ni sucursal';
-                } elseif (!$lendusRecord->inferred_branch_id && $lendusRecord->codigo) {
+                } elseif (! $lendusRecord->inferred_branch_id && $lendusRecord->codigo) {
                     $reasons[] = 'Código Lendus sin branch_id resuelto';
                 }
-                if ($enPlacements == 0) $reasons[] = 'Sin ministraciones';
-                if ($enCobranza == 0)   $reasons[] = 'Sin cobranza';
-                if ($enSaldos == 0)     $reasons[] = 'Sin saldos';
+                if ($enPlacements == 0) {
+                    $reasons[] = 'Sin ministraciones';
+                }
+                if ($enCobranza == 0) {
+                    $reasons[] = 'Sin cobranza';
+                }
+                if ($enSaldos == 0) {
+                    $reasons[] = 'Sin saldos';
+                }
 
                 $reason = empty($reasons) ? 'desconocida — revisar logs' : implode('; ', $reasons);
 
@@ -224,8 +249,8 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
                     mb_substr((string) $codigoLendus, 0, 10),
                     mb_substr((string) $sucInferida, 0, 16),
                     $enPlacements > 0 ? "SÍ ({$enPlacements})" : 'NO',
-                    $enCobranza > 0   ? "SÍ ({$enCobranza})"  : 'NO',
-                    $enSaldos > 0     ? "SÍ ({$enSaldos})"    : 'NO',
+                    $enCobranza > 0 ? "SÍ ({$enCobranza})" : 'NO',
+                    $enSaldos > 0 ? "SÍ ({$enSaldos})" : 'NO',
                     mb_substr($reason, 0, 40),
                 ];
             }
@@ -239,8 +264,11 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
         $allowedNames = array_map('strtoupper', array_merge(self::OPERATIVE_BRANCHES, self::ALLOWED_EXTRAS));
 
         $nonOperative = $rows->filter(function ($r) use ($allowedNames) {
-            if ($r->branch_name === '<sin sucursal>') return false;
-            return !in_array(strtoupper(trim($r->branch_name)), $allowedNames, true);
+            if ($r->branch_name === '<sin sucursal>') {
+                return false;
+            }
+
+            return ! in_array(strtoupper(trim($r->branch_name)), $allowedNames, true);
         });
 
         $noCount = $nonOperative->count();
@@ -251,7 +279,7 @@ class DebugEmployeeBranchAssignmentsCommand extends Command
             foreach ($nonOperative as $r) {
                 $this->line("    <fg=red>✗</> {$r->full_name} → {$r->branch_name}");
             }
-            $this->line('  Ejecuta: php artisan reportes:clean-non-operative-employee-branches ' . $this->argument('period_id'));
+            $this->line('  Ejecuta: php artisan reportes:clean-non-operative-employee-branches '.$this->argument('period_id'));
         }
         $this->line('');
 

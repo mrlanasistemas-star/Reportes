@@ -78,21 +78,53 @@ class ExpenseObservationAttributionService
      *  concepto acotado como motos/finiquito), así que exige más margen que el
      *  fuzzy_name (≥80%) usado en FinanciamientoMotosAssignmentService. */
     private const FUZZY_ACCEPT_THRESHOLD = 92.0;
-    private const FUZZY_ACCEPT_MARGIN    = 8.0;
+
+    private const FUZZY_ACCEPT_MARGIN = 8.0;
+
     /** Por debajo de esto ni se reporta como "ambiguo" — es simplemente texto no-persona. */
-    private const AMBIGUOUS_FLOOR        = 75.0;
+    private const AMBIGUOUS_FLOOR = 75.0;
+
     /** Cuántos candidatos fuzzy se exponen en el diagnóstico (audit command). */
     private const MAX_DIAGNOSTIC_CANDIDATES = 5;
 
+    /**
+     * Inyecta las dependencias del motor de atribución.
+     *
+     * @param  PersonIdentityResolverService  $personResolver  Normalizador de nombres de persona (acentos, mayúsculas, puntuación).
+     * @param  PeriodEmployeeRosterService  $rosterService  Fuente del roster válido del periodo (únicos candidatos a beneficiario).
+     * @param  BranchRadiographyCalculator  $branchCalculator  Provee el mapa de sucursales operativas oficiales.
+     * @param  OpexClassificationService  $opexClassifier  Fuente única de clasificación OPEX (decide qué filas son atribuibles).
+     */
     public function __construct(
         private readonly PersonIdentityResolverService $personResolver,
         private readonly PeriodEmployeeRosterService $rosterService,
         private readonly BranchRadiographyCalculator $branchCalculator,
         private readonly OpexClassificationService $opexClassifier,
-    ) {
-    }
+    ) {}
 
     /**
+     * Re-atribuye al beneficiario real los gastos OPEX del periodo (fuentes
+     * gastos_lendus_excel, gastos_lendus y gastos_erp) leyendo Observación/
+     * Justificación contra el roster válido del periodo.
+     *
+     * Flujo: carga roster y construye índices (tokens de nombre completo,
+     * combinaciones parciales, alias confirmados), consulta fact_expenses de los
+     * periodos de datos excluyendo los conceptos delegados a
+     * FinanciamientoMotosAssignmentService y las filas no elegibles según
+     * OpexClassificationService, y resuelve cada fila con resolveRow().
+     *
+     * Efectos en BD (solo si $dryRun = false):
+     *  - Fila con 'changed' = true: actualiza employee_id, branch_id y las
+     *    columnas attribution_* (method, confidence, source, needs_review).
+     *  - Fila en estado 'conflicto' o 'ambiguo' sin cambio: solo marca
+     *    attribution_needs_review = true y los metadatos attribution_*; nunca
+     *    toca employee_id/branch_id.
+     * Nunca modifica monto, categoría ni concepto, ni borra o duplica filas.
+     * Devuelve [] si no existen las fuentes de datos o el roster está vacío.
+     *
+     * @param  Period  $period  Periodo cuyo roster define a los candidatos válidos.
+     * @param  array<int, int>  $dataIds  IDs de periodo cuyos fact_expenses se evalúan (periodo y, en su caso, sus fuentes consolidadas).
+     * @param  bool  $dryRun  true = solo diagnostica (comando de auditoría), sin escribir en BD.
      * @return array<int, array{
      *   fact_expense_id:int, period_id:int, report_upload_id:int, category:string, concept:string,
      *   amount:float, raw_employee_name:?string, observation:?string, justification:?string,
@@ -123,8 +155,8 @@ class ExpenseObservationAttributionService
         // isEligibleForAttribution()/resolveRow(), que ya distinguen SOURCE_ERP vs
         // SOURCE_LENDUS para la clasificación OPEX.
         $lendusPdfId = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
-        $erpId       = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
-        $sourceIds   = array_values(array_filter([$lendusExcelId, $lendusPdfId, $erpId]));
+        $erpId = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
+        $sourceIds = array_values(array_filter([$lendusExcelId, $lendusPdfId, $erpId]));
         if (empty($sourceIds)) {
             return [];
         }
@@ -179,7 +211,7 @@ class ExpenseObservationAttributionService
                 'e.id', 'e.period_id', 'e.report_upload_id', 'e.category', 'e.concept',
                 'e.employee_id', 'e.branch_id', 'e.observations', 'e.raw_payload',
                 'ru.data_source_id',
-                DB::raw("COALESCE(NULLIF(e.paid_amount,0), e.amount) as amount")
+                DB::raw('COALESCE(NULLIF(e.paid_amount,0), e.amount) as amount')
             )
             ->get()
             // PROBLEMA REAL detectado corriendo esto contra datos reales (Junio 2026):
@@ -220,34 +252,34 @@ class ExpenseObservationAttributionService
             : Employee::query()->whereIn('id', $existingEmployeeIds)->pluck('full_name', 'id')->all();
 
         $matchContext = [
-            'rosterByEmployeeId'  => $rosterByEmployeeId,
-            'aliasIndex'          => $aliasIndex,
-            'comboIndex'          => $comboIndex,
-            'fullNameTokensById'  => $fullNameTokensById,
+            'rosterByEmployeeId' => $rosterByEmployeeId,
+            'aliasIndex' => $aliasIndex,
+            'comboIndex' => $comboIndex,
+            'fullNameTokensById' => $fullNameTokensById,
             'allEmployeeNameById' => $allEmployeeNameById,
         ];
 
         foreach ($rows as $row) {
             $result = $this->resolveRow($row, $matchContext, $operativeMap);
 
-            if ($result['changed'] && !$dryRun) {
+            if ($result['changed'] && ! $dryRun) {
                 DB::table('fact_expenses')->where('id', $row->id)->update([
-                    'employee_id'               => $result['employee_id'],
-                    'branch_id'                 => $result['branch_id'],
-                    'attribution_method'        => $result['metodo'],
-                    'attribution_confidence'    => $result['confianza'] ?: null,
-                    'attribution_source'        => $result['fuente'],
-                    'attribution_needs_review'  => $result['estado'] === 'conflicto' || $result['estado'] === 'ambiguo',
-                    'updated_at'                => now(),
+                    'employee_id' => $result['employee_id'],
+                    'branch_id' => $result['branch_id'],
+                    'attribution_method' => $result['metodo'],
+                    'attribution_confidence' => $result['confianza'] ?: null,
+                    'attribution_source' => $result['fuente'],
+                    'attribution_needs_review' => $result['estado'] === 'conflicto' || $result['estado'] === 'ambiguo',
+                    'updated_at' => now(),
                 ]);
-            } elseif (!$dryRun && in_array($result['estado'], ['conflicto', 'ambiguo'], true)) {
+            } elseif (! $dryRun && in_array($result['estado'], ['conflicto', 'ambiguo'], true)) {
                 // No toca employee_id/branch_id — solo deja constancia de la revisión pendiente.
                 DB::table('fact_expenses')->where('id', $row->id)->update([
-                    'attribution_method'       => $result['metodo'],
-                    'attribution_confidence'   => $result['confianza'] ?: null,
-                    'attribution_source'       => $result['fuente'],
+                    'attribution_method' => $result['metodo'],
+                    'attribution_confidence' => $result['confianza'] ?: null,
+                    'attribution_source' => $result['fuente'],
                     'attribution_needs_review' => true,
-                    'updated_at'               => now(),
+                    'updated_at' => now(),
                 ]);
             }
 
@@ -273,11 +305,33 @@ class ExpenseObservationAttributionService
             ->classify($category, $concept, $sourceType)['eligible_for_attribution'];
     }
 
+    /**
+     * Decide el beneficiario de UNA fila de gasto a partir de su Observación y
+     * Justificación.
+     *
+     * Reglas aplicadas, en orden:
+     *  1. Si Observación y Justificación resuelven a personas válidas DISTINTAS →
+     *     estado 'conflicto' (nunca se elige una).
+     *  2. Gana Observación sobre Justificación cuando ambas (o una) resuelven.
+     *  3. Sin ganador: si algún lado fue ambiguo → 'ambiguo'; si el employee_id
+     *     previo de la fila está confirmado por nombre completo en el texto →
+     *     'ya_correcto'; si la fila ya tiene sucursal operativa → 'branch_general'
+     *     (employee_id se limpia a NULL); si no → 'no_atribuible'.
+     *  4. Con ganador: la sucursal es la histórica del colaborador en el periodo
+     *     (solo si es operativa oficial; si no, se conserva la de la fila) y el
+     *     estado es 'atribuido' o 'ya_correcto' según haya cambio.
+     * No escribe en BD; solo calcula el resultado.
+     *
+     * @param  object  $row  Fila de fact_expenses (con data_source_id del upload y monto efectivo).
+     * @param  array  $matchContext  Índices precalculados: rosterByEmployeeId, aliasIndex, comboIndex, fullNameTokensById, allEmployeeNameById.
+     * @param  array<int, string>  $operativeMap  branch_id => nombre de las sucursales operativas oficiales.
+     * @return array Resultado de diagnóstico/atribución con la forma descrita en attributeForPeriod().
+     */
     private function resolveRow(object $row, array $matchContext, array $operativeMap): array
     {
         [$obsText, $justText] = $this->splitObservations((string) $row->observations);
 
-        $obsMatch  = $obsText  !== null ? $this->matchAgainstRoster($obsText, $matchContext) : null;
+        $obsMatch = $obsText !== null ? $this->matchAgainstRoster($obsText, $matchContext) : null;
         $justMatch = $justText !== null ? $this->matchAgainstRoster($justText, $matchContext) : null;
 
         $rawEmployeeName = is_array($row->raw_payload)
@@ -285,17 +339,17 @@ class ExpenseObservationAttributionService
             : (($decoded = json_decode((string) $row->raw_payload, true)) ? ($decoded['solicitante'] ?? null) : null);
 
         $base = [
-            'fact_expense_id'      => $row->id,
-            'period_id'            => $row->period_id,
-            'report_upload_id'     => $row->report_upload_id,
-            'category'             => (string) $row->category,
-            'concept'              => (string) $row->concept,
-            'amount'               => (float) $row->amount,
-            'raw_employee_name'    => $rawEmployeeName,
-            'observation'          => $obsText,
-            'justification'        => $justText,
+            'fact_expense_id' => $row->id,
+            'period_id' => $row->period_id,
+            'report_upload_id' => $row->report_upload_id,
+            'category' => (string) $row->category,
+            'concept' => (string) $row->concept,
+            'amount' => (float) $row->amount,
+            'raw_employee_name' => $rawEmployeeName,
+            'observation' => $obsText,
+            'justification' => $justText,
             'previous_employee_id' => $row->employee_id,
-            'previous_branch_id'   => $row->branch_id,
+            'previous_branch_id' => $row->branch_id,
         ];
 
         // CONFLICTO: ambos campos resuelven a personas VÁLIDAS y DISTINTAS — nunca
@@ -360,16 +414,16 @@ class ExpenseObservationAttributionService
             // CONFIRMA una asignación que el texto ya respalda explícitamente
             // (nombre completo contenido, no una coincidencia parcial/débil).
             if ($row->employee_id && isset($matchContext['allEmployeeNameById'][$row->employee_id])) {
-                $prevName   = $matchContext['allEmployeeNameById'][$row->employee_id];
+                $prevName = $matchContext['allEmployeeNameById'][$row->employee_id];
                 $prevTokens = $this->tokensOf($this->personResolver->normalizePersonName($prevName));
-                if (!empty($prevTokens)) {
-                    $obsTokens  = $obsText  !== null ? $this->tokensOf($this->personResolver->normalizePersonName($obsText))  : [];
+                if (! empty($prevTokens)) {
+                    $obsTokens = $obsText !== null ? $this->tokensOf($this->personResolver->normalizePersonName($obsText)) : [];
                     $justTokens = $justText !== null ? $this->tokensOf($this->personResolver->normalizePersonName($justText)) : [];
                     $confirmedByText = $this->tokensContain($obsTokens, $prevTokens) || $this->tokensContain($justTokens, $prevTokens);
                     if ($confirmedByText) {
                         return $base + [
                             'employee_id' => (int) $row->employee_id, 'employee_name' => $prevName,
-                            'branch_id'   => (int) $row->branch_id,
+                            'branch_id' => (int) $row->branch_id,
                             'branch_name' => $row->branch_id ? ($operativeMap[(int) $row->branch_id] ?? null) : null,
                             'metodo' => 'previous_employee_confirmed_by_text', 'confianza' => 1.0,
                             'fuente' => $this->tokensContain($obsTokens, $prevTokens) ? 'observation' : 'justification',
@@ -405,7 +459,7 @@ class ExpenseObservationAttributionService
                 // comparando contra el employee_id que la fila tenía.
                 return $base + [
                     'employee_id' => null, 'employee_name' => null,
-                    'branch_id'   => (int) $row->branch_id,
+                    'branch_id' => (int) $row->branch_id,
                     'branch_name' => $operativeMap[(int) $row->branch_id] ?? null,
                     'metodo' => null, 'confianza' => 0.0, 'fuente' => null,
                     'estado' => 'branch_general', 'changed' => $row->employee_id !== null,
@@ -422,7 +476,7 @@ class ExpenseObservationAttributionService
         }
 
         $winnerEmployeeId = $winner['employee_id'];
-        $rosterRow        = $matchContext['rosterByEmployeeId'][$winnerEmployeeId];
+        $rosterRow = $matchContext['rosterByEmployeeId'][$winnerEmployeeId];
 
         // Sucursal atribuida = la HISTÓRICA del colaborador para ESTE periodo (ya
         // resuelta por PeriodEmployeeRosterService vía employee_branch_assignments,
@@ -430,7 +484,7 @@ class ExpenseObservationAttributionService
         // branch_id actual). Solo se acepta si es una de las 13 sucursales oficiales;
         // si no, se conserva el branch_id que ya tenía la fila (nunca se inventa ni
         // se blanquea sucursal).
-        $branchId   = ($rosterRow['branch_id'] && $rosterRow['is_branch_operativa']) ? (int) $rosterRow['branch_id'] : $row->branch_id;
+        $branchId = ($rosterRow['branch_id'] && $rosterRow['is_branch_operativa']) ? (int) $rosterRow['branch_id'] : $row->branch_id;
         $branchName = ($rosterRow['branch_id'] && $rosterRow['is_branch_operativa'])
             ? ($operativeMap[$branchId] ?? $rosterRow['branch_name'])
             : ($row->branch_id ? ($operativeMap[$row->branch_id] ?? null) : null);
@@ -438,17 +492,17 @@ class ExpenseObservationAttributionService
         $changed = ((int) $row->employee_id !== $winnerEmployeeId) || ((int) $row->branch_id !== (int) $branchId);
 
         return $base + [
-            'employee_id'   => $winnerEmployeeId,
+            'employee_id' => $winnerEmployeeId,
             'employee_name' => $rosterRow['name'],
-            'branch_id'     => $branchId,
-            'branch_name'   => $branchName,
-            'metodo'        => $winner['method'],
-            'confianza'     => $winner['confidence'],
-            'fuente'        => $source,
-            'estado'        => $changed ? 'atribuido' : 'ya_correcto',
-            'changed'       => $changed,
-            'candidates'    => [],
-            'reason'        => null,
+            'branch_id' => $branchId,
+            'branch_name' => $branchName,
+            'metodo' => $winner['method'],
+            'confianza' => $winner['confidence'],
+            'fuente' => $source,
+            'estado' => $changed ? 'atribuido' : 'ya_correcto',
+            'changed' => $changed,
+            'candidates' => [],
+            'reason' => null,
         ];
     }
 
@@ -457,6 +511,9 @@ class ExpenseObservationAttributionService
      * usado por GastosLendusExcelImportService: implode(' | ', array_filter([obs, just])).
      * Con un único segmento no es posible saber si era observación o justificación —
      * no importa para la resolución (se intenta igual como "texto primario").
+     *
+     * @param  string  $raw  Contenido crudo de fact_expenses.observations.
+     * @return array{0: ?string, 1: ?string} [observación, justificación]; null cuando el segmento está vacío.
      */
     private function splitObservations(string $raw): array
     {
@@ -467,18 +524,26 @@ class ExpenseObservationAttributionService
         if (str_contains($raw, ' | ')) {
             [$first, $rest] = explode(' | ', $raw, 2);
             $first = trim($first) !== '' ? trim($first) : null;
-            $rest  = trim($rest) !== '' ? trim($rest) : null;
+            $rest = trim($rest) !== '' ? trim($rest) : null;
+
             return [$first, $rest];
         }
+
         return [$raw, null];
     }
 
-    /** Tokeniza un nombre/texto YA normalizado (espacio simple, sin acentos/puntuación). */
+    /**
+     * Tokeniza un nombre/texto YA normalizado (espacio simple, sin acentos/puntuación).
+     *
+     * @param  string  $normalized  Texto ya pasado por normalizePersonName().
+     * @return array<int, string> Palabras no vacías, en orden.
+     */
     private function tokensOf(string $normalized): array
     {
         if ($normalized === '') {
             return [];
         }
+
         return array_values(array_filter(explode(' ', $normalized), fn ($t) => $t !== ''));
     }
 
@@ -493,6 +558,7 @@ class ExpenseObservationAttributionService
      * qué token es apellido en nombres de 3 tokens (se deja solo el nombre
      * completo — ya suficientemente específico con 3 palabras).
      *
+     * @param  array<int, string>  $tokens  Tokens normalizados del nombre completo.
      * @return array<int, array<int, string>>
      */
     private function nameCombinations(array $tokens): array
@@ -522,14 +588,21 @@ class ExpenseObservationAttributionService
         return $unique;
     }
 
-    /** Contención de una secuencia de tokens dentro de otra, respetando límites de palabra. */
+    /**
+     * Contención de una secuencia de tokens dentro de otra, respetando límites de palabra.
+     *
+     * @param  array<int, string>  $haystackTokens  Tokens del texto donde se busca.
+     * @param  array<int, string>  $needleTokens  Secuencia contigua buscada (nombre, alias o combinación).
+     * @return bool true si la secuencia aparece completa y contigua; false si $needleTokens está vacío.
+     */
     private function tokensContain(array $haystackTokens, array $needleTokens): bool
     {
         if (empty($needleTokens)) {
             return false;
         }
-        $haystack = ' ' . implode(' ', $haystackTokens) . ' ';
-        $needle   = ' ' . implode(' ', $needleTokens) . ' ';
+        $haystack = ' '.implode(' ', $haystackTokens).' ';
+        $needle = ' '.implode(' ', $needleTokens).' ';
+
         return str_contains($haystack, $needle);
     }
 
@@ -552,6 +625,10 @@ class ExpenseObservationAttributionService
      * tiene ningún par plausible, esa ventana no cuenta para nada (protección
      * contra coincidencias de substring sin relación real, y contra "encontrar"
      * a alguien cuando falta una palabra completa de su nombre).
+     *
+     * @param  array<int, string>  $textTokens  Tokens normalizados del texto libre.
+     * @param  array<int, string>  $candidateTokens  Tokens normalizados del nombre completo del candidato.
+     * @return float Mejor puntaje promedio por token (0-100); 0.0 si ninguna ventana es plausible.
      */
     private function windowScoreForCandidate(array $textTokens, array $candidateTokens): float
     {
@@ -583,7 +660,7 @@ class ExpenseObservationAttributionService
                     $sumBest += $tokenBest;
                 }
 
-                if (!$allTokensClearFloor) {
+                if (! $allTokensClearFloor) {
                     continue;
                 }
 
@@ -600,9 +677,14 @@ class ExpenseObservationAttributionService
     /**
      * Resuelve un texto libre (Observación o Justificación) contra el roster del
      * periodo, en el orden A→E documentado en el docblock de la clase.
+     * Ambigüedad (varios alias, combinación compartida, empate o fuzzy sin
+     * margen) devuelve method = 'ambiguous' y employee_id null; nunca elige.
+     * No escribe en BD.
      *
+     * @param  string  $text  Observación o Justificación cruda.
+     * @param  array  $matchContext  Índices precalculados en attributeForPeriod().
      * @return array{employee_id:?int,method:?string,confidence:float,candidates:array,reason:?string}|null
-     *         null SOLO cuando el texto normalizado queda vacío (nada que evaluar).
+     *                                                                                                      null SOLO cuando el texto normalizado queda vacío (nada que evaluar).
      */
     private function matchAgainstRoster(string $text, array $matchContext): ?array
     {
@@ -633,20 +715,21 @@ class ExpenseObservationAttributionService
         }
         if (count($aliasHits) === 1) {
             $eid = array_key_first($aliasHits);
+
             return ['employee_id' => $eid, 'method' => 'alias', 'confidence' => 1.0, 'candidates' => [], 'reason' => null];
         }
         if (count($aliasHits) > 1) {
             $candidates = array_map(fn ($eid) => [
                 'employee_id' => $eid,
-                'name'        => $rosterByEmployeeId[$eid]['name'] ?? null,
-                'score'       => 100.0,
-                'method'      => 'alias_shared',
+                'name' => $rosterByEmployeeId[$eid]['name'] ?? null,
+                'score' => 100.0,
+                'method' => 'alias_shared',
             ], array_keys($aliasHits));
 
             return [
                 'employee_id' => null, 'method' => 'ambiguous', 'confidence' => 1.0,
-                'candidates'  => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
-                'reason'      => 'El texto contiene el alias de más de un colaborador distinto.',
+                'candidates' => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
+                'reason' => 'El texto contiene el alias de más de un colaborador distinto.',
             ];
         }
 
@@ -662,7 +745,7 @@ class ExpenseObservationAttributionService
         $sharedComboHit = null;  // combinación más específica que matcheó pero es compartida por >1 identidad
         foreach ($matchContext['comboIndex'] as $comboKey => $ownerIds) {
             $comboTokens = $this->tokensOf($comboKey);
-            if (!$this->tokensContain($textTokens, $comboTokens)) {
+            if (! $this->tokensContain($textTokens, $comboTokens)) {
                 continue;
             }
             $uniqueOwners = array_values(array_unique($ownerIds));
@@ -671,28 +754,30 @@ class ExpenseObservationAttributionService
                 if ($sharedComboHit === null || $len > $sharedComboHit['len']) {
                     $sharedComboHit = ['len' => $len, 'owners' => $uniqueOwners];
                 }
+
                 continue;
             }
             $eid = $uniqueOwners[0];
-            if (!isset($bestLenByEmployee[$eid]) || $len > $bestLenByEmployee[$eid]) {
+            if (! isset($bestLenByEmployee[$eid]) || $len > $bestLenByEmployee[$eid]) {
                 $bestLenByEmployee[$eid] = $len;
             }
         }
 
-        if (!empty($bestLenByEmployee)) {
+        if (! empty($bestLenByEmployee)) {
             $maxLen = max($bestLenByEmployee);
             $winners = array_keys(array_filter($bestLenByEmployee, fn ($len) => $len === $maxLen));
 
             if (count($winners) === 1) {
-                $eid     = $winners[0];
+                $eid = $winners[0];
                 $fullLen = count($fullNameTokensById[$eid] ?? []);
-                $isFull  = $fullLen > 0 && $maxLen >= $fullLen;
+                $isFull = $fullLen > 0 && $maxLen >= $fullLen;
+
                 return [
                     'employee_id' => $eid,
-                    'method'      => $isFull ? 'full_name_in_text' : 'partial_name_unique',
-                    'confidence'  => $isFull ? 1.0 : 0.95,
-                    'candidates'  => [],
-                    'reason'      => null,
+                    'method' => $isFull ? 'full_name_in_text' : 'partial_name_unique',
+                    'confidence' => $isFull ? 1.0 : 0.95,
+                    'candidates' => [],
+                    'reason' => null,
                 ];
             }
 
@@ -700,15 +785,15 @@ class ExpenseObservationAttributionService
             // mismo texto — nunca se elige arbitrariamente.
             $candidates = array_map(fn ($eid) => [
                 'employee_id' => $eid,
-                'name'        => $rosterByEmployeeId[$eid]['name'] ?? null,
-                'score'       => 100.0,
-                'method'      => 'combo',
+                'name' => $rosterByEmployeeId[$eid]['name'] ?? null,
+                'score' => 100.0,
+                'method' => 'combo',
             ], $winners);
 
             return [
                 'employee_id' => null, 'method' => 'ambiguous', 'confidence' => 1.0,
-                'candidates'  => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
-                'reason'      => 'Más de un colaborador del roster comparte la misma combinación de nombre encontrada en el texto.',
+                'candidates' => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
+                'reason' => 'Más de un colaborador del roster comparte la misma combinación de nombre encontrada en el texto.',
             ];
         }
 
@@ -717,15 +802,15 @@ class ExpenseObservationAttributionService
             // personas del roster, pero más de una — nunca se asigna al azar.
             $candidates = array_map(fn ($eid) => [
                 'employee_id' => $eid,
-                'name'        => $rosterByEmployeeId[$eid]['name'] ?? null,
-                'score'       => 100.0,
-                'method'      => 'combo_shared',
+                'name' => $rosterByEmployeeId[$eid]['name'] ?? null,
+                'score' => 100.0,
+                'method' => 'combo_shared',
             ], $sharedComboHit['owners']);
 
             return [
                 'employee_id' => null, 'method' => 'ambiguous', 'confidence' => 1.0,
-                'candidates'  => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
-                'reason'      => 'La combinación de nombre encontrada en el texto es compartida por más de un colaborador del roster (ninguno se elige arbitrariamente).',
+                'candidates' => array_slice($candidates, 0, self::MAX_DIAGNOSTIC_CANDIDATES),
+                'reason' => 'La combinación de nombre encontrada en el texto es compartida por más de un colaborador del roster (ninguno se elige arbitrariamente).',
             ];
         }
 
@@ -761,7 +846,7 @@ class ExpenseObservationAttributionService
         }
 
         arsort($scored);
-        $bestEid   = array_key_first($scored);
+        $bestEid = array_key_first($scored);
         $bestScore = $scored[$bestEid];
         $secondScore = 0.0;
         $i = 0;
@@ -791,10 +876,11 @@ class ExpenseObservationAttributionService
             // Candidato real pero sin confianza/margen suficiente — reportado como
             // ambiguo, nunca auto-asignado.
             $bestName = $rosterByEmployeeId[$bestEid]['name'] ?? '?';
+
             return [
                 'employee_id' => null, 'method' => 'ambiguous', 'confidence' => round($bestScore / 100, 2),
-                'candidates'  => $topCandidates,
-                'reason'      => sprintf(
+                'candidates' => $topCandidates,
+                'reason' => sprintf(
                     'Mejor coincidencia difusa: "%s" (%.1f%%)%s — sin margen suficiente sobre el umbral de %.0f%%.',
                     $bestName,
                     $bestScore,

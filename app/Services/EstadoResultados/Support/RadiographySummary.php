@@ -19,6 +19,11 @@ use Illuminate\Support\Facades\DB;
  */
 final class RadiographySummary
 {
+    /**
+     * Fila vigente de period_summaries del periodo (generada, no invalidada, la más reciente).
+     *
+     * @param  int  $periodId  periodo
+     */
     public static function current(int $periodId): ?object
     {
         return DB::table('period_summaries')
@@ -29,6 +34,12 @@ final class RadiographySummary
             ->first();
     }
 
+    /**
+     * Id del consolidado vigente del periodo.
+     *
+     * @param  int  $periodId  periodo
+     * @return int|null null si no hay consolidado vigente
+     */
     public static function currentId(int $periodId): ?int
     {
         $id = self::current($periodId)?->id;

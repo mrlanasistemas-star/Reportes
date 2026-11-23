@@ -8,6 +8,7 @@ use App\Services\Okr\OkrAuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -23,6 +24,15 @@ use Symfony\Component\HttpFoundation\Response;
  */
 trait ServesOkrDocuments
 {
+    /**
+     * Entrega el PDF de una carta compromiso o amonestación (emitido o firmado),
+     * en línea (`view=1`) o como descarga.
+     *
+     * @param  Request  $request  Flags `signed` y `view`.
+     * @param  OkrCommitmentLetter|OkrWarning  $document  Documento OKR con folio y rutas de almacenamiento.
+     * @param  string  $label  Nombre legible del tipo de documento para los mensajes ("carta compromiso", etc.).
+     * @return Response PDF (inline o attachment) o respuesta 404 explicativa vía missingDocument().
+     */
     protected function serveDocument(Request $request, OkrCommitmentLetter|OkrWarning $document, string $label): Response
     {
         $signed = $request->boolean('signed');
@@ -32,19 +42,28 @@ trait ServesOkrDocuments
         if ($signed && $path === null) {
             return $this->missingDocument($request, "La {$label} {$document->folio} todavía no tiene copia firmada cargada.", 'Usa "Subir firmada" para cargar el PDF escaneado con las firmas.');
         }
-        if (!is_string($path) || $path === '' || !Storage::disk($disk)->exists($path)) {
+        if (! is_string($path) || $path === '' || ! Storage::disk($disk)->exists($path)) {
             return $this->missingDocument($request,
                 $signed ? "No encontramos el archivo de la copia firmada de {$document->folio}." : "No encontramos el PDF de {$document->folio} en el almacenamiento.",
                 'El registro y su folio se conservan. Proporciona el folio a Sistemas para restaurar el archivo; no vuelvas a emitir el documento.');
         }
 
-        $filename = $document->folio . ($signed ? '-firmada' : '') . '.pdf';
+        $filename = $document->folio.($signed ? '-firmada' : '').'.pdf';
 
         return $request->boolean('view')
             ? Storage::disk($disk)->response($path, $filename, ['Content-Type' => 'application/pdf', 'Cache-Control' => 'private, no-store'])
             : Storage::disk($disk)->download($path, $filename, ['Content-Type' => 'application/pdf']);
     }
 
+    /**
+     * Respuesta 404 legible cuando el documento no existe: JSON para fetch o
+     * una página HTML mínima (estilo Montserrat) para el visor/pestaña.
+     *
+     * @param  Request  $request  Se usa para saber si espera JSON.
+     * @param  string  $message  Qué documento y qué falta.
+     * @param  string  $hint  Qué debe hacer el usuario.
+     * @return Response JsonResponse o HTML, ambos con estado 404.
+     */
     protected function missingDocument(Request $request, string $message, string $hint): Response
     {
         if ($request->expectsJson()) {
@@ -52,12 +71,12 @@ trait ServesOkrDocuments
         }
 
         return response('<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            . '<title>Documento no disponible</title>'
-            . '<body style="margin:0;font-family:Montserrat,\'Segoe UI\',Arial,sans-serif;background:#f8fafc;color:#0f172a;display:flex;min-height:100vh;align-items:center;justify-content:center">'
-            . '<div style="max-width:520px;margin:24px;padding:24px 28px;border:1px solid #fecaca;border-radius:16px;background:#fff;box-shadow:0 10px 30px rgba(15,23,42,.08)">'
-            . '<p style="margin:0 0 6px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#b91c1c">Documento no disponible</p>'
-            . '<p style="margin:0 0 10px;font-size:15px;font-weight:700">' . e($message) . '</p>'
-            . '<p style="margin:0;font-size:13px;color:#475569">' . e($hint) . '</p></div></body></html>', 404)
+            .'<title>Documento no disponible</title>'
+            .'<body style="margin:0;font-family:Montserrat,\'Segoe UI\',Arial,sans-serif;background:#f8fafc;color:#0f172a;display:flex;min-height:100vh;align-items:center;justify-content:center">'
+            .'<div style="max-width:520px;margin:24px;padding:24px 28px;border:1px solid #fecaca;border-radius:16px;background:#fff;box-shadow:0 10px 30px rgba(15,23,42,.08)">'
+            .'<p style="margin:0 0 6px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#b91c1c">Documento no disponible</p>'
+            .'<p style="margin:0 0 10px;font-size:15px;font-weight:700">'.e($message).'</p>'
+            .'<p style="margin:0;font-size:13px;color:#475569">'.e($hint).'</p></div></body></html>', 404)
             ->header('Content-Type', 'text/html; charset=UTF-8');
     }
 
@@ -65,6 +84,19 @@ trait ServesOkrDocuments
      * Copia firmada (4.8): PDF real (≤10 MB). Si ya existe una, sustituirla exige
      * confirmación explícita (`replace=1`) y la anterior queda registrada en la
      * bitácora — nunca se pierde en silencio.
+     *
+     * Valida que el archivo empiece con la firma `%PDF`, lo guarda en el disco
+     * `local` bajo `$directory`, actualiza en BD las columnas `signed_*` del
+     * documento y registra el evento en OkrAuditLogger (entidad `objective`).
+     * El archivo anterior NO se borra del disco.
+     *
+     * @param  Request  $request  Campos `file` (PDF) y `replace` (opcional).
+     * @param  OkrCommitmentLetter|OkrWarning  $document  Documento al que se adjunta la copia firmada.
+     * @param  string  $directory  Carpeta destino dentro del disco local.
+     * @param  string  $label  Nombre legible del tipo de documento para los mensajes.
+     * @return JsonResponse Éxito (`folio`, `replaced`), 422 si no es PDF real o 409 si requiere confirmar sustitución.
+     *
+     * @throws ValidationException Si el archivo falta, no es PDF o excede 10 MB.
      */
     protected function storeSignedCopy(Request $request, OkrCommitmentLetter|OkrWarning $document, string $directory, string $label): JsonResponse
     {
@@ -80,16 +112,16 @@ trait ServesOkrDocuments
             return new JsonResponse(['message' => 'El archivo no es un PDF válido. Escanea el documento firmado y guárdalo como PDF.', 'errors' => ['file' => ['El archivo no es un PDF válido.']]], 422);
         }
 
-        if ($document->signed_stored_path !== null && !$request->boolean('replace')) {
+        if ($document->signed_stored_path !== null && ! $request->boolean('replace')) {
             return new JsonResponse([
-                'message' => "La {$label} {$document->folio} ya tiene una copia firmada (cargada el " . $document->signed_uploaded_at?->format('d/m/Y H:i') . '). Confirma si deseas sustituirla.',
+                'message' => "La {$label} {$document->folio} ya tiene una copia firmada (cargada el ".$document->signed_uploaded_at?->format('d/m/Y H:i').'). Confirma si deseas sustituirla.',
                 'action' => 'confirm_replace',
             ], 409);
         }
 
         $disk = 'local';
         $previous = $document->signed_stored_path;
-        $path = $file->storeAs($directory, $document->folio . '-firmada-' . now()->format('YmdHis') . '.pdf', $disk);
+        $path = $file->storeAs($directory, $document->folio.'-firmada-'.now()->format('YmdHis').'.pdf', $disk);
 
         $document->update([
             'signed_stored_path' => $path, 'signed_disk' => $disk,
@@ -98,7 +130,7 @@ trait ServesOkrDocuments
 
         app(OkrAuditLogger::class)->log('objective', $document->okr_objective_id, $request->user()->id,
             $previous ? 'signed_copy_replaced' : 'signed_copy_uploaded', 'signed_stored_path', $previous, $path,
-            "{$document->folio}: copia firmada " . ($previous ? 'sustituida (la anterior se conserva)' : 'cargada') . " — {$file->getClientOriginalName()}");
+            "{$document->folio}: copia firmada ".($previous ? 'sustituida (la anterior se conserva)' : 'cargada')." — {$file->getClientOriginalName()}");
 
         return new JsonResponse(['success' => true, 'folio' => $document->folio, 'replaced' => $previous !== null]);
     }

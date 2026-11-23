@@ -6,12 +6,16 @@ use App\Concerns\PasswordValidationRules;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
+/**
+ * Validación de la eliminación de la propia cuenta desde Ajustes › Perfil:
+ * pide confirmar con la contraseña actual.
+ */
 class ProfileDeleteRequest extends FormRequest
 {
     use PasswordValidationRules;
 
     /**
-     * Get the validation rules that apply to the request.
+     * Reglas: `password` debe coincidir con la contraseña actual del usuario.
      *
      * @return array<string, ValidationRule|array<mixed>|string>
      */

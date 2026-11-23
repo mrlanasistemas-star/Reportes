@@ -75,12 +75,24 @@ final class ComparisonConcepts
         'neutral' => 'Sin cambio',
     ];
 
+    /**
+     * Metadatos (label, kind y, en márgenes, 'of') de un concepto importe o margen.
+     *
+     * @param  string  $key  clave del concepto (de AMOUNTS o MARGINS)
+     * @return array{label:string, kind:string, of?:string}
+     *
+     * @throws \InvalidArgumentException si el concepto no existe
+     */
     public static function meta(string $key): array
     {
         return self::AMOUNTS[$key] ?? self::MARGINS[$key] ?? throw new \InvalidArgumentException('Concepto desconocido: '.$key);
     }
 
-    /** @return list<array{key:string,label:string,kind:string,kind_label:string}> */
+    /**
+     * Catálogo público de conceptos en orden de presentación (lo envía ComparisonService al frontend).
+     *
+     * @return list<array{key:string,label:string,kind:string,kind_label:string}>
+     */
     public static function catalog(): array
     {
         return array_map(fn ($k) => [

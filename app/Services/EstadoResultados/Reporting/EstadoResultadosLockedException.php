@@ -7,6 +7,10 @@ use App\Models\EstadoResultados\EstadoResultadosVersion;
 /** El periodo tiene una versión aprobada vigente: cualquier cambio se rechaza con HTTP 423. */
 class EstadoResultadosLockedException extends EstadoResultadosGovernanceException
 {
+    /**
+     * @param  EstadoResultadosVersion  $version  versión aprobada que bloquea el periodo
+     * @param  string  $periodLabel  etiqueta del periodo para el mensaje
+     */
     public function __construct(EstadoResultadosVersion $version, string $periodLabel)
     {
         parent::__construct(

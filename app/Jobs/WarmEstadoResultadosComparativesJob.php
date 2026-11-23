@@ -31,13 +31,29 @@ class WarmEstadoResultadosComparativesJob implements ShouldBeUnique, ShouldQueue
     /** Ventana máxima del candado de unicidad (se libera antes al terminar el job). */
     public int $uniqueFor = 900;
 
+    /**
+     * @param  int  $periodId  Id del periodo cuyas comparativas se precalientan.
+     */
     public function __construct(public int $periodId) {}
 
+    /**
+     * Llave de unicidad: un solo precalentamiento por periodo a la vez.
+     *
+     * @return string Identificador 'er-comparativas-{periodo}'.
+     */
     public function uniqueId(): string
     {
         return 'er-comparativas-'.$this->periodId;
     }
 
+    /**
+     * Sube el límite de memoria a 1 GB, busca el periodo y ejecuta
+     * ComparativesWarmer::warm() (que guarda en caché las comparativas). Registra
+     * en log el tiempo; cualquier error se registra como warning y no se relanza.
+     * Lo despacha ComparativesWarmer.
+     *
+     * @param  ComparativesWarmer  $warmer  Servicio que calcula y cachea las comparativas.
+     */
     public function handle(ComparativesWarmer $warmer): void
     {
         @ini_set('memory_limit', '1024M');

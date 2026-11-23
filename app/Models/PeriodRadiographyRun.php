@@ -2,10 +2,28 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * Ejecución de generación de una radiografía financiera (Excel + PDF).
+ *
+ * Tabla: `period_radiography_runs`. Cada fila es un intento de generar un reporte
+ * (GenerateRadiographyJob), identificado por periodo, tipo (simple/comparativo),
+ * alcance (general/sucursal/gestor) y periodo de comparación, de modo que reportes
+ * distintos del mismo periodo coexisten sin pisarse (ver identity()).
+ *
+ * Columnas clave:
+ * - `report_type`: `simple` o comparativo (NULL en runs antiguos = `simple`).
+ * - `scope`: `general`, sucursal o gestor (NULL en runs antiguos = `general`).
+ * - `branch_id`/`employee_id`/`comparison_period_id`: completan la identidad.
+ * - `status`: estado de la ejecución (ej. `running`, `success`, fallido, cancelado).
+ * - `log`/`error_message`/`metadata` (array): bitácora, error y datos extra.
+ * - `queued_at`/`started_at`/`finished_at`/`cancelled_at` (datetime) y `cancelled_by`.
+ * - `output_excel_path`/`output_pdf_path`: archivos generados (ambos requeridos para "éxito descargable").
+ */
 class PeriodRadiographyRun extends Model
 {
     protected $fillable = [
@@ -31,33 +49,38 @@ class PeriodRadiographyRun extends Model
     ];
 
     protected $casts = [
-        'started_at'   => 'datetime',
-        'finished_at'  => 'datetime',
-        'queued_at'    => 'datetime',
+        'started_at' => 'datetime',
+        'finished_at' => 'datetime',
+        'queued_at' => 'datetime',
         'cancelled_at' => 'datetime',
-        'metadata'     => 'array',
+        'metadata' => 'array',
     ];
 
+    /** Archivos exportados (Excel/PDF) producidos por esta ejecución. */
     public function exports(): HasMany
     {
         return $this->hasMany(PeriodRadiographyExport::class, 'run_id');
     }
 
+    /** Periodo del reporte. */
     public function period(): BelongsTo
     {
         return $this->belongsTo(Period::class, 'period_id');
     }
 
+    /** Periodo contra el que se compara (solo en reportes comparativos). */
     public function comparisonPeriod(): BelongsTo
     {
         return $this->belongsTo(Period::class, 'comparison_period_id');
     }
 
+    /** Sucursal del reporte cuando el alcance es por sucursal. */
     public function branch(): BelongsTo
     {
         return $this->belongsTo(Branch::class, 'branch_id');
     }
 
+    /** Gestor del reporte cuando el alcance es por colaborador. */
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class, 'employee_id');
@@ -67,16 +90,18 @@ class PeriodRadiographyRun extends Model
      * Tupla que identifica de forma única "qué reporte es este" — un simple y un
      * comparativo del mismo periodo tienen identidades distintas y por lo tanto
      * pueden coexistir sin pisarse.
+     *
+     * @return array{period_id:mixed, report_type:string, scope:string, comparison_period_id:mixed, branch_id:mixed, employee_id:mixed}
      */
     public function identity(): array
     {
         return [
-            'period_id'            => $this->period_id,
-            'report_type'          => $this->report_type ?? 'simple',
-            'scope'                => $this->scope ?? 'general',
+            'period_id' => $this->period_id,
+            'report_type' => $this->report_type ?? 'simple',
+            'scope' => $this->scope ?? 'general',
             'comparison_period_id' => $this->comparison_period_id,
-            'branch_id'            => $this->branch_id,
-            'employee_id'          => $this->employee_id,
+            'branch_id' => $this->branch_id,
+            'employee_id' => $this->employee_id,
         ];
     }
 
@@ -91,11 +116,15 @@ class PeriodRadiographyRun extends Model
      * report_type/scope tratan NULL como su default ('simple'/'general') porque runs
      * creados antes de que el dispatcher empezara a fijarlos explícitamente pueden
      * traerlos vacíos — ver ReportUploadController::generateRadiography().
+     *
+     * @param  Builder  $query  Consulta de runs.
+     * @param  array  $identity  Identidad con las llaves de identity(); las ausentes se tratan como null/default.
+     * @return Builder La consulta filtrada.
      */
     public function scopeForIdentity($query, array $identity)
     {
         $reportType = $identity['report_type'] ?? 'simple';
-        $scope      = $identity['scope'] ?? 'general';
+        $scope = $identity['scope'] ?? 'general';
 
         return $query
             ->where('period_id', $identity['period_id'])
@@ -129,6 +158,9 @@ class PeriodRadiographyRun extends Model
      * anterior de la MISMA identidad. Este método es la única fuente que ambos
      * consumidores deben usar en vez de repetir la resolución en cada controlador.
      *
+     * "Éxito" = `status = success` con Excel Y PDF generados.
+     *
+     * @param  array  $identity  Identidad del reporte (ver identity()).
      * @return array{latest: ?self, latest_success: ?self}
      */
     public static function resolveForIdentity(array $identity): array

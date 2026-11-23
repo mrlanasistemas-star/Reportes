@@ -7,11 +7,16 @@ use App\Models\OkrKeyResult;
 use App\Models\OkrKpi;
 use App\Models\OkrObjective;
 use App\Services\Okr\OkrAuditLogger;
+use App\Services\Okr\OkrBaselineGuard;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Módulo OKR — Key Results de un Objective en DRAFT (una vez activo, la
@@ -30,6 +35,20 @@ class KeyResultController extends Controller
 {
     use AuthorizesRequests;
 
+    /**
+     * Agrega un Key Result a un OKR en borrador (escribe en okr_key_results).
+     *
+     * Valida KPI activo, descripción, línea base, meta y peso; aplica las reglas
+     * de línea base de assertBaselineAllowed(). En OKR individual el KR se marca
+     * con `baseline_source` = línea base manual individual.
+     *
+     * @param  Request  $request  Datos del KR.
+     * @param  OkrObjective  $objective  OKR en borrador.
+     * @return RedirectResponse Regresa con mensaje de éxito.
+     *
+     * @throws AuthorizationException Si no tiene `update` sobre el OKR.
+     * @throws ValidationException Si los datos o la línea base no son válidos.
+     */
     public function store(Request $request, OkrObjective $objective): RedirectResponse
     {
         $this->authorize('update', $objective);
@@ -39,17 +58,17 @@ class KeyResultController extends Controller
             // Un KPI inactivo nunca puede asignarse a un KR nuevo (sección 43 del
             // pedido) — un KR ya existente conserva su KPI aunque luego se
             // desactive (no se le retira retroactivamente).
-            'kpi_id'         => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
-            'description'    => ['required', 'string', 'max:191'],
+            'kpi_id' => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
+            'description' => ['required', 'string', 'max:191'],
             'baseline_value' => ['nullable', 'numeric'],
-            'target_value'   => ['required', 'numeric'],
-            'weight'         => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'target_value' => ['required', 'numeric'],
+            'weight' => ['required', 'numeric', 'min:0.01', 'max:100'],
         ]);
 
         $this->assertBaselineAllowed($data, $objective);
 
         $objective->keyResults()->create($data + ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE
-            ? ['baseline_source' => \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL] : []));
+            ? ['baseline_source' => OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL] : []));
 
         return back()->with('success', 'Key Result agregado.');
     }
@@ -61,8 +80,21 @@ class KeyResultController extends Controller
      * conservando el vínculo con el OKR de sucursal. Nunca copia la meta de la
      * sucursal. Pesos al 100%, misma regla de base manual autorizada que el
      * asistente, todo en una transacción y en bitácora.
+     *
+     * Con `replace=1` los KR actuales se eliminan (soft-delete) y se registran
+     * en la bitácora antes de crear los nuevos. Valida ponderación = 100%, la
+     * línea base con OkrBaselineGuard y que los KPI manuales traigan línea base.
+     *
+     * @param  Request  $request  `key_results[]`, `reason` y `replace` opcionales.
+     * @param  OkrObjective  $objective  OKR en borrador.
+     * @param  OkrAuditLogger  $logger  Bitácora OKR.
+     * @param  OkrBaselineGuard  $guard  Reglas de línea base manual autorizada.
+     * @return JsonResponse `{ success, key_results }` o 422 con el motivo.
+     *
+     * @throws AuthorizationException Si no tiene `update` sobre el OKR.
+     * @throws ValidationException Si los datos no son válidos.
      */
-    public function complete(Request $request, OkrObjective $objective, OkrAuditLogger $logger, \App\Services\Okr\OkrBaselineGuard $guard): \Illuminate\Http\JsonResponse
+    public function complete(Request $request, OkrObjective $objective, OkrAuditLogger $logger, OkrBaselineGuard $guard): JsonResponse
     {
         $this->authorize('update', $objective);
         if ($objective->lifecycle_status !== OkrObjective::STATUS_DRAFT) {
@@ -70,19 +102,19 @@ class KeyResultController extends Controller
         }
         // "Editar metas" en borrador (15-oct-2026): con replace=true se sustituyen
         // los KR del borrador (los anteriores quedan en soft-delete y bitácora).
-        if ($objective->keyResults()->exists() && !$request->boolean('replace')) {
+        if ($objective->keyResults()->exists() && ! $request->boolean('replace')) {
             return response()->json(['message' => 'Este OKR ya tiene Key Results — usa "Editar metas" para reemplazarlos.'], 422);
         }
 
         $data = $request->validate([
-            'key_results'                          => ['required', 'array', 'min:1'],
-            'key_results.*.kpi_id'                 => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
-            'key_results.*.description'            => ['required', 'string', 'max:191'],
-            'key_results.*.baseline_value'         => ['nullable', 'numeric'],
+            'key_results' => ['required', 'array', 'min:1'],
+            'key_results.*.kpi_id' => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
+            'key_results.*.description' => ['required', 'string', 'max:191'],
+            'key_results.*.baseline_value' => ['nullable', 'numeric'],
             'key_results.*.baseline_manual_reason' => ['nullable', 'string', 'max:500'],
-            'key_results.*.target_value'           => ['required', 'numeric'],
-            'key_results.*.weight'                 => ['required', 'numeric', 'min:0.01', 'max:100'],
-            'reason'                               => ['nullable', 'string', 'max:500'],
+            'key_results.*.target_value' => ['required', 'numeric'],
+            'key_results.*.weight' => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'reason' => ['nullable', 'string', 'max:500'],
         ]);
 
         $total = round(array_sum(array_column($data['key_results'], 'weight')), 2);
@@ -96,7 +128,7 @@ class KeyResultController extends Controller
             if ($error !== null) {
                 $errors["key_results.{$i}.{$error['field']}"] = [$error['message']];
             }
-            if ($error === null && ($kr['baseline_value'] ?? null) === null && !OkrKpi::query()->find($kr['kpi_id'])?->isAutomatic()) {
+            if ($error === null && ($kr['baseline_value'] ?? null) === null && ! OkrKpi::query()->find($kr['kpi_id'])?->isAutomatic()) {
                 $errors["key_results.{$i}.baseline_value"] = ['Captura la línea base de este KPI manual.'];
             }
         }
@@ -104,7 +136,7 @@ class KeyResultController extends Controller
             return response()->json(['message' => collect($errors)->flatten()->first(), 'errors' => $errors], 422);
         }
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($objective, $data, $logger) {
+        DB::transaction(function () use ($objective, $data, $logger) {
             foreach ($objective->keyResults()->with('kpi')->get() as $old) {
                 $logger->log('key_result', $old->id, auth()->id(), 'key_result_removed', 'target_value', $old->target_value, null,
                     "Reemplazado al editar las metas del borrador ({$old->kpi->name}).");
@@ -113,11 +145,11 @@ class KeyResultController extends Controller
             $isIndividual = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE;
             foreach ($data['key_results'] as $row) {
                 $reason = trim((string) ($row['baseline_manual_reason'] ?? ''));
-                $authorized = !$isIndividual && ($row['baseline_value'] ?? null) !== null && $reason !== '';
+                $authorized = ! $isIndividual && ($row['baseline_value'] ?? null) !== null && $reason !== '';
                 $kr = $objective->keyResults()->create([
                     'kpi_id' => $row['kpi_id'], 'description' => $row['description'],
                     'baseline_value' => $row['baseline_value'] ?? null,
-                    'baseline_source' => $isIndividual ? \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL : ($authorized ? 'manual_authorized' : null),
+                    'baseline_source' => $isIndividual ? OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL : ($authorized ? 'manual_authorized' : null),
                     'target_value' => $row['target_value'], 'weight' => $row['weight'],
                 ]);
                 $logger->log('key_result', $kr->id, auth()->id(), 'key_result_completed', 'target_value', null, $kr->target_value,
@@ -133,30 +165,52 @@ class KeyResultController extends Controller
         return response()->json(['success' => true, 'key_results' => $objective->keyResults()->count()]);
     }
 
+    /**
+     * Modifica un Key Result de un OKR en borrador (mismas reglas que store()).
+     *
+     * @param  Request  $request  Datos del KR.
+     * @param  OkrObjective  $objective  OKR en borrador.
+     * @param  OkrKeyResult  $keyResult  KR a modificar.
+     * @return RedirectResponse Regresa con mensaje de éxito.
+     *
+     * @throws AuthorizationException Si no tiene `update` sobre el OKR.
+     * @throws ValidationException Si los datos o la línea base no son válidos.
+     */
     public function update(Request $request, OkrObjective $objective, OkrKeyResult $keyResult): RedirectResponse
     {
         $this->authorize('update', $objective);
         $this->assertDraft($objective);
 
         $data = $request->validate([
-            'description'    => ['required', 'string', 'max:191'],
+            'description' => ['required', 'string', 'max:191'],
             // Un KPI inactivo nunca puede asignarse a un KR nuevo (sección 43 del
             // pedido) — un KR ya existente conserva su KPI aunque luego se
             // desactive (no se le retira retroactivamente).
-            'kpi_id'         => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
+            'kpi_id' => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
             'baseline_value' => ['nullable', 'numeric'],
-            'target_value'   => ['required', 'numeric'],
-            'weight'         => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'target_value' => ['required', 'numeric'],
+            'weight' => ['required', 'numeric', 'min:0.01', 'max:100'],
         ]);
 
         $this->assertBaselineAllowed($data, $objective);
 
         $keyResult->update($data + ($objective->scope_type === OkrObjective::SCOPE_EMPLOYEE
-            ? ['baseline_source' => \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL] : []));
+            ? ['baseline_source' => OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL] : []));
 
         return back()->with('success', 'Key Result actualizado.');
     }
 
+    /**
+     * Elimina (soft-delete) un Key Result de un OKR en borrador y lo registra en
+     * la bitácora del Objective.
+     *
+     * @param  OkrObjective  $objective  OKR en borrador.
+     * @param  OkrKeyResult  $keyResult  KR a eliminar.
+     * @param  OkrAuditLogger  $logger  Bitácora OKR.
+     * @return RedirectResponse Regresa con mensaje de éxito.
+     *
+     * @throws AuthorizationException Si no tiene `update` sobre el OKR.
+     */
     public function destroy(OkrObjective $objective, OkrKeyResult $keyResult, OkrAuditLogger $logger): RedirectResponse
     {
         $this->authorize('update', $objective);
@@ -168,6 +222,14 @@ class KeyResultController extends Controller
         return back()->with('success', 'Key Result eliminado.');
     }
 
+    /**
+     * Aborta con 422 si el OKR no está en borrador (los KR de un OKR activo
+     * solo se ajustan con "editar meta"/pesos en ObjectiveController).
+     *
+     * @param  OkrObjective  $objective  OKR a verificar.
+     *
+     * @throws HttpException 422 si no es borrador.
+     */
     private function assertDraft(OkrObjective $objective): void
     {
         abort_if($objective->lifecycle_status !== OkrObjective::STATUS_DRAFT, 422, 'Solo se pueden modificar Key Results mientras el Objective está en borrador. Usa "editar meta" para un OKR activo.');
@@ -177,6 +239,11 @@ class KeyResultController extends Controller
      * KPI automático de SUCURSAL → baseline_value SIEMPRE null aquí (solo
      * Reportería la fija al activar). OKR individual (16-oct-2026) → la línea
      * base es MANUAL y obligatoria.
+     *
+     * @param  array  $data  Datos validados del KR (`kpi_id`, `baseline_value`).
+     * @param  OkrObjective  $objective  OKR dueño del KR.
+     *
+     * @throws ValidationException Si falta la línea base individual o se capturó una para KPI automático.
      */
     private function assertBaselineAllowed(array $data, OkrObjective $objective): void
     {

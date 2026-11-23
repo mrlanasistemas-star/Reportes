@@ -12,6 +12,12 @@ use Illuminate\Support\Str;
  */
 final class PersonName
 {
+    /**
+     * Llave de comparación de un nombre: palabras normalizadas ordenadas alfabéticamente.
+     *
+     * @param  string|null  $name  nombre de persona
+     * @return string|null null si tiene menos de 2 palabras (no identifica a nadie)
+     */
     public static function key(?string $name): ?string
     {
         $tokens = self::tokens($name);
@@ -23,7 +29,12 @@ final class PersonName
         return implode(' ', $tokens);
     }
 
-    /** @return list<string> */
+    /**
+     * Palabras normalizadas (mayúsculas, sin acentos ni signos) de 2 o más caracteres.
+     *
+     * @param  string|null  $text  texto
+     * @return list<string>
+     */
     public static function tokens(?string $text): array
     {
         $v = mb_strtoupper(Str::ascii(trim((string) $text)));

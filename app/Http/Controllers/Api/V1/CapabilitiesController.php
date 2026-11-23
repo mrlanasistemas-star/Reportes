@@ -18,10 +18,11 @@ use Illuminate\Http\Request;
  *   permitted   — ¿ESTE token/consumidor puede usarlo HOY? (implemented AND
  *                 tiene la ability correspondiente AND está activo)
  *   blocked     — implemented=false con una razón explícita (nunca "false"
- *                 sin contexto — ver docs/efectividad-cobranza-aprobada.md)
+ *                 sin contexto — ver docs/MANUAL-DESARROLLADOR.md)
  */
 class CapabilitiesController extends Controller
 {
+    /** Recurso de la API => ability (o lista de abilities, todas obligatorias) que exige. */
     private const RESOURCE_ABILITIES = [
         'branches' => 'branches.read',
         'employees' => 'employees.read',
@@ -66,6 +67,18 @@ class CapabilitiesController extends Controller
      */
     private const BLOCKED_RESOURCES = [];
 
+    /**
+     * Describe qué recursos existen y cuáles puede usar el consumidor actual.
+     *
+     * `permitted` exige: consumidor activo, ability concedida al consumidor
+     * (hasAbility) y presente en el token actual (o token con comodín '*').
+     * Añade banderas de contrato (`features`), datos del consumidor, versión
+     * del motor/metodología de Efectividad aprobada y el catálogo de métricas.
+     * Solo lectura.
+     *
+     * @param  Request  $request  Petición del consumidor de API autenticado.
+     * @return JsonResponse {api_version, definition_version, features, consumer, resources, metrics_catalog}.
+     */
     public function index(Request $request): JsonResponse
     {
         /** @var ApiConsumer $consumer */

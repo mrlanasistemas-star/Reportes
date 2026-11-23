@@ -22,6 +22,7 @@ final class SourceChecklist
         'con_problemas' => 'Con problemas',
     ];
 
+    /** Qué cifra del ER afecta cada fuente (texto de negocio mostrado al usuario). */
     private const AFFECTS = [
         'radiografia' => 'Ingresos, OPEX y nómina de sucursales (la base del EBITDA).',
         'administrativa' => 'Pagos de Corporativo (gastos y nómina corporativa, gastos financieros) y su cruce contra el ERP.',
@@ -31,9 +32,14 @@ final class SourceChecklist
     ];
 
     /**
+     * Arma la checklist de fuentes del periodo en orden: Radiografía, ERP, NOI de sucursales,
+     * estados de cuenta, NOI de corporativo y ajustes contables, más un resumen de conteos.
+     *
+     * @param  string  $periodLabel  etiqueta del periodo (para los mensajes)
      * @param  array<string,mixed>  $sources  bloque `sources` ya armado (sin checklist)
      * @param  array<string,array>  $diagnosis  UploadModuleInspector::inspect()
-     * @param  list<array<string,mixed>>  $adjustments
+     * @param  list<array<string,mixed>>  $adjustments  ajustes contables del periodo con su estado
+     * @param  bool  $corpRequired  true si el NOI de corporativo es obligatorio
      * @return array{items:list<array<string,mixed>>, summary:array<string,int>}
      */
     public static function build(string $periodLabel, array $sources, array $diagnosis, array $adjustments, bool $corpRequired = false): array
@@ -165,6 +171,24 @@ final class SourceChecklist
         return ['items' => $items, 'summary' => $summary];
     }
 
+    /**
+     * Construye un elemento de la checklist. Si no está «lista» genera el motivo completo
+     * («Fuente de Periodo: mensaje → qué hacer») salvo que se pase uno explícito.
+     *
+     * @param  string  $key  clave de la fuente
+     * @param  string  $label  nombre de negocio de la fuente
+     * @param  string  $where  er | carga | er_tab
+     * @param  string  $state  lista | falta | con_problemas
+     * @param  bool  $required  obligatoria para aprobar (si no, se marca «recomendada»)
+     * @param  string  $message  situación actual en español
+     * @param  string|null  $fix  qué hacer para resolverla
+     * @param  string  $affects  cifra afectada
+     * @param  array  $action  acción del botón {kind, label, slot?, tab?}
+     * @param  string  $period  etiqueta del periodo
+     * @param  string|null  $reason  motivo explícito (opcional)
+     * @param  array|null  $diagnosis  diagnóstico de UploadModuleInspector (se filtra a campos públicos)
+     * @return array<string, mixed>
+     */
     private static function item(string $key, string $label, string $where, string $state, bool $required, string $message, ?string $fix, string $affects, array $action, string $period, ?string $reason = null, ?array $diagnosis = null): array
     {
         return [
@@ -188,6 +212,12 @@ final class SourceChecklist
         ];
     }
 
+    /**
+     * Baja a minúscula la primera letra (multibyte) para encadenar el mensaje en una frase,
+     * respetando siglas (ERP, NOI…) y textos que empiezan con número.
+     *
+     * @param  string  $s  texto
+     */
     private static function lcfirst(string $s): string
     {
         // Siglas (ERP, NOI…) se respetan: sólo se baja la inicial de una palabra normal.

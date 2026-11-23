@@ -9,6 +9,21 @@ use App\Services\PeriodDerivedDataCleaner;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:run-database-update` — ejecuta desde consola el "Actualizar BD" de un periodo
+ * (DatabaseUpdateService::updateForPeriod): crea un PeriodDatabaseUpdateRun, procesa las fuentes
+ * y lo marca success/failed (también si PHP muere por error fatal, vía shutdown handler).
+ * Se niega a correr si ya hay un run `running` para el periodo.
+ *
+ * Con `--force-reset`: marca como failed los runs `running`, BORRA las employee_branch_assignments
+ * del periodo y limpia todos los datos derivados (fact_*, summaries; uploads → pending) antes de
+ * re-ejecutar desde cero.
+ * Escribe en BD: SÍ (period_database_update_runs y todas las tablas que carga el servicio).
+ *
+ * Ejemplos:
+ *   php artisan reportes:run-database-update 21
+ *   php artisan reportes:run-database-update 21 --force-reset
+ */
 class RunDatabaseUpdateCommand extends Command
 {
     protected $signature = 'reportes:run-database-update
@@ -17,16 +32,25 @@ class RunDatabaseUpdateCommand extends Command
 
     protected $description = 'Ejecuta la actualización de BD para un periodo (crea run, llama servicio, marca success/failed).';
 
+    /**
+     * Aplica el reset opcional, valida que no haya otro run activo, crea el run, ejecuta la
+     * actualización y registra el resultado.
+     *
+     * @param  DatabaseUpdateService  $service  Servicio de actualización de BD del periodo.
+     * @param  PeriodDerivedDataCleaner  $cleaner  Limpia datos derivados (solo con --force-reset).
+     * @return int SUCCESS si la actualización terminó; FAILURE si falta el periodo, hay un run activo o la actualización falló.
+     */
     public function handle(DatabaseUpdateService $service, PeriodDerivedDataCleaner $cleaner): int
     {
         set_time_limit(0);
 
-        $periodId    = (int) $this->argument('period_id');
-        $forceReset  = $this->option('force-reset');
-        $period      = Period::find($periodId);
+        $periodId = (int) $this->argument('period_id');
+        $forceReset = $this->option('force-reset');
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -41,10 +65,10 @@ class RunDatabaseUpdateCommand extends Command
 
             foreach ($stuckRuns as $stuck) {
                 $stuck->update([
-                    'status'        => 'failed',
-                    'log'           => 'Marcado como failed por --force-reset antes de re-ejecución.',
+                    'status' => 'failed',
+                    'log' => 'Marcado como failed por --force-reset antes de re-ejecución.',
                     'error_message' => 'Interrupted: --force-reset',
-                    'finished_at'   => now(),
+                    'finished_at' => now(),
                 ]);
                 $this->line("  → Run #{$stuck->id} marcado como failed.");
             }
@@ -55,7 +79,7 @@ class RunDatabaseUpdateCommand extends Command
 
             // clearForPeriod limpia fact_*, period_summaries, uploads → pending
             $cleaner->clearForPeriod($period);
-            $this->line("  → Datos derivados del periodo limpiados (fact_*, summaries, uploads → pending).");
+            $this->line('  → Datos derivados del periodo limpiados (fact_*, summaries, uploads → pending).');
             $this->line('');
         }
 
@@ -67,17 +91,18 @@ class RunDatabaseUpdateCommand extends Command
 
         if ($existing) {
             $this->error("Ya hay un run en estado 'running' para el periodo #{$periodId} (ID: {$existing->id}).");
-            $this->line("Usa --force-reset para limpiarlo y re-ejecutar desde cero.");
+            $this->line('Usa --force-reset para limpiarlo y re-ejecutar desde cero.');
+
             return self::FAILURE;
         }
 
         // ── Crear run ─────────────────────────────────────────────────────────
         $run = PeriodDatabaseUpdateRun::create([
-            'period_id'  => $periodId,
+            'period_id' => $periodId,
             'created_by' => null,
-            'status'     => 'running',
-            'log'        => 'Iniciando actualización de BD…',
-            'metadata'   => ['source' => 'artisan:run-database-update'],
+            'status' => 'running',
+            'log' => 'Iniciando actualización de BD…',
+            'metadata' => ['source' => 'artisan:run-database-update'],
             'started_at' => now(),
         ]);
 
@@ -92,10 +117,10 @@ class RunDatabaseUpdateCommand extends Command
                 $stuck = PeriodDatabaseUpdateRun::find($runId);
                 if ($stuck && $stuck->status === 'running') {
                     $stuck->update([
-                        'status'        => 'failed',
-                        'log'           => 'Proceso PHP terminó inesperadamente (fatal error).',
-                        'error_message' => $error['message'] . ' in ' . $error['file'] . ':' . $error['line'],
-                        'finished_at'   => now(),
+                        'status' => 'failed',
+                        'log' => 'Proceso PHP terminó inesperadamente (fatal error).',
+                        'error_message' => $error['message'].' in '.$error['file'].':'.$error['line'],
+                        'finished_at' => now(),
                     ]);
                 }
             }
@@ -111,26 +136,27 @@ class RunDatabaseUpdateCommand extends Command
             $elapsed = round(microtime(true) - $startTotal, 1);
 
             $run->update([
-                'status'      => 'success',
-                'log'         => "Actualización completada en {$elapsed}s.",
+                'status' => 'success',
+                'log' => "Actualización completada en {$elapsed}s.",
                 'finished_at' => now(),
             ]);
 
             $this->info('');
             $this->info("✓ Run #{$run->id} completado en {$elapsed}s.");
+
             return self::SUCCESS;
 
         } catch (\Throwable $e) {
             $run->update([
-                'status'        => 'failed',
-                'log'           => 'Error durante la actualización de BD.',
+                'status' => 'failed',
+                'log' => 'Error durante la actualización de BD.',
                 'error_message' => mb_strimwidth($e->getMessage(), 0, 2000),
-                'finished_at'   => now(),
+                'finished_at' => now(),
             ]);
 
             $this->error('');
             $this->error("✗ Run #{$run->id} falló:");
-            $this->error('  ' . $e->getMessage());
+            $this->error('  '.$e->getMessage());
 
             if ($this->getOutput()->isVerbose()) {
                 $this->line('');

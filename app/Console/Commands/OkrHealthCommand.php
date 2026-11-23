@@ -11,8 +11,15 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 
 /**
- * Parte 17 del cierre (04-oct-2026) — diagnóstico operativo del módulo OKR,
- * de un vistazo: nada aquí modifica datos, solo lee y reporta.
+ * Comando `okr:health` — Parte 17 del cierre (04-oct-2026): diagnóstico operativo del módulo
+ * OKR de un vistazo: última corrida de okr:refresh y okr:close-due (alerta si pasan de 26 h),
+ * Objectives activos y vencidos aún activos, semanas de colocación sin archivo, colaboradores
+ * elegibles y documentos (cartas compromiso y warnings) sin firma subida.
+ *
+ * Escribe en BD: NO — nada aquí modifica datos, solo lee y reporta.
+ *
+ * Ejemplo:
+ *   php artisan okr:health
  */
 class OkrHealthCommand extends Command
 {
@@ -20,6 +27,13 @@ class OkrHealthCommand extends Command
 
     protected $description = 'Diagnóstico operativo del módulo OKR: scheduler, objectives vencidos, semanas de colocación sin archivo, documentos pendientes de firma.';
 
+    /**
+     * Imprime las secciones Scheduler, Objectives, Colocación semanal, Usuarios y Documentos.
+     *
+     * @param  OkrEmployeeBranchResolver  $employeeResolver  Cuenta colaboradores activos elegibles.
+     * @param  OkrWeeklyPlacementResolver  $placementResolver  Detecta semanas de colocación faltantes.
+     * @return int Siempre 0.
+     */
     public function handle(OkrEmployeeBranchResolver $employeeResolver, OkrWeeklyPlacementResolver $placementResolver): int
     {
         $this->line('<fg=cyan;options=bold>── Scheduler ──</>');
@@ -36,7 +50,7 @@ class OkrHealthCommand extends Command
             ->where('end_date', '<', now()->toDateString())
             ->count();
         $this->line("Objectives activos: {$activeCount}");
-        $this->{$overdueStillActive > 0 ? 'warn' : 'line'}("Objectives vencidos aún activos: {$overdueStillActive}" . ($overdueStillActive > 0 ? ' — revisar si okr:close-due está corriendo' : ''));
+        $this->{$overdueStillActive > 0 ? 'warn' : 'line'}("Objectives vencidos aún activos: {$overdueStillActive}".($overdueStillActive > 0 ? ' — revisar si okr:close-due está corriendo' : ''));
 
         $this->newLine();
         $this->line('<fg=cyan;options=bold>── Colocación semanal ──</>');
@@ -46,7 +60,7 @@ class OkrHealthCommand extends Command
 
         $this->newLine();
         $this->line('<fg=cyan;options=bold>── Usuarios / gestores ──</>');
-        $this->line('Colaboradores activos elegibles para nuevo OKR: ' . $employeeResolver->countAllActive());
+        $this->line('Colaboradores activos elegibles para nuevo OKR: '.$employeeResolver->countAllActive());
 
         $this->newLine();
         $this->line('<fg=cyan;options=bold>── Documentos ──</>');
@@ -58,6 +72,14 @@ class OkrHealthCommand extends Command
         return 0;
     }
 
+    /**
+     * Imprime la fecha de la última corrida registrada y la marca como advertencia si nunca corrió
+     * o si tiene más horas que el umbral.
+     *
+     * @param  string  $label  Etiqueta de la tarea.
+     * @param  string|null  $timestamp  Fecha/hora registrada en caché o null.
+     * @param  int  $staleAfterHours  Horas a partir de las cuales se considera atrasada.
+     */
     private function reportLastRun(string $label, ?string $timestamp, int $staleAfterHours): void
     {
         if ($timestamp === null) {
@@ -88,7 +110,7 @@ class OkrHealthCommand extends Command
                 continue;
             }
 
-            if (!$placementResolver->hasAnyUpload($objective)) {
+            if (! $placementResolver->hasAnyUpload($objective)) {
                 $neverUploaded++;
 
                 continue;

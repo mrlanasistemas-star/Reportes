@@ -7,30 +7,54 @@ use App\Services\BranchResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-colocacion-sucursal` — colocación de UNA sucursal (`--branch=`
+ * nombre exacto o parcial): brutos, desglose por producto, desembolsos incluidos y excluidos,
+ * otras rutas/prefijos que podrían tener desembolsos, cartera y recuperación remanente (incluido
+ * el fallback Pass2 de San Juan del Río) y una conclusión. Sin `--branch` lista la colocación
+ * bruta de todas las sucursales.
+ *
+ * Escribe en BD: NO — solo lectura. Usa JSON_EXTRACT (requiere MySQL).
+ *
+ * Ejemplos:
+ *   php artisan reportes:debug-colocacion-sucursal 14
+ *   php artisan reportes:debug-colocacion-sucursal 14 --branch="SAN JUAN"
+ */
 class DebugColocacionSucursalCommand extends Command
 {
-    protected $signature   = 'reportes:debug-colocacion-sucursal {period_id : ID del periodo} {--branch= : Nombre exacto o parcial de la sucursal}';
+    protected $signature = 'reportes:debug-colocacion-sucursal {period_id : ID del periodo} {--branch= : Nombre exacto o parcial de la sucursal}';
+
     protected $description = 'Colocación de una sucursal: brutos, excluidos, productos, rutas, conclusión.';
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas, catálogo de prefijos y sucursales operativas.
+     */
     public function __construct(private readonly BranchResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Resuelve los periodos de datos y, según `--branch`, muestra el diagnóstico detallado de la
+     * sucursal o la lista general.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
-        $periodId   = (int) $this->argument('period_id');
+        $periodId = (int) $this->argument('period_id');
         $branchName = (string) ($this->option('branch') ?? '');
-        $period     = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -39,7 +63,7 @@ class DebugColocacionSucursalCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG COLOCACIÓN POR SUCURSAL — Periodo #{$periodId}");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── Resolve branch filter ─────────────────────────────────────────────
@@ -85,6 +109,7 @@ class DebugColocacionSucursalCommand extends Command
             foreach ($this->resolver->operativeFinancialBranches() as $name) {
                 $this->line("    - $name");
             }
+
             return self::FAILURE;
         }
 
@@ -153,7 +178,7 @@ class DebugColocacionSucursalCommand extends Command
             ->whereIn('branch_id', $matchedBranchIds)
             ->where(function ($q) {
                 $q->whereNull('product_name')
-                  ->orWhereRaw("product_name NOT REGEXP ?", ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS']);
+                    ->orWhereRaw('product_name NOT REGEXP ?', ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS']);
             })
             ->selectRaw('COUNT(*) as creditos, SUM(amount) as colocacion')
             ->first();
@@ -170,8 +195,8 @@ class DebugColocacionSucursalCommand extends Command
             ->whereIn('period_id', $dataIds)
             ->whereIn('branch_id', $matchedBranchIds)
             ->whereNotNull('product_name')
-            ->whereRaw("product_name REGEXP ?", ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS'])
-            ->selectRaw("product_name, COUNT(*) as creditos, SUM(amount) as total")
+            ->whereRaw('product_name REGEXP ?', ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS'])
+            ->selectRaw('product_name, COUNT(*) as creditos, SUM(amount) as total')
             ->groupBy('product_name')
             ->orderByDesc('total')
             ->get();
@@ -198,14 +223,14 @@ class DebugColocacionSucursalCommand extends Command
             foreach ($routeBranches as $rb) {
                 $rreal = $this->resolver->resolveRealBranchFromRoute($rb->name);
                 if ($rreal && str_contains($this->accentFold(strtoupper($rreal)), $targetNorm)
-                    && !in_array((int) $rb->id, $matchedBranchIds, true)) {
+                    && ! in_array((int) $rb->id, $matchedBranchIds, true)) {
                     $routeIds[] = (int) $rb->id;
                     $this->line(sprintf('    Branch id=%d "%s" → resuelve a %s', $rb->id, $rb->name, $rreal));
                 }
             }
 
             // Check placements from those extra routes
-            if (!empty($routeIds)) {
+            if (! empty($routeIds)) {
                 $routeColocacion = DB::table('fact_placements')
                     ->whereIn('period_id', $dataIds)
                     ->whereIn('branch_id', $routeIds)
@@ -220,7 +245,7 @@ class DebugColocacionSucursalCommand extends Command
             $nullBranch = DB::table('fact_placements')
                 ->whereIn('period_id', $dataIds)
                 ->whereNull('branch_id')
-                ->whereRaw("UPPER(COALESCE(promoter_code,'')) LIKE ?", [$prefix . '%'])
+                ->whereRaw("UPPER(COALESCE(promoter_code,'')) LIKE ?", [$prefix.'%'])
                 ->selectRaw('COUNT(*) as creditos, SUM(amount) as total')
                 ->first();
             if ((int) ($nullBranch->creditos ?? 0) > 0) {
@@ -262,9 +287,9 @@ class DebugColocacionSucursalCommand extends Command
         $this->info('── 7. Conclusión ──');
 
         if ($isSJR) {
-            $hasCartera  = (float) ($cartera->cartera ?? 0) > 0;
+            $hasCartera = (float) ($cartera->cartera ?? 0) > 0;
             $hasRecupDir = (float) ($recup->total ?? 0) > 0;
-            $hasRecupP2  = $sjrPass2Total = $this->getSjrPass2Total($dataIds, $matchedBranchIds) > 0;
+            $hasRecupP2 = $sjrPass2Total = $this->getSjrPass2Total($dataIds, $matchedBranchIds) > 0;
 
             if ($colocacion == 0 && $hasCartera) {
                 $this->line('  <fg=green>OK: San Juan del Río se mantiene dentro del GLOBAL como sucursal cerrada</>');
@@ -288,6 +313,13 @@ class DebugColocacionSucursalCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Lista la colocación bruta y el número de créditos por sucursal.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  int  $periodId  ID del periodo (para el texto de ayuda).
+     * @return int self::SUCCESS.
+     */
     private function showAllBranches(array $dataIds, int $periodId): int
     {
         $this->info('── Colocación por sucursal (todas las operativas) ──');
@@ -295,23 +327,30 @@ class DebugColocacionSucursalCommand extends Command
         $rows = DB::table('fact_placements as p')
             ->join('branches as b', 'p.branch_id', '=', 'b.id')
             ->whereIn('p.period_id', $dataIds)
-            ->selectRaw("b.name as branch, SUM(p.amount) as total_bruto, COUNT(*) as creditos")
+            ->selectRaw('b.name as branch, SUM(p.amount) as total_bruto, COUNT(*) as creditos')
             ->groupBy('b.id', 'b.name')
             ->orderByDesc('total_bruto')
             ->get();
 
         $this->table(
             ['Sucursal BD', 'Créditos brutos', 'Total bruto'],
-            $rows->map(fn ($r) => [mb_substr($r->branch, 0, 35), $r->creditos, '$' . number_format((float) $r->total_bruto, 2)])->all()
+            $rows->map(fn ($r) => [mb_substr($r->branch, 0, 35), $r->creditos, '$'.number_format((float) $r->total_bruto, 2)])->all()
         );
 
         $this->line('');
-        $this->line("  Usa --branch=\"NOMBRE\" para ver detalle de una sucursal específica.");
+        $this->line('  Usa --branch="NOMBRE" para ver detalle de una sucursal específica.');
         $this->line("  Ejemplo: php artisan reportes:debug-colocacion-sucursal $periodId --branch=\"SAN JUAN DEL RIO\"");
         $this->line('');
+
         return self::SUCCESS;
     }
 
+    /**
+     * Busca en el catálogo de prefijos de ruta el prefijo cuyo nombre contiene la sucursal.
+     *
+     * @param  string  $branchNorm  Nombre de sucursal en mayúsculas sin acentos.
+     * @return string|null Prefijo encontrado o null.
+     */
     private function getBranchPrefix(string $branchNorm): ?string
     {
         $catalog = $this->resolver->getCatalog();
@@ -320,9 +359,16 @@ class DebugColocacionSucursalCommand extends Command
                 return $prefix;
             }
         }
+
         return null;
     }
 
+    /**
+     * Quita acentos de un texto en mayúsculas.
+     *
+     * @param  string  $str  Texto en mayúsculas.
+     * @return string Texto sin acentos.
+     */
     private function accentFold(string $str): string
     {
         return strtr($str, [
@@ -331,6 +377,14 @@ class DebugColocacionSucursalCommand extends Command
         ]);
     }
 
+    /**
+     * Suma los PAGO de sucursales no operativas cuyo acreditado empieza con "SJR" (recuperación de
+     * San Juan del Río atribuida por el fallback Pass2).
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  array<int>  $sjrBranchIds  IDs de sucursal SJR (no se usan en el filtro actual).
+     * @return float Total recuperado vía Pass2.
+     */
     private function getSjrPass2Total(array $dataIds, array $sjrBranchIds): float
     {
         // Pass2 SJR = PAGO rows where branch NOT in operative, accredited prefix=SJR

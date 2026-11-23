@@ -7,6 +7,22 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-fondeos` — auditoría de fondeos entre sucursales y envíos a
+ * corporativo de Lendus (categorías Préstamos Intersucursales y Envío de utilidad a
+ * corporativo): origen, destino, responsable y monto. No afectan EBITDA; es rastreo de flujo.
+ *
+ * Usa solo la fuente PDF (gastos_lendus) como renglones; el destino se toma del raw_payload,
+ * luego se cruza con el Excel de Lendus por monto (±1 peso) y, como último recurso, se
+ * interpreta del texto del concepto. Clasifica cada movimiento como OK, Origen no detectado o
+ * Destino no detectado.
+ *
+ * Escribe en BD: NO (solo CSV con `--export`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-fondeos 5
+ *   php artisan reportes:audit-fondeos 5 --detail --export
+ */
 class AuditFondeosCommand extends Command
 {
     protected $signature = 'reportes:audit-fondeos
@@ -18,25 +34,32 @@ class AuditFondeosCommand extends Command
 
     // Official branch names for normalization
     private const BRANCH_ALIASES = [
-        'SAN JUAN DEL RIO'  => 'SAN JUAN DEL RÍO',
-        'SAN JUAN'          => 'SAN JUAN DEL RÍO',
-        'TENANGO'           => 'TENANGO DEL VALLE',
-        'CORDOBA'           => 'CÓRDOBA',
-        'SAN LUIS POTOSI'   => 'SAN LUIS POTOSÍ',
-        'MIACATLAN'         => 'MIACATLÁN',
+        'SAN JUAN DEL RIO' => 'SAN JUAN DEL RÍO',
+        'SAN JUAN' => 'SAN JUAN DEL RÍO',
+        'TENANGO' => 'TENANGO DEL VALLE',
+        'CORDOBA' => 'CÓRDOBA',
+        'SAN LUIS POTOSI' => 'SAN LUIS POTOSÍ',
+        'MIACATLAN' => 'MIACATLÁN',
     ];
 
+    /**
+     * Carga los movimientos del PDF, resuelve destino y estado de cada uno, acumula totales por
+     * origen, destino y estado, e imprime el resumen, la tabla de detalle y el CSV según opciones.
+     *
+     * @return int 0 al terminar (también si no hay movimientos); 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
@@ -78,6 +101,7 @@ class AuditFondeosCommand extends Command
 
         if ($fondeos->isEmpty()) {
             $this->info('  No se encontraron movimientos de fondeo en el período.');
+
             return 0;
         }
 
@@ -100,44 +124,46 @@ class AuditFondeosCommand extends Command
 
         $usedExcelIds = [];
 
-        $totalFondeo     = 0.0;
+        $totalFondeo = 0.0;
         $totalCorporativo = 0.0;
-        $sinOrigen       = 0.0;
-        $sinDestino      = 0.0;
-        $porOrigen       = [];
-        $porDestino      = [];
-        $estadoCounts    = [];
-        $detailRows      = [];
+        $sinOrigen = 0.0;
+        $sinDestino = 0.0;
+        $porOrigen = [];
+        $porDestino = [];
+        $estadoCounts = [];
+        $detailRows = [];
 
         foreach ($fondeos as $row) {
-            $monto    = (float) ($row->paid_amount ?: $row->amount);
-            $origen   = (string) ($row->sucursal_origen ?? '');
-            $cat      = (string) ($row->categoria ?? '');
+            $monto = (float) ($row->paid_amount ?: $row->amount);
+            $origen = (string) ($row->sucursal_origen ?? '');
+            $cat = (string) ($row->categoria ?? '');
             $concepto = (string) ($row->concepto ?? '');
-            $payload  = json_decode((string) ($row->raw_payload ?? 'null'), true) ?? [];
+            $payload = json_decode((string) ($row->raw_payload ?? 'null'), true) ?? [];
 
             // Destination: prefer parsed raw_payload keys, then cross-reference with Excel by amount
             $destinoSuc = $payload['fondeo_destino_sucursal'] ?? null;
-            if (!$destinoSuc || $destinoSuc === 'No detectado' || $destinoSuc === 'null') {
+            if (! $destinoSuc || $destinoSuc === 'No detectado' || $destinoSuc === 'null') {
                 $destinoSuc = null;
             }
             $destinoTexto = $payload['fondeo_destino_texto'] ?? $concepto;
-            $fondeoTipo   = $payload['fondeo_tipo'] ?? null;
-            $excelObs     = '';
+            $fondeoTipo = $payload['fondeo_tipo'] ?? null;
+            $excelObs = '';
 
             // Cross-reference with Excel by amount ±1 peso
-            if (!$destinoSuc && !empty($excelByAmount)) {
+            if (! $destinoSuc && ! empty($excelByAmount)) {
                 $montoInt = (int) round($monto);
                 $candidates = array_merge(
-                    $excelByAmount[$montoInt]     ?? [],
+                    $excelByAmount[$montoInt] ?? [],
                     $excelByAmount[$montoInt + 1] ?? [],
                     $excelByAmount[$montoInt - 1] ?? [],
                 );
                 foreach ($candidates as $ex) {
-                    if (in_array($ex->id, $usedExcelIds, true)) continue;
+                    if (in_array($ex->id, $usedExcelIds, true)) {
+                        continue;
+                    }
                     $exPayload = json_decode((string) ($ex->raw_payload ?? 'null'), true) ?? [];
                     $candidate = $exPayload['branch_to_detected'] ?? null;
-                    if (!$candidate || $candidate === 'No detectado' || $candidate === 'null') {
+                    if (! $candidate || $candidate === 'No detectado' || $candidate === 'null') {
                         // Try to detect from observations
                         $exText = mb_strtoupper(trim((string) ($ex->observations ?? '')));
                         if ($exText) {
@@ -145,17 +171,17 @@ class AuditFondeosCommand extends Command
                         }
                     }
                     if ($candidate) {
-                        $destinoSuc   = $candidate;
-                        $excelObs     = (string) ($ex->observations ?? '');
-                        $fondeoTipo   = 'fondeo_sucursal';
+                        $destinoSuc = $candidate;
+                        $excelObs = (string) ($ex->observations ?? '');
+                        $fondeoTipo = 'fondeo_sucursal';
                         $usedExcelIds[] = $ex->id;
                         break;
                     }
                 }
             }
 
-            if (!$destinoSuc) {
-                $parsed     = $this->parseDestinoFromConcept($concepto);
+            if (! $destinoSuc) {
+                $parsed = $this->parseDestinoFromConcept($concepto);
                 $destinoSuc = $parsed['sucursal'];
                 $fondeoTipo = $parsed['tipo'];
             }
@@ -163,7 +189,7 @@ class AuditFondeosCommand extends Command
             // Normalize destination name (strip noise, apply aliases)
             if ($destinoSuc && $destinoSuc !== 'CORPORATIVO') {
                 $destinoSuc = $this->stripNoise($destinoSuc);
-                $normKey    = strtr(mb_strtoupper(trim($destinoSuc)), ['Á'=>'A','É'=>'E','Í'=>'I','Ó'=>'O','Ú'=>'U','Ü'=>'U','Ñ'=>'N']);
+                $normKey = strtr(mb_strtoupper(trim($destinoSuc)), ['Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U', 'Ü' => 'U', 'Ñ' => 'N']);
                 $destinoSuc = self::BRANCH_ALIASES[$normKey] ?? self::BRANCH_ALIASES[$destinoSuc] ?? $destinoSuc;
             }
 
@@ -174,7 +200,7 @@ class AuditFondeosCommand extends Command
             $estado = 'OK';
             $motivo = '';
 
-            if (!$origen) {
+            if (! $origen) {
                 $estado = 'Origen no detectado';
                 $motivo = 'branch_id NULL — reimportar PDF para recuperar sucursal';
                 $sinOrigen += $monto;
@@ -182,10 +208,10 @@ class AuditFondeosCommand extends Command
                 $estado = 'OK';
                 $motivo = "Origen: {$origen} → Corporativo / excedente";
                 $totalCorporativo += $monto;
-            } elseif (!$destinoSuc || $destinoSuc === 'No detectado') {
+            } elseif (! $destinoSuc || $destinoSuc === 'No detectado') {
                 $estado = 'Destino no detectado';
                 $motivo = "Texto sin sucursal reconocida: «{$concepto}»";
-                $sinDestino  += $monto;
+                $sinDestino += $monto;
                 $totalFondeo += $monto;
             } else {
                 $motivo = "Origen: {$origen} → Destino: {$destinoSuc}";
@@ -197,18 +223,18 @@ class AuditFondeosCommand extends Command
             $porOrigen[$origen ?: '(sin sucursal)'] = ($porOrigen[$origen ?: '(sin sucursal)'] ?? 0.0) + $monto;
 
             $detailRows[] = [
-                'id'           => $row->id,
-                'origen'       => $origen ?: '(sin sucursal)',
-                'destino_suc'  => $destinoSuc ?? 'No detectado',
-                'destino_texto'=> $destinoTexto,
-                'tipo'         => $tipo,
-                'empleado'     => (string) ($row->observations ?? ''),
-                'concepto'     => $concepto,
-                'fecha'        => $row->fecha,
-                'monto'        => $monto,
-                'fuente'       => (string) ($row->fuente ?? ''),
-                'estado'       => $estado,
-                'motivo'       => $motivo,
+                'id' => $row->id,
+                'origen' => $origen ?: '(sin sucursal)',
+                'destino_suc' => $destinoSuc ?? 'No detectado',
+                'destino_texto' => $destinoTexto,
+                'tipo' => $tipo,
+                'empleado' => (string) ($row->observations ?? ''),
+                'concepto' => $concepto,
+                'fecha' => $row->fecha,
+                'monto' => $monto,
+                'fuente' => (string) ($row->fuente ?? ''),
+                'estado' => $estado,
+                'motivo' => $motivo,
             ];
         }
 
@@ -217,27 +243,31 @@ class AuditFondeosCommand extends Command
         // ── Resumen ──────────────────────────────────────────────────────────
         $this->line('');
         $this->info('════ RESUMEN ════');
-        $this->line(str_pad('Total registros', 44) . count($detailRows));
-        $this->line(str_pad('Total monto',     44) . '$' . number_format($totalTotal, 2));
+        $this->line(str_pad('Total registros', 44).count($detailRows));
+        $this->line(str_pad('Total monto', 44).'$'.number_format($totalTotal, 2));
         $this->line('');
-        $this->info(str_pad('Fondeos entre sucursales',     44) . '$' . number_format($totalFondeo, 2));
-        $this->info(str_pad('Envíos a corporativo/excedente', 44) . '$' . number_format($totalCorporativo, 2));
-        if ($sinOrigen > 0)  $this->warn(str_pad('Sin origen detectado',     44) . '$' . number_format($sinOrigen, 2));
-        if ($sinDestino > 0) $this->warn(str_pad('Sin destino detectado',    44) . '$' . number_format($sinDestino, 2));
+        $this->info(str_pad('Fondeos entre sucursales', 44).'$'.number_format($totalFondeo, 2));
+        $this->info(str_pad('Envíos a corporativo/excedente', 44).'$'.number_format($totalCorporativo, 2));
+        if ($sinOrigen > 0) {
+            $this->warn(str_pad('Sin origen detectado', 44).'$'.number_format($sinOrigen, 2));
+        }
+        if ($sinDestino > 0) {
+            $this->warn(str_pad('Sin destino detectado', 44).'$'.number_format($sinDestino, 2));
+        }
         $this->line('');
         foreach ($estadoCounts as $est => $cnt) {
-            $this->line(str_pad("  Estado [{$est}]", 44) . $cnt . ' registros');
+            $this->line(str_pad("  Estado [{$est}]", 44).$cnt.' registros');
         }
 
         // ── Por sucursal destino ──────────────────────────────────────────────
-        if (!empty($porDestino)) {
+        if (! empty($porDestino)) {
             $this->line('');
             $this->info('════ FONDEOS POR DESTINO ════');
             arsort($porDestino);
-            $this->line(str_pad('Sucursal destino', 30) . 'Total recibido');
+            $this->line(str_pad('Sucursal destino', 30).'Total recibido');
             $this->line(str_repeat('─', 50));
             foreach ($porDestino as $dest => $amt) {
-                $this->line(str_pad($dest, 30) . '$' . number_format($amt, 2));
+                $this->line(str_pad($dest, 30).'$'.number_format($amt, 2));
             }
         }
 
@@ -245,10 +275,10 @@ class AuditFondeosCommand extends Command
         $this->line('');
         $this->info('════ POR SUCURSAL ORIGEN ════');
         arsort($porOrigen);
-        $this->line(str_pad('Sucursal Origen', 30) . 'Total fondeado');
+        $this->line(str_pad('Sucursal Origen', 30).'Total fondeado');
         $this->line(str_repeat('─', 50));
         foreach ($porOrigen as $suc => $amt) {
-            $this->line(str_pad($suc, 30) . '$' . number_format($amt, 2));
+            $this->line(str_pad($suc, 30).'$'.number_format($amt, 2));
         }
 
         // ── Tabla detalle ────────────────────────────────────────────────────
@@ -256,23 +286,23 @@ class AuditFondeosCommand extends Command
             $this->line('');
             $this->info('════ TABLA DETALLE DE FONDEOS ════');
             $this->line(
-                str_pad('ID', 8) .
-                str_pad('Origen', 20) .
-                str_pad('Destino', 22) .
-                str_pad('Monto', 16) .
-                str_pad('Estado', 26) .
+                str_pad('ID', 8).
+                str_pad('Origen', 20).
+                str_pad('Destino', 22).
+                str_pad('Monto', 16).
+                str_pad('Estado', 26).
                 'Concepto'
             );
             $this->line(str_repeat('─', 140));
             foreach ($detailRows as $r) {
-                $line = str_pad($r['id'], 8) .
-                        str_pad(mb_substr($r['origen'], 0, 18), 20) .
-                        str_pad(mb_substr($r['destino_suc'], 0, 20), 22) .
-                        str_pad('$' . number_format($r['monto'], 2), 16) .
-                        str_pad(mb_substr($r['estado'], 0, 24), 26) .
+                $line = str_pad($r['id'], 8).
+                        str_pad(mb_substr($r['origen'], 0, 18), 20).
+                        str_pad(mb_substr($r['destino_suc'], 0, 20), 22).
+                        str_pad('$'.number_format($r['monto'], 2), 16).
+                        str_pad(mb_substr($r['estado'], 0, 24), 26).
                         mb_substr($r['concepto'], 0, 50);
                 match ($r['estado']) {
-                    'OK'  => $this->line($line),
+                    'OK' => $this->line($line),
                     default => $this->warn($line),
                 };
             }
@@ -286,9 +316,17 @@ class AuditFondeosCommand extends Command
         return 0;
     }
 
+    /**
+     * Interpreta la sucursal destino a partir del texto del concepto quitando ruido
+     * (FONDEO A SUC., PRÉSTAMO INTERSUCURSAL, DEPÓSITO…); CORPORATIVO/EXCEDENTE se marca como
+     * excedente corporativo.
+     *
+     * @param  string  $concept  Concepto original del gasto.
+     * @return array{sucursal:string,tipo:string} Sucursal detectada (o "No detectado") y tipo de fondeo.
+     */
     private function parseDestinoFromConcept(string $concept): array
     {
-        $cu = strtr(mb_strtoupper(trim($concept)), ['Á'=>'A','É'=>'E','Í'=>'I','Ó'=>'O','Ú'=>'U','Ü'=>'U','Ñ'=>'N']);
+        $cu = strtr(mb_strtoupper(trim($concept)), ['Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U', 'Ü' => 'U', 'Ñ' => 'N']);
         $cu = preg_replace('/\s+/', ' ', $cu) ?? $cu;
 
         if (str_contains($cu, 'CORPORATIVO') || str_contains($cu, 'EXCEDENTE')) {
@@ -302,31 +340,50 @@ class AuditFondeosCommand extends Command
             '/^PRESTAMO\s+A\s*/i', '/\s*FONDEO\s*/i', '/\s*DEPOSITO\s*/i',
         ];
         $clean = $cu;
-        foreach ($noise as $p) { $clean = preg_replace($p, ' ', $clean) ?? $clean; }
+        foreach ($noise as $p) {
+            $clean = preg_replace($p, ' ', $clean) ?? $clean;
+        }
         $clean = trim($clean);
 
         $suc = $this->matchBranch($clean);
+
         return ['sucursal' => $suc ?? 'No detectado', 'tipo' => $suc ? 'fondeo_sucursal' : 'no_clasificado'];
     }
 
+    /**
+     * Busca dentro del texto el nombre de alguna sucursal conocida y devuelve su nombre oficial.
+     *
+     * @param  string  $text  Texto libre.
+     * @return string|null Nombre oficial de la sucursal o null si no hay coincidencia.
+     */
     private function matchBranch(string $text): ?string
     {
         $map = [
-            'ATLACOMULCO'=>'ATLACOMULCO','ATLIXCO'=>'ATLIXCO','CORDOBA'=>'CÓRDOBA',
-            'CUERNAVACA'=>'CUERNAVACA','HUAMANTLA'=>'HUAMANTLA','IXTLAHUACA'=>'IXTLAHUACA',
-            'MIACATLAN'=>'MIACATLÁN','ORIZABA'=>'ORIZABA','SAN JUAN DEL RIO'=>'SAN JUAN DEL RÍO',
-            'SAN JUAN'=>'SAN JUAN DEL RÍO','SAN LUIS POTOSI'=>'SAN LUIS POTOSÍ',
-            'TENANGO DEL VALLE'=>'TENANGO DEL VALLE','TENANGO'=>'TENANGO DEL VALLE',
-            'TLAXCALA'=>'TLAXCALA','TULA'=>'TULA','CHIHUAHUA'=>'CHIHUAHUA',
-            'DURANGO'=>'DURANGO','YAUTEPEC'=>'YAUTEPEC',
+            'ATLACOMULCO' => 'ATLACOMULCO', 'ATLIXCO' => 'ATLIXCO', 'CORDOBA' => 'CÓRDOBA',
+            'CUERNAVACA' => 'CUERNAVACA', 'HUAMANTLA' => 'HUAMANTLA', 'IXTLAHUACA' => 'IXTLAHUACA',
+            'MIACATLAN' => 'MIACATLÁN', 'ORIZABA' => 'ORIZABA', 'SAN JUAN DEL RIO' => 'SAN JUAN DEL RÍO',
+            'SAN JUAN' => 'SAN JUAN DEL RÍO', 'SAN LUIS POTOSI' => 'SAN LUIS POTOSÍ',
+            'TENANGO DEL VALLE' => 'TENANGO DEL VALLE', 'TENANGO' => 'TENANGO DEL VALLE',
+            'TLAXCALA' => 'TLAXCALA', 'TULA' => 'TULA', 'CHIHUAHUA' => 'CHIHUAHUA',
+            'DURANGO' => 'DURANGO', 'YAUTEPEC' => 'YAUTEPEC',
         ];
-        $norm = strtr(mb_strtoupper(trim($text)), ['Á'=>'A','É'=>'E','Í'=>'I','Ó'=>'O','Ú'=>'U','Ü'=>'U','Ñ'=>'N']);
+        $norm = strtr(mb_strtoupper(trim($text)), ['Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U', 'Ü' => 'U', 'Ñ' => 'N']);
         foreach ($map as $key => $official) {
-            if (str_contains($norm, $key)) return $official;
+            if (str_contains($norm, $key)) {
+                return $official;
+            }
         }
+
         return null;
     }
 
+    /**
+     * Aplica patrones (FONDEA A SUC. X, FONDEO PARA X, DEPÓSITO A X…) a las observaciones del
+     * Excel de Lendus para extraer la sucursal destino.
+     *
+     * @param  string  $textUpper  Observaciones en mayúsculas.
+     * @return string|null Sucursal oficial detectada o null.
+     */
     private function detectFromExcelText(string $textUpper): ?string
     {
         static $noiseLeading = ['FONDEO', 'FONDEA', 'DEPOSITO', 'DEPÓSITO', 'A', 'PARA', 'DE', 'SUC', 'SUCURSAL'];
@@ -347,7 +404,7 @@ class AuditFondeosCommand extends Command
                 while ($changed) {
                     $changed = false;
                     foreach ($noiseLeading as $noise) {
-                        if (str_starts_with($candidate, $noise . ' ')) {
+                        if (str_starts_with($candidate, $noise.' ')) {
                             $candidate = trim(mb_substr($candidate, mb_strlen($noise)));
                             $changed = true;
                             break;
@@ -356,7 +413,9 @@ class AuditFondeosCommand extends Command
                 }
                 if (strlen($candidate) >= 3) {
                     $matched = $this->matchBranch($candidate);
-                    if ($matched) return $matched;
+                    if ($matched) {
+                        return $matched;
+                    }
                 }
             }
         }
@@ -364,6 +423,12 @@ class AuditFondeosCommand extends Command
         return null;
     }
 
+    /**
+     * Quita palabras de ruido iniciales (FONDEO, A, PARA, SUC, SUCURSAL…) de un nombre candidato.
+     *
+     * @param  string  $candidate  Texto candidato.
+     * @return string Texto limpio en mayúsculas.
+     */
     private function stripNoise(string $candidate): string
     {
         static $noiseLeading = ['FONDEO', 'FONDEA', 'DEPOSITO', 'DEPÓSITO', 'A', 'PARA', 'DE', 'SUC', 'SUCURSAL'];
@@ -372,39 +437,46 @@ class AuditFondeosCommand extends Command
         while ($changed) {
             $changed = false;
             foreach ($noiseLeading as $noise) {
-                if (str_starts_with($c, $noise . ' ')) {
+                if (str_starts_with($c, $noise.' ')) {
                     $c = trim(mb_substr($c, mb_strlen($noise)));
                     $changed = true;
                     break;
                 }
             }
         }
+
         return $c;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV con un renglón por movimiento de fondeo.
+     *
+     * @param  int  $periodId  ID del periodo (va en el nombre del archivo).
+     * @param  array  $rows  Filas de detalle generadas en handle().
+     */
     private function exportCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $file = "fondeos_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "fondeos_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
 
         $headers = ['ID', 'Sucursal Origen', 'Sucursal Destino', 'Destino Texto', 'Tipo', 'Empleado', 'Concepto', 'Fecha', 'Monto', 'Fuente', 'Estado', 'Motivo'];
-        $lines   = [implode(',', $headers)];
+        $lines = [implode(',', $headers)];
 
         foreach ($rows as $r) {
             $lines[] = implode(',', [
                 $r['id'],
-                '"' . str_replace('"', '""', $r['origen']) . '"',
-                '"' . str_replace('"', '""', $r['destino_suc']) . '"',
-                '"' . str_replace('"', '""', $r['destino_texto']) . '"',
-                '"' . str_replace('"', '""', $r['tipo']) . '"',
-                '"' . str_replace('"', '""', $r['empleado']) . '"',
-                '"' . str_replace('"', '""', $r['concepto']) . '"',
+                '"'.str_replace('"', '""', $r['origen']).'"',
+                '"'.str_replace('"', '""', $r['destino_suc']).'"',
+                '"'.str_replace('"', '""', $r['destino_texto']).'"',
+                '"'.str_replace('"', '""', $r['tipo']).'"',
+                '"'.str_replace('"', '""', $r['empleado']).'"',
+                '"'.str_replace('"', '""', $r['concepto']).'"',
                 $r['fecha'] ?? '',
                 number_format($r['monto'], 2, '.', ''),
-                '"' . str_replace('"', '""', $r['fuente']) . '"',
-                '"' . str_replace('"', '""', $r['estado']) . '"',
-                '"' . str_replace('"', '""', $r['motivo']) . '"',
+                '"'.str_replace('"', '""', $r['fuente']).'"',
+                '"'.str_replace('"', '""', $r['estado']).'"',
+                '"'.str_replace('"', '""', $r['motivo']).'"',
             ]);
         }
 

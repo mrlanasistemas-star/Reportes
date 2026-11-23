@@ -18,6 +18,9 @@ use Illuminate\Support\Facades\DB;
  *     contradicción de fuentes, se mantiene visible y conciliable (nunca se
  *     oculta en silencio).
  *   - Ausente de NOI sin baja confirmada → sigue elegible con advertencia.
+ *
+ * La usan los resolvedores de personal de OKR (elegibles para metas) y la API
+ * de colaboradores. Solo lectura.
  */
 class EmploymentEligibilityPolicy
 {
@@ -28,8 +31,19 @@ class EmploymentEligibilityPolicy
         'EMPLEADO DE PRUEBA%', 'EMPLEADO PRUEBA%', 'USUARIO PRUEBA%', 'PRUEBA %', 'TEST %', 'DEMO %',
     ];
 
+    /**
+     * @param  RosterMovementEvidenceCollector  $evidence  Línea de tiempo de directorios laborales cargados.
+     */
     public function __construct(private readonly RosterMovementEvidenceCollector $evidence) {}
 
+    /**
+     * ¿El nombre corresponde a un registro que no es persona (vacante, plaza, prueba)?
+     *
+     * Equivalente en PHP de excludePlaceholders(): convierte cada patrón LIKE de
+     * PLACEHOLDER_PATTERNS a regex (sin distinguir mayúsculas, espacios colapsados).
+     *
+     * @param  string|null  $name  Nombre completo.
+     */
     public static function isPlaceholderName(?string $name): bool
     {
         $n = preg_replace('/\s+/u', ' ', mb_strtoupper(trim((string) $name)));
@@ -44,7 +58,14 @@ class EmploymentEligibilityPolicy
         return false;
     }
 
-    /** Excluye vacantes/plazas/registros de prueba (columna de nombre completo). */
+    /**
+     * Excluye vacantes/plazas/registros de prueba (columna de nombre completo).
+     *
+     * Modifica la consulta recibida agregando un NOT LIKE por patrón.
+     *
+     * @param  QueryBuilder  $query  Consulta a filtrar (se modifica en sitio).
+     * @param  string  $column  Columna con el nombre completo (se interpola en SQL; debe venir del código, nunca del usuario).
+     */
     public function excludePlaceholders(QueryBuilder $query, string $column = 'full_name'): void
     {
         $query->where(function ($q) use ($column) {
@@ -57,6 +78,13 @@ class EmploymentEligibilityPolicy
     /**
      * ¿El directorio vigente es ANTERIOR al cierre de la nómina vigente? Si lo
      * es, su INACTIVO no puede excluir a quien cobra en esa nómina.
+     *
+     * Compara el corte efectivo del directorio (directoryTimeline()) contra la
+     * fecha fin del periodo de la nómina (comparación de cadenas Y-m-d).
+     *
+     * @param  int|null  $directoryUploadId  Carga del directorio vigente.
+     * @param  int|null  $rosterPeriodId  Periodo de la nómina vigente.
+     * @return bool false si falta alguno de los datos.
      */
     public function directoryPredatesPayroll(?int $directoryUploadId, ?int $rosterPeriodId): bool
     {
@@ -69,7 +97,12 @@ class EmploymentEligibilityPolicy
         return $end !== null && $cut !== null && $cut < substr((string) $end, 0, 10);
     }
 
-    /** @return int[] employee_id activos en la nómina vigente. */
+    /**
+     * Colaboradores que cobran en la nómina del periodo (is_active_for_period = 1).
+     *
+     * @param  int  $rosterPeriodId  Periodo de la nómina vigente.
+     * @return int[] employee_id activos en la nómina vigente.
+     */
     public function paidInRoster(int $rosterPeriodId): array
     {
         return DB::table('period_employee_rosters')

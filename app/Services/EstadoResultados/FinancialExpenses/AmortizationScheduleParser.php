@@ -31,16 +31,24 @@ use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
  */
 class AmortizationScheduleParser
 {
+    /** Filas que se revisan para encontrar el encabezado. */
     private const HEADER_SCAN_ROWS = 30;
 
+    /** Abreviaturas de mes (español e inglés) para fechas en texto. */
     private const MONTHS = [
         'ENE' => 1, 'FEB' => 2, 'MAR' => 3, 'ABR' => 4, 'MAY' => 5, 'JUN' => 6, 'JUL' => 7, 'AGO' => 8,
         'SEP' => 9, 'SET' => 9, 'OCT' => 10, 'NOV' => 11, 'DIC' => 12, 'JAN' => 1, 'APR' => 4, 'AUG' => 8, 'DEC' => 12,
     ];
 
+    /** @param  SpreadsheetSafetyInspector  $inspector  revisión del contenedor Excel */
     public function __construct(private readonly SpreadsheetSafetyInspector $inspector) {}
 
     /**
+     * Lee la tabla de amortización: elige la hoja/fila de encabezado con mejor coincidencia,
+     * lee los renglones y rechaza el archivo completo si hay errores por fila. No toca BD.
+     *
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $extension  extensión (xlsx, xlsm, xls, csv)
      * @return array{
      *   sheet:string, header_row:int, columns:array<string,string>,
      *   rows:list<array{source_row:int, payment_number:?int, payment_date:string, payment_total:string, principal:string, interest:string, interest_vat:?string, balance:?string}>,
@@ -69,8 +77,13 @@ class AmortizationScheduleParser
             }
             $reader->setReadFilter(new class($maxRows + 1, $maxCols) implements IReadFilter
             {
+                /**
+                 * @param  int  $rows  filas máximas a cargar
+                 * @param  int  $cols  columnas máximas a cargar
+                 */
                 public function __construct(private int $rows, private int $cols) {}
 
+                /** Sólo carga celdas dentro de los límites de filas/columnas. */
                 public function readCell($columnAddress, $row, $worksheetName = ''): bool
                 {
                     return (int) $row <= $this->rows && Coordinate::columnIndexFromString((string) $columnAddress) <= $this->cols;
@@ -165,7 +178,16 @@ class AmortizationScheduleParser
         return Money::str2(config('estado_resultados.gastos_financieros.tolerancia_cuadre', '0.05'));
     }
 
-    /** @return array{0:list<array<string,mixed>>, 1:list<array{row:int,column:?string,message:string}>, 2:list<string>} */
+    /**
+     * Lee los renglones bajo el encabezado: ignora vacíos y totales; exige fecha e interés
+     * válidos (importes no negativos); deduce capital o pago si faltan; marca descuadres
+     * interés + capital (+ IVA) ≠ pago mayores a la tolerancia.
+     *
+     * @param  array  $values  valores de la hoja
+     * @param  int  $headerRow  índice de la fila de encabezado
+     * @param  array<string,int>  $map  campo ⇒ índice de columna
+     * @return array{0:list<array<string,mixed>>, 1:list<array{row:int,column:?string,message:string}>, 2:list<string>} [renglones, errores, descuadres]
+     */
     private function readRows(array $values, int $headerRow, array $map): array
     {
         $rows = [];
@@ -271,6 +293,13 @@ class AmortizationScheduleParser
         return [$rows, $errors, $mismatch];
     }
 
+    /**
+     * Fecha de pago a Y-m-d desde DateTime, número de serie de Excel o texto (incluye meses
+     * abreviados en español/inglés).
+     *
+     * @param  mixed  $raw  valor de la celda
+     * @return string|null null si no es una fecha válida
+     */
     public static function date(mixed $raw): ?string
     {
         if ($raw === null || (is_string($raw) && trim($raw) === '')) {

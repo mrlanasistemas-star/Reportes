@@ -7,14 +7,19 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Auditoría de cierre de Rotación de Personal — formato completo para revisión
- * manual: resumen general, resumen por sucursal, listas nominales de altas y
- * bajas, cambios de sucursal (no cuentan como alta/baja) y, opcionalmente,
- * comparación contra un control manual externo.
+ * Comando `reportes:audit-rotacion-cierre` — auditoría de cierre de Rotación de Personal en
+ * formato completo para revisión manual: resumen general, resumen por sucursal, listas
+ * nominales de altas y bajas, cambios de sucursal (no cuentan como alta/baja) y,
+ * opcionalmente, comparación contra un control manual externo (CSV).
  *
- * Fuente de datos: fact_rotacion (source=derived_noi) y period_employee_rosters
- * — las mismas tablas que ya alimentan Preview.vue/Excel/PDF. Este comando NO
- * recalcula nada, solo presenta lo que ya existe en BD de forma auditable.
+ * Fuente de datos: fact_rotacion (source = derived_noi) y period_employee_rosters — las mismas
+ * tablas que ya alimentan Preview.vue/Excel/PDF. Este comando NO recalcula nada, solo
+ * presenta lo que ya existe en BD de forma auditable.
+ * Escribe en BD: NO — solo lectura (el CSV de control solo se lee).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-rotacion-cierre 21
+ *   php artisan reportes:audit-rotacion-cierre 21 --control=/ruta/control_junio.csv
  */
 class AuditRotacionCierreCommand extends Command
 {
@@ -24,23 +29,30 @@ class AuditRotacionCierreCommand extends Command
 
     protected $description = 'Auditoría completa de Rotación de Personal: resumen general, por sucursal, listas nominales de altas/bajas, cambios de sucursal y comparación opcional contra control manual.';
 
+    /**
+     * Localiza el periodo mensual anterior y ejecuta las secciones A–E (y F si se pasó `--control`).
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo o su mensual anterior no existen.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return self::FAILURE;
         }
 
         $prevPeriod = $period->previousMonthly(Period::all());
-        if (!$prevPeriod) {
+        if (! $prevPeriod) {
             $this->error("No se encontró periodo mensual anterior a {$period->label}.");
+
             return self::FAILURE;
         }
 
         $this->line('');
         $this->info('════════════════════════════════════════════════════════════════');
-        $this->info("  AUDITORÍA DE CIERRE — ROTACIÓN DE PERSONAL");
+        $this->info('  AUDITORÍA DE CIERRE — ROTACIÓN DE PERSONAL');
         $this->info("  {$prevPeriod->label} → {$period->label}");
         $this->info('════════════════════════════════════════════════════════════════');
 
@@ -57,7 +69,12 @@ class AuditRotacionCierreCommand extends Command
         return self::SUCCESS;
     }
 
-    /** A) Resumen general */
+    /**
+     * A) Resumen general: plantilla anterior y actual, altas, bajas e índice (bajas / plantilla).
+     *
+     * @param  Period  $period  Periodo actual.
+     * @param  Period  $prevPeriod  Periodo mensual anterior.
+     */
     private function sectionA(Period $period, Period $prevPeriod): void
     {
         $curr = DB::table('fact_rotacion')->where('period_id', $period->id)->where('source', 'derived_noi')
@@ -65,10 +82,10 @@ class AuditRotacionCierreCommand extends Command
         $prev = DB::table('fact_rotacion')->where('period_id', $prevPeriod->id)->where('source', 'derived_noi')
             ->selectRaw('SUM(promedio_personal) as plantilla')->first();
 
-        $altas     = (int) ($curr->altas ?? 0);
-        $bajas     = (int) ($curr->bajas ?? 0);
+        $altas = (int) ($curr->altas ?? 0);
+        $bajas = (int) ($curr->bajas ?? 0);
         $plantilla = (int) ($curr->plantilla ?? 0);
-        $indice    = $plantilla > 0 ? round($bajas / $plantilla * 100, 2) : 0.0;
+        $indice = $plantilla > 0 ? round($bajas / $plantilla * 100, 2) : 0.0;
 
         $this->line('');
         $this->info("════ A) RESUMEN GENERAL — {$prevPeriod->label} vs {$period->label} ════");
@@ -78,7 +95,12 @@ class AuditRotacionCierreCommand extends Command
         );
     }
 
-    /** B) Resumen por sucursal */
+    /**
+     * B) Resumen por sucursal: plantilla anterior/actual, altas, bajas, índice y variación.
+     *
+     * @param  Period  $period  Periodo actual.
+     * @param  Period  $prevPeriod  Periodo mensual anterior.
+     */
     private function sectionB(Period $period, Period $prevPeriod): void
     {
         $currRows = DB::table('fact_rotacion')->where('period_id', $period->id)->where('source', 'derived_noi')
@@ -100,8 +122,8 @@ class AuditRotacionCierreCommand extends Command
                 $plantillaCurr,
                 (int) ($c->altas ?? 0),
                 (int) ($c->bajas ?? 0),
-                $c ? number_format((float) $c->indice_rotacion, 2) . '%' : '—',
-                ($plantillaCurr - $plantillaPrev >= 0 ? '+' : '') . ($plantillaCurr - $plantillaPrev),
+                $c ? number_format((float) $c->indice_rotacion, 2).'%' : '—',
+                ($plantillaCurr - $plantillaPrev >= 0 ? '+' : '').($plantillaCurr - $plantillaPrev),
             ];
         }
 
@@ -113,7 +135,11 @@ class AuditRotacionCierreCommand extends Command
         );
     }
 
-    /** C) Lista nominal de altas */
+    /**
+     * C) Lista nominal de altas (roster activo, sucursal operativa, movement_type = alta).
+     *
+     * @param  Period  $period  Periodo actual.
+     */
     private function sectionC(Period $period): void
     {
         $altas = DB::table('period_employee_rosters')
@@ -128,6 +154,7 @@ class AuditRotacionCierreCommand extends Command
         $this->info("════ C) LISTA NOMINAL DE ALTAS ({$altas->count()}) ════");
         if ($altas->isEmpty()) {
             $this->line('  Sin altas en el periodo.');
+
             return;
         }
         $this->table(
@@ -136,7 +163,11 @@ class AuditRotacionCierreCommand extends Command
         );
     }
 
-    /** D) Lista nominal de bajas */
+    /**
+     * D) Lista nominal de bajas (roster inactivo, sucursal operativa, movement_type = baja).
+     *
+     * @param  Period  $period  Periodo actual.
+     */
     private function sectionD(Period $period): void
     {
         $bajas = DB::table('period_employee_rosters')
@@ -151,6 +182,7 @@ class AuditRotacionCierreCommand extends Command
         $this->info("════ D) LISTA NOMINAL DE BAJAS ({$bajas->count()}) ════");
         if ($bajas->isEmpty()) {
             $this->line('  Sin bajas en el periodo.');
+
             return;
         }
         $this->table(
@@ -159,7 +191,13 @@ class AuditRotacionCierreCommand extends Command
         );
     }
 
-    /** E) Cambios de sucursal — misma identidad, activo en ambos periodos, branch_id distinto */
+    /**
+     * E) Cambios de sucursal — misma identidad (nombre normalizado), activa en ambos periodos y con
+     * branch_id distinto. No cuentan como alta/baja.
+     *
+     * @param  Period  $period  Periodo actual.
+     * @param  Period  $prevPeriod  Periodo mensual anterior.
+     */
     private function sectionE(Period $period, Period $prevPeriod): void
     {
         $curr = DB::table('period_employee_rosters')
@@ -177,46 +215,60 @@ class AuditRotacionCierreCommand extends Command
         $cambios = [];
         foreach ($curr as $norm => $c) {
             $p = $prev->get($norm);
-            if (!$p) continue; // es alta, no cambio de sucursal
+            if (! $p) {
+                continue;
+            } // es alta, no cambio de sucursal
             if ((int) $p->branch_id !== (int) $c->branch_id) {
                 $cambios[] = [$c->nombre_original, $p->branch_name, $c->branch_name, 'No cuenta como alta/baja'];
             }
         }
 
         $this->line('');
-        $this->info('════ E) CAMBIOS DE SUCURSAL (' . count($cambios) . ') ════');
+        $this->info('════ E) CAMBIOS DE SUCURSAL ('.count($cambios).') ════');
         if (empty($cambios)) {
             $this->line('  Sin cambios de sucursal en el periodo.');
+
             return;
         }
         $this->table(['Nombre', 'Sucursal anterior', 'Sucursal actual', 'Nota'], $cambios);
     }
 
-    /** F) Auditoría contra control manual externo (opcional, --control=ruta.csv) */
+    /**
+     * F) Auditoría contra control manual externo (opcional, `--control=ruta.csv` con columnas
+     * sucursal, altas, bajas, plantilla): compara por sucursal contra lo derivado de NOI y lista
+     * los empleados que explican cada diferencia.
+     *
+     * @param  Period  $period  Periodo actual.
+     * @param  string  $controlPath  Ruta del CSV de control.
+     */
     private function sectionF(Period $period, string $controlPath): void
     {
         $this->line('');
         $this->info('════ F) AUDITORÍA VS CONTROL MANUAL ════');
 
-        if (!is_file($controlPath) || !is_readable($controlPath)) {
+        if (! is_file($controlPath) || ! is_readable($controlPath)) {
             $this->warn("  No se pudo leer el archivo de control: {$controlPath}");
+
             return;
         }
 
         $handle = fopen($controlPath, 'r');
-        if (!$handle) {
+        if (! $handle) {
             $this->warn("  No se pudo abrir el archivo de control: {$controlPath}");
+
             return;
         }
 
-        $header  = fgetcsv($handle);
+        $header = fgetcsv($handle);
         $control = [];
         while (($row = fgetcsv($handle)) !== false) {
             $data = array_combine($header, $row);
-            if (!$data || empty($data['sucursal'])) continue;
+            if (! $data || empty($data['sucursal'])) {
+                continue;
+            }
             $control[mb_strtoupper(trim($data['sucursal']))] = [
-                'altas'     => (int) ($data['altas'] ?? 0),
-                'bajas'     => (int) ($data['bajas'] ?? 0),
+                'altas' => (int) ($data['altas'] ?? 0),
+                'bajas' => (int) ($data['bajas'] ?? 0),
                 'plantilla' => (int) ($data['plantilla'] ?? 0),
             ];
         }
@@ -224,6 +276,7 @@ class AuditRotacionCierreCommand extends Command
 
         if (empty($control)) {
             $this->warn('  El archivo de control no contiene filas válidas (columnas esperadas: sucursal,altas,bajas,plantilla).');
+
             return;
         }
 
@@ -241,13 +294,13 @@ class AuditRotacionCierreCommand extends Command
         $rows = [];
         foreach ($sucursales as $suc) {
             $ctrl = $control[$suc] ?? ['altas' => 0, 'bajas' => 0, 'plantilla' => 0];
-            $noi  = $noiRows->get($suc);
-            $noiAltas     = (int) ($noi->altas ?? 0);
-            $noiBajas     = (int) ($noi->bajas ?? 0);
+            $noi = $noiRows->get($suc);
+            $noiAltas = (int) ($noi->altas ?? 0);
+            $noiBajas = (int) ($noi->bajas ?? 0);
             $noiPlantilla = (int) ($noi->promedio_personal ?? 0);
 
-            $diffAltas     = $noiAltas - $ctrl['altas'];
-            $diffBajas     = $noiBajas - $ctrl['bajas'];
+            $diffAltas = $noiAltas - $ctrl['altas'];
+            $diffBajas = $noiBajas - $ctrl['bajas'];
             $diffPlantilla = $noiPlantilla - $ctrl['plantilla'];
 
             $explica = collect()

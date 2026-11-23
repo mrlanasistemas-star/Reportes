@@ -40,6 +40,9 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
  *    macros, vínculos externos).
  *  - Dimensiones (filas/columnas) por hoja con listWorksheetInfo() ANTES de load(), y un
  *    filtro de lectura que nunca carga más allá de esos límites. Sólo datos (sin estilos).
+ *
+ * Lo usan EstadoResultadosUploadService (carga de archivos) y MovementControlService (relectura
+ * para encontrar filas no guardadas).
  *  - Fórmulas INTERNAS se calculan (mismo resultado que antes); el valor guardado por Excel
  *    sólo se usa si el cálculo falla, y si difiere del calculado se avisa. Una fórmula que
  *    referencia OTRO libro, una ruta, URL, DDE o
@@ -48,8 +51,10 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
  */
 class BankStatementParser
 {
+    /** Estructura de la cuenta administrativa (trae columna REQ). */
     public const LAYOUT_ADMINISTRATIVA = 'administrativa';
 
+    /** Estructura de la cuenta de excedentes (trae DETALLE, sin REQ). */
     public const LAYOUT_EXCEDENTES = 'excedentes';
 
     /** Límite defensivo de filas por hoja (un estado de cuenta mensual real tiene cientos). */
@@ -70,18 +75,30 @@ class BankStatementParser
     /** Fórmulas internas cuyo valor guardado difiere del calculado (aviso informativo). */
     private int $staleFormulas = 0;
 
+    /** @param  SpreadsheetSafetyInspector  $inspector  revisión del contenedor antes de abrirlo */
     public function __construct(private readonly SpreadsheetSafetyInspector $inspector = new SpreadsheetSafetyInspector) {}
 
+    /**
+     * Límite de filas por hoja (config estado_resultados.import.max_rows, mínimo 1).
+     */
     public static function maxRows(): int
     {
         return max(1, (int) config('estado_resultados.import.max_rows', self::MAX_ROWS));
     }
 
+    /**
+     * Límite de columnas por hoja (config estado_resultados.import.max_columns, mínimo 1).
+     */
     public static function maxColumns(): int
     {
         return max(1, (int) config('estado_resultados.import.max_columns', self::MAX_COLUMNS));
     }
 
+    /**
+     * ¿La fórmula sale del libro (otro libro, ruta/URL, DDE o funciones de red)?
+     *
+     * @param  string  $formula  texto de la fórmula
+     */
     public static function isExternalFormula(string $formula): bool
     {
         foreach (self::EXTERNAL_FORMULA as $re) {
@@ -93,6 +110,7 @@ class BankStatementParser
         return false;
     }
 
+    /** Campo normalizado ⇒ textos de encabezado aceptados (mayúsculas sin acentos). */
     private const HEADER_ALIASES = [
         'fecha' => ['FECHA', 'FECHA OPERACION', 'FECHA MOVIMIENTO'],
         'referencia' => ['REFERENCIA BANCA', 'REFRENCIA BANCA', 'REFERENCIA BANCARIA', 'REFERENCIA', 'DESCRIPCION Y REFERENCIA', 'DESCRIPCION', 'CONCEPTO BANCO'],
@@ -112,12 +130,21 @@ class BankStatementParser
     ];
 
     /**
+     * Lee y valida el archivo completo: inspección de seguridad, límites de filas/columnas,
+     * carga sólo de datos, primera hoja con encabezado reconocido, rechazo de fórmulas externas
+     * en columnas usadas y lectura de movimientos. No toca BD.
+     *
+     * @param  string  $absolutePath  ruta absoluta del archivo
+     * @param  string|null  $extension  extensión original (si la ruta no la trae)
      * @return array{
      *   layout: string, sheet: string, header_row: int, columns: array<string,int>,
      *   movements: list<array<string,mixed>>, detail_lines: int, rows_read: int,
      *   opening_balance: ?string, control_cargos: ?string, control_abonos: ?string,
      *   warnings: list<string>
      * }
+     *
+     * @throws EstadoResultadosImportException archivo ilegible, demasiado grande, estructura no
+     *                                         reconocida, fórmulas externas o filas inválidas
      */
     public function parse(string $absolutePath, ?string $extension = null): array
     {
@@ -152,8 +179,19 @@ class BankStatementParser
             // Nunca se carga más allá de los límites (defensa adicional si listWorksheetInfo subestima).
             $reader->setReadFilter(new class($maxRows + 1, $maxCols) implements IReadFilter
             {
+                /**
+                 * @param  int  $rows  filas máximas a cargar
+                 * @param  int  $cols  columnas máximas a cargar
+                 */
                 public function __construct(private int $rows, private int $cols) {}
 
+                /**
+                 * PhpSpreadsheet sólo carga la celda si está dentro de los límites.
+                 *
+                 * @param  string  $columnAddress  letra de columna
+                 * @param  int  $row  número de fila
+                 * @param  string  $worksheetName  hoja
+                 */
                 public function readCell($columnAddress, $row, $worksheetName = ''): bool
                 {
                     return (int) $row <= $this->rows && Coordinate::columnIndexFromString((string) $columnAddress) <= $this->cols;
@@ -273,6 +311,15 @@ class BankStatementParser
         return [$rows, $external];
     }
 
+    /**
+     * Busca en las primeras 20 filas el encabezado con FECHA, CARGO y ABONO; REQ ⇒ cuenta
+     * administrativa, DETALLE ⇒ excedentes. Exige además REFERENCIA, CONCEPTO y SUCURSAL.
+     *
+     * @param  array  $rows  filas de la hoja (base 0)
+     * @return array{layout:string, header_row:int, columns:array<string,int>}|null null si no hay encabezado
+     *
+     * @throws EstadoResultadosImportException si el encabezado está incompleto
+     */
     private function detectHeader(array $rows): ?array
     {
         foreach (array_slice($rows, 0, 20, true) as $rowIndex => $row) {
@@ -312,6 +359,16 @@ class BankStatementParser
         return null;
     }
 
+    /**
+     * Recorre las filas después del encabezado aplicando las reglas de lectura de la clase:
+     * movimientos (fecha válida + importe), líneas de detalle, saldo inicial, totales de control
+     * y pie del archivo. Acumula errores por fila y, si hay alguno, rechaza el archivo completo.
+     *
+     * @param  array  $d  encabezado detectado + filas (detectHeader + sheet/rows/external)
+     * @return array<string, mixed> layout, movimientos, conteos, saldo inicial, totales de control y avisos
+     *
+     * @throws EstadoResultadosImportException con el detalle de filas inválidas
+     */
     private function readRows(array $d): array
     {
         $cols = $d['columns'];
@@ -484,6 +541,11 @@ class BankStatementParser
         ];
     }
 
+    /**
+     * Texto de encabezado normalizado (mayúsculas, sin acentos, espacios simples).
+     *
+     * @param  mixed  $cell  valor de la celda
+     */
     private function headerKey(mixed $cell): string
     {
         $v = mb_strtoupper(Str::ascii(trim((string) $cell)));
@@ -491,6 +553,14 @@ class BankStatementParser
         return preg_replace('/\s+/', ' ', $v) ?? $v;
     }
 
+    /**
+     * Importe de una celda: vacío ⇒ 0; texto inválido ⇒ agrega error y devuelve null.
+     *
+     * @param  mixed  $raw  valor de la celda
+     * @param  int  $row  fila (para el mensaje)
+     * @param  string  $col  nombre de la columna (para el mensaje)
+     * @param  array  $errors  errores acumulados (por referencia)
+     */
     private function amount(mixed $raw, int $row, string $col, array &$errors): ?BigDecimal
     {
         if ($raw === null || (is_string($raw) && trim($raw) === '')) {
@@ -506,6 +576,11 @@ class BankStatementParser
         return $value;
     }
 
+    /**
+     * Importe opcional (p. ej. SALDO/TOTAL) con 2 decimales; null si vacío o inválido.
+     *
+     * @param  mixed  $raw  valor de la celda
+     */
     private function amountOrNull(mixed $raw): ?string
     {
         if ($raw === null || (is_string($raw) && trim($raw) === '')) {
@@ -516,6 +591,13 @@ class BankStatementParser
         return $v === null ? null : (string) $v->toScale(2, RoundingMode::HALF_UP);
     }
 
+    /**
+     * Fecha de una celda a Y-m-d: número de serie de Excel (rango 30000–80000) o texto en
+     * d/m/Y, d/m/y, Y-m-d, d-m-Y o d.m.Y (el texto debe coincidir exactamente con el formato).
+     *
+     * @param  mixed  $raw  valor de la celda
+     * @return string|null null si no es una fecha válida
+     */
     private function date(mixed $raw): ?string
     {
         if ($raw === null || $raw === '') {
@@ -544,6 +626,11 @@ class BankStatementParser
         return null;
     }
 
+    /**
+     * Texto con espacios colapsados; null si queda vacío.
+     *
+     * @param  mixed  $v  valor
+     */
     private function text(mixed $v): ?string
     {
         if ($v === null) {
@@ -554,11 +641,22 @@ class BankStatementParser
         return $t === '' ? null : $t;
     }
 
+    /**
+     * Recorta un texto a $max caracteres (multibyte).
+     *
+     * @param  string|null  $v  texto
+     * @param  int  $max  longitud máxima
+     */
     private function limit(?string $v, int $max): ?string
     {
         return $v === null ? null : mb_substr($v, 0, $max);
     }
 
+    /**
+     * ¿Todas las celdas de la fila están vacías?
+     *
+     * @param  array  $row  fila
+     */
     private function isEmpty(array $row): bool
     {
         foreach ($row as $c) {

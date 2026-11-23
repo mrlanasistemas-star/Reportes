@@ -6,18 +6,36 @@ use App\Models\Period;
 use App\Models\PeriodRadiographyRun;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:debug-generation-progress` — muestra el estado y progreso de la generación
+ * de la Radiografía de un periodo: últimas 5 corridas (`period_radiography_runs`), detalle
+ * completo de la más reciente (etapas, avance, errores) y un resumen ejecutivo.
+ *
+ * Cuándo usarlo: cuando la generación parece detenida o falló.
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-generation-progress 21
+ */
 class DebugGenerationProgressCommand extends Command
 {
-    protected $signature   = 'reportes:debug-generation-progress {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-generation-progress {period_id : ID del periodo}';
+
     protected $description = 'Muestra el estado y progreso de la generación de radiografía para un periodo.';
 
+    /**
+     * Consulta las corridas de generación del periodo e imprime listado, detalle y resumen.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -36,6 +54,7 @@ class DebugGenerationProgressCommand extends Command
         if ($runs->isEmpty()) {
             $this->warn('  No hay runs de generación para este periodo.');
             $this->line('');
+
             return self::SUCCESS;
         }
 
@@ -45,7 +64,7 @@ class DebugGenerationProgressCommand extends Command
             $runs->map(fn ($run) => [
                 $run->id,
                 $run->status,
-                isset($run->metadata['progress_percent']) ? $run->metadata['progress_percent'] . '%' : '—',
+                isset($run->metadata['progress_percent']) ? $run->metadata['progress_percent'].'%' : '—',
                 $run->metadata['current_step'] ?? '—',
                 mb_strimwidth((string) ($run->log ?? ''), 0, 50),
                 optional($run->started_at)->format('d/m H:i'),
@@ -62,12 +81,12 @@ class DebugGenerationProgressCommand extends Command
         $this->line('');
 
         $statusColor = match ($latest->status) {
-            'success'   => 'green',
-            'running'   => 'cyan',
-            'queued'    => 'yellow',
-            'failed'    => 'red',
+            'success' => 'green',
+            'running' => 'cyan',
+            'queued' => 'yellow',
+            'failed' => 'red',
             'cancelled' => 'white',
-            default     => 'white',
+            default => 'white',
         };
 
         $this->line(sprintf('  Run ID:       <fg=white>#%d</>', $latest->id));
@@ -78,13 +97,13 @@ class DebugGenerationProgressCommand extends Command
 
         if ($latest->started_at && $latest->finished_at) {
             $elapsed = $latest->started_at->diffInSeconds($latest->finished_at);
-            $mins    = (int) floor($elapsed / 60);
-            $secs    = $elapsed % 60;
+            $mins = (int) floor($elapsed / 60);
+            $secs = $elapsed % 60;
             $this->line(sprintf('  Duración:     %s', $mins > 0 ? "{$mins} min {$secs} seg" : "{$secs} seg"));
         } elseif ($latest->started_at && in_array($latest->status, ['queued', 'running'], true)) {
             $elapsed = now()->diffInSeconds($latest->started_at ?? $latest->queued_at ?? $latest->created_at);
-            $mins    = (int) floor($elapsed / 60);
-            $secs    = $elapsed % 60;
+            $mins = (int) floor($elapsed / 60);
+            $secs = $elapsed % 60;
             $this->line(sprintf('  Transcurrido: <fg=yellow>%s</>', $mins > 0 ? "{$mins} min {$secs} seg" : "{$secs} seg"));
         }
 
@@ -92,13 +111,13 @@ class DebugGenerationProgressCommand extends Command
 
         // Progress
         $meta = $latest->metadata ?? [];
-        if (!empty($meta)) {
-            $pct  = $meta['progress_percent'] ?? null;
+        if (! empty($meta)) {
+            $pct = $meta['progress_percent'] ?? null;
             $step = $meta['current_step'] ?? null;
 
             if ($pct !== null) {
                 $filled = (int) round($pct / 5);
-                $bar    = str_repeat('█', $filled) . str_repeat('░', 20 - $filled);
+                $bar = str_repeat('█', $filled).str_repeat('░', 20 - $filled);
                 $this->line(sprintf('  Progreso:     <fg=cyan>[%s]</> <fg=white>%d%%</>', $bar, $pct));
             }
             if ($step) {
@@ -144,7 +163,7 @@ class DebugGenerationProgressCommand extends Command
             $progress = $meta['progress_percent'] ?? 0;
             $this->warn("  ⏳ Generación en curso ({$progress}%). Polling activo.");
         } elseif ($latest->status === 'failed') {
-            $this->error("  ✗ Generación fallida. Consulta el error arriba.");
+            $this->error('  ✗ Generación fallida. Consulta el error arriba.');
         } elseif ($latest->status === 'cancelled') {
             $this->line('  <fg=white>○ Generación cancelada manualmente.</>');
         }
@@ -152,7 +171,7 @@ class DebugGenerationProgressCommand extends Command
         $this->line('');
         $this->line('  Diagnóstico rápido:');
         $this->line('    - Para reintentar: php artisan queue:work --tries=1 --timeout=0');
-        $this->line('    - Para debug completo: php artisan reportes:debug-incidents ' . $periodId);
+        $this->line('    - Para debug completo: php artisan reportes:debug-incidents '.$periodId);
         $this->line('');
 
         return self::SUCCESS;

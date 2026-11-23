@@ -3,6 +3,7 @@
 namespace App\Services\Api;
 
 use App\Models\Period;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -19,7 +20,23 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  */
 class ApiPeriodRange
 {
-    /** @return Collection<int, Period> ordenados por fecha de inicio ascendente */
+    /**
+     * Resuelve los periodos solicitados por la petición.
+     *
+     * Con `period_ids`: valida enteros positivos, quita duplicados, aplica el
+     * máximo y exige que todos existan. Con `from_period_id`/`to_period_id`:
+     * ambos deben existir, ser del mismo tipo y `from` iniciar antes o igual
+     * que `to`; devuelve todos los periodos de ese tipo cuyo inicio cae en el rango.
+     *
+     * Solo lectura sobre la tabla periods.
+     *
+     * @param  Request  $request  Petición HTTP con los parámetros de rango.
+     * @param  int  $max  Número máximo de periodos permitidos por petición.
+     * @return Collection<int, Period> ordenados por fecha de inicio ascendente
+     *
+     * @throws HttpException 422 por parámetros inválidos/combinados/excedidos; 404 si algún id de `period_ids` no existe.
+     * @throws ModelNotFoundException si `from_period_id` o `to_period_id` no existen.
+     */
     public static function resolve(Request $request, int $max): Collection
     {
         $rawIds = trim((string) $request->query('period_ids', ''));
@@ -79,7 +96,12 @@ class ApiPeriodRange
         return $periods->values();
     }
 
-    /** Ficha corta del periodo, misma forma que /periods/{id}. */
+    /**
+     * Ficha corta del periodo, misma forma que /periods/{id}.
+     *
+     * @param  Period  $period  Periodo a describir.
+     * @return array<string, mixed> id, code, type, label (visible), custom_name, system_label, fechas (Y-m-d) e is_closed.
+     */
     public static function describe(Period $period): array
     {
         return [

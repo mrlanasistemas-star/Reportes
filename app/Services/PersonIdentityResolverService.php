@@ -3,30 +3,50 @@
 namespace App\Services;
 
 use App\Models\Employee;
-use App\Models\EmployeeAlias;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
-use App\Services\BranchResolverService;
 
+/**
+ * Resuelve la identidad de personas (colaboradores) entre fuentes y su sucursal.
+ *
+ * Compara nombres normalizados (exacto, mismas palabras reordenadas, similitud
+ * difusa), respeta los rechazos explícitos de fusión (employee_match_rejections),
+ * infiere sucursal por asignaciones previas, duplicados canónicos, alias o prefijos
+ * de contrato, arma la traza de diagnóstico de "personas sin sucursal" y decide si un
+ * nombre de NOI tiene evidencia de ser un colaborador real.
+ *
+ * Lo usan los importadores (NOI, Lendus), EmployeeBranchAutoMatchService,
+ * FinanciamientoMotosAssignmentService y los paneles/comandos de identidad.
+ */
 class PersonIdentityResolverService
 {
-    // Contract prefix → operative branch name
+    // Prefijo de contrato → nombre de sucursal operativa
     private const CONTRACT_PREFIXES = [
-        'ATLIX' => 'ATLIXCO',          // longer prefix first to avoid ATLA ambiguity
-        'ATLA'  => 'ATLACOMULCO',
-        'CORD'  => 'CORDOBA',
-        'CUER'  => 'CUERNAVACA',
-        'HUAM'  => 'HUAMANTLA',
-        'IXTA'  => 'IXTLAHUACA',
-        'MIAC'  => 'MIACATLAN',
-        'ORIZ'  => 'ORIZABA',
-        'SLP'   => 'SAN LUIS POTOSI',
-        'TENA'  => 'TENANGO DEL VALLE',
-        'TLAX'  => 'TLAXCALA',
-        'TULA'  => 'TULA',
+        'ATLIX' => 'ATLIXCO',          // prefijo más largo primero para evitar ambigüedad con ATLA
+        'ATLA' => 'ATLACOMULCO',
+        'CORD' => 'CORDOBA',
+        'CUER' => 'CUERNAVACA',
+        'HUAM' => 'HUAMANTLA',
+        'IXTA' => 'IXTLAHUACA',
+        'MIAC' => 'MIACATLAN',
+        'ORIZ' => 'ORIZABA',
+        'SLP' => 'SAN LUIS POTOSI',
+        'TENA' => 'TENANGO DEL VALLE',
+        'TLAX' => 'TLAXCALA',
+        'TULA' => 'TULA',
     ];
 
+    /**
+     * Normaliza un nombre de persona para compararlo entre fuentes.
+     *
+     * Quita acentos (ASCII), pasa a minúsculas, reemplaza todo lo que no sea letra,
+     * dígito o espacio por espacio, colapsa espacios y recorta.
+     *
+     * @param  string|null  $value  Nombre original.
+     * @return string Nombre normalizado ('' si queda vacío).
+     */
     public function normalizePersonName(?string $value): string
     {
         return Str::of((string) $value)
@@ -39,42 +59,69 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Returns 0–100 similarity score between two names (normalized internally).
-     * BELASCO / BELAZCO → ~85.7, well above the 80 threshold.
+     * Devuelve un puntaje de similitud 0–100 entre dos nombres (se normalizan internamente).
+     *
+     * Usa similar_text() de PHP. Iguales tras normalizar = 100; alguno vacío = 0.
+     * Ejemplo: BELASCO / BELAZCO → ~85.7, por encima del umbral de 80.
+     *
+     * @param  string  $a  Primer nombre.
+     * @param  string  $b  Segundo nombre.
      */
     public function scoreNameSimilarity(string $a, string $b): float
     {
         $aN = $this->normalizePersonName($a);
         $bN = $this->normalizePersonName($b);
 
-        if ($aN === $bN) return 100.0;
-        if ($aN === '' || $bN === '') return 0.0;
+        if ($aN === $bN) {
+            return 100.0;
+        }
+        if ($aN === '' || $bN === '') {
+            return 0.0;
+        }
 
         similar_text($aN, $bN, $pct);
+
         return (float) $pct;
     }
 
+    /**
+     * Indica si dos nombres probablemente son la misma persona según el umbral de similitud.
+     *
+     * @param  string  $a  Primer nombre.
+     * @param  string  $b  Segundo nombre.
+     * @param  float  $threshold  Puntaje mínimo (0–100) para considerarlos iguales.
+     */
     public function isLikelySamePerson(string $a, string $b, float $threshold = 80.0): bool
     {
         return $this->scoreNameSimilarity($a, $b) >= $threshold;
     }
 
     /**
-     * Find an existing employee matching the given name.
-     * Resolution order: exact normalized → fuzzy (≥80%).
-     * Returns ['employee' => Employee, 'method' => string, 'score' => float] or null.
+     * Busca un colaborador existente que coincida con el nombre dado.
+     *
+     * Orden: 1) nombre normalizado exacto ('exact_name'); 2) mismo conjunto exacto de
+     * palabras en otro orden, con más de una palabra ('exact_name_reordered');
+     * 3) mejor similitud difusa ≥80% ('fuzzy_name'). Excluye $excludeId y los
+     * colaboradores con rechazo explícito de fusión contra él. Carga todos los
+     * empleados con nombre normalizado en memoria para los pasos 2 y 3.
+     *
+     * @param  string  $name  Nombre a buscar.
+     * @param  int|null  $excludeId  ID de colaborador a excluir (normalmente el propio registro).
+     * @return array{employee: Employee, method: string, score: float}|null
      */
     public function findExistingPersonMatch(string $name, ?int $excludeId = null): ?array
     {
         $normalized = $this->normalizePersonName($name);
-        if ($normalized === '') return null;
+        if ($normalized === '') {
+            return null;
+        }
 
         // Homónimos con rechazo de fusión explícito (employee_match_rejections) nunca
         // son "la misma persona" del registro excluido — misma regla que
         // CanonicalEmployeeResolver / Roster\RosterIdentityResolver.
         $rejected = $excludeId ? $this->rejectedEmployeeIds($excludeId) : [];
 
-        // 1. Exact normalized match
+        // 1. Coincidencia exacta del nombre normalizado
         $exact = Employee::query()
             ->where('normalized_name', $normalized)
             ->when($excludeId, fn ($q) => $q->where('id', '!=', $excludeId))
@@ -102,7 +149,7 @@ class PersonIdentityResolverService
             }
         }
 
-        // 3. Fuzzy match — similar_text ≥ 80%
+        // 3. Coincidencia difusa — similar_text ≥ 80%
         $bestScore = 0.0;
         $bestMatch = null;
 
@@ -122,10 +169,16 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Aggregate fact_recoveries contracts by normalized promoter name ONCE, scoped to
-     * the given period data ids. Pass the result to resolveBranchFromContractPrefix()
-     * and buildResolutionTrace() to avoid an unindexed LOWER(promoter_name) full-table
-     * scan per person — this was the main cause of "personas sin sucursal" hanging.
+     * Agrupa UNA sola vez los contratos de fact_recoveries por nombre de promotor
+     * normalizado, limitado a los periodos de datos indicados (máximo 20 contratos
+     * distintos por nombre).
+     *
+     * Pasa el resultado a resolveBranchFromContractPrefix() y buildResolutionTrace()
+     * para evitar un recorrido completo de la tabla con LOWER(promoter_name) por cada
+     * persona — era la causa principal de que "personas sin sucursal" se colgara.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<string, array<int, string>> nombre normalizado => lista de contratos.
      */
     public function buildContractsIndex(array $dataIds): array
     {
@@ -146,10 +199,10 @@ class PersonIdentityResolverService
             if ($norm === '') {
                 continue;
             }
-            if (!isset($byName[$norm])) {
+            if (! isset($byName[$norm])) {
                 $byName[$norm] = [];
             }
-            if (count($byName[$norm]) < 20 && !in_array($r->contract, $byName[$norm], true)) {
+            if (count($byName[$norm]) < 20 && ! in_array($r->contract, $byName[$norm], true)) {
                 $byName[$norm][] = $r->contract;
             }
         }
@@ -158,8 +211,16 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Infer branch from contract-number prefixes found in fact_recoveries
-     * for rows where the promoter name matches the given person.
+     * Infiere la sucursal por el prefijo de los números de contrato (CONTRACT_PREFIXES)
+     * en fact_recoveries donde el promotor coincide con la persona.
+     *
+     * Si no se envía el índice precargado, consulta fact_recoveries completo (sin
+     * filtrar por periodo) comparando LOWER(promoter_name) con el nombre normalizado.
+     * Devuelve la primera sucursal encontrada en branches por nombre exacto.
+     *
+     * @param  string  $personName  Nombre de la persona.
+     * @param  array<string, array<int, string>>|null  $contractsPreloaded  Índice de buildContractsIndex().
+     * @return int|null ID de sucursal o null.
      */
     public function resolveBranchFromContractPrefix(string $personName, ?array $contractsPreloaded = null): ?int
     {
@@ -175,7 +236,7 @@ class PersonIdentityResolverService
                 ->take(20)
                 ->all();
 
-        // Sort prefixes longest-first to avoid ATLA shadowing ATLIX
+        // Ordenar prefijos del más largo al más corto para que ATLA no opaque a ATLIX
         $prefixes = self::CONTRACT_PREFIXES;
         uksort($prefixes, fn ($a, $b) => strlen($b) <=> strlen($a));
 
@@ -186,7 +247,9 @@ class PersonIdentityResolverService
                     $branchId = DB::table('branches')
                         ->whereRaw('UPPER(TRIM(name)) = ?', [$branchName])
                         ->value('id');
-                    if ($branchId) return (int) $branchId;
+                    if ($branchId) {
+                        return (int) $branchId;
+                    }
                 }
             }
         }
@@ -194,7 +257,8 @@ class PersonIdentityResolverService
         return null;
     }
 
-    // The 12 operative branches that are valid for employee assignment.
+    // Sucursales válidas para asignar colaboradores: las 13 operativas (SAN JUAN DEL RÍO
+    // con y sin acento) más CORPORATIVO.
     private const OPERATIVE_BRANCH_NAMES = [
         'ATLACOMULCO', 'ATLIXCO', 'CORDOBA', 'CUERNAVACA', 'HUAMANTLA',
         'IXTLAHUACA', 'MIACATLAN', 'ORIZABA', 'SAN LUIS POTOSI',
@@ -203,13 +267,20 @@ class PersonIdentityResolverService
     ];
 
     /**
-     * Returns a subquery that restricts branch_id to operative branches only.
-     * Routes/offices/zones that are NOT one of the operative sucursales are excluded.
+     * Devuelve los IDs de branches que son sucursales operativas (OPERATIVE_BRANCH_NAMES).
+     * Se usa para restringir branch_id; rutas/oficinas/zonas que no son sucursal quedan fuera.
+     *
+     * El resultado se guarda en una variable static: se calcula una vez por proceso PHP
+     * (en un worker de cola de larga vida no ve sucursales creadas después).
+     *
+     * @return array<int, int>
      */
     private function operativeBranchIds(): array
     {
         static $cache = null;
-        if ($cache !== null) return $cache;
+        if ($cache !== null) {
+            return $cache;
+        }
 
         $cache = DB::table('branches')
             ->whereIn(DB::raw('UPPER(TRIM(name))'), self::OPERATIVE_BRANCH_NAMES)
@@ -220,16 +291,22 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Look for another employee record with the same normalized_name (canonical duplicate)
-     * and return their branch_id if they have one. Used to unify multi-source duplicates.
-     * Only returns operative branch IDs (never routes or non-operative offices).
+     * Busca otro registro de colaborador con el mismo normalized_name (duplicado canónico)
+     * y devuelve la sucursal de su asignación más reciente. Sirve para unificar
+     * duplicados que vienen de varias fuentes. Excluye homónimos con rechazo explícito
+     * de fusión y solo devuelve sucursales operativas (nunca rutas ni oficinas no operativas).
+     *
+     * @param  Employee  $employee  Colaborador sin sucursal.
+     * @return int|null ID de sucursal o null.
      */
     public function resolveBranchFromCanonicalEmployee(Employee $employee): ?int
     {
         $normalized = $employee->normalized_name;
-        if (!$normalized) return null;
+        if (! $normalized) {
+            return null;
+        }
 
-        // Find all employee IDs with the same normalized name (excluding self)
+        // Todos los IDs de colaborador con el mismo nombre normalizado (excepto él mismo)
         $canonicalIds = DB::table('employees')
             ->where('normalized_name', $normalized)
             ->where('id', '!=', $employee->id)
@@ -239,10 +316,14 @@ class PersonIdentityResolverService
         // Un homónimo con rechazo de fusión explícito no es un duplicado: no hereda su sucursal.
         $canonicalIds = array_values(array_diff($canonicalIds, $this->rejectedEmployeeIds((int) $employee->id)));
 
-        if (empty($canonicalIds)) return null;
+        if (empty($canonicalIds)) {
+            return null;
+        }
 
         $operativeIds = $this->operativeBranchIds();
-        if (empty($operativeIds)) return null;
+        if (empty($operativeIds)) {
+            return null;
+        }
 
         return DB::table('employee_branch_assignments')
             ->whereIn('employee_id', $canonicalIds)
@@ -253,24 +334,36 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Resolve branch using saved aliases: if another employee has this person's
-     * normalized name stored as an alias, inherit their branch.
-     * Only returns operative branch IDs.
+     * Resuelve la sucursal por alias guardados: si otro colaborador tiene registrado
+     * el nombre normalizado de esta persona como alias, hereda su sucursal más reciente.
+     * Ignora alias de colaboradores con rechazo explícito de fusión y solo devuelve
+     * sucursales operativas.
+     *
+     * @param  Employee  $employee  Colaborador sin sucursal.
+     * @return int|null ID de sucursal o null.
      */
     public function resolveBranchFromAlias(Employee $employee): ?int
     {
         $normalized = $employee->normalized_name;
-        if (!$normalized) return null;
+        if (! $normalized) {
+            return null;
+        }
 
         $canonicalEmployeeId = DB::table('employee_aliases')
             ->where('normalized_alias', $normalized)
             ->value('employee_id');
 
-        if (!$canonicalEmployeeId || $canonicalEmployeeId === $employee->id) return null;
-        if (in_array((int) $canonicalEmployeeId, $this->rejectedEmployeeIds((int) $employee->id), true)) return null;
+        if (! $canonicalEmployeeId || $canonicalEmployeeId === $employee->id) {
+            return null;
+        }
+        if (in_array((int) $canonicalEmployeeId, $this->rejectedEmployeeIds((int) $employee->id), true)) {
+            return null;
+        }
 
         $operativeIds = $this->operativeBranchIds();
-        if (empty($operativeIds)) return null;
+        if (empty($operativeIds)) {
+            return null;
+        }
 
         return DB::table('employee_branch_assignments')
             ->where('employee_id', $canonicalEmployeeId)
@@ -281,13 +374,18 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Return the branch from the most recent existing assignment for an employee.
-     * Only returns operative branch IDs — never routes or non-operative offices.
+     * Devuelve la sucursal de la asignación más reciente (mayor period_id) del colaborador.
+     * Solo devuelve sucursales operativas — nunca rutas ni oficinas no operativas.
+     *
+     * @param  int  $employeeId  ID del colaborador.
+     * @return int|null ID de sucursal o null.
      */
     public function resolveBranchFromExistingAssignments(int $employeeId): ?int
     {
         $operativeIds = $this->operativeBranchIds();
-        if (empty($operativeIds)) return null;
+        if (empty($operativeIds)) {
+            return null;
+        }
 
         return DB::table('employee_branch_assignments')
             ->where('employee_id', $employeeId)
@@ -298,55 +396,69 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Build a full resolution trace for an employee that ended up sin sucursal.
-     * Accepts pre-loaded collections to avoid N+1 queries.
+     * Arma la traza completa de diagnóstico de un colaborador que quedó sin sucursal
+     * (panel "personas sin sucursal").
      *
-     * Performance: when called in a loop (one call per unassigned person), ALWAYS pass
-     * $candidateBranchesPreloaded / $placementsPreloaded / $lendusPreloaded computed ONCE
-     * outside the loop — otherwise each call repeats a full-table query per person, which
-     * is what previously made the "personas sin sucursal" panel hang on "Cargando personas…".
+     * Revisa y documenta: candidatos por nombre (≥60%, aceptados ≥80%, top 5),
+     * prefijo de contrato en cobranza, coincidencia como promotor en Ministraciones
+     * (exacta o ≥95%), directorio de empleados Lendus (exacto o ≥85%, con respaldo
+     * por prefijo de CODIGO), y 3 movimientos NOI de muestra. Con eso construye
+     * 'reason' (por qué no se resolvió) y 'suggested_action' (qué hacer). Solo lee BD.
      *
-     * @param  \Illuminate\Support\Collection $allEmployees  All employees (id, full_name, normalized_name)
-     * @param  \Illuminate\Support\Collection $sampleMovs    NOI movements for this employee (movement_date, concept, amount, raw_payload, source)
-     * @param  array<int,string>|null $candidateBranchesPreloaded  employee_id => branch_name, for ALL employees
-     * @param  \Illuminate\Support\Collection|null $placementsPreloaded  keyed by normalized_promoter_name
-     * @param  \Illuminate\Support\Collection|null $lendusPreloaded  all operational lendus_employee_directory rows
+     * Rendimiento: si se llama en un ciclo (una vez por persona sin asignar), SIEMPRE
+     * envía $candidateBranchesPreloaded / $placementsPreloaded / $lendusPreloaded /
+     * $contractsPreloaded calculados UNA vez fuera del ciclo — si no, cada llamada repite
+     * consultas de tabla completa por persona, lo que antes colgaba el panel en
+     * "Cargando personas…".
+     *
+     * @param  int  $employeeId  ID del colaborador sin sucursal.
+     * @param  string  $fullName  Nombre completo del colaborador.
+     * @param  Collection  $allEmployees  Todos los colaboradores (id, full_name, normalized_name).
+     * @param  Collection  $sampleMovs  Movimientos NOI del colaborador (movement_date, concept, amount, raw_payload, source).
+     * @param  string|null  $employeeCode  Clave de empleado detectada, si existe.
+     * @param  string|null  $historicalBranch  Sucursal histórica conocida (pista), si existe.
+     * @param  array<int>|null  $dataIds  IDs de periodos de datos; sin ellos no se revisa Ministraciones.
+     * @param  array<int,string>|null  $candidateBranchesPreloaded  employee_id => nombre de sucursal, para TODOS los colaboradores.
+     * @param  Collection|null  $placementsPreloaded  Promotores de colocación indexados por normalized_promoter_name.
+     * @param  Collection|null  $lendusPreloaded  Todos los renglones operativos de lendus_employee_directory.
+     * @param  array<string, array<int, string>>|null  $contractsPreloaded  Índice de buildContractsIndex().
+     * @return array<string, mixed> Traza con normalized_name, checked_*, candidate_matches, detected_codes, placement_match, lendus_match, sample_movements, result, reason y suggested_action.
      */
     public function buildResolutionTrace(
         int $employeeId,
         string $fullName,
-        \Illuminate\Support\Collection $allEmployees,
-        \Illuminate\Support\Collection $sampleMovs,
+        Collection $allEmployees,
+        Collection $sampleMovs,
         ?string $employeeCode = null,
         ?string $historicalBranch = null,
         ?array $dataIds = null,
         ?array $candidateBranchesPreloaded = null,
-        ?\Illuminate\Support\Collection $placementsPreloaded = null,
-        ?\Illuminate\Support\Collection $lendusPreloaded = null,
+        ?Collection $placementsPreloaded = null,
+        ?Collection $lendusPreloaded = null,
         ?array $contractsPreloaded = null,
     ): array {
         $normalized = $this->normalizePersonName($fullName);
 
         $trace = [
-            'normalized_name'               => $normalized,
-            'checked_exact_name'            => true,
-            'checked_fuzzy_name'            => true,
-            'checked_contract_prefix'       => false,
+            'normalized_name' => $normalized,
+            'checked_exact_name' => true,
+            'checked_fuzzy_name' => true,
+            'checked_contract_prefix' => false,
             'checked_historical_assignment' => true,
-            'checked_lendus_directory'      => false,
-            'lendus_match'                  => null,
-            'candidate_matches'             => [],
+            'checked_lendus_directory' => false,
+            'lendus_match' => null,
+            'candidate_matches' => [],
             'detected_codes' => [
-                'employee_code'   => $employeeCode,
+                'employee_code' => $employeeCode,
                 'contract_prefix' => null,
-                'branch_hint'     => $historicalBranch,
-                'lendus_codigo'   => null,
-                'lendus_puesto'   => null,
-                'raw_clues'       => [],
+                'branch_hint' => $historicalBranch,
+                'lendus_codigo' => null,
+                'lendus_puesto' => null,
+                'raw_clues' => [],
             ],
             'sample_movements' => [],
-            'result'           => 'unresolved',
-            'reason'           => '',
+            'result' => 'unresolved',
+            'reason' => '',
             'suggested_action' => 'Asignar sucursal manualmente.',
         ];
 
@@ -370,18 +482,22 @@ class PersonIdentityResolverService
 
         $seen = [];
         foreach ($allEmployees as $c) {
-            if ((int) $c->id === $employeeId) continue;
+            if ((int) $c->id === $employeeId) {
+                continue;
+            }
             $normC = $this->normalizePersonName((string) $c->normalized_name);
-            if (isset($seen[$normC])) continue; // skip duplicate employee records for same name
+            if (isset($seen[$normC])) {
+                continue;
+            } // skip duplicate employee records for same name
             $seen[$normC] = true;
 
             $score = $this->scoreNameSimilarity($fullName, (string) $c->normalized_name);
             if ($score >= 60.0) {
-                $scoreRound    = round($score, 1);
+                $scoreRound = round($score, 1);
                 $candidateBranch = $candidateBranches[(int) $c->id] ?? null;
-                $accepted      = $score >= 80.0;
+                $accepted = $score >= 80.0;
 
-                if ($accepted && !$candidateBranch) {
+                if ($accepted && ! $candidateBranch) {
                     $reason = "score {$scoreRound}% sobre umbral, pero el candidato tampoco tiene sucursal asignada";
                 } elseif ($accepted) {
                     $reason = "score {$scoreRound}% sobre umbral — debió haberse resuelto";
@@ -391,11 +507,11 @@ class PersonIdentityResolverService
 
                 $trace['candidate_matches'][] = [
                     'employee_id' => (int) $c->id,
-                    'name'        => $c->full_name,
-                    'score'       => $scoreRound,
-                    'branch'      => $candidateBranch,
-                    'accepted'    => $accepted,
-                    'reason'      => $reason,
+                    'name' => $c->full_name,
+                    'score' => $scoreRound,
+                    'branch' => $candidateBranch,
+                    'accepted' => $accepted,
+                    'reason' => $reason,
                 ];
             }
         }
@@ -408,7 +524,7 @@ class PersonIdentityResolverService
         if ($branchFromContract) {
             $branchName = DB::table('branches')->where('id', $branchFromContract)->value('name');
             $trace['detected_codes']['contract_prefix'] = (string) $branchName;
-            if (!$trace['detected_codes']['branch_hint']) {
+            if (! $trace['detected_codes']['branch_hint']) {
                 $trace['detected_codes']['branch_hint'] = (string) $branchName;
             }
         } else {
@@ -420,15 +536,15 @@ class PersonIdentityResolverService
                     ->pluck('contract')
                     ->take(3)
                     ->toArray();
-            if (!empty($contracts)) {
-                $trace['detected_codes']['raw_clues'][] = 'Contratos en cobranza: ' . implode(', ', $contracts) . ' — sin prefijo de sucursal reconocido';
+            if (! empty($contracts)) {
+                $trace['detected_codes']['raw_clues'][] = 'Contratos en cobranza: '.implode(', ', $contracts).' — sin prefijo de sucursal reconocido';
             }
         }
 
         // ── Ministraciones / Colocación check ────────────────────────────
-        $trace['checked_ministraciones'] = !empty($dataIds);
+        $trace['checked_ministraciones'] = ! empty($dataIds);
         $placementMatch = null;
-        if (!empty($dataIds)) {
+        if (! empty($dataIds)) {
             $promoterRows = $placementsPreloaded ?? DB::table('fact_placements')
                 ->whereIn('period_id', $dataIds)
                 ->whereNotNull('branch_id')
@@ -460,9 +576,9 @@ class PersonIdentityResolverService
         $trace['placement_match'] = $placementMatch;
         if ($placementMatch) {
             $placementBranchName = DB::table('branches')->where('id', $placementMatch['branch_id'])->value('name');
-            $trace['detected_codes']['placement_code']   = $placementMatch['code'];
+            $trace['detected_codes']['placement_code'] = $placementMatch['code'];
             $trace['detected_codes']['placement_branch'] = $placementBranchName;
-            if (!$trace['detected_codes']['branch_hint']) {
+            if (! $trace['detected_codes']['branch_hint']) {
                 $trace['detected_codes']['branch_hint'] = (string) $placementBranchName;
             }
         }
@@ -480,15 +596,15 @@ class PersonIdentityResolverService
             $trace['checked_lendus_directory'] = true;
 
             // Exact match first, then fuzzy ≥85%
-            $lendusRecord    = $allLendus->first(fn ($r) => $r->normalized_name === $normalized);
+            $lendusRecord = $allLendus->first(fn ($r) => $r->normalized_name === $normalized);
             $bestLendusScore = 100.0;
-            if (!$lendusRecord) {
+            if (! $lendusRecord) {
                 $bestLendusScore = 0.0;
                 foreach ($allLendus as $rec) {
                     similar_text($normalized, $rec->normalized_name, $pct);
                     if ($pct > $bestLendusScore) {
                         $bestLendusScore = $pct;
-                        $lendusRecord    = $rec;
+                        $lendusRecord = $rec;
                     }
                 }
                 if ($bestLendusScore < 85.0) {
@@ -497,32 +613,32 @@ class PersonIdentityResolverService
             }
 
             if ($lendusRecord) {
-                $lendusBranchId   = $lendusRecord->inferred_branch_id;
+                $lendusBranchId = $lendusRecord->inferred_branch_id;
                 $lendusBranchName = $lendusRecord->inferred_branch_name;
 
                 // Fallback: resolve from CODIGO prefix when inferred_branch_id was not set at import time
-                if (!$lendusBranchId && $lendusRecord->codigo) {
+                if (! $lendusBranchId && $lendusRecord->codigo) {
                     $branchResolver = app(BranchResolverService::class);
-                    $resolvedName   = $branchResolver->resolveBranchNameFromCode((string) $lendusRecord->codigo);
+                    $resolvedName = $branchResolver->resolveBranchNameFromCode((string) $lendusRecord->codigo);
                     if ($resolvedName) {
                         $resolvedId = DB::table('branches')
                             ->whereRaw('UPPER(TRIM(name)) = ?', [strtoupper(trim($resolvedName))])
                             ->value('id');
-                        $lendusBranchId   = $resolvedId ? (int) $resolvedId : null;
+                        $lendusBranchId = $resolvedId ? (int) $resolvedId : null;
                         $lendusBranchName = $resolvedName;
                     }
                 }
 
                 if ($lendusBranchId || $lendusBranchName) {
                     $lendusMatch = [
-                        'codigo'      => $lendusRecord->codigo,
-                        'nombre'      => $lendusRecord->nombre,
-                        'puesto'      => $lendusRecord->puesto,
-                        'estatus'     => $lendusRecord->estatus,
-                        'branch_id'   => $lendusBranchId,
+                        'codigo' => $lendusRecord->codigo,
+                        'nombre' => $lendusRecord->nombre,
+                        'puesto' => $lendusRecord->puesto,
+                        'estatus' => $lendusRecord->estatus,
+                        'branch_id' => $lendusBranchId,
                         'branch_name' => $lendusBranchName,
-                        'score'       => round($bestLendusScore, 1),
-                        'method'      => $bestLendusScore >= 100.0 ? 'exact' : 'fuzzy',
+                        'score' => round($bestLendusScore, 1),
+                        'method' => $bestLendusScore >= 100.0 ? 'exact' : 'fuzzy',
                     ];
                 }
             }
@@ -532,7 +648,7 @@ class PersonIdentityResolverService
         if ($lendusMatch) {
             $trace['detected_codes']['lendus_codigo'] = $lendusMatch['codigo'];
             $trace['detected_codes']['lendus_puesto'] = $lendusMatch['puesto'];
-            if (!$trace['detected_codes']['branch_hint']) {
+            if (! $trace['detected_codes']['branch_hint']) {
                 $trace['detected_codes']['branch_hint'] = $lendusMatch['branch_name'];
             }
         }
@@ -543,15 +659,18 @@ class PersonIdentityResolverService
             $code = null;
             if (is_array($payload)) {
                 foreach (['employee_code', 'codigo_empleado', 'codigo', 'clave', 'code'] as $k) {
-                    if (!empty($payload[$k])) { $code = $payload[$k]; break; }
+                    if (! empty($payload[$k])) {
+                        $code = $payload[$k];
+                        break;
+                    }
                 }
             }
             $trace['sample_movements'][] = [
-                'date'    => $mov->movement_date ?? null,
+                'date' => $mov->movement_date ?? null,
                 'concept' => mb_substr((string) $mov->concept, 0, 40),
-                'amount'  => (float) $mov->amount,
-                'code'    => $code,
-                'source'  => $mov->source ?? null,
+                'amount' => (float) $mov->amount,
+                'code' => $code,
+                'source' => $mov->source ?? null,
             ];
         }
 
@@ -559,17 +678,17 @@ class PersonIdentityResolverService
         $reasons = [];
         $bestMatch = $trace['candidate_matches'][0] ?? null;
 
-        if ($bestMatch && !$bestMatch['accepted']) {
+        if ($bestMatch && ! $bestMatch['accepted']) {
             $reasons[] = "Mejor coincidencia: \"{$bestMatch['name']}\" con {$bestMatch['score']}% — por debajo del mínimo de 80%.";
         } elseif (empty($trace['candidate_matches'])) {
-            $reasons[] = "No se encontró empleado con nombre similar (≥60%).";
+            $reasons[] = 'No se encontró empleado con nombre similar (≥60%).';
         }
 
-        if (!$trace['detected_codes']['contract_prefix']) {
-            if (!empty($trace['detected_codes']['raw_clues'])) {
-                $reasons[] = "Contratos en cobranza sin prefijo de sucursal reconocido.";
+        if (! $trace['detected_codes']['contract_prefix']) {
+            if (! empty($trace['detected_codes']['raw_clues'])) {
+                $reasons[] = 'Contratos en cobranza sin prefijo de sucursal reconocido.';
             } else {
-                $reasons[] = "Sin contratos en cobranza — no se pudo inferir sucursal por prefijo.";
+                $reasons[] = 'Sin contratos en cobranza — no se pudo inferir sucursal por prefijo.';
             }
         }
 
@@ -578,7 +697,7 @@ class PersonIdentityResolverService
                 $label = $placementMatch['method'] === 'exact' ? 'exacto' : "variante {$placementMatch['score']}%";
                 $reasons[] = "Ministraciones: código promotor {$placementMatch['code']} ({$label}) → {$trace['detected_codes']['placement_branch']}.";
             } else {
-                $reasons[] = "Sin registro como promotor en Ministraciones/Colocación del periodo.";
+                $reasons[] = 'Sin registro como promotor en Ministraciones/Colocación del periodo.';
             }
         }
 
@@ -587,46 +706,52 @@ class PersonIdentityResolverService
                 $label = $lendusMatch['method'] === 'exact' ? 'exacto' : "variante {$lendusMatch['score']}%";
                 $reasons[] = "Directorio Lendus: {$lendusMatch['nombre']} ({$label}) — {$lendusMatch['puesto']} → {$lendusMatch['branch_name']}.";
             } else {
-                $reasons[] = "No encontrado en el directorio de empleados Lendus.";
+                $reasons[] = 'No encontrado en el directorio de empleados Lendus.';
             }
         }
 
-        if (!$historicalBranch) {
-            $reasons[] = "Sin asignaciones históricas en periodos anteriores.";
+        if (! $historicalBranch) {
+            $reasons[] = 'Sin asignaciones históricas en periodos anteriores.';
         }
 
-        $trace['reason'] = implode(' ', $reasons) ?: "No se encontró nombre equivalente, contrato ni código de sucursal.";
+        $trace['reason'] = implode(' ', $reasons) ?: 'No se encontró nombre equivalente, contrato ni código de sucursal.';
 
         // ── Suggested action ─────────────────────────────────────────────
         if ($lendusMatch && $lendusMatch['branch_name']) {
             $label = $lendusMatch['method'] === 'exact' ? 'exacto' : "variante {$lendusMatch['score']}%";
             $trace['suggested_action'] = "Directorio Lendus ({$label}): sucursal {$lendusMatch['branch_name']} (código {$lendusMatch['codigo']}). Verificar y asignar.";
-        } elseif ($placementMatch && !empty($trace['detected_codes']['placement_branch'])) {
+        } elseif ($placementMatch && ! empty($trace['detected_codes']['placement_branch'])) {
             $trace['suggested_action'] = "Ministraciones: sucursal {$trace['detected_codes']['placement_branch']} (código {$placementMatch['code']}). Verificar y asignar.";
         } elseif ($bestMatch && $bestMatch['score'] >= 70.0) {
             $trace['suggested_action'] = "Posible coincidencia: \"{$bestMatch['name']}\" ({$bestMatch['score']}%). Verificar y asignar manualmente.";
         } elseif ($trace['detected_codes']['branch_hint']) {
             $trace['suggested_action'] = "Posible sucursal detectada: {$trace['detected_codes']['branch_hint']}. Verificar y asignar.";
         } else {
-            $trace['suggested_action'] = "Asignar sucursal manualmente desde el panel de incidencias.";
+            $trace['suggested_action'] = 'Asignar sucursal manualmente desde el panel de incidencias.';
         }
 
         return $trace;
     }
 
     /**
-     * Evaluate whether a person detected in NOI (nómina) has any evidence of being
-     * a legitimate, currently-operating collaborator — cross-checked against Lendus
-     * (directorio de empleados + cartera/colocación/cobranza) and against employees
-     * that already carry a confirmed operative sucursal from a prior period.
+     * Evalúa si una persona detectada en NOI (nómina) tiene evidencia de ser un
+     * colaborador legítimo y vigente — cruzando contra Lendus (directorio de empleados
+     * + cartera/colocación/cobranza) y contra colaboradores que ya tienen una sucursal
+     * asignada en un periodo anterior.
      *
-     * NOI is never trusted on its own as proof of operative existence (see
-     * NoiNominaImportService::resolveEmployee() docblock — "Clave del trabajador"
-     * is reused across periods for different people, and NOI carries stale/baja
-     * records). This is the single gate used both when scanning NOI for the
-     * employee catalog and when anchoring "sin percepciones" ($0) blocks, so a
-     * name is never treated as valid in one path and invalid in the other.
+     * NOI nunca se toma por sí solo como prueba de existencia operativa (ver el docblock
+     * de NoiNominaImportService::resolveEmployee() — la "Clave del trabajador" se reutiliza
+     * entre periodos para personas distintas y NOI arrastra registros viejos/de baja).
+     * Es el filtro único usado tanto al escanear NOI para el catálogo de empleados como
+     * al anclar bloques "sin percepciones" ($0), para que un nombre nunca sea válido en
+     * un camino e inválido en el otro.
      *
+     * Orden: directorio Lendus (exacto, luego difuso ≥90%; is_non_portfolio_role = no
+     * operativo), promotor en fact_recoveries / fact_placements / fact_portfolios, y
+     * asignación histórica con sucursal (cualquier sucursal existente, no solo operativas).
+     * Solo lee BD.
+     *
+     * @param  string  $fullName  Nombre completo tal como viene en NOI.
      * @return array{
      *   found: bool,
      *   source: ?string,
@@ -652,19 +777,23 @@ class PersonIdentityResolverService
             $exact = $lendus->firstWhere('normalized_name', $normalized);
             if ($exact) {
                 return [
-                    'found' => true, 'source' => 'lendus_directory', 'is_non_portfolio_role' => !$exact->is_operational,
+                    'found' => true, 'source' => 'lendus_directory', 'is_non_portfolio_role' => ! $exact->is_operational,
                     'branch_hint' => $exact->inferred_branch_name, 'detail' => "Directorio Lendus (exacto) — puesto: {$exact->puesto}",
                 ];
             }
 
-            $best = null; $bestScore = 0.0;
+            $best = null;
+            $bestScore = 0.0;
             foreach ($lendus as $rec) {
                 $score = $this->scoreNameSimilarity($normalized, (string) $rec->normalized_name);
-                if ($score > $bestScore) { $bestScore = $score; $best = $rec; }
+                if ($score > $bestScore) {
+                    $bestScore = $score;
+                    $best = $rec;
+                }
             }
             if ($best && $bestScore >= 90.0) {
                 return [
-                    'found' => true, 'source' => 'lendus_directory_fuzzy', 'is_non_portfolio_role' => !$best->is_operational,
+                    'found' => true, 'source' => 'lendus_directory_fuzzy', 'is_non_portfolio_role' => ! $best->is_operational,
                     'branch_hint' => $best->inferred_branch_name, 'detail' => "Directorio Lendus (variante {$bestScore}%) — puesto: {$best->puesto}",
                 ];
             }
@@ -703,12 +832,20 @@ class PersonIdentityResolverService
     }
 
     /**
-     * Return all near-duplicate candidates for a name, sorted by score desc.
+     * Devuelve todos los posibles duplicados de un nombre, ordenados por puntaje descendente.
+     *
+     * Excluye $excludeId y los colaboradores con rechazo explícito de fusión. Método
+     * 'near_exact' si el puntaje es ≥95, si no 'fuzzy'.
+     *
+     * @param  string  $name  Nombre a comparar.
+     * @param  float  $minScore  Puntaje mínimo (0–100) para incluir un candidato.
+     * @param  int|null  $excludeId  ID de colaborador a excluir.
+     * @return array<int, array{id: int, full_name: string, score: float, method: string}>
      */
     public function suggestPossibleMatches(string $name, float $minScore = 75.0, ?int $excludeId = null): array
     {
-        $matches    = [];
-        $rejected   = $excludeId ? $this->rejectedEmployeeIds($excludeId) : [];
+        $matches = [];
+        $rejected = $excludeId ? $this->rejectedEmployeeIds($excludeId) : [];
         $candidates = Employee::query()
             ->whereNotNull('normalized_name')
             ->when($excludeId, fn ($q) => $q->where('id', '!=', $excludeId))
@@ -719,15 +856,16 @@ class PersonIdentityResolverService
             $score = $this->scoreNameSimilarity($name, (string) $c->normalized_name);
             if ($score >= $minScore) {
                 $matches[] = [
-                    'id'        => $c->id,
+                    'id' => $c->id,
                     'full_name' => $c->full_name,
-                    'score'     => round($score, 1),
-                    'method'    => $score >= 95.0 ? 'near_exact' : 'fuzzy',
+                    'score' => round($score, 1),
+                    'method' => $score >= 95.0 ? 'near_exact' : 'fuzzy',
                 ];
             }
         }
 
         usort($matches, fn ($a, $b) => $b['score'] <=> $a['score']);
+
         return $matches;
     }
 
@@ -735,11 +873,15 @@ class PersonIdentityResolverService
      * employee_id con rechazo de fusión explícito contra $employeeId (homónimos
      * con clave NOI distinta o decisión de un usuario) — nunca son la misma persona.
      *
+     * Lee employee_match_rejections en ambas direcciones (a↔b). Si la tabla no existe
+     * devuelve un arreglo vacío.
+     *
+     * @param  int  $employeeId  ID del colaborador de referencia.
      * @return int[]
      */
     public function rejectedEmployeeIds(int $employeeId): array
     {
-        if (!Schema::hasTable('employee_match_rejections')) {
+        if (! Schema::hasTable('employee_match_rejections')) {
             return [];
         }
 

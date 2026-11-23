@@ -22,12 +22,19 @@ class RadiographyChartSvgBuilder
     private const COLORS = ['#106A59', '#1f2937', '#0ea5e9', '#f59e0b', '#dc2626', '#7c3aed', '#059669', '#64748b'];
 
     /**
+     * Solo valores > 0, máximo 10 barras, escala relativa al valor máximo; cada barra
+     * lleva su etiqueta (truncada) y el monto.
+     *
      * Gráfica de barras horizontales — sirve tanto para comparaciones de 2 valores
      * (Recuperación vs Colocación, EBITDA vs Gastos, Cartera sana vs vencida) como
      * para desgloses de N categorías (mora por bucket, composición de nómina,
      * colocación/recuperación por producto, efectividad de cobranza).
      *
-     * @param array<int, array{label: string, value: float}> $data
+     * @param  array<int, array{label: string, value: float}>  $data
+     * @param  string  $title  Título de la gráfica.
+     * @param  int  $width  Ancho total en píxeles.
+     * @param  int  $rowHeight  Alto de cada barra en píxeles.
+     * @return string Etiqueta <img> con el SVG en base64, o '' si no hay datos.
      */
     public function horizontalBarChart(array $data, string $title, int $width = 480, int $rowHeight = 22): string
     {
@@ -76,11 +83,16 @@ class RadiographyChartSvgBuilder
     }
 
     /**
+     * Una barra segmentada por proporción del total con leyenda (etiqueta, monto y %).
+     *
      * Gráfica de dona/pastel simplificada como serie de barras apiladas horizontales
      * con leyenda — usada para "composición" (nómina, cartera sana vs vencida) donde
      * interesa la proporción del total más que comparar magnitudes absolutas.
      *
-     * @param array<int, array{label: string, value: float}> $data
+     * @param  array<int, array{label: string, value: float}>  $data
+     * @param  string  $title  Título de la gráfica.
+     * @param  int  $width  Ancho total en píxeles.
+     * @return string Etiqueta <img> con el SVG en base64, o '' si no hay datos.
      */
     public function stackedCompositionBar(array $data, string $title, int $width = 480): string
     {
@@ -136,6 +148,11 @@ class RadiographyChartSvgBuilder
      * (Browsershot, desde 21-sep-2026) SÍ renderiza <svg> inline nativo, pero se deja
      * este wrapper sin cambios — mismo SVG, mismo dataset, ambos motores lo interpretan
      * igual de bien vía <img>, y tocarlo no aporta nada a la migración.
+     *
+     * @param  string  $svg  Código SVG.
+     * @param  int  $width  Ancho en píxeles.
+     * @param  int  $height  Alto en píxeles.
+     * @return string Etiqueta <img> con data URI base64.
      */
     private function wrapAsImg(string $svg, int $width, int $height): string
     {
@@ -147,16 +164,35 @@ class RadiographyChartSvgBuilder
         );
     }
 
+    /**
+     * Recorta el texto y agrega "…" si excede el máximo.
+     *
+     * @param  string  $value  Texto.
+     * @param  int  $max  Longitud máxima.
+     * @return string Texto recortado.
+     */
     private function truncate(string $value, int $max): string
     {
-        return mb_strlen($value) > $max ? mb_substr($value, 0, $max - 1) . '…' : $value;
+        return mb_strlen($value) > $max ? mb_substr($value, 0, $max - 1).'…' : $value;
     }
 
+    /**
+     * Formato monetario sin decimales con el signo antes del $ (-$1,234, nunca $-1,234).
+     *
+     * @param  float  $value  Monto.
+     * @return string Monto formateado.
+     */
     private function formatMoney(float $value): string
     {
-        return (round($value) < 0 ? '-' : '') . '$' . number_format(abs($value), 0); // -$1,234 (nunca $-1,234)
+        return (round($value) < 0 ? '-' : '').'$'.number_format(abs($value), 0); // -$1,234 (nunca $-1,234)
     }
 
+    /**
+     * Escapa texto para incrustarlo en SVG/HTML.
+     *
+     * @param  string  $value  Texto.
+     * @return string Texto escapado.
+     */
     private function esc(string $value): string
     {
         return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');

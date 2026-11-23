@@ -46,8 +46,15 @@ final class V12Buckets
     /** @var array<string,int> contrato => número de transferencias de gestor aplicadas */
     public array $transferencias = [];
 
+    /** @param  V12Corrida  $c  estado compartido de la corrida */
     public function __construct(private readonly V12Corrida $c) {}
 
+    /**
+     * MR_ConstruirReporte: recorre las cuotas y llena por gestor la meta/Sano por cobrar, lo
+     * cobrado por bucket y el saldo pendiente al corte de Atraso/Vencido, aplicando las reglas
+     * de la clase (cuota del día sana, refinanciamientos, cambio de gestor). Llena las
+     * propiedades públicas $meta, $pcS, $cobS, $pcA, $cobA, $pcV, $cobV, $detalle y $transferencias.
+     */
     public function construir(): void
     {
         $c = $this->c;
@@ -221,6 +228,17 @@ final class V12Buckets
         return $f > $cuota ? 'A' : 'S';
     }
 
+    /**
+     * Registra un cobro del periodo en el bucket que le corresponde por fecha de reconocimiento
+     * y lo asigna al gestor responsable en esa fecha (sin gestor no se registra).
+     *
+     * @param  string  $k  clave de la cuota
+     * @param  string  $ct  contrato
+     * @param  int  $fRec  día de reconocimiento del cobro
+     * @param  int  $fq  día de vencimiento de la cuota
+     * @param  int  $mat  día de maduración (vencimiento del contrato)
+     * @param  float  $pagado  importe cobrado
+     */
     private function cobro(string $k, string $ct, int $fRec, int $fq, int $mat, float $pagado): void
     {
         $grupo = $this->c->responsable($ct, $fRec);

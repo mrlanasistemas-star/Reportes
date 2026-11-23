@@ -6,6 +6,7 @@ use App\Services\Access\DataScopeService;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Fase 6.4 — candado de alcance por sucursal en la ENTRADA de cada petición web.
@@ -20,10 +21,27 @@ use Symfony\Component\HttpFoundation\Response;
  */
 class EnsureBranchScope
 {
+    /** Nombres de parámetro (query o cuerpo) que identifican una sucursal a validar. */
     private const BRANCH_KEYS = ['branch_id', 'manual_branch_id'];
 
+    /**
+     * @param  DataScopeService  $scope  Servicio de alcance por sucursal del usuario.
+     */
     public function __construct(private readonly DataScopeService $scope) {}
 
+    /**
+     * Si el usuario tiene alcance restringido, revisa cada parámetro de
+     * BRANCH_KEYS con valor numérico positivo y exige que esa sucursal esté
+     * dentro de su alcance (DataScopeService::authorizeBranch aborta con 403
+     * en caso contrario). Valores vacíos, arreglos o no numéricos se ignoran.
+     * Usuarios con alcance general o invitados pasan sin revisión.
+     *
+     * @param  Request  $request  Petición entrante.
+     * @param  Closure  $next  Siguiente capa del pipeline.
+     * @return Response Respuesta de la siguiente capa.
+     *
+     * @throws HttpException 403 si pide una sucursal fuera de su alcance.
+     */
     public function handle(Request $request, Closure $next): Response
     {
         $user = $request->user();

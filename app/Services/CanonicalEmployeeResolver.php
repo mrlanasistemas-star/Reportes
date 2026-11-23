@@ -2,7 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\EmployeeMatchRejection;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Identidad canónica de colaborador — cierre 17-sep-2026 (ronda 2, C1/C2).
@@ -58,7 +61,11 @@ class CanonicalEmployeeResolver
      * Agrupa filas con `id`/`normalized_name` (ej. `Employee` o cualquier
      * proyección con esos dos campos) en identidades canónicas. Un registro sin
      * normalized_name se trata como su PROPIA identidad — nunca se fusiona a
-     * ciegas con otro solo por tener el campo vacío.
+     * ciegas con otro solo por tener el campo vacío. Si dos registros con el mismo
+     * nombre tienen un rechazo de fusión registrado, se separan en identidades
+     * distintas (clave con sufijo "#N").
+     *
+     * Efectos: solo lectura de `employee_match_rejections` (vía rejectedPairs()).
      *
      * @param  Collection<int, object{id:int, normalized_name:?string, full_name?:?string}>  $rows
      * @return Collection<int, object{id:int, full_name:?string, employee_ids:int[]}>
@@ -75,19 +82,19 @@ class CanonicalEmployeeResolver
         $byIdentity = [];
         foreach ($rows as $row) {
             $norm = trim((string) ($row->normalized_name ?? ''));
-            $key  = $norm !== '' ? $norm : ('__employee_' . $row->id);
+            $key = $norm !== '' ? $norm : ('__employee_'.$row->id);
             if ($rejected !== []) {
                 $base = $key;
                 $suffix = 0;
                 while (isset($membersByKey[$key]) && collect($membersByKey[$key])->contains(
-                    fn ($m) => isset($rejected[\App\Models\EmployeeMatchRejection::pairKey((int) $m, (int) $row->id)])
+                    fn ($m) => isset($rejected[EmployeeMatchRejection::pairKey((int) $m, (int) $row->id)])
                 )) {
-                    $key = $base . '#' . (++$suffix);
+                    $key = $base.'#'.(++$suffix);
                 }
                 $membersByKey[$key][] = (int) $row->id;
             }
 
-            if (!isset($byIdentity[$key])) {
+            if (! isset($byIdentity[$key])) {
                 $byIdentity[$key] = ['id' => (int) $row->id, 'full_name' => $row->full_name ?? null, 'employee_ids' => []];
             }
             $byIdentity[$key]['id'] = min($byIdentity[$key]['id'], (int) $row->id);
@@ -97,16 +104,25 @@ class CanonicalEmployeeResolver
         return collect(array_values($byIdentity))->map(fn ($r) => (object) $r);
     }
 
-    /** @return array<string, true> pair_key de rechazos que involucran a estos ids. */
+    /**
+     * Obtiene los pares de colaboradores que un usuario o la regla de homónimos
+     * marcó explícitamente como "no fusionar".
+     *
+     * Consulta `employee_match_rejections` en bloques de 500 ids. Devuelve vacío si
+     * hay menos de 2 ids, no hay BD enlazada (pruebas unitarias) o no existe la tabla.
+     *
+     * @param  int[]  $ids  Ids de employees a revisar.
+     * @return array<string, true> pair_key de rechazos que involucran a estos ids.
+     */
     private function rejectedPairs(array $ids): array
     {
         // Sin BD disponible (pruebas unitarias puras) no hay rechazos que consultar.
-        if (count($ids) < 2 || !app()->bound('db') || !\Illuminate\Support\Facades\Schema::hasTable('employee_match_rejections')) {
+        if (count($ids) < 2 || ! app()->bound('db') || ! Schema::hasTable('employee_match_rejections')) {
             return [];
         }
         $out = [];
         foreach (array_chunk($ids, 500) as $chunk) {
-            foreach (\Illuminate\Support\Facades\DB::table('employee_match_rejections')
+            foreach (DB::table('employee_match_rejections')
                 ->whereIn('employee_id_a', $chunk)->orWhereIn('employee_id_b', $chunk)->pluck('pair_key') as $k) {
                 $out[(string) $k] = true;
             }

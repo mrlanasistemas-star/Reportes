@@ -6,17 +6,32 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-payroll-employees` — auditoría de nómina por empleado: detecta
+ * conceptos extra/faltantes y clasificaciones incorrectas contra la referencia de Abril 2026
+ * (totales por concepto, por sucursal, reasignaciones manuales OVERRIDES, conceptos que deben
+ * quedar en $0 o no aparecer, y Financiamiento Motos).
+ *
+ * ADVERTENCIA: las consultas usan `fact_noi_movements.branch_id` y `employees.name`, columnas
+ * que no existen en el esquema actual (la tabla employees usa `full_name` y NOI no guarda
+ * sucursal); es un comando histórico que probablemente falle con error SQL.
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:audit-payroll-employees 5 --compare-reference
+ */
 class AuditPayrollEmployeesCommand extends Command
 {
-    protected $signature   = 'reportes:audit-payroll-employees
+    protected $signature = 'reportes:audit-payroll-employees
                                 {period_id}
                                 {--compare-reference : comparar totales contra referencia Abril 2026}';
+
     protected $description = 'Auditoría nómina por empleado: detecta extra, missing y clasificación incorrecta';
 
     // Reasignaciones manuales de sucursal por nombre normalizado
     private const OVERRIDES = [
         'MONICA ANA KAREN GARCIA CANCINO' => 'TULA',
-        'VICTOR ANGEL CANO GARCIA'        => 'TENANGO DEL VALLE',
+        'VICTOR ANGEL CANO GARCIA' => 'TENANGO DEL VALLE',
     ];
 
     // Conceptos que deben eliminarse del total global (referencia los trae en $0)
@@ -33,31 +48,40 @@ class AuditPayrollEmployeesCommand extends Command
 
     // Referencia Abril 2026
     private const REF_TOTAL = 2_501_589.43;
+
     private const REF_DELTAS = [
         // [concepto => diferencia conocida explicada]
-        'PENSION ALIMENTICIA'     => 2_646.32,   // debe ser $0 en total global
-        'FINANCIAMIENTO MOTOS'    => 423.00,      // 1 registro extra
-        'OTROS CONCEPTOS NOMINA'  => 334.00,      // no debe aparecer
+        'PENSION ALIMENTICIA' => 2_646.32,   // debe ser $0 en total global
+        'FINANCIAMIENTO MOTOS' => 423.00,      // 1 registro extra
+        'OTROS CONCEPTOS NOMINA' => 334.00,      // no debe aparecer
     ];
 
+    /**
+     * Imprime las secciones A–F: totales por concepto (con banderas), comparativo contra la
+     * referencia y deltas conocidos, totales por sucursal, reasignaciones manuales, conceptos a
+     * corregir y registros de Financiamiento Motos.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         $this->line('');
-        $this->info("════════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA NÓMINA POR EMPLEADO — {$period->label} (ID {$period->id})");
-        $this->info("════════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════════');
 
         // ── A. Conteo por concepto ─────────────────────────────────────────────
         $this->line('');
@@ -77,13 +101,13 @@ class AuditPayrollEmployeesCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $this->line(str_pad('Concepto', 38) . str_pad('Tipo', 14) . str_pad('Total', 18) . 'Regs');
+        $this->line(str_pad('Concepto', 38).str_pad('Tipo', 14).str_pad('Total', 18).'Regs');
         $this->line(str_repeat('─', 80));
 
         $totalSystem = 0.0;
         foreach ($byConcept as $row) {
-            $concepto = (string)$row->concept;
-            $monto    = (float)$row->total;
+            $concepto = (string) $row->concept;
+            $monto = (float) $row->total;
 
             $flag = '';
             if (in_array($concepto, array_map('strtoupper', self::ZERO_GLOBAL_CONCEPTS))) {
@@ -94,46 +118,49 @@ class AuditPayrollEmployeesCommand extends Command
             }
 
             $this->line(
-                str_pad(mb_substr($concepto, 0, 36), 38) .
-                str_pad($row->concept_type, 14) .
-                str_pad('$' . number_format($monto, 2), 18) .
-                $row->cnt .
+                str_pad(mb_substr($concepto, 0, 36), 38).
+                str_pad($row->concept_type, 14).
+                str_pad('$'.number_format($monto, 2), 18).
+                $row->cnt.
                 $flag
             );
             $totalSystem += $monto;
         }
 
         $this->line(str_repeat('─', 80));
-        $this->line("  " . str_pad('TOTAL SISTEMA', 38) . str_pad('', 14) . '$' . number_format($totalSystem, 2));
+        $this->line('  '.str_pad('TOTAL SISTEMA', 38).str_pad('', 14).'$'.number_format($totalSystem, 2));
 
         // ── B. Comparativo vs referencia ──────────────────────────────────────
         if ($this->option('compare-reference')) {
             $this->line('');
             $this->info('════ B. COMPARATIVO VS REFERENCIA ABRIL 2026 ════');
 
-            $diff  = $totalSystem - self::REF_TOTAL;
-            $sign  = $diff >= 0 ? '+' : '';
+            $diff = $totalSystem - self::REF_TOTAL;
+            $sign = $diff >= 0 ? '+' : '';
             $match = abs($diff) < 1 ? '✓ EXACTO' : (abs($diff) < 5_000 ? '~ CASI OK' : '✗ DIFERENCIA');
 
-            $this->line("  Referencia:  \$" . number_format(self::REF_TOTAL, 2));
-            $this->line("  Sistema:     \$" . number_format($totalSystem, 2));
-            $msg = "  Diferencia:  {$sign}\$" . number_format(abs($diff), 2) . " [{$match}]";
-            if ($match === '✓ EXACTO') $this->info($msg);
-            else $this->warn($msg);
+            $this->line('  Referencia:  $'.number_format(self::REF_TOTAL, 2));
+            $this->line('  Sistema:     $'.number_format($totalSystem, 2));
+            $msg = "  Diferencia:  {$sign}\$".number_format(abs($diff), 2)." [{$match}]";
+            if ($match === '✓ EXACTO') {
+                $this->info($msg);
+            } else {
+                $this->warn($msg);
+            }
 
             $this->line('');
             $this->warn('  Diferencias conocidas con referencia:');
             $knownDelta = 0.0;
             foreach (self::REF_DELTAS as $concepto => $delta) {
-                $this->warn("  → {$concepto}: +\$" . number_format($delta, 2));
+                $this->warn("  → {$concepto}: +\$".number_format($delta, 2));
                 $knownDelta += $delta;
             }
-            $this->warn("  Total ajuste conocido: +\$" . number_format($knownDelta, 2));
+            $this->warn('  Total ajuste conocido: +$'.number_format($knownDelta, 2));
             $unexplained = $diff - $knownDelta;
             if (abs($unexplained) > 1) {
-                $this->warn("  ⚠ Diferencia no explicada: \$" . number_format(abs($unexplained), 2));
+                $this->warn('  ⚠ Diferencia no explicada: $'.number_format(abs($unexplained), 2));
             } else {
-                $this->info("  ✓ Toda la diferencia está explicada por los deltas conocidos.");
+                $this->info('  ✓ Toda la diferencia está explicada por los deltas conocidos.');
             }
         }
 
@@ -156,18 +183,18 @@ class AuditPayrollEmployeesCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $this->line(str_pad('Sucursal', 28) . str_pad('Total', 18) . str_pad('Empleados', 12) . 'Movs');
+        $this->line(str_pad('Sucursal', 28).str_pad('Total', 18).str_pad('Empleados', 12).'Movs');
         $this->line(str_repeat('─', 68));
         foreach ($byBranch as $row) {
-            $sucursal = (string)$row->sucursal;
+            $sucursal = (string) $row->sucursal;
             $override = '';
             foreach (self::OVERRIDES as $nombre => $newBranch) {
                 // note: overrides checked per-employee, not per-branch aggregate
             }
             $this->line(
-                str_pad(mb_substr($sucursal, 0, 26), 28) .
-                str_pad('$' . number_format((float)$row->total, 2), 18) .
-                str_pad((string)$row->empleados, 12) .
+                str_pad(mb_substr($sucursal, 0, 26), 28).
+                str_pad('$'.number_format((float) $row->total, 2), 18).
+                str_pad((string) $row->empleados, 12).
                 $row->movimientos
             );
         }
@@ -178,7 +205,7 @@ class AuditPayrollEmployeesCommand extends Command
         $this->line('  Empleados cuya sucursal fue corregida manualmente:');
         foreach (self::OVERRIDES as $nombre => $branchOverride) {
             $emp = DB::table('employees')
-                ->whereRaw("UPPER(TRIM(name)) = ?", [strtoupper(trim($nombre))])
+                ->whereRaw('UPPER(TRIM(name)) = ?', [strtoupper(trim($nombre))])
                 ->first();
 
             if ($emp) {
@@ -186,7 +213,7 @@ class AuditPayrollEmployeesCommand extends Command
                     ->whereIn('period_id', $dataIds)
                     ->where('employee_id', $emp->id)
                     ->sum('amount');
-                $this->line("  → {$nombre}: \$" . number_format((float)$movs, 2) . " → asignado a {$branchOverride}");
+                $this->line("  → {$nombre}: \$".number_format((float) $movs, 2)." → asignado a {$branchOverride}");
             } else {
                 $this->warn("  → {$nombre}: no encontrado en tabla employees");
             }
@@ -211,11 +238,11 @@ class AuditPayrollEmployeesCommand extends Command
                 ->groupBy('n.employee_id', 'e.name', 'b.name')
                 ->get();
 
-            $total = $rows->sum(fn ($r) => (float)$r->total);
+            $total = $rows->sum(fn ($r) => (float) $r->total);
             if ($total > 0) {
-                $this->warn("  ✗ {$concept}: total \$" . number_format($total, 2) . " (debe ser \$0.00 global en referencia)");
+                $this->warn("  ✗ {$concept}: total \$".number_format($total, 2).' (debe ser $0.00 global en referencia)');
                 foreach ($rows as $r) {
-                    $this->line("      - {$r->nombre} ({$r->sucursal}): \$" . number_format((float)$r->total, 2));
+                    $this->line("      - {$r->nombre} ({$r->sucursal}): \$".number_format((float) $r->total, 2));
                 }
             }
         }
@@ -250,14 +277,14 @@ class AuditPayrollEmployeesCommand extends Command
             ->get();
 
         if ($motoRows->isEmpty()) {
-            $this->line("  (no se encontraron registros de Financiamiento Motos)");
+            $this->line('  (no se encontraron registros de Financiamiento Motos)');
         } else {
-            $this->line(str_pad('Empleado', 34) . str_pad('Sucursal', 20) . 'Monto');
+            $this->line(str_pad('Empleado', 34).str_pad('Sucursal', 20).'Monto');
             $this->line(str_repeat('─', 65));
             foreach ($motoRows as $r) {
-                $this->line("  " . str_pad($r->nombre, 34) . str_pad($r->sucursal, 20) . '$' . number_format((float)$r->amount, 2));
+                $this->line('  '.str_pad($r->nombre, 34).str_pad($r->sucursal, 20).'$'.number_format((float) $r->amount, 2));
             }
-            $this->line("  Total: \$" . number_format($motoRows->sum(fn ($r) => (float)$r->amount), 2) . " — referencia tiene \$" . number_format(self::REF_DELTAS['FINANCIAMIENTO MOTOS'], 2) . " menos");
+            $this->line('  Total: $'.number_format($motoRows->sum(fn ($r) => (float) $r->amount), 2).' — referencia tiene $'.number_format(self::REF_DELTAS['FINANCIAMIENTO MOTOS'], 2).' menos');
         }
 
         return 0;

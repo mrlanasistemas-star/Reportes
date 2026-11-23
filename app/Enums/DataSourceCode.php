@@ -2,8 +2,17 @@
 
 namespace App\Enums;
 
-enum DataSourceCode: string {
-
+/**
+ * Catálogo de fuentes de datos que se pueden subir a un periodo de reportería.
+ *
+ * Cada caso identifica un tipo de archivo (NOI, Lendus, gastos ERP/Lendus,
+ * IMSS, rotación, etc.). El valor se guarda en `report_uploads` y en
+ * `data_sources.code`, y decide qué importador procesa el archivo
+ * (ver DatabaseUpdateService, ReportUploadController y StoreReportUploadRequest).
+ * Importante: los valores son persistentes en BD; no renombrarlos.
+ */
+enum DataSourceCode: string
+{
     case NoiNomina = 'noi_nomina';
     case NoiNominaFiscal = 'noi_nomina_fiscal';
     case LendusMinistraciones = 'lendus_ministraciones';

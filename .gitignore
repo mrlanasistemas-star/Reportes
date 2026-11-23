@@ -76,3 +76,6 @@ yarn-error.log
 *.xlsx
 *.xlsm
 *.xls
+
+# Capturas de errores locales (pueden mostrar nombres de archivos reales).
+/docs/error/

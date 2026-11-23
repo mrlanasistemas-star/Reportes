@@ -10,7 +10,7 @@ return new class extends Migration
      * Módulo OKR (08-sep-2026) — Objective. FASE ACTUAL: solo dos niveles reales
      * (Sucursal → Gestor) — `parent_id`/`scope_type` dejan la puerta abierta a
      * niveles futuros (Corporativo/Regional/Gerente) SIN desarrollarlos ahora
-     * (ver docs/OKR.md). `scope_type`='branch' requiere branch_id;
+     * (ver docs/MANUAL-DESARROLLADOR.md). `scope_type`='branch' requiere branch_id;
      * `scope_type`='employee' requiere employee_id + normalmente parent_id
      * apuntando al Objective de sucursal que agrupa (opcional).
      *

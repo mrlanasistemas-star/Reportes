@@ -277,41 +277,81 @@ final class Treatment
         self::PENDIENTE,
     ];
 
+    /**
+     * Claves de todos los tratamientos del catálogo.
+     *
+     * @return list<string>
+     */
     public static function all(): array
     {
         return array_keys(self::META);
     }
 
+    /**
+     * ¿El tratamiento existe en el catálogo?
+     *
+     * @param  string  $treatment  clave
+     */
     public static function exists(string $treatment): bool
     {
         return isset(self::META[$treatment]);
     }
 
+    /**
+     * ¿El usuario puede asignar este tratamiento manualmente (o desde el catálogo de conceptos)?
+     *
+     * @param  string  $treatment  clave
+     */
     public static function isAssignable(string $treatment): bool
     {
         return in_array($treatment, self::ASSIGNABLE, true);
     }
 
+    /**
+     * Etiqueta en español (la clave si no existe).
+     *
+     * @param  string  $treatment  clave
+     */
     public static function label(string $treatment): string
     {
         return self::META[$treatment]['label'] ?? $treatment;
     }
 
+    /**
+     * Línea/sección del ER a la que suma el tratamiento; null si queda fuera del ER.
+     *
+     * @param  string  $treatment  clave
+     */
     public static function line(string $treatment): ?string
     {
         return self::META[$treatment]['line'] ?? null;
     }
 
+    /**
+     * Grupo de presentación (p. ej. 'fuera'); desconocido ⇒ 'pendiente'.
+     *
+     * @param  string  $treatment  clave
+     */
     public static function group(string $treatment): string
     {
         return self::META[$treatment]['group'] ?? 'pendiente';
     }
 
+    /**
+     * ¿El tratamiento suma a alguna línea del Estado de Resultados?
+     *
+     * @param  string  $treatment  clave
+     */
     public static function affectsStatement(string $treatment): bool
     {
         return self::line($treatment) !== null;
     }
 
+    /**
+     * Explicación de negocio del tratamiento (vacía si no existe).
+     *
+     * @param  string  $treatment  clave
+     */
     public static function explain(string $treatment): string
     {
         return self::META[$treatment]['explain'] ?? '';
@@ -331,6 +371,12 @@ final class Treatment
         };
     }
 
+    /**
+     * Tratamiento contable (dimensión independiente): gasto operativo, gasto financiero,
+     * ingreso no operativo, reconocido en otra fuente, etc.
+     *
+     * @param  string  $treatment  clave
+     */
     public static function accounting(string $treatment): string
     {
         return match ($treatment) {
@@ -353,6 +399,11 @@ final class Treatment
         };
     }
 
+    /**
+     * Tono visual (color de la etiqueta en la UI); por defecto 'muted'.
+     *
+     * @param  string  $treatment  clave
+     */
     public static function tone(string $treatment): string
     {
         return self::META[$treatment]['tone'] ?? 'muted';

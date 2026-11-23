@@ -6,18 +6,35 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-period-clean` — diagnóstico de los datos derivados de un periodo:
+ * conteos por tabla derivada, productos visibles sin movimiento, empleados sin sucursal, gastos
+ * por fuente, duplicados potenciales y snapshots/reportes obsoletos.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-period-clean 21
+ */
 class DebugPeriodCleanCommand extends Command
 {
-    protected $signature   = 'reportes:debug-period-clean {periodId : ID del periodo a diagnosticar}';
+    protected $signature = 'reportes:debug-period-clean {periodId : ID del periodo a diagnosticar}';
+
     protected $description = 'Diagnóstico de datos derivados de un periodo: conteos, productos sin movimiento, empleados sin sucursal, duplicados potenciales.';
 
+    /**
+     * Imprime las secciones 1–6 del diagnóstico de limpieza del periodo.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('periodId');
 
         $period = Period::find($periodId);
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -28,17 +45,17 @@ class DebugPeriodCleanCommand extends Command
         // ── 1. CONTEOS POR TABLA ────────────────────────────────────────────
         $this->info('── 1. Conteos por tabla derivada ──');
         $tables = [
-            'fact_noi_movements'          => 'Movimientos NOI',
-            'fact_placements'             => 'Ministraciones/Colocación',
-            'fact_recoveries'             => 'Recuperación/Cobranza',
-            'fact_portfolios'             => 'Saldos/Cartera',
-            'fact_expenses'               => 'Gastos',
+            'fact_noi_movements' => 'Movimientos NOI',
+            'fact_placements' => 'Ministraciones/Colocación',
+            'fact_recoveries' => 'Recuperación/Cobranza',
+            'fact_portfolios' => 'Saldos/Cartera',
+            'fact_expenses' => 'Gastos',
             'fact_period_employee_summary' => 'Resumen empleados (consolidado)',
         ];
 
         foreach ($tables as $table => $label) {
             $cnt = DB::table($table)->where('period_id', $periodId)->count();
-            $this->line(sprintf('  %-42s %s', $label . ':', $cnt > 0 ? "<fg=green>{$cnt}</>" : '<fg=red>0 — SIN DATOS</>'));
+            $this->line(sprintf('  %-42s %s', $label.':', $cnt > 0 ? "<fg=green>{$cnt}</>" : '<fg=red>0 — SIN DATOS</>'));
         }
 
         // Summaries

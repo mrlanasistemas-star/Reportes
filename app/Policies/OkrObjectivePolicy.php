@@ -28,9 +28,10 @@ use App\Services\Okr\OkrObjectiveVisibilityService;
  */
 class OkrObjectivePolicy
 {
-    public function __construct(private readonly OkrObjectiveVisibilityService $visibility)
-    {
-    }
+    /**
+     * @param  OkrObjectiveVisibilityService  $visibility  Regla única de visibilidad/responsable/dueño de OKR.
+     */
+    public function __construct(private readonly OkrObjectiveVisibilityService $visibility) {}
 
     /**
      * CORRECCIÓN 04-oct-2026 (cierre real OKR, punto 15) / 05-oct-2026
@@ -41,13 +42,26 @@ class OkrObjectivePolicy
      *   - ADMIN/GERENCIAL: todo.
      *   - COLABORADOR: responsible_user_id === user.id, O es el DUEÑO real
      *     del Objective individual (user.employee_id === objective.employee_id).
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @param  OkrObjective  $objective  OKR que se quiere consultar.
+     * @return bool true si puede verlo.
      */
     public function view(User $user, OkrObjective $objective): bool
     {
         return $this->visibility->canView($user, $objective);
     }
 
-    /** Editar meta/peso, recalcular progreso. */
+    /**
+     * Permitido a: administrador, responsable del OKR, o rol con permiso
+     * "administrar_otros" sobre un OKR que ya puede ver.
+     *
+     * Editar meta/peso, recalcular progreso.
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @param  OkrObjective  $objective  OKR a modificar.
+     * @return bool true si puede editarlo.
+     */
     public function update(User $user, OkrObjective $objective): bool
     {
         return $this->isAdmin($user) || $this->visibility->isResponsible($user, $objective) || $this->managesOthers($user, $objective);
@@ -57,6 +71,10 @@ class OkrObjectivePolicy
      * Activar el Objective — decisión administrativa/gerencial (Parte 1,
      * 04-oct-2026: GERENCIAL tiene "asignación" explícita en su alcance),
      * nunca del propio responsable ni de un colaborador.
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @param  OkrObjective  $objective  OKR a activar/asignar.
+     * @return bool true si tiene acceso gerencial y el OKR está en su alcance.
      */
     public function assign(User $user, OkrObjective $objective): bool
     {
@@ -65,17 +83,31 @@ class OkrObjectivePolicy
         return $user->hasManagerialAccess() && $this->visibility->canView($user, $objective);
     }
 
+    /**
+     * Eliminar un OKR: solo administrador (users.role = 'admin').
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @param  OkrObjective  $objective  OKR a eliminar.
+     * @return bool true si es administrador.
+     */
     public function delete(User $user, OkrObjective $objective): bool
     {
         return $this->isAdmin($user);
     }
 
     /**
+     * Permitido a: administrador, responsable, dueño real (employee_id) o rol con
+     * "administrar_otros" sobre un OKR visible.
+     *
      * 11 del cierre (05-oct-2026): el DUEÑO real del Objective (vínculo
      * employee_id) puede dar seguimiento a SU PROPIO Objective aunque
      * responsible_user_id sea su gerente — sin que esto lo autorice a
      * editar meta/peso, activar, cancelar, emitir Carta o Warning (eso sigue
      * siendo admin/responsable/gerencial exclusivamente, ver update/assign).
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @param  OkrObjective  $objective  OKR al que se registra avance.
+     * @return bool true si puede registrar check-in.
      */
     public function checkin(User $user, OkrObjective $objective): bool
     {
@@ -85,6 +117,14 @@ class OkrObjectivePolicy
             || $this->managesOthers($user, $objective);
     }
 
+    /**
+     * Subir evidencia de avance a un OKR. Mismas reglas que checkin(): administrador,
+     * responsable, dueño real o rol con "administrar_otros" sobre un OKR visible.
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @param  OkrObjective  $objective  OKR al que se adjunta evidencia.
+     * @return bool true si puede subir evidencia.
+     */
     public function uploadEvidence(User $user, OkrObjective $objective): bool
     {
         return $this->isAdmin($user)
@@ -94,10 +134,16 @@ class OkrObjectivePolicy
     }
 
     /**
+     * Consulta ActionPermissionService (módulo 'okr', acción 'administrar_otros').
+     *
      * Prioridad 9 — permiso "Administrar OKR de otros empleados" (Roles y
      * permisos): da a ese rol las facultades de edición/seguimiento del
      * responsable, SOLO sobre lo que su rol ya puede ver (misma regla de
      * visibilidad/alcance). No activa, emite ni elimina por sí solo.
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @param  OkrObjective  $objective  OKR evaluado.
+     * @return bool true si tiene el permiso y además puede ver el OKR.
      */
     private function managesOthers(User $user, OkrObjective $objective): bool
     {
@@ -105,6 +151,12 @@ class OkrObjectivePolicy
             && $this->visibility->canView($user, $objective);
     }
 
+    /**
+     * Indica si el usuario es administrador (users.role === 'admin').
+     *
+     * @param  User  $user  Usuario autenticado.
+     * @return bool true si es admin.
+     */
     private function isAdmin(User $user): bool
     {
         return ($user->role ?? null) === 'admin';

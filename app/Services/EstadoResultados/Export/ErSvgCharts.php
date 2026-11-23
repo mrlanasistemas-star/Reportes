@@ -31,11 +31,18 @@ final class ErSvgCharts
         'ebit' => 'EBIT', 'resultado_financiero_neto' => 'Res. financiero', 'ebt' => 'EBT', 'isr' => 'ISR', 'utilidad_neta' => 'Utilidad neta',
     ];
 
+    /** Ancho lógico (viewBox) de todas las gráficas. */
     private const W = 720;
 
     /**
-     * @param  list<string>  $labels
+     * Gráfica de líneas (evolución). Los puntos sin dato no se dibujan y el mes se marca
+     * «Sin datos».
+     *
+     * @param  list<string>  $labels  etiquetas de periodo
      * @param  list<array{label:string,color?:string,data:list<?string|float|null>}>  $series
+     * @param  string  $unit  'MXN' o '%'
+     * @param  int  $height  alto del SVG
+     * @return string SVG
      */
     public static function line(array $labels, array $series, string $unit = 'MXN', int $height = 230): string
     {
@@ -282,11 +289,22 @@ final class ErSvgCharts
         return [floor($min / $step) * $step, ceil($max / $step) * $step, $step];
     }
 
+    /**
+     * Etiqueta de apertura del SVG con el viewBox y la tipografía de la marca.
+     *
+     * @param  int  $height  alto
+     */
     private static function open(int $height): string
     {
         return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '.self::W.' '.$height.'" width="100%" preserveAspectRatio="xMidYMid meet" font-family="Montserrat, Helvetica, Arial, sans-serif" role="img">';
     }
 
+    /**
+     * SVG de «sin datos» con el mensaje indicado (alto máximo 70).
+     *
+     * @param  string  $text  mensaje
+     * @param  int  $height  alto solicitado
+     */
     private static function empty(string $text, int $height): string
     {
         $h = min($height, 70);
@@ -295,6 +313,17 @@ final class ErSvgCharts
             .'<text x="'.(self::W / 2).'" y="'.($h / 2 + 4).'" text-anchor="middle" font-size="10" fill="#64748B">'.e($text).'</text></svg>';
     }
 
+    /**
+     * Líneas horizontales de la cuadrícula con su etiqueta de eje (la del cero resaltada).
+     *
+     * @param  float  $min  mínimo de la escala
+     * @param  float  $max  máximo de la escala
+     * @param  float  $step  paso
+     * @param  callable  $y  valor ⇒ coordenada Y
+     * @param  int  $l  margen izquierdo
+     * @param  float  $pw  ancho del área de trazo
+     * @param  string  $unit  'MXN' o '%'
+     */
     private static function grid(float $min, float $max, float $step, callable $y, int $l, float $pw, string $unit): string
     {
         $out = '';
@@ -308,6 +337,12 @@ final class ErSvgCharts
         return $out;
     }
 
+    /**
+     * Leyenda horizontal (cuadro de color + nombre de cada serie).
+     *
+     * @param  array  $series  series
+     * @param  int  $l  posición X inicial
+     */
     private static function legend(array $series, int $l): string
     {
         $out = '';
@@ -322,6 +357,15 @@ final class ErSvgCharts
         return $out;
     }
 
+    /**
+     * Etiquetas del eje X (periodos abreviados si son muchos) y marca «Sin datos» en los meses
+     * donde ninguna serie tiene valor.
+     *
+     * @param  array  $labels  periodos
+     * @param  array  $series  series
+     * @param  callable  $x  índice ⇒ coordenada X
+     * @param  float  $base  Y de la línea base
+     */
     private static function xLabels(array $labels, array $series, callable $x, float $base): string
     {
         $out = '';
@@ -355,11 +399,23 @@ final class ErSvgCharts
         return mb_substr($m[1], 0, 3).' '.$m[2];
     }
 
+    /**
+     * Valor de eje: porcentaje (1 decimal si < 10 y no entero) o importe abreviado.
+     *
+     * @param  float  $v  valor
+     * @param  string  $unit  'MXN' o '%'
+     */
     private static function fmt(float $v, string $unit): string
     {
         return $unit === '%' ? number_format($v, abs($v) < 10 && fmod($v, 1.0) != 0.0 ? 1 : 0).'%' : ErFormat::axis($v);
     }
 
+    /**
+     * Todos los valores no vacíos de todas las series como float (para la escala).
+     *
+     * @param  array  $series  series
+     * @return list<float>
+     */
     private static function flat(array $series): array
     {
         $out = [];
@@ -374,11 +430,22 @@ final class ErSvgCharts
         return $out;
     }
 
+    /**
+     * ¿Alguna serie tiene al menos un valor?
+     *
+     * @param  array  $series  series
+     */
     private static function hasValues(array $series): bool
     {
         return self::flat($series) !== [];
     }
 
+    /**
+     * Recorta un texto a $n caracteres con «…».
+     *
+     * @param  string  $s  texto
+     * @param  int  $n  longitud máxima
+     */
     private static function clip(string $s, int $n): string
     {
         return mb_strlen($s) > $n ? mb_substr($s, 0, $n - 1).'…' : $s;

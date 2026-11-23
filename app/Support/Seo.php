@@ -17,13 +17,24 @@ class Seo
 
     public const NOINDEX = 'noindex, nofollow';
 
-    /** Marca de empresa: "Mr Lana". */
+    /**
+     * Marca de empresa: "Mr Lana".
+     *
+     * @return string Nombre de la empresa (config seo.site_name).
+     */
     public static function siteName(): string
     {
         return (string) config('seo.site_name', 'Mr Lana');
     }
 
-    /** Nombre del producto en buscadores; siempre contiene la marca ("Reportes Mr Lana"). */
+    /**
+     * Usa seo.app_title si está configurado; si no, arma "<app.name> <marca>" solo
+     * cuando app.name no contiene ya la marca (comparación solo con letras).
+     *
+     * Nombre del producto en buscadores; siempre contiene la marca ("Reportes Mr Lana").
+     *
+     * @return string Título del producto para buscadores.
+     */
     public static function appTitle(): string
     {
         $explicit = trim((string) config('seo.app_title'));
@@ -39,20 +50,34 @@ class Seo
         return str_contains($normalize($name), $normalize($site)) ? $name : "{$name} {$site}";
     }
 
-    /** Raíz absoluta desde APP_URL (nunca del Host de la petición). */
+    /**
+     * Raíz absoluta desde APP_URL (nunca del Host de la petición).
+     *
+     * @return string APP_URL sin diagonal final.
+     */
     public static function baseUrl(): string
     {
         return rtrim((string) config('app.url'), '/');
     }
 
+    /**
+     * Convierte una ruta relativa en URL absoluta sobre APP_URL.
+     *
+     * @param  string  $path  Ruta relativa (con o sin diagonales).
+     * @return string URL absoluta.
+     */
     public static function absolute(string $path): string
     {
         $path = trim($path, '/');
 
-        return self::baseUrl() . '/' . $path;
+        return self::baseUrl().'/'.$path;
     }
 
-    /** @return array<string, array<string, string>> páginas públicas cuyas rutas existen */
+    /**
+     * Filtra config('seo.public_pages') dejando solo las páginas cuya ruta nombrada existe.
+     *
+     * @return array<string, array<string, string>> páginas públicas cuyas rutas existen
+     */
     public static function publicPages(): array
     {
         return collect((array) config('seo.public_pages', []))
@@ -60,6 +85,12 @@ class Seo
             ->all();
     }
 
+    /**
+     * Nombre de la ruta resuelta de la petición, si existe.
+     *
+     * @param  Request  $request  Petición actual.
+     * @return string|null Nombre de la ruta o null.
+     */
     protected static function routeName(Request $request): ?string
     {
         $route = $request->route();
@@ -67,6 +98,13 @@ class Seo
         return is_object($route) && method_exists($route, 'getName') ? $route->getName() : null;
     }
 
+    /**
+     * Indica si la página puede indexarse: ruta nombrada incluida en las páginas
+     * públicas y método GET. Todo lo demás (sistema interno) es noindex.
+     *
+     * @param  Request  $request  Petición actual.
+     * @return bool true si la página es pública e indexable.
+     */
     public static function isIndexable(Request $request): bool
     {
         $name = self::routeName($request);
@@ -76,7 +114,14 @@ class Seo
             && $request->isMethod('GET');
     }
 
-    /** Valor de X-Robots-Tag para la respuesta, o null si no debe llevar cabecera. */
+    /**
+     * Las rutas en seo.header_exempt_routes no reciben cabecera.
+     *
+     * Valor de X-Robots-Tag para la respuesta, o null si no debe llevar cabecera.
+     *
+     * @param  Request  $request  Petición actual.
+     * @return string|null 'index, follow', 'noindex, nofollow' o null.
+     */
     public static function robotsHeaderFor(Request $request): ?string
     {
         $name = self::routeName($request);
@@ -89,8 +134,12 @@ class Seo
     }
 
     /**
+     * Arma título, descripción, canonical (solo si es indexable), Open Graph y
+     * JSON-LD sustituyendo los marcadores {app} y {site} de config/seo.php.
+     *
      * Datos SEO de la petición actual para el root view (app.blade.php).
      *
+     * @param  Request  $request  Petición actual.
      * @return array<string, mixed>
      */
     public static function forRequest(Request $request): array
@@ -132,12 +181,24 @@ class Seo
         ];
     }
 
-    /** JSON-LD (Organization + WebSite + WebPage), seguro para incrustar en <script>. */
+    /**
+     * Usa JSON_HEX_TAG/JSON_HEX_AMP para que el JSON no pueda cerrar la etiqueta <script>.
+     *
+     * JSON-LD (Organization + WebSite + WebPage), seguro para incrustar en <script>.
+     *
+     * @param  string  $title  Título de la página.
+     * @param  string  $description  Descripción de la página.
+     * @param  string  $url  URL canónica.
+     * @param  string  $logo  URL absoluta del logo.
+     * @param  string  $image  URL absoluta de la imagen Open Graph.
+     * @param  string  $lang  Idioma (p. ej. es-MX).
+     * @return string JSON listo para incrustar.
+     */
     public static function jsonLd(string $title, string $description, string $url, string $logo, string $image, string $lang): string
     {
         $base = self::baseUrl();
-        $org = $base . '/#organization';
-        $site = $base . '/#website';
+        $org = $base.'/#organization';
+        $site = $base.'/#website';
 
         $graph = [
             // Clave '@context' armada en PHP (no en Blade): Blade confunde un
@@ -148,21 +209,21 @@ class Seo
                     '@type' => 'Organization',
                     '@id' => $org,
                     'name' => self::siteName(),
-                    'url' => $base . '/',
+                    'url' => $base.'/',
                     'logo' => ['@type' => 'ImageObject', 'url' => $logo, 'width' => 256, 'height' => 256],
                 ],
                 [
                     '@type' => 'WebSite',
                     '@id' => $site,
                     'name' => self::appTitle(),
-                    'alternateName' => ['Reportes MrLana', self::siteName() . ' Reportes', 'Sistema de reportes ' . self::siteName()],
-                    'url' => $base . '/',
+                    'alternateName' => ['Reportes MrLana', self::siteName().' Reportes', 'Sistema de reportes '.self::siteName()],
+                    'url' => $base.'/',
                     'inLanguage' => $lang,
                     'publisher' => ['@id' => $org],
                 ],
                 [
                     '@type' => 'WebPage',
-                    '@id' => $url . '#webpage',
+                    '@id' => $url.'#webpage',
                     'name' => $title,
                     'description' => $description,
                     'url' => $url,

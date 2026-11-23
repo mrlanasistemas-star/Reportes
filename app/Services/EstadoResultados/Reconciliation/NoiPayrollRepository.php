@@ -20,9 +20,15 @@ use Illuminate\Support\Facades\DB;
  */
 class NoiPayrollRepository
 {
+    /** @param  BranchRadiographyCalculator  $branchCalculator  mapa de sucursales de Radiografía */
     public function __construct(private readonly BranchRadiographyCalculator $branchCalculator) {}
 
     /**
+     * Percepciones NOI del universo agrupadas por colaborador (llave de nombre), con su sucursal,
+     * si es operativa, total, llaves ambiguas (mismo nombre, distinto empleado) y totales sin
+     * sucursal operativa. Sólo lectura.
+     *
+     * @param  list<int>  $dataIds  universo de period_id
      * @return array{
      *   employees: array<string, array{employee_id:int, name:string, branch:?string, operative:bool, total:string}>,
      *   ambiguous_keys: list<string>,

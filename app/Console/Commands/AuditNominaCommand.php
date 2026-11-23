@@ -8,6 +8,26 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-nomina` — auditoría de Nómina y Capital Humano concepto por
+ * concepto: NOI fiscal / no fiscal (por códigos P/D), Lendus PDF, Lendus Excel y ERP, contra
+ * los valores de control (targets) de Junio 2026 definidos en CONCEPTOS. Las filas marcadas
+ * "(no incluido en total)" son deducciones al trabajador, informativas. El IMSS patronal se
+ * audita aparte con `reportes:audit-imss` / `reportes:audit-imss-derivado`.
+ *
+ * Opciones:
+ *   --by-branch    desglose por sucursal oficial usando BranchRadiographyCalculator.
+ *   --by-employee  desglose por empleado normalizado con deduplicación fiscal/no fiscal.
+ *   --detail       detalle por código/concepto de cada fuente.
+ *   --export       CSV(s) en storage/app/auditorias/.
+ *
+ * Escribe en BD: NO (solo CSV). Usa REGEXP (requiere MySQL).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-nomina 21
+ *   php artisan reportes:audit-nomina 21 --by-branch --export
+ *   php artisan reportes:audit-nomina 21 --by-employee
+ */
 class AuditNominaCommand extends Command
 {
     protected $signature = 'reportes:audit-nomina
@@ -51,25 +71,33 @@ class AuditNominaCommand extends Command
         ['Préstamo Personal (no incluido en total)',      'NOI',        [], ['D004' => 1], null, null, 0.0],
     ];
 
+    /**
+     * Resuelve fuentes y periodos de datos, calcula cada concepto de la tabla CONCEPTOS por
+     * fuente, lo compara contra su target e imprime el resultado; despacha los desgloses por
+     * sucursal/empleado y la exportación según opciones.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
-        $noiFiscalId   = DB::table('data_sources')->where('code', 'noi_nomina_fiscal')->value('id');
+        $noiFiscalId = DB::table('data_sources')->where('code', 'noi_nomina_fiscal')->value('id');
         $noiNoFiscalId = DB::table('data_sources')->where('code', 'noi_nomina')->value('id');
-        $erpId         = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
-        $lendusId      = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
-        $lendusXlsId   = DB::table('data_sources')->where('code', 'gastos_lendus_excel')->value('id');
+        $erpId = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
+        $lendusId = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
+        $lendusXlsId = DB::table('data_sources')->where('code', 'gastos_lendus_excel')->value('id');
 
         $this->line('');
         $this->info('════════════════════════════════════════════════════════════════════════════');
@@ -77,17 +105,17 @@ class AuditNominaCommand extends Command
         $this->info('  NOI (fiscal/no fiscal) + Lendus PDF + Lendus Excel + ERP, concepto por concepto');
         $this->info('════════════════════════════════════════════════════════════════════════════');
 
-        $rows         = [];
-        $grandTotal   = 0.0;
-        $grandTarget  = 0.0;
+        $rows = [];
+        $grandTotal = 0.0;
+        $grandTarget = 0.0;
 
         foreach (self::CONCEPTOS as [$label, $fuente, $percCodes, $dedCodes, $gastoCat, $gastoConceptLike, $target]) {
-            $noiFiscal   = $this->sumNoi($dataIds, $noiFiscalId, $percCodes, $dedCodes);
+            $noiFiscal = $this->sumNoi($dataIds, $noiFiscalId, $percCodes, $dedCodes);
             $noiNoFiscal = $this->sumNoi($dataIds, $noiNoFiscalId, $percCodes, $dedCodes);
 
             $lendusAmt = 0.0;
-            $erpAmt    = 0.0;
-            $xlsAmt    = 0.0;
+            $erpAmt = 0.0;
+            $xlsAmt = 0.0;
 
             if ($gastoCat !== null || $gastoConceptLike !== null) {
                 if (in_array($fuente, ['LENDUS', 'MIXTO', 'GASTO'], true)) {
@@ -103,58 +131,58 @@ class AuditNominaCommand extends Command
 
             $isExcludedFromTotal = str_contains($label, 'no incluido en total') || $label === 'Pensión Alimenticia';
             $total = $noiFiscal + $noiNoFiscal + $lendusAmt + $erpAmt + $xlsAmt;
-            $diff  = $total - $target;
+            $diff = $total - $target;
 
             $estado = match (true) {
                 $isExcludedFromTotal && $total > 0 => 'Detectado pero no incluido',
-                abs($diff) < 1.0                    => 'OK',
-                $target > 0 && $total == 0.0         => 'Falta en NOI/Lendus/Gastos',
-                $total > 0 && $total < $target        => 'Viene parcial',
-                default                               => 'Diferencia',
+                abs($diff) < 1.0 => 'OK',
+                $target > 0 && $total == 0.0 => 'Falta en NOI/Lendus/Gastos',
+                $total > 0 && $total < $target => 'Viene parcial',
+                default => 'Diferencia',
             };
 
-            if (!$isExcludedFromTotal) {
-                $grandTotal  += $total;
+            if (! $isExcludedFromTotal) {
+                $grandTotal += $total;
                 $grandTarget += $target;
             }
 
             $rows[] = [
-                'label'        => $label,
-                'fuente'       => $fuente,
-                'codigos'      => trim(implode('+', $percCodes) . ' ' . implode('+', array_keys($dedCodes))),
-                'noi_fiscal'   => $noiFiscal,
-                'noi_no_fiscal'=> $noiNoFiscal,
-                'lendus'       => $lendusAmt + $xlsAmt,
-                'erp'          => $erpAmt,
-                'total'        => $total,
-                'target'       => $target,
-                'diff'         => $diff,
-                'estado'       => $estado,
+                'label' => $label,
+                'fuente' => $fuente,
+                'codigos' => trim(implode('+', $percCodes).' '.implode('+', array_keys($dedCodes))),
+                'noi_fiscal' => $noiFiscal,
+                'noi_no_fiscal' => $noiNoFiscal,
+                'lendus' => $lendusAmt + $xlsAmt,
+                'erp' => $erpAmt,
+                'total' => $total,
+                'target' => $target,
+                'diff' => $diff,
+                'estado' => $estado,
             ];
         }
 
         $this->line('');
         $this->info('════ DESGLOSE POR CONCEPTO ════');
         $this->line(
-            str_pad('Concepto', 28) . str_pad('Fuente', 11) . str_pad('Códigos', 16) .
-            str_pad('NOI Fiscal', 13) . str_pad('NOI NoFiscal', 13) . str_pad('Lendus', 13) .
-            str_pad('ERP', 11) . str_pad('Total', 13) . str_pad('Target', 13) .
-            str_pad('Diff', 11) . 'Estado'
+            str_pad('Concepto', 28).str_pad('Fuente', 11).str_pad('Códigos', 16).
+            str_pad('NOI Fiscal', 13).str_pad('NOI NoFiscal', 13).str_pad('Lendus', 13).
+            str_pad('ERP', 11).str_pad('Total', 13).str_pad('Target', 13).
+            str_pad('Diff', 11).'Estado'
         );
         $this->line(str_repeat('─', 175));
 
         foreach ($rows as $r) {
             $line =
-                str_pad(mb_substr($r['label'], 0, 26), 28) .
-                str_pad($r['fuente'], 11) .
-                str_pad(mb_substr($r['codigos'], 0, 14), 16) .
-                str_pad(number_format($r['noi_fiscal'], 2), 13) .
-                str_pad(number_format($r['noi_no_fiscal'], 2), 13) .
-                str_pad(number_format($r['lendus'], 2), 13) .
-                str_pad(number_format($r['erp'], 2), 11) .
-                str_pad(number_format($r['total'], 2), 13) .
-                str_pad(number_format($r['target'], 2), 13) .
-                str_pad(number_format($r['diff'], 2), 11) .
+                str_pad(mb_substr($r['label'], 0, 26), 28).
+                str_pad($r['fuente'], 11).
+                str_pad(mb_substr($r['codigos'], 0, 14), 16).
+                str_pad(number_format($r['noi_fiscal'], 2), 13).
+                str_pad(number_format($r['noi_no_fiscal'], 2), 13).
+                str_pad(number_format($r['lendus'], 2), 13).
+                str_pad(number_format($r['erp'], 2), 11).
+                str_pad(number_format($r['total'], 2), 13).
+                str_pad(number_format($r['target'], 2), 13).
+                str_pad(number_format($r['diff'], 2), 11).
                 $r['estado'];
 
             match ($r['estado']) {
@@ -167,10 +195,10 @@ class AuditNominaCommand extends Command
         $this->line(str_repeat('─', 175));
         $diffTotal = $grandTotal - $grandTarget;
         $this->line('');
-        $this->info(str_pad('TOTAL NÓMINA Y CAPITAL HUMANO', 60) . '$' . number_format($grandTotal, 2));
-        $this->line(str_pad('Target', 60) . '$' . number_format($grandTarget, 2));
+        $this->info(str_pad('TOTAL NÓMINA Y CAPITAL HUMANO', 60).'$'.number_format($grandTotal, 2));
+        $this->line(str_pad('Target', 60).'$'.number_format($grandTarget, 2));
         $match = abs($diffTotal) < 1 ? '✓ EXACTO' : (abs($diffTotal) < 500 ? '≈ CERCANO' : '⚠ REVISAR');
-        $this->line(str_pad('Diferencia', 60) . ($diffTotal >= 0 ? '+' : '') . '$' . number_format($diffTotal, 2) . '  ' . $match);
+        $this->line(str_pad('Diferencia', 60).($diffTotal >= 0 ? '+' : '').'$'.number_format($diffTotal, 2).'  '.$match);
 
         if ($this->option('export')) {
             $this->exportCsv($period->id, $rows);
@@ -187,20 +215,28 @@ class AuditNominaCommand extends Command
         return 0;
     }
 
+    /**
+     * Toma del calculador los campos de nómina por sucursal (nómina, comisiones, bonos, etc.),
+     * los imprime por sucursal con totales y los cuadra contra la tabla global.
+     *
+     * @param  Period  $period  Periodo auditado.
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  array  $globalRows  Filas globales calculadas en handle() para el cuadre.
+     */
     private function handleByBranch(Period $period, array $dataIds, array $globalRows): void
     {
         /** @var BranchRadiographyCalculator $calc */
-        $calc   = app(BranchRadiographyCalculator::class);
+        $calc = app(BranchRadiographyCalculator::class);
         $result = $calc->buildBranches($period, $dataIds, []);
         $global = $calc->sumGlobal($result['branches'], $result['unassigned']);
 
         // Main payroll fields from BranchRadiographyCalculator
         $mainFields = [
-            'nomina_total'     => 'Nómina',
-            'comisiones'       => 'Comisiones',
-            'vacaciones'       => 'Vacaciones',
+            'nomina_total' => 'Nómina',
+            'comisiones' => 'Comisiones',
+            'vacaciones' => 'Vacaciones',
             'prima_vacacional' => 'Prima vacacional',
-            'bonos'            => 'Bonos',
+            'bonos' => 'Bonos',
             'bonos_aceleradores' => 'Bonos Aceleradores',
         ];
 
@@ -209,7 +245,7 @@ class AuditNominaCommand extends Command
 
         $allBranches = array_merge($result['branches'], [['sucursal' => 'GLOBAL'] + $global]);
 
-        $this->line(str_pad('Concepto', 32) . implode('', array_map(
+        $this->line(str_pad('Concepto', 32).implode('', array_map(
             fn ($b) => str_pad(mb_substr($b['sucursal'], 0, 13), 15),
             $allBranches
         )));
@@ -235,7 +271,7 @@ class AuditNominaCommand extends Command
             }
         }
 
-        if (!empty($allDetailLabels)) {
+        if (! empty($allDetailLabels)) {
             $this->line(str_repeat('·', 32 + 15 * count($allBranches)));
             foreach (array_keys($allDetailLabels) as $lbl) {
                 $line = str_pad(mb_substr($lbl, 0, 30), 32);
@@ -270,12 +306,19 @@ class AuditNominaCommand extends Command
         }
     }
 
+    /**
+     * Agrupa los movimientos NOI (fiscal y no fiscal) por empleado normalizado y sucursal
+     * asignada, deduplicando entre ambas fuentes, e incluye gastos Lendus/ERP atribuibles.
+     *
+     * @param  Period  $period  Periodo auditado.
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     */
     private function handleByEmployee(Period $period, array $dataIds): void
     {
-        $noiFiscalId   = DB::table('data_sources')->where('code', 'noi_nomina_fiscal')->value('id');
+        $noiFiscalId = DB::table('data_sources')->where('code', 'noi_nomina_fiscal')->value('id');
         $noiNoFiscalId = DB::table('data_sources')->where('code', 'noi_nomina')->value('id');
-        $lendusId      = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
-        $erpId         = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
+        $lendusId = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
+        $erpId = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
 
         // Pull per-employee NOI rows with source flag
         $noiRows = DB::table('fact_noi_movements as n')
@@ -283,7 +326,7 @@ class AuditNominaCommand extends Command
             ->leftJoin('employees as e', 'n.employee_id', '=', 'e.id')
             ->leftJoin('employee_branch_assignments as eba', function ($j) use ($period) {
                 $j->on('eba.employee_id', '=', 'n.employee_id')
-                  ->where('eba.period_id', '=', $period->id);
+                    ->where('eba.period_id', '=', $period->id);
             })
             ->leftJoin('branches as b', 'eba.branch_id', '=', 'b.id')
             ->whereIn('n.period_id', $dataIds)
@@ -306,25 +349,25 @@ class AuditNominaCommand extends Command
 
         foreach ($noiRows as $row) {
             $norm = $this->normalizeEmployeeName($row->nombre_original);
-            if (!isset($empMap[$norm])) {
+            if (! isset($empMap[$norm])) {
                 $empMap[$norm] = [
-                    'norm'             => $norm,
+                    'norm' => $norm,
                     'nombres_original' => [],
-                    'sucursal'         => $row->sucursal,
-                    'fuente_flags'     => [],
-                    'monto_fiscal'     => 0.0,
-                    'monto_nofiscal'   => 0.0,
-                    'monto_lendus'     => 0.0,
-                    'monto_erp'        => 0.0,
-                    'conceptos'        => [],
+                    'sucursal' => $row->sucursal,
+                    'fuente_flags' => [],
+                    'monto_fiscal' => 0.0,
+                    'monto_nofiscal' => 0.0,
+                    'monto_lendus' => 0.0,
+                    'monto_erp' => 0.0,
+                    'conceptos' => [],
                 ];
             }
 
             $empMap[$norm]['nombres_original'][] = $row->nombre_original;
-            $empMap[$norm]['conceptos'][]         = $row->concepto;
+            $empMap[$norm]['conceptos'][] = $row->concepto;
 
             if ((int) $row->data_source_id === (int) $noiFiscalId) {
-                $empMap[$norm]['monto_fiscal']   += (float) $row->monto;
+                $empMap[$norm]['monto_fiscal'] += (float) $row->monto;
                 $empMap[$norm]['fuente_flags']['fiscal'] = true;
             } else {
                 $empMap[$norm]['monto_nofiscal'] += (float) $row->monto;
@@ -337,40 +380,42 @@ class AuditNominaCommand extends Command
         $this->info('════ NÓMINA POR EMPLEADO (dedup fiscal+no-fiscal) ════');
         $this->line(
             str_pad('Empleado normalizado', 32)
-            . str_pad('Sucursal', 18)
-            . str_pad('Fiscal', 14)
-            . str_pad('No fiscal', 14)
-            . str_pad('Lendus/ERP', 13)
-            . str_pad('Total', 14)
-            . str_pad('Dup', 5)
-            . 'Acción'
+            .str_pad('Sucursal', 18)
+            .str_pad('Fiscal', 14)
+            .str_pad('No fiscal', 14)
+            .str_pad('Lendus/ERP', 13)
+            .str_pad('Total', 14)
+            .str_pad('Dup', 5)
+            .'Acción'
         );
         $this->line(str_repeat('─', 132));
 
-        $totalFiscal   = 0.0;
+        $totalFiscal = 0.0;
         $totalNoFiscal = 0.0;
-        $dupCount      = 0;
-        $employeeRows  = [];
+        $dupCount = 0;
+        $employeeRows = [];
 
         foreach ($empMap as $norm => $emp) {
-            $isDup   = isset($emp['fuente_flags']['fiscal'], $emp['fuente_flags']['nofiscal']);
-            $total   = $emp['monto_fiscal'] + $emp['monto_nofiscal'] + $emp['monto_lendus'] + $emp['monto_erp'];
-            $accion  = $isDup ? 'CONSOLIDADO (fiscal+no-fiscal unificado)' : 'OK';
+            $isDup = isset($emp['fuente_flags']['fiscal'], $emp['fuente_flags']['nofiscal']);
+            $total = $emp['monto_fiscal'] + $emp['monto_nofiscal'] + $emp['monto_lendus'] + $emp['monto_erp'];
+            $accion = $isDup ? 'CONSOLIDADO (fiscal+no-fiscal unificado)' : 'OK';
             $dupFlag = $isDup ? 'SÍ' : 'no';
             $nombreOriginal = implode(' / ', array_unique($emp['nombres_original']));
 
-            $totalFiscal   += $emp['monto_fiscal'];
+            $totalFiscal += $emp['monto_fiscal'];
             $totalNoFiscal += $emp['monto_nofiscal'];
-            if ($isDup) $dupCount++;
+            if ($isDup) {
+                $dupCount++;
+            }
 
             $line = str_pad(mb_substr($norm, 0, 30), 32)
-                . str_pad(mb_substr($emp['sucursal'], 0, 16), 18)
-                . str_pad(number_format($emp['monto_fiscal'], 2), 14)
-                . str_pad(number_format($emp['monto_nofiscal'], 2), 14)
-                . str_pad(number_format($emp['monto_lendus'] + $emp['monto_erp'], 2), 13)
-                . str_pad(number_format($total, 2), 14)
-                . str_pad($dupFlag, 5)
-                . $accion;
+                .str_pad(mb_substr($emp['sucursal'], 0, 16), 18)
+                .str_pad(number_format($emp['monto_fiscal'], 2), 14)
+                .str_pad(number_format($emp['monto_nofiscal'], 2), 14)
+                .str_pad(number_format($emp['monto_lendus'] + $emp['monto_erp'], 2), 13)
+                .str_pad(number_format($total, 2), 14)
+                .str_pad($dupFlag, 5)
+                .$accion;
 
             $isDup ? $this->warn($line) : $this->line($line);
 
@@ -379,68 +424,88 @@ class AuditNominaCommand extends Command
             }
 
             $employeeRows[] = array_merge($emp, [
-                'total'          => $total,
-                'es_duplicado'   => $isDup ? 'SÍ' : 'no',
-                'accion'         => $accion,
-                'nombre_original'=> $nombreOriginal,
+                'total' => $total,
+                'es_duplicado' => $isDup ? 'SÍ' : 'no',
+                'accion' => $accion,
+                'nombre_original' => $nombreOriginal,
             ]);
         }
 
         $this->line(str_repeat('─', 132));
-        $this->info(str_pad('TOTAL', 50) . '$' . number_format($totalFiscal + $totalNoFiscal, 2));
-        $this->line("  Empleados totales: " . count($empMap) . "   Duplicados (fiscal+no-fiscal): {$dupCount}");
+        $this->info(str_pad('TOTAL', 50).'$'.number_format($totalFiscal + $totalNoFiscal, 2));
+        $this->line('  Empleados totales: '.count($empMap)."   Duplicados (fiscal+no-fiscal): {$dupCount}");
 
         if ($this->option('export')) {
             $this->exportByEmployeeCsv($period->id, $employeeRows);
         }
     }
 
+    /**
+     * Normaliza un nombre de empleado: mayúsculas, sin acentos y espacios colapsados.
+     *
+     * @param  string  $name  Nombre original.
+     * @return string Nombre normalizado.
+     */
     private function normalizeEmployeeName(string $name): string
     {
         $name = mb_strtoupper(trim($name));
         // Strip accents
-        $from = ['Á','É','Í','Ó','Ú','Ü','Ñ','À','È','Ì','Ò','Ù'];
-        $to   = ['A','E','I','O','U','U','N','A','E','I','O','U'];
+        $from = ['Á', 'É', 'Í', 'Ó', 'Ú', 'Ü', 'Ñ', 'À', 'È', 'Ì', 'Ò', 'Ù'];
+        $to = ['A', 'E', 'I', 'O', 'U', 'U', 'N', 'A', 'E', 'I', 'O', 'U'];
         $name = str_replace($from, $to, $name);
         // Collapse multiple spaces
         $name = preg_replace('/\s+/', ' ', $name);
+
         return $name;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV del desglose por empleado.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $rows  Filas por empleado.
+     */
     private function exportByEmployeeCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $file = "nomina_por_empleado_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "nomina_por_empleado_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $hdrs = ['Empleado normalizado', 'Nombre original', 'Sucursal', 'Monto fiscal', 'Monto no fiscal', 'Monto Lendus/ERP', 'Total', 'Duplicado', 'Acción'];
         $lines = [implode(',', $hdrs)];
         foreach ($rows as $r) {
             $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $r['norm']) . '"',
-                '"' . str_replace('"', '""', $r['nombre_original']) . '"',
-                '"' . str_replace('"', '""', $r['sucursal']) . '"',
+                '"'.str_replace('"', '""', $r['norm']).'"',
+                '"'.str_replace('"', '""', $r['nombre_original']).'"',
+                '"'.str_replace('"', '""', $r['sucursal']).'"',
                 number_format($r['monto_fiscal'], 2, '.', ''),
                 number_format($r['monto_nofiscal'], 2, '.', ''),
                 number_format($r['monto_lendus'] + $r['monto_erp'], 2, '.', ''),
                 number_format($r['total'], 2, '.', ''),
                 $r['es_duplicado'],
-                '"' . str_replace('"', '""', $r['accion']) . '"',
+                '"'.str_replace('"', '""', $r['accion']).'"',
             ]);
         }
         Storage::disk('local')->put("{$dir}/{$file}", implode("\n", $lines));
         $this->info("  CSV por empleado: storage/app/{$dir}/{$file}");
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV del desglose de nómina por sucursal.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $allBranches  Filas por sucursal del calculador.
+     * @param  array<string,string>  $mainFields  Campo del calculador => etiqueta de columna.
+     */
     private function exportByBranchCsv(int $periodId, array $allBranches, array $mainFields): void
     {
-        $dir  = 'auditorias';
-        $file = "nomina_por_sucursal_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "nomina_por_sucursal_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
 
         $branchNames = array_map(fn ($b) => $b['sucursal'], $allBranches);
-        $headers     = array_merge(['Concepto', 'Fuente'], $branchNames);
-        $lines       = [implode(',', $headers)];
+        $headers = array_merge(['Concepto', 'Fuente'], $branchNames);
+        $lines = [implode(',', $headers)];
 
         foreach ($mainFields as $key => $label) {
-            $row = ['"' . str_replace('"', '""', $label) . '"', 'NOI'];
+            $row = ['"'.str_replace('"', '""', $label).'"', 'NOI'];
             foreach ($allBranches as $b) {
                 $row[] = number_format((float) ($b[$key] ?? 0), 2, '.', '');
             }
@@ -455,7 +520,7 @@ class AuditNominaCommand extends Command
             }
         }
         foreach (array_keys($allDetailLabels) as $lbl) {
-            $row = ['"' . str_replace('"', '""', $lbl) . '"', 'ERP/Lendus'];
+            $row = ['"'.str_replace('"', '""', $lbl).'"', 'ERP/Lendus'];
             foreach ($allBranches as $b) {
                 $row[] = number_format((float) ($b['nomina_detalle'][$lbl] ?? 0), 2, '.', '');
             }
@@ -466,16 +531,26 @@ class AuditNominaCommand extends Command
         $this->info("  CSV por sucursal: storage/app/{$dir}/{$file}");
     }
 
+    /**
+     * Suma movimientos NOI de una fuente: percepciones cuyos códigos empiezan con los indicados
+     * más deducciones por código multiplicadas por su signo (+1 suma, −1 resta).
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  int|null  $sourceId  ID del data_source NOI (null devuelve 0).
+     * @param  array<string>  $percCodes  Códigos de percepción (p. ej. P001).
+     * @param  array<string,int>  $dedCodesWithSign  Código de deducción => signo.
+     * @return float Total calculado.
+     */
     private function sumNoi(array $dataIds, ?int $sourceId, array $percCodes, array $dedCodesWithSign): float
     {
-        if (!$sourceId) {
+        if (! $sourceId) {
             return 0.0;
         }
 
         $total = 0.0;
 
-        if (!empty($percCodes)) {
-            $pattern = '^(' . implode('|', $percCodes) . ')';
+        if (! empty($percCodes)) {
+            $pattern = '^('.implode('|', $percCodes).')';
             $total += (float) DB::table('fact_noi_movements as n')
                 ->join('report_uploads as ru', 'n.report_upload_id', '=', 'ru.id')
                 ->where('ru.data_source_id', $sourceId)
@@ -491,7 +566,7 @@ class AuditNominaCommand extends Command
                 ->where('ru.data_source_id', $sourceId)
                 ->whereIn('n.period_id', $dataIds)
                 ->where('n.concept_type', 'deduccion')
-                ->whereRaw('n.concept REGEXP ?', ['^' . $code])
+                ->whereRaw('n.concept REGEXP ?', ['^'.$code])
                 ->sum('n.amount');
             $total += $amt * $sign;
         }
@@ -499,9 +574,20 @@ class AuditNominaCommand extends Command
         return $total;
     }
 
+    /**
+     * Suma gastos (paid_amount o amount) de una fuente, opcionalmente filtrando por categoría,
+     * por conceptos que contengan alguna subcadena y excluyendo conceptos exactos.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  int|null  $sourceId  ID del data_source (null devuelve 0).
+     * @param  string|null  $category  Categoría exacta o null para todas.
+     * @param  array<string>|null  $conceptLike  Subcadenas a buscar en el concepto (OR) o null.
+     * @param  array<string>  $excludeConcepts  Conceptos exactos (mayúsculas) a excluir.
+     * @return float Total calculado.
+     */
     private function sumGasto(array $dataIds, ?int $sourceId, ?string $category, ?array $conceptLike, array $excludeConcepts = []): float
     {
-        if (!$sourceId) {
+        if (! $sourceId) {
             return 0.0;
         }
 
@@ -517,33 +603,40 @@ class AuditNominaCommand extends Command
         if ($conceptLike !== null) {
             $q->where(function ($q2) use ($conceptLike) {
                 foreach ($conceptLike as $needle) {
-                    $q2->orWhereRaw("UPPER(COALESCE(e.concept,'')) LIKE ?", ['%' . strtoupper($needle) . '%']);
+                    $q2->orWhereRaw("UPPER(COALESCE(e.concept,'')) LIKE ?", ['%'.strtoupper($needle).'%']);
                 }
             });
         }
 
-        if (!empty($excludeConcepts)) {
+        if (! empty($excludeConcepts)) {
             $q->whereNotIn(DB::raw("UPPER(TRIM(COALESCE(e.concept,'')))"), $excludeConcepts);
         }
 
         return (float) $q->selectRaw('SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as t')->value('t');
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV concepto por concepto con fuente, calculado,
+     * target y diferencia.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $rows  Filas calculadas en handle().
+     */
     private function exportCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $file = "nomina_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "nomina_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
 
-        $lines   = [];
+        $lines = [];
         $headers = ['Concepto', 'Fuente', 'Códigos', 'NOI Fiscal', 'NOI No Fiscal', 'Lendus', 'ERP', 'Total', 'Target', 'Diferencia', 'Estado'];
         $lines[] = implode(',', $headers);
 
         foreach ($rows as $r) {
             $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $r['label']) . '"',
+                '"'.str_replace('"', '""', $r['label']).'"',
                 $r['fuente'],
-                '"' . str_replace('"', '""', $r['codigos']) . '"',
+                '"'.str_replace('"', '""', $r['codigos']).'"',
                 number_format($r['noi_fiscal'], 2, '.', ''),
                 number_format($r['noi_no_fiscal'], 2, '.', ''),
                 number_format($r['lendus'], 2, '.', ''),

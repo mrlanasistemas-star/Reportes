@@ -15,10 +15,13 @@ namespace App\Services\Efectividad\V4;
  */
 class EfectividadV4ParityComparator
 {
+    /** Tolerancia en montos. */
     public const TOL_MONTO = 0.000001;
 
+    /** Tolerancia en porcentajes (razón 0–1). */
     public const TOL_PCT = 1e-12;
 
+    /** Campo ⇒ tipo de comparación (monto/pct). */
     private const CAMPOS = [
         'sano_pc' => 'monto', 'sano_cob' => 'monto', 'sano_pct' => 'pct',
         'atraso_pc' => 'monto', 'atraso_cob' => 'monto', 'atraso_pct' => 'pct',
@@ -27,6 +30,14 @@ class EfectividadV4ParityComparator
     ];
 
     /**
+     * Compara fila por fila (llave tipo|oficina|promotor) y campo por campo con las tolerancias
+     * de la clase; reporta filas sólo en Excel, sólo en Laravel, diferencias de texto e
+     * incidencias distintas, y si hay paridad total. Función pura.
+     *
+     * @param  array  $esperado  filas de la hoja EFECTIVIDAD del libro de referencia
+     * @param  array  $calculado  filas del motor PHP
+     * @param  array  $incidenciasEsperadas  incidencias del libro
+     * @param  array  $incidenciasCalculadas  incidencias del motor
      * @return array{filas: list<array<string,mixed>>, resumen: array<string,mixed>, incidencias: array<string,mixed>}
      */
     public function compare(array $esperado, array $calculado, array $incidenciasEsperadas = [], array $incidenciasCalculadas = []): array
@@ -120,6 +131,11 @@ class EfectividadV4ParityComparator
         ];
     }
 
+    /**
+     * Llave de emparejamiento «tipo|OFICINA|promotor».
+     *
+     * @param  array  $fila  fila
+     */
     private function llave(array $fila): string
     {
         return $fila['tipo'].'|'.mb_strtoupper((string) ($fila['oficina'] ?? '')).'|'.$fila['promotor'];

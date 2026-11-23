@@ -21,11 +21,19 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
  *   1. "Resumen ejecutivo" — alcance, 8 KPI y tendencia EBITDA vs OPEX (con gráfica).
  *   2. "Desglose" — cartera vencida por antigüedad, categoría EBITDA y detalle por
  *      sucursal (colocación, recuperación, EBITDA, categoría), con gráficas nativas.
+ *
+ * Lo invoca DashboardController al exportar; los estilos vienen de RadiographyStyleHelper.
  */
 class DashboardExcelExporter
 {
     /**
-     * @param array{kpis: ?array, charts: ?array, trend: array, periodLabel: string, branchName: ?string, generatedAt: Carbon, generatedBy: ?string} $data
+     * Arma el libro y lo guarda como .xlsx (con gráficas, sin precalcular fórmulas).
+     *
+     * Crea el directorio destino si no existe y libera las hojas al terminar.
+     *
+     * @param  array{kpis: ?array, charts: ?array, trend: array, periodLabel: string, branchName: ?string, generatedAt: Carbon, generatedBy: ?string}  $data  Datos ya armados por DashboardController.
+     * @param  string  $path  Ruta absoluta del archivo a escribir.
+     * @return string La misma ruta escrita.
      */
     public function export(array $data, string $path): string
     {
@@ -41,10 +49,16 @@ class DashboardExcelExporter
         return $path;
     }
 
+    /**
+     * Construye en memoria el libro con las hojas "Resumen ejecutivo" y "Desglose".
+     *
+     * @param  array<string, mixed>  $data  Mismo arreglo que export().
+     * @return Spreadsheet Libro listo para escribir (la hoja activa es la primera).
+     */
     public function build(array $data): Spreadsheet
     {
-        $book = new Spreadsheet();
-        $book->getProperties()->setCreator('MR LANA · Reportes')->setTitle('Dashboard ' . $data['periodLabel']);
+        $book = new Spreadsheet;
+        $book->getProperties()->setCreator('MR LANA · Reportes')->setTitle('Dashboard '.$data['periodLabel']);
         $book->getDefaultStyle()->getFont()->setName('Calibri')->setSize(10);
 
         $summary = $book->getActiveSheet();
@@ -60,20 +74,34 @@ class DashboardExcelExporter
         return $book;
     }
 
+    /**
+     * Texto del alcance: "Sucursal X" o "Todas las sucursales (consolidado)".
+     *
+     * @param  array<string, mixed>  $data  Datos del exporte (usa branchName).
+     */
     private function scopeLabel(array $data): string
     {
-        return $data['branchName'] ? 'Sucursal ' . $data['branchName'] : 'Todas las sucursales (consolidado)';
+        return $data['branchName'] ? 'Sucursal '.$data['branchName'] : 'Todas las sucursales (consolidado)';
     }
 
+    /**
+     * Escribe título, subtítulo y metadatos (periodo, alcance, fuente, generado por) en las primeras filas.
+     *
+     * @param  Worksheet  $sheet  Hoja destino.
+     * @param  array<string, mixed>  $data  Datos del exporte.
+     * @param  string  $title  Título de la hoja.
+     * @param  string  $lastCol  Última columna a combinar.
+     * @return int Primera fila libre (deja una en blanco).
+     */
     private function header(Worksheet $sheet, array $data, string $title, string $lastCol): int
     {
-        S::applyTitleStyle($sheet, "A1:{$lastCol}1", 'MR LANA · ' . $title);
-        S::applySubtitleStyle($sheet, "A2:{$lastCol}2", 'Dashboard — ' . $data['periodLabel'] . ' — ' . $this->scopeLabel($data));
+        S::applyTitleStyle($sheet, "A1:{$lastCol}1", 'MR LANA · '.$title);
+        S::applySubtitleStyle($sheet, "A2:{$lastCol}2", 'Dashboard — '.$data['periodLabel'].' — '.$this->scopeLabel($data));
         $meta = [
             ['Periodo', $data['periodLabel']],
             ['Alcance', $this->scopeLabel($data)],
             ['Fuente', 'Radiografía generada del periodo (misma fuente que el Dashboard, el PDF y la Reportería)'],
-            ['Generado', $data['generatedAt']->format('d/m/Y H:i') . ($data['generatedBy'] ? ' · ' . $data['generatedBy'] : '')],
+            ['Generado', $data['generatedAt']->format('d/m/Y H:i').($data['generatedBy'] ? ' · '.$data['generatedBy'] : '')],
         ];
         $row = 3;
         foreach ($meta as [$k, $v]) {
@@ -88,14 +116,24 @@ class DashboardExcelExporter
         return $row + 1;
     }
 
+    /**
+     * Hoja "Resumen ejecutivo": tabla de los 8 KPI y tabla de tendencia EBITDA/OPEX.
+     *
+     * Sin KPI escribe un aviso y termina. Los meses sin radiografía se marcan
+     * como texto "Sin radiografía" (nunca 0) y, si existe alguno, NO se agrega
+     * la gráfica de línea.
+     *
+     * @param  Worksheet  $sheet  Hoja destino.
+     * @param  array<string, mixed>  $data  Datos del exporte.
+     */
     private function summarySheet(Worksheet $sheet, array $data): void
     {
         S::setColWidths($sheet, ['A' => 30, 'B' => 22, 'C' => 22, 'D' => 4, 'E' => 14, 'F' => 14, 'G' => 14, 'H' => 14, 'I' => 14, 'J' => 14]);
         $row = $this->header($sheet, $data, 'Resumen ejecutivo', 'C');
         $kpis = $data['kpis'];
 
-        if (!$kpis) {
-            S::setCellValueSafe($sheet, "A{$row}", 'Sin datos de radiografía para ' . $this->scopeLabel($data) . ' en ' . $data['periodLabel'] . '. Elige otra sucursal o verifica que la radiografía del periodo ya esté generada.');
+        if (! $kpis) {
+            S::setCellValueSafe($sheet, "A{$row}", 'Sin datos de radiografía para '.$this->scopeLabel($data).' en '.$data['periodLabel'].'. Elige otra sucursal o verifica que la radiografía del periodo ya esté generada.');
             S::mergeCellsSafe($sheet, "A{$row}:C{$row}");
             S::applyWarningStyle($sheet, "A{$row}:C{$row}");
 
@@ -120,7 +158,9 @@ class DashboardExcelExporter
         foreach ($cards as $i => [$label, $value, $fmt]) {
             $sheet->setCellValue("A{$row}", $label);
             $sheet->setCellValue("B{$row}", $fmt === 'int' ? (int) $value : (float) $value);
-            $sheet->setCellValue("C{$row}", match ($fmt) { 'money' => 'MXN', 'pct' => '%', default => 'personas' });
+            $sheet->setCellValue("C{$row}", match ($fmt) {
+                'money' => 'MXN', 'pct' => '%', default => 'personas'
+            });
             S::applyDataRowStyle($sheet, "A{$row}:C{$row}", $i % 2 === 0);
             match ($fmt) {
                 'money' => S::applyCurrencyFormat($sheet, "B{$row}"),
@@ -137,7 +177,7 @@ class DashboardExcelExporter
         // ── Tendencia ────────────────────────────────────────────────────────────
         $row++;
         $trend = $data['trend'] ?? [];
-        S::applySectionHeaderStyle($sheet, "A{$row}:C{$row}", 'Tendencia EBITDA vs OPEX — ' . $this->scopeLabel($data));
+        S::applySectionHeaderStyle($sheet, "A{$row}:C{$row}", 'Tendencia EBITDA vs OPEX — '.$this->scopeLabel($data));
         $row++;
         if ($trend === []) {
             S::setCellValueSafe($sheet, "A{$row}", 'Sin periodos suficientes para mostrar la tendencia.');
@@ -151,7 +191,7 @@ class DashboardExcelExporter
         $missing = false;
         foreach ($trend as $i => $p) {
             $available = $p['available'] ?? true;
-            $missing = $missing || !$available;
+            $missing = $missing || ! $available;
             $sheet->setCellValue("A{$row}", $p['label']);
             if ($available) {
                 $sheet->setCellValue("B{$row}", (float) $p['ebitda']);
@@ -172,7 +212,7 @@ class DashboardExcelExporter
         }
 
         $points = array_values(array_filter($trend, fn ($p) => $p['available'] ?? true));
-        if ($points !== [] && !$missing) {
+        if ($points !== [] && ! $missing) {
             S::addMultiSeriesChart(
                 $sheet,
                 'EBITDA vs OPEX',
@@ -190,16 +230,25 @@ class DashboardExcelExporter
         $sheet->freezePane('A7');
     }
 
+    /**
+     * Hoja "Desglose": mora por antigüedad (con barras), sucursales por
+     * categoría EBITDA (dona solo en vista consolidada) y detalle por sucursal
+     * con fila "Suma de sucursales" (valores, no fórmulas) y gráfica de
+     * colocación vs recuperación cuando hay más de una sucursal.
+     *
+     * @param  Worksheet  $sheet  Hoja destino.
+     * @param  array<string, mixed>  $data  Datos del exporte.
+     */
     private function detailSheet(Worksheet $sheet, array $data): void
     {
         S::setColWidths($sheet, ['A' => 26, 'B' => 20, 'C' => 20, 'D' => 20, 'E' => 16, 'F' => 4]);
         $row = $this->header($sheet, $data, 'Desglose del Dashboard', 'E');
         $charts = $data['charts'];
 
-        if (!$data['kpis'] || !$charts) {
+        if (! $data['kpis'] || ! $charts) {
             S::setCellValueSafe($sheet, "A{$row}", $data['kpis']
                 ? 'Este alcance no tiene desglose por sucursal en la radiografía del periodo.'
-                : 'Sin datos de radiografía para ' . $this->scopeLabel($data) . ' en ' . $data['periodLabel'] . '.');
+                : 'Sin datos de radiografía para '.$this->scopeLabel($data).' en '.$data['periodLabel'].'.');
             S::mergeCellsSafe($sheet, "A{$row}:E{$row}");
             S::applyWarningStyle($sheet, "A{$row}:E{$row}");
 
@@ -222,7 +271,7 @@ class DashboardExcelExporter
         $moraLast = $row - 1;
         if ($moraLast >= $moraFirst) {
             S::addBarChart($sheet, 'Cartera vencida por antigüedad', "\$A\${$moraFirst}:\$A\${$moraLast}", "\$B\${$moraFirst}:\$B\${$moraLast}",
-                $moraLast - $moraFirst + 1, 'G' . ($moraFirst - 2), 'N' . ($moraFirst + 13), 'FFEF4444',
+                $moraLast - $moraFirst + 1, 'G'.($moraFirst - 2), 'N'.($moraFirst + 13), 'FFEF4444',
                 array_column($charts['moraBuckets'], 'label'), array_map('floatval', array_column($charts['moraBuckets'], 'valor')));
         }
 
@@ -242,9 +291,9 @@ class DashboardExcelExporter
             $row++;
         }
         $catLast = $row - 1;
-        if (!$isBranch && $catLast >= $catFirst) {
+        if (! $isBranch && $catLast >= $catFirst) {
             S::addDonutChart($sheet, 'Sucursales por categoría EBITDA', "\$A\${$catFirst}:\$A\${$catLast}", "\$B\${$catFirst}:\$B\${$catLast}",
-                $catLast - $catFirst + 1, 'G' . ($catFirst - 2), 'N' . ($catFirst + 13), array_map(fn ($c) => 'FF' . ltrim($c, '#'), $charts['categoriaColors'] ?? []));
+                $catLast - $catFirst + 1, 'G'.($catFirst - 2), 'N'.($catFirst + 13), array_map(fn ($c) => 'FF'.ltrim($c, '#'), $charts['categoriaColors'] ?? []));
         }
 
         // ── Detalle por sucursal ─────────────────────────────────────────────────
@@ -292,8 +341,8 @@ class DashboardExcelExporter
                     ['label' => 'Colocación', 'range' => "\$B\${$first}:\$B\${$last}", 'color' => S::BG_PRIMARY_DARK, 'values' => array_column($rows, 'colocacion')],
                     ['label' => 'Recuperación', 'range' => "\$C\${$first}:\$C\${$last}", 'color' => S::BG_ACCENT, 'values' => array_column($rows, 'recuperacion')],
                 ],
-                'A' . ($row + 3),
-                'I' . ($row + 25),
+                'A'.($row + 3),
+                'I'.($row + 25),
             );
         }
     }

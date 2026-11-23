@@ -63,8 +63,11 @@ final class EfectividadV4ColumnMap
     ];
 
     /**
+     * Resuelve el índice de columna de cada campo canónico comparando los encabezados
+     * normalizados con sus alias.
+     *
      * @param  list<mixed>  $encabezados  fila de encabezados del archivo
-     * @param  array<string, list<string>>  $mapa
+     * @param  array<string, list<string>>  $mapa  campo ⇒ alias
      * @return array<string,int> campo canónico => índice de columna (0-based)
      */
     public static function resolver(array $encabezados, array $mapa): array

@@ -10,9 +10,18 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Auditoría de calidad de identidad de colaboradores — solo lectura, nunca modifica
- * la base de datos. Ver EmployeesNormalizeCommand para fusionar duplicados de forma
- * segura después de revisar este reporte.
+ * Comando `employees:audit-identities` — auditoría de calidad de identidad de colaboradores:
+ * duplicados exactos (mismo nombre normalizado), duplicados probables (typo/acento/espacio, vía
+ * EmployeeNameCanonicalizer), colaboradores que nunca tuvieron sucursal, rutas usadas como
+ * sucursal, aliases confirmados y empleados cuyo único rastro en NOI es la fila sintética
+ * headcount_only ($0) sin respaldo en Lendus.
+ *
+ * Solo lectura, nunca modifica la base de datos. Ver `employees:normalize` para fusionar
+ * duplicados de forma segura después de revisar este reporte.
+ *
+ * Ejemplos:
+ *   php artisan employees:audit-identities
+ *   php artisan employees:audit-identities --json
  */
 class EmployeesAuditIdentitiesCommand extends Command
 {
@@ -20,6 +29,15 @@ class EmployeesAuditIdentitiesCommand extends Command
 
     protected $description = 'Audita duplicados exactos/probables, colaboradores sin sucursal, rutas usadas como sucursal y NOI $0 sin respaldo Lendus.';
 
+    /**
+     * Calcula las seis métricas de calidad de identidad e imprime el resumen con tablas de detalle
+     * (o JSON con `--json`).
+     *
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Construye el mapa alias → nombre canónico.
+     * @param  PersonIdentityResolverService  $identityResolver  Evalúa evidencia fuera de NOI.
+     * @param  BranchResolverService  $branchResolver  Indica si una sucursal es operativa.
+     * @return int Siempre self::SUCCESS.
+     */
     public function handle(
         EmployeeNameCanonicalizer $canonicalizer,
         PersonIdentityResolverService $identityResolver,
@@ -35,7 +53,9 @@ class EmployeesAuditIdentitiesCommand extends Command
         $canonicalMap = $canonicalizer->buildCanonicalMap($uniqueNames);
         $fuzzyGroups = [];
         foreach ($canonicalMap as $alias => $canonical) {
-            if ($alias === $canonical) continue;
+            if ($alias === $canonical) {
+                continue;
+            }
             $fuzzyGroups[$canonical][] = $alias;
         }
 
@@ -50,7 +70,7 @@ class EmployeesAuditIdentitiesCommand extends Command
             ->select('eba.employee_id', 'b.name as branch_name')
             ->distinct()
             ->get()
-            ->filter(fn ($r) => !$branchResolver->isSheetBranch((string) $r->branch_name) && strtoupper(trim($r->branch_name)) !== 'CORPORATIVO')
+            ->filter(fn ($r) => ! $branchResolver->isSheetBranch((string) $r->branch_name) && strtoupper(trim($r->branch_name)) !== 'CORPORATIVO')
             ->map(fn ($r) => ['employee_id' => (int) $r->employee_id, 'branch_name' => $r->branch_name])
             ->values();
 
@@ -71,28 +91,29 @@ class EmployeesAuditIdentitiesCommand extends Command
             $candidates = Employee::query()->whereIn('id', $headcountOnlyEmployeeIds)->get(['id', 'full_name']);
             foreach ($candidates as $c) {
                 $evidence = $identityResolver->evaluateNoiCandidateEvidence($c->full_name);
-                if (!$evidence['found']) {
+                if (! $evidence['found']) {
                     $staleZeroCandidates[] = ['id' => $c->id, 'full_name' => $c->full_name];
                 }
             }
         }
 
         $report = [
-            'duplicados_exactos'          => $exactGroups->count(),
-            'duplicados_exactos_detalle'  => $exactGroups->map(fn ($g) => ['normalized_name' => $g->first()->normalized_name, 'employee_ids' => $g->pluck('id')->all(), 'names' => $g->pluck('full_name')->unique()->values()->all()])->values()->all(),
-            'duplicados_probables'        => count($fuzzyGroups),
-            'duplicados_probables_detalle'=> collect($fuzzyGroups)->map(fn ($aliases, $canonical) => ['canonical' => $canonical, 'aliases' => $aliases])->values()->all(),
-            'sin_sucursal'                => $sinSucursal->count(),
-            'sin_sucursal_detalle'        => $sinSucursal->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name])->values()->all(),
-            'ruta_usada_como_sucursal'    => $rutaComoSucursal->count(),
+            'duplicados_exactos' => $exactGroups->count(),
+            'duplicados_exactos_detalle' => $exactGroups->map(fn ($g) => ['normalized_name' => $g->first()->normalized_name, 'employee_ids' => $g->pluck('id')->all(), 'names' => $g->pluck('full_name')->unique()->values()->all()])->values()->all(),
+            'duplicados_probables' => count($fuzzyGroups),
+            'duplicados_probables_detalle' => collect($fuzzyGroups)->map(fn ($aliases, $canonical) => ['canonical' => $canonical, 'aliases' => $aliases])->values()->all(),
+            'sin_sucursal' => $sinSucursal->count(),
+            'sin_sucursal_detalle' => $sinSucursal->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name])->values()->all(),
+            'ruta_usada_como_sucursal' => $rutaComoSucursal->count(),
             'ruta_usada_como_sucursal_detalle' => $rutaComoSucursal->values()->all(),
-            'aliases_detectados'          => $aliasesCount,
+            'aliases_detectados' => $aliasesCount,
             'noi_cero_obsoletos_persistidos' => count($staleZeroCandidates),
             'noi_cero_obsoletos_persistidos_detalle' => $staleZeroCandidates,
         ];
 
         if ($this->option('json')) {
             $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
             return self::SUCCESS;
         }
 
@@ -106,7 +127,7 @@ class EmployeesAuditIdentitiesCommand extends Command
         $this->line("NOI \$0 ya persistidos sin respaldo Lendus:     {$report['noi_cero_obsoletos_persistidos']}");
         $this->line('');
 
-        if (!empty($report['duplicados_probables_detalle'])) {
+        if (! empty($report['duplicados_probables_detalle'])) {
             $this->line('── Duplicados probables ──');
             $rows = [];
             foreach ($report['duplicados_probables_detalle'] as $g) {
@@ -115,13 +136,13 @@ class EmployeesAuditIdentitiesCommand extends Command
             $this->table(['Canónico', 'Alias fusionables'], $rows);
         }
 
-        if (!empty($report['ruta_usada_como_sucursal_detalle'])) {
+        if (! empty($report['ruta_usada_como_sucursal_detalle'])) {
             $this->line('── Ruta usada como sucursal (revisar employee_branch_assignments) ──');
             $rows = array_map(fn ($r) => [$r['employee_id'], $r['branch_name']], $report['ruta_usada_como_sucursal_detalle']);
             $this->table(['employee_id', 'branch_name (no operativa)'], $rows);
         }
 
-        if (!empty($report['noi_cero_obsoletos_persistidos_detalle'])) {
+        if (! empty($report['noi_cero_obsoletos_persistidos_detalle'])) {
             $this->line('── NOI $0 ya persistidos sin respaldo (candidatos a limpieza manual) ──');
             $rows = array_map(fn ($r) => [$r['id'], $r['full_name']], $report['noi_cero_obsoletos_persistidos_detalle']);
             $this->table(['id', 'full_name'], $rows);

@@ -4,16 +4,36 @@ namespace App\Models\EstadoResultados;
 
 use App\Models\Period;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * Estado de cuenta bancario cargado al Estado de Resultados (tabla `estado_resultados_uploads`).
+ *
+ * Cada fila es un archivo publicado para un periodo, una cuenta (`account_slot`: administrativa |
+ * excedentes, con `account_label` p.ej. «BBVA ****6697») y una parte (`file_part`: hay hasta dos
+ * archivos por cuenta). Al volver a subir la misma cuenta/parte la carga anterior queda
+ * `reemplazado` (`superseded_at`, `superseded_by_upload_id`).
+ *
+ * Columnas clave: `layout` (estructura detectada), datos del archivo (`original_name`, `file_hash`,
+ * `file_size`, `stored_path`, `has_macros`), contadores (`rows_read`, `movements_count`,
+ * `detail_lines_count`, `out_of_period_count`), totales leídos (`total_cargos`, `total_abonos`)
+ * contra los de control del archivo (`control_total_*`, `control_ok`), rango de fechas,
+ * avisos (`warnings` texto plano y `warnings_detail` estructurado con severidad,
+ * `blocking_warnings` cuántos bloquean la aprobación), `status`, `lifecycle` y tiempos
+ * `validated_at`/`processed_at`.
+ */
 class EstadoResultadosUpload extends Model
 {
+    /** Carga publicada y aún no procesada. */
     public const STATUS_LOADED = 'cargado';
 
+    /** Carga ya incluida en un procesamiento del periodo. */
     public const STATUS_PROCESSED = 'procesado';
 
+    /** Carga sustituida por otra más reciente de la misma cuenta/parte. */
     public const STATUS_REPLACED = 'reemplazado';
 
     // ── Ciclo de vida del archivo (independiente de `status`) ─────────────
@@ -31,6 +51,7 @@ class EstadoResultadosUpload extends Model
 
     public const LIFECYCLE_REEMPLAZADO = 'reemplazado';
 
+    /** Etiquetas en español de cada etapa del ciclo de vida. */
     public const LIFECYCLE_LABELS = [
         self::LIFECYCLE_RECIBIDO => 'Recibido',
         self::LIFECYCLE_VALIDADO => 'Validado',
@@ -41,8 +62,10 @@ class EstadoResultadosUpload extends Model
         self::LIFECYCLE_REEMPLAZADO => 'Reemplazado',
     ];
 
+    /** Aviso sólo informativo: no impide aprobar. */
     public const SEVERITY_INFO = 'informativa';
 
+    /** Aviso bloqueante: impide aprobar el periodo hasta resolverse. */
     public const SEVERITY_BLOCKING = 'bloqueante';
 
     protected $table = 'estado_resultados_uploads';
@@ -62,21 +85,36 @@ class EstadoResultadosUpload extends Model
         'processed_at' => 'datetime',
     ];
 
+    /**
+     * Periodo al que se cargó el estado de cuenta.
+     */
     public function period(): BelongsTo
     {
         return $this->belongsTo(Period::class);
     }
 
+    /**
+     * Usuario que subió el archivo (columna `uploaded_by`).
+     */
     public function uploader(): BelongsTo
     {
         return $this->belongsTo(User::class, 'uploaded_by');
     }
 
+    /**
+     * Movimientos bancarios normalizados leídos de este archivo.
+     */
     public function movements(): HasMany
     {
         return $this->hasMany(EstadoResultadosMovement::class, 'upload_id');
     }
 
+    /**
+     * Scope: sólo cargas no reemplazadas (las que cuentan para el periodo).
+     *
+     * @param  Builder  $query
+     * @return Builder
+     */
     public function scopeActive($query)
     {
         return $query->where('status', '!=', self::STATUS_REPLACED);
@@ -89,6 +127,13 @@ class EstadoResultadosUpload extends Model
      *   conciliado  → procesado, sin movimientos pendientes de clasificar, totales de control
      *                 que no fallan y sin avisos bloqueantes;
      *   procesado   → procesado pero con pendientes / control que no cuadra / aviso bloqueante.
+     *
+     * @param  string  $status  `status` de la carga (cargado | procesado | reemplazado).
+     * @param  bool|null  $controlOk  Resultado de totales de control (null = el archivo no trae control).
+     * @param  bool  $processed  Si la carga ya entró a un procesamiento.
+     * @param  int  $pendingCount  Movimientos pendientes de clasificar.
+     * @param  int  $blockingWarnings  Número de avisos bloqueantes.
+     * @return string Una de las constantes LIFECYCLE_*.
      */
     public static function lifecycleFor(string $status, ?bool $controlOk, bool $processed, int $pendingCount, int $blockingWarnings = 0): string
     {
@@ -100,6 +145,11 @@ class EstadoResultadosUpload extends Model
         };
     }
 
+    /**
+     * Etiqueta en español de una etapa del ciclo de vida; si no se conoce devuelve el valor tal cual.
+     *
+     * @param  string|null  $lifecycle  Valor LIFECYCLE_*.
+     */
     public static function lifecycleLabel(?string $lifecycle): string
     {
         return self::LIFECYCLE_LABELS[$lifecycle] ?? (string) $lifecycle;
@@ -109,7 +159,10 @@ class EstadoResultadosUpload extends Model
      * Marca como procesadas las cargas ACTIVAS indicadas (status + lifecycle + processed_at).
      * Para el procesador: sustituye al update(['status' => procesado]).
      *
-     * @param  list<int>  $uploadIds
+     * Efecto: UPDATE masivo en BD (no dispara eventos de modelo). Ignora ids reemplazados.
+     *
+     * @param  list<int>  $uploadIds  Cargas que entraron al procesamiento.
+     * @return int Número de filas actualizadas.
      */
     public static function markProcessed(array $uploadIds): int
     {
@@ -129,6 +182,8 @@ class EstadoResultadosUpload extends Model
      * Avisos que BLOQUEAN la aprobación ([{code, severity, message}]). Compatible con cargas
      * previas a la migración C2: un control que no cuadra siempre es bloqueante.
      *
+     * @param  array|null  $detail  Avisos estructurados (`warnings_detail`).
+     * @param  bool|null  $controlOk  false agrega el aviso «control_no_cuadra» si no venía.
      * @return list<array{code:string,severity:string,message:string}>
      */
     public static function blockingWarnings(?array $detail, ?bool $controlOk = null): array
@@ -141,7 +196,11 @@ class EstadoResultadosUpload extends Model
         return $out;
     }
 
-    /** @return list<array{code:string,severity:string,message:string}> */
+    /**
+     * Avisos bloqueantes de ESTA carga (atajo de blockingWarnings() con sus propias columnas).
+     *
+     * @return list<array{code:string,severity:string,message:string}>
+     */
     public function blockingWarningsList(): array
     {
         return self::blockingWarnings($this->warnings_detail, $this->control_ok);

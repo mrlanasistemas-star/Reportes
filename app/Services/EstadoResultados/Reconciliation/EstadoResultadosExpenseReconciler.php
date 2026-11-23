@@ -73,6 +73,7 @@ class EstadoResultadosExpenseReconciler
 
     public const DUPLICADO_UUID = 'duplicado_uuid';
 
+    /** Estados que significan «conciliado con ERP» (total o parcial). */
     public const CONCILIADOS = [self::EXACTO, self::TOLERANCIA, self::AGREGADO, self::AGREGADO_ERP, self::MULTIPLE, self::PARCIAL];
 
     /** Tipo de emparejamiento por estado conciliado. */
@@ -81,11 +82,13 @@ class EstadoResultadosExpenseReconciler
         self::AGREGADO_ERP => 'N:1', self::MULTIPLE => 'N:M', self::PARCIAL => 'parcial',
     ];
 
+    /** Estados que requieren revisión humana (no se concilian ni se clasifican solos). */
     public const REVISION = [
         self::FOLIO_MONTO_DIFERENTE, self::FOLIO_FECHA_DIFERENTE, self::FOLIO_YA_CONCILIADO,
         self::FOLIO_AMBIGUO, self::FOLIO_OTRO_PERIODO, self::POSIBLE_DUPLICADO_ERP,
     ];
 
+    /** Etiquetas en español de cada estado de conciliación (también estados no ERP). */
     public const LABELS = [
         self::EXACTO => 'Conciliado con ERP (exacto)',
         self::TOLERANCIA => 'Conciliado con ERP (fecha con tolerancia)',
@@ -108,13 +111,20 @@ class EstadoResultadosExpenseReconciler
         'reverso' => 'Reverso / cancelación (cargo y abono se anulan)',
     ];
 
-    /** @param list<string> $partialStatuses estatus ERP (mayúsculas) que declaran un pago parcial */
+    /**
+     * @param  int  $toleranceDays  días de tolerancia de fecha (ventana de pagos)
+     * @param  int  $maxGroupSize  máximo de pagos/requisiciones en una combinación 1:N / N:1
+     * @param  list<string>  $partialStatuses  estatus ERP (mayúsculas) que declaran un pago parcial
+     */
     public function __construct(
         private readonly int $toleranceDays = 3,
         private readonly int $maxGroupSize = 8,
         private readonly array $partialStatuses = [],
     ) {}
 
+    /**
+     * Instancia con config estado_resultados.conciliacion.* (tolerancia ≥ 0, grupo ≥ 2).
+     */
     public static function fromConfig(): self
     {
         return new self(
@@ -124,17 +134,27 @@ class EstadoResultadosExpenseReconciler
         );
     }
 
+    /**
+     * Días de tolerancia configurados (se reportan en el resumen de la corrida).
+     */
     public function toleranceDays(): int
     {
         return $this->toleranceDays;
     }
 
+    /**
+     * Tamaño máximo de grupo para combinaciones de pagos/requisiciones.
+     */
     public function maxGroupSize(): int
     {
         return $this->maxGroupSize;
     }
 
     /**
+     * Concilia los cargos del periodo contra el ERP siguiendo el orden de evaluación de la clase
+     * (determinista: cargos ordenados por fecha, cuenta, fila y huella; ERP por fecha, importe y
+     * huella). Función pura.
+     *
      * @param  list<array{fingerprint:string, folio_normalized:?string, cargo:string, movement_date:string, branch_name:?string, branch_kind:string, uuid:?string, source_row:int, account_slot:string}>  $movements  cargos dentro del periodo
      * @param  list<array<string,mixed>>  $erpRows  ErpExpenseRepository::forDataIds()
      * @param  array<string, list<array<string,mixed>>>  $foliosOutside  ErpExpenseRepository::foliosOutside()
@@ -524,11 +544,24 @@ class EstadoResultadosExpenseReconciler
         return ['results' => $results, 'erp_links' => $links, 'allocations' => $allocations, 'erp_balances' => $balances];
     }
 
+    /**
+     * Centavos enteros → importe en cadena con 2 decimales.
+     *
+     * @param  int  $cents  centavos
+     */
     public static function fromCents(int $cents): string
     {
         return (string) BigDecimal::ofUnscaledValue($cents, 2);
     }
 
+    /**
+     * Clave estable del grupo de conciliación (folio + huellas ordenadas de ambos lados).
+     *
+     * @param  string  $folio  folio normalizado
+     * @param  list<string>  $movementFps  huellas de movimientos
+     * @param  list<string>  $erpFps  huellas ERP
+     * @return string «G-» + 12 caracteres de SHA-1
+     */
     private function groupKey(string $folio, array $movementFps, array $erpFps): string
     {
         sort($movementFps, SORT_STRING);
@@ -537,6 +570,12 @@ class EstadoResultadosExpenseReconciler
         return 'G-'.substr(sha1($folio.'|'.implode(',', $movementFps).'|'.implode(',', $erpFps)), 0, 12);
     }
 
+    /**
+     * Datos de una fila ERP que se guardan en el detalle de conciliación del movimiento.
+     *
+     * @param  array  $erp  fila ERP
+     * @return array<string, mixed>
+     */
     private function erpSummary(array $erp): array
     {
         return [
@@ -555,6 +594,13 @@ class EstadoResultadosExpenseReconciler
         ];
     }
 
+    /**
+     * Diferencia absoluta en días entre dos fechas Y-m-d.
+     *
+     * @param  string|null  $a  fecha
+     * @param  string|null  $b  fecha
+     * @return int|null null si falta o no se puede interpretar alguna
+     */
     private function deltaDays(?string $a, ?string $b): ?int
     {
         if (! $a || ! $b) {
@@ -569,7 +615,13 @@ class EstadoResultadosExpenseReconciler
         return (int) abs($da->diff($db)->days);
     }
 
-    /** Ventana de fechas válida para los pagos de un registro ERP. */
+    /**
+     * Ventana de fechas válida para los pagos de un registro ERP:
+     * [min(captura, fecha) − tolerancia, fecha + tolerancia].
+     *
+     * @param  array  $erp  fila ERP (date, fecha_captura)
+     * @return array{0:string, 1:string}|null null si el ERP no tiene fecha
+     */
     private function window(array $erp): ?array
     {
         $end = $erp['date'];
@@ -583,6 +635,12 @@ class EstadoResultadosExpenseReconciler
         return [$start, $endD];
     }
 
+    /**
+     * ¿La fecha cae dentro de la ventana (inclusive)? Sin ventana ⇒ false.
+     *
+     * @param  string  $date  fecha Y-m-d
+     * @param  array|null  $window  resultado de window()
+     */
     private function inWindow(string $date, ?array $window): bool
     {
         return $window !== null && $date >= $window[0] && $date <= $window[1];
@@ -590,7 +648,13 @@ class EstadoResultadosExpenseReconciler
 
     /**
      * Todas las combinaciones (tamaño ≥ 2) cuya suma en centavos es exactamente $target.
-     * Se detiene al encontrar 2 (basta para declarar ambigüedad).
+     * Se detiene al encontrar 2 (basta para declarar ambigüedad). Supone importes positivos
+     * (poda cuando la suma alcanza el objetivo).
+     *
+     * @param  array  $rows  filas candidatas
+     * @param  int  $target  objetivo en centavos
+     * @param  string  $field  campo con el importe (cargo / amount)
+     * @return list<array> hasta 2 combinaciones
      */
     private function exactSubsets(array $rows, int $target, string $field): array
     {
@@ -618,6 +682,13 @@ class EstadoResultadosExpenseReconciler
         return $found;
     }
 
+    /**
+     * ¿La sucursal del movimiento es compatible con la del ERP? Sin sucursal confiable ⇒ sí;
+     * corporativo ⇒ ERP corporativo; operativa ⇒ ERP de Radiografía de la misma sucursal.
+     *
+     * @param  array  $m  movimiento
+     * @param  array  $erp  fila ERP
+     */
     private function branchCompatible(array $m, array $erp): bool
     {
         $kind = $m['branch_kind'] ?? 'vacia';

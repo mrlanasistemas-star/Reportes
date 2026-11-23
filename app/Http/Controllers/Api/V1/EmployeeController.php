@@ -12,11 +12,18 @@ use App\Services\Api\ApiScopeResolver;
 use App\Services\Api\ApiValidation;
 use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Api\FinancialMetricResolver;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
+/**
+ * /api/v1/employees — catálogo de colaboradores (tabla employees) y su ficha
+ * financiera atribuible por periodo, para consumidores externos de la API.
+ *
+ * Todas las respuestas respetan el alcance por sucursal del ApiConsumer.
+ */
 class EmployeeController extends Controller
 {
     /** Métricas atribuibles a nivel individual que se devuelven en financial-summary. */
@@ -26,6 +33,20 @@ class EmployeeController extends Controller
         'collections_effectiveness_legacy',
     ];
 
+    /**
+     * GET /api/v1/employees — lista paginada de colaboradores activos por nombre.
+     *
+     * Filtros: `branch_id` opcional (debe estar autorizado; filtra por
+     * cualquier asignación registrada a esa ruta). Sin `branch_id`, un
+     * consumidor restringido ve a quienes tengan alguna asignación a sus
+     * sucursales permitidas; sin acceso → lista vacía. Cada elemento lleva su
+     * branch "actual" (asignación con mayor id) y la atribución a sucursal/región.
+     *
+     * @param  Request  $request  `per_page`, `branch_id` opcional.
+     * @return JsonResponse {data: [colaborador...], meta: paginación}.
+     *
+     * @throws HttpException 403 si `branch_id` no está autorizado.
+     */
     public function index(Request $request): JsonResponse
     {
         /** @var ApiConsumer $consumer */
@@ -97,6 +118,14 @@ class EmployeeController extends Controller
      * sucursal "actual" (más reciente conocida) solo para identificación,
      * nunca como atribución financiera de un periodo pasado (ver Fase 2.3,
      * EmployeeBranchHistoryResolver).
+     *
+     * @param  Request  $request  Petición del consumidor de API autenticado.
+     * @param  int  $employeeId  ID del colaborador.
+     * @param  EmployeeBranchHistoryResolver  $branchHistory  Resuelve la sucursal actual.
+     * @return JsonResponse {id, employee_code, full_name, position, is_active, branch_id, branch, sucursal, region}.
+     *
+     * @throws ModelNotFoundException 404 si no existe.
+     * @throws HttpException 403 si su sucursal actual no está autorizada.
      */
     public function show(Request $request, int $employeeId, EmployeeBranchHistoryResolver $branchHistory): JsonResponse
     {
@@ -139,6 +168,15 @@ class EmployeeController extends Controller
      *
      * Fase 2.2/2.3 — autorización centralizada contra la sucursal HISTÓRICA
      * del colaborador en el periodo pedido, nunca su asignación más reciente.
+     *
+     * @param  Request  $request  `period_id` obligatorio.
+     * @param  int  $employeeId  ID del colaborador.
+     * @param  FinancialMetricResolver  $resolver  Calcula/lee cada métrica de EMPLOYEE_METRICS.
+     * @param  ApiScopeResolver  $scopeResolver  Autoriza al colaborador en el periodo.
+     * @param  EmployeeBranchHistoryResolver  $branchHistory  Branch del colaborador en ese periodo.
+     * @return JsonResponse {employee_id, period_id, branch_id, branch_status, sucursal_id, sucursal_status, metrics}.
+     *
+     * @throws ModelNotFoundException 404 si colaborador o periodo no existen.
      */
     public function financialSummary(Request $request, int $employeeId, FinancialMetricResolver $resolver, ApiScopeResolver $scopeResolver, EmployeeBranchHistoryResolver $branchHistory): JsonResponse
     {
@@ -182,6 +220,7 @@ class EmployeeController extends Controller
      * + región, tomadas de la relación REAL del branch (sucursal_id), nunca del
      * nombre del colaborador. Branch null o no atribuible → todo null (honesto).
      *
+     * @param  Branch|null  $branch  Branch con `sucursal` precargada, o null.
      * @return array{branch: array{id:int, code:?string, name:string}|null, sucursal: array{id:int, codigo:string, nombre:string}|null, region: string|null}
      */
     private function branchAttribution(?Branch $branch): array
@@ -199,7 +238,15 @@ class EmployeeController extends Controller
         ];
     }
 
-    /** @return Collection<int, int|null> keyBy employee_id => branch_id */
+    /**
+     * Branch "actual" de varios colaboradores en una sola consulta.
+     *
+     * Toma, por colaborador, la asignación (employee_branch_assignments) con
+     * el id más alto como la más reciente.
+     *
+     * @param  Collection<int, int>  $employeeIds  IDs de la página actual.
+     * @return Collection<int, int|null> keyBy employee_id => branch_id
+     */
     private function batchResolveCurrentBranchIds(Collection $employeeIds): Collection
     {
         if ($employeeIds->isEmpty()) {

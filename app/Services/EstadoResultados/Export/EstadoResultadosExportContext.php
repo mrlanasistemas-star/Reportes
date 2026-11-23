@@ -22,6 +22,7 @@ use App\Services\EstadoResultados\Support\Money;
  */
 class EstadoResultadosExportContext
 {
+    /** Pasos del modelo de EBITDA único con etiqueta, tipo y fórmula impresa. */
     public const STEPS = [
         'ingresos_operativos' => ['label' => 'Ingresos operativos', 'kind' => 'income', 'formula' => 'Intereses, IVA (criterio gerencial), moratorios, cargos y comisiones cobrados. Sin capital recuperado.'],
         'opex_total' => ['label' => 'OPEX · gastos operativos', 'kind' => 'expense', 'formula' => 'Gastos y nómina de sucursales, gastos y nómina corporativa y Dirección General.'],
@@ -34,8 +35,10 @@ class EstadoResultadosExportContext
         'utilidad_neta' => ['label' => 'Utilidad neta', 'kind' => 'result', 'formula' => 'EBT − ISR'],
     ];
 
+    /** Pasos que son resultados (subtotales) del estado. */
     public const RESULT_KEYS = ['ebitda', 'ebit', 'ebt', 'utilidad_neta'];
 
+    /** Márgenes impresos. */
     public const MARGINS = [
         'ebitda' => 'Margen EBITDA',
         'ebit' => 'Margen EBIT',
@@ -43,12 +46,14 @@ class EstadoResultadosExportContext
         'neto' => 'Margen neto',
     ];
 
+    /** Etiquetas del estado de validación. */
     public const VALIDATION_LABELS = [
         'ok' => 'Validado: sin diferencias ni pendientes',
         'con_pendientes' => 'Con pendientes por resolver',
         'con_diferencias' => 'Con diferencias por revisar',
     ];
 
+    /** Etiquetas del estado de cada fuente. */
     public const SOURCE_STATUS = [
         'procesado' => 'Procesado',
         'cargado' => 'Cargado (sin procesar)',
@@ -56,11 +61,18 @@ class EstadoResultadosExportContext
         'con_incidencias' => 'Con incidencias',
     ];
 
+    /** @param  PeriodSummaryExtractor  $extractor  normaliza snapshots del modelo anterior */
     public function __construct(private readonly PeriodSummaryExtractor $extractor) {}
 
     /**
+     * Arma el contexto de presentación: reporte (estado, versión, hash), resultados y márgenes
+     * (normalizados si el dataset es del modelo anterior), statement, categorías de OPEX,
+     * comparativas, validación, fuentes y avisos. Función pura.
+     *
      * @param  array  $d  dataset resuelto (EstadoResultadosReportResolver::resolve)
      * @param  array|null  $cmp  payload de ComparisonService::build (null = no disponible)
+     * @param  string|null  $cmpError  motivo por el que no hay comparativas
+     * @return array<string, mixed>
      */
     public function make(array $d, ?array $cmp = null, ?string $cmpError = null): array
     {
@@ -199,6 +211,17 @@ class EstadoResultadosExportContext
         return $out;
     }
 
+    /**
+     * Bloque de comparativas para PDF/Excel: pares (anterior, año anterior, personalizado,
+     * acumulado), evolución, sucursales y gráficas. Marca 'mismatch' si el hash del periodo
+     * actual en las comparativas no coincide con el del dataset exportado.
+     *
+     * @param  array  $d  dataset
+     * @param  array|null  $cmp  payload de ComparisonService (null = no disponible)
+     * @param  string|null  $error  mensaje si no hay comparativas
+     * @param  array  $results  resultados ya normalizados del periodo
+     * @return array<string, mixed>
+     */
     private function comparisons(array $d, ?array $cmp, ?string $error, array $results): array
     {
         if ($cmp === null) {
@@ -244,6 +267,15 @@ class EstadoResultadosExportContext
         ];
     }
 
+    /**
+     * Vista de un modo de comparación de pares: periodos, comparabilidad, filas por concepto y
+     * categorías OPEX ya etiquetadas para imprimir.
+     *
+     * @param  array  $m  modo de ComparisonService (pair())
+     * @param  string  $title  título de la sección
+     * @param  bool  $partial  acumulado parcial (menos de 12 meses)
+     * @return array<string, mixed>
+     */
     private function pairView(array $m, string $title, bool $partial): array
     {
         $c = (array) ($m['comparability'] ?? []);
@@ -359,6 +391,13 @@ class EstadoResultadosExportContext
         return self::SOURCE_STATUS[$status] ?? ($status === '' ? 'Sin estado' : ucfirst(str_replace('_', ' ', $status)));
     }
 
+    /**
+     * Resumen de validación para imprimir: estado, controles que no cuadran, conciliación con
+     * Radiografía y pendientes.
+     *
+     * @param  array  $d  dataset
+     * @return array<string, mixed>
+     */
     private function validation(array $d): array
     {
         $v = (array) ($d['validation'] ?? []);

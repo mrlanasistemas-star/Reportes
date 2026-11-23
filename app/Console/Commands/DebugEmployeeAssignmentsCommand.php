@@ -7,29 +7,51 @@ use App\Services\BranchResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-employee-assignments` — estado de las asignaciones de empleados del
+ * periodo: resumen global con/sin sucursal, montos de nómina sin asignar (P001, P002, bonos),
+ * totales globales con y sin lo no asignado, lista de empleados sin match, resumen por sucursal
+ * y confirmación de que cartera/recuperación/colocación/mora no dependen de la asignación de
+ * empleados.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-employee-assignments 21
+ */
 class DebugEmployeeAssignmentsCommand extends Command
 {
-    protected $signature   = 'reportes:debug-employee-assignments {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-employee-assignments {period_id : ID del periodo}';
+
     protected $description = 'Muestra estado de asignaciones de empleados: con sucursal, sin match, montos sin asignar.';
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas y sucursales operativas.
+     */
     public function __construct(private readonly BranchResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Construye el mapa operativo e imprime las seis secciones del diagnóstico.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge($weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge($weeklyIds, [$period->id])));
 
         // Operative branch map: branch_id → sucursal
         $operativeMap = [];
@@ -44,7 +66,7 @@ class DebugEmployeeAssignmentsCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG EMPLOYEE ASSIGNMENTS — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── 1. Resumen global de asignaciones ────────────────────────────────
@@ -96,18 +118,19 @@ class DebugEmployeeAssignmentsCommand extends Command
             ")
             ->first();
 
-        $p001Sin  = (float) ($sinAsignar->p001_sin ?? 0);
-        $p002Sin  = (float) ($sinAsignar->p002_sin ?? 0);
+        $p001Sin = (float) ($sinAsignar->p001_sin ?? 0);
+        $p002Sin = (float) ($sinAsignar->p002_sin ?? 0);
         $bonosSin = (float) ($sinAsignar->bonos_sin ?? 0);
 
         // Gastos sin asignar: CORPORATIVO branch gastos (not Norte, not operative)
         $corpIds = DB::table('branches')->get()->filter(function ($b) {
             $up = strtoupper(trim($b->name ?? ''));
+
             return str_contains($up, 'CORPORATIVO');
         })->pluck('id')->toArray();
 
         $gastosSin = 0.0;
-        if (!empty($corpIds)) {
+        if (! empty($corpIds)) {
             $sourceIds = DB::table('data_sources')
                 ->whereIn('code', ['gastos_lendus', 'gastos_erp'])
                 ->pluck('id');
@@ -123,7 +146,7 @@ class DebugEmployeeAssignmentsCommand extends Command
 
         $this->table(
             ['Monto P001 sin asignar', 'Monto P002 sin asignar', 'Bonos sin asignar', 'Gastos sin asignar (Corp)'],
-            [['$' . number_format($p001Sin, 2), '$' . number_format($p002Sin, 2), '$' . number_format($bonosSin, 2), '$' . number_format($gastosSin, 2)]]
+            [['$'.number_format($p001Sin, 2), '$'.number_format($p002Sin, 2), '$'.number_format($bonosSin, 2), '$'.number_format($gastosSin, 2)]]
         );
 
         // ── 3. Totales GLOBAL (con y sin unassigned) ─────────────────────────
@@ -186,9 +209,9 @@ class DebugEmployeeAssignmentsCommand extends Command
         } else {
             $tableRows = $sinMatchList->map(fn ($r) => [
                 mb_substr((string) $r->nombre, 0, 35),
-                '$' . number_format((float) $r->p001, 2),
-                '$' . number_format((float) $r->p002, 2),
-                '$' . number_format((float) $r->bonos, 2),
+                '$'.number_format((float) $r->p001, 2),
+                '$'.number_format((float) $r->p002, 2),
+                '$'.number_format((float) $r->bonos, 2),
                 $r->fuente,
                 'Verificar manualmente',
                 'Agregar a employee_branch_assignments',
@@ -226,9 +249,9 @@ class DebugEmployeeAssignmentsCommand extends Command
             $asignadosPorSuc->map(fn ($r) => [
                 mb_substr($r->sucursal, 0, 30),
                 $r->emps,
-                '$' . number_format((float) $r->p001, 2),
-                '$' . number_format((float) $r->p002, 2),
-                '$' . number_format((float) $r->bonos, 2),
+                '$'.number_format((float) $r->p001, 2),
+                '$'.number_format((float) $r->p002, 2),
+                '$'.number_format((float) $r->bonos, 2),
             ])->all()
         );
 
@@ -242,10 +265,10 @@ class DebugEmployeeAssignmentsCommand extends Command
         $this->line('  <fg=yellow>~ Nómina/comis/bonos → fact_noi_movements × employee_branch_assignments</>');
         $this->line('  <fg=yellow>~ Gastos con sucursal → Lendus PDF/ERP branch_id directo</>');
         if ($sinMatch > 0) {
-            $this->line("  <fg=yellow>~ SIN ASIGNAR (empleados) → {$sinMatch} empleados → \$" . number_format($p001Sin + $p002Sin + $bonosSin, 2) . " → aparecen en pestaña SIN ASIGNAR del Excel</>");
+            $this->line("  <fg=yellow>~ SIN ASIGNAR (empleados) → {$sinMatch} empleados → \$".number_format($p001Sin + $p002Sin + $bonosSin, 2).' → aparecen en pestaña SIN ASIGNAR del Excel</>');
         }
         if ($gastosSin > 0) {
-            $this->line("  <fg=yellow>~ SIN ASIGNAR (gastos corp) → \$" . number_format($gastosSin, 2) . " → aparecen en pestaña SIN ASIGNAR del Excel</>");
+            $this->line('  <fg=yellow>~ SIN ASIGNAR (gastos corp) → $'.number_format($gastosSin, 2).' → aparecen en pestaña SIN ASIGNAR del Excel</>');
         }
         $this->line('');
         $this->info('══════════════════════════════════════════════════════════════════════');

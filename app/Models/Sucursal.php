@@ -16,6 +16,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * DERIVADO (que además considera si la ruta del catálogo está inactiva) vive en
  * Branch::derivedActive(); aquí no se inventa un enum de estado nuevo.
  *
+ * Tabla: `sucursales`. Cada fila es una sucursal institucional.
+ *
  * @property int $id
  * @property string $codigo
  * @property string $nombre
@@ -37,6 +39,7 @@ class Sucursal extends Model
         'activa' => 'boolean',
     ];
 
+    /** Branches (sucursales/rutas operativas de las fuentes) que apuntan a esta sucursal vía `branches.sucursal_id`. */
     public function branches(): HasMany
     {
         return $this->hasMany(Branch::class);

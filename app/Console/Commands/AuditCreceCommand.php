@@ -7,35 +7,53 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Full audit of CRECE product across all data sources for a period.
- * Shows where CRECE appears, where it doesn't, and WHY.
+ * Comando `reportes:audit-crece` — auditoría completa del producto CRECE en todas las
+ * fuentes de un periodo: muestra dónde aparece, dónde no y POR QUÉ.
+ *
+ * Revisa: 1) colocación (`fact_placements`, incluido raw_payload), 2) recuperación
+ * (`fact_recoveries`, con desglose capital/interés/impuesto/cargos y participación 30% CRECE
+ * de Savehearts), 3) cartera (`fact_portfolios` con buckets de mora), 4) pólizas CRECE
+ * (is_savehearts), 5) nota de clasificación en el reporte y 6–7) muestras de 20 filas.
+ *
+ * Escribe en BD: NO — solo lectura. Usa REGEXP y JSON_SEARCH (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:audit-crece 5
  */
 class AuditCreceCommand extends Command
 {
-    protected $signature   = 'reportes:audit-crece {period_id}';
+    protected $signature = 'reportes:audit-crece {period_id}';
+
     protected $description = 'Auditoría completa de CRECE en todas las fuentes del periodo';
 
     private const CRECE_PATTERN = 'CRECE|CRECE12|CRECE 12|CRECE24|CRECE 24|CRECE SAC|CRECE12 SAC|CRECE24 SAC|A LA MEDIDA';
 
+    /**
+     * Resuelve los periodos de datos y ejecuta en orden todas las secciones de diagnóstico de
+     * CRECE, imprimiendo hallazgos y posibles causas cuando no se encuentra el producto.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
 
-        $this->info("════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA CRECE — {$period->label} (ID {$period->id})");
-        $this->info("  DataIds: [" . implode(', ', $dataIds) . "]");
-        $this->info("════════════════════════════════════════════════════════════");
+        $this->info('  DataIds: ['.implode(', ', $dataIds).']');
+        $this->info('════════════════════════════════════════════════════════════');
 
         // ── 1. COLOCACIÓN ────────────────────────────────────────────────────
         $this->line('');
@@ -49,21 +67,21 @@ class AuditCreceCommand extends Command
             ->get();
 
         if ($creceCol->isEmpty()) {
-            $this->warn("  ✗ CRECE no encontrado en fact_placements.");
-            $this->line("  Diagnóstico:");
-            $this->line("    → El archivo Ministraciones.xlsx del periodo NO contiene productos CRECE.");
-            $this->line("    → Todos los productos en ministraciones son: " .
+            $this->warn('  ✗ CRECE no encontrado en fact_placements.');
+            $this->line('  Diagnóstico:');
+            $this->line('    → El archivo Ministraciones.xlsx del periodo NO contiene productos CRECE.');
+            $this->line('    → Todos los productos en ministraciones son: '.
                 DB::table('fact_placements')
                     ->whereIn('period_id', $dataIds)
                     ->select('product_name', DB::raw('COUNT(*) as cnt'))
                     ->groupBy('product_name')
                     ->pluck('cnt', 'product_name')
-                    ->map(fn ($c, $p) => ($p ?? 'null') . "({$c})")
+                    ->map(fn ($c, $p) => ($p ?? 'null')."({$c})")
                     ->implode(', ')
             );
         } else {
             foreach ($creceCol as $r) {
-                $this->info("  ✓ {$r->product_name}: {$r->cnt} ops, $" . number_format((float)$r->total, 2));
+                $this->info("  ✓ {$r->product_name}: {$r->cnt} ops, $".number_format((float) $r->total, 2));
             }
         }
 
@@ -97,21 +115,21 @@ class AuditCreceCommand extends Command
             ->get();
 
         if ($creceRec->isEmpty()) {
-            $this->warn("  ✗ CRECE no encontrado en fact_recoveries.");
+            $this->warn('  ✗ CRECE no encontrado en fact_recoveries.');
         } else {
             $totalCreceRec = 0.0;
             foreach ($creceRec as $r) {
                 $sh = $r->is_savehearts ? ' [SAVEHEARTS]' : '';
                 $this->info("  ✓ {$r->product_name}{$sh}: {$r->cnt} filas");
-                $this->line("      Capital=$" . number_format((float)$r->capital, 2) .
-                            "  Interés=$" . number_format((float)$r->interes, 2) .
-                            "  Imp=$" . number_format((float)$r->impuesto, 2) .
-                            "  Cargos=$" . number_format((float)$r->cargos, 2));
-                $this->line("      Total=$" . number_format((float)$r->total, 2) .
-                            "  CRECE30_share=$" . number_format((float)$r->share30, 2));
-                $totalCreceRec += (float)$r->total;
+                $this->line('      Capital=$'.number_format((float) $r->capital, 2).
+                            '  Interés=$'.number_format((float) $r->interes, 2).
+                            '  Imp=$'.number_format((float) $r->impuesto, 2).
+                            '  Cargos=$'.number_format((float) $r->cargos, 2));
+                $this->line('      Total=$'.number_format((float) $r->total, 2).
+                            '  CRECE30_share=$'.number_format((float) $r->share30, 2));
+                $totalCreceRec += (float) $r->total;
             }
-            $this->line("  TOTAL CRECE en recuperación: $" . number_format($totalCreceRec, 2));
+            $this->line('  TOTAL CRECE en recuperación: $'.number_format($totalCreceRec, 2));
         }
 
         // ── 3. CARTERA ───────────────────────────────────────────────────────
@@ -138,17 +156,17 @@ class AuditCreceCommand extends Command
             ->get();
 
         if ($crecePort->isEmpty()) {
-            $this->warn("  ✗ CRECE no encontrado en fact_portfolios.");
+            $this->warn('  ✗ CRECE no encontrado en fact_portfolios.');
         } else {
             foreach ($crecePort as $r) {
                 $this->info("  ✓ {$r->product_name}: {$r->contratos} contratos");
-                $this->line("      Cartera=$" . number_format((float)$r->cartera, 2) .
-                            "  Vencida=$" . number_format((float)$r->vencida, 2));
-                $this->line("      Mora: 0-30=$" . number_format((float)$r->mora_1_30, 2) .
-                            "  31-60=$" . number_format((float)$r->mora_31_60, 2) .
-                            "  61-90=$" . number_format((float)$r->mora_61_90, 2));
-                $this->line("      91-120=$" . number_format((float)$r->mora_91_120, 2) .
-                            "  120+=$" . number_format((float)$r->mora_120plus, 2));
+                $this->line('      Cartera=$'.number_format((float) $r->cartera, 2).
+                            '  Vencida=$'.number_format((float) $r->vencida, 2));
+                $this->line('      Mora: 0-30=$'.number_format((float) $r->mora_1_30, 2).
+                            '  31-60=$'.number_format((float) $r->mora_31_60, 2).
+                            '  61-90=$'.number_format((float) $r->mora_61_90, 2));
+                $this->line('      91-120=$'.number_format((float) $r->mora_91_120, 2).
+                            '  120+=$'.number_format((float) $r->mora_120plus, 2));
             }
         }
 
@@ -170,8 +188,8 @@ class AuditCreceCommand extends Command
             ->get();
 
         if ($polizas->isEmpty()) {
-            $this->warn("  ✗ No se detectaron pólizas CRECE (is_savehearts=true + CRECE).");
-            $this->line("  Diagnóstico:");
+            $this->warn('  ✗ No se detectaron pólizas CRECE (is_savehearts=true + CRECE).');
+            $this->line('  Diagnóstico:');
 
             // Check if there are ANY savehearts rows
             $anyShRows = DB::table('fact_recoveries')
@@ -195,14 +213,14 @@ class AuditCreceCommand extends Command
             $this->line("    → Filas con savehearts_crece_share > 0: {$withShare}");
 
             if ($anyShRows === 0 && $operSeguro === 0) {
-                $this->line("    → El Excel de cobranza no tiene filas de tipo SEGURO/PÓLIZA para este periodo.");
+                $this->line('    → El Excel de cobranza no tiene filas de tipo SEGURO/PÓLIZA para este periodo.');
                 $this->line("    → O la columna 'Operación' no fue detectada correctamente.");
             }
         } else {
             foreach ($polizas as $p) {
                 $this->info("  ✓ {$p->product_name}: {$p->cnt} pólizas");
-                $this->line("      Bruto=$" . number_format((float)$p->total_bruto, 2) .
-                            "  30% CRECE=$" . number_format((float)$p->share30, 2));
+                $this->line('      Bruto=$'.number_format((float) $p->total_bruto, 2).
+                            '  30% CRECE=$'.number_format((float) $p->share30, 2));
             }
         }
 
@@ -210,11 +228,11 @@ class AuditCreceCommand extends Command
         $this->line('');
         $this->info('─── 5. CLASIFICACIÓN DE CRECE EN EL REPORTE ───');
         $this->line("  PRODUCT_SPECIAL_PATTERN = 'A LA MEDIDA|DIARIO|CREDITO CONSUMO'");
-        $this->info("  ✓ CRECE removido de PRODUCT_SPECIAL_PATTERN — clasificado como OPERATIVO");
-        $this->line("  Efecto en buildProducts():");
-        $this->line("    → CRECE aparece en la lista de productos operativos");
-        $this->line("    → CRECE colocación incluida en reporte operativo");
-        $this->line("    → CRECE recuperación incluida por producto en reporte");
+        $this->info('  ✓ CRECE removido de PRODUCT_SPECIAL_PATTERN — clasificado como OPERATIVO');
+        $this->line('  Efecto en buildProducts():');
+        $this->line('    → CRECE aparece en la lista de productos operativos');
+        $this->line('    → CRECE colocación incluida en reporte operativo');
+        $this->line('    → CRECE recuperación incluida por producto en reporte');
 
         // ── 6. 20 EJEMPLOS DE CADA FUENTE ────────────────────────────────
         $this->line('');
@@ -224,21 +242,21 @@ class AuditCreceCommand extends Command
             ->whereIn('period_id', $dataIds)
             ->whereRaw("UPPER(COALESCE(product_name,'')) REGEXP 'CRECE'")
             ->select('product_name', 'is_savehearts', 'operation', 'concept',
-                     'capital', 'interest', 'total_amount', 'payment_date')
+                'capital', 'interest', 'total_amount', 'payment_date')
             ->limit(20)
             ->get();
 
         if ($samples->isNotEmpty()) {
-            $this->line(str_pad('Producto', 22) . str_pad('Sh', 4) . str_pad('Operación', 22) .
-                        str_pad('Capital', 14) . 'Total');
+            $this->line(str_pad('Producto', 22).str_pad('Sh', 4).str_pad('Operación', 22).
+                        str_pad('Capital', 14).'Total');
             $this->line(str_repeat('-', 80));
             foreach ($samples as $s) {
                 $this->line(
-                    str_pad(mb_substr($s->product_name ?? '', 0, 20), 22) .
-                    str_pad($s->is_savehearts ? 'Y' : 'N', 4) .
-                    str_pad(mb_substr($s->operation ?? '', 0, 20), 22) .
-                    str_pad('$' . number_format((float)$s->capital, 0), 14) .
-                    '$' . number_format((float)$s->total_amount, 0)
+                    str_pad(mb_substr($s->product_name ?? '', 0, 20), 22).
+                    str_pad($s->is_savehearts ? 'Y' : 'N', 4).
+                    str_pad(mb_substr($s->operation ?? '', 0, 20), 22).
+                    str_pad('$'.number_format((float) $s->capital, 0), 14).
+                    '$'.number_format((float) $s->total_amount, 0)
                 );
             }
         }
@@ -255,15 +273,15 @@ class AuditCreceCommand extends Command
             ->get();
 
         if ($portSamples->isNotEmpty()) {
-            $this->line(str_pad('Producto', 35) . str_pad('Balance', 18) .
-                        str_pad('DPD', 8) . 'Vencida');
+            $this->line(str_pad('Producto', 35).str_pad('Balance', 18).
+                        str_pad('DPD', 8).'Vencida');
             $this->line(str_repeat('-', 75));
             foreach ($portSamples as $s) {
                 $this->line(
-                    str_pad(mb_substr($s->product_name ?? '', 0, 33), 35) .
-                    str_pad('$' . number_format((float)$s->balance, 0), 18) .
-                    str_pad($s->days_past_due, 8) .
-                    '$' . number_format((float)$s->past_due_balance, 0)
+                    str_pad(mb_substr($s->product_name ?? '', 0, 33), 35).
+                    str_pad('$'.number_format((float) $s->balance, 0), 18).
+                    str_pad($s->days_past_due, 8).
+                    '$'.number_format((float) $s->past_due_balance, 0)
                 );
             }
         }

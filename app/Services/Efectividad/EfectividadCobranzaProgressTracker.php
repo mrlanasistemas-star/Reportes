@@ -22,25 +22,40 @@ use App\Models\EfectividadCobranzaRun;
  */
 class EfectividadCobranzaProgressTracker
 {
-    /** @var array<string,array<string,mixed>> */
+    /** @var array<string,array<string,mixed>> línea de tiempo por etapa (se guarda en runs.stages) */
     private array $stages;
 
+    /** Etapa en curso. */
     private EfectividadCobranzaStage|EfectividadAprobadaStage|null $current = null;
 
+    /** Último conteo escrito en BD (para escribir por bloques). */
     private int $lastWrittenCount = 0;
 
+    /** Momento (microtime) de la última escritura de avance. */
     private float $lastWriteAt = 0.0;
 
+    /** @param  EfectividadCobranzaRun  $run  ejecución cuyo progreso se persiste */
     public function __construct(private readonly EfectividadCobranzaRun $run)
     {
         $this->stages = $run->stages ?? [];
     }
 
+    /**
+     * Ejecución asociada.
+     */
     public function run(): EfectividadCobranzaRun
     {
         return $this->run;
     }
 
+    /**
+     * Inicia una etapa: la marca «running» en la línea de tiempo y actualiza etapa actual,
+     * inicio, heartbeat, avance (0/total si es medible) y log de la ejecución (guarda en BD).
+     *
+     * @param  EfectividadCobranzaStage|EfectividadAprobadaStage  $stage  etapa
+     * @param  int|null  $total  registros totales (null = etapa no medible)
+     * @param  string|null  $detail  resumen inicial
+     */
     public function start(EfectividadCobranzaStage|EfectividadAprobadaStage $stage, ?int $total = null, ?string $detail = null): void
     {
         $this->current = $stage;
@@ -70,6 +85,8 @@ class EfectividadCobranzaProgressTracker
     /**
      * Avance medible de la etapa actual. Escribe solo cada N registros / N
      * segundos; el último valor siempre se persiste en complete().
+     *
+     * @param  int  $processed  registros procesados hasta ahora
      */
     public function advance(int $processed): void
     {
@@ -106,7 +123,13 @@ class EfectividadCobranzaProgressTracker
     }
 
     /**
+     * Cierra una etapa como «done» (fin, procesados, resumen y detalles) y guarda la línea de
+     * tiempo y el heartbeat.
+     *
+     * @param  EfectividadCobranzaStage|EfectividadAprobadaStage  $stage  etapa
+     * @param  string|null  $summary  resumen legible
      * @param  array<string,mixed>  $extra  conteos/resumen adicionales para el detalle
+     * @param  int|null  $processed  registros procesados finales
      */
     public function complete(EfectividadCobranzaStage|EfectividadAprobadaStage $stage, ?string $summary = null, array $extra = [], ?int $processed = null): void
     {
@@ -160,6 +183,9 @@ class EfectividadCobranzaProgressTracker
         $this->run->forceFill(['stages' => $this->stages])->save();
     }
 
+    /**
+     * Etapa en curso (null si no se ha iniciado ninguna).
+     */
     public function current(): EfectividadCobranzaStage|EfectividadAprobadaStage|null
     {
         return $this->current;

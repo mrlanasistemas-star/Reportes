@@ -16,6 +16,10 @@ use Illuminate\Support\Facades\DB;
 class ClassificationService
 {
     /**
+     * Clasificación manual VIGENTE por huella del periodo (la más reciente gana) con el número
+     * de cambios registrados para esa huella.
+     *
+     * @param  int  $periodId  periodo
      * @return array<string, array{treatment:string, previous:?string, notes:string, user:?string, at:?string, history_count:int}>
      */
     public function effectiveOverrides(int $periodId): array
@@ -42,7 +46,13 @@ class ClassificationService
         return $out;
     }
 
-    /** @return list<array<string,mixed>> */
+    /**
+     * Historial de clasificaciones manuales de un movimiento (más reciente primero).
+     *
+     * @param  int  $periodId  periodo
+     * @param  string  $fingerprint  huella del movimiento
+     * @return list<array<string,mixed>>
+     */
     public function history(int $periodId, string $fingerprint): array
     {
         return EstadoResultadosClassification::query()
@@ -63,7 +73,19 @@ class ClassificationService
     }
 
     /**
-     * @param  list<array{fingerprint:string, source:string, current:string}>  $items
+     * Clasifica manualmente uno o varios movimientos: agrega una fila a la bitácora por cada
+     * item cuyo tratamiento actual sea distinto (los que no cambian se omiten). Transacción con
+     * la fila del periodo bloqueada.
+     *
+     * @param  Period  $period  periodo
+     * @param  list<array{fingerprint:string, source:string, current:string}>  $items  movimientos con su tratamiento actual
+     * @param  string  $treatment  tratamiento nuevo (debe ser asignable)
+     * @param  string  $notes  motivo (mínimo 3 caracteres; se guarda hasta 2000)
+     * @param  int|null  $userId  usuario
+     * @return int número de clasificaciones registradas
+     *
+     * @throws \InvalidArgumentException tratamiento no permitido o motivo corto
+     *                                   (también EstadoResultadosLockedException, HTTP 423, si el periodo está aprobado)
      */
     public function classify(Period $period, array $items, string $treatment, string $notes, ?int $userId): int
     {

@@ -35,17 +35,36 @@ final class Figures
         'sin_consolidado' => 'Tu alcance no incluye el consolidado: no se calcula la participación.',
     ];
 
+    /**
+     * Normaliza un importe a cadena con 2 decimales.
+     *
+     * @param  mixed  $v  importe (string/int/float/BigDecimal) o null
+     * @return string|null importe normalizado o null si no hay dato
+     */
     public static function amount(mixed $v): ?string
     {
         return $v === null ? null : Money::str2($v);
     }
 
+    /**
+     * Resta exacta a − b (variación en pesos).
+     *
+     * @param  string|null  $a  importe actual
+     * @param  string|null  $b  importe anterior
+     * @return string|null diferencia con 2 decimales; null si falta cualquiera
+     */
     public static function sub(?string $a, ?string $b): ?string
     {
         return $a === null || $b === null ? null : Money::str2(Money::of($a)->minus(Money::of($b)));
     }
 
-    /** @param list<?string> $values null si cualquiera es null */
+    /**
+     * Suma exacta de importes. Si alguno es null (pendiente) el total es null: nunca se suma un
+     * pendiente como cero.
+     *
+     * @param  list<?string>  $values  importes; null si cualquiera es null
+     * @return string|null total con 2 decimales
+     */
     public static function sum(array $values): ?string
     {
         $t = BigDecimal::zero();
@@ -105,6 +124,12 @@ final class Figures
         return ($kind === ComparisonConcepts::EXPENSE ? ! $up : $up) ? 'favorable' : 'desfavorable';
     }
 
+    /**
+     * Motivo público (código + mensaje en español de REASONS) por el que una cifra no se compara.
+     *
+     * @param  string|null  $code  código del motivo
+     * @return array{code:string, message:string}|null null si no hay motivo
+     */
     public static function reason(?string $code): ?array
     {
         return $code === null ? null : ['code' => $code, 'message' => self::REASONS[$code] ?? $code];

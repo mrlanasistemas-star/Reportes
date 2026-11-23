@@ -12,8 +12,15 @@ namespace App\Services\EstadoResultados\Support;
  */
 final class FolioNormalizer
 {
+    /** Valores que significan «sin requisición». */
     private const NO_FOLIO = ['S/R', 'SR', 'S-R', 'SIN REQ', 'SIN FOLIO', 'N/A', 'NA', 'NO APLICA', '-', '0'];
 
+    /**
+     * Normaliza un folio: mayúsculas, sin prefijo REQ/REQUISICION y sólo letras y dígitos.
+     *
+     * @param  mixed  $raw  folio tal como viene en ERP o estado de cuenta
+     * @return string|null folio normalizado o null si no hay folio
+     */
     public static function normalize(mixed $raw): ?string
     {
         if ($raw === null) {

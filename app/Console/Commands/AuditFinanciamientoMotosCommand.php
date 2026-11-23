@@ -8,6 +8,23 @@ use App\Services\Radiography\BranchRadiographyCalculator;
 use App\Services\Radiography\RadiographySnapshotBuilder;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:audit-financiamiento-motos` — auditoría de Financiamiento de
+ * Motos/Cascos: por registro de gasto muestra el empleado encontrado, sucursal asignada,
+ * método y confianza (FinanciamientoMotosAssignmentService).
+ *
+ * Por defecto es SOLO LECTURA (dry-run) y oculta los registros ya asignados en corridas
+ * anteriores. Con `--fix` PERSISTE employee_id/branch_id en `fact_expenses`.
+ * Termina con un resumen (sin empleado, sin sucursal, monto sin asignar, duplicados y cuadre
+ * global vs sucursales) y devuelve FAILURE si queda algo pendiente.
+ *
+ * Escribe en BD: solo con `--fix` (actualiza `fact_expenses`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-financiamiento-motos 21
+ *   php artisan reportes:audit-financiamiento-motos 21 --detail
+ *   php artisan reportes:audit-financiamiento-motos 21 --fix
+ */
 class AuditFinanciamientoMotosCommand extends Command
 {
     protected $signature = 'reportes:audit-financiamiento-motos
@@ -17,21 +34,31 @@ class AuditFinanciamientoMotosCommand extends Command
 
     protected $description = 'Auditoría de Financiamiento de Motos/Cascos: empleado encontrado, sucursal asignada, método y confianza por registro. Por defecto NO modifica datos.';
 
+    /**
+     * Resuelve los periodos de datos, ejecuta la asignación (en dry-run salvo `--fix`), imprime la
+     * tabla de resultados y el resumen de pendientes.
+     *
+     * @param  FinanciamientoMotosAssignmentService  $motosAssignment  Servicio que resuelve empleado/sucursal de cada gasto de motos.
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Se usa para resolver los periodos de datos del periodo.
+     * @param  BranchRadiographyCalculator  $branchCalculator  Inyectado (no se usa directamente en el cuerpo).
+     * @return int SUCCESS si todo quedó resuelto o no hay registros; FAILURE si el periodo no existe o quedan pendientes.
+     */
     public function handle(
         FinanciamientoMotosAssignmentService $motosAssignment,
         RadiographySnapshotBuilder $snapshotBuilder,
         BranchRadiographyCalculator $branchCalculator,
     ): int {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $dataIds = $snapshotBuilder->resolveDataIdsPublic($period);
-        $dryRun  = !$this->option('fix');
+        $dryRun = ! $this->option('fix');
 
         $this->line('');
         $this->info('════════════════════════════════════════════════════════════');
@@ -44,10 +71,11 @@ class AuditFinanciamientoMotosCommand extends Command
 
         if (empty($results)) {
             $this->line('Sin registros de Financiamiento de Motos/Cascos para este periodo.');
+
             return self::SUCCESS;
         }
 
-        $showAll   = (bool) $this->option('detail');
+        $showAll = (bool) $this->option('detail');
         $toDisplay = $showAll
             ? $results
             : array_filter($results, fn (array $r) => $r['estado'] !== 'ya_asignado');
@@ -62,13 +90,13 @@ class AuditFinanciamientoMotosCommand extends Command
                 $r['sucursal'] ?? '—',
                 number_format($r['amount'], 2),
                 $r['metodo'],
-                $r['confianza'] > 0 ? round($r['confianza'] * 100, 1) . '%' : '—',
+                $r['confianza'] > 0 ? round($r['confianza'] * 100, 1).'%' : '—',
                 strtoupper($r['estado']),
             ];
         }
 
-        if (!$showAll && count($rows) < count($results)) {
-            $this->line('(' . (count($results) - count($rows)) . ' registro(s) ya asignado(s) en corridas anteriores, ocultos — usa --detail para verlos todos)');
+        if (! $showAll && count($rows) < count($results)) {
+            $this->line('('.(count($results) - count($rows)).' registro(s) ya asignado(s) en corridas anteriores, ocultos — usa --detail para verlos todos)');
         }
         $this->table(
             ['ID', 'Empleado original', 'Empleado encontrado', 'employee_id', 'Sucursal', 'Monto', 'Método', 'Confianza', 'Estado'],
@@ -76,9 +104,9 @@ class AuditFinanciamientoMotosCommand extends Command
         );
 
         // ── Resumen final ──────────────────────────────────────────────────────
-        $sinEmpleado  = array_filter($results, fn (array $r) => $r['employee_id'] === null && $r['estado'] !== 'ya_asignado');
-        $sinSucursal  = array_filter($results, fn (array $r) => $r['branch_id'] === null);
-        $montoSin     = array_sum(array_map(fn (array $r) => $r['branch_id'] === null ? $r['amount'] : 0.0, $results));
+        $sinEmpleado = array_filter($results, fn (array $r) => $r['employee_id'] === null && $r['estado'] !== 'ya_asignado');
+        $sinSucursal = array_filter($results, fn (array $r) => $r['branch_id'] === null);
+        $montoSin = array_sum(array_map(fn (array $r) => $r['branch_id'] === null ? $r['amount'] : 0.0, $results));
 
         $porEmpleado = [];
         $porSucursal = [];
@@ -102,21 +130,23 @@ class AuditFinanciamientoMotosCommand extends Command
         $duplicados = 0;
         foreach ($results as $r) {
             $key = $r['fact_expense_id'];
-            if (isset($seen[$key])) { $duplicados++; }
+            if (isset($seen[$key])) {
+                $duplicados++;
+            }
             $seen[$key] = true;
         }
 
         $this->line('');
         $this->info('── RESUMEN ──');
-        $this->line('Total registros:              ' . count($results));
-        $this->line('Registros sin empleado:        ' . count($sinEmpleado));
-        $this->line('Registros sin sucursal:        ' . count($sinSucursal));
-        $this->line('Monto sin asignar:             $' . number_format($montoSin, 2));
-        $this->line('Registros duplicados:          ' . $duplicados);
-        $this->line('Total global:                  $' . number_format($totalGlobal, 2));
-        $this->line('Suma por empleado:              $' . number_format($sumEmpleados, 2));
-        $this->line('Suma por sucursal:               $' . number_format($sumSucursales, 2));
-        $this->line('Diferencia global vs sucursales: $' . number_format(abs($totalGlobal - $sumSucursales), 2));
+        $this->line('Total registros:              '.count($results));
+        $this->line('Registros sin empleado:        '.count($sinEmpleado));
+        $this->line('Registros sin sucursal:        '.count($sinSucursal));
+        $this->line('Monto sin asignar:             $'.number_format($montoSin, 2));
+        $this->line('Registros duplicados:          '.$duplicados);
+        $this->line('Total global:                  $'.number_format($totalGlobal, 2));
+        $this->line('Suma por empleado:              $'.number_format($sumEmpleados, 2));
+        $this->line('Suma por sucursal:               $'.number_format($sumSucursales, 2));
+        $this->line('Diferencia global vs sucursales: $'.number_format(abs($totalGlobal - $sumSucursales), 2));
 
         $allGood = count($sinEmpleado) === 0
             && count($sinSucursal) === 0

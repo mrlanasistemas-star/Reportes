@@ -32,7 +32,13 @@ use App\Models\PeriodSummary;
 class EmployeePeriodManualExpenseService
 {
     /**
-     * @return array{amount: float, notes: string}
+     * Lee el gasto manual guardado de un colaborador en un periodo (legado, ver clase).
+     *
+     * Solo lectura en `employee_period_manual_expenses`; si no hay fila devuelve 0 y notas vacías.
+     *
+     * @param  int  $periodId  Periodo consultado.
+     * @param  int  $employeeId  Colaborador (employees.id).
+     * @return array{amount: float, notes: string} Monto y notas guardadas.
      */
     public function getForPeriodEmployee(int $periodId, int $employeeId): array
     {
@@ -43,17 +49,29 @@ class EmployeePeriodManualExpenseService
 
         return [
             'amount' => $row ? (float) $row->amount : 0.0,
-            'notes'  => $row ? (string) ($row->notes ?? '') : '',
+            'notes' => $row ? (string) ($row->notes ?? '') : '',
         ];
     }
 
     /**
-     * @return array{amount: float, notes: string}
+     * Guarda (crea o actualiza) el gasto manual de un colaborador en un periodo (legado, ver clase).
+     *
+     * Reglas: el monto se redondea a 2 decimales y nunca baja de 0; las notas se
+     * conservan aunque el monto sea 0. Conserva el created_by original.
+     * Efectos: escribe en `employee_period_manual_expenses` y toca el updated_at de
+     * PeriodSummary para invalidar la caché del snapshot del periodo.
+     *
+     * @param  int  $periodId  Periodo.
+     * @param  int  $employeeId  Colaborador (employees.id).
+     * @param  float  $amount  Monto capturado.
+     * @param  string  $notes  Notas del ajuste.
+     * @param  int|null  $userId  Usuario que guarda (auditoría created_by/updated_by).
+     * @return array{amount: float, notes: string} Valores finalmente guardados.
      */
     public function upsert(int $periodId, int $employeeId, float $amount, string $notes, ?int $userId = null): array
     {
         $amount = round(max(0.0, $amount), 2);
-        $notes  = $amount > 0 ? trim($notes) : trim($notes); // las notas se conservan aunque el monto sea 0 (ej. al limpiar)
+        $notes = $amount > 0 ? trim($notes) : trim($notes); // las notas se conservan aunque el monto sea 0 (ej. al limpiar)
 
         $existing = EmployeePeriodManualExpense::query()
             ->where('period_id', $periodId)
@@ -63,8 +81,8 @@ class EmployeePeriodManualExpenseService
         EmployeePeriodManualExpense::query()->updateOrCreate(
             ['period_id' => $periodId, 'employee_id' => $employeeId],
             [
-                'amount'     => $amount,
-                'notes'      => $notes,
+                'amount' => $amount,
+                'notes' => $notes,
                 'created_by' => $existing?->created_by ?? $userId,
                 'updated_by' => $userId,
             ]
@@ -80,6 +98,8 @@ class EmployeePeriodManualExpenseService
      * financiera del sistema) sin tocar el mecanismo de caché en sí — su key
      * incluye PeriodSummary->updated_at, así que "tocar" el summary basta para
      * que la siguiente lectura recalcule con el gasto manual recién guardado.
+     *
+     * @param  int  $periodId  Periodo cuyo resumen se "toca" (UPDATE de updated_at en period_summaries).
      */
     private function invalidatePeriodSnapshotCache(int $periodId): void
     {

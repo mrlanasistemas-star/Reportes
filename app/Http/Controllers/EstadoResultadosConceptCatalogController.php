@@ -11,6 +11,7 @@ use App\Services\EstadoResultados\Reporting\EstadoResultadosRedactor;
 use App\Services\EstadoResultados\Support\Treatment;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Catálogo de conceptos del Estado de Resultados (global, 20-nov-2026).
@@ -22,12 +23,21 @@ use Illuminate\Http\Request;
  */
 class EstadoResultadosConceptCatalogController extends Controller
 {
+    /**
+     * @param  ConceptCatalogService  $catalog  Lógica del catálogo (CRUD, bitácora, coincidencia, vista previa).
+     * @param  DataScopeService  $dataScope  Exige alcance general para escribir/previsualizar.
+     * @param  EstadoResultadosAbilities  $abilities  Permisos finos del usuario (ver nómina / ver DG) para ocultar movimientos.
+     */
     public function __construct(
         private readonly ConceptCatalogService $catalog,
         private readonly DataScopeService $dataScope,
         private readonly EstadoResultadosAbilities $abilities,
     ) {}
 
+    /**
+     * Lista todas las reglas del catálogo, las opciones de los selectores y la firma del catálogo
+     * (cambia cuando cambia cualquier regla; sirve para saber si hay que reprocesar).
+     */
     public function index(): JsonResponse
     {
         return response()->json([
@@ -37,6 +47,13 @@ class EstadoResultadosConceptCatalogController extends Controller
         ]);
     }
 
+    /**
+     * Crea una regla del catálogo (requiere alcance general).
+     *
+     * Efecto: inserta la regla y su renglón de bitácora. No reprocesa el periodo.
+     *
+     * @return JsonResponse 201 con mensaje y la regla presentada; 422 si la validación o el servicio la rechazan.
+     */
     public function store(Request $request): JsonResponse
     {
         $this->dataScope->requireGeneral($request->user(), 'El catálogo de conceptos');
@@ -49,6 +66,12 @@ class EstadoResultadosConceptCatalogController extends Controller
         }, 201);
     }
 
+    /**
+     * Edita una regla existente (requiere alcance general). Registra antes/después en la bitácora.
+     *
+     * @param  EstadoResultadosConceptRule  $rule  Regla a editar (route model binding).
+     * @return JsonResponse Mensaje y la regla actualizada; 422 si se rechaza.
+     */
     public function update(Request $request, EstadoResultadosConceptRule $rule): JsonResponse
     {
         $this->dataScope->requireGeneral($request->user(), 'El catálogo de conceptos');
@@ -61,6 +84,12 @@ class EstadoResultadosConceptCatalogController extends Controller
         });
     }
 
+    /**
+     * Activa o desactiva una regla (requiere alcance general). Una regla inactiva deja de aplicarse al procesar.
+     *
+     * @param  Request  $request  `active` booleano obligatorio.
+     * @param  EstadoResultadosConceptRule  $rule  Regla a cambiar.
+     */
     public function toggle(Request $request, EstadoResultadosConceptRule $rule): JsonResponse
     {
         $this->dataScope->requireGeneral($request->user(), 'El catálogo de conceptos');
@@ -73,6 +102,11 @@ class EstadoResultadosConceptCatalogController extends Controller
         ]);
     }
 
+    /**
+     * Borra (borrado lógico) una regla, dejando constancia en la bitácora del catálogo.
+     *
+     * @param  EstadoResultadosConceptRule  $rule  Regla a borrar.
+     */
     public function destroy(Request $request, EstadoResultadosConceptRule $rule): JsonResponse
     {
         $this->dataScope->requireGeneral($request->user(), 'El catálogo de conceptos');
@@ -82,12 +116,26 @@ class EstadoResultadosConceptCatalogController extends Controller
         return response()->json(['message' => 'Regla «'.$name.'» borrada. Queda en la bitácora del catálogo.']);
     }
 
+    /**
+     * Historial de cambios de una regla (lectura; no exige alcance general).
+     *
+     * @param  EstadoResultadosConceptRule  $rule  Regla consultada.
+     */
     public function logs(EstadoResultadosConceptRule $rule): JsonResponse
     {
         return response()->json(['logs' => $this->catalog->logs($rule)]);
     }
 
-    /** Movimientos del periodo que coinciden con la regla en captura (antes de guardar). */
+    /**
+     * Movimientos del periodo que coinciden con la regla en captura (antes de guardar).
+     *
+     * Requiere alcance general. Oculta los movimientos de nómina si el usuario no tiene
+     * `ver_nomina` y los de Dirección General si no tiene `ver_dg`. Muestra como máximo 200.
+     * Sólo lectura: no guarda nada.
+     *
+     * @param  Request  $request  Datos de la regla en captura; `rule_id` opcional: la regla que se edita, para que su versión guardada no compita contra la versión en captura.
+     * @param  Period  $period  Periodo cuyos movimientos se revisan.
+     */
     public function preview(Request $request, Period $period): JsonResponse
     {
         $this->dataScope->requireGeneral($request->user(), 'La vista previa del catálogo de conceptos');
@@ -113,6 +161,13 @@ class EstadoResultadosConceptCatalogController extends Controller
         return response()->json($this->catalog->preview($period, $data, isset($data['rule_id']) ? (int) $data['rule_id'] : null, 200, $hidden));
     }
 
+    /**
+     * Valida los datos de una regla (crear/editar) con mensajes en español.
+     *
+     * @return array Datos validados.
+     *
+     * @throws ValidationException 422 si algún campo no es válido.
+     */
     private function validateRule(Request $request): array
     {
         return $request->validate([
@@ -137,6 +192,12 @@ class EstadoResultadosConceptCatalogController extends Controller
         ]);
     }
 
+    /**
+     * Ejecuta una escritura del catálogo y convierte \InvalidArgumentException del servicio en 422.
+     *
+     * @param  callable  $fn  Escritura que devuelve el cuerpo JSON de éxito.
+     * @param  int  $status  Código HTTP de éxito (201 al crear).
+     */
     private function write(callable $fn, int $status = 200): JsonResponse
     {
         try {

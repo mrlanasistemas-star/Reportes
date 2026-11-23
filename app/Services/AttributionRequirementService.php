@@ -32,8 +32,17 @@ namespace App\Services;
 class AttributionRequirementService
 {
     /**
-     * @param string $reportType 'simple'|'month_vs_month'|'bimester_vs_bimester'|'quarter_vs_quarter'
-     * @param string $scope 'general'|'branch'|'employee'
+     * Indica si la generación de un reporte debe detenerse cuando falta atribuir
+     * sucursal/colaborador a gastos del Excel Lendus o a Financiamiento de Motos/Cascos.
+     *
+     * Hoy siempre devuelve false (ver docblock de la clase): los totales financieros
+     * se calculan desde el PDF, que ya trae la sucursal resuelta. No toca BD ni caché.
+     *
+     * @param  string  $reportType  Tipo de reporte: 'simple'|'month_vs_month'|'bimester_vs_bimester'|'quarter_vs_quarter'.
+     * @param  string  $scope  Alcance del reporte: 'general'|'branch'|'employee'.
+     * @param  int|null  $branchId  Sucursal elegida cuando el alcance es por sucursal (hoy no se usa).
+     * @param  int|null  $employeeId  Colaborador elegido cuando el alcance es por colaborador (hoy no se usa).
+     * @return bool true si la falta de atribución debe bloquear la generación.
      */
     public function requiresBranchAttribution(
         string $reportType,

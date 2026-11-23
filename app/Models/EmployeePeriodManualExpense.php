@@ -11,6 +11,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * (no se borra/trunca), pero ningún flujo real la lee ni la escribe: el
  * "Gasto general por gestor" es 100% efímero por request desde el cierre.
  * No usar este modelo en código nuevo.
+ *
+ * Tabla: `employee_period_manual_expenses`. Cada fila era un gasto general manual
+ * asignado a un gestor en un periodo (`amount` decimal:2, `notes`, auditoría
+ * `created_by`/`updated_by`).
  */
 class EmployeePeriodManualExpense extends Model
 {
@@ -27,11 +31,13 @@ class EmployeePeriodManualExpense extends Model
         'amount' => 'decimal:2',
     ];
 
+    /** Periodo del gasto manual. */
     public function period(): BelongsTo
     {
         return $this->belongsTo(Period::class);
     }
 
+    /** Gestor al que se asignó el gasto manual. */
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);

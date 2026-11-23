@@ -16,6 +16,8 @@ use Illuminate\Support\Str;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Control total de la pestaña Validación (20-nov-2026): filas de los archivos que aportan al
@@ -27,8 +29,15 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
  */
 class EstadoResultadosControlController extends Controller
 {
+    /** Filas por página en la vista «fuera» (filas que fueron a otro periodo). */
     private const PER_PAGE = 100;
 
+    /**
+     * @param  MovementControlService  $control  Lee las filas fuera del dataset y las no guardadas.
+     * @param  EstadoResultadosAbilities  $abilities  Permisos finos (ver_nomina / ver_dg) para redactar.
+     * @param  DataScopeService  $dataScope  Alcance por sucursal del usuario.
+     * @param  EstadoResultadosReportResolver  $resolver  Devuelve el dataset vigente (en vivo o snapshot aprobado).
+     */
     public function __construct(
         private readonly MovementControlService $control,
         private readonly EstadoResultadosAbilities $abilities,
@@ -36,7 +45,19 @@ class EstadoResultadosControlController extends Controller
         private readonly EstadoResultadosReportResolver $resolver,
     ) {}
 
-    /** GET /estado-resultados/{period}/control-movimientos?vista=fuera|no_guardado&archivo=&ubicacion=&page= */
+    /**
+     * GET /estado-resultados/{period}/control-movimientos?vista=fuera|no_guardado&archivo=&ubicacion=&page=
+     *
+     * Lista las filas de los archivos del periodo que NO quedaron en su dataset:
+     *  - vista=fuera: filas ubicadas en otro periodo / duplicadas / sin periodo / periodo cerrado /
+     *    periodo existente / legado (filtro `ubicacion`), paginadas de 100 en 100 y redactadas
+     *    según ver_nomina / ver_dg.
+     *  - vista=no_guardado: filas leídas del archivo que no se guardaron (sin paginar).
+     *
+     * @param  Request  $request  Query: vista, archivo (id de carga), ubicacion, page, alcance.
+     * @param  Period  $period  Debe ser mensual (422 si no).
+     * @return JsonResponse { data, total, page, per_page, last_page, ... }; 403/422 según alcance o parámetros.
+     */
     public function movements(Request $request, Period $period): JsonResponse
     {
         abort_unless($period->type === 'monthly', 422, 'El Estado de Resultados se genera sobre periodos mensuales.');
@@ -61,7 +82,23 @@ class EstadoResultadosControlController extends Controller
         ));
     }
 
-    /** GET /estado-resultados/{period}/control-movimientos/exportar?estado=&archivo=&bandera= (xlsx) */
+    /**
+     * GET /estado-resultados/{period}/control-movimientos/exportar?estado=&archivo=&huellas[]= (xlsx)
+     *
+     * Exporta a Excel la lista filtrada de la pestaña Validación. Junta: movimientos del dataset
+     * del periodo (filtrados por estado de control, archivo y huellas seleccionadas), filas que
+     * fueron a otro periodo (paginando de 1000 en 1000) y filas no guardadas. Si se mandan
+     * `huellas`, sólo exporta esos movimientos del dataset.
+     *
+     * Efectos: eleva memory_limit a 1 GB; escribe un .xlsx temporal en storage/app/tmp que se
+     * borra tras enviarse; si falla la escritura registra el error en el log con una referencia
+     * ER-CTRL-… que se muestra al usuario (500).
+     *
+     * @param  Request  $request  Query: estado (todos|completado|pendiente|duplicado|fuera|no_guardado|revisar),
+     *                            archivo, huellas[], alcance.
+     * @param  Period  $period  Debe ser mensual.
+     * @return BinaryFileResponse|JsonResponse Descarga del Excel o error JSON.
+     */
     public function export(Request $request, Period $period)
     {
         @ini_set('memory_limit', '1024M');
@@ -146,7 +183,15 @@ class EstadoResultadosControlController extends Controller
         return response()->download($path, $name, ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])->deleteFileAfterSend();
     }
 
-    /** Estado de control de un movimiento del dataset (snapshots anteriores no traen `control`). */
+    /**
+     * Estado de control de un movimiento del dataset (snapshots anteriores no traen `control`).
+     *
+     * Si el movimiento ya trae `control` lo usa; si no, lo deduce: duplicado (placement) →
+     * fuera (no in_period) → pendiente (tratamiento PENDIENTE) → completado.
+     *
+     * @param  array  $m  Movimiento tal como viene en dataset.movements.
+     * @return array{status:string,label:string,explain:string,flags:array}
+     */
     public static function controlOf(array $m): array
     {
         if (isset($m['control']['status'])) {
@@ -162,6 +207,16 @@ class EstadoResultadosControlController extends Controller
         return ['status' => $status, 'label' => MovementControlService::STATUS_LABELS[$status], 'explain' => (string) ($m['rule_reason'] ?? ''), 'flags' => []];
     }
 
+    /**
+     * Escribe el Excel de control: título en A1, encabezados en la fila 3, datos desde la fila 4,
+     * importes con formato #,##0.00, autofiltro y paneles congelados. Todo texto se escribe como
+     * TEXTO explícito para que nunca se ejecute una fórmula que venga en el estado de cuenta.
+     *
+     * @param  array  $rows  Filas ya armadas por export().
+     * @param  string  $path  Ruta del archivo a generar.
+     * @param  string  $periodLabel  Nombre del periodo para el título.
+     * @param  string  $estado  Filtro aplicado (para el título).
+     */
     private function writeXlsx(array $rows, string $path, string $periodLabel, string $estado): void
     {
         $book = new Spreadsheet;
@@ -196,7 +251,16 @@ class EstadoResultadosControlController extends Controller
         (new Xlsx($book))->save($path);
     }
 
-    /** Mismo alcance por sucursal que el dataset (DataScopeService). */
+    /**
+     * Mismo alcance por sucursal que el dataset (DataScopeService).
+     *
+     * CONSOLIDADO (por defecto) exige alcance general; una sucursal exige que el usuario la tenga
+     * permitida.
+     *
+     * @return string Alcance validado (máx. 80 caracteres).
+     *
+     * @throws HttpException 403 sin sesión o sin acceso.
+     */
     private function authorizeScope(Request $request): string
     {
         $user = $request->user();

@@ -2,12 +2,20 @@
 
 namespace App\Services\Okr;
 
+use App\Models\Branch;
 use App\Models\Employee;
+use App\Models\OkrBranchReconciliation;
+use App\Models\Period;
+use App\Models\User;
+use App\Services\BranchResolverService;
 use App\Services\CanonicalEmployeeResolver;
 use App\Services\Catalog\BranchRouteCatalog;
+use App\Services\Roster\EmploymentEligibilityPolicy;
 use App\Services\Roster\RosterMovementStatus;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Módulo OKR — CORRECCIÓN 08-sep-2026 (bug "empleado de otra sucursal"): antes
@@ -23,11 +31,14 @@ use Illuminate\Support\Facades\DB;
  */
 class OkrEmployeeBranchResolver
 {
+    /**
+     * @param  CanonicalEmployeeResolver  $canonicalResolver  Agrupa ids de Employee de la misma persona.
+     * @param  OkrPersonnelResolver  $personnelResolver  Directorio laboral Lendus vigente (activos, inactivos, vacantes, códigos).
+     */
     public function __construct(
         private readonly CanonicalEmployeeResolver $canonicalResolver,
         private readonly OkrPersonnelResolver $personnelResolver,
-    ) {
-    }
+    ) {}
 
     /**
      * Empleados activos cuya asignación de sucursal MÁS RECIENTE es $branchId
@@ -49,6 +60,11 @@ class OkrEmployeeBranchResolver
      * nombre pero `normalized_name` distinto (o el mismo nombre pero SIN
      * relación de identidad) siguen siendo dos opciones separadas.
      *
+     * Efecto: solo lecturas (ver eligibleEmployeesQuery y membershipMap).
+     *
+     * @param  int|null  $branchId  Sucursal oficial; null = todas.
+     * @param  string|null  $search  Texto a buscar en full_name (LIKE).
+     * @param  int  $limit  Máximo de personas a devolver.
      * @return Collection<int, object{id:int, full_name:string, employee_ids:int[]}>
      */
     public function employeesForBranch(?int $branchId, ?string $search = null, int $limit = 30): Collection
@@ -63,7 +79,7 @@ class OkrEmployeeBranchResolver
         }
 
         if ($search !== null && trim($search) !== '') {
-            $query->where('full_name', 'like', '%' . trim($search) . '%');
+            $query->where('full_name', 'like', '%'.trim($search).'%');
         }
 
         $rows = $query->orderBy('id')->get(['id', 'full_name', 'normalized_name']);
@@ -79,10 +95,10 @@ class OkrEmployeeBranchResolver
      * (dos personas reales con el normalized_name IDÉNTICO se agruparían — igual
      * que en el resto de Reportería, no es un problema exclusivo de OKR).
      *
-     * @param  \Illuminate\Support\Collection<int, Employee>  $rows
+     * @param  Collection<int, Employee>  $rows
      * @return Collection<int, object{id:int, full_name:string, employee_ids:int[]}>
      */
-    private function canonicalize(\Illuminate\Support\Collection $rows): Collection
+    private function canonicalize(Collection $rows): Collection
     {
         return $this->canonicalResolver->canonicalize($rows);
     }
@@ -95,6 +111,9 @@ class OkrEmployeeBranchResolver
      * individuales por vendedor", el Objective de sucursal aplica a TODOS los
      * colaboradores de esa sucursal, no solo a los que alcanzaron a aparecer en
      * el buscador limitado.
+     *
+     * @param  int  $branchId  Sucursal oficial.
+     * @return int Personas únicas elegibles de la sucursal.
      */
     public function countForBranch(int $branchId): int
     {
@@ -116,8 +135,14 @@ class OkrEmployeeBranchResolver
      * bajas). Elegible = is_active (sin baja manual) Y presente como activo en
      * esa nómina vigente. Si todavía no hay ninguna nómina procesada (instalación
      * nueva), no existe otra fuente: se cae a is_active, nunca a "todos".
+     *
+     * Además excluye: quien solo aparece INACTIVO en el directorio vigente (salvo
+     * que cobre en una nómina posterior a ese directorio), registros que no son
+     * personas por su nombre y plazas/vacantes del directorio.
+     *
+     * @return Builder Consulta sobre Employee con los filtros de elegibilidad.
      */
-    private function eligibleEmployeesQuery(): \Illuminate\Database\Eloquent\Builder
+    private function eligibleEmployeesQuery(): Builder
     {
         $query = Employee::query()->where('is_active', true);
         $rosterPeriodId = $this->currentRosterPeriodId();
@@ -180,20 +205,29 @@ class OkrEmployeeBranchResolver
         return $query;
     }
 
-    private ?\App\Services\Roster\EmploymentEligibilityPolicy $eligibilityPolicy = null;
+    /** Instancia perezosa de la política única de vigencia laboral. */
+    private ?EmploymentEligibilityPolicy $eligibilityPolicy = null;
 
-    private function eligibilityPolicy(): \App\Services\Roster\EmploymentEligibilityPolicy
+    /**
+     * Política de vigencia laboral (se resuelve del contenedor la primera vez).
+     */
+    private function eligibilityPolicy(): EmploymentEligibilityPolicy
     {
-        return $this->eligibilityPolicy ??= app(\App\Services\Roster\EmploymentEligibilityPolicy::class);
+        return $this->eligibilityPolicy ??= app(EmploymentEligibilityPolicy::class);
     }
 
-    /** @var array<int, int[]> */
+    /**
+     * Caché por periodo de nómina de los ids que cobran pese a un directorio anterior.
+     *
+     * @var array<int, int[]>
+     */
     private array $paidDespiteCache = [];
 
     /**
      * employee_id que cobran en la nómina vigente cuando el directorio vigente
      * es ANTERIOR a esa nómina (su INACTIVO no puede excluirlos).
      *
+     * @param  int|null  $rosterPeriodId  Periodo de nómina vigente; null → [].
      * @return int[]
      */
     private function paidDespiteOlderDirectory(?int $rosterPeriodId): array
@@ -207,7 +241,13 @@ class OkrEmployeeBranchResolver
         ) ? $this->eligibilityPolicy()->paidInRoster($rosterPeriodId) : [];
     }
 
-    /** Filas de baja CONFIRMADA (con evidencia) del periodo de nómina vigente. */
+    /**
+     * Filas de baja CONFIRMADA (con evidencia) del periodo de nómina vigente:
+     * inactivo en el periodo, movimiento 'baja' y conciliación 'baja_confirmada'.
+     *
+     * @param  int  $rosterPeriodId  Periodo de nómina.
+     * @return \Illuminate\Database\Query\Builder Consulta sobre period_employee_rosters.
+     */
     private function confirmedBajaQuery(int $rosterPeriodId): \Illuminate\Database\Query\Builder
     {
         return DB::table('period_employee_rosters')
@@ -219,9 +259,11 @@ class OkrEmployeeBranchResolver
 
     /**
      * Versión en LOTE de employeeIsActive() — "Seguimiento por gestor" con N
-     * hijos: número fijo de consultas, nunca 3 por gestor.
+     * hijos: número fijo de consultas, nunca 3 por gestor. Un id con baja
+     * manual (is_active=false) siempre es false; si no, basta que algún id de
+     * su grupo canónico sea elegible.
      *
-     * @param  int[]  $employeeIds
+     * @param  int[]  $employeeIds  Ids a evaluar.
      * @return array<int, bool> employee_id => activo
      */
     public function activeMap(array $employeeIds): array
@@ -240,8 +282,9 @@ class OkrEmployeeBranchResolver
         $map = [];
         foreach ($employeeIds as $id) {
             $row = $own->get($id);
-            if (!$row || !$row->is_active) {
+            if (! $row || ! $row->is_active) {
                 $map[$id] = false;
+
                 continue;
             }
             $members = ($row->normalized_name && isset($groupIds[$row->normalized_name])) ? $groupIds[$row->normalized_name]->pluck('id')->all() : [$id];
@@ -255,7 +298,11 @@ class OkrEmployeeBranchResolver
         return $map;
     }
 
-    /** Último periodo con nómina (roster) procesada, o null si no hay ninguna. */
+    /**
+     * Último periodo con nómina (roster) procesada, o null si no hay ninguna.
+     *
+     * @return int|null Id del periodo con fecha fin más reciente.
+     */
     public function currentRosterPeriodId(): ?int
     {
         // 15-oct-2026: el periodo vigente es el de FECHA más reciente con nómina
@@ -279,7 +326,7 @@ class OkrEmployeeBranchResolver
     public function rosterStatus(): array
     {
         $periodId = $this->currentRosterPeriodId();
-        $period = $periodId ? \App\Models\Period::query()->find($periodId) : null;
+        $period = $periodId ? Period::query()->find($periodId) : null;
         $daysOld = $period?->end_date ? (int) $period->end_date->diffInDays(now()) : null;
 
         return [
@@ -290,12 +337,16 @@ class OkrEmployeeBranchResolver
         ];
     }
 
-    /** Etiqueta del periodo de nómina vigente — la UI la muestra para explicar por qué alguien no aparece. */
+    /**
+     * Etiqueta del periodo de nómina vigente — la UI la muestra para explicar por qué alguien no aparece.
+     *
+     * @return string|null Etiqueta del periodo o null si no hay nómina.
+     */
     public function currentRosterPeriodLabel(): ?string
     {
         $periodId = $this->currentRosterPeriodId();
 
-        return $periodId !== null ? \App\Models\Period::query()->find($periodId)?->label : null;
+        return $periodId !== null ? Period::query()->find($periodId)?->label : null;
     }
 
     /**
@@ -304,7 +355,8 @@ class OkrEmployeeBranchResolver
      * ligada a otro id histórico de la misma persona: el seguimiento individual
      * suma por el grupo completo, nunca por coincidencia insegura de nombre libre.
      *
-     * @return int[]
+     * @param  int  $employeeId  Id de referencia.
+     * @return int[] Ids del grupo (al menos el propio si no tiene nombre normalizado).
      */
     public function canonicalIdsFor(int $employeeId): array
     {
@@ -332,6 +384,8 @@ class OkrEmployeeBranchResolver
      * OKR" cuando NO hay filtro de sucursal (D12 del cierre, 17-sep-2026).
      * `Employee::where('is_active', true)->count()` a secas sufre el MISMO bug
      * de duplicados que employeesForBranch() tenía antes de canonicalizar.
+     *
+     * @return int Personas únicas elegibles.
      */
     public function countAllActive(): int
     {
@@ -344,8 +398,12 @@ class OkrEmployeeBranchResolver
      * IDs de colaboradores ELEGIBLES cuya sucursal VIGENTE (membershipMap) es
      * $branchId — 16-oct-2026: una sola regla para el buscador, el conteo y
      * la validación de pertenencia.
+     *
+     * @param  int  $branchId  Sucursal oficial.
+     * @param  bool  $includeConflicts  Incluir también a quienes tienen conflicto de fuentes que involucra esta sucursal.
+     * @return Collection<int, int> Ids de Employee.
      */
-    private function employeeIdsForBranch(int $branchId, bool $includeConflicts = false): \Illuminate\Support\Collection
+    private function employeeIdsForBranch(int $branchId, bool $includeConflicts = false): Collection
     {
         $ids = $this->eligibleEmployeesQuery()->pluck('id')->map(fn ($id) => (int) $id)->all();
 
@@ -379,18 +437,31 @@ class OkrEmployeeBranchResolver
      * Nunca se exigen pagos ni colocación para pertenecer, ni se reescriben
      * periodos anteriores: un cambio de sucursal posterior simplemente es la
      * fuente más reciente.
+     *
+     * @param  int  $employeeId  Colaborador.
+     * @return int|null Sucursal oficial vigente o null (sin fuentes o en conflicto).
      */
     public function currentBranchIdFor(int $employeeId): ?int
     {
         return $this->membershipFor($employeeId)['branch_id'];
     }
 
+    /**
+     * ¿La sucursal vigente del colaborador es exactamente $branchId? (validación backend de OKR individual).
+     *
+     * @param  int  $employeeId  Colaborador.
+     * @param  int  $branchId  Sucursal del OKR.
+     * @return bool true si pertenece.
+     */
     public function employeeBelongsToBranch(int $employeeId, int $branchId): bool
     {
         return $this->currentBranchIdFor($employeeId) === $branchId;
     }
 
     /**
+     * Pertenencia de sucursal de un colaborador con su fuente y posible conflicto.
+     *
+     * @param  int  $employeeId  Colaborador.
      * @return array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string, conflict:?array}
      */
     public function membershipFor(int $employeeId): array
@@ -398,19 +469,24 @@ class OkrEmployeeBranchResolver
         return $this->membershipMap([$employeeId])[$employeeId];
     }
 
-    /** @var array<int, array> */
+    /**
+     * Caché en memoria employee_id => pertenencia calculada (se vacía al conciliar).
+     *
+     * @var array<int, array>
+     */
     private array $membershipCache = [];
 
     /**
-     * Versión en lote de membershipFor() — número fijo de consultas.
+     * Versión en lote de membershipFor() — número fijo de consultas. Solo
+     * calcula los ids que no estén ya en caché.
      *
-     * @param  int[]  $employeeIds
+     * @param  int[]  $employeeIds  Colaboradores.
      * @return array<int, array{branch_id:?int, branch_name:?string, route:?string, inactive_route:?string, source:?string, source_label:?string, conflict:?array}>
      */
     public function membershipMap(array $employeeIds): array
     {
         $employeeIds = array_values(array_unique(array_map('intval', $employeeIds)));
-        $pending = array_values(array_filter($employeeIds, fn ($id) => !isset($this->membershipCache[$id])));
+        $pending = array_values(array_filter($employeeIds, fn ($id) => ! isset($this->membershipCache[$id])));
 
         if ($pending !== []) {
             $this->computeMemberships($pending);
@@ -419,6 +495,19 @@ class OkrEmployeeBranchResolver
         return collect($employeeIds)->mapWithKeys(fn ($id) => [$id => $this->membershipCache[$id]])->all();
     }
 
+    /**
+     * Calcula la pertenencia de un lote y la guarda en $membershipCache.
+     * Reúne candidatos de 4 fuentes (ruta de cartera por código, nómina NOI,
+     * asignación de Reportería, directorio Lendus), traducidos a sucursal
+     * oficial, y elige el de fecha más reciente (a igual fecha, menor
+     * prioridad). Una conciliación OKR con evidencia igual o más reciente
+     * manda; si dos fuentes fuertes del mismo periodo discrepan, se marca
+     * conflicto y la sucursal queda null. Las rutas inactivas solo se informan.
+     *
+     * Efecto: lecturas de BD; escribe en la caché de la instancia.
+     *
+     * @param  int[]  $employeeIds  Ids aún no calculados.
+     */
     private function computeMemberships(array $employeeIds): void
     {
         $employees = Employee::query()->whereIn('id', $employeeIds)->get(['id', 'normalized_name'])->keyBy('id');
@@ -463,7 +552,7 @@ class OkrEmployeeBranchResolver
             $latestDate = $rows->max('end_date');
             $top = $rows->where('end_date', $latestDate)->sortByDesc('n')->first();
             $catalogRoute = BranchRouteCatalog::route($top->route_name);
-            if ($catalogRoute !== null && !$catalogRoute['active']) {
+            if ($catalogRoute !== null && ! $catalogRoute['active']) {
                 $inactiveRoute[$id] = $catalogRoute['route'];
 
                 continue;
@@ -511,7 +600,7 @@ class OkrEmployeeBranchResolver
             $d = $norm ? ($dirRows[$norm] ?? null) : null;
             if ($d && $directory && mb_strtoupper((string) $d->estatus) === 'ACTIVO'
                 && ($b = $officialId($d->inferred_branch_id ? (int) $d->inferred_branch_id : null, $d->inferred_branch_name))) {
-                $candidates[$id][] = [4, (string) ($directory['period_end'] ?? ''), $b, 'lendus_directory', 'Directorio Lendus ' . ($directory['period_label'] ?? 'vigente'), null];
+                $candidates[$id][] = [4, (string) ($directory['period_end'] ?? ''), $b, 'lendus_directory', 'Directorio Lendus '.($directory['period_label'] ?? 'vigente'), null];
             }
 
             $a = self::firstOfGroup($assignmentIdx, $assignments, $group);
@@ -520,7 +609,7 @@ class OkrEmployeeBranchResolver
             }
         }
 
-        $branchNames = \App\Models\Branch::query()->pluck('name', 'id');
+        $branchNames = Branch::query()->pluck('name', 'id');
         $reconciliations = $this->reconciliationsFor($groupOf, $employees);
         foreach ($employeeIds as $id) {
             // Fecha más reciente primero; a igual fecha, menor número de prioridad.
@@ -551,7 +640,7 @@ class OkrEmployeeBranchResolver
                     'route' => null,
                     'inactive_route' => $inactiveRoute[$id] ?? null,
                     'source' => 'okr_reconciliation',
-                    'source_label' => 'Conciliación autorizada OKR' . ($rec->evidence_date ? ' (evidencia al ' . substr((string) $rec->evidence_date, 0, 10) . ')' : ''),
+                    'source_label' => 'Conciliación autorizada OKR'.($rec->evidence_date ? ' (evidencia al '.substr((string) $rec->evidence_date, 0, 10).')' : ''),
                     'conflict' => null,
                 ];
 
@@ -569,7 +658,7 @@ class OkrEmployeeBranchResolver
                     'source_label' => self::CONFLICT_MESSAGE,
                     'conflict' => [
                         'message' => self::CONFLICT_MESSAGE,
-                        'detail' => collect($conflict)->map(fn ($c) => "{$c['label']}: " . ($c['branch_name'] ?? 'sucursal desconocida'))->implode(' · '),
+                        'detail' => collect($conflict)->map(fn ($c) => "{$c['label']}: ".($c['branch_name'] ?? 'sucursal desconocida'))->implode(' · '),
                         'evidence_date' => $best[1],
                         'branch_ids' => collect($conflict)->pluck('branch_id')->unique()->values()->all(),
                         'sources' => $conflict,
@@ -591,8 +680,13 @@ class OkrEmployeeBranchResolver
         }
     }
 
-    /** @return array<int, int> employee_id => posición de su primera fila. */
-    private static function firstIndexByEmployee(\Illuminate\Support\Collection $rows): array
+    /**
+     * Índice employee_id => posición de su primera fila en una colección ya ordenada.
+     *
+     * @param  Collection  $rows  Filas con employee_id.
+     * @return array<int, int> employee_id => posición de su primera fila.
+     */
+    private static function firstIndexByEmployee(Collection $rows): array
     {
         $idx = [];
         foreach ($rows as $i => $row) {
@@ -602,8 +696,15 @@ class OkrEmployeeBranchResolver
         return $idx;
     }
 
-    /** Primera fila (en el orden original) de cualquier id del grupo, o null. */
-    private static function firstOfGroup(array $idx, \Illuminate\Support\Collection $rows, array $group): ?object
+    /**
+     * Primera fila (en el orden original) de cualquier id del grupo, o null.
+     *
+     * @param  array<int, int>  $idx  Índice de firstIndexByEmployee().
+     * @param  Collection  $rows  Filas indexadas.
+     * @param  int[]  $group  Ids del grupo canónico.
+     * @return object|null Fila de menor posición.
+     */
+    private static function firstOfGroup(array $idx, Collection $rows, array $group): ?object
     {
         $best = null;
         foreach ($group as $employeeId) {
@@ -616,6 +717,7 @@ class OkrEmployeeBranchResolver
         return $best === null ? null : $rows->get($best);
     }
 
+    /** Mensaje para la UI cuando las fuentes de sucursal se contradicen. */
     public const CONFLICT_MESSAGE = 'Encontramos información diferente sobre la sucursal de este colaborador.';
 
     /**
@@ -623,14 +725,15 @@ class OkrEmployeeBranchResolver
      * canónico o su normalized_name). Tolera que la tabla aún no exista
      * (migración pendiente en el servidor).
      *
-     * @param  array<int, int[]>  $groupOf
-     * @return array<int, object>
+     * @param  array<int, int[]>  $groupOf  employee_id => ids de su grupo canónico.
+     * @param  Collection  $employees  Employees del lote (keyBy id, con normalized_name).
+     * @return array<int, object> employee_id => conciliación más reciente (employee_id, normalized_name, branch_id, evidence_date).
      */
-    private function reconciliationsFor(array $groupOf, \Illuminate\Support\Collection $employees): array
+    private function reconciliationsFor(array $groupOf, Collection $employees): array
     {
         static $hasTable = null;
-        $hasTable ??= \Illuminate\Support\Facades\Schema::hasTable('okr_branch_reconciliations');
-        if (!$hasTable || $groupOf === []) {
+        $hasTable ??= Schema::hasTable('okr_branch_reconciliations');
+        if (! $hasTable || $groupOf === []) {
             return [];
         }
 
@@ -656,6 +759,7 @@ class OkrEmployeeBranchResolver
     /**
      * Conflicto de sucursal vigente (o null) — para la UI y la validación.
      *
+     * @param  int  $employeeId  Colaborador.
      * @return array{message:string, detail:string, evidence_date:string, branch_ids:int[], sources:array}|null
      */
     public function branchConflictFor(int $employeeId): ?array
@@ -666,19 +770,29 @@ class OkrEmployeeBranchResolver
     /**
      * Registra una conciliación AUTORIZADA: la sucursal elegida debe ser una de
      * las que reportan las fuentes en conflicto (nunca una inventada).
+     *
+     * Efecto: INSERT en okr_branch_reconciliations y limpieza de la caché de pertenencias.
+     *
+     * @param  int  $employeeId  Colaborador con conflicto.
+     * @param  int  $branchId  Sucursal elegida (debe estar entre las del conflicto).
+     * @param  User  $user  Usuario que concilia.
+     * @param  string|null  $notes  Notas de la conciliación.
+     * @return OkrBranchReconciliation Conciliación registrada.
+     *
+     * @throws \RuntimeException Si no hay conflicto o la sucursal no es una de las fuentes.
      */
-    public function reconcileBranch(int $employeeId, int $branchId, \App\Models\User $user, ?string $notes = null): \App\Models\OkrBranchReconciliation
+    public function reconcileBranch(int $employeeId, int $branchId, User $user, ?string $notes = null): OkrBranchReconciliation
     {
         $conflict = $this->branchConflictFor($employeeId);
         if ($conflict === null) {
             throw new \RuntimeException('Este colaborador no tiene información contradictoria de sucursal que conciliar.');
         }
-        if (!in_array($branchId, $conflict['branch_ids'], true)) {
+        if (! in_array($branchId, $conflict['branch_ids'], true)) {
             throw new \RuntimeException('La sucursal elegida no corresponde a ninguna de las fuentes en conflicto.');
         }
 
         $chosen = collect($conflict['sources'])->firstWhere('branch_id', $branchId);
-        $rec = \App\Models\OkrBranchReconciliation::query()->create([
+        $rec = OkrBranchReconciliation::query()->create([
             'employee_id' => $employeeId,
             'normalized_name' => Employee::query()->whereKey($employeeId)->value('normalized_name'),
             'branch_id' => $branchId,
@@ -705,10 +819,10 @@ class OkrEmployeeBranchResolver
      */
     private function officialBranchIdResolver(): \Closure
     {
-        $branches = \App\Models\Branch::query()->get(['id', 'name']);
+        $branches = Branch::query()->get(['id', 'name']);
         $idByKey = $branches->mapWithKeys(fn ($b) => [BranchRouteCatalog::normalize($b->name) => (int) $b->id])->all();
         $nameById = $branches->pluck('name', 'id')->all();
-        $routeResolver = app(\App\Services\BranchResolverService::class);
+        $routeResolver = app(BranchResolverService::class);
 
         return function (?int $branchId, ?string $name) use ($idByKey, $nameById, $routeResolver): ?int {
             $raw = $name ?? ($branchId !== null ? ($nameById[$branchId] ?? null) : null);
@@ -757,7 +871,7 @@ class OkrEmployeeBranchResolver
                 ->get(['employee_id', 'movement_type', 'reconciliation_status'])
                 ->each(function ($r) use (&$pendingAbsence) {
                     $status = RosterMovementStatus::resolve($r->reconciliation_status, $r->movement_type, false);
-                    if (!RosterMovementStatus::isConfirmedBaja($status, $r->movement_type) && $status !== RosterMovementStatus::AUSENCIA_JUSTIFICADA) {
+                    if (! RosterMovementStatus::isConfirmedBaja($status, $r->movement_type) && $status !== RosterMovementStatus::AUSENCIA_JUSTIFICADA) {
                         $pendingAbsence[(int) $r->employee_id] = RosterMovementStatus::label($status);
                     }
                 });
@@ -780,30 +894,30 @@ class OkrEmployeeBranchResolver
             $list = [];
             $norm = $employees->get($id)?->normalized_name;
             if ($norm !== null && isset($inactiveOnly[$norm]) && collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($paidDespite[$g]))) {
-                $list[] = ['code' => 'labor_contradiction', 'label' => 'Cobra en la nómina ' . ($rosterLabel ?? 'vigente') . ' pero un directorio anterior lo marca INACTIVO · concilia en Colaboradores'];
+                $list[] = ['code' => 'labor_contradiction', 'label' => 'Cobra en la nómina '.($rosterLabel ?? 'vigente').' pero un directorio anterior lo marca INACTIVO · concilia en Colaboradores'];
             }
-            if ($rosterPeriodId !== null && !collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($inRoster[$g]))) {
+            if ($rosterPeriodId !== null && ! collect($this->canonicalIdsFor($id))->contains(fn ($g) => isset($inRoster[$g]))) {
                 // Regla de negocio (19-oct-2026): a falta de pago de nómina NOI en
                 // el periodo vigente, el gestor se MARCA como baja (con el mes) en
                 // el selector de OKR. Es solo una señal de presentación: NO cambia
                 // su elegibilidad (sigue siendo seleccionable, ver más abajo) ni la
                 // baja CONFIRMADA del roster, que exige evidencia dura y es la única
                 // que excluye de verdad (confirmedBajaQuery / employeeIsActive).
-                $list[] = ['code' => 'baja_sin_noi', 'label' => 'Baja ' . ($rosterLabel ?? 'del periodo vigente') . ' · sin pago de nómina NOI'];
+                $list[] = ['code' => 'baja_sin_noi', 'label' => 'Baja '.($rosterLabel ?? 'del periodo vigente').' · sin pago de nómina NOI'];
             }
             $pendingLabel = collect($this->canonicalIdsFor($id))->map(fn ($g) => $pendingAbsence[$g] ?? null)->filter()->first();
             if ($pendingLabel !== null) {
-                $list[] = ['code' => 'pending_reconciliation', 'label' => "{$pendingLabel} en " . ($rosterLabel ?? 'el periodo vigente') . ' · pendiente de conciliación en Colaboradores'];
+                $list[] = ['code' => 'pending_reconciliation', 'label' => "{$pendingLabel} en ".($rosterLabel ?? 'el periodo vigente').' · pendiente de conciliación en Colaboradores'];
             }
             $codes = $codesByNorm[$employees->get($id)?->normalized_name] ?? [];
-            if ($latestPortfolio && $codes !== [] && !collect($codes)->contains(fn ($c) => isset($producing[$c]))) {
+            if ($latestPortfolio && $codes !== [] && ! collect($codes)->contains(fn ($c) => isset($producing[$c]))) {
                 $list[] = ['code' => 'no_activity', 'label' => "Sin actividad en cartera ({$latestPortfolio->name})"];
             }
             if ($memberships[$id]['inactive_route']) {
                 $list[] = ['code' => 'inactive_route', 'label' => "Ruta {$memberships[$id]['inactive_route']} inactiva (solo histórico)"];
             }
             if (($memberships[$id]['conflict'] ?? null) !== null) {
-                $list[] = ['code' => 'branch_conflict', 'label' => self::CONFLICT_MESSAGE . ' ' . $memberships[$id]['conflict']['detail']];
+                $list[] = ['code' => 'branch_conflict', 'label' => self::CONFLICT_MESSAGE.' '.$memberships[$id]['conflict']['detail']];
             } elseif ($memberships[$id]['branch_id'] === null) {
                 $list[] = ['code' => 'branch_pending', 'label' => 'Sucursal vigente pendiente de verificar'];
             }
@@ -819,13 +933,16 @@ class OkrEmployeeBranchResolver
      * aparte para que StoreObjectiveRequest pueda rechazar en BACKEND (nunca
      * solo ocultar en el wizard) un `employee_id` de alguien en baja enviado
      * directamente, sin depender de que el frontend ya lo haya filtrado.
+     *
+     * @param  int  $employeeId  Colaborador a verificar.
+     * @return bool true si no tiene baja manual y algún id de su grupo es elegible.
      */
     public function employeeIsActive(int $employeeId): bool
     {
         // Misma regla que el buscador (eligibleEmployeesQuery) — evaluada sobre
         // el grupo canónico: el id enviado puede ser el histórico de la persona,
         // pero una baja manual explícita de ESE id nunca se ignora.
-        if (!Employee::query()->whereKey($employeeId)->where('is_active', true)->exists()) {
+        if (! Employee::query()->whereKey($employeeId)->where('is_active', true)->exists()) {
             return false;
         }
 

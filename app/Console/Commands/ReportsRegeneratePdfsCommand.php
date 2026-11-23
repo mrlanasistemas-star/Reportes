@@ -45,15 +45,23 @@ class ReportsRegeneratePdfsCommand extends Command
     /** Marca de "ya regenerado con este motor" en PeriodRadiographyExport.template_version. */
     private const ENGINE_VERSION = 'browsershot-1';
 
+    /**
+     * Valida el filtro (`--period`, `--run` o `--all`), reúne los PDFs históricos objetivo, omite
+     * los ya regenerados con el motor vigente (salvo `--force`) y, fuera de `--dry-run`, regenera
+     * cada uno en una ruta nueva y solo tras validarlo actualiza el puntero en BD.
+     *
+     * @param  RadiografiaExportService  $service  Servicio de exportación (exportPdf / exportPdfWithConfig).
+     * @return int SUCCESS al terminar; FAILURE si no se indicó ningún filtro (o si hubo fallos).
+     */
     public function handle(RadiografiaExportService $service): int
     {
         $periodOpt = $this->option('period');
-        $runOpt    = $this->option('run');
-        $all       = (bool) $this->option('all');
-        $dryRun    = (bool) $this->option('dry-run');
-        $force     = (bool) $this->option('force');
+        $runOpt = $this->option('run');
+        $all = (bool) $this->option('all');
+        $dryRun = (bool) $this->option('dry-run');
+        $force = (bool) $this->option('force');
 
-        if (!$periodOpt && !$runOpt && !$all) {
+        if (! $periodOpt && ! $runOpt && ! $all) {
             $this->error('Especifica --period=<id>, --run=<id> o --all.');
 
             return self::FAILURE;
@@ -70,7 +78,7 @@ class ReportsRegeneratePdfsCommand extends Command
             return self::SUCCESS;
         }
 
-        if (!$force) {
+        if (! $force) {
             $before = $targets->count();
             $targets = $targets->reject(fn ($t) => $t['export']->template_version === self::ENGINE_VERSION)->values();
             $skipped = $before - $targets->count();
@@ -101,7 +109,7 @@ class ReportsRegeneratePdfsCommand extends Command
         );
 
         if ($dryRun) {
-            $this->info('--dry-run: no se generó ni sustituyó ningún archivo. ' . $targets->count() . ' PDF(s) serían regenerados.');
+            $this->info('--dry-run: no se generó ni sustituyó ningún archivo. '.$targets->count().' PDF(s) serían regenerados.');
 
             return self::SUCCESS;
         }
@@ -110,21 +118,21 @@ class ReportsRegeneratePdfsCommand extends Command
         $failed = 0;
 
         foreach ($targets as $target) {
-            $label = $target['period']->label . ' · ' . ($target['run']->report_type ?? 'simple') . '/' . $this->scopeLabel($target['run']);
+            $label = $target['period']->label.' · '.($target['run']->report_type ?? 'simple').'/'.$this->scopeLabel($target['run']);
 
             try {
                 $newPath = $this->regenerateOne($service, $target);
 
-                if (!file_exists($newPath) || filesize($newPath) === 0) {
+                if (! file_exists($newPath) || filesize($newPath) === 0) {
                     throw new \RuntimeException('El PDF regenerado quedó vacío o no se escribió en disco.');
                 }
 
                 $oldPath = $target['export']->export_path;
 
                 $target['export']->update([
-                    'export_path'      => $newPath,
+                    'export_path' => $newPath,
                     'template_version' => self::ENGINE_VERSION,
-                    'exported_at'      => now(),
+                    'exported_at' => now(),
                 ]);
 
                 if ($target['run'] && $target['run']->output_pdf_path) {
@@ -138,7 +146,7 @@ class ReportsRegeneratePdfsCommand extends Command
                     'export_id' => $target['export']->id,
                     'period_id' => $target['period']->id,
                     'exception' => get_class($e),
-                    'message'   => $e->getMessage(),
+                    'message' => $e->getMessage(),
                 ]);
                 $this->error("FALLO {$label}: {$e->getMessage()}");
                 $failed++;
@@ -151,46 +159,66 @@ class ReportsRegeneratePdfsCommand extends Command
         return $failed > 0 ? self::FAILURE : self::SUCCESS;
     }
 
+    /**
+     * @param  PeriodRadiographyRun|null  $run  Corrida asociada al PDF.
+     * @return string Etiqueta del alcance: general, branch#ID, employee#ID…
+     */
     private function scopeLabel(?PeriodRadiographyRun $run): string
     {
-        if (!$run || !$run->scope || $run->scope === 'general') {
+        if (! $run || ! $run->scope || $run->scope === 'general') {
             return 'general';
         }
 
-        return $run->scope . ($run->branch_id ? "#{$run->branch_id}" : ($run->employee_id ? "#{$run->employee_id}" : ''));
+        return $run->scope.($run->branch_id ? "#{$run->branch_id}" : ($run->employee_id ? "#{$run->employee_id}" : ''));
     }
 
+    /**
+     * Regenera un PDF: sin corrida usa exportPdf() del periodo; con corrida reconstruye su
+     * configuración (alcance, tipo, sucursal, colaborador, comparativo) y usa exportPdfWithConfig().
+     *
+     * @param  RadiografiaExportService  $service  Servicio de exportación.
+     * @param  array  $target  Objetivo con export, run y period.
+     * @return string Ruta del PDF nuevo.
+     */
     private function regenerateOne(RadiografiaExportService $service, array $target): string
     {
         $run = $target['run'];
 
-        if (!$run) {
+        if (! $run) {
             return $service->exportPdf($target['period']);
         }
 
         $config = array_filter([
-            'scope'              => $run->scope ?: 'general',
-            'report_type'        => $run->report_type ?: 'simple',
-            'branch_id'          => $run->branch_id,
-            'employee_id'        => $run->employee_id,
-            'compare_period_id'  => $run->comparison_period_id,
+            'scope' => $run->scope ?: 'general',
+            'report_type' => $run->report_type ?: 'simple',
+            'branch_id' => $run->branch_id,
+            'employee_id' => $run->employee_id,
+            'compare_period_id' => $run->comparison_period_id,
         ], fn ($v) => $v !== null);
 
         return $service->exportPdfWithConfig($target['period'], $config);
     }
 
-    /** @return Collection<int, array{export: PeriodRadiographyExport, run: ?PeriodRadiographyRun, period: Period}|null> */
+    /**
+     * Reúne los PeriodRadiographyExport de tipo PDF según el filtro y arma cada objetivo
+     * (null cuando el export está huérfano).
+     *
+     * @param  string|null  $periodOpt  Valor de `--period`.
+     * @param  string|null  $runOpt  Valor de `--run`.
+     * @param  bool  $all  true para todos los periodos.
+     * @return Collection<int, array{export: PeriodRadiographyExport, run: ?PeriodRadiographyRun, period: Period}|null>
+     */
     private function collectTargets(?string $periodOpt, ?string $runOpt, bool $all): Collection
     {
         if ($runOpt) {
             $run = PeriodRadiographyRun::find((int) $runOpt);
-            if (!$run) {
+            if (! $run) {
                 $this->error("No existe el run #{$runOpt}.");
 
                 return collect();
             }
             $export = PeriodRadiographyExport::where('run_id', $run->id)->where('file_type', 'pdf')->latest('id')->first();
-            if (!$export) {
+            if (! $export) {
                 $this->error("El run #{$run->id} no tiene un PDF registrado en Histórico.");
 
                 return collect();
@@ -204,7 +232,7 @@ class ReportsRegeneratePdfsCommand extends Command
             $summaryIds = PeriodSummary::where('period_id', $periodId)->pluck('id');
 
             $general = PeriodRadiographyExport::where('file_type', 'pdf')->whereNull('run_id')->whereIn('period_summary_id', $summaryIds)->get();
-            $runIds  = PeriodRadiographyRun::where('period_id', $periodId)->pluck('id');
+            $runIds = PeriodRadiographyRun::where('period_id', $periodId)->pluck('id');
             $filtered = PeriodRadiographyExport::where('file_type', 'pdf')->whereIn('run_id', $runIds)->get();
 
             return $general->map(fn ($e) => $this->buildTarget($e, null))
@@ -212,14 +240,20 @@ class ReportsRegeneratePdfsCommand extends Command
         }
 
         // --all
-        $general  = PeriodRadiographyExport::where('file_type', 'pdf')->whereNull('run_id')->get();
+        $general = PeriodRadiographyExport::where('file_type', 'pdf')->whereNull('run_id')->get();
         $filtered = PeriodRadiographyExport::where('file_type', 'pdf')->whereNotNull('run_id')->get();
 
         return $general->map(fn ($e) => $this->buildTarget($e, null))
             ->concat($filtered->map(fn ($e) => $this->buildTarget($e, PeriodRadiographyRun::find($e->run_id))));
     }
 
-    /** @return array{export: PeriodRadiographyExport, run: ?PeriodRadiographyRun, period: Period}|null */
+    /**
+     * Arma el objetivo de regeneración resolviendo el periodo del export (vía corrida o summary).
+     *
+     * @param  PeriodRadiographyExport  $export  Registro del PDF histórico.
+     * @param  PeriodRadiographyRun|null  $run  Corrida asociada, si existe.
+     * @return array{export: PeriodRadiographyExport, run: ?PeriodRadiographyRun, period: Period}|null Null si no se puede resolver el periodo.
+     */
     private function buildTarget(PeriodRadiographyExport $export, ?PeriodRadiographyRun $run): ?array
     {
         $period = null;
@@ -228,15 +262,15 @@ class ReportsRegeneratePdfsCommand extends Command
             $period = $run->period;
         }
 
-        if (!$period && $export->period_summary_id) {
+        if (! $period && $export->period_summary_id) {
             $period = PeriodSummary::find($export->period_summary_id)?->period;
         }
 
-        if (!$period && isset($export->metadata['period_id'])) {
+        if (! $period && isset($export->metadata['period_id'])) {
             $period = Period::find($export->metadata['period_id']);
         }
 
-        if (!$period) {
+        if (! $period) {
             return null;
         }
 

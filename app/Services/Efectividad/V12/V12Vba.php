@@ -158,16 +158,33 @@ final class V12Vba
         return checkdate($m, $d, $y) ? self::dia($y, $m, $d) : null;
     }
 
+    /**
+     * Fecha → número de día (días desde 1970-01-01 en UTC), representación interna del motor.
+     *
+     * @param  int  $y  año
+     * @param  int  $m  mes
+     * @param  int  $d  día
+     */
     public static function dia(int $y, int $m, int $d): int
     {
         return intdiv((int) (new DateTimeImmutable(sprintf('%04d-%02d-%02d', $y, $m, $d), new DateTimeZone('UTC')))->getTimestamp(), 86400);
     }
 
+    /**
+     * Número de día → Y-m-d.
+     *
+     * @param  int  $dia  día
+     */
     public static function ymd(int $dia): string
     {
         return gmdate('Y-m-d', $dia * 86400);
     }
 
+    /**
+     * Número de día → d/m/Y.
+     *
+     * @param  int  $dia  día
+     */
     public static function dmy(int $dia): string
     {
         return gmdate('d/m/Y', $dia * 86400);

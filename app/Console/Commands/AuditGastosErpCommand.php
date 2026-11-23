@@ -7,6 +7,18 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-gastos-erp` — auditoría de Gastos ERP con el filtro único por
+ * Sucursal: excluye Corporativo y sucursal vacía; Gasolina y Financiamiento Celular se
+ * reclasifican a Nómina (misma regla que BranchRadiographyCalculator); el resto entra a OPEX.
+ * El monto usado es "Total final requisición" (paid_amount o amount).
+ *
+ * Escribe en BD: NO (solo CSV con `--export`). Usa JSON_EXTRACT (requiere MySQL).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-gastos-erp 21
+ *   php artisan reportes:audit-gastos-erp 21 --detail --export
+ */
 class AuditGastosErpCommand extends Command
 {
     protected $signature = 'reportes:audit-gastos-erp
@@ -16,23 +28,32 @@ class AuditGastosErpCommand extends Command
 
     protected $description = 'Auditoría Gastos ERP: filtro único por Sucursal (excluye Corporativo y sucursal vacía)';
 
+    /**
+     * Carga los gastos de la fuente gastos_erp, aplica el filtro por sucursal y la reclasificación
+     * a nómina, e imprime el resumen de integración, el desglose por concepto incluido y, con
+     * `--detail`, cada fila con su motivo.
+     *
+     * @return int 0 al terminar; 1 si el periodo o la fuente gastos_erp no existen.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         $erpId = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
-        if (!$erpId) {
+        if (! $erpId) {
             $this->error('Fuente gastos_erp no encontrada en data_sources.');
+
             return 1;
         }
 
@@ -68,95 +89,95 @@ class AuditGastosErpCommand extends Command
         // NOMINA_EXPENSE_CATS: same list as BranchRadiographyCalculator
         $nominaExpenseCats = ['Gasolina', 'Financiamiento Celular'];
 
-        $totalCrudo                 = 0.0;
-        $totalExclCorp              = 0.0;
-        $totalExclSinSuc            = 0.0;
-        $totalCargado               = 0.0;  // after branch filter, before Nómina reclassification
-        $totalReclasificadoNomina   = 0.0;
-        $totalOpex                  = 0.0;
+        $totalCrudo = 0.0;
+        $totalExclCorp = 0.0;
+        $totalExclSinSuc = 0.0;
+        $totalCargado = 0.0;  // after branch filter, before Nómina reclassification
+        $totalReclasificadoNomina = 0.0;
+        $totalOpex = 0.0;
 
-        $conceptoTotales       = [];
-        $nominaReclasDetalle   = [];
-        $detailRows            = [];
+        $conceptoTotales = [];
+        $nominaReclasDetalle = [];
+        $detailRows = [];
 
         foreach ($rows as $row) {
-            $monto      = (float) ($row->paid_amount ?: $row->amount);
-            $sucursal   = (string) ($row->sucursal ?? '');
-            $sucUpper   = strtoupper(trim($sucursal));
-            $estatus    = strtoupper(trim(str_replace(['-','_'], ' ', (string) ($row->estatus_raw ?? ''))));
-            $concepto   = (string) ($row->concept ?? '');
-            $categoria  = (string) ($row->category ?? '');
+            $monto = (float) ($row->paid_amount ?: $row->amount);
+            $sucursal = (string) ($row->sucursal ?? '');
+            $sucUpper = strtoupper(trim($sucursal));
+            $estatus = strtoupper(trim(str_replace(['-', '_'], ' ', (string) ($row->estatus_raw ?? ''))));
+            $concepto = (string) ($row->concept ?? '');
+            $categoria = (string) ($row->category ?? '');
 
             $totalCrudo += $monto;
 
-            $motivo   = '';
+            $motivo = '';
             $incluido = true;
-            $destino  = 'OPEX';
+            $destino = 'OPEX';
 
             if ($row->branch_id === null || $sucursal === '') {
                 $incluido = false;
                 $totalExclSinSuc += $monto;
-                $motivo  = 'EXCLUIDO: Sin sucursal asignada';
+                $motivo = 'EXCLUIDO: Sin sucursal asignada';
                 $destino = 'Excluido';
             } elseif ($sucUpper === 'CORPORATIVO') {
                 $incluido = false;
                 $totalExclCorp += $monto;
-                $motivo  = 'EXCLUIDO: Sucursal Corporativo';
+                $motivo = 'EXCLUIDO: Sucursal Corporativo';
                 $destino = 'Excluido';
             } elseif (in_array($categoria, $nominaExpenseCats, true)) {
                 // Reclassified to Nómina y Capital Humano — counted in gastos_erp_cargado but not OPEX
                 $totalCargado += $monto;
                 $totalReclasificadoNomina += $monto;
-                $motivo  = "RECLASIFICADO a Nómina: {$categoria}";
+                $motivo = "RECLASIFICADO a Nómina: {$categoria}";
                 $destino = 'Nómina y Capital Humano';
                 $incluido = false;
                 $nominaReclasDetalle[$categoria] = ($nominaReclasDetalle[$categoria] ?? 0.0) + $monto;
             } else {
                 $totalCargado += $monto;
-                $totalOpex    += $monto;
+                $totalOpex += $monto;
                 $motivo = 'INCLUIDO en OPEX';
-                $label  = $concepto ?: $categoria ?: 'Sin concepto';
+                $label = $concepto ?: $categoria ?: 'Sin concepto';
                 $conceptoTotales[$label] = ($conceptoTotales[$label] ?? 0.0) + $monto;
             }
 
             $detailRows[] = [
-                'folio'     => $row->id,
-                'sucursal'  => $sucursal ?: '(sin sucursal)',
-                'estatus'   => $estatus,
-                'concepto'  => $concepto,
+                'folio' => $row->id,
+                'sucursal' => $sucursal ?: '(sin sucursal)',
+                'estatus' => $estatus,
+                'concepto' => $concepto,
                 'categoria' => $categoria,
-                'obs'       => mb_substr((string)($row->observations ?? ''), 0, 50),
-                'fecha'     => $row->expense_date,
-                'monto'     => $monto,
-                'incluido'  => $incluido ? 'SÍ' : 'NO',
-                'motivo'    => $motivo,
-                'destino'   => $destino,
+                'obs' => mb_substr((string) ($row->observations ?? ''), 0, 50),
+                'fecha' => $row->expense_date,
+                'monto' => $monto,
+                'incluido' => $incluido ? 'SÍ' : 'NO',
+                'motivo' => $motivo,
+                'destino' => $destino,
             ];
         }
 
         // ── Resumen ──────────────────────────────────────────────────────────
         $this->line('');
         $this->info('════ RESUMEN — INTEGRACIÓN ERP ════');
-        $this->line(str_pad('ERP total crudo (todos los registros)',      48) . '$' . number_format($totalCrudo, 2));
-        $this->line(str_pad('(-) Excluido: Sucursal Corporativo',         48) . '$' . number_format($totalExclCorp, 2));
-        $this->line(str_pad('(-) Excluido: Sin sucursal asignada',        48) . '$' . number_format($totalExclSinSuc, 2));
+        $this->line(str_pad('ERP total crudo (todos los registros)', 48).'$'.number_format($totalCrudo, 2));
+        $this->line(str_pad('(-) Excluido: Sucursal Corporativo', 48).'$'.number_format($totalExclCorp, 2));
+        $this->line(str_pad('(-) Excluido: Sin sucursal asignada', 48).'$'.number_format($totalExclSinSuc, 2));
         $this->line(str_repeat('─', 64));
-        $this->line(str_pad('ERP total cargado (sucursales operativas)',   48) . '$' . number_format($totalCargado, 2));
-        $this->line(str_pad('(-) Reclasificado a Nómina/Capital Humano',  48) . '$' . number_format($totalReclasificadoNomina, 2));
+        $this->line(str_pad('ERP total cargado (sucursales operativas)', 48).'$'.number_format($totalCargado, 2));
+        $this->line(str_pad('(-) Reclasificado a Nómina/Capital Humano', 48).'$'.number_format($totalReclasificadoNomina, 2));
         foreach ($nominaReclasDetalle as $cat => $amt) {
-            $this->line(str_pad("    → {$cat}", 48) . '$' . number_format($amt, 2));
+            $this->line(str_pad("    → {$cat}", 48).'$'.number_format($amt, 2));
         }
         $this->line(str_repeat('─', 64));
-        $this->info(str_pad('(=) ERP FINAL OPEX',                         48) . '$' . number_format($totalOpex, 2));
+        $this->info(str_pad('(=) ERP FINAL OPEX', 48).'$'.number_format($totalOpex, 2));
 
         // ── Por concepto ─────────────────────────────────────────────────────
         $this->line('');
         $this->info('════ DESGLOSE POR CONCEPTO (incluidos) ════');
         arsort($conceptoTotales);
-        $this->line(str_pad('Concepto', 45) . 'Monto');
+        $this->line(str_pad('Concepto', 45).'Monto');
         $this->line(str_repeat('─', 65));
         foreach ($conceptoTotales as $con => $amt) {
-            $this->line(str_pad(mb_substr($con, 0, 43), 45) . '$' . number_format($amt, 2));
+            $this->line(str_pad(mb_substr($con, 0, 43), 45).'$'.number_format($amt, 2));
         }
 
         // ── Detalle fila por fila ─────────────────────────────────────────────
@@ -164,20 +185,20 @@ class AuditGastosErpCommand extends Command
             $this->line('');
             $this->info('════ DETALLE FILA A FILA ════');
             $this->line(
-                str_pad('ID', 8) .
-                str_pad('Sucursal', 22) .
-                str_pad('Concepto', 32) .
-                str_pad('Monto', 16) .
-                str_pad('Destino', 28) .
+                str_pad('ID', 8).
+                str_pad('Sucursal', 22).
+                str_pad('Concepto', 32).
+                str_pad('Monto', 16).
+                str_pad('Destino', 28).
                 'Motivo'
             );
             $this->line(str_repeat('─', 140));
             foreach ($detailRows as $r) {
-                $line = str_pad($r['folio'], 8) .
-                        str_pad(mb_substr($r['sucursal'], 0, 20), 22) .
-                        str_pad(mb_substr($r['concepto'], 0, 30), 32) .
-                        str_pad('$' . number_format($r['monto'], 2), 16) .
-                        str_pad(mb_substr($r['destino'], 0, 26), 28) .
+                $line = str_pad($r['folio'], 8).
+                        str_pad(mb_substr($r['sucursal'], 0, 20), 22).
+                        str_pad(mb_substr($r['concepto'], 0, 30), 32).
+                        str_pad('$'.number_format($r['monto'], 2), 16).
+                        str_pad(mb_substr($r['destino'], 0, 26), 28).
                         $r['motivo'];
                 if ($r['destino'] === 'OPEX') {
                     $this->line($line);
@@ -197,28 +218,34 @@ class AuditGastosErpCommand extends Command
         return 0;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV de detalle de los gastos ERP.
+     *
+     * @param  int  $periodId  ID del periodo (va en el nombre del archivo).
+     * @param  array  $rows  Filas de detalle generadas en handle().
+     */
     private function exportCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $file = "gastos_erp_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "gastos_erp_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
 
-        $lines   = [];
+        $lines = [];
         $headers = ['ID', 'Sucursal', 'Estatus', 'Concepto', 'Categoría', 'Observación', 'Fecha', 'Monto', 'Destino', 'Motivo'];
         $lines[] = implode(',', $headers);
 
         foreach ($rows as $r) {
             $lines[] = implode(',', [
                 $r['folio'],
-                '"' . str_replace('"', '""', $r['sucursal']) . '"',
-                '"' . str_replace('"', '""', $r['estatus']) . '"',
-                '"' . str_replace('"', '""', $r['concepto']) . '"',
-                '"' . str_replace('"', '""', $r['categoria']) . '"',
-                '"' . str_replace('"', '""', $r['obs']) . '"',
+                '"'.str_replace('"', '""', $r['sucursal']).'"',
+                '"'.str_replace('"', '""', $r['estatus']).'"',
+                '"'.str_replace('"', '""', $r['concepto']).'"',
+                '"'.str_replace('"', '""', $r['categoria']).'"',
+                '"'.str_replace('"', '""', $r['obs']).'"',
                 $r['fecha'] ?? '',
                 number_format($r['monto'], 2, '.', ''),
-                '"' . str_replace('"', '""', $r['destino']) . '"',
-                '"' . str_replace('"', '""', $r['motivo']) . '"',
+                '"'.str_replace('"', '""', $r['destino']).'"',
+                '"'.str_replace('"', '""', $r['motivo']).'"',
             ]);
         }
 

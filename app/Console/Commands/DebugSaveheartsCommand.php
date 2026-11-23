@@ -5,26 +5,43 @@ namespace App\Console\Commands;
 use App\Models\Recovery;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:debug-savehearts` — estadísticas de filas Savehearts/seguros en
+ * `fact_recoveries` para el period_id exacto (sin expandir semanas): total de filas, filas
+ * Savehearts, CRECE (con participación > 0) y no-CRECE, con montos.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-savehearts 21
+ */
 class DebugSaveheartsCommand extends Command
 {
-    protected $signature   = 'reportes:debug-savehearts {period_id}';
+    protected $signature = 'reportes:debug-savehearts {period_id}';
+
     protected $description = 'Muestra estadísticas de filas Savehearts/seguros en fact_recoveries para un periodo.';
 
+    /**
+     * Cuenta y resume las filas Savehearts del periodo.
+     *
+     * @return int 0 al terminar; 1 si no hay registros de recuperación en el periodo.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
 
-        $total      = Recovery::where('period_id', $periodId)->count();
+        $total = Recovery::where('period_id', $periodId)->count();
         $savehearts = Recovery::where('period_id', $periodId)->where('is_savehearts', true)->count();
-        $crece      = Recovery::where('period_id', $periodId)
+        $crece = Recovery::where('period_id', $periodId)
             ->where('is_savehearts', true)
             ->where('savehearts_crece_share', '>', 0)
             ->count();
-        $nonCrece   = $savehearts - $crece;
+        $nonCrece = $savehearts - $crece;
 
         if ($total === 0) {
             $this->warn("No hay registros en fact_recoveries para el periodo {$periodId}.");
             $this->line('Asegúrate de haber importado los archivos con php artisan reportes:reprocess-period.');
+
             return 1;
         }
 
@@ -36,8 +53,8 @@ class DebugSaveheartsCommand extends Command
         $this->line(sprintf('    – No CRECE (excluidos)     : %d', $nonCrece));
         $this->line(sprintf('    – CRECE (30%% a EBITDA)     : %d', $crece));
 
-        $sumNormal     = Recovery::where('period_id', $periodId)->where('is_savehearts', false)->sum('total_amount');
-        $sumShCrece    = Recovery::where('period_id', $periodId)->where('is_savehearts', true)->sum('savehearts_crece_share');
+        $sumNormal = Recovery::where('period_id', $periodId)->where('is_savehearts', false)->sum('total_amount');
+        $sumShCrece = Recovery::where('period_id', $periodId)->where('is_savehearts', true)->sum('savehearts_crece_share');
         $sumShNonCrece = Recovery::where('period_id', $periodId)
             ->where('is_savehearts', true)
             ->where('savehearts_crece_share', 0)

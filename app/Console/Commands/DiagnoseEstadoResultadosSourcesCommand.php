@@ -32,6 +32,19 @@ class DiagnoseEstadoResultadosSourcesCommand extends Command
 
     protected $description = 'Estado de Resultados: explica qué fuentes ve el ER en un periodo y por qué alguna falta (sólo lectura).';
 
+    /**
+     * Resuelve el periodo, inspecciona las fuentes de Carga de archivos que usa el ER, agrupa los
+     * gastos ERP por universo (sucursal operativa, CORPORATIVO, sin sucursal…), revisa otras fuentes
+     * con sucursal CORPORATIVO, los estados de cuenta bancarios y el NOI corporativo, y lo imprime
+     * en texto legible o JSON (`--json`). Advierte si existe otro periodo mensual del mismo mes.
+     *
+     * @param  PeriodDataIds  $dataIds  Resuelve los period_id de datos del periodo (igual que Radiografía).
+     * @param  UploadModuleInspector  $inspector  Diagnostica el estado de cada fuente de Carga de archivos.
+     * @param  ErpExpenseRepository  $erp  Repositorio de gastos ERP por periodo.
+     * @param  CorporatePayrollRepository  $corp  Repositorio del NOI corporativo del ER.
+     * @param  BranchRadiographyCalculator  $branches  Se usa para obtener los IDs de sucursal CORPORATIVO.
+     * @return int SUCCESS al terminar; FAILURE si no se encontró el periodo mensual.
+     */
     public function handle(PeriodDataIds $dataIds, UploadModuleInspector $inspector, ErpExpenseRepository $erp, CorporatePayrollRepository $corp, BranchRadiographyCalculator $branches): int
     {
         $period = $this->resolvePeriod((string) $this->argument('periodo'));
@@ -140,6 +153,12 @@ class DiagnoseEstadoResultadosSourcesCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Busca un periodo mensual por ID, código, AAAA-MM o nombre/etiqueta (sin distinguir mayúsculas).
+     *
+     * @param  string  $arg  Texto tecleado por el usuario.
+     * @return Period|null Periodo mensual encontrado o null.
+     */
     private function resolvePeriod(string $arg): ?Period
     {
         $arg = trim($arg);

@@ -12,12 +12,19 @@ use Illuminate\Support\Facades\Log;
  * acción, campo, antes/después) en vez de crear una tabla paralela — con
  * auditable_type 'user_account' o 'role'. Nunca guarda contraseñas ni tokens.
  * Si la escritura falla, la acción del administrador NO se revierte (se registra en el log).
+ *
+ * Lo usan los controladores de Usuarios/Roles e invitaciones para registrar
+ * cada cambio y la pantalla de historial para listarlos.
  */
 class UserAccessAuditLogger
 {
+    /** auditable_type para acciones sobre cuentas de usuario. */
     public const TYPE_USER = 'user_account';
+
+    /** auditable_type para acciones sobre roles. */
     public const TYPE_ROLE = 'role';
 
+    /** Etiqueta en español que se muestra en el historial para cada clave de acción. */
     public const LABELS = [
         'user_created' => 'Creó el usuario',
         'access_enabled' => 'Activó el acceso',
@@ -35,6 +42,22 @@ class UserAccessAuditLogger
         'role_deleted' => 'Eliminó el rol',
     ];
 
+    /**
+     * Inserta un renglón en `okr_audit_logs` con la acción de administración.
+     *
+     * Si no hay actor (p. ej. procesos de sistema) no registra nada. Cualquier
+     * error de escritura se atrapa y solo se deja un warning en el log de Laravel,
+     * para no revertir la acción del administrador.
+     *
+     * @param  User|null  $actor  Usuario que ejecutó la acción.
+     * @param  string  $type  TYPE_USER o TYPE_ROLE.
+     * @param  int  $id  Id del usuario o rol afectado.
+     * @param  string  $action  Clave de la acción (ver LABELS).
+     * @param  string|null  $field  Campo modificado, si aplica.
+     * @param  string|null  $old  Valor anterior (nunca contraseñas ni tokens).
+     * @param  string|null  $new  Valor nuevo (nunca contraseñas ni tokens).
+     * @param  string|null  $detail  Detalle libre; se guarda en la columna `reason`.
+     */
     public function log(?User $actor, string $type, int $id, string $action, ?string $field = null, ?string $old = null, ?string $new = null, ?string $detail = null): void
     {
         if (! $actor) {
@@ -52,7 +75,17 @@ class UserAccessAuditLogger
         }
     }
 
-    /** Últimas acciones para la pantalla (más recientes primero). */
+    /**
+     * Últimas acciones para la pantalla (más recientes primero).
+     *
+     * Une la bitácora con `users` (actor y usuario objetivo) y `roles` para
+     * mostrar nombres; si el usuario o rol ya no existe muestra "eliminado"
+     * (para roles intenta usar old_value como nombre). Si la consulta falla
+     * (tablas sin migrar) devuelve arreglo vacío.
+     *
+     * @param  int  $limit  Máximo de renglones a devolver.
+     * @return array<int, array<string, mixed>> Renglones listos para la vista (id, type, action, label, actor, target, old_value, new_value, detail, at).
+     */
     public function recent(int $limit = 150): array
     {
         try {

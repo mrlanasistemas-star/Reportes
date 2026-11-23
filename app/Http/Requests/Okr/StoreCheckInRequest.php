@@ -14,6 +14,12 @@ use Illuminate\Validation\Validator;
  */
 class StoreCheckInRequest extends FormRequest
 {
+    /**
+     * Solo puede capturar check-in quien tenga la habilidad `checkin` sobre el
+     * Objective de la ruta (Policy de OkrObjective).
+     *
+     * @return bool false si no hay Objective en la ruta o no hay permiso.
+     */
     public function authorize(): bool
     {
         $objective = $this->route('objective');
@@ -21,25 +27,39 @@ class StoreCheckInRequest extends FormRequest
         return $objective ? ($this->user()?->can('checkin', $objective) ?? false) : false;
     }
 
+    /**
+     * Reglas del check-in semanal: bloqueo principal, acción correctiva con
+     * responsable y fecha compromiso (hoy o posterior) y resultados manuales
+     * de KR (`manual_results[]` con `key_result_id` y `value`).
+     *
+     * @return array<string, array<int, mixed>>
+     */
     public function rules(): array
     {
         return [
-            'main_blocker'       => ['nullable', 'string', 'max:2000'],
-            'corrective_action'  => ['nullable', 'string', 'max:2000'],
+            'main_blocker' => ['nullable', 'string', 'max:2000'],
+            'corrective_action' => ['nullable', 'string', 'max:2000'],
             'action_responsible_user_id' => ['nullable', 'integer', 'exists:users,id'],
-            'action_due_date'            => ['nullable', 'date', 'after_or_equal:today'],
-            'manual_results'                    => ['nullable', 'array'],
-            'manual_results.*.key_result_id'    => ['required', 'integer'],
-            'manual_results.*.value'            => ['required', 'numeric'],
+            'action_due_date' => ['nullable', 'date', 'after_or_equal:today'],
+            'manual_results' => ['nullable', 'array'],
+            'manual_results.*.key_result_id' => ['required', 'integer'],
+            'manual_results.*.value' => ['required', 'numeric'],
         ];
     }
 
+    /**
+     * Validación posterior: cada `manual_results[i].key_result_id` debe
+     * pertenecer al Objective de la ruta y su KPI no puede ser automático
+     * (consulta los KR del Objective con su KPI).
+     *
+     * @param  Validator  $validator  Validador al que se agregan los errores.
+     */
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {
             $objective = $this->route('objective');
             $results = $this->input('manual_results', []);
-            if (!$objective || empty($results)) {
+            if (! $objective || empty($results)) {
                 return;
             }
 
@@ -49,8 +69,9 @@ class StoreCheckInRequest extends FormRequest
                 $krId = $row['key_result_id'] ?? null;
                 $kr = $krId ? ($keyResults[$krId] ?? null) : null;
 
-                if (!$kr) {
+                if (! $kr) {
                     $validator->errors()->add("manual_results.{$i}.key_result_id", 'Ese Key Result no pertenece a este Objective.');
+
                     continue;
                 }
 

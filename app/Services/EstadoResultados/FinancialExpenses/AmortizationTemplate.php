@@ -13,7 +13,13 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
  */
 class AmortizationTemplate
 {
-    /** @return string ruta del archivo temporal generado */
+    /**
+     * Genera la plantilla de ejemplo (pagos mensuales o semanales según el crédito) y la guarda
+     * en un archivo temporal.
+     *
+     * @param  EstadoResultadosCredit|null  $credit  crédito (para título y periodicidad)
+     * @return string ruta del archivo temporal generado
+     */
     public function build(?EstadoResultadosCredit $credit = null): string
     {
         $weekly = $credit?->periodicity === EstadoResultadosCredit::SEMANAL;

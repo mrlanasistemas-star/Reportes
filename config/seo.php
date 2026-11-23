@@ -1,7 +1,7 @@
 <?php
 
 /*
-| SEO técnico (27-oct-2026). Ver docs/seo.md y App\Support\Seo.
+| SEO técnico (27-oct-2026). Ver docs/MANUAL-DESARROLLADOR.md y App\Support\Seo.
 |
 | Solo las páginas públicas (login y recuperar contraseña) son indexables; todo
 | lo demás lleva noindex en el HTML y en la cabecera X-Robots-Tag

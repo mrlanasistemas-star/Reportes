@@ -18,10 +18,15 @@ use Laravel\Fortify\Contracts\LoginResponse as LoginResponseContract;
 use Laravel\Fortify\Features;
 use Laravel\Fortify\Fortify;
 
+/**
+ * Configura Laravel Fortify (autenticación): acciones de alta/restablecimiento,
+ * login con candado de cuenta deshabilitada, vistas Inertia de autenticación y
+ * límites de intentos de login y 2FA. El registro público está deshabilitado.
+ */
 class FortifyServiceProvider extends ServiceProvider
 {
     /**
-     * Register any application services.
+     * Registra la respuesta de login personalizada (LoginResponse).
      */
     public function register(): void
     {
@@ -29,7 +34,7 @@ class FortifyServiceProvider extends ServiceProvider
     }
 
     /**
-     * Bootstrap any application services.
+     * Inicializa Fortify: acciones, vistas y límites de intentos.
      */
     public function boot(): void
     {
@@ -39,7 +44,11 @@ class FortifyServiceProvider extends ServiceProvider
     }
 
     /**
-     * Configure Fortify actions.
+     * Configura las acciones de Fortify. El login valida usuario/contraseña y, si la
+     * cuenta tiene `disabled_at`, lanza ValidationException con un mensaje en español
+     * en lugar de autenticar.
+     *
+     * @throws ValidationException Si la cuenta está deshabilitada.
      */
     private function configureActions(): void
     {
@@ -63,7 +72,8 @@ class FortifyServiceProvider extends ServiceProvider
     }
 
     /**
-     * Configure Fortify views.
+     * Configura las vistas Inertia de Fortify (login, restablecer/olvidé contraseña,
+     * verificar correo, reto 2FA y confirmar contraseña).
      */
     private function configureViews(): void
     {
@@ -97,7 +107,8 @@ class FortifyServiceProvider extends ServiceProvider
     }
 
     /**
-     * Configure rate limiting.
+     * Configura límites de intentos: 2FA 5/min por sesión de login; login 5/min por
+     * combinación usuario+IP.
      */
     private function configureRateLimiting(): void
     {

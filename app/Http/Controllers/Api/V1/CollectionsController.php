@@ -4,8 +4,8 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\ApiConsumer;
-use App\Models\Employee;
 use App\Models\EfectividadCobranzaRun;
+use App\Models\Employee;
 use App\Models\Period;
 use App\Services\Api\ApiScopeResolver;
 use App\Services\Api\ApiValidation;
@@ -13,6 +13,7 @@ use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Api\FinancialMetricResolver;
 use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use App\Services\Efectividad\V4\EfectividadV4FingerprintService;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -63,6 +64,26 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 class CollectionsController extends Controller
 {
+    /**
+     * GET /api/v1/collections/effectiveness — efectividad de cobranza en sus
+     * dos versiones para un periodo y alcance.
+     *
+     * - `legacy`: efectividad histórica de la radiografía (FinancialMetricResolver).
+     * - `approved`: snapshot ya generado del motor vigente (nunca se recalcula aquí);
+     *   por colaborador se busca su fila dentro del snapshot de su sucursal verificada.
+     *
+     * Solo lectura (BD); el fingerprint compara contra el estado actual de las fuentes.
+     *
+     * @param  Request  $request  `period_id` obligatorio y parámetros de alcance.
+     * @param  FinancialMetricResolver  $resolver  Resuelve la versión legacy.
+     * @param  ApiScopeResolver  $scopeResolver  Determina y autoriza el alcance.
+     * @param  EmployeeBranchHistoryResolver  $employeeBranchHistoryResolver  Sucursal verificada del colaborador en el periodo.
+     * @param  EfectividadV4FingerprintService  $fingerprintService  Detecta snapshots obsoletos.
+     * @param  EfectividadV4Calculator  $calculator  Solo se usa para normalizar nombres de promotor.
+     * @return JsonResponse {period_id, scope, versions: {legacy, approved}}.
+     *
+     * @throws ModelNotFoundException 404 si el periodo no existe.
+     */
     public function effectiveness(
         Request $request,
         FinancialMetricResolver $resolver,
@@ -76,7 +97,7 @@ class CollectionsController extends Controller
 
         $periodId = ApiValidation::requiredId($request, 'period_id');
         $period = Period::query()->findOrFail($periodId);
-        $scope  = $scopeResolver->resolve($request, $consumer, $period);
+        $scope = $scopeResolver->resolve($request, $consumer, $period);
 
         $legacy = $resolver->resolve('collections_effectiveness_legacy', $period, $scope['type'], $scope['branch_id'], $scope['employee_id']);
 
@@ -86,9 +107,9 @@ class CollectionsController extends Controller
 
         return response()->json([
             'period_id' => $period->id,
-            'scope'     => $scope,
-            'versions'  => [
-                'legacy'   => $legacy + ['version' => 'legacy_vigente_atrasado_vencido'],
+            'scope' => $scope,
+            'versions' => [
+                'legacy' => $legacy + ['version' => 'legacy_vigente_atrasado_vencido'],
                 'approved' => $approved,
             ],
         ]);
@@ -103,6 +124,11 @@ class CollectionsController extends Controller
      * (`latestV4Success` → `forV4Identity`): un snapshot V6 o de la calculadora
      * anterior nunca se exporta como vigente. El archivo vive en el disco privado
      * `local` (nunca público); la descarga queda auditada por `log.api-query`.
+     *
+     * @param  Request  $request  `period_id` obligatorio (semanal) y parámetros de alcance.
+     * @param  ApiScopeResolver  $scopeResolver  Determina y autoriza el alcance.
+     * @return StreamedResponse|JsonResponse Descarga .xlsx, o JSON de error: 422 (alcance colaborador
+     *                                       o periodo no semanal), 404 (sin corrida vigente), 409 (falta el archivo).
      */
     public function exportEffectiveness(Request $request, ApiScopeResolver $scopeResolver): StreamedResponse|JsonResponse
     {
@@ -165,6 +191,12 @@ class CollectionsController extends Controller
      * sucursal específica) — nunca se suman snapshots de sucursales para
      * simular el general, nunca se parte un snapshot general para simular uno
      * de sucursal.
+     *
+     * @param  Period  $period  Periodo consultado (debe ser semanal).
+     * @param  int|null  $branchId  Sucursal del alcance, o null para el general.
+     * @param  EfectividadV4FingerprintService  $fingerprintService  Marca `stale` si las fuentes cambiaron.
+     * @return array<string, mixed> Bloque `approved`: disponible con filas/resumen (GRAN TOTAL)/cobertura,
+     *                              o no disponible con su motivo.
      */
     private function resolveApprovedSnapshot(Period $period, ?int $branchId, EfectividadV4FingerprintService $fingerprintService): array
     {
@@ -173,7 +205,7 @@ class CollectionsController extends Controller
         }
         $run = $this->latestV4Success($period->id, $branchId);
 
-        if (!$run) {
+        if (! $run) {
             return $this->notAvailable($period->id, $branchId, 'Aún no se ha generado la Efectividad de Cobranza (motor V4) para este periodo/alcance. Generarla desde el módulo web "Efectividad de Cobranza" antes de consultarla por API.');
         }
 
@@ -181,24 +213,39 @@ class CollectionsController extends Controller
         $rows = $run->result_rows ?? [];
 
         return [
-            'available'     => true,
+            'available' => true,
             // Fase 2 — un snapshot obsoleto SIGUE siendo datos reales (no inventados),
             // pero jamás se presenta como vigente: status=stale, nunca "ok".
-            'status'        => $isStale ? 'stale' : 'ok',
-            'is_stale'      => $isStale,
-            'run_id'        => $run->id,
-            'generated_at'  => $run->finished_at?->toISOString(),
-            'summary'       => collect($rows)->firstWhere('promotor', 'GRAN TOTAL'),
-            'rows'          => $rows,
-            'coverage'      => $run->coverage,
-            'parameters'    => $run->metadata['parametros'] ?? null,
-            'incidents'     => ['count' => (int) $run->incidents_count, 'by_code' => array_values($run->metadata['incidencias_resumen'] ?? [])],
+            'status' => $isStale ? 'stale' : 'ok',
+            'is_stale' => $isStale,
+            'run_id' => $run->id,
+            'generated_at' => $run->finished_at?->toISOString(),
+            'summary' => collect($rows)->firstWhere('promotor', 'GRAN TOTAL'),
+            'rows' => $rows,
+            'coverage' => $run->coverage,
+            'parameters' => $run->metadata['parametros'] ?? null,
+            'incidents' => ['count' => (int) $run->incidents_count, 'by_code' => array_values($run->metadata['incidencias_resumen'] ?? [])],
             'engine_version' => $run->engine_version,
-            'methodology'   => $run->metodologia,
-            'version'       => self::VERSION,
+            'methodology' => $run->metodologia,
+            'version' => self::VERSION,
         ];
     }
 
+    /**
+     * Bloque `approved` para un colaborador: sucursal verificada en el periodo
+     * → snapshot de esa sucursal → única fila de promotor con su nombre normalizado.
+     *
+     * Responde `not_attributable` si no hay asignación verificada, si no hay
+     * fila con su nombre o si hay varias (homonimia); `not_available` si no hay
+     * corrida vigente para su sucursal.
+     *
+     * @param  Period  $period  Periodo consultado (debe ser semanal).
+     * @param  array<string, mixed>  $scope  Alcance resuelto (usa `employee_id`).
+     * @param  EmployeeBranchHistoryResolver  $employeeBranchHistoryResolver  Sucursal histórica del colaborador.
+     * @param  EfectividadV4FingerprintService  $fingerprintService  Marca `stale` si las fuentes cambiaron.
+     * @param  EfectividadV4Calculator  $calculator  Normaliza nombres para comparar.
+     * @return array<string, mixed> Bloque `approved` con `row` o el motivo de no atribución.
+     */
     private function resolveApprovedForEmployee(
         Period $period,
         array $scope,
@@ -218,16 +265,16 @@ class CollectionsController extends Controller
         if ($historical['status'] !== 'known') {
             return [
                 'available' => false,
-                'status'    => 'not_attributable',
-                'reason'    => 'No existe una asignación de sucursal verificada (employee_branch_assignments) para este colaborador en el periodo exacto consultado. Sin esa identidad verificada, nunca se atribuye un resultado financiero solo por coincidencia de nombre.',
-                'version'   => self::VERSION,
+                'status' => 'not_attributable',
+                'reason' => 'No existe una asignación de sucursal verificada (employee_branch_assignments) para este colaborador en el periodo exacto consultado. Sin esa identidad verificada, nunca se atribuye un resultado financiero solo por coincidencia de nombre.',
+                'version' => self::VERSION,
             ];
         }
 
         $branchId = $historical['branch_id'];
         $run = $this->latestV4Success($period->id, $branchId);
 
-        if (!$run) {
+        if (! $run) {
             return $this->notAvailable($period->id, $branchId, "Aún no se ha generado la Efectividad de Cobranza (motor V4) para la sucursal verificada de este colaborador en este periodo (branch_id={$branchId}). Generarla desde el módulo web antes de consultarla por API.");
         }
 
@@ -242,43 +289,52 @@ class CollectionsController extends Controller
         if ($matches->count() > 1) {
             return [
                 'available' => false,
-                'status'    => 'not_attributable',
-                'reason'    => 'Hay '.$matches->count().' filas de promotor con el mismo nombre normalizado en la sucursal verificada de este colaborador (oficinas: '.$matches->pluck('oficina')->implode(', ').'). No se atribuye un resultado por homonimia.',
-                'coverage'  => $run->coverage,
-                'version'   => self::VERSION,
+                'status' => 'not_attributable',
+                'reason' => 'Hay '.$matches->count().' filas de promotor con el mismo nombre normalizado en la sucursal verificada de este colaborador (oficinas: '.$matches->pluck('oficina')->implode(', ').'). No se atribuye un resultado por homonimia.',
+                'coverage' => $run->coverage,
+                'version' => self::VERSION,
             ];
         }
         $row = $matches->first();
 
-        if (!$row) {
+        if (! $row) {
             return [
                 'available' => false,
-                'status'    => 'not_attributable',
-                'reason'    => 'El cálculo ya existe para la sucursal verificada de este colaborador en este periodo, pero ninguna fila de promotor coincide con su nombre normalizado — no se atribuye por aproximación.',
-                'coverage'  => $run->coverage,
-                'version'   => self::VERSION,
+                'status' => 'not_attributable',
+                'reason' => 'El cálculo ya existe para la sucursal verificada de este colaborador en este periodo, pero ninguna fila de promotor coincide con su nombre normalizado — no se atribuye por aproximación.',
+                'coverage' => $run->coverage,
+                'version' => self::VERSION,
             ];
         }
 
         $isStale = $fingerprintService->isStale($run);
 
         return [
-            'available'    => true,
-            'status'       => $isStale ? 'stale' : 'ok',
-            'is_stale'     => $isStale,
-            'run_id'       => $run->id,
-            'branch_id'    => $branchId,
+            'available' => true,
+            'status' => $isStale ? 'stale' : 'ok',
+            'is_stale' => $isStale,
+            'run_id' => $run->id,
+            'branch_id' => $branchId,
             'generated_at' => $run->finished_at?->toISOString(),
-            'row'          => $row,
-            'coverage'     => $run->coverage,
+            'row' => $row,
+            'coverage' => $run->coverage,
             'engine_version' => $run->engine_version,
-            'methodology'  => $run->metodologia,
-            'version'      => self::VERSION,
+            'methodology' => $run->metodologia,
+            'version' => self::VERSION,
         ];
     }
 
+    /** Etiqueta de versión del contrato del bloque `approved`. */
     public const VERSION = 'approved_snapshot_v4';
 
+    /**
+     * Última corrida exitosa del motor y metodología vigentes (scope forV4Identity,
+     * modo semanal) para un periodo y sucursal exactos.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  int|null  $branchId  Sucursal, o null para el alcance general.
+     * @return EfectividadCobranzaRun|null Corrida más reciente (mayor id) o null.
+     */
     private function latestV4Success(int $periodId, ?int $branchId): ?EfectividadCobranzaRun
     {
         return EfectividadCobranzaRun::query()
@@ -288,7 +344,12 @@ class CollectionsController extends Controller
             ->first();
     }
 
-    /** La macro V4 es semanal: un mes/bimestre no tiene resultado verificable. */
+    /**
+     * La macro V4 es semanal: un mes/bimestre no tiene resultado verificable.
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @return array<string, mixed>|null null si es semanal; si no, bloque `not_supported_period`.
+     */
     private function unsupportedPeriod(Period $period): ?array
     {
         if ($period->type === 'weekly') {
@@ -305,6 +366,15 @@ class CollectionsController extends Controller
         ];
     }
 
+    /**
+     * Arma el bloque `not_available`, explicando si existe un resultado de un
+     * motor anterior o de una metodología anterior que no se sirve como vigente.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  int|null  $branchId  Sucursal, o null para el general.
+     * @param  string  $reason  Motivo base (se le añade el contexto del resultado previo).
+     * @return array<string, mixed> Bloque con available=false, status=not_available, reason y versiones vigentes.
+     */
     private function notAvailable(int $periodId, ?int $branchId, string $reason): array
     {
         $previous = EfectividadCobranzaRun::latestSuccessFor($periodId, $branchId);

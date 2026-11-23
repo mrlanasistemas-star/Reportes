@@ -7,6 +7,20 @@ use App\Services\EmployeeNameCanonicalizer;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-empleados` — diagnóstico de normalización de nombres, candidatos a
+ * fusión (merge fuzzy) y datos consolidados de empleados/gestores. Con `--name=` busca un
+ * fragmento de nombre en NOI, Ministraciones, Cartera y Recuperación (con su asignación de
+ * sucursal) y compara la similitud de las variantes encontradas; sin `--name` muestra el
+ * diagnóstico general de `fact_period_employee_summary` (con/sin sucursal, candidatos a fusión,
+ * resumen por sucursal).
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplos:
+ *   php artisan reportes:debug-empleados 21
+ *   php artisan reportes:debug-empleados 21 --name="MARGARITA"
+ */
 class DebugEmpleadosCommand extends Command
 {
     protected $signature = 'reportes:debug-empleados
@@ -15,25 +29,34 @@ class DebugEmpleadosCommand extends Command
 
     protected $description = 'Diagnóstico de normalización, merge fuzzy y datos consolidados de empleados/gestores.';
 
+    /**
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Normalizador canónico de nombres de empleados.
+     */
     public function __construct(private readonly EmployeeNameCanonicalizer $canonicalizer)
     {
         parent::__construct();
     }
 
+    /**
+     * Resuelve los periodos de datos y despacha al detalle por nombre o al diagnóstico general.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
-        $periodId  = (int) $this->argument('periodId');
+        $periodId = (int) $this->argument('periodId');
         $nameFilter = strtoupper(trim($this->option('name') ?? ''));
 
         $period = Period::find($periodId);
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         // Resolve weekly data IDs (same logic as SnapshotBuilder)
         $allPeriods = Period::all();
-        $dataIds    = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = $period->resolveBaseWeeklyIds($allPeriods);
         if (empty($dataIds)) {
             $dataIds = [$period->id];
         }
@@ -41,7 +64,7 @@ class DebugEmpleadosCommand extends Command
 
         $this->line('');
         $this->info("══════════ DEBUG EMPLEADOS — {$period->label} (ID #{$periodId}) ══════════");
-        $this->line("Data IDs usados: " . implode(', ', $dataIds));
+        $this->line('Data IDs usados: '.implode(', ', $dataIds));
         $this->line('');
 
         if ($nameFilter) {
@@ -55,6 +78,14 @@ class DebugEmpleadosCommand extends Command
 
     // ── DETALLE POR NOMBRE ───────────────────────────────────────────────────
 
+    /**
+     * Busca el fragmento de nombre en cada fuente (NOI con asignación, ministraciones, cartera y
+     * recuperación) e imprime la similitud entre todas las variantes encontradas.
+     *
+     * @param  int  $periodId  ID del periodo (para la asignación de sucursal).
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  string  $nameFilter  Fragmento de nombre en mayúsculas.
+     */
     private function debugByName(int $periodId, array $dataIds, string $nameFilter): void
     {
         $this->info("── Buscando: \"{$nameFilter}\" ──");
@@ -83,7 +114,7 @@ class DebugEmpleadosCommand extends Command
                 $this->line(sprintf('       normalized_name (DB)=%s', $r->normalized_name));
                 $this->line(sprintf('       normalized_name (nuevo)=%s', $norm));
                 $this->line(sprintf('       pagos=$%s  movs=%d',
-                    number_format((float)$r->pagos, 2), $r->movs));
+                    number_format((float) $r->pagos, 2), $r->movs));
 
                 // Branch assignment
                 $eba = DB::table('employee_branch_assignments as eba')
@@ -95,7 +126,7 @@ class DebugEmpleadosCommand extends Command
                 if ($eba) {
                     $this->line(sprintf('       sucursal=%s  match=%s  confidence=%s',
                         $eba->branch ?? 'NULL', $eba->match_type ?? '—',
-                        $eba->confidence !== null ? number_format((float)$eba->confidence, 2) : '—'));
+                        $eba->confidence !== null ? number_format((float) $eba->confidence, 2) : '—'));
                 } else {
                     $this->warn('       SIN asignación de sucursal.');
                 }
@@ -109,8 +140,8 @@ class DebugEmpleadosCommand extends Command
             ->leftJoin('branches as b', 'p.branch_id', '=', 'b.id')
             ->whereIn('p.period_id', $dataIds)
             ->whereRaw('UPPER(COALESCE(p.promoter_name, p.promoter_code)) LIKE ?', ["%{$nameFilter}%"])
-            ->selectRaw("p.promoter_name, p.normalized_promoter_name, b.name as sucursal,
-                COUNT(*) as ops, SUM(p.amount) as colocacion")
+            ->selectRaw('p.promoter_name, p.normalized_promoter_name, b.name as sucursal,
+                COUNT(*) as ops, SUM(p.amount) as colocacion')
             ->groupBy('p.promoter_name', 'p.normalized_promoter_name', 'b.name')
             ->get();
 
@@ -123,7 +154,7 @@ class DebugEmpleadosCommand extends Command
                 $this->line(sprintf('    normalized (DB)=%s', $r->normalized_promoter_name));
                 $this->line(sprintf('    normalized (nuevo)=%s', $norm));
                 $this->line(sprintf('    sucursal=%s  ops=%d  colocacion=$%s',
-                    $r->sucursal ?? 'NULL', $r->ops, number_format((float)$r->colocacion, 2)));
+                    $r->sucursal ?? 'NULL', $r->ops, number_format((float) $r->colocacion, 2)));
                 $this->line('');
             }
         }
@@ -134,10 +165,10 @@ class DebugEmpleadosCommand extends Command
             ->leftJoin('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $dataIds)
             ->whereRaw('UPPER(COALESCE(po.promoter_name, po.promoter_code)) LIKE ?', ["%{$nameFilter}%"])
-            ->selectRaw("COALESCE(po.promoter_name, po.promoter_code) as nombre, b.name as sucursal,
+            ->selectRaw('COALESCE(po.promoter_name, po.promoter_code) as nombre, b.name as sucursal,
                 SUM(po.balance) as cartera,
                 SUM(CASE WHEN po.days_past_due>0 THEN po.balance ELSE 0 END) as vencida,
-                COUNT(*) as contratos")
+                COUNT(*) as contratos')
             ->groupBy('po.promoter_name', 'po.promoter_code', 'b.name')
             ->get();
 
@@ -150,8 +181,8 @@ class DebugEmpleadosCommand extends Command
                 $this->line(sprintf('    normalized (nuevo)=%s', $norm));
                 $this->line(sprintf('    sucursal=%s  cartera=$%s  vencida=$%s  contratos=%d',
                     $r->sucursal ?? 'NULL',
-                    number_format((float)$r->cartera, 2),
-                    number_format((float)$r->vencida, 2),
+                    number_format((float) $r->cartera, 2),
+                    number_format((float) $r->vencida, 2),
                     $r->contratos));
                 $this->line('');
             }
@@ -174,7 +205,7 @@ class DebugEmpleadosCommand extends Command
                 $this->line(sprintf('  promoter_name="%s"  norm=%s  recuperacion=$%s',
                     $r->promoter_name,
                     $norm,
-                    number_format((float)$r->recuperacion, 2)));
+                    number_format((float) $r->recuperacion, 2)));
             }
         }
         $this->line('');
@@ -191,15 +222,17 @@ class DebugEmpleadosCommand extends Command
         if ($allNames->count() < 2) {
             $this->line('  Solo se encontró una variante de nombre, no hay comparación necesaria.');
         } else {
-            $normalized = $allNames->map(fn($n) => ['original' => $n, 'norm' => $this->canonicalizer->normalize($n)])->values();
+            $normalized = $allNames->map(fn ($n) => ['original' => $n, 'norm' => $this->canonicalizer->normalize($n)])->values();
             foreach ($normalized as $idxA => $a) {
                 foreach ($normalized as $idxB => $b) {
-                    if ($idxB <= $idxA) continue;
-                    $lev   = levenshtein($a['norm'], $b['norm']);
-                    $tokA  = array_filter(explode(' ', $a['norm']), fn($t) => strlen($t) >= 3);
-                    $tokB  = array_filter(explode(' ', $b['norm']), fn($t) => strlen($t) >= 3);
+                    if ($idxB <= $idxA) {
+                        continue;
+                    }
+                    $lev = levenshtein($a['norm'], $b['norm']);
+                    $tokA = array_filter(explode(' ', $a['norm']), fn ($t) => strlen($t) >= 3);
+                    $tokB = array_filter(explode(' ', $b['norm']), fn ($t) => strlen($t) >= 3);
                     $common = count(array_intersect($tokA, $tokB));
-                    $merge  = $lev <= 2 && $common >= 3;
+                    $merge = $lev <= 2 && $common >= 3;
                     $status = $merge ? '<fg=green>FUSIONABLE</>' : '<fg=red>NO fusionar</>';
                     $this->line(sprintf(
                         '  "%s" ↔ "%s"',
@@ -219,11 +252,18 @@ class DebugEmpleadosCommand extends Command
 
     // ── DIAGNÓSTICO GENERAL ──────────────────────────────────────────────────
 
+    /**
+     * Diagnóstico general: conteos con/sin sucursal en el resumen por empleado, top 20 sin
+     * sucursal, candidatos a fusión por similitud y resumen por sucursal.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     */
     private function debugGeneral(int $periodId, array $dataIds): void
     {
         // 1. Summary table
         $this->info('── 1. fact_period_employee_summary ──');
-        $total       = DB::table('fact_period_employee_summary')->where('period_id', $periodId)->count();
+        $total = DB::table('fact_period_employee_summary')->where('period_id', $periodId)->count();
         $conSucursal = DB::table('fact_period_employee_summary')->where('period_id', $periodId)->whereNotNull('branch_id')->count();
         $sinSucursal = $total - $conSucursal;
 
@@ -248,7 +288,7 @@ class DebugEmpleadosCommand extends Command
                 $this->line(sprintf('  [%s] %-45s $%s',
                     $r->employee_code ?? '—',
                     mb_substr($r->full_name, 0, 45),
-                    number_format((float)$r->total_payments, 2)));
+                    number_format((float) $r->total_payments, 2)));
             }
             $this->line('');
         }
@@ -256,9 +296,9 @@ class DebugEmpleadosCommand extends Command
         // 3. Fuzzy merge candidates (names with levenshtein distance ≤ 2 and ≥ 3 common tokens)
         $this->info('── 3. Candidatos a fusión por similitud de nombre ──');
         $allNormNames = $this->collectAllNormalizedNames($dataIds);
-        $normKeys     = array_keys($allNormNames);
-        $mergeMap     = $this->canonicalizer->buildCanonicalMap($normKeys);
-        $aliases      = array_filter($mergeMap, fn ($canonical, $key) => $key !== $canonical, ARRAY_FILTER_USE_BOTH);
+        $normKeys = array_keys($allNormNames);
+        $mergeMap = $this->canonicalizer->buildCanonicalMap($normKeys);
+        $aliases = array_filter($mergeMap, fn ($canonical, $key) => $key !== $canonical, ARRAY_FILTER_USE_BOTH);
 
         if (empty($aliases)) {
             $this->line('  <fg=green>Sin candidatos a fusión detectados.</>');
@@ -286,7 +326,7 @@ class DebugEmpleadosCommand extends Command
 
         foreach ($bySucursal as $b) {
             $this->line(sprintf('  %-30s empleados=%-4d nómina=$%s',
-                $b->sucursal, $b->empleados, number_format((float)$b->nomina, 2)));
+                $b->sucursal, $b->empleados, number_format((float) $b->nomina, 2)));
         }
         $this->line('');
         $this->info('══════════ FIN DEBUG EMPLEADOS ══════════');
@@ -294,6 +334,13 @@ class DebugEmpleadosCommand extends Command
 
     // ── HELPERS ─────────────────────────────────────────────────────────────
 
+    /**
+     * Junta los nombres distintos de NOI (empleados) y de promotores en colocación, cartera y
+     * recuperación, indexados por su forma canónica (gana la primera fuente).
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<string,string> Nombre normalizado => nombre original.
+     */
     private function collectAllNormalizedNames(array $dataIds): array
     {
         $names = [];
@@ -303,30 +350,29 @@ class DebugEmpleadosCommand extends Command
             ->whereIn('n.period_id', $dataIds)
             ->distinct('e.full_name')
             ->pluck('e.full_name')
-            ->each(fn($n) => $names[$this->canonicalizer->normalize($n)] = $n);
+            ->each(fn ($n) => $names[$this->canonicalizer->normalize($n)] = $n);
 
         DB::table('fact_placements')
             ->whereIn('period_id', $dataIds)
             ->whereNotNull('promoter_name')
             ->distinct('promoter_name')
             ->pluck('promoter_name')
-            ->each(fn($n) => $names[$this->canonicalizer->normalize($n)] ??= $n);
+            ->each(fn ($n) => $names[$this->canonicalizer->normalize($n)] ??= $n);
 
         DB::table('fact_portfolios')
             ->whereIn('period_id', $dataIds)
             ->whereNotNull('promoter_name')
             ->distinct('promoter_name')
             ->pluck('promoter_name')
-            ->each(fn($n) => $names[$this->canonicalizer->normalize($n)] ??= $n);
+            ->each(fn ($n) => $names[$this->canonicalizer->normalize($n)] ??= $n);
 
         DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->whereNotNull('promoter_name')
             ->distinct('promoter_name')
             ->pluck('promoter_name')
-            ->each(fn($n) => $names[$this->canonicalizer->normalize($n)] ??= $n);
+            ->each(fn ($n) => $names[$this->canonicalizer->normalize($n)] ??= $n);
 
         return $names; // normalized => original
     }
-
 }

@@ -8,11 +8,26 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Comando `reportes:cleanup-branches` — reasigna las filas de las tablas de hechos de
+ * sucursales "ruta/alias" a su sucursal oficial y desactiva los registros no oficiales.
+ * Por defecto es DRY-RUN (no modifica nada); con `--apply` (pide confirmación) ejecuta.
+ * Las DESCONOCIDAS solo se desactivan si no tienen filas; las oficiales y CORPORATIVO no se tocan.
+ * Versión anterior del modo limpieza de `reportes:branches`.
+ *
+ * Escribe en BD: SÍ con `--apply` (FACT_TABLES.branch_id y `branches.is_active`), sin
+ * transacción; es irreversible, hacer respaldo antes.
+ *
+ * Ejemplos:
+ *   php artisan reportes:cleanup-branches
+ *   php artisan reportes:cleanup-branches --apply
+ */
 class CleanupBranchesCommand extends Command
 {
-    protected $signature   = 'reportes:cleanup-branches
+    protected $signature = 'reportes:cleanup-branches
                                 {--dry-run : Show what would change without touching the DB (default)}
                                 {--apply   : Actually execute the remapping and deactivation}';
+
     protected $description = 'Remap fact-table rows from route/alias branches to official branches, then deactivate non-official records.';
 
     private const FACT_TABLES = [
@@ -29,29 +44,38 @@ class CleanupBranchesCommand extends Command
 
     private BranchResolverService $resolver;
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de sucursales operativas y rutas.
+     */
     public function __construct(BranchResolverService $resolver)
     {
         parent::__construct();
         $this->resolver = $resolver;
     }
 
+    /**
+     * Recorre las sucursales no oficiales, reasigna (o simula reasignar) las rutas alias y
+     * desactiva las desconocidas sin datos; imprime el resumen.
+     *
+     * @return int self::SUCCESS (también si se cancela la confirmación).
+     */
     public function handle(): int
     {
-        $apply  = $this->option('apply');
-        $dryRun = !$apply;
+        $apply = $this->option('apply');
+        $dryRun = ! $apply;
 
         if ($dryRun) {
             $this->warn('Modo DRY-RUN — no se modifica nada. Pasa --apply para ejecutar.');
         } else {
             $this->warn('Modo APPLY — los cambios son irreversibles. Haz un backup antes de continuar.');
-            if (!$this->confirm('¿Continuar con la limpieza?')) {
+            if (! $this->confirm('¿Continuar con la limpieza?')) {
                 return self::SUCCESS;
             }
         }
 
         $this->newLine();
 
-        $branches  = Branch::query()->orderBy('name')->get();
+        $branches = Branch::query()->orderBy('name')->get();
         $operative = collect($this->resolver->operativeFinancialBranches())
             ->map(fn ($n) => $this->normalizeKey($n))
             ->flip();
@@ -63,28 +87,33 @@ class CleanupBranchesCommand extends Command
             ->mapWithKeys(fn ($b) => [$this->normalizeKey($b->name) => $b->id])
             ->all();
 
-        $remapCount   = 0;
-        $deactivated  = 0;
-        $skipped      = 0;
-        $totalRows    = 0;
+        $remapCount = 0;
+        $deactivated = 0;
+        $skipped = 0;
+        $totalRows = 0;
 
         foreach ($branches as $branch) {
             $normName = $this->normalizeKey($branch->name);
 
             // Keep official branches and excluded branches untouched
-            if (isset($operative[$normName])) continue;
-            if ($this->isExcluded($normName)) continue;
+            if (isset($operative[$normName])) {
+                continue;
+            }
+            if ($this->isExcluded($normName)) {
+                continue;
+            }
 
             $resolvedName = $this->resolver->resolveRealBranchFromRoute($branch->name);
 
             if ($resolvedName && isset($operative[$this->normalizeKey($resolvedName)])) {
                 // RUTA_ALIAS — remap rows to official branch
-                $targetId   = $officialBranchIdMap[$this->normalizeKey($resolvedName)] ?? null;
+                $targetId = $officialBranchIdMap[$this->normalizeKey($resolvedName)] ?? null;
 
-                if (!$targetId) {
+                if (! $targetId) {
                     // Official branch not in DB yet — create it now (even in dry-run, we just note it)
                     $this->line("  [WARN] Sucursal oficial '{$resolvedName}' no existe en BD. Crea primero con BranchSeeder.");
                     $skipped++;
+
                     continue;
                 }
 
@@ -94,7 +123,7 @@ class CleanupBranchesCommand extends Command
                 $label = $dryRun ? '[DRY-RUN]' : '[APPLIED]';
                 $this->line("  {$label} RUTA_ALIAS '{$branch->name}' → '{$resolvedName}' (branch_id {$branch->id} → {$targetId}): {$rows} filas");
 
-                if ($apply && !$dryRun) {
+                if ($apply && ! $dryRun) {
                     $branch->update(['is_active' => false]);
                 }
 
@@ -107,7 +136,7 @@ class CleanupBranchesCommand extends Command
                 $label = $dryRun ? '[DRY-RUN]' : '[APPLIED]';
                 $this->warn("  {$label} DESCONOCIDA '{$branch->name}' (id {$branch->id}): {$rows} fila(s) huérfana(s) — no se pueden reasignar.");
 
-                if ($apply && !$dryRun && $rows === 0) {
+                if ($apply && ! $dryRun && $rows === 0) {
                     $branch->update(['is_active' => false]);
                     $deactivated++;
                 } elseif ($rows > 0) {
@@ -118,7 +147,7 @@ class CleanupBranchesCommand extends Command
         }
 
         $this->newLine();
-        $this->info("Resumen:");
+        $this->info('Resumen:');
         $this->line("  Rutas alias remapeadas : {$remapCount}");
         $this->line("  Desconocidas sin datos  : {$deactivated}");
         $this->line("  Omitidas (con datos)    : {$skipped}");
@@ -132,19 +161,27 @@ class CleanupBranchesCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Cuenta y, si no es dry-run, mueve `branch_id` de origen a destino en cada tabla de hechos.
+     *
+     * @param  int  $fromId  Sucursal origen.
+     * @param  int  $toId  Sucursal oficial destino.
+     * @param  bool  $dryRun  true para solo contar.
+     * @return int Total de filas afectadas (o que se afectarían).
+     */
     private function remapFacts(int $fromId, int $toId, bool $dryRun): int
     {
         $total = 0;
 
         foreach (self::FACT_TABLES as $table) {
-            if (!DB::getSchemaBuilder()->hasColumn($table, 'branch_id')) {
+            if (! DB::getSchemaBuilder()->hasColumn($table, 'branch_id')) {
                 continue;
             }
 
             $count = (int) DB::table($table)->where('branch_id', $fromId)->count();
             $total += $count;
 
-            if ($count > 0 && !$dryRun) {
+            if ($count > 0 && ! $dryRun) {
                 DB::table($table)
                     ->where('branch_id', $fromId)
                     ->update(['branch_id' => $toId]);
@@ -156,6 +193,12 @@ class CleanupBranchesCommand extends Command
         return $total;
     }
 
+    /**
+     * Cuenta las filas que referencian la sucursal en todas las FACT_TABLES.
+     *
+     * @param  int  $branchId  ID de la sucursal.
+     * @return int Total de filas.
+     */
     private function countAllFacts(int $branchId): int
     {
         $total = 0;
@@ -164,20 +207,37 @@ class CleanupBranchesCommand extends Command
                 $total += (int) DB::table($table)->where('branch_id', $branchId)->count();
             }
         }
+
         return $total;
     }
 
+    /**
+     * Indica si el nombre normalizado pertenece a EXCLUDED_NAMES (CORPORATIVO).
+     *
+     * @param  string  $normName  Nombre normalizado.
+     * @return bool true si está excluido.
+     */
     private function isExcluded(string $normName): bool
     {
         foreach (self::EXCLUDED_NAMES as $excl) {
-            if ($this->normalizeKey($excl) === $normName) return true;
+            if ($this->normalizeKey($excl) === $normName) {
+                return true;
+            }
         }
+
         return false;
     }
 
+    /**
+     * Normaliza un nombre: recorta, minúsculas y sin acentos.
+     *
+     * @param  string  $value  Texto original.
+     * @return string Texto normalizado.
+     */
     private function normalizeKey(string $value): string
     {
         $value = trim(mb_strtolower($value, 'UTF-8'));
+
         return str_replace(
             ['á', 'é', 'í', 'ó', 'ú', 'ü', 'ñ'],
             ['a', 'e', 'i', 'o', 'u', 'u', 'n'],

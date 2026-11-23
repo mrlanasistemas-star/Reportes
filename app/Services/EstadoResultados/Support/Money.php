@@ -15,8 +15,12 @@ use Brick\Math\RoundingMode;
  */
 final class Money
 {
+    /** Escala (decimales) interna de cálculo. */
     public const INTERNAL_SCALE = 6;
 
+    /**
+     * Cero exacto.
+     */
     public static function zero(): BigDecimal
     {
         return BigDecimal::zero();
@@ -72,7 +76,11 @@ final class Money
         }
     }
 
-    /** @param iterable<mixed> $values */
+    /**
+     * Suma exacta de importes (cada valor pasa por of()).
+     *
+     * @param  iterable<mixed>  $values  importes
+     */
     public static function sum(iterable $values): BigDecimal
     {
         $total = BigDecimal::zero();
@@ -101,6 +109,12 @@ final class Money
         return self::of($value)->toScale(2, RoundingMode::HALF_UP)->getUnscaledValue()->toInt();
     }
 
+    /**
+     * ¿Dos importes son iguales a nivel de centavos (redondeo HALF_UP)?
+     *
+     * @param  mixed  $a  importe
+     * @param  mixed  $b  importe
+     */
     public static function equalsCents(mixed $a, mixed $b): bool
     {
         return self::cents($a) === self::cents($b);

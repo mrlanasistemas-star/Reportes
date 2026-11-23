@@ -31,12 +31,16 @@ namespace App\Services\EstadoResultados\Reporting;
  */
 class ReportStatusEvaluator
 {
+    /** Único estado de fuente que permite aprobar. */
     public const SATISFACTORY_SOURCE = 'procesado';
 
+    /** Único estado de la última corrida que permite aprobar. */
     public const SATISFACTORY_RUN = 'ok';
 
+    /** Único estado de validación que permite aprobar. */
     public const SATISFACTORY_VALIDATION = 'ok';
 
+    /** Nombre de negocio de cada fuente (mensajes de bloqueo). */
     private const SOURCE_LABELS = [
         'radiografia' => 'Radiografía del periodo',
         'erp' => 'ERP de gastos',
@@ -45,6 +49,12 @@ class ReportStatusEvaluator
     ];
 
     /**
+     * Evalúa el dataset contra la lista blanca de la clase y devuelve estado, bloqueos con su
+     * motivo exacto, pendientes de clasificar (conteo e importe), validaciones que no cuadran y
+     * datos faltantes. Bloqueos de conciliación ⇒ pendiente_conciliacion; otros ⇒ borrador;
+     * ninguno ⇒ listo_revision. «preliminary» = hay al menos un bloqueo. Función pura.
+     *
+     * @param  array  $d  dataset canónico en vivo
      * @return array{status:string, status_label:string, preliminary:bool, preliminary_reasons:list<string>,
      *               blockers:list<array{code:string,message:string}>, pending:array{count:int,amount:string},
      *               failed_checks:list<array{key:string,label:string,difference:string}>, missing:list<string>}
@@ -226,6 +236,12 @@ class ReportStatusEvaluator
         ];
     }
 
+    /**
+     * Motivo en español de por qué el estado de una fuente no es satisfactorio.
+     *
+     * @param  string  $key  clave de la fuente (radiografia, erp, nomina, procesamiento)
+     * @param  mixed  $status  estado reportado en el dataset
+     */
     private function sourceMessage(string $key, mixed $status): string
     {
         $label = self::SOURCE_LABELS[$key] ?? $key;
@@ -239,6 +255,11 @@ class ReportStatusEvaluator
         };
     }
 
+    /**
+     * Representación de texto de un valor arbitrario (escalares tal cual, lo demás en JSON).
+     *
+     * @param  mixed  $v  valor
+     */
     private function str(mixed $v): string
     {
         return is_scalar($v) ? (string) $v : json_encode($v, JSON_UNESCAPED_UNICODE);

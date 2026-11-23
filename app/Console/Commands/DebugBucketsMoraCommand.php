@@ -6,25 +6,42 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-buckets-mora` — valida los buckets de mora de `fact_portfolios` por
+ * días vencidos (Al corriente, 1-30, 31-60, 61-90, 91-120, 120+) sumando past_due_balance, y
+ * confirma que los contratos de 121-180 y 180+ días quedan agrupados en "Mora 120+".
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-buckets-mora 14
+ */
 class DebugBucketsMoraCommand extends Command
 {
-    protected $signature   = 'reportes:debug-buckets-mora {period_id}';
+    protected $signature = 'reportes:debug-buckets-mora {period_id}';
+
     protected $description = 'Valida buckets de mora para un periodo — confirma 120+ vs 121-180/180+';
 
+    /**
+     * Calcula conteo y saldo vencido por bucket y verifica que 121-180 + 180+ = 120+.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $this->info("Periodo: {$period->label} (ID {$period->id})");
 
         // Resolve data IDs
-        $allPeriods = \App\Models\Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $allPeriods = Period::all();
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -39,7 +56,7 @@ class DebugBucketsMoraCommand extends Command
         ];
 
         $this->line('');
-        $this->line(str_pad('Bucket', 20) . str_pad('Contratos', 12) . str_pad('Vencida', 20));
+        $this->line(str_pad('Bucket', 20).str_pad('Contratos', 12).str_pad('Vencida', 20));
         $this->line(str_repeat('-', 52));
 
         $totalMora = 0.0;
@@ -51,18 +68,20 @@ class DebugBucketsMoraCommand extends Command
                 ->selectRaw('COUNT(*) as cnt, SUM(COALESCE(past_due_balance,0)) as vencida')
                 ->first();
 
-            $vencida = (float)($row?->vencida ?? 0);
-            if ($b['min'] > 0) $totalMora += $vencida;
+            $vencida = (float) ($row?->vencida ?? 0);
+            if ($b['min'] > 0) {
+                $totalMora += $vencida;
+            }
 
             $this->line(
-                str_pad($b['label'], 20) .
-                str_pad(number_format($row?->cnt ?? 0), 12) .
-                '$' . number_format($vencida, 2)
+                str_pad($b['label'], 20).
+                str_pad(number_format($row?->cnt ?? 0), 12).
+                '$'.number_format($vencida, 2)
             );
         }
 
         $this->line(str_repeat('-', 52));
-        $this->line(str_pad('Mora total', 20) . str_pad('', 12) . '$' . number_format($totalMora, 2));
+        $this->line(str_pad('Mora total', 20).str_pad('', 12).'$'.number_format($totalMora, 2));
         $this->line('');
 
         // Verify no separate 121-180 / 180+ rows
@@ -85,9 +104,9 @@ class DebugBucketsMoraCommand extends Command
         $this->info("Contratos 120+       (suma de ambos):          {$rows120plus}");
 
         if ($rows121_180 + $rows180plus === $rows120plus) {
-            $this->info("✓ Los registros 121-180 y 180+ se agrupan correctamente en Mora 120+.");
+            $this->info('✓ Los registros 121-180 y 180+ se agrupan correctamente en Mora 120+.');
         } else {
-            $this->warn("! Discrepancia en conteo — revisar manualmente.");
+            $this->warn('! Discrepancia en conteo — revisar manualmente.');
         }
 
         return 0;

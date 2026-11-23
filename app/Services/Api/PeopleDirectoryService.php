@@ -43,9 +43,18 @@ class PeopleDirectoryService
 
     private const CACHE_VERSION = 'v1';
 
+    /**
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Normaliza nombres y fusiona variantes de captura (mismas reglas que el reporte).
+     */
     public function __construct(private readonly EmployeeNameCanonicalizer $canonicalizer) {}
 
     /**
+     * Directorio de personas activas agrupadas por identidad, con sus rutas
+     * y sucursal actual, ordenado por nombre.
+     *
+     * Usa caché (6 h) con llave dependiente del estado de las tablas de
+     * origen; en caso de fallo de caché ejecuta buildPeople() (lecturas a BD).
+     *
      * @return list<array<string, mixed>>
      */
     public function people(): array
@@ -55,6 +64,9 @@ class PeopleDirectoryService
 
     /**
      * Sucursales oficiales con sus rutas (branches activos).
+     *
+     * Cacheado 6 h igual que people(). Las rutas sin sucursal atribuible se
+     * agregan al final en un grupo con code/name/id null.
      *
      * @return list<array<string, mixed>>
      */
@@ -66,6 +78,12 @@ class PeopleDirectoryService
     /**
      * Sucursal oficial de un branch: catálogo de rutas → BD → null.
      *
+     * Orden: 1) BranchRouteCatalog (ruta oficial); 2) sucursal histórica cuyo
+     * nombre coincide con el branch; 3) relación branches.sucursal_id (source
+     * "database"); 4) null. El `id` se toma de la tabla sucursales por nombre
+     * normalizado (lectura memoizada).
+     *
+     * @param  Branch  $branch  Ruta/branch a atribuir (usa la relación `sucursal` si hace falta).
      * @return array{code: string, name: string, id: int|null, okr_operative: bool, source: string}|null
      */
     public function sucursalForBranch(Branch $branch): ?array
@@ -101,7 +119,16 @@ class PeopleDirectoryService
         ];
     }
 
-    /** Motivo por el que un registro NO es una persona, o null si lo es. */
+    /**
+     * Motivo por el que un registro NO es una persona, o null si lo es.
+     *
+     * Sobre el nombre normalizado detecta: vacío, VACANTE(S), VENCIDO(S),
+     * códigos de promotor (p. ej. ORI09247), cuentas operativas (SIN ASIGNAR,
+     * OFICINA, CORPORATIVO…) y nombres con menos de dos palabras.
+     *
+     * @param  string  $fullName  Nombre tal como está en employees.
+     * @return string|null sin_nombre|vacante|cartera_vencida|codigo_de_promotor|cuenta_operativa|nombre_incompleto, o null.
+     */
     public static function placeholderReason(string $fullName): ?string
     {
         $name = BranchRouteCatalog::normalize($fullName);
@@ -117,6 +144,16 @@ class PeopleDirectoryService
         };
     }
 
+    /**
+     * Construye la llave de caché a partir de una "huella" de las tablas de
+     * origen (conteos, máximos de id/updated_at de employees, asignaciones,
+     * rechazos y branches), de modo que cualquier import la invalide.
+     *
+     * Ejecuta varias consultas agregadas ligeras en cada llamada.
+     *
+     * @param  string  $what  Recurso cacheado ("people" o "sucursales").
+     * @return string Llave de caché versionada.
+     */
     private function cacheKey(string $what): string
     {
         $stamp = implode('|', [
@@ -135,7 +172,11 @@ class PeopleDirectoryService
     /** @var array<string, int>|null */
     private ?array $dbSucursalIdsMemo = null;
 
-    /** @return array<string, int> nombre normalizado → sucursales.id */
+    /**
+     * Mapa de sucursales de la BD por nombre normalizado, memoizado por instancia.
+     *
+     * @return array<string, int> nombre normalizado → sucursales.id
+     */
     private function dbSucursalIds(): array
     {
         if ($this->dbSucursalIdsMemo !== null) {
@@ -151,6 +192,9 @@ class PeopleDirectoryService
     }
 
     /**
+     * Carga todos los branches (activos e inactivos) con su sucursal oficial
+     * ya resuelta, indexados por id.
+     *
      * @return array<int, array{id: int, code: string|null, name: string, active: bool, sucursal: array<string, mixed>|null}>
      */
     private function branchesById(): array
@@ -169,7 +213,12 @@ class PeopleDirectoryService
         return $result;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * Agrupa los branches ACTIVOS por sucursal oficial (ordenadas por código);
+     * los que no tienen sucursal van en un grupo final sin código.
+     *
+     * @return list<array<string, mixed>>
+     */
     private function buildSucursales(): array
     {
         $bySucursal = [];
@@ -209,7 +258,20 @@ class PeopleDirectoryService
         return $result;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * Construye el directorio de personas sin caché.
+     *
+     * Pasos: 1) agrupa empleados activos por nombre normalizado y fusiona
+     * variantes (prefiriendo nombres de NOI); 2) separa homónimos con rechazo
+     * de fusión registrado; 3) junta las asignaciones de ruta de cada registro
+     * (más recientes primero por fecha de inicio del periodo) y arma la fila
+     * de cada persona. Resultado ordenado por nombre y luego id.
+     *
+     * Solo lectura (employees, employee_match_rejections,
+     * employee_branch_assignments, periods, branches, sucursales).
+     *
+     * @return list<array<string, mixed>>
+     */
     private function buildPeople(): array
     {
         $employees = Employee::query()
@@ -278,9 +340,17 @@ class PeopleDirectoryService
     }
 
     /**
-     * @param  list<Employee>  $members
-     * @param  array<int, array<int, bool>>  $rejected
-     * @return list<list<Employee>>
+     * Separa un grupo de registros con el mismo nombre cuando entre ellos
+     * existe un rechazo de fusión registrado.
+     *
+     * Sin rechazo → el grupo queda intacto. Con rechazo: se subdivide por
+     * clave NOI (employee_code) y los registros sin clave se agregan al primer
+     * subgrupo; si ningún registro tiene clave, cada uno queda como persona
+     * independiente.
+     *
+     * @param  list<Employee>  $members  Registros agrupados por nombre.
+     * @param  array<int, array<int, bool>>  $rejected  Mapa simétrico de pares rechazados (id → id → true).
+     * @return list<list<Employee>> Subgrupos (cada uno es una persona).
      */
     private function splitHomonyms(array $members, array $rejected): array
     {
@@ -319,9 +389,17 @@ class PeopleDirectoryService
     }
 
     /**
-     * @param  list<Employee>  $members
-     * @param  array<int, list<array{branch_id: int, start: string}>>  $routesByEmployee
-     * @param  array<int, array{id: int, code: string|null, name: string, active: bool, sucursal: array<string, mixed>|null}>  $branches
+     * Arma la fila pública de una persona a partir de sus registros.
+     *
+     * El registro principal es el de NOI con clave (menor id); si no hay, el
+     * de menor id priorizando los que tienen clave. Las rutas de todos sus
+     * registros se ordenan de la más reciente a la más antigua sin repetir; la
+     * primera define la ruta y sucursal actuales. Incluye variantes de nombre,
+     * claves y si es persona o placeholder.
+     *
+     * @param  list<Employee>  $members  Registros de la misma persona.
+     * @param  array<int, list<array{branch_id: int, start: string}>>  $routesByEmployee  Asignaciones por employee_id.
+     * @param  array<int, array{id: int, code: string|null, name: string, active: bool, sucursal: array<string, mixed>|null}>  $branches  Branches indexados por id.
      * @return array<string, mixed>
      */
     private function personRow(array $members, array $routesByEmployee, array $branches): array

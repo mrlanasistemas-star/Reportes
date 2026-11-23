@@ -7,6 +7,7 @@ use App\Models\OkrKpi;
 use App\Models\OkrObjective;
 use App\Models\OkrProgressSnapshot;
 use App\Models\Period;
+use Illuminate\Support\Carbon;
 
 /**
  * Módulo OKR (08-sep-2026, corregido el mismo día) — evalúa un Key Result:
@@ -21,10 +22,20 @@ use App\Models\Period;
  * 15-ago → 10-oct) comparara TODAS sus semanas contra el mismo mes. Ahora
  * cada semana resuelve SU PROPIO periodo real vía OkrTrackingPeriodResolver
  * (según la fecha calendario de esa semana), nunca "el último generado" a
- * ciegas — ver docs/OKR.md.
+ * ciegas — ver docs/MANUAL-DESARROLLADOR.md.
  */
 class OkrSnapshotService
 {
+    /**
+     * @param  OkrKpiValueResolver  $resolver  Valor real de KPI automático desde Reportería.
+     * @param  OkrTrajectoryService  $trajectory  Trayectoria esperada base→meta.
+     * @param  OkrProjectionService  $projection  Proyección al cierre.
+     * @param  OkrProgressCalculator  $calculator  Fórmula única de avance/desviación.
+     * @param  OkrHealthService  $health  Semáforo.
+     * @param  OkrTrackingPeriodResolver  $periodResolver  Periodo mensual de cada semana.
+     * @param  OkrCalendarService  $calendar  Inicio/fin de semanas.
+     * @param  OkrWeeklyPlacementResolver  $placementResolver  Colocación semanal real (cargas de archivo).
+     */
     public function __construct(
         private readonly OkrKpiValueResolver $resolver,
         private readonly OkrTrajectoryService $trajectory,
@@ -34,13 +45,30 @@ class OkrSnapshotService
         private readonly OkrTrackingPeriodResolver $periodResolver,
         private readonly OkrCalendarService $calendar,
         private readonly OkrWeeklyPlacementResolver $placementResolver,
-    ) {
-    }
+    ) {}
 
+    /**
+     * Evalúa un KR en la semana actual de su Objective: obtiene el valor real
+     * (automático desde Reportería o carga semanal; manual = el capturado en
+     * check-in), calcula esperado/avance/desviación/semáforo/proyección,
+     * actualiza el caché del KR y guarda (o actualiza) el snapshot de la semana.
+     *
+     * Reglas: semana 0 (no ha iniciado) no se evalúa; en colocación con carga
+     * semanal, si la semana en curso aún no tiene archivo se evalúa la semana
+     * anterior y se borra el marcador vacío de la semana abierta.
+     *
+     * Efecto: UPDATE de okr_key_results, updateOrCreate en okr_progress_snapshots
+     * y posible DELETE de un snapshot vacío.
+     *
+     * @param  OkrKeyResult  $kr  KR a evaluar (con objective y kpi accesibles).
+     * @param  Period|null  $period  Periodo ya resuelto para la semana; null = se resuelve aquí.
+     * @param  int|null  $checkInId  Check-in que originó la evaluación (trazabilidad de KPI manual).
+     * @return OkrKeyResult KR recargado.
+     */
     public function evaluateKeyResult(OkrKeyResult $kr, ?Period $period = null, ?int $checkInId = null): OkrKeyResult
     {
-        $objective  = $kr->objective;
-        $kpi        = $kr->kpi;
+        $objective = $kr->objective;
+        $kpi = $kr->kpi;
         $weekNumber = $objective->currentWeekNumber();
 
         // BUG CORREGIDO 09-sep-2026 (punto 5): el Objective todavía no inicia
@@ -76,40 +104,40 @@ class OkrSnapshotService
             : [$kr->current_value, $this->resolveSourceMetadata($kpi, $period, $this->calendar->weekEnd($objective->start_date, $weekNumber), $checkInId)]; // manual — el check-in ya lo capturó, nunca se sobreescribe aquí
 
         $totalWeeks = (int) $objective->duration_weeks;
-        $baseline   = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
-        $target     = (float) $kr->target_value;
+        $baseline = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
+        $target = (float) $kr->target_value;
 
         [$expectedValue, $expectedProgress, $actualProgress] = $this->progressFor($kpi, $sourceMeta, $baseline, $target, $currentValue, $weekNumber, $totalWeeks);
-        $deviation        = $this->calculator->deviationPp($actualProgress, $expectedProgress);
-        $healthStatus     = $this->health->classify($deviation);
+        $deviation = $this->calculator->deviationPp($actualProgress, $expectedProgress);
+        $healthStatus = $this->health->classify($deviation);
 
         [$projectedValue, $projectedCompliance] = $this->project($kr, $kpi, $sourceMeta, $currentValue, $baseline, $target, $weekNumber, $totalWeeks);
 
         $kr->update([
-            'current_value'                    => $currentValue,
-            'expected_value'                   => $expectedValue,
-            'actual_progress_percentage'       => $actualProgress,
-            'expected_progress_percentage'     => $expectedProgress,
-            'deviation_pp'                     => $deviation,
-            'projected_value'                  => $projectedValue,
-            'projected_compliance_percentage'  => $projectedCompliance,
-            'health_status'                    => $healthStatus,
-            'last_evaluated_at'                => now(),
+            'current_value' => $currentValue,
+            'expected_value' => $expectedValue,
+            'actual_progress_percentage' => $actualProgress,
+            'expected_progress_percentage' => $expectedProgress,
+            'deviation_pp' => $deviation,
+            'projected_value' => $projectedValue,
+            'projected_compliance_percentage' => $projectedCompliance,
+            'health_status' => $healthStatus,
+            'last_evaluated_at' => now(),
         ]);
 
         OkrProgressSnapshot::query()->updateOrCreate(
             ['okr_key_result_id' => $kr->id, 'week_number' => $weekNumber],
             array_merge([
-                'snapshot_date'                    => now()->toDateString(),
-                'actual_value'                      => $currentValue,
-                'expected_value'                    => $expectedValue,
-                'actual_progress_percentage'         => $actualProgress,
-                'expected_progress_percentage'       => $expectedProgress,
-                'deviation_pp'                       => $deviation,
-                'projected_value'                    => $projectedValue,
-                'projected_compliance_percentage'    => $projectedCompliance,
-                'health_status'                      => $healthStatus,
-                'calculated_at'                      => now(),
+                'snapshot_date' => now()->toDateString(),
+                'actual_value' => $currentValue,
+                'expected_value' => $expectedValue,
+                'actual_progress_percentage' => $actualProgress,
+                'expected_progress_percentage' => $expectedProgress,
+                'deviation_pp' => $deviation,
+                'projected_value' => $projectedValue,
+                'projected_compliance_percentage' => $projectedCompliance,
+                'health_status' => $healthStatus,
+                'calculated_at' => now(),
             ], $sourceMeta),
         );
 
@@ -122,24 +150,29 @@ class OkrSnapshotService
      * genera radiografía a nivel MENSUAL (ver Period::canReceiveUploads()), así
      * que un KPI automático siempre queda 'monthly' — 'monthly_proxy' si el mes
      * resuelto realmente cubre la fecha de esa semana, 'last_available' si tuvo
-     * que caer a un mes anterior (ver OkrTrackingPeriodResolver).
+     * que caer a un mes anterior (ver OkrTrackingPeriodResolver). KPI manual →
+     * referencia al check-in y calidad 'manual_checkin'. Sin periodo → todo null.
      *
+     * @param  OkrKpi  $kpi  KPI del KR.
+     * @param  Period|null  $period  Periodo resuelto para la semana.
+     * @param  Carbon  $weekEndDate  Fin de la semana evaluada.
+     * @param  int|null  $checkInId  Check-in de origen (KPI manual).
      * @return array{source_reference:?string, source_period_id:?int, source_period_code:?string, source_date:?string, source_granularity:?string, source_quality:?string}
      */
-    private function resolveSourceMetadata(OkrKpi $kpi, ?Period $period, \Illuminate\Support\Carbon $weekEndDate, ?int $checkInId): array
+    private function resolveSourceMetadata(OkrKpi $kpi, ?Period $period, Carbon $weekEndDate, ?int $checkInId): array
     {
-        if (!$kpi->isAutomatic()) {
+        if (! $kpi->isAutomatic()) {
             return [
-                'source_reference'   => $checkInId ? "manual_checkin:{$checkInId}" : 'manual',
-                'source_period_id'   => null,
+                'source_reference' => $checkInId ? "manual_checkin:{$checkInId}" : 'manual',
+                'source_period_id' => null,
                 'source_period_code' => null,
-                'source_date'        => $weekEndDate->toDateString(),
+                'source_date' => $weekEndDate->toDateString(),
                 'source_granularity' => 'manual',
-                'source_quality'     => OkrProgressSnapshot::QUALITY_MANUAL_CHECKIN,
+                'source_quality' => OkrProgressSnapshot::QUALITY_MANUAL_CHECKIN,
             ];
         }
 
-        if (!$period) {
+        if (! $period) {
             return [
                 'source_reference' => null, 'source_period_id' => null, 'source_period_code' => null,
                 'source_date' => null, 'source_granularity' => null, 'source_quality' => null,
@@ -150,12 +183,12 @@ class OkrSnapshotService
             && $period->start_date->lte($weekEndDate) && $period->end_date->gte($weekEndDate);
 
         return [
-            'source_reference'   => "period:{$period->id}",
-            'source_period_id'   => $period->id,
+            'source_reference' => "period:{$period->id}",
+            'source_period_id' => $period->id,
             'source_period_code' => $period->code,
-            'source_date'        => $period->end_date?->toDateString(),
+            'source_date' => $period->end_date?->toDateString(),
             'source_granularity' => 'monthly',
-            'source_quality'     => $coversWeek ? OkrProgressSnapshot::QUALITY_MONTHLY_PROXY : OkrProgressSnapshot::QUALITY_LAST_AVAILABLE,
+            'source_quality' => $coversWeek ? OkrProgressSnapshot::QUALITY_MONTHLY_PROXY : OkrProgressSnapshot::QUALITY_LAST_AVAILABLE,
         ];
     }
 
@@ -167,6 +200,14 @@ class OkrSnapshotService
      * el camino de siempre (proxy mensual de Reportería) — esto es un
      * complemento opt-in, nunca rompe Objectives que no la usan.
      *
+     * Con carga semanal: valor = acumulado 1..N (calidad 'exact'), o null con
+     * calidad 'missing' si falta alguna semana.
+     *
+     * @param  OkrKpi  $kpi  KPI automático.
+     * @param  OkrObjective  $objective  Objective del KR.
+     * @param  int  $weekNumber  Semana evaluada.
+     * @param  Period|null  $period  Periodo mensual de esa semana.
+     * @param  int|null  $checkInId  Check-in de origen (solo trazabilidad).
      * @return array{0: ?float, 1: array} [currentValue, sourceMeta]
      */
     private function resolveAutomaticValue(OkrKpi $kpi, OkrObjective $objective, int $weekNumber, ?Period $period, ?int $checkInId): array
@@ -187,12 +228,12 @@ class OkrSnapshotService
             }
 
             return [$placement['cumulative'], [
-                'source_reference'   => $placement['upload_id'] ? "placement_upload:{$placement['upload_id']}" : null,
-                'source_period_id'   => null,
+                'source_reference' => $placement['upload_id'] ? "placement_upload:{$placement['upload_id']}" : null,
+                'source_period_id' => null,
                 'source_period_code' => null,
-                'source_date'        => $weekEndDate->toDateString(),
+                'source_date' => $weekEndDate->toDateString(),
                 'source_granularity' => 'weekly',
-                'source_quality'     => OkrProgressSnapshot::QUALITY_EXACT,
+                'source_quality' => OkrProgressSnapshot::QUALITY_EXACT,
             ]];
         }
 
@@ -211,6 +252,10 @@ class OkrSnapshotService
      * incremento. Antes la trayectoria esperada partía de la base mensual
      * (p. ej. $638,576) y el real semanal acumulado aparecía como
      * incumplimiento desde la semana 1 aunque faltara tiempo para la meta.
+     *
+     * @param  OkrKpi  $kpi  KPI del KR.
+     * @param  array  $sourceMeta  Metadata de fuente (se revisa source_granularity).
+     * @return bool true si es KPI acumulativo con fuente semanal.
      */
     private function isWeeklyFlow(OkrKpi $kpi, array $sourceMeta): bool
     {
@@ -218,6 +263,17 @@ class OkrSnapshotService
     }
 
     /**
+     * Valor esperado y avances (esperado y real) de la semana. Flujo semanal:
+     * esperado = meta × fracción transcurrida y avance real = actual / meta.
+     * Resto: trayectoria lineal base→meta y fórmula única de OkrProgressCalculator.
+     *
+     * @param  OkrKpi  $kpi  KPI del KR.
+     * @param  array  $sourceMeta  Metadata de fuente.
+     * @param  float|null  $baseline  Línea base.
+     * @param  float  $target  Meta.
+     * @param  float|null  $currentValue  Valor real.
+     * @param  int  $weekNumber  Semana evaluada.
+     * @param  int  $totalWeeks  Duración del OKR.
      * @return array{0: ?float, 1: float, 2: ?float} [expectedValue, expectedProgress%, actualProgress%]
      */
     private function progressFor(OkrKpi $kpi, array $sourceMeta, ?float $baseline, float $target, ?float $currentValue, int $weekNumber, int $totalWeeks): array
@@ -232,7 +288,7 @@ class OkrSnapshotService
             return [$expectedValue, $expectedProgress, $actualProgress];
         }
 
-        $expectedValue  = $baseline !== null ? $this->trajectory->expectedValue($baseline, $target, $weekNumber, $totalWeeks) : null;
+        $expectedValue = $baseline !== null ? $this->trajectory->expectedValue($baseline, $target, $weekNumber, $totalWeeks) : null;
         $actualProgress = $this->calculator->rawProgress($baseline, $target, $currentValue, $kpi->direction);
 
         return [$expectedValue, $expectedProgress, $actualProgress];
@@ -246,6 +302,18 @@ class OkrSnapshotService
      *    OKR (p. ej. $638,576 × 12 = $7,662,912) como si fuera colocación nueva.
      *  - Saldo/porcentaje: tendencia lineal solo con al menos 2 lecturas reales.
      * Sin datos suficientes → null ("Sin datos suficientes" en la UI).
+     *
+     * Efecto: lee snapshots previos del KR (para la tendencia).
+     *
+     * @param  OkrKeyResult  $kr  KR evaluado.
+     * @param  OkrKpi  $kpi  KPI del KR.
+     * @param  array  $sourceMeta  Metadata de fuente.
+     * @param  float|null  $currentValue  Valor real actual.
+     * @param  float|null  $baseline  Línea base.
+     * @param  float  $target  Meta.
+     * @param  int  $weekNumber  Semana evaluada.
+     * @param  int  $totalWeeks  Duración del OKR.
+     * @return array{0: ?float, 1: ?float} [valor proyectado, % de cumplimiento proyectado]
      */
     private function project(OkrKeyResult $kr, OkrKpi $kpi, array $sourceMeta, ?float $currentValue, ?float $baseline, float $target, int $weekNumber, int $totalWeeks): array
     {
@@ -279,6 +347,7 @@ class OkrSnapshotService
 
         return [$projectedValue, $this->projection->projectedCompliancePercentage($projectedValue, $baseline, $target, $kpi->direction, $this->calculator)];
     }
+
     /**
      * Punto 4 de la auditoría 09-sep-2026 — "hueco histórico" cuando el cron
      * no corrió una semana: recorre 1..semanaActual y crea el snapshot que
@@ -293,6 +362,9 @@ class OkrSnapshotService
      * sin snapshot hasta que alguien capture un check-in retroactivo (fuera
      * de alcance de este backfill).
      *
+     * Efecto: INSERT en okr_progress_snapshots para las semanas faltantes.
+     *
+     * @param  OkrObjective  $objective  Objective a rellenar.
      * @return int Número de snapshots creados.
      */
     public function backfillMissingWeeks(OkrObjective $objective): int
@@ -304,7 +376,7 @@ class OkrSnapshotService
 
         $created = 0;
         foreach ($objective->keyResults()->with('kpi')->get() as $kr) {
-            if (!$kr->kpi->isAutomatic()) {
+            if (! $kr->kpi->isAutomatic()) {
                 continue;
             }
 
@@ -323,37 +395,48 @@ class OkrSnapshotService
         return $created;
     }
 
+    /**
+     * Calcula y guarda (updateOrCreate) el snapshot de una semana pasada de un
+     * KR automático, con fecha = fin de esa semana y sin proyección. No toca el
+     * caché en vivo del KR.
+     *
+     * Efecto: escritura en okr_progress_snapshots.
+     *
+     * @param  OkrKeyResult  $kr  KR automático.
+     * @param  OkrObjective  $objective  Objective del KR.
+     * @param  int  $weekNumber  Semana a escribir.
+     */
     private function writeBackfilledSnapshot(OkrKeyResult $kr, OkrObjective $objective, int $weekNumber): void
     {
-        $kpi    = $kr->kpi;
+        $kpi = $kr->kpi;
         $period = $this->periodResolver->getPeriodForObjectiveWeek($objective->start_date, $weekNumber);
 
         [$currentValue, $sourceMeta] = $this->resolveAutomaticValue($kpi, $objective, $weekNumber, $period, null);
 
         $totalWeeks = (int) $objective->duration_weeks;
-        $baseline   = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
-        $target     = (float) $kr->target_value;
+        $baseline = $kr->baseline_value !== null ? (float) $kr->baseline_value : null;
+        $target = (float) $kr->target_value;
 
         [$expectedValue, $expectedProgress, $actualProgress] = $this->progressFor($kpi, $sourceMeta, $baseline, $target, $currentValue, $weekNumber, $totalWeeks);
-        $deviation        = $this->calculator->deviationPp($actualProgress, $expectedProgress);
-        $healthStatus     = $this->health->classify($deviation);
+        $deviation = $this->calculator->deviationPp($actualProgress, $expectedProgress);
+        $healthStatus = $this->health->classify($deviation);
 
         $weekEndDate = $this->calendar->weekEnd($objective->start_date, $weekNumber);
 
         OkrProgressSnapshot::query()->updateOrCreate(
             ['okr_key_result_id' => $kr->id, 'week_number' => $weekNumber],
             array_merge([
-            'snapshot_date'                      => $weekEndDate->toDateString(),
-            'actual_value'                       => $currentValue,
-            'expected_value'                     => $expectedValue,
-            'actual_progress_percentage'         => $actualProgress,
-            'expected_progress_percentage'       => $expectedProgress,
-            'deviation_pp'                       => $deviation,
-            'projected_value'                    => null, // proyección solo tiene sentido "hoy", no retroactiva
-            'projected_compliance_percentage'    => null,
-            'health_status'                      => $healthStatus,
-            'calculated_at'                      => now(),
-        ], $sourceMeta));
+                'snapshot_date' => $weekEndDate->toDateString(),
+                'actual_value' => $currentValue,
+                'expected_value' => $expectedValue,
+                'actual_progress_percentage' => $actualProgress,
+                'expected_progress_percentage' => $expectedProgress,
+                'deviation_pp' => $deviation,
+                'projected_value' => null, // proyección solo tiene sentido "hoy", no retroactiva
+                'projected_compliance_percentage' => null,
+                'health_status' => $healthStatus,
+                'calculated_at' => now(),
+            ], $sourceMeta));
     }
 
     /**
@@ -363,6 +446,11 @@ class OkrSnapshotService
      * snapshots de colocación de esas semanas de un OKR ACTIVO; las semanas
      * anteriores a N no dependen de este archivo y nunca se tocan, y un OKR
      * cerrado/cancelado jamás se reprocesa (histórico congelado).
+     * Reescribe las semanas desde $fromWeek hasta la anterior a la actual y
+     * luego evalúa el Objective completo (semana actual).
+     *
+     * @param  OkrObjective  $objective  Objective afectado por la carga.
+     * @param  int  $fromWeek  Semana del archivo procesado.
      */
     public function evaluatePlacementHistory(OkrObjective $objective, int $fromWeek): void
     {
@@ -383,6 +471,15 @@ class OkrSnapshotService
         $this->evaluateObjective($objective);
     }
 
+    /**
+     * Evalúa todos los KR del Objective en su semana actual y fija la salud
+     * del Objective como el peor semáforo de sus KR.
+     *
+     * Efecto: escrituras de KR/snapshots (ver evaluateKeyResult) y UPDATE de health_status.
+     *
+     * @param  OkrObjective  $objective  Objective a evaluar.
+     * @return OkrObjective Objective recargado.
+     */
     public function evaluateObjective(OkrObjective $objective): OkrObjective
     {
         // Todos los KR de un mismo Objective comparten la misma semana actual —

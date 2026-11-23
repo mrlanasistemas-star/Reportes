@@ -20,16 +20,32 @@ use App\Services\EstadoResultados\Support\Treatment as T;
  */
 class EstadoResultadosRedactor
 {
+    /** Claves de sección/categoría con detalle de nómina. */
     public const NOMINA_SECTIONS = ['nomina_sucursales', 'nomina_corporativa'];
 
+    /** Claves de sección/categoría con detalle de Dirección General. */
     public const DG_SECTIONS = ['dg'];
 
+    /** Tratamientos que identifican un movimiento de nómina. */
     private const NOMINA_TREATMENTS = [T::NOMINA_SUCURSAL, T::NOMINA_CORPORATIVA];
 
+    /** Tratamientos que identifican un movimiento de Dirección General. */
     private const DG_TREATMENTS = [T::DG_OPERATIVO, T::DG_REMUNERACION];
 
+    /** Reglas de clasificación que identifican un movimiento de Dirección General. */
     private const DG_RULES = ['dg_requiere_revision', 'erp_dg'];
 
+    /**
+     * Aplica la redacción a un dataset según los permisos del usuario: colapsa secciones y
+     * categorías sensibles a su total, retira los movimientos ocultos, anonimiza toda referencia
+     * a ellos en el resto del dataset (excepto meta, statement, catálogos y dimensiones) y deja
+     * el resumen en meta.redactions. Función pura: no toca BD.
+     *
+     * @param  array  $d  dataset canónico sin redactar
+     * @param  bool  $canNomina  permiso ver_nomina
+     * @param  bool  $canDg  permiso ver_dg
+     * @return array dataset redactado
+     */
     public function apply(array $d, bool $canNomina, bool $canDg): array
     {
         $hidden = ['nomina' => 0, 'dg' => 0];
@@ -98,7 +114,14 @@ class EstadoResultadosRedactor
         return $d;
     }
 
-    /** ¿El movimiento es detalle de nómina (por tratamiento vigente, automático, sugerido o regla)? */
+    /**
+     * ¿El movimiento es detalle de nómina (por tratamiento vigente, automático, sugerido o regla)?
+     *
+     * También cuenta: tratamiento previo a un override, categoría de nómina, empleado NOI
+     * asignado o un vínculo de evidencia NOI.
+     *
+     * @param  array  $m  movimiento/fila del dataset
+     */
     public static function isPayroll(array $m): bool
     {
         foreach (['treatment', 'auto_treatment', 'suggested_treatment'] as $k) {
@@ -122,6 +145,12 @@ class EstadoResultadosRedactor
         return str_contains((string) ($m['rule_code'] ?? ''), 'nomina');
     }
 
+    /**
+     * ¿El movimiento es detalle de Dirección General? (tratamiento vigente/automático/sugerido o
+     * previo DG, categoría opex_dg o regla DG).
+     *
+     * @param  array  $m  movimiento/fila del dataset
+     */
     public static function isDg(array $m): bool
     {
         foreach (['treatment', 'auto_treatment', 'suggested_treatment'] as $k) {
@@ -145,6 +174,15 @@ class EstadoResultadosRedactor
      *  - renglones con `fingerprint` de un movimiento oculto (se conservan importes/fechas/estado),
      *  - vínculos cuyo `target` es un movimiento oculto o que son evidencia NOI sin `ver_nomina`,
      *  - cualquier `evidence` que nombre a un colaborador sin `ver_nomina`.
+     *
+     * Recursivo sobre todos los subarreglos.
+     *
+     * @param  array  $node  nodo a revisar
+     * @param  array<string, bool>  $hiddenFp  huellas de movimientos ocultos
+     * @param  bool  $canNomina  permiso ver_nomina
+     * @param  bool  $canDg  permiso ver_dg
+     * @param  int  $count  contador (por referencia) de referencias anonimizadas
+     * @return array nodo anonimizado
      */
     private function scrub(array $node, array $hiddenFp, bool $canNomina, bool $canDg, int &$count): array
     {
@@ -185,6 +223,11 @@ class EstadoResultadosRedactor
         return $node;
     }
 
+    /**
+     * ¿La evidencia identifica a un colaborador (nombre, empleado o total NOI)?
+     *
+     * @param  array  $evidence  bloque de evidencia de un vínculo
+     */
     private function namesEmployee(array $evidence): bool
     {
         foreach (['employee', 'employee_name', 'empleado', 'colaborador', 'noi_total'] as $k) {
@@ -196,6 +239,13 @@ class EstadoResultadosRedactor
         return false;
     }
 
+    /**
+     * Reemplaza las líneas de una sección/categoría por una sola línea «Detalle restringido» con
+     * el total (el resultado no cambia) y la marca 'restricted'.
+     *
+     * @param  array  $block  sección o categoría del statement (requiere total.amount y total.pct)
+     * @param  string  $permission  nombre del permiso requerido (para el mensaje)
+     */
     private function collapse(array $block, string $permission): array
     {
         if (($block['lines'] ?? []) === [] || ! ($block['applies'] ?? true)) {
@@ -215,6 +265,12 @@ class EstadoResultadosRedactor
         return $block;
     }
 
+    /**
+     * Aviso en español de qué detalle está restringido; null si el usuario ve todo.
+     *
+     * @param  bool  $nomina  permiso ver_nomina
+     * @param  bool  $dg  permiso ver_dg
+     */
     private function message(bool $nomina, bool $dg): ?string
     {
         $parts = array_filter([$nomina ? null : 'nómina', $dg ? null : 'Dirección General']);

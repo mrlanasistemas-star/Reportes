@@ -6,11 +6,12 @@ use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
 /**
  * Fase 2.8 — exportador fiel al layout REAL de la hoja EFECTIVIDAD del VBA
  * aprobado (columnas A-M, filas 1-5 de encabezado, semáforo en %Cobrado
- * Total) — ver docs/efectividad-cobranza-aprobada.md sección 12-13.
+ * Total) — ver docs/MANUAL-DESARROLLADOR.md sección 12-13.
  *
  * Prioriza fidelidad al formato aprobado, no un rediseño estético (regla
  * explícita del encargo). No usa macros: XLSX simple, formato/color vía
@@ -18,22 +19,36 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
  */
 class EfectividadCobranzaAprobadaExcelExporter
 {
-    /** @param array<int, array<string,mixed>> $filas salida de EfectividadCobranzaAprobadaCalculator::calculate() */
+    /**
+     * Escribe la hoja EFECTIVIDAD (encabezado + filas) y guarda el XLSX.
+     *
+     * @param  array<int, array<string,mixed>>  $filas  salida de EfectividadCobranzaAprobadaCalculator::calculate()
+     * @param  string  $periodoLabel  etiqueta del periodo para el encabezado
+     * @param  string  $outputPath  ruta del archivo a generar
+     * @return string ruta generada
+     */
     public function export(array $filas, string $periodoLabel, string $outputPath): string
     {
-        $spreadsheet = new Spreadsheet();
+        $spreadsheet = new Spreadsheet;
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->setTitle('EFECTIVIDAD');
 
         $this->escribirEncabezado($sheet, $periodoLabel);
         $this->escribirFilas($sheet, $filas);
 
-        $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+        $writer = new Xlsx($spreadsheet);
         $writer->save($outputPath);
 
         return $outputPath;
     }
 
+    /**
+     * Filas 1–5: título, periodo, criterio, bloques SANO / ATRASO / VENCIDO / COBRANZA TOTAL /
+     * MORA y encabezados de columna.
+     *
+     * @param  Worksheet  $sheet  hoja
+     * @param  string  $periodoLabel  periodo
+     */
     private function escribirEncabezado(Worksheet $sheet, string $periodoLabel): void
     {
         $sheet->setCellValue('A1', 'EFECTIVIDAD DE COBRANZA — MR LANA');
@@ -41,7 +56,7 @@ class EfectividadCobranzaAprobadaExcelExporter
         $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
         $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
-        $sheet->setCellValue('A2', 'Periodo: ' . $periodoLabel);
+        $sheet->setCellValue('A2', 'Periodo: '.$periodoLabel);
         $sheet->mergeCells('A2:M2');
         $sheet->getStyle('A2')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
 
@@ -69,6 +84,13 @@ class EfectividadCobranzaAprobadaExcelExporter
         $sheet->getStyle('A5:M5')->getFont()->setBold(true);
     }
 
+    /**
+     * Desde la fila 6: un renglón por promotor (con separador de oficina), totales en negrita y
+     * semáforo de color en % cobrado total.
+     *
+     * @param  Worksheet  $sheet  hoja
+     * @param  array  $filas  filas del calculador
+     */
     private function escribirFilas(Worksheet $sheet, array $filas): void
     {
         $row = 6;
@@ -78,7 +100,7 @@ class EfectividadCobranzaAprobadaExcelExporter
             $esTotal = $fila['es_total'] ?? false;
             $oficina = $fila['oficina'] ?? null;
 
-            if (!$esTotal && $oficina !== null && $oficina !== $oficinaActual) {
+            if (! $esTotal && $oficina !== null && $oficina !== $oficinaActual) {
                 $sheet->setCellValue("A{$row}", mb_strtoupper($oficina));
                 $sheet->mergeCells("A{$row}:M{$row}");
                 $sheet->getStyle("A{$row}")->getFont()->setBold(true);

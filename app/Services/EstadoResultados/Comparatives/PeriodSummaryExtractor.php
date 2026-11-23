@@ -43,6 +43,19 @@ class PeriodSummaryExtractor
         'en_vivo' => 'Cálculo en vivo',
     ];
 
+    /**
+     * Reduce un dataset sin redactar a su resumen para comparativas.
+     *
+     * Reglas: corrige el signo del resultado financiero si el dataset lo trae como gasto (validado
+     * contra EBT = EBIT + RFN); ISR «sin información» ⇒ ISR y utilidad neta null (pendiente, nunca
+     * $0); sólo ADVIERTE incoherencias (Ingresos − OPEX ≠ EBITDA, Σ categorías ≠ OPEX), nunca ajusta;
+     * estado: snapshot ⇒ aprobado, sin datos ⇒ todos los importes null, faltan fuentes ⇒ parcial,
+     * preliminar o listo_revision. Función pura.
+     *
+     * @param  array  $d  dataset canónico (results, statement, adjustments, sources, completeness, meta)
+     * @return array<string, mixed> resumen con period, scope, status, source, report, values, complete,
+     *                              opex_categories, availability, has_data y warnings
+     */
     public function extract(array $d): array
     {
         $r = (array) ($d['results'] ?? []);
@@ -222,6 +235,7 @@ class PeriodSummaryExtractor
         return $out;
     }
 
+    /** Etiquetas de las secciones de OPEX del dataset de compatibilidad. */
     private const LEGACY_LABELS = [
         'opex_sucursales' => 'OPEX sucursales',
         'nomina_sucursales' => 'Nómina y capital humano sucursales',
@@ -230,6 +244,15 @@ class PeriodSummaryExtractor
         'dg' => 'Gastos operativos Dirección General',
     ];
 
+    /**
+     * Disponibilidad de fuentes del periodo según el bloque sources del dataset: ERP, NOI de
+     * sucursales, estados de cuenta (cargadas/total y faltantes), NOI de corporativo y grado de
+     * captura de ajustes.
+     *
+     * @param  array  $d  dataset canónico
+     * @param  array<string, string>  $adj  estado por clave de ajuste (capturado, sin_informacion…)
+     * @return array<string, mixed>
+     */
     private function availability(array $d, array $adj): array
     {
         $s = (array) ($d['sources'] ?? []);

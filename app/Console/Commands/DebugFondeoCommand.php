@@ -6,27 +6,46 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-fondeo` — detalle de Préstamos Intersucursales (fondeo): total por
+ * fuente, por sucursal y fuente, detalle fila a fila del PDF de Lendus (la fuente que usa el
+ * calculador), filas del Excel de Lendus solo como referencia (no se usan), comparación contra
+ * el target fijo de Abril 2026 ($449,425) y categorías alternativas que podrían ser fondeo.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-fondeo 14
+ */
 class DebugFondeoCommand extends Command
 {
-    protected $signature   = 'reportes:debug-fondeo {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-fondeo {period_id : ID del periodo mensual}';
+
     protected $description = 'Fondeo: detalle fila a fila de Préstamos Intersucursales por fuente, sucursal y concepto.';
 
-    private const TARGET      = 449_425.00;
+    private const TARGET = 449_425.00;
+
     private const FONDEO_CATS = ['Préstamos Intersucursales'];
 
+    /**
+     * Resuelve los periodos de datos e imprime las secciones 1–5 del diagnóstico de fondeo.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -35,8 +54,8 @@ class DebugFondeoCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG FONDEO — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
-        $this->line('  Target fondeo Abril 2026: $' . number_format(self::TARGET, 2));
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
+        $this->line('  Target fondeo Abril 2026: $'.number_format(self::TARGET, 2));
         $this->line('');
 
         // ── 1. Total por fuente ───────────────────────────────────────────────
@@ -46,7 +65,7 @@ class DebugFondeoCommand extends Command
             ->join('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
             ->whereIn('e.period_id', $dataIds)
             ->whereIn('e.category', self::FONDEO_CATS)
-            ->selectRaw("ds.code, ds.name as source_name, COUNT(*) as filas, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+            ->selectRaw('ds.code, ds.name as source_name, COUNT(*) as filas, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
             ->groupBy('ds.id', 'ds.code', 'ds.name')
             ->orderByDesc('total')
             ->get();
@@ -56,8 +75,8 @@ class DebugFondeoCommand extends Command
         } else {
             $grandTotal = 0.0;
             foreach ($bySource as $s) {
-                $this->line(sprintf('  %-25s : %4d filas  $%s', $s->code, $s->filas, number_format((float)$s->total, 2)));
-                $grandTotal += (float)$s->total;
+                $this->line(sprintf('  %-25s : %4d filas  $%s', $s->code, $s->filas, number_format((float) $s->total, 2)));
+                $grandTotal += (float) $s->total;
             }
             $this->line(sprintf('  %-25s :       TOTAL $%s', '', number_format($grandTotal, 2)));
         }
@@ -71,7 +90,7 @@ class DebugFondeoCommand extends Command
             ->join('branches as b', 'e.branch_id', '=', 'b.id')
             ->whereIn('e.period_id', $dataIds)
             ->whereIn('e.category', self::FONDEO_CATS)
-            ->selectRaw("b.name as sucursal, ds.code as fuente, COUNT(*) as filas, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+            ->selectRaw('b.name as sucursal, ds.code as fuente, COUNT(*) as filas, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
             ->groupBy('b.id', 'b.name', 'ds.id', 'ds.code')
             ->orderByDesc('total')
             ->get();
@@ -85,7 +104,7 @@ class DebugFondeoCommand extends Command
                     mb_substr($r->sucursal, 0, 30),
                     $r->fuente,
                     $r->filas,
-                    '$' . number_format((float)$r->total, 2),
+                    '$'.number_format((float) $r->total, 2),
                 ])->all()
             );
         }
@@ -129,7 +148,7 @@ class DebugFondeoCommand extends Command
         } else {
             $this->line(sprintf('  %-4s  %-25s  %-35s  %-12s  %-35s  %12s',
                 '#', 'Sucursal', 'Concepto', 'Fecha', 'Observación', 'Monto'));
-            $this->line('  ' . str_repeat('─', 135));
+            $this->line('  '.str_repeat('─', 135));
             $i = 1;
             foreach ($filasPDF as $r) {
                 $this->line(sprintf('  %-4d  %-25s  %-35s  %-12s  %-35s  $%s',
@@ -141,7 +160,7 @@ class DebugFondeoCommand extends Command
                     number_format((float) $r->total, 2)
                 ));
             }
-            $this->line('  ' . str_repeat('─', 135));
+            $this->line('  '.str_repeat('─', 135));
             $this->line(sprintf('  %-4s  %-25s  %-35s  %-12s  %-35s  $%s',
                 'TOT', '', '', '', 'TOTAL LENDUS PDF:', number_format($pdfTotal, 2)));
         }
@@ -183,9 +202,9 @@ class DebugFondeoCommand extends Command
 
         // ── 4. Comparación vs target ──────────────────────────────────────────
         $this->info('── 4. Comparación vs target ──');
-        $calcTotal = $bySource->sum(fn ($s) => (float)$s->total);
-        $diff  = $calcTotal - self::TARGET;
-        $pct   = self::TARGET > 0 ? abs($diff / self::TARGET) * 100 : 0;
+        $calcTotal = $bySource->sum(fn ($s) => (float) $s->total);
+        $diff = $calcTotal - self::TARGET;
+        $pct = self::TARGET > 0 ? abs($diff / self::TARGET) * 100 : 0;
         $color = $pct < 1 ? 'green' : ($pct < 10 ? 'yellow' : 'red');
         $this->line(sprintf('  Calculado : $%s', number_format($calcTotal, 2)));
         $this->line(sprintf('  Target    : $%s', number_format(self::TARGET, 2)));
@@ -206,11 +225,11 @@ class DebugFondeoCommand extends Command
                 ->whereIn('e.period_id', $dataIds)
                 ->whereIn('e.category', self::FONDEO_CATS)
                 ->whereRaw("UPPER(b.name) LIKE '%CORPORAT%'")
-                ->selectRaw("SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
+                ->selectRaw('SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total')
                 ->value('total');
 
-            if ((float)($corpFondeo ?? 0) > 0) {
-                $this->line(sprintf('    → Corporativo tiene fondeo: $%s — ¿debe excluirse del GLOBAL?', number_format((float)$corpFondeo, 2)));
+            if ((float) ($corpFondeo ?? 0) > 0) {
+                $this->line(sprintf('    → Corporativo tiene fondeo: $%s — ¿debe excluirse del GLOBAL?', number_format((float) $corpFondeo, 2)));
             }
         }
         $this->line('');
@@ -223,7 +242,7 @@ class DebugFondeoCommand extends Command
             ->whereIn('e.period_id', $dataIds)
             ->whereRaw("LOWER(COALESCE(e.category,'')) REGEXP 'fondeo|intersucursal|prestamo'")
             ->whereNotIn('e.category', self::FONDEO_CATS)
-            ->selectRaw("ds.code, e.category, e.concept, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total, COUNT(*) as filas")
+            ->selectRaw('ds.code, e.category, e.concept, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total, COUNT(*) as filas')
             ->groupBy('ds.id', 'ds.code', 'e.category', 'e.concept')
             ->orderByDesc('total')
             ->get();
@@ -237,7 +256,7 @@ class DebugFondeoCommand extends Command
                     $r->code,
                     mb_substr($r->category ?? '—', 0, 30),
                     mb_substr($r->concept ?? '—', 0, 35),
-                    '$' . number_format((float)$r->total, 2),
+                    '$'.number_format((float) $r->total, 2),
                     $r->filas,
                 ])->all()
             );

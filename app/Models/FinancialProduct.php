@@ -5,8 +5,19 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class FinancialProduct extends Model {
-
+/**
+ * Catálogo de productos financieros (tipos de crédito que coloca la empresa).
+ *
+ * Tabla: `financial_products`. Cada fila es un producto (ej. CRECE, CREDITO DIARIO).
+ *
+ * Columnas clave:
+ * - `code`: código del producto.
+ * - `name`: nombre tal como se muestra.
+ * - `normalized_name`: nombre normalizado para emparejar contra las fuentes.
+ * - `is_active` (bool): si el producto sigue vigente.
+ */
+class FinancialProduct extends Model
+{
     protected $fillable = [
         'code',
         'name',
@@ -18,8 +29,9 @@ class FinancialProduct extends Model {
         'is_active' => 'boolean',
     ];
 
-    public function placements(): HasMany {
+    /** Colocaciones (créditos otorgados) de este producto. */
+    public function placements(): HasMany
+    {
         return $this->hasMany(Placement::class);
     }
-
 }

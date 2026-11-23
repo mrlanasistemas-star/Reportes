@@ -6,11 +6,28 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-periodos` — vista general de los periodos de un año (por defecto el
+ * actual): semanas base, meses operativos y periodos compuestos automáticos, con su composición
+ * y el estado de sus archivos, más un resumen.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplos:
+ *   php artisan reportes:debug-periodos
+ *   php artisan reportes:debug-periodos 2026
+ */
 class DebugPeriodosCommand extends Command
 {
-    protected $signature   = 'reportes:debug-periodos {year? : Año a diagnosticar (default: año actual)}';
+    protected $signature = 'reportes:debug-periodos {year? : Año a diagnosticar (default: año actual)}';
+
     protected $description = 'Vista general de periodos: semanas, mensuales operativos y compuestos automáticos. Muestra composición y estado de archivos.';
 
+    /**
+     * Carga los periodos del año e imprime las secciones de semanas, mensuales, compuestos y resumen.
+     *
+     * @return int Código de salida (SUCCESS; también si no hay periodos).
+     */
     public function handle(): int
     {
         $year = (int) ($this->argument('year') ?? date('Y'));
@@ -28,6 +45,7 @@ class DebugPeriodosCommand extends Command
 
         if ($allPeriods->isEmpty()) {
             $this->warn("  No hay periodos registrados para el año {$year}.");
+
             return self::SUCCESS;
         }
 
@@ -62,10 +80,10 @@ class DebugPeriodosCommand extends Command
                     $this->line("  ── {$monthName} ──");
                 }
 
-                $uploaded  = (int) ($uploadCountsByPeriod[$w->id]->cnt ?? 0);
+                $uploaded = (int) ($uploadCountsByPeriod[$w->id]->cnt ?? 0);
                 $processed = (int) ($processedCountsByPeriod[$w->id]->cnt ?? 0);
-                $range     = optional($w->start_date)->format('d/m') . ' – ' . optional($w->end_date)->format('d/m');
-                $closed    = $w->is_closed ? '<fg=gray>[CERRADO]</>' : '';
+                $range = optional($w->start_date)->format('d/m').' – '.optional($w->end_date)->format('d/m');
+                $closed = $w->is_closed ? '<fg=gray>[CERRADO]</>' : '';
 
                 $this->line(sprintf(
                     '  #%-4d %-30s %-14s archivos=%d / procesados=%d %s',
@@ -91,8 +109,8 @@ class DebugPeriodosCommand extends Command
         } else {
             foreach ($monthly as $m) {
                 $componentIds = $m->component_period_ids ?? [];
-                $compLabels   = $allPeriods->whereIn('id', $componentIds)->pluck('name')->join(', ');
-                $range = optional($m->start_date)->format('d/m/Y') . ' – ' . optional($m->end_date)->format('d/m/Y');
+                $compLabels = $allPeriods->whereIn('id', $componentIds)->pluck('name')->join(', ');
+                $range = optional($m->start_date)->format('d/m/Y').' – '.optional($m->end_date)->format('d/m/Y');
 
                 $this->line(sprintf(
                     '  #%-4d %-22s %-24s semanas=[%s]',
@@ -113,13 +131,15 @@ class DebugPeriodosCommand extends Command
 
         foreach ($compoundTypes as $type => $label) {
             $group = $allPeriods->where('type', $type)->values();
-            if ($group->isEmpty()) continue;
+            if ($group->isEmpty()) {
+                continue;
+            }
 
             $this->line("  {$label}:");
             foreach ($group as $p) {
                 $componentIds = $p->component_period_ids ?? [];
-                $compLabels   = $allPeriods->whereIn('id', $componentIds)->pluck('name')->join(', ');
-                $range = optional($p->start_date)->format('d/m/Y') . ' – ' . optional($p->end_date)->format('d/m/Y');
+                $compLabels = $allPeriods->whereIn('id', $componentIds)->pluck('name')->join(', ');
+                $range = optional($p->start_date)->format('d/m/Y').' – '.optional($p->end_date)->format('d/m/Y');
 
                 $this->line(sprintf(
                     '    #%-4d %-30s %-24s compone=[%s]',
@@ -144,7 +164,7 @@ class DebugPeriodosCommand extends Command
         ));
 
         // Meses sin periodo mensual configurado
-        $monthsWithWeekly  = $allPeriods->where('type', 'weekly')->pluck('month')->unique()->sort()->values();
+        $monthsWithWeekly = $allPeriods->where('type', 'weekly')->pluck('month')->unique()->sort()->values();
         $monthsWithMonthly = $allPeriods->where('type', 'monthly')->pluck('month')->unique()->sort()->values();
         $monthsWithoutMonthly = $monthsWithWeekly->diff($monthsWithMonthly)->values();
 
@@ -163,10 +183,15 @@ class DebugPeriodosCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * @param  int  $month  Número de mes (1–12).
+     * @return string Nombre del mes en español o "Mes N" si está fuera de rango.
+     */
     private function monthName(int $month): string
     {
-        $names = [1=>'Enero',2=>'Febrero',3=>'Marzo',4=>'Abril',5=>'Mayo',6=>'Junio',
-                  7=>'Julio',8=>'Agosto',9=>'Septiembre',10=>'Octubre',11=>'Noviembre',12=>'Diciembre'];
+        $names = [1 => 'Enero', 2 => 'Febrero', 3 => 'Marzo', 4 => 'Abril', 5 => 'Mayo', 6 => 'Junio',
+            7 => 'Julio', 8 => 'Agosto', 9 => 'Septiembre', 10 => 'Octubre', 11 => 'Noviembre', 12 => 'Diciembre'];
+
         return $names[$month] ?? "Mes {$month}";
     }
 }

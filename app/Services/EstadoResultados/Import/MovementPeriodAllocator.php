@@ -32,12 +32,16 @@ use Illuminate\Support\Facades\Schema;
  */
 class MovementPeriodAllocator
 {
+    /** Suma en el periodo de su fecha (dedup_key = 0). */
     public const PERIODO = 'periodo';
 
+    /** Su fecha no cae en ningún periodo mensual existente. */
     public const SIN_PERIODO = 'sin_periodo';
 
+    /** Copia de un movimiento que ya cuenta desde otro archivo. */
     public const DUPLICADO = 'duplicado';
 
+    /** Su fecha cae en un periodo aprobado (congelado). */
     public const PERIODO_CERRADO = 'periodo_cerrado';
 
     /** Movimiento cargado ANTES del reparto por fecha (17-nov-2026): nunca se mueve. */
@@ -46,6 +50,10 @@ class MovementPeriodAllocator
     /** Su fecha cae en un periodo que ya tenía datos en producción: no se le agrega. */
     public const PERIODO_EXISTENTE = 'periodo_existente';
 
+    /**
+     * ¿Existe la columna placement? (sin la migración el reparto por fecha no aplica).
+     * No se memoriza: consulta el esquema en cada llamada.
+     */
     public static function available(): bool
     {
         return Schema::hasColumn('estado_resultados_movements', 'placement');
@@ -53,6 +61,7 @@ class MovementPeriodAllocator
 
     /**
      * Reasigna todos los movimientos. Devuelve los periodos que cambiaron.
+     * Toma el candado global (exclusive) y ejecuta doSync() en una transacción.
      *
      * @return array{changed:int, periods:list<int>}
      */
@@ -68,6 +77,9 @@ class MovementPeriodAllocator
     /**
      * Serializa todo lo que reacomoda movimientos entre periodos (cargas y procesamientos
      * de periodos distintos pueden tocar los mismos movimientos).
+     *
+     * Candado de caché global de 300 s; espera hasta 120 s (si no lo obtiene, block() lanza
+     * LockTimeoutException).
      *
      * @template T
      *
@@ -85,12 +97,30 @@ class MovementPeriodAllocator
         }
     }
 
-    /** Para llamar DENTRO de una transacción que ya escribió movimientos (carga). */
+    /**
+     * Para llamar DENTRO de una transacción que ya escribió movimientos (carga).
+     * No toma el candado: quien llama debe estar dentro de exclusive().
+     *
+     * @return array{changed:int, periods:list<int>}
+     */
     public function syncInTransaction(): array
     {
         return self::available() ? $this->doSync() : ['changed' => 0, 'periods' => []];
     }
 
+    /**
+     * Calcula el destino deseado de cada movimiento (periodo, en periodo, placement y si es el
+     * «dueño» de su huella) y escribe sólo las diferencias en dos fases: primero «estaciona»
+     * los que cambian (dedup_key = id) para no chocar con la llave única
+     * (period_id, fingerprint, dedup_key) y luego aplica el destino final agrupado. Lo que cambia
+     * de periodo queda con processed_at = null (el periodo pedirá reprocesar).
+     *
+     * Ganador entre copias de la misma huella en un periodo: la del archivo subido en ese
+     * periodo, luego la que ya era vigente, luego la carga más reciente. Periodos aprobados,
+     * cargas reemplazadas y movimientos legado no se tocan.
+     *
+     * @return array{changed:int, periods:list<int>}
+     */
     private function doSync(): array
     {
         $periods = Period::query()->where('type', 'monthly')->orderBy('id')

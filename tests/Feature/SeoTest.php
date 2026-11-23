@@ -8,7 +8,7 @@ uses(RefreshDatabase::class);
 /**
  * SEO técnico (27-oct-2026): solo login/recuperar contraseña son indexables, con
  * metas renderizadas en el servidor; todo lo demás lleva noindex (meta + cabecera).
- * Ver config/seo.php, App\Support\Seo y docs/seo.md.
+ * Ver config/seo.php, App\Support\Seo y docs/MANUAL-DESARROLLADOR.md.
  */
 beforeEach(function () {
     config(['app.url' => 'https://reportes.example.com', 'app.name' => 'Reportes']);

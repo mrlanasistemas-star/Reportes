@@ -19,6 +19,15 @@ use Throwable;
  */
 class TechnicalErrorReference
 {
+    /**
+     * Distingue un error técnico (bug, BD caída, excepción inesperada) de los
+     * errores "esperados" del framework (HTTP, validación, autenticación,
+     * autorización, modelo no encontrado, token CSRF vencido), que ya tienen su
+     * propia respuesta al usuario.
+     *
+     * @param  Throwable  $e  Excepción capturada.
+     * @return bool true si debe mostrarse el mensaje genérico con referencia.
+     */
     public static function isTechnical(Throwable $e): bool
     {
         return ! ($e instanceof HttpExceptionInterface
@@ -29,6 +38,13 @@ class TechnicalErrorReference
             || $e instanceof TokenMismatchException);
     }
 
+    /**
+     * Devuelve la referencia de error de la petición actual; la genera
+     * (`ERR-XXXXXXXX`) y la guarda en los atributos del request si aún no existe,
+     * para que log y respuesta compartan el mismo valor.
+     *
+     * @return string Referencia única de la petición.
+     */
     public static function forCurrentRequest(): string
     {
         $request = request();
@@ -41,6 +57,12 @@ class TechnicalErrorReference
         return $ref;
     }
 
+    /**
+     * Mensaje en español que se muestra al usuario cuando ocurre un error técnico.
+     *
+     * @param  string  $ref  Referencia que debe proporcionar a Sistemas.
+     * @return string Mensaje listo para mostrar.
+     */
     public static function message(string $ref): string
     {
         return "No pudimos completar la operación por un error técnico. Intenta nuevamente. Si continúa, proporciona esta referencia a Sistemas: {$ref}.";

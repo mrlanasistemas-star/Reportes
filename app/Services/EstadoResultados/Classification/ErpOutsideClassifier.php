@@ -17,7 +17,14 @@ use Illuminate\Support\Str;
  */
 class ErpOutsideClassifier
 {
-    /** @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool} */
+    /**
+     * Clasifica una fila ERP excluida por Radiografía. Orden: sin sucursal operativa (pendiente)
+     * → Dirección General (pendiente) → nómina (nómina corporativa) → pólizas (pendiente) →
+     * mobiliario/equipo (posible CAPEX, pendiente) → OPEX Corporativo por defecto.
+     *
+     * @param  array  $erp  fila ERP (category, concept, observations, universe, sucursal_raw)
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
+     */
     public function classify(array $erp): array
     {
         $category = mb_strtoupper(Str::ascii((string) $erp['category']));
@@ -48,6 +55,16 @@ class ErpOutsideClassifier
             'Requisición ERP de Corporativo (estatus contable válido). Radiografía la excluye por diseño; en el ER suma a OPEX Corporativo.');
     }
 
+    /**
+     * Resultado de clasificación con la forma estándar.
+     *
+     * @param  string  $treatment  tratamiento asignado
+     * @param  string|null  $suggested  sugerencia para revisión
+     * @param  string  $rule  código de regla
+     * @param  string  $reason  explicación en español
+     * @param  bool  $review  requiere revisión
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
+     */
     private function out(string $treatment, ?string $suggested, string $rule, string $reason, bool $review = false): array
     {
         return ['treatment' => $treatment, 'suggested' => $suggested, 'rule' => $rule, 'reason' => $reason, 'review' => $review];

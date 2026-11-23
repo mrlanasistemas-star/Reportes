@@ -13,6 +13,7 @@ use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Api\EmployeePeriodKpiService;
 use App\Services\Api\FinancialMetricRegistry;
 use App\Services\Api\PeriodBranchKpiService;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -34,14 +35,19 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  */
 class PeriodKpiController extends Controller
 {
+    /** Máximo de periodos por llamada en /periods/export. */
     private const MAX_RANGE_EXPORT = 12;
 
+    /** Máximo de periodos por llamada en /employees/{id}/periods. */
     private const MAX_RANGE_EMPLOYEE = 24;
 
+    /** KPIs por colaborador y periodo (mismas fuentes que el reporte mensual). */
     private EmployeePeriodKpiService $employeeKpis;
 
+    /** KPIs por sucursal, corporativo y consolidado de un periodo. */
     private PeriodBranchKpiService $branchKpis;
 
+    /** Sucursal histórica de un colaborador por periodo (autorización IDOR). */
     private EmployeeBranchHistoryResolver $branchHistory;
 
     /**
@@ -56,7 +62,19 @@ class PeriodKpiController extends Controller
         $this->branchHistory = app(EmployeeBranchHistoryResolver::class);
     }
 
-    /** GET /api/v1/periods/{periodId}/employees */
+    /**
+     * GET /api/v1/periods/{periodId}/employees — colaboradores del periodo con
+     * sucursal, ruta, estado laboral y KPIs; paginado en memoria o CSV completo.
+     *
+     * Filtra por la sucursal asignada en el periodo (alcance del consumidor y
+     * filtros opcionales). `unidentified_count` solo para alcance global.
+     *
+     * @param  Request  $request  `per_page`, `page`, `branch_id`, `sucursal_id`, `format=csv` opcionales.
+     * @param  int  $periodId  ID del periodo.
+     * @return JsonResponse|Response JSON paginado o archivo CSV.
+     *
+     * @throws HttpException 403 si `branch_id` no está autorizado; 422 si `page` es inválido.
+     */
     public function employees(Request $request, int $periodId): JsonResponse|Response
     {
         $this->freshServices();
@@ -100,7 +118,16 @@ class PeriodKpiController extends Controller
         ]);
     }
 
-    /** GET /api/v1/periods/{periodId}/branches */
+    /**
+     * GET /api/v1/periods/{periodId}/branches — KPIs por sucursal, más los
+     * bloques corporativo y consolidado (solo alcance global).
+     *
+     * @param  Request  $request  `format=csv` opcional.
+     * @param  int  $periodId  ID del periodo.
+     * @return JsonResponse|Response JSON con period + bloque de sucursales, o CSV.
+     *
+     * @throws ModelNotFoundException 404 si el periodo no existe.
+     */
     public function branches(Request $request, int $periodId): JsonResponse|Response
     {
         $this->freshServices();
@@ -118,7 +145,15 @@ class PeriodKpiController extends Controller
         return response()->json(['period' => ApiPeriodRange::describe($period)] + $block);
     }
 
-    /** GET /api/v1/periods/{periodId}/export — todo el periodo en una sola llamada. */
+    /**
+     * GET /api/v1/periods/{periodId}/export — todo el periodo en una sola llamada.
+     *
+     * @param  Request  $request  `include` = branches,employees (por defecto ambos).
+     * @param  int  $periodId  ID del periodo.
+     * @return JsonResponse Exportación del periodo (ver periodExport()).
+     *
+     * @throws HttpException 403 si pide employees sin employees.read; 422 si `include` es inválido.
+     */
     public function export(Request $request, int $periodId): JsonResponse
     {
         $this->freshServices();
@@ -131,7 +166,18 @@ class PeriodKpiController extends Controller
         return response()->json($this->periodExport($consumer, $period, $include));
     }
 
-    /** GET /api/v1/periods/export?from_period_id=&to_period_id= (o period_ids=) */
+    /**
+     * GET /api/v1/periods/export?from_period_id=&to_period_id= (o period_ids=)
+     *
+     * Exporta hasta MAX_RANGE_EXPORT periodos. En JSON devuelve una exportación
+     * por periodo; en CSV exige `dataset` (employees o branches) y concatena
+     * las filas de todos los periodos.
+     *
+     * @param  Request  $request  Rango de periodos, `include`, `format`, `dataset`.
+     * @return JsonResponse|Response JSON {periods, meta} o CSV.
+     *
+     * @throws HttpException 422 si CSV sin `dataset` válido o rango/include inválidos; 403 sin employees.read.
+     */
     public function rangeExport(Request $request): JsonResponse|Response
     {
         $this->freshServices();
@@ -172,7 +218,21 @@ class PeriodKpiController extends Controller
         ]);
     }
 
-    /** GET /api/v1/employees/{employeeId}/periods — un colaborador a lo largo de un rango. */
+    /**
+     * GET /api/v1/employees/{employeeId}/periods — un colaborador a lo largo de un rango.
+     *
+     * Por cada periodo (máx. MAX_RANGE_EMPLOYEE) devuelve status ok / forbidden
+     * (fuera de alcance por sucursal histórica) / not_found (sin actividad) o el
+     * estado del cálculo. Con `include_effectiveness` (por defecto 1) agrega
+     * la efectividad de cobranza del colaborador.
+     *
+     * @param  Request  $request  Rango de periodos, `include_effectiveness`, `format=csv`.
+     * @param  int  $employeeId  ID del colaborador.
+     * @return JsonResponse|Response JSON {employee, source, definition_version, data, meta} o CSV.
+     *
+     * @throws ModelNotFoundException 404 si el colaborador no existe.
+     * @throws HttpException 403 si un consumidor restringido no tiene acceso en ningún periodo del rango.
+     */
     public function employeePeriods(Request $request, int $employeeId): JsonResponse|Response
     {
         $this->freshServices();
@@ -249,6 +309,14 @@ class PeriodKpiController extends Controller
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /**
+     * Arma la exportación de un periodo con los bloques pedidos.
+     *
+     * @param  ApiConsumer  $consumer  Consumidor (define alcance).
+     * @param  Period  $period  Periodo a exportar.
+     * @param  list<string>  $include  Bloques: branches y/o employees.
+     * @return array<string, mixed> {period, branches?, employees?}.
+     */
     private function periodExport(ApiConsumer $consumer, Period $period, array $include): array
     {
         $out = ['period' => ApiPeriodRange::describe($period)];
@@ -276,6 +344,16 @@ class PeriodKpiController extends Controller
         return $out;
     }
 
+    /**
+     * Bloque de sucursales de un periodo filtrado al alcance del consumidor.
+     *
+     * Un consumidor restringido recibe `not_authorized` en corporativo y
+     * consolidado, y `reconciliation` en null.
+     *
+     * @param  ApiConsumer  $consumer  Consumidor (define alcance).
+     * @param  Period  $period  Periodo.
+     * @return array<string, mixed> {status, message, source, definition_version, calculated_at, data, corporate, consolidated, reconciliation}.
+     */
     private function branchBlock(ApiConsumer $consumer, Period $period): array
     {
         $result = $this->branchKpis->forPeriod($period);
@@ -301,6 +379,14 @@ class PeriodKpiController extends Controller
         ];
     }
 
+    /**
+     * Convierte el bloque de sucursales en filas CSV (block = branch, corporate
+     * o consolidated). Al corporativo se le quita la lista de empleados de nómina.
+     *
+     * @param  Period  $period  Periodo (para period_id/period_label).
+     * @param  array<string, mixed>  $block  Resultado de branchBlock().
+     * @return list<array<string, mixed>> Filas para ApiCsv.
+     */
     private function branchCsvRows(Period $period, array $block): array
     {
         $base = ['period_id' => $period->id, 'period_label' => $period->label, 'status' => $block['status']];
@@ -318,7 +404,14 @@ class PeriodKpiController extends Controller
         return $rows;
     }
 
-    /** CSV: sin listas de detalle voluminosas (siguen disponibles en JSON). */
+    /**
+     * CSV: sin listas de detalle voluminosas (siguen disponibles en JSON).
+     *
+     * Quita partidas de OPEX, colocación por producto y el bloque availability.
+     *
+     * @param  array<string, mixed>  $row  Fila JSON.
+     * @return array<string, mixed> Fila reducida.
+     */
     private function forCsv(array $row): array
     {
         unset($row['kpis']['opex']['items'], $row['kpis']['placement']['by_product'], $row['availability']);
@@ -327,7 +420,16 @@ class PeriodKpiController extends Controller
     }
 
     /**
-     * @param  list<array>  $rows
+     * Filtra filas de colaboradores por alcance y filtros opcionales.
+     *
+     * Restringido: solo filas con sucursal asignada (en el periodo) autorizada.
+     * `sucursal_id` solo coincide si la sucursal vino de una asignación real
+     * (branch_source = assignment).
+     *
+     * @param  ApiConsumer  $consumer  Consumidor (define alcance).
+     * @param  list<array>  $rows  Filas de EmployeePeriodKpiService.
+     * @param  int|null  $branchId  Filtro por branch asignado.
+     * @param  int|null  $sucursalId  Filtro por sucursal institucional.
      * @return list<array>
      */
     private function filterEmployeeRows(ApiConsumer $consumer, array $rows, ?int $branchId, ?int $sucursalId): array
@@ -356,7 +458,15 @@ class PeriodKpiController extends Controller
         }));
     }
 
-    /** @return array{0:?int, 1:?int} */
+    /**
+     * Lee y valida los filtros `branch_id` y `sucursal_id`.
+     *
+     * @param  Request  $request  Petición.
+     * @param  ApiConsumer  $consumer  Consumidor (valida acceso al branch).
+     * @return array{0:?int, 1:?int} [branch_id, sucursal_id]
+     *
+     * @throws HttpException 403 si `branch_id` no está autorizado.
+     */
     private function employeeFilters(Request $request, ApiConsumer $consumer): array
     {
         $branchId = ApiValidation::nullableId($request, 'branch_id');
@@ -373,6 +483,11 @@ class PeriodKpiController extends Controller
      * El bloque de colaboradores exige ADEMÁS `employees.read` (token y consumidor,
      * misma doble verificación que EnsureApiAbility): `financial.read` por sí solo
      * nunca abre datos por colaborador.
+     *
+     * @param  ApiConsumer  $consumer  Consumidor.
+     * @param  list<string>  $include  Bloques pedidos.
+     *
+     * @throws HttpException 403 si pide employees sin la ability.
      */
     private function assertEmployeesAbilityFor(ApiConsumer $consumer, array $include): void
     {
@@ -381,6 +496,14 @@ class PeriodKpiController extends Controller
         }
     }
 
+    /**
+     * Interpreta `include` (por defecto "branches,employees").
+     *
+     * @param  Request  $request  Petición.
+     * @return list<string> Bloques pedidos.
+     *
+     * @throws HttpException 422 si está vacío o trae valores desconocidos.
+     */
     private function includes(Request $request): array
     {
         $raw = trim((string) $request->query('include', 'branches,employees'));
@@ -393,6 +516,14 @@ class PeriodKpiController extends Controller
         return $parts;
     }
 
+    /**
+     * Página solicitada (1 si no viene).
+     *
+     * @param  Request  $request  Petición con `page` opcional.
+     * @return int Página >= 1.
+     *
+     * @throws HttpException 422 si no es un entero positivo.
+     */
     private function page(Request $request): int
     {
         $raw = $request->query('page');

@@ -21,11 +21,17 @@ use Throwable;
  */
 class EfectividadCalculadoraService
 {
+    /** Máximo de archivos por espacio de cálculo. */
     public const MAX_ARCHIVOS = 45;
 
     /** Memoria mínima para leer/calcular en la solicitud (una semana de una sucursal grande ronda 120 MB). */
     public const MEMORIA_MINIMA = 512 * 1024 * 1024;
 
+    /**
+     * @param  EfectividadWorkspace  $workspace  espacio efímero cifrado
+     * @param  EfectividadExcelReader  $reader  lector de Excel de Lendus
+     * @param  EfectividadV12Calculator  $calc  motor V12.9.4
+     */
     public function __construct(
         private readonly EfectividadWorkspace $workspace,
         private readonly EfectividadExcelReader $reader,
@@ -33,6 +39,12 @@ class EfectividadCalculadoraService
     ) {}
 
     /**
+     * Agrega Excel al espacio (lo crea si no hay token): rechaza duplicados (sha1), carteras con
+     * la misma fecha y archivos ilegibles; guarda cifrado sólo el contenido leído y BORRA
+     * siempre el Excel original. Invalida el resultado previo. Purga espacios vencidos.
+     *
+     * @param  string|null  $token  espacio existente o null para crear uno
+     * @param  int  $userId  usuario
      * @param  list<UploadedFile>  $archivos
      * @return array{token:string, rechazados:list<array{nombre:string, error:string}>, resumen:array<string,mixed>}
      */
@@ -90,6 +102,16 @@ class EfectividadCalculadoraService
         return ['token' => $token, 'rechazados' => $rechazados, 'resumen' => $this->resumen($meta)];
     }
 
+    /**
+     * Quita un archivo del espacio (y su contenido cifrado) e invalida el resultado.
+     *
+     * @param  string  $token  espacio
+     * @param  int  $userId  usuario
+     * @param  string  $id  id del archivo
+     * @return array<string, mixed> resumen actualizado
+     *
+     * @throws EfectividadArchivoException si el espacio expiró o no es del usuario
+     */
     public function quitarArchivo(string $token, int $userId, string $id): array
     {
         $meta = $this->workspace->meta($token, $userId);
@@ -204,8 +226,16 @@ class EfectividadCalculadoraService
     }
 
     /**
+     * Calcula un corte disponible (sólo si tiene todas las carteras e ingresos requeridos),
+     * agrega avisos, fuentes y catálogo de filtros y guarda el resultado cifrado en el espacio.
+     *
+     * @param  string  $token  espacio
+     * @param  int  $userId  usuario
      * @param  string  $modo  DIARIO | ACUMULADO | SEMANAL | MENSUAL
      * @param  string  $valor  fecha de corte (AAAA-MM-DD) o mes (AAAA-MM)
+     * @return array<string, mixed> resultado (filas, parámetros, notas, avisos…)
+     *
+     * @throws EfectividadArchivoException modalidad/corte no válido, faltan archivos o error del motor
      */
     public function calcular(string $token, int $userId, string $modo, string $valor): array
     {
@@ -263,6 +293,15 @@ class EfectividadCalculadoraService
         return $resultado;
     }
 
+    /**
+     * Último resultado calculado del espacio.
+     *
+     * @param  string  $token  espacio
+     * @param  int  $userId  usuario
+     * @return array<string, mixed>
+     *
+     * @throws EfectividadArchivoException si no hay resultado o el espacio expiró
+     */
     public function resultado(string $token, int $userId): array
     {
         $this->workspace->meta($token, $userId);
@@ -303,6 +342,12 @@ class EfectividadCalculadoraService
         return $resultado;
     }
 
+    /**
+     * Elimina el espacio del usuario (si ya expiró o no es suyo, no hace nada).
+     *
+     * @param  string  $token  espacio
+     * @param  int  $userId  usuario
+     */
     public function limpiar(string $token, int $userId): void
     {
         try {
@@ -330,6 +375,20 @@ class EfectividadCalculadoraService
 
     // ------------------------------------------------------------------
 
+    /**
+     * Ejecuta el motor V12 para un corte DIARIO/ACUMULADO/SEMANAL con las fotos de cartera del
+     * domingo base al corte (en DIARIO sólo la del día anterior y la del corte) y el historial
+     * de ingresos.
+     *
+     * @param  string  $token  espacio
+     * @param  array  $meta  meta del espacio
+     * @param  string  $modo  modalidad
+     * @param  string  $base  domingo base (Y-m-d)
+     * @param  string  $corte  fecha de corte (Y-m-d)
+     * @param  array  $historial  ingresos acumulados de todos los archivos
+     * @param  array  $cache  fotos ya leídas (por referencia)
+     * @return array<string, mixed>
+     */
     private function calcularCorte(string $token, array $meta, string $modo, string $base, string $corte, array $historial, array &$cache): array
     {
         $fBase = CarbonImmutable::parse($base);
@@ -453,6 +512,12 @@ class EfectividadCalculadoraService
         return $a;
     }
 
+    /**
+     * Notas metodológicas que acompañan el resultado (comunes + específicas de la modalidad).
+     *
+     * @param  string  $modo  modalidad
+     * @return list<string>
+     */
     private function notas(string $modo): array
     {
         $notas = [
@@ -519,6 +584,17 @@ class EfectividadCalculadoraService
         return ['columnas' => $columnas ?? [], 'filas' => $filas];
     }
 
+    /**
+     * Foto de cartera de una fecha (leída del espacio, memorizada en $cache).
+     *
+     * @param  string  $token  espacio
+     * @param  array  $meta  meta del espacio
+     * @param  string  $fecha  fecha Y-m-d
+     * @param  array  $cache  memo por id de archivo (por referencia)
+     * @return array{columnas:array, filas:array}
+     *
+     * @throws EfectividadArchivoException si no hay cartera de esa fecha
+     */
     private function foto(string $token, array $meta, string $fecha, array &$cache): array
     {
         foreach ($meta['archivos'] as $a) {
@@ -564,6 +640,9 @@ class EfectividadCalculadoraService
         return $mapa[$this->calc->normalizar($ruta)] ?? $this->sinSucursal();
     }
 
+    /**
+     * Etiqueta para rutas fuera del catálogo (config efectividad_rutas.sin_sucursal).
+     */
     private function sinSucursal(): string
     {
         return (string) config('efectividad_rutas.sin_sucursal', 'SIN SUCURSAL ASIGNADA');
@@ -591,6 +670,13 @@ class EfectividadCalculadoraService
         return $this->calc->construirFilas(array_map(fn ($p) => $this->base($p), $promotores), $this->sinSucursal());
     }
 
+    /**
+     * Sólo las claves base de una fila de promotor (oficina, promotor, sucursal e importes)
+     * para reconstruir subtotales con el motor.
+     *
+     * @param  array  $f  fila
+     * @return array<string, mixed>
+     */
     private function base(array $f): array
     {
         return array_intersect_key($f, array_flip(['oficina', 'promotor', 'sucursal', 'sano_pc', 'sano_cob', 'atraso_pc', 'atraso_cob', 'vencido_pc', 'vencido_cob']));
@@ -667,12 +753,22 @@ class EfectividadCalculadoraService
         ];
     }
 
+    /**
+     * Nombre del día en español («lunes»…).
+     *
+     * @param  CarbonImmutable  $d  fecha
+     */
     private function diaNombre(CarbonImmutable $d): string
     {
         return $d->locale('es')->translatedFormat('l');
     }
 
-    /** @return array<string,true> días (AAAA-MM-DD) cubiertos por algún archivo de ingresos */
+    /**
+     * Días cubiertos por el rango desde–hasta de cada archivo de ingresos.
+     *
+     * @param  array  $ingresos  archivos de ingresos del espacio
+     * @return array<string,true> días (AAAA-MM-DD) cubiertos por algún archivo de ingresos
+     */
     private function coberturaIngresos(array $ingresos): array
     {
         $dias = [];
@@ -685,11 +781,21 @@ class EfectividadCalculadoraService
         return $dias;
     }
 
+    /**
+     * Y-m-d → d/m/Y.
+     *
+     * @param  string  $ymd  fecha
+     */
     private function dmy(string $ymd): string
     {
         return CarbonImmutable::parse($ymd)->format('d/m/Y');
     }
 
+    /**
+     * Fecha larga en español («4 de octubre de 2026»).
+     *
+     * @param  CarbonImmutable  $d  fecha
+     */
     private function fechaLarga(CarbonImmutable $d): string
     {
         return $d->locale('es')->translatedFormat('j \d\e F \d\e Y');

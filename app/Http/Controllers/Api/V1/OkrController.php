@@ -8,6 +8,7 @@ use App\Models\Employee;
 use App\Models\OkrObjective;
 use App\Services\Api\EmployeeBranchHistoryResolver;
 use App\Services\Okr\OkrProgressCalculator;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -16,10 +17,19 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  * Fase 1 — OKR autorizado. Solo expone lo que ya es válido mostrar fuera del
  * sistema (estado, cumplimiento cacheado) — nunca texto libre de check-ins o
  * contenido legal de cartas/warnings (fuera de alcance de la API general).
+ *
+ * Endpoints /api/v1/okr/* consumidos por sistemas externos con un ApiConsumer;
+ * todo filtrado por la sucursal EFECTIVA de cada objetivo.
  */
 class OkrController extends Controller
 {
     /**
+     * Resumen global de OKR activos visibles para el consumidor.
+     *
+     * Cuenta objetivos con lifecycle_status = activo, los que están en riesgo
+     * o fuera de ruta (health_status), y las sucursales y colaboradores
+     * distintos con OKR. Solo lectura.
+     *
      * CORRECCIÓN seguridad por sucursal (igual que employeeSummary): la
      * autorización es por la sucursal EFECTIVA del objetivo —su propia
      * `branch_id` o la de su Objective padre si es individual— NUNCA por la
@@ -29,6 +39,10 @@ class OkrController extends Controller
      * a otra sucursal no autorizada (p. ej. tras una transferencia). El
      * pre-filtro SQL solo acota el volumen; el conteo final se filtra en PHP
      * por `canAccessBranch(sucursal efectiva)`, que es la única fuente de verdad.
+     *
+     * @param  Request  $request  Petición del consumidor de API autenticado.
+     * @return JsonResponse {active_count, at_risk_count, branches_with_okr, employees_with_okr}
+     *                      (todo en 0 si el consumidor no tiene acceso a sucursales).
      */
     public function summary(Request $request): JsonResponse
     {
@@ -61,8 +75,8 @@ class OkrController extends Controller
             ->values();
 
         return response()->json([
-            'active_count'      => $active->count(),
-            'at_risk_count'     => $active->whereIn('health_status', [OkrObjective::HEALTH_RISK, OkrObjective::HEALTH_OFF_TRACK])->count(),
+            'active_count' => $active->count(),
+            'at_risk_count' => $active->whereIn('health_status', [OkrObjective::HEALTH_RISK, OkrObjective::HEALTH_OFF_TRACK])->count(),
             'branches_with_okr' => $active->pluck('branch_id')->filter()->unique()->count(),
             'employees_with_okr' => $active->pluck('employee_id')->filter()->unique()->count(),
         ]);
@@ -77,6 +91,19 @@ class OkrController extends Controller
      * es visible para este consumidor, se responde 403 (sin acceso real a
      * este colaborador); si el colaborador simplemente no tiene objetivos,
      * se responde 200 con lista vacía — ausencia de datos, no de permiso.
+     *
+     * El cumplimiento de cada objetivo se calcula al vuelo con
+     * OkrProgressCalculator a partir del avance real y el peso de sus KR.
+     *
+     * @param  Request  $request  Petición del consumidor de API autenticado.
+     * @param  int  $employeeId  ID del colaborador (employees.id).
+     * @param  OkrProgressCalculator  $calculator  Calcula el % de cumplimiento ponderado.
+     * @param  EmployeeBranchHistoryResolver  $branchHistory  Inyectado pero no usado actualmente.
+     * @return JsonResponse {employee_id, objectives: [{id, title, lifecycle_status, health_status,
+     *                      final_status, start_date, end_date, compliance_percentage}]}.
+     *
+     * @throws ModelNotFoundException 404 si el colaborador no existe.
+     * @throws HttpException 403 si tiene objetivos pero ninguno es visible para el consumidor.
      */
     public function employeeSummary(Request $request, int $employeeId, OkrProgressCalculator $calculator, EmployeeBranchHistoryResolver $branchHistory): JsonResponse
     {
@@ -100,14 +127,14 @@ class OkrController extends Controller
 
         return response()->json([
             'employee_id' => $employeeId,
-            'objectives'  => $visibleObjectives->map(fn (OkrObjective $objective) => [
-                'id'               => $objective->id,
-                'title'            => $objective->title,
+            'objectives' => $visibleObjectives->map(fn (OkrObjective $objective) => [
+                'id' => $objective->id,
+                'title' => $objective->title,
                 'lifecycle_status' => $objective->lifecycle_status,
-                'health_status'    => $objective->health_status,
-                'final_status'     => $objective->final_status,
-                'start_date'       => optional($objective->start_date)->toDateString(),
-                'end_date'         => optional($objective->end_date)->toDateString(),
+                'health_status' => $objective->health_status,
+                'final_status' => $objective->final_status,
+                'start_date' => optional($objective->start_date)->toDateString(),
+                'end_date' => optional($objective->end_date)->toDateString(),
                 'compliance_percentage' => $calculator->objectiveCompliance(
                     $objective->keyResults->map(fn ($kr) => ['raw_progress' => $kr->actual_progress_percentage, 'weight' => $kr->weight])->all()
                 ),

@@ -7,6 +7,19 @@ use App\Services\Radiography\BranchRadiographyCalculator;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-gastos-periodo` — auditoría de OPEX (gastos_operativos) concepto
+ * por concepto usando la fuente única BranchRadiographyCalculator, comparada contra la tabla
+ * de regresión TARGETS_JUNIO_2026 (validada para el periodo 21 = Junio 2026). En otros
+ * periodos una diferencia no implica error; solo indica que hay que revisar por qué cambió.
+ * También lista los conceptos calculados que no existen en la tabla target.
+ *
+ * Escribe en BD: NO (solo CSV con `--export`). Devuelve FAILURE si el total no cuadra con el target.
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-gastos-periodo 21
+ *   php artisan reportes:audit-gastos-periodo 21 --detail --export
+ */
 class AuditGastosPeriodoCommand extends Command
 {
     protected $signature = 'reportes:audit-gastos-periodo
@@ -41,23 +54,32 @@ class AuditGastosPeriodoCommand extends Command
         'Gasolina' => 165400.00, 'Sin clasificar: FLYERS Y VINILES' => 15585.27,
     ];
 
+    /**
+     * Calcula el resultado por sucursal y global del calculador, compara el detalle de gastos
+     * contra el target concepto por concepto y el total, y muestra el detalle por sucursal si se
+     * pide.
+     *
+     * @param  BranchRadiographyCalculator  $calc  Calculador oficial de la Radiografía.
+     * @return int SUCCESS si el OPEX total coincide con el target; FAILURE si no o si el periodo no existe.
+     */
     public function handle(BranchRadiographyCalculator $calc): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
-        if (!$period) {
+        $period = Period::find($periodId);
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
 
         $branchResult = $calc->buildBranches($period, $dataIds);
-        $branches     = $branchResult['branches'];
-        $unassigned   = $branchResult['unassigned'];
-        $global       = $calc->sumGlobal($branches, $unassigned);
+        $branches = $branchResult['branches'];
+        $unassigned = $branchResult['unassigned'];
+        $global = $calc->sumGlobal($branches, $unassigned);
 
         $this->line('');
         $this->info('════════════════════════════════════════════════════════════');
@@ -73,7 +95,8 @@ class AuditGastosPeriodoCommand extends Command
             ['Concepto', 'Target', 'Calculado', 'Diferencia', 'Estado'],
             collect(self::TARGETS_JUNIO_2026)->map(function ($target, $label) use ($current) {
                 $actual = (float) ($current[$label] ?? 0.0);
-                $diff   = $actual - $target;
+                $diff = $actual - $target;
+
                 return [
                     $label,
                     number_format($target, 2),
@@ -86,7 +109,7 @@ class AuditGastosPeriodoCommand extends Command
 
         $extra = array_diff_key($current, self::TARGETS_JUNIO_2026);
         $extra = array_filter($extra, fn ($v) => (float) $v != 0.0);
-        if (!empty($extra)) {
+        if (! empty($extra)) {
             $this->line('');
             $this->warn('  Conceptos calculados que NO están en la tabla target (dinero real sin bucket manual):');
             foreach ($extra as $label => $amt) {
@@ -94,8 +117,8 @@ class AuditGastosPeriodoCommand extends Command
             }
         }
 
-        $totalTarget  = array_sum(self::TARGETS_JUNIO_2026);
-        $totalActual  = (float) $global['gastos_operativos'];
+        $totalTarget = array_sum(self::TARGETS_JUNIO_2026);
+        $totalActual = (float) $global['gastos_operativos'];
         $this->line('');
         $this->info(sprintf('  TOTAL TARGET:    $%s', number_format($totalTarget, 2)));
         $this->info(sprintf('  TOTAL CALCULADO: $%s', number_format($totalActual, 2)));
@@ -105,7 +128,9 @@ class AuditGastosPeriodoCommand extends Command
             $this->line('');
             $this->info('════ DETALLE POR SUCURSAL ════');
             foreach ($branches as $b) {
-                if ((float) $b['gastos_operativos'] == 0.0) continue;
+                if ((float) $b['gastos_operativos'] == 0.0) {
+                    continue;
+                }
                 $this->line(sprintf('  %-20s $%s', $b['sucursal'], number_format($b['gastos_operativos'], 2)));
             }
         }
@@ -122,24 +147,32 @@ class AuditGastosPeriodoCommand extends Command
         return $ok ? self::SUCCESS : self::FAILURE;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV Concepto/Target/Calculado/Diferencia/Estado,
+     * más los conceptos extra sin target.
+     *
+     * @param  int  $periodId  ID del periodo (va en el nombre del archivo).
+     * @param  array<string,float>  $current  Detalle de gastos calculado (concepto => monto).
+     * @param  array<string,float>  $extra  Conceptos calculados que no están en la tabla target.
+     */
     private function exportCsv(int $periodId, array $current, array $extra): void
     {
-        $dir  = 'auditorias';
-        $file = "gastos_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "gastos_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
-        $csv  = static fn (string $v): string => '"' . str_replace('"', '""', $v) . '"';
+        $csv = static fn (string $v): string => '"'.str_replace('"', '""', $v).'"';
 
         $lines = [implode(',', ['Concepto', 'Target', 'Calculado', 'Diferencia', 'Estado'])];
         foreach (self::TARGETS_JUNIO_2026 as $label => $target) {
             $actual = (float) ($current[$label] ?? 0.0);
-            $diff   = $actual - $target;
+            $diff = $actual - $target;
             $lines[] = implode(',', [
                 $csv($label), number_format($target, 2, '.', ''), number_format($actual, 2, '.', ''),
                 number_format($diff, 2, '.', ''), abs($diff) < 0.01 ? 'Cuadra' : 'No cuadra',
             ]);
         }
         foreach ($extra as $label => $amt) {
-            $lines[] = implode(',', [$csv($label . ' (fuera de target)'), '0.00', number_format((float) $amt, 2, '.', ''), number_format((float) $amt, 2, '.', ''), 'No cuadra']);
+            $lines[] = implode(',', [$csv($label.' (fuera de target)'), '0.00', number_format((float) $amt, 2, '.', ''), number_format((float) $amt, 2, '.', ''), 'No cuadra']);
         }
 
         Storage::disk('local')->makeDirectory($dir);

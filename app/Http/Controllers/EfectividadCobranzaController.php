@@ -20,6 +20,7 @@ use App\Services\Efectividad\V4\EfectividadV4Incidents;
 use App\Services\Reporting\OperativeBranchService;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -48,23 +49,39 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *
  * Concurrencia (auditoría 2026-10-12): `generate()` corre dentro de un
  * `Cache::lock()` (INSERT atómico en `cache_locks`, válido también en MyISAM).
+ *
+ * Nota (23-nov-2026): este controlador no está referenciado en routes/*.php; la ruta
+ * /efectividad-cobranza hoy la atiende EfectividadCalculadoraController (calculadora efímera,
+ * sin BD). Se conserva como motor con BD (V4 / Aprobada-Periódica).
  */
 class EfectividadCobranzaController extends Controller
 {
+    /** Ejecuciones por página en el historial. */
     private const HISTORY_PER_PAGE = 10;
 
+    /**
+     * @param  EfectividadCobranzaRunPresenter  $presenter  Da forma (resumen/detalle) a las ejecuciones para la UI.
+     * @param  EfectividadV4DataAdapter  $adapter  Ventana de fechas y disponibilidad de fuentes del motor V4.
+     * @param  EfectividadCobranzaPdfExporter  $pdfExporter  Genera/reutiliza el PDF resumen de una ejecución.
+     */
     public function __construct(
         private readonly EfectividadCobranzaRunPresenter $presenter,
         private readonly EfectividadV4DataAdapter $adapter,
         private readonly EfectividadCobranzaPdfExporter $pdfExporter,
     ) {}
 
+    /**
+     * Pantalla principal del módulo (enfoca la ejecución activa/reciente del usuario).
+     */
     public function index(Request $request): Response
     {
         return $this->renderPage($request, null);
     }
 
-    /** URL estable del detalle de una ejecución (enlaces de correo y notificaciones). */
+    /**
+     * URL estable del detalle de una ejecución (enlaces de correo y notificaciones).
+     * 404 si el usuario no puede ver la ejecución.
+     */
     public function show(Request $request, EfectividadCobranzaRun $run): Response
     {
         $this->authorizeRun($request, $run);
@@ -72,6 +89,23 @@ class EfectividadCobranzaController extends Controller
         return $this->renderPage($request, $run);
     }
 
+    /**
+     * Solicita generar la Efectividad de Cobranza de un periodo (y opcionalmente una sucursal).
+     *
+     * - Periodos no semanales → motor Aprobada/Periódica (generatePeriodica()).
+     * - Semanas operativas → motor V4 (modo SEMANAL o DIARIO con `cutoff_date`). Si los ingresos
+     *   parecen parciales y no se mandó `confirm_partial`, responde 409 pidiendo confirmación.
+     *
+     * Concurrencia: dentro de un Cache::lock por identidad (periodo/sucursal/modo/corte) reutiliza
+     * la ejecución activa existente (suscribiendo al usuario) o crea una nueva en cola.
+     * Efectos: INSERT en efectividad_cobranza_runs, despacho de GenerateEfectividadCobranzaAprobadaJob
+     * y guardado de `queue_job_id`; si la cola rechaza el trabajo, marca la ejecución como fallida
+     * técnica y responde 503.
+     *
+     * @param  Request  $request  `period_id`, `branch_id`, `mode`, `cutoff_date`, `confirm_partial`.
+     * @param  Dispatcher  $dispatcher  Bus de despacho (devuelve el id del job con driver database).
+     * @return JsonResponse { run_id, status, reused, accepted, run }; 409/422/503 según el caso.
+     */
     public function generate(Request $request, Dispatcher $dispatcher): JsonResponse
     {
         $data = $request->validate([
@@ -222,6 +256,11 @@ class EfectividadCobranzaController extends Controller
      * usando lo que el usuario ya sube (Saldos por Cliente + Ingresos Cobranza
      * por Histórico General). Misma protección de concurrencia que V4, con su
      * propia clave de lock (identidad distinta: nunca compite con V4).
+     *
+     * Efectos: crea (o reutiliza) la ejecución y despacha GenerateEfectividadAprobadaPeriodicaJob.
+     *
+     * @param  int|null  $branchId  Sucursal o null = general.
+     * @param  int|null  $userId  Solicitante (queda suscrito si se reutiliza una ejecución activa).
      */
     private function generatePeriodica(Dispatcher $dispatcher, Period $period, ?int $branchId, ?int $userId): JsonResponse
     {
@@ -279,7 +318,14 @@ class EfectividadCobranzaController extends Controller
         ]);
     }
 
-    /** @return JsonResponse|null null si la cola aceptó el trabajo (o ya corrió inline en sync); una 503 si no. */
+    /**
+     * Despacha el job de una ejecución y guarda su `queue_job_id`. Si la cola lo rechaza y la
+     * ejecución sigue en cola, la marca como FAILED técnica (EC-TEC-COLA-NO-DISPONIBLE), lo
+     * registra en el log y devuelve una 503.
+     *
+     * @param  object  $job  Job a despachar.
+     * @return JsonResponse|null null si la cola aceptó el trabajo (o ya corrió inline en sync); una 503 si no.
+     */
     private function dispatchOrFail(EfectividadCobranzaRun $run, object $job, Dispatcher $dispatcher): ?JsonResponse
     {
         try {
@@ -328,6 +374,9 @@ class EfectividadCobranzaController extends Controller
         }
     }
 
+    /**
+     * Detalle/avance de una ejecución (polling de la pantalla). 404 si el usuario no puede verla.
+     */
     public function progress(Request $request, EfectividadCobranzaRun $run): JsonResponse
     {
         $this->authorizeRun($request, $run);
@@ -341,6 +390,8 @@ class EfectividadCobranzaController extends Controller
      * es el propio Job, en sus puntos de cancelación cooperativa, quien cierra
      * la ejecución como `cancelled` — así nunca hay una carrera entre esta
      * petición HTTP y el worker que está escribiendo el mismo registro.
+     *
+     * @return JsonResponse Mensaje y resumen; 409 si la ejecución ya terminó.
      */
     public function cancel(Request $request, EfectividadCobranzaRun $run): JsonResponse
     {
@@ -376,7 +427,7 @@ class EfectividadCobranzaController extends Controller
         ]);
     }
 
-    /** Ejecuciones activas del usuario (indicador de navegación y restauración). */
+    /** Ejecuciones activas del usuario (indicador de navegación y restauración); máximo 10. */
     public function activity(Request $request): JsonResponse
     {
         $runs = EfectividadCobranzaRun::query()
@@ -392,7 +443,12 @@ class EfectividadCobranzaController extends Controller
         ]);
     }
 
-    /** Incidencias de cálculo (bitácora _AUDITORIA_EFECTIVIDAD) — paginadas y filtrables. */
+    /**
+     * Incidencias de cálculo (bitácora _AUDITORIA_EFECTIVIDAD) — paginadas (25) y filtrables.
+     *
+     * @param  Request  $request  `code` (código de incidencia), `q` (texto en contrato), `page`.
+     * @return JsonResponse { data, meta, summary } con etiqueta y acción recomendada por código.
+     */
     public function incidents(Request $request, EfectividadCobranzaRun $run): JsonResponse
     {
         $this->authorizeRun($request, $run);
@@ -424,7 +480,12 @@ class EfectividadCobranzaController extends Controller
         ]);
     }
 
-    /** Exporta las incidencias a CSV (UTF-8 con BOM para abrir directo en Excel). */
+    /**
+     * Exporta las incidencias a CSV (UTF-8 con BOM para abrir directo en Excel).
+     *
+     * Aplica los mismos filtros que incidents(); se escribe en streaming (lotes de 500) y los
+     * textos de origen se neutralizan contra inyección de fórmulas (csvText()).
+     */
     public function exportIncidents(Request $request, EfectividadCobranzaRun $run): StreamedResponse
     {
         $this->authorizeRun($request, $run);
@@ -463,6 +524,13 @@ class EfectividadCobranzaController extends Controller
         return $value !== '' && in_array($value[0], ['=', '+', '-', '@', "\t", "\r"], true) ? "'".$value : $value;
     }
 
+    /**
+     * Consulta base de incidencias de una ejecución: filtra por código exacto y por contrato
+     * (LIKE con comodines escapados), ordenada por posición.
+     *
+     * @param  array  $filters  `code`, `q`.
+     * @return Builder
+     */
     private function incidentQuery(EfectividadCobranzaRun $run, array $filters)
     {
         return EfectividadCobranzaRunIncident::query()
@@ -472,6 +540,10 @@ class EfectividadCobranzaController extends Controller
             ->orderBy('position');
     }
 
+    /**
+     * Descarga el Excel generado por una ejecución exitosa (sin caché). 404 si no terminó con
+     * éxito, si el archivo no existe o si el usuario no puede ver la ejecución.
+     */
     public function download(Request $request, EfectividadCobranzaRun $run): BinaryFileResponse
     {
         $this->authorizeRun($request, $run);
@@ -493,6 +565,8 @@ class EfectividadCobranzaController extends Controller
      * PDF resumen (bajo demanda, nunca dentro del Job): se genera la primera
      * vez que se pide y se reutiliza después — nunca recalcula el resultado
      * financiero, solo renderiza los mismos `result_rows` ya cerrados.
+     *
+     * Efecto: la primera vez escribe el PDF en el disco `local`. 404 si la ejecución no fue exitosa.
      */
     public function downloadPdf(Request $request, EfectividadCobranzaRun $run): BinaryFileResponse
     {
@@ -512,6 +586,17 @@ class EfectividadCobranzaController extends Controller
         ]);
     }
 
+    /**
+     * Arma la página Inertia `EfectividadCobranza/Index`.
+     *
+     * Envía periodos, las 13 sucursales operativas, la selección actual, la ejecución enfocada
+     * (la indicada, la del periodo/sucursal elegidos, o la activa/más reciente del usuario), las
+     * ejecuciones activas, el historial paginado (10) con filtros f_period/f_branch/f_status/
+     * f_from/f_to/f_user, catálogos de etapas y, para admins, la lista de solicitantes.
+     * Un no-admin sólo ve las ejecuciones que solicitó o a las que está suscrito.
+     *
+     * @param  EfectividadCobranzaRun|null  $focus  Ejecución a enfocar (abre el detalle) o null.
+     */
     private function renderPage(Request $request, ?EfectividadCobranzaRun $focus): Response
     {
         /** @var User $user */

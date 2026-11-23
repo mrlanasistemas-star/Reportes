@@ -51,7 +51,7 @@ use Illuminate\Support\LazyCollection;
  * `cursor()` se mantiene — NO se cambia a `chunk()` ni a streaming a disco:
  * medido con datos reales (documentosMayo), el cuello de botella real es el
  * importador (lectura del .xlsx), no este adaptador — ver
- * docs/efectividad-cobranza-aprobada.md sección de rendimiento.
+ * docs/MANUAL-DESARROLLADOR.md sección de rendimiento.
  */
 class EfectividadCobranzaAprobadaDataAdapter
 {
@@ -81,7 +81,7 @@ class EfectividadCobranzaAprobadaDataAdapter
      */
     public function build(Period $period, ?int $branchId = null, ?callable $onProgress = null): array
     {
-        if (!$period->start_date || !$period->end_date) {
+        if (! $period->start_date || ! $period->end_date) {
             throw new \RuntimeException("El periodo #{$period->id} no tiene start_date/end_date definidos.");
         }
 
@@ -104,7 +104,7 @@ class EfectividadCobranzaAprobadaDataAdapter
             $ingresosQuery->where('branch_id', $branchId);
         }
 
-        $cartera  = [];
+        $cartera = [];
         $coverage = $this->emptyCoverage();
         $coverage['cartera_period_id'] = $carteraPeriod?->id;
 
@@ -119,6 +119,7 @@ class EfectividadCobranzaAprobadaDataAdapter
 
             if ($row->contract === null || trim((string) $row->contract) === '') {
                 $coverage['cartera_rows_sin_contrato']++;
+
                 continue;
             }
 
@@ -174,19 +175,25 @@ class EfectividadCobranzaAprobadaDataAdapter
         }
         $onProgress && $onProgress('ingresos', $coverage['ingresos_rows_total'], $ingresosTotal);
 
-        $coverage['status']  = $this->resolveCoverageStatus($coverage);
+        $coverage['status'] = $this->resolveCoverageStatus($coverage);
         $coverage['message'] = $this->resolveCoverageMessage($coverage);
 
         return [
-            'cartera'   => $cartera,
-            'ingresos'  => $ingresos,
+            'cartera' => $cartera,
+            'ingresos' => $ingresos,
             'fecha_ini' => $fechaIni,
             'fecha_fin' => $fechaFin,
-            'coverage'  => $coverage,
+            'coverage' => $coverage,
         ];
     }
 
-    /** @return LazyCollection<int,mixed> */
+    /**
+     * Cursor perezoso de la consulta (evita cargar todos los modelos de golpe en el adaptador;
+     * el calculador los materializa después).
+     *
+     * @param  mixed  $query  consulta Eloquent
+     * @return LazyCollection<int,mixed>
+     */
     private function chunkCursor($query): LazyCollection
     {
         return $query->cursor();
@@ -201,6 +208,9 @@ class EfectividadCobranzaAprobadaDataAdapter
      *  - compuesto (bimestral/trimestral/semestral/anual) → el ÚLTIMO mes
      *    componente, mismo criterio ya usado por el resto de Reportería para
      *    cartera/mora/préstamo activo.
+     *
+     * @param  Period  $period  periodo evaluado
+     * @return Period|null periodo cuyo fact_portfolios se usa como CARTERA (null = ninguno)
      */
     public function resolveCarteraPeriod(Period $period): ?Period
     {
@@ -217,72 +227,94 @@ class EfectividadCobranzaAprobadaDataAdapter
         return $period->resolveLastMonthlyComponent($allPeriods);
     }
 
+    /**
+     * Fila de fact_portfolios → fila CARTERA con los nombres de campo que espera el calculador.
+     *
+     * @param  Portfolio  $row  saldo por cliente
+     * @return array<string, mixed>
+     */
     private function carteraRow(Portfolio $row): array
     {
         return [
-            'contrato'                        => $row->contract,
-            'oficina'                          => $row->route_name,
-            'promotor'                         => $row->promoter_name ?? $row->promoter_code,
-            'estatus'                          => $row->status,
-            'substatus'                        => $row->substatus,
-            'fecha_vencimiento'                => $row->contract_due_date,
-            'total_atrasado'                   => $row->total_overdue_raw,
-            'pagos_atrasados'                  => $row->overdue_installments,
-            'total_pendiente'                  => $row->total_pending_raw,
-            'saldo_capital'                    => $row->saldo_capital_vencido,
-            'saldo_interes'                    => $row->saldo_interes_vencido,
-            'saldo_impuesto'                   => $row->saldo_impuesto_vencido,
-            'saldo_cargo_calendario'           => $row->saldo_cargo_calendario_vencido,
-            'saldo_impuesto_cargo_calendario'  => $row->saldo_impuesto_cargo_calendario_vencido,
-            'cuota'                            => $row->installment_amount,
-            'periodicidad'                     => $row->periodicity,
-            'pagos'                            => $row->num_payments,
-            'fecha_primer_pago'                => $row->first_payment_date,
-            'fecha_siguiente_pago'             => $row->next_payment_date,
+            'contrato' => $row->contract,
+            'oficina' => $row->route_name,
+            'promotor' => $row->promoter_name ?? $row->promoter_code,
+            'estatus' => $row->status,
+            'substatus' => $row->substatus,
+            'fecha_vencimiento' => $row->contract_due_date,
+            'total_atrasado' => $row->total_overdue_raw,
+            'pagos_atrasados' => $row->overdue_installments,
+            'total_pendiente' => $row->total_pending_raw,
+            'saldo_capital' => $row->saldo_capital_vencido,
+            'saldo_interes' => $row->saldo_interes_vencido,
+            'saldo_impuesto' => $row->saldo_impuesto_vencido,
+            'saldo_cargo_calendario' => $row->saldo_cargo_calendario_vencido,
+            'saldo_impuesto_cargo_calendario' => $row->saldo_impuesto_cargo_calendario_vencido,
+            'cuota' => $row->installment_amount,
+            'periodicidad' => $row->periodicity,
+            'pagos' => $row->num_payments,
+            'fecha_primer_pago' => $row->first_payment_date,
+            'fecha_siguiente_pago' => $row->next_payment_date,
         ];
     }
 
+    /**
+     * Fila de fact_recoveries → fila INGRESOS con los nombres de campo que espera el calculador.
+     *
+     * @param  Recovery  $row  ingreso de cobranza
+     * @return array<string, mixed>
+     */
     private function ingresoRow(Recovery $row): array
     {
         return [
-            'contrato'           => $row->contract,
-            'operacion'          => $row->operation,
-            'transaccion'        => $row->transaction,
-            'fecha_transaccion'  => $row->payment_date,
-            'fecha_cuota'        => $row->installment_due_date,
-            'capital'            => $row->capital,
-            'interes'            => $row->interest,
-            'impuesto'           => $row->tax,
-            'cargos_calendario'  => $row->charges,
-            'oficina'            => $row->office_name_raw,
-            'promotor'           => $row->promoter_name,
-            'acreditado'         => $row->acreditado,
-            'numero_cuota'       => $row->installment_number,
-            'fecha_vencimiento'  => $row->contract_due_date,
+            'contrato' => $row->contract,
+            'operacion' => $row->operation,
+            'transaccion' => $row->transaction,
+            'fecha_transaccion' => $row->payment_date,
+            'fecha_cuota' => $row->installment_due_date,
+            'capital' => $row->capital,
+            'interes' => $row->interest,
+            'impuesto' => $row->tax,
+            'cargos_calendario' => $row->charges,
+            'oficina' => $row->office_name_raw,
+            'promotor' => $row->promoter_name,
+            'acreditado' => $row->acreditado,
+            'numero_cuota' => $row->installment_number,
+            'fecha_vencimiento' => $row->contract_due_date,
         ];
     }
 
+    /**
+     * Estructura de cobertura en cero (conteos de filas leídas/excluidas por fuente).
+     *
+     * @return array<string, mixed>
+     */
     private function emptyCoverage(): array
     {
         return [
-            'cartera_rows_total'                     => 0,
-            'cartera_rows_sin_contrato'               => 0,
-            'cartera_rows_sin_estatus'                => 0,
+            'cartera_rows_total' => 0,
+            'cartera_rows_sin_contrato' => 0,
+            'cartera_rows_sin_estatus' => 0,
             'cartera_rows_excluidas_cerrado_inactivo' => 0,
             // Fase 8 — period_id REAL de donde se leyó CARTERA (puede ser distinto del
             // periodo evaluado para compuestos: el último mes componente). null = no se
             // encontró ningún mes componente del cual tomar CARTERA (p.ej. periodo weekly).
-            'cartera_period_id'                       => null,
-            'ingresos_rows_total'                     => 0,
-            'ingresos_rows_whitelist_pass'             => 0,
-            'ingresos_rows_sin_fecha_transaccion'      => 0,
-            'ingresos_rows_sin_fecha_cuota'            => 0,
-            'ingresos_rows_usables'                    => 0,
-            'status'                                   => 'sin_datos',
-            'message'                                  => '',
+            'cartera_period_id' => null,
+            'ingresos_rows_total' => 0,
+            'ingresos_rows_whitelist_pass' => 0,
+            'ingresos_rows_sin_fecha_transaccion' => 0,
+            'ingresos_rows_sin_fecha_cuota' => 0,
+            'ingresos_rows_usables' => 0,
+            'status' => 'sin_datos',
+            'message' => '',
         ];
     }
 
+    /**
+     * Estado de cobertura según qué fuente tiene filas (sin_datos, sin_cartera, sin_ingresos…).
+     *
+     * @param  array  $c  cobertura
+     */
     private function resolveCoverageStatus(array $c): string
     {
         if ($c['cartera_rows_total'] === 0 && $c['ingresos_rows_total'] === 0) {
@@ -304,6 +336,11 @@ class EfectividadCobranzaAprobadaDataAdapter
         return 'ok';
     }
 
+    /**
+     * Mensaje en español que explica el estado de cobertura al usuario.
+     *
+     * @param  array  $c  cobertura (con 'status' ya resuelto)
+     */
     private function resolveCoverageMessage(array $c): string
     {
         return match ($c['status']) {

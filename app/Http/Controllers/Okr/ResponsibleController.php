@@ -8,25 +8,36 @@ use App\Models\Employee;
 use App\Models\OkrObjective;
 use App\Models\User;
 use App\Services\Access\AccessDelegationGuard;
-use App\Services\Access\DataScopeService;
 use App\Services\Access\ActionPermissionService;
+use App\Services\Access\DataScopeService;
+use App\Services\Access\GerenciasDirectoryImportService;
 use App\Services\Access\ModuleAccessService;
 use App\Services\Access\RoleCatalogService;
 use App\Services\Access\UserAccessAuditLogger;
-use App\Services\Access\GerenciasDirectoryImportService;
 use App\Services\Access\UserInvitationService;
 use App\Services\CanonicalEmployeeResolver;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Módulo USUARIOS (prioridad 8/10) — antes "Responsables OKR" / "Usuarios y
@@ -50,14 +61,33 @@ use Inertia\Response;
  */
 class ResponsibleController extends Controller
 {
+    /**
+     * @param  ActionPermissionService  $actions  Permisos por acción del módulo `usuarios`.
+     * @param  AccessDelegationGuard  $guard  Qué usuarios/roles puede administrar u otorgar el actor.
+     * @param  UserAccessAuditLogger  $audit  Bitácora de cambios de acceso.
+     * @param  UserInvitationService  $invitations  Envío y estado de invitaciones por correo.
+     */
     public function __construct(
         private readonly ActionPermissionService $actions,
         private readonly AccessDelegationGuard $guard,
         private readonly UserAccessAuditLogger $audit,
         private readonly UserInvitationService $invitations,
-    ) {
-    }
+    ) {}
 
+    /**
+     * Página Inertia `usuarios/Index`: tabla de usuarios, colaboradores
+     * vinculables (prop diferida), roles asignables, bitácora reciente,
+     * sucursales que el actor puede conceder, URLs y permisos del actor.
+     *
+     * Efecto secundario: consume de la sesión (session()->pull) los resultados
+     * de un solo uso — contraseñas temporales selladas, invitaciones,
+     * asignación masiva e importación — para mostrarlos una única vez.
+     *
+     * @param  Request  $request  Usuario autenticado (actor).
+     * @param  OkrEmployeeBranchResolver  $branchResolver  Sucursal vigente de los colaboradores vinculados.
+     * @param  ModuleAccessService  $moduleAccess  Matriz de módulos por rol.
+     * @return Response Página de Usuarios.
+     */
     public function index(Request $request, OkrEmployeeBranchResolver $branchResolver, ModuleAccessService $moduleAccess): Response
     {
         $actor = $request->user();
@@ -126,6 +156,13 @@ class ResponsibleController extends Controller
      * y permisos del actor (constantes) calculados una vez. Las reglas de
      * autorización no cambian: se usan los mismos servicios y el backend
      * vuelve a validar cada acción.
+     *
+     * @param  User  $actor  Usuario que consulta.
+     * @param  DataScopeService  $scope  Alcance por sucursal (se precarga en lote).
+     * @param  OkrEmployeeBranchResolver  $branchResolver  Sucursal vigente de los colaboradores.
+     * @param  RoleCatalogService  $catalog  Etiquetas de roles.
+     * @param  int  $enabledAdmins  Administradores no bloqueados (protege al último admin).
+     * @return array<int, array<string, mixed>> Una fila por usuario con estado de acceso, invitación, alcance, URLs y permisos.
      */
     private function userRows(User $actor, DataScopeService $scope, OkrEmployeeBranchResolver $branchResolver, RoleCatalogService $catalog, int $enabledAdmins): array
     {
@@ -146,59 +183,59 @@ class ResponsibleController extends Controller
             ->mapWithKeys(fn ($a) => [$a => $this->actions->canAction($actor, 'usuarios', $a)])->all();
 
         return $this->withRequestScope($scope, $branchResolver, fn () => $users->map(function (User $u) use ($usageCounts, $memberships, $branchNames, $actor, $catalog, $enabledAdmins, $scope, $actorCan) {
-                $branchId = $u->employee_id ? ($memberships[(int) $u->employee_id]['branch_id'] ?? null) : null;
-                $canManage = $this->guard->canManageUser($actor, $u);
-                $manageable = $u->id !== $actor->id && $canManage;
-                $isLastAdmin = $u->isAdmin() && $u->disabled_at === null && $enabledAdmins <= 1;
+            $branchId = $u->employee_id ? ($memberships[(int) $u->employee_id]['branch_id'] ?? null) : null;
+            $canManage = $this->guard->canManageUser($actor, $u);
+            $manageable = $u->id !== $actor->id && $canManage;
+            $isLastAdmin = $u->isAdmin() && $u->disabled_at === null && $enabledAdmins <= 1;
 
-                return [
-                    'id' => $u->id, 'name' => $u->name, 'email' => $u->email,
-                    'role' => $u->role, 'role_name' => $catalog->label($u->role),
-                    // Estado de ACCESO (nunca situación laboral): bloqueado > pendiente > habilitado.
-                    'access' => $u->disabled_at !== null ? 'blocked' : ($u->access_enabled_at !== null ? 'enabled' : 'pending'),
-                    'access_enabled_at' => $u->access_enabled_at?->toDateTimeString(),
-                    'disabled_at' => $u->disabled_at?->toDateTimeString(),
-                    'last_login_at' => $u->last_login_at?->toDateTimeString(),
-                    'created_at' => $u->created_at?->toDateTimeString(),
-                    'invitation' => [
-                        'status' => UserInvitationService::statusOf($u),
-                        'sent_at' => $u->welcome_email_sent_at?->toDateTimeString(),
-                        'error' => $u->welcome_email_error,
-                        'attempts' => (int) ($u->welcome_email_attempts ?? 0),
-                        'last_attempt_at' => $u->welcome_email_last_attempt_at?->toDateTimeString(),
-                    ],
-                    'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
-                    'employee_id' => $u->employee_id,
-                    'employee_name' => $u->employee?->full_name,
-                    'employee_is_active' => $u->employee?->is_active,
-                    'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
-                    // Fase 6.4 — alcance por sucursal (general o lista) para la tabla y el editor.
-                    'data_scope' => $scope->describe($u),
-                    'is_self' => $u->id === $actor->id,
-                    'is_last_admin' => $isLastAdmin,
-                    // URLs generadas por el BACKEND (route()): respetan el prefijo/subcarpeta
-                    // real del servidor — un '/okr/...' fijo en el frontend daba 404 si la app
-                    // no está en la raíz del dominio (ver prioridad 10, botón reenviar).
-                    'urls' => [
-                        'enable_access' => route('usuarios.enable-access', $u),
-                        'disable_access' => route('usuarios.disable-access', $u),
-                        'toggle_disabled' => route('usuarios.toggle-disabled', $u),
-                        'reset_password' => route('usuarios.reset-password', $u),
-                        'resend_invitation' => route('usuarios.resend-invitation', $u),
-                        'update_role' => route('usuarios.update-role', $u),
-                        'link_employee' => route('usuarios.link-employee', $u),
-                        'update_branch_scope' => route('usuarios.update-branch-scope', $u),
-                    ],
-                    'can' => [
-                        'manage_access' => $manageable && ! $isLastAdmin && $actorCan['gestionar_acceso'],
-                        'reset_password' => $manageable && $actorCan['restablecer'],
-                        'invite' => $canManage && $actorCan['invitar'],
-                        'change_role' => $manageable && ! ($u->isAdmin() && $isLastAdmin) && $actorCan['asignar_rol'],
-                        'link_employee' => $canManage && $actorCan['editar'],
-                        'change_branch_scope' => ! $u->isAdmin() && $manageable && $actorCan['asignar_rol'],
-                    ],
-                ];
-            })->values()->all());
+            return [
+                'id' => $u->id, 'name' => $u->name, 'email' => $u->email,
+                'role' => $u->role, 'role_name' => $catalog->label($u->role),
+                // Estado de ACCESO (nunca situación laboral): bloqueado > pendiente > habilitado.
+                'access' => $u->disabled_at !== null ? 'blocked' : ($u->access_enabled_at !== null ? 'enabled' : 'pending'),
+                'access_enabled_at' => $u->access_enabled_at?->toDateTimeString(),
+                'disabled_at' => $u->disabled_at?->toDateTimeString(),
+                'last_login_at' => $u->last_login_at?->toDateTimeString(),
+                'created_at' => $u->created_at?->toDateTimeString(),
+                'invitation' => [
+                    'status' => UserInvitationService::statusOf($u),
+                    'sent_at' => $u->welcome_email_sent_at?->toDateTimeString(),
+                    'error' => $u->welcome_email_error,
+                    'attempts' => (int) ($u->welcome_email_attempts ?? 0),
+                    'last_attempt_at' => $u->welcome_email_last_attempt_at?->toDateTimeString(),
+                ],
+                'objectives_count' => (int) ($usageCounts[$u->id] ?? 0),
+                'employee_id' => $u->employee_id,
+                'employee_name' => $u->employee?->full_name,
+                'employee_is_active' => $u->employee?->is_active,
+                'current_branch' => $branchId ? ($branchNames[$branchId] ?? null) : null,
+                // Fase 6.4 — alcance por sucursal (general o lista) para la tabla y el editor.
+                'data_scope' => $scope->describe($u),
+                'is_self' => $u->id === $actor->id,
+                'is_last_admin' => $isLastAdmin,
+                // URLs generadas por el BACKEND (route()): respetan el prefijo/subcarpeta
+                // real del servidor — un '/okr/...' fijo en el frontend daba 404 si la app
+                // no está en la raíz del dominio (ver prioridad 10, botón reenviar).
+                'urls' => [
+                    'enable_access' => route('usuarios.enable-access', $u),
+                    'disable_access' => route('usuarios.disable-access', $u),
+                    'toggle_disabled' => route('usuarios.toggle-disabled', $u),
+                    'reset_password' => route('usuarios.reset-password', $u),
+                    'resend_invitation' => route('usuarios.resend-invitation', $u),
+                    'update_role' => route('usuarios.update-role', $u),
+                    'link_employee' => route('usuarios.link-employee', $u),
+                    'update_branch_scope' => route('usuarios.update-branch-scope', $u),
+                ],
+                'can' => [
+                    'manage_access' => $manageable && ! $isLastAdmin && $actorCan['gestionar_acceso'],
+                    'reset_password' => $manageable && $actorCan['restablecer'],
+                    'invite' => $canManage && $actorCan['invitar'],
+                    'change_role' => $manageable && ! ($u->isAdmin() && $isLastAdmin) && $actorCan['asignar_rol'],
+                    'link_employee' => $canManage && $actorCan['editar'],
+                    'change_branch_scope' => ! $u->isAdmin() && $manageable && $actorCan['asignar_rol'],
+                ],
+            ];
+        })->values()->all());
     }
 
     /**
@@ -214,6 +251,11 @@ class ResponsibleController extends Controller
      * canónico (menor del grupo), estable entre llamadas. La sucursal vigente
      * de todas las personas se resuelve en UNA pasada (membershipMap), no una
      * por persona.
+     *
+     * Incluye colaboradores activos o que ya tienen usuario vinculado.
+     *
+     * @param  OkrEmployeeBranchResolver  $branchResolver  Sucursal vigente por persona.
+     * @return array<int, array<string, mixed>> Personas ordenadas por nombre con `linked_user_id` y `records`.
      */
     private function linkableEmployees(OkrEmployeeBranchResolver $branchResolver): array
     {
@@ -264,6 +306,11 @@ class ResponsibleController extends Controller
      * AccessDelegationGuard por dentro) devuelve ESTA instancia ya precargada
      * en vez de una nueva sin memo por cada fila. Se restaura al terminar: no
      * queda caché de alcance para otras peticiones.
+     *
+     * @param  DataScopeService  $scope  Instancia precargada a registrar en el contenedor.
+     * @param  OkrEmployeeBranchResolver  $resolver  Instancia a registrar en el contenedor.
+     * @param  \Closure  $fn  Trabajo a ejecutar con esas instancias.
+     * @return mixed Lo que devuelva `$fn`.
      */
     private function withRequestScope(DataScopeService $scope, OkrEmployeeBranchResolver $resolver, \Closure $fn): mixed
     {
@@ -284,6 +331,25 @@ class ResponsibleController extends Controller
         }
     }
 
+    /**
+     * Da de alta un usuario.
+     *
+     * Valida datos, rol (nunca Administrador desde aquí; debe poder otorgarlo
+     * el actor), colaborador vinculado (identidad canónica sin otra cuenta) y
+     * alcance por sucursal (obligatorio para roles gerenciales; si el actor es
+     * restringido y no elige, se heredan sus sucursales). Crea el registro en
+     * `users` con contraseña hasheada (modo invite/auto genera una temporal de
+     * 16 caracteres; manual la escribe el actor), opcionalmente habilita el
+     * acceso, guarda el alcance, registra en la bitácora y, si procede, envía
+     * la invitación por correo (UserInvitationService). La contraseña temporal
+     * se deja sellada en sesión para mostrarse una sola vez.
+     *
+     * @param  Request  $request  Datos del nuevo usuario.
+     * @return RedirectResponse Regresa con éxito, resultado de invitación y/o contraseña sellada.
+     *
+     * @throws ValidationException Si los datos o el alcance no son válidos.
+     * @throws HttpException 403 si el rol o alcance exceden los del actor.
+     */
     public function store(Request $request): RedirectResponse
     {
         $actor = $request->user();
@@ -321,7 +387,7 @@ class ResponsibleController extends Controller
         // Una identidad laboral (persona) no puede quedar ligada a dos cuentas:
         // se revisa el grupo canónico completo, no solo el employee_id exacto.
         if (($data['employee_id'] ?? null) !== null && $this->employeeIdentityLinkedUserId((int) $data['employee_id']) !== null) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'employee_id' => 'Esa identidad de colaborador ya está vinculada a otra cuenta.',
             ]);
         }
@@ -340,10 +406,10 @@ class ResponsibleController extends Controller
         // por omisión. Se exige la elección explícita. (Nivel colaborador sin elección
         // conserva «solo lo propio», que nunca amplía su acceso.)
         if ($scopeMode === null && $this->isManagerialRole($role)) {
-            throw \Illuminate\Validation\ValidationException::withMessages(['branch_scope' => 'Elige el alcance por sucursal del usuario: «Todas las sucursales» o «Sucursales específicas».']);
+            throw ValidationException::withMessages(['branch_scope' => 'Elige el alcance por sucursal del usuario: «Todas las sucursales» o «Sucursales específicas».']);
         }
         if ($scopeMode === DataScopeService::MODE_BRANCHES && $scopeIds === []) {
-            throw \Illuminate\Validation\ValidationException::withMessages(['branch_ids' => 'Elige al menos una sucursal o marca «Todas las sucursales».']);
+            throw ValidationException::withMessages(['branch_ids' => 'Elige al menos una sucursal o marca «Todas las sucursales».']);
         }
         abort_if($scopeMode !== null && ! $dataScope->canGrant($actor, $scopeMode, $scopeIds), 403, 'No puedes conceder un alcance mayor al tuyo: solo puedes asignar sucursales que tú mismo tienes autorizadas.');
 
@@ -410,6 +476,14 @@ class ResponsibleController extends Controller
      * la contraseña en claro, el reenvío entrega una contraseña temporal NUEVA
      * (solo se aplica si el correo se acepta; si el envío falla, la contraseña
      * anterior sigue intacta — ver UserInvitationService::send()).
+     *
+     * Registra el intento en la bitácora. Responde JSON con el estado de la
+     * invitación si la petición lo espera (422 si no se envió).
+     *
+     * @param  Request  $request  Actor.
+     * @param  User  $user  Usuario destinatario.
+     *
+     * @throws HttpException 403 si el actor no puede administrarlo.
      */
     public function resendWelcomeEmail(Request $request, User $user): RedirectResponse|JsonResponse
     {
@@ -440,6 +514,12 @@ class ResponsibleController extends Controller
     /**
      * Activa el acceso — decisión EXPLÍCITA de quien administra usuarios.
      * Solo cambia users.access_enabled_at; NUNCA el estado laboral del colaborador.
+     * Registra `access_enabled` en la bitácora.
+     *
+     * @param  Request  $request  Actor (requiere permiso `gestionar_acceso`).
+     * @param  User  $user  Usuario a habilitar.
+     *
+     * @throws HttpException 403 vía assertManageable().
      */
     public function enableAccess(Request $request, User $user): RedirectResponse
     {
@@ -454,6 +534,12 @@ class ResponsibleController extends Controller
     /**
      * Revoca la activación (vuelve a "pendiente de activación"): deja de poder
      * entrar al módulo OKR hasta que se active de nuevo. No toca employees.
+     * No permite revocarse a sí mismo. Registra `access_revoked`.
+     *
+     * @param  Request  $request  Actor (requiere permiso `gestionar_acceso`).
+     * @param  User  $user  Usuario a revocar.
+     *
+     * @throws HttpException 403 vía assertManageable().
      */
     public function disableAccess(Request $request, User $user): RedirectResponse
     {
@@ -472,6 +558,16 @@ class ResponsibleController extends Controller
     /**
      * Restablece la contraseña de otro usuario: generada (se muestra UNA vez) o
      * manual (con confirmación). Siempre con hash; cierra sus sesiones abiertas.
+     *
+     * Renueva `remember_token`, borra sus sesiones y registra `password_reset`.
+     * La contraseña generada (14 caracteres, sin símbolos) se deja sellada en
+     * sesión para mostrarse una sola vez. No aplica a la propia cuenta.
+     *
+     * @param  Request  $request  `password_mode` (auto/manual) y `password` + confirmación.
+     * @param  User  $user  Usuario destinatario.
+     *
+     * @throws HttpException 403 vía assertManageable().
+     * @throws ValidationException Si la contraseña manual no es válida.
      */
     public function resetPassword(Request $request, User $user): RedirectResponse
     {
@@ -510,6 +606,14 @@ class ResponsibleController extends Controller
      * sus sesiones). Se omiten tu propia cuenta y las que tu rol no puede
      * administrar. El listado con las contraseñas se sella cifrado en la sesión
      * para UNA sola descarga en Excel (nunca va a la pantalla ni a los logs).
+     *
+     * Por cada usuario procesado escribe el nuevo hash y `remember_token`,
+     * borra sus sesiones y registra `password_reset` en la bitácora.
+     *
+     * @param  Request  $request  `user_ids[]` (1 a 500).
+     * @param  OkrEmployeeBranchResolver  $branchResolver  Sucursal laboral para el Excel.
+     * @param  DataScopeService  $dataScope  Alcance por sucursal para el Excel.
+     * @return RedirectResponse Con `bulk_password_result` (actualizados/omitidos) o error si ninguno aplicó.
      */
     public function bulkResetPasswords(Request $request, OkrEmployeeBranchResolver $branchResolver, DataScopeService $dataScope): RedirectResponse
     {
@@ -557,8 +661,15 @@ class ResponsibleController extends Controller
         return back()->with('bulk_password_result', ['updated' => count($rows), 'skipped' => $skipped]);
     }
 
-    /** Descarga ÚNICA del Excel de la última asignación masiva (Nombre, Usuario, Contraseña, Correo, Sucursal). */
-    public function downloadBulkPasswords(Request $request): \Symfony\Component\HttpFoundation\BinaryFileResponse|RedirectResponse
+    /**
+     * Descarga ÚNICA del Excel de la última asignación masiva (Nombre, Usuario,
+     * Contraseña, Correo, Sucursal). Consume el listado sellado de la sesión,
+     * así que una segunda descarga ya no lo encuentra.
+     *
+     * @param  Request  $request  Petición del actor.
+     * @return BinaryFileResponse|RedirectResponse Archivo .xlsx o regreso con error.
+     */
+    public function downloadBulkPasswords(Request $request): BinaryFileResponse|RedirectResponse
     {
         $rows = self::revealSecret(session()->pull('bulk_password_credentials'));
         if (! is_array($rows) || $rows === []) {
@@ -573,7 +684,15 @@ class ResponsibleController extends Controller
         );
     }
 
-    /** Sucursal para el Excel: la laboral del colaborador vinculado; si no, la(s) de su alcance. */
+    /**
+     * Sucursal para el Excel: la laboral del colaborador vinculado; si no, la(s)
+     * de su alcance ("Todas las sucursales", lista separada por comas o "—").
+     *
+     * @param  User  $user  Usuario de la fila.
+     * @param  OkrEmployeeBranchResolver  $branchResolver  Sucursal vigente del colaborador.
+     * @param  Collection  $branchNames  Mapa id → nombre de sucursal.
+     * @param  DataScopeService  $dataScope  Alcance por sucursal del usuario.
+     */
     private function branchLabelFor(User $user, OkrEmployeeBranchResolver $branchResolver, $branchNames, DataScopeService $dataScope): string
     {
         $branchId = $user->employee_id ? $branchResolver->currentBranchIdFor($user->employee_id) : null;
@@ -592,14 +711,18 @@ class ResponsibleController extends Controller
 
     /**
      * Arma y envía un .xlsx temporal (encabezados en negritas, columnas autoajustadas)
-     * y lo elimina tras enviarlo.
+     * y lo elimina tras enviarlo. Todas las celdas se escriben como texto. El
+     * archivo temporal se guarda en storage/app/user-imports.
      *
-     * @param  list<string>  $headers
-     * @param  list<list<mixed>>  $rows
+     * @param  list<string>  $headers  Encabezados de la primera fila.
+     * @param  list<list<mixed>>  $rows  Filas de datos.
+     * @param  string  $sheetTitle  Nombre de la hoja.
+     * @param  string  $fileBase  Nombre base del archivo descargado (sin extensión).
+     * @return BinaryFileResponse Descarga sin caché.
      */
-    private function downloadSpreadsheet(array $headers, array $rows, string $sheetTitle, string $fileBase): \Symfony\Component\HttpFoundation\BinaryFileResponse
+    private function downloadSpreadsheet(array $headers, array $rows, string $sheetTitle, string $fileBase): BinaryFileResponse
     {
-        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
+        $spreadsheet = new Spreadsheet;
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->setTitle($sheetTitle);
         $sheet->fromArray($headers, null, 'A1');
@@ -607,23 +730,23 @@ class ResponsibleController extends Controller
         foreach ($rows as $row) {
             // Como texto explícito: una contraseña o un correo nunca se reinterpretan como número/fórmula.
             foreach (array_values($row) as $i => $value) {
-                $sheet->setCellValueExplicit([$i + 1, $r], (string) ($value ?? ''), \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+                $sheet->setCellValueExplicit([$i + 1, $r], (string) ($value ?? ''), DataType::TYPE_STRING);
             }
             $r++;
         }
-        $lastCol = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($headers));
+        $lastCol = Coordinate::stringFromColumnIndex(count($headers));
         foreach (range(1, count($headers)) as $i) {
             $sheet->getColumnDimensionByColumn($i)->setAutoSize(true);
         }
         $sheet->getStyle("A1:{$lastCol}1")->getFont()->setBold(true);
 
         $dir = storage_path('app/user-imports');
-        \Illuminate\Support\Facades\File::ensureDirectoryExists($dir);
-        $outputPath = $dir . '/' . $fileBase . '_' . now()->format('Ymd_His') . '_' . Str::random(6) . '.xlsx';
-        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet))->save($outputPath);
+        File::ensureDirectoryExists($dir);
+        $outputPath = $dir.'/'.$fileBase.'_'.now()->format('Ymd_His').'_'.Str::random(6).'.xlsx';
+        (new Xlsx($spreadsheet))->save($outputPath);
         $spreadsheet->disconnectWorksheets();
 
-        return response()->download($outputPath, $fileBase . '.xlsx', [
+        return response()->download($outputPath, $fileBase.'.xlsx', [
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
             'Pragma' => 'no-cache',
@@ -633,6 +756,14 @@ class ResponsibleController extends Controller
     /**
      * Bloquea / desbloquea la CUENTA (`disabled_at`): no puede iniciar sesión en
      * ningún módulo. Candados: no a ti mismo y nunca al último administrador habilitado.
+     *
+     * Al bloquear renueva `remember_token` y borra sus sesiones. Registra
+     * `account_blocked` / `account_unblocked` en la bitácora.
+     *
+     * @param  Request  $request  Actor (requiere permiso `gestionar_acceso`).
+     * @param  User  $user  Usuario a bloquear/desbloquear.
+     *
+     * @throws HttpException 403 vía assertManageable().
      */
     public function toggleDisabled(Request $request, User $user): RedirectResponse
     {
@@ -663,6 +794,16 @@ class ResponsibleController extends Controller
      * Cambia el rol de otro usuario. Candados: nunca el propio; nunca quitar al
      * último administrador habilitado; quien no es admin no asigna Administrador
      * ni un rol con más permisos que el suyo.
+     *
+     * Si el usuario no tenía alcance explícito y quedaría ampliado (actor
+     * restringido o rol destino gerencial), antes se congela su alcance actual
+     * como lista de sucursales. Registra `role_changed` (y `branch_scope_changed`).
+     *
+     * @param  Request  $request  Campo `role`.
+     * @param  User  $user  Usuario a modificar.
+     *
+     * @throws ValidationException Si el rol no existe.
+     * @throws HttpException 403 si el actor no puede administrarlo u otorgar el rol.
      */
     public function updateRole(Request $request, User $user): RedirectResponse
     {
@@ -708,12 +849,20 @@ class ResponsibleController extends Controller
         $this->audit->log($request->user(), UserAccessAuditLogger::TYPE_USER, $user->id, 'role_changed', 'role', $catalog->label($old), $catalog->label($data['role']));
 
         return back()->with('success', "Rol de {$user->name} actualizado a {$catalog->label($data['role'])}."
-            . ($frozenEmpty ? ' Todavía no tiene sucursales autorizadas: asígnaselas en «Alcance por sucursal».' : ''));
+            .($frozenEmpty ? ' Todavía no tiene sucursales autorizadas: asígnaselas en «Alcance por sucursal».' : ''));
     }
 
     /**
      * Vincula/desvincula el colaborador real de este usuario. Un colaborador no
-     * puede quedar ligado a dos usuarios (también hay UNIQUE en BD).
+     * puede quedar ligado a dos usuarios (también hay UNIQUE en BD); la
+     * revisión cubre toda la identidad canónica de la persona.
+     *
+     * Actualiza `users.employee_id` y registra `employee_linked`.
+     *
+     * @param  Request  $request  `employee_id` (null para desvincular).
+     * @param  User  $user  Usuario a vincular.
+     *
+     * @throws HttpException 403 si el actor no puede administrarlo.
      */
     public function linkEmployee(Request $request, User $user): RedirectResponse
     {
@@ -744,6 +893,16 @@ class ResponsibleController extends Controller
      * Nadie concede un alcance mayor al propio (DataScopeService::canGrant) ni
      * administra a quien tiene más alcance que él (AccessDelegationGuard). El
      * cambio aplica en la siguiente petición del usuario (sin caché residual).
+     *
+     * No aplica a administradores ni a la propia cuenta. Guarda el alcance vía
+     * DataScopeService::save() y registra `branch_scope_changed` (anterior/nuevo).
+     *
+     * @param  Request  $request  `branch_scope` (all/branches) y `branch_ids[]`.
+     * @param  User  $user  Usuario a modificar.
+     * @param  DataScopeService  $dataScope  Servicio de alcance por sucursal.
+     *
+     * @throws ValidationException Si el alcance no es válido o no trae sucursales.
+     * @throws HttpException 403 vía assertManageable() o si excede el alcance del actor.
      */
     public function updateBranchScope(Request $request, User $user, DataScopeService $dataScope): RedirectResponse
     {
@@ -768,7 +927,7 @@ class ResponsibleController extends Controller
 
         $ids = array_map('intval', $data['branch_ids'] ?? []);
         if ($data['branch_scope'] === DataScopeService::MODE_BRANCHES && $ids === []) {
-            throw \Illuminate\Validation\ValidationException::withMessages(['branch_ids' => 'Elige al menos una sucursal o marca «Todas las sucursales».']);
+            throw ValidationException::withMessages(['branch_ids' => 'Elige al menos una sucursal o marca «Todas las sucursales».']);
         }
 
         $old = $dataScope->label($user);
@@ -782,6 +941,15 @@ class ResponsibleController extends Controller
      * Usuarios → Importar usuarios (paso 1): sube el directorio de gerencias,
      * lo valida y devuelve la VISTA PREVIA. No crea nada. El archivo se guarda
      * temporalmente para re-leerlo al confirmar (idempotencia autoritativa).
+     *
+     * Guarda el Excel en storage local `user-imports` y su ruta en sesión
+     * (`import_file_path`); si no hay hoja «Directorio» o filas, lo borra.
+     *
+     * @param  Request  $request  Archivo `file` (.xlsx/.xls, ≤10 MB).
+     * @param  GerenciasDirectoryImportService  $service  Lee y valida el directorio.
+     * @return RedirectResponse Con `import_preview` (resumen y filas) o error.
+     *
+     * @throws HttpException 403 si el actor no es administrador.
      */
     public function importPreview(Request $request, GerenciasDirectoryImportService $service): RedirectResponse
     {
@@ -820,6 +988,18 @@ class ResponsibleController extends Controller
      * contraseña temporal (hash en BD; el claro solo va al reporte de entrega).
      * Por omisión NO envía invitaciones por correo (SMTP puede no estar
      * verificado); se puede activar explícitamente con `send_invitations`.
+     *
+     * Re-lee el archivo guardado en sesión, crea las cuentas elegidas con
+     * createImportedUser(), borra el archivo temporal, registra un resumen en la
+     * bitácora y deja en sesión el resultado (sin contraseñas) y el reporte de
+     * credenciales sellado para una sola descarga.
+     *
+     * @param  Request  $request  `emails[]`, `confirmed` y `send_invitations`.
+     * @param  GerenciasDirectoryImportService  $service  Lee y valida el directorio.
+     * @param  DataScopeService  $dataScope  Asigna el alcance de cada cuenta nueva.
+     * @return RedirectResponse Con `import_result`.
+     *
+     * @throws HttpException 403 si no es administrador; 422 si expiró la sesión de importación.
      */
     public function importConfirm(Request $request, GerenciasDirectoryImportService $service, DataScopeService $dataScope): RedirectResponse
     {
@@ -881,8 +1061,8 @@ class ResponsibleController extends Controller
                 $report[] = array_merge($base, $this->createImportedUser($row, $actor, $dataScope, $sendInvitations));
                 $created++;
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::error('Importación de gerencias: fallo al crear una cuenta.', ['email' => $row['email'], 'error' => $e->getMessage()]);
-                $report[] = array_merge($base, ['creation' => 'Error al crear', 'access' => '—', 'invitation' => '—', 'observations' => trim($base['observations'] . ' ' . 'No se pudo crear; intenta de nuevo.')]);
+                Log::error('Importación de gerencias: fallo al crear una cuenta.', ['email' => $row['email'], 'error' => $e->getMessage()]);
+                $report[] = array_merge($base, ['creation' => 'Error al crear', 'access' => '—', 'invitation' => '—', 'observations' => trim($base['observations'].' '.'No se pudo crear; intenta de nuevo.')]);
             }
         }
 
@@ -909,7 +1089,20 @@ class ResponsibleController extends Controller
         return $response;
     }
 
-    /** Crea una cuenta importada (rol gerencial, alcance = su sucursal). */
+    /**
+     * Crea una cuenta importada (rol gerencial, alcance = su sucursal).
+     *
+     * Genera contraseña temporal de 16 caracteres (solo se guarda el hash),
+     * vincula el colaborador si su identidad está libre, deja el acceso
+     * pendiente de activación, guarda el alcance, registra en la bitácora y
+     * opcionalmente envía la invitación.
+     *
+     * @param  array  $row  Fila validada del directorio (nombre, correo, sucursal, colaborador...).
+     * @param  User  $actor  Administrador que importa.
+     * @param  DataScopeService  $dataScope  Servicio de alcance.
+     * @param  bool  $sendInvitations  Si se envía correo de bienvenida.
+     * @return array{temporary_password:string, creation:string, access:string, invitation:string}
+     */
     private function createImportedUser(array $row, User $actor, DataScopeService $dataScope, bool $sendInvitations): array
     {
         $tempPassword = Str::password(16);
@@ -959,8 +1152,13 @@ class ResponsibleController extends Controller
      * (session()->pull): una sola descarga. El archivo temporal se elimina tras
      * enviarse; nada se persiste en logs ni exportaciones ordinarias. Si se
      * pierde, hay que restablecer la contraseña (nunca se recupera el valor).
+     *
+     * @param  Request  $request  Petición del administrador.
+     * @return BinaryFileResponse|RedirectResponse Excel o regreso con error.
+     *
+     * @throws HttpException 403 si no es administrador.
      */
-    public function downloadImportCredentials(Request $request): \Symfony\Component\HttpFoundation\BinaryFileResponse|RedirectResponse
+    public function downloadImportCredentials(Request $request): BinaryFileResponse|RedirectResponse
     {
         abort_unless($request->user()->isAdmin(), 403, 'Solo un administrador puede descargar las credenciales.');
 
@@ -984,20 +1182,28 @@ class ResponsibleController extends Controller
      * Contraseña generada que se muestra UNA vez: viaja cifrada en la sesión (el
      * driver es `database` sin SESSION_ENCRYPT), así nunca queda en texto plano en
      * la tabla `sessions` entre la redirección y la pantalla que la muestra.
+     *
+     * @param  array  $secret  Datos a cifrar (nombre, correo, contraseña o un listado).
+     * @return string Valor cifrado con Crypt (APP_KEY).
      */
     public static function sealSecret(array $secret): string
     {
-        return \Illuminate\Support\Facades\Crypt::encrypt($secret);
+        return Crypt::encrypt($secret);
     }
 
-    /** @return array<string, string>|null */
+    /**
+     * Descifra un valor sellado con sealSecret().
+     *
+     * @param  mixed  $sealed  Valor leído de la sesión (puede ser null).
+     * @return array<string, string>|null null si no hay valor, no se puede descifrar o no es arreglo.
+     */
     public static function revealSecret(mixed $sealed): ?array
     {
         if (! is_string($sealed) || $sealed === '') {
             return null;
         }
         try {
-            $value = \Illuminate\Support\Facades\Crypt::decrypt($sealed);
+            $value = Crypt::decrypt($sealed);
         } catch (\Throwable) {
             return null;
         }
@@ -1005,13 +1211,27 @@ class ResponsibleController extends Controller
         return is_array($value) ? $value : null;
     }
 
-    /** Rol (del sistema o personalizado) de nivel gerencial — sin alcance explícito vería todas las sucursales. */
+    /**
+     * Rol (del sistema o personalizado) de nivel gerencial — sin alcance
+     * explícito vería todas las sucursales.
+     *
+     * @param  string  $role  Clave del rol.
+     */
     private function isManagerialRole(string $role): bool
     {
         return $role === User::ROLE_GERENCIAL
             || ($role !== User::ROLE_ADMIN && app(RoleCatalogService::class)->baseLevel($role) === User::ROLE_GERENCIAL);
     }
 
+    /**
+     * Aborta con 403 si el actor no puede administrar a ese usuario
+     * (AccessDelegationGuard::canManageUser()).
+     *
+     * @param  Request  $request  Actor.
+     * @param  User  $user  Usuario objetivo.
+     *
+     * @throws HttpException 403.
+     */
     private function assertManageable(Request $request, User $user): void
     {
         abort_unless($this->guard->canManageUser($request->user(), $user), 403, 'Solo un administrador puede modificar a otro administrador.');
@@ -1025,6 +1245,8 @@ class ResponsibleController extends Controller
      * normalized_name, respetando homónimos reales) y se revisa TODO el grupo,
      * así una identidad laboral nunca queda ligada a dos cuentas distintas.
      *
+     * @param  int  $employeeId  Cualquier id de la persona.
+     * @param  int|null  $exceptUserId  Usuario a ignorar (el que se está editando).
      * @return int|null id del usuario que ya tiene vinculada esa identidad (o null).
      */
     private function employeeIdentityLinkedUserId(int $employeeId, ?int $exceptUserId = null): ?int
@@ -1049,6 +1271,12 @@ class ResponsibleController extends Controller
         return $query->value('id');
     }
 
+    /**
+     * Cierra todas las sesiones abiertas del usuario borrando sus filas de la
+     * tabla de sesiones. Solo actúa si el driver de sesión es `database`.
+     *
+     * @param  User  $user  Usuario cuyas sesiones se cierran.
+     */
     private function closeSessions(User $user): void
     {
         if (config('session.driver') === 'database') {

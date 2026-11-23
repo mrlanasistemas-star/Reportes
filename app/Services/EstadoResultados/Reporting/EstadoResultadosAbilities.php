@@ -23,22 +23,41 @@ use App\Services\Access\ModuleAccessService;
  */
 class EstadoResultadosAbilities
 {
+    /** Clave del módulo en el sistema de permisos. */
     public const MODULE = 'estado_resultados';
 
+    /** Mensaje mostrado a usuarios con alcance limitado a sucursales. */
     public const BRANCH_SCOPE_REASON = 'Tu acceso está limitado a tus sucursales: cargar, procesar, clasificar y aprobar se hacen sobre el periodo completo y los realiza alguien con acceso general.';
 
+    /**
+     * @param  ActionPermissionService  $actions  permisos por acción (role_action_permissions)
+     * @param  ModuleAccessService  $modules  acceso al módulo
+     * @param  DataScopeService  $dataScope  alcance general vs por sucursal
+     */
     public function __construct(
         private readonly ActionPermissionService $actions,
         private readonly ModuleAccessService $modules,
         private readonly DataScopeService $dataScope,
     ) {}
 
+    /**
+     * ¿El usuario tiene la acción del módulo ER? (no considera el alcance por sucursal).
+     *
+     * @param  User|null  $user  usuario
+     * @param  string  $action  clave de acción guardada (cargar, procesar, clasificar, ajustes, aprobar, exportar, ver_nomina, ver_dg, catalogo)
+     */
     public function can(?User $user, string $action): bool
     {
         return $this->actions->canAction($user, self::MODULE, $action);
     }
 
-    /** @return array<string,bool|string|null> */
+    /**
+     * Mapa de capacidades para la UI. Las operaciones de periodo completo exigen además acceso
+     * general; null como usuario se trata como acceso general.
+     *
+     * @param  User|null  $user  usuario
+     * @return array<string,bool|string|null>
+     */
     public function for(?User $user): array
     {
         $can = fn (string $a) => $this->can($user, $a);

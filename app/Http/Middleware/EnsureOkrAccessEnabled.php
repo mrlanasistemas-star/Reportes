@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * D5 del cierre, 17-sep-2026 — `users.access_enabled_at` existía SOLO como
@@ -22,6 +23,16 @@ use Symfony\Component\HttpFoundation\Response;
  */
 class EnsureOkrAccessEnabled
 {
+    /**
+     * Aplica la regla descrita en la clase: admin pasa siempre; un no-admin
+     * con `access_enabled_at` nulo recibe 403. Sin usuario, deja pasar.
+     *
+     * @param  Request  $request  Petición a una ruta del módulo OKR.
+     * @param  Closure  $next  Siguiente capa del pipeline.
+     * @return Response Respuesta de la siguiente capa.
+     *
+     * @throws HttpException 403 si el acceso OKR está pendiente.
+     */
     public function handle(Request $request, Closure $next): Response
     {
         $user = $request->user();

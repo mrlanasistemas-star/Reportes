@@ -34,6 +34,14 @@ use Illuminate\Support\Facades\DB;
  */
 class OkrWeeklyPlacementResolver
 {
+    /**
+     * ¿El Objective (o, si es individual, su padre de sucursal) tiene al menos
+     * una carga semanal ACTIVA? Decide si se usa la colocación semanal real o
+     * el proxy mensual.
+     *
+     * @param  OkrObjective  $objective  Objective a consultar.
+     * @return bool true si existe alguna carga activa aplicable.
+     */
     public function hasAnyUpload(OkrObjective $objective): bool
     {
         if ($objective->placementUploads()->where('status', OkrPlacementUpload::STATUS_ACTIVE)->exists()) {
@@ -51,7 +59,12 @@ class OkrWeeklyPlacementResolver
     }
 
     /**
-     * @return array{weekly: ?float, cumulative: ?float, missing_weeks: int[], upload_id: ?int}
+     * Colocación de un solo Objective para la semana N (ver compute()). Si no
+     * hay datos devuelve todo null con las semanas 1..N como faltantes.
+     *
+     * @param  OkrObjective  $objective  Objective a resolver.
+     * @param  int  $weekNumber  Semana a evaluar (1-based).
+     * @return array{weekly: ?float, cumulative: ?float, missing_weeks: int[], upload_id: ?int, weeks: array<int, ?float>}
      */
     public function resolve(OkrObjective $objective, int $weekNumber): array
     {
@@ -64,8 +77,9 @@ class OkrWeeklyPlacementResolver
      * Versión en LOTE (Parte 14 del cierre) — "Seguimiento por gestor" de una
      * sucursal con N hijos: un número fijo de consultas, nunca una por gestor.
      *
-     * @param  Collection<int, OkrObjective>  $objectives
-     * @return array<int, array{weekly: ?float, cumulative: ?float, missing_weeks: int[], upload_id: ?int, weeks: array<int, ?float>}>
+     * @param  Collection<int, OkrObjective>  $objectives  Objectives a resolver.
+     * @param  int  $weekNumber  Semana a evaluar (1-based).
+     * @return array<int, array{weekly: ?float, cumulative: ?float, missing_weeks: int[], upload_id: ?int, weeks: array<int, ?float>}> Resultado por id de Objective.
      */
     public function resolveMany(Collection $objectives, int $weekNumber): array
     {
@@ -73,7 +87,19 @@ class OkrWeeklyPlacementResolver
     }
 
     /**
-     * @param  Collection<int, OkrObjective>  $objectives
+     * Núcleo del cálculo. Para cada Objective y cada semana 1..N toma su carga
+     * propia; si es un hijo individual sin carga propia usa los movimientos de
+     * la carga del padre filtrados por sus ids canónicos de empleado (si no hay
+     * filas suyas y el archivo no es de cobertura completa, la semana queda
+     * faltante, nunca 0). Los movimientos ya contados en semanas anteriores
+     * (misma huella) no se vuelven a sumar.
+     *
+     * Efecto: lecturas en okr_placement_uploads, okr_placement_movements y employees
+     * (número fijo de consultas para todo el lote).
+     *
+     * @param  Collection<int, OkrObjective>  $objectives  Objectives a resolver.
+     * @param  int  $weekNumber  Semana a evaluar; < 1 devuelve [].
+     * @return array<int, array<string, mixed>> Resultado por id de Objective (weekly, cumulative, missing_weeks, upload_id, weeks).
      */
     private function compute(Collection $objectives, int $weekNumber): array
     {
@@ -164,7 +190,15 @@ class OkrWeeklyPlacementResolver
         return $results;
     }
 
-    /** Suma los movimientos cuya huella no se contó en una semana anterior. */
+    /**
+     * Suma los movimientos cuya huella no se contó en una semana anterior.
+     *
+     * Efecto: agrega al acumulador $seen las huellas de esta semana.
+     *
+     * @param  array<int, object>  $movements  Filas de okr_placement_movements (amount, fingerprint...).
+     * @param  array<string, bool>  $seen  Huellas ya contadas (por referencia).
+     * @return float Suma de importes nuevos (2 decimales).
+     */
     private function sumUnseen(array $movements, array &$seen): float
     {
         $sum = 0.0;
@@ -182,8 +216,14 @@ class OkrWeeklyPlacementResolver
     }
 
     /**
-     * @param  int[]  $employeeIds
-     * @return array<int, int[]>
+     * Agrupa cada empleado con todos los Employee.id que comparten su
+     * normalized_name (identidad canónica: la misma persona con ids históricos).
+     * Sin nombre normalizado, el empleado queda solo con su propio id.
+     *
+     * Efecto: dos lecturas sobre employees.
+     *
+     * @param  int[]  $employeeIds  Ids de empleado de los OKR individuales.
+     * @return array<int, int[]> id de empleado => ids canónicos equivalentes.
      */
     private function canonicalIdsByEmployee(array $employeeIds): array
     {

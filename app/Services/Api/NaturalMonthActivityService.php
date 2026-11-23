@@ -12,6 +12,7 @@ use App\Services\EstadoResultados\Import\MovementPeriodAllocator;
 use App\Services\EstadoResultados\Support\Treatment;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -58,12 +59,22 @@ class NaturalMonthActivityService
     /** Margen para alcanzar filas de un periodo con fecha ligeramente fuera de su ventana. */
     private const NEIGHBOR_DAYS = 45;
 
+    /**
+     * @param  PeriodWeeklyActivityService  $slotActivity  Motor de reparto por cortes de fecha (colaboradores).
+     * @param  ClassificationService  $classifications  Tratamientos manuales vigentes de los movimientos bancarios del ER.
+     */
     public function __construct(
         private readonly PeriodWeeklyActivityService $slotActivity,
         private readonly ClassificationService $classifications,
     ) {}
 
-    /** @return array{0: CarbonImmutable, 1: CarbonImmutable} */
+    /**
+     * Primer y último día (a las 00:00) de un mes natural.
+     *
+     * @param  int  $year  Año.
+     * @param  int  $month  Mes (1-12).
+     * @return array{0: CarbonImmutable, 1: CarbonImmutable}
+     */
     public static function bounds(int $year, int $month): array
     {
         $from = CarbonImmutable::create($year, $month, 1)->startOfDay();
@@ -73,6 +84,11 @@ class NaturalMonthActivityService
 
     /**
      * Meses naturales con al menos un día cubierto por un periodo mensual.
+     *
+     * Recorre mes por mes desde el inicio del primer periodo mensual hasta el
+     * fin del último y calcula la cobertura de cada uno (días con un periodo
+     * que tiene datos). Devuelve los meses del más reciente al más antiguo,
+     * marcados complete o partial. Solo lectura, sin caché.
      *
      * @return list<array{month:string, date_from:string, date_to:string, days:int, covered_days:int, status:string}>
      */
@@ -109,6 +125,15 @@ class NaturalMonthActivityService
 
     /**
      * Resultado SIN filtrar por consumidor (el controlador aplica alcance e include).
+     *
+     * Toma como candidatos los periodos mensuales que se traslapan con el mes
+     * ampliado ±45 días (NEIGHBOR_DAYS) y cachea 15 min el resultado de
+     * compute() con una firma basada en id/updated_at de los periodos, sus
+     * radiografías y el último updated_at de los movimientos bancarios del mes.
+     *
+     * @param  int  $year  Año del mes natural.
+     * @param  int  $month  Mes natural (1-12).
+     * @return array<string, mixed> status (complete|partial|no_data), cobertura, totales, diario, sucursales, colaboradores, movimientos bancarios, auditoría y conciliación.
      */
     public function forMonth(int $year, int $month): array
     {
@@ -138,6 +163,26 @@ class NaturalMonthActivityService
         return Cache::remember($key, self::CACHE_TTL, fn () => $this->compute($from, $to, $candidates, $summaries));
     }
 
+    /**
+     * Cálculo sin caché del mes natural.
+     *
+     * Lee de los periodos candidatos (y de sus semanas componentes) solo las
+     * filas con fecha dentro del mes: colocación por fecha de operación,
+     * recuperación por fecha de pago (regla de exclusión del reporte) y gastos
+     * ERP por fecha del gasto (monto registrado, sin reglas OPEX). Acumula por
+     * sucursal del movimiento, sin sucursal, por día y por periodo de origen;
+     * registra como auditoría las filas cuya fecha cae fuera de la ventana de
+     * su propio periodo (ya incluidas en los totales). Agrega colaboradores,
+     * movimientos bancarios y la conciliación sucursales/diario/colaboradores.
+     *
+     * Solo lectura sobre BD.
+     *
+     * @param  CarbonImmutable  $from  Primer día del mes.
+     * @param  CarbonImmutable  $to  Último día del mes.
+     * @param  Collection  $candidates  Periodos mensuales candidatos (orden cronológico).
+     * @param  Collection  $summaries  PeriodSummary indexadas por period_id.
+     * @return array<string, mixed>
+     */
     private function compute(CarbonImmutable $from, CarbonImmutable $to, $candidates, $summaries): array
     {
         $fromS = $from->toDateString();
@@ -349,6 +394,23 @@ class NaturalMonthActivityService
 
     // ── Colaboradores ─────────────────────────────────────────────────────
 
+    /**
+     * Colocación/recuperación del mes natural por colaborador.
+     *
+     * Para cada periodo candidato que se traslapa con el mes o tiene datos,
+     * ejecuta el motor de actividad con un único corte = mes natural
+     * (forPeriodSlots, cacheado 12 h) y suma los resultados por colaborador
+     * (id canónico) y por no identificado (nombre + motivo). Omite filas en
+     * cero. La sucursal del colaborador queda la del último periodo que aporta.
+     * Periodos con datos y traslape pero sin radiografía vigente se reportan
+     * en la lista de faltantes.
+     *
+     * @param  Collection  $candidates  Periodos mensuales candidatos.
+     * @param  CarbonImmutable  $from  Primer día del mes.
+     * @param  CarbonImmutable  $to  Último día del mes.
+     * @param  array  $withData  IDs de periodos con al menos una fila de datos.
+     * @return array{0: list<array>, 1: list<array>, 2: list<array>} [colaboradores, no identificados, periodos sin radiografía].
+     */
     private function employees($candidates, CarbonImmutable $from, CarbonImmutable $to, array $withData): array
     {
         $slot = [['id' => null, 'start_date' => $from->toDateString(), 'end_date' => $to->toDateString()]];
@@ -421,6 +483,20 @@ class NaturalMonthActivityService
 
     // ── Movimientos bancarios del Estado de Resultados ──────────────────
 
+    /**
+     * Resumen del flujo bancario del mes (movimientos del Estado de
+     * Resultados por fecha del movimiento).
+     *
+     * Solo considera cargas activas, excluye las copias marcadas «duplicado»
+     * y cuenta cada huella (fingerprint) una sola vez. El tratamiento de cada
+     * movimiento es el manual vigente del periodo si existe; si no, el
+     * automático cuando ya fue procesado; en otro caso PENDIENTE. Agrupa por
+     * tratamiento y por sucursal.
+     *
+     * @param  string  $from  Primer día del mes (Y-m-d).
+     * @param  string  $to  Último día del mes (Y-m-d).
+     * @return array<string, mixed>|null Resumen, o null si la tabla del ER no existe.
+     */
     private function bankMovements(string $from, string $to): ?array
     {
         if (! Schema::hasTable('estado_resultados_movements')) {
@@ -504,7 +580,14 @@ class NaturalMonthActivityService
 
     // ── Cobertura ─────────────────────────────────────────────────────────
 
-    /** @return list<int> ids de periodos mensuales con al menos una fila de datos. */
+    /**
+     * Filtra los periodos que tienen al menos una fila en fact_placements,
+     * fact_recoveries o fact_expenses (solo busca por los ids recibidos; no
+     * incluye sus semanas componentes).
+     *
+     * @param  array  $periodIds  IDs de periodos mensuales.
+     * @return list<int> ids de periodos mensuales con al menos una fila de datos.
+     */
     private function periodIdsWithData(array $periodIds): array
     {
         if ($periodIds === []) {
@@ -520,6 +603,17 @@ class NaturalMonthActivityService
         return array_keys($ids);
     }
 
+    /**
+     * Cobertura día por día del mes: un día está cubierto si cae dentro de un
+     * periodo (el primero que lo contenga) que tiene datos. Devuelve también
+     * los rangos sin cobertura y los periodos que existen pero sin datos.
+     *
+     * @param  Collection  $periods  Periodos mensuales a considerar.
+     * @param  CarbonImmutable  $from  Primer día del mes.
+     * @param  CarbonImmutable  $to  Último día del mes.
+     * @param  array  $withData  IDs de periodos con datos.
+     * @return array<string, mixed> month, fechas, days, covered_days, missing_ranges, periods_without_data.
+     */
     private function coverage($periods, CarbonImmutable $from, CarbonImmutable $to, array $withData): array
     {
         $days = (int) $from->diffInDays($to) + 1;
@@ -560,6 +654,14 @@ class NaturalMonthActivityService
         ];
     }
 
+    /**
+     * Indica si el periodo (con fechas definidas) se traslapa con el rango.
+     *
+     * @param  Period  $p  Periodo.
+     * @param  CarbonImmutable  $from  Inicio del rango.
+     * @param  CarbonImmutable  $to  Fin del rango.
+     * @return bool true si hay al menos un día en común.
+     */
     private function overlaps(Period $p, CarbonImmutable $from, CarbonImmutable $to): bool
     {
         return $p->start_date && $p->end_date
@@ -567,6 +669,14 @@ class NaturalMonthActivityService
             && $p->end_date->toDateString() >= $from->toDateString();
     }
 
+    /**
+     * Tramo de días en común entre el periodo y el rango.
+     *
+     * @param  Period  $p  Periodo.
+     * @param  CarbonImmutable  $from  Inicio del rango.
+     * @param  CarbonImmutable  $to  Fin del rango.
+     * @return array{from: string, to: string, days: int}|null Tramo, o null si no se traslapan.
+     */
     private function overlap(Period $p, CarbonImmutable $from, CarbonImmutable $to): ?array
     {
         if (! $this->overlaps($p, $from, $to)) {
@@ -578,6 +688,14 @@ class NaturalMonthActivityService
         return ['from' => $a, 'to' => $b, 'days' => (int) CarbonImmutable::parse($a)->diffInDays(CarbonImmutable::parse($b)) + 1];
     }
 
+    /**
+     * Indica si una fecha cae fuera de la ventana [inicio, fin] de su periodo
+     * de carga (solo para auditoría). Sin ventana o sin fecha → false.
+     *
+     * @param  array|null  $window  [start_date, end_date] en Y-m-d.
+     * @param  string|null  $date  Fecha del movimiento.
+     * @return bool true si la fecha está fuera de la ventana.
+     */
     private function outside(?array $window, ?string $date): bool
     {
         if ($window === null || $window[0] === null || $window[1] === null || $date === null) {
@@ -590,11 +708,24 @@ class NaturalMonthActivityService
 
     // ── Acumuladores ──────────────────────────────────────────────────────
 
+    /**
+     * Acumulador vacío de colocación, recuperación y gastos ERP.
+     *
+     * @return array<string, mixed>
+     */
     private function emptyAcc(): array
     {
         return ['placement' => 0.0, 'operations' => 0, 'recovery' => 0.0, 'erp_expenses' => 0.0, 'erp_paid' => 0.0, 'erp_rows' => 0, 'erp_by_category' => []];
     }
 
+    /**
+     * Convierte un acumulador en la forma pública (montos redondeados a 2
+     * decimales).
+     *
+     * @param  array  $acc  Acumulador (ver emptyAcc()).
+     * @param  bool  $withCategories  Si se incluye el desglose de gastos ERP por categoría (ordenado alfabéticamente).
+     * @return array{placement: array, recovery: array, erp_expenses: array}
+     */
     private function finalize(array $acc, bool $withCategories = true): array
     {
         $erp = [
@@ -615,11 +746,23 @@ class NaturalMonthActivityService
         ];
     }
 
+    /**
+     * Bucket en cero de colocación/recuperación por colaborador.
+     *
+     * @return array{placement: array{amount: float, operations: int}, recovery: array{total: float}}
+     */
     private function zeroBucket(): array
     {
         return ['placement' => ['amount' => 0.0, 'operations' => 0], 'recovery' => ['total' => 0.0]];
     }
 
+    /**
+     * Suma dos buckets de colocación/recuperación (redondeando montos).
+     *
+     * @param  array  $a  Bucket acumulado.
+     * @param  array  $b  Bucket a sumar.
+     * @return array Bucket resultante.
+     */
     private function addBucket(array $a, array $b): array
     {
         return [

@@ -82,6 +82,9 @@ final class V12Corrida
     /** @var array<string, array<string,mixed>> incidencias de auditoría (no alteran cifras) */
     public array $incidencias = [];
 
+    /**
+     * Índice de la foto de cierre (días entre el domingo base y el corte).
+     */
     public function numeroFotoFinal(): int
     {
         return $this->corte - $this->domingo;
@@ -103,6 +106,15 @@ final class V12Corrida
         return '';
     }
 
+    /**
+     * Registra una incidencia de auditoría una sola vez por código + contrato (+ referencia).
+     * No altera cifras.
+     *
+     * @param  string  $codigo  código de la incidencia
+     * @param  string  $contrato  contrato ('' si no aplica)
+     * @param  string  $descripcion  descripción en español
+     * @param  array  $extra  referencia, fecha, importe
+     */
     public function incidencia(string $codigo, string $contrato, string $descripcion, array $extra = []): void
     {
         $id = $codigo.'|'.$contrato.(isset($extra['referencia']) ? '|'.$extra['referencia'] : '');
@@ -124,6 +136,11 @@ final class V12Corrida
         return true;
     }
 
+    /**
+     * ¿El historial de ingresos trae todas esas columnas?
+     *
+     * @param  string  ...$campos  campos requeridos
+     */
     public function tieneHist(string ...$campos): bool
     {
         foreach ($campos as $c) {

@@ -8,40 +8,61 @@ use App\Services\EmployeeNameCanonicalizer;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-nomina` — diagnóstico de nómina NOI: totales por tipo de concepto y por
+ * código (P001, P002, D004…), por fuente de datos, empleados asignados por sucursal, montos sin
+ * asignar, top de empleados sin asignar y referencia vs calculado.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-nomina 21
+ */
 class DebugNominaCommand extends Command
 {
-    protected $signature   = 'reportes:debug-nomina {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-nomina {period_id : ID del periodo mensual}';
+
     protected $description = 'Diagnóstico de nómina NOI: totales por tipo, por fuente, asignación por sucursal, sin asignar.';
 
+    /**
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Normalizador canónico de nombres.
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas y sucursales operativas.
+     */
     public function __construct(
         private readonly EmployeeNameCanonicalizer $canonicalizer,
-        private readonly BranchResolverService     $resolver,
+        private readonly BranchResolverService $resolver,
     ) {
         parent::__construct();
     }
 
+    /**
+     * Resuelve los periodos de datos e imprime las secciones 1–6 del diagnóstico.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
 
         $this->line('');
-        $this->info("══════════════════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════════════════');
         $this->info("  DEBUG NÓMINA — {$period->label} (ID #{$periodId})");
-        $this->info("══════════════════════════════════════════════════════════════");
-        $this->line("  Data IDs: [" . implode(', ', $dataIds) . "]");
+        $this->info('══════════════════════════════════════════════════════════════');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── 1. Totales por concept_type ───────────────────────────────
@@ -55,8 +76,8 @@ class DebugNominaCommand extends Command
 
         $grandTotal = 0;
         foreach ($byType as $row) {
-            $this->line(sprintf('  %-28s  %3d emps  $%s', $row->tipo, $row->empleados, number_format((float)$row->total, 2)));
-            $grandTotal += (float)$row->total;
+            $this->line(sprintf('  %-28s  %3d emps  $%s', $row->tipo, $row->empleados, number_format((float) $row->total, 2)));
+            $grandTotal += (float) $row->total;
         }
         $this->line(sprintf('  %-28s           $%s', 'TOTAL', number_format($grandTotal, 2)));
         $this->line('');
@@ -65,25 +86,25 @@ class DebugNominaCommand extends Command
         $this->info('── 1b. Totales por concepto NOI (top 30 por monto absoluto) ──');
         $byConcept = DB::table('fact_noi_movements')
             ->whereIn('period_id', $dataIds)
-            ->selectRaw("concept, concept_type, SUM(amount) as total, COUNT(DISTINCT employee_id) as empleados")
+            ->selectRaw('concept, concept_type, SUM(amount) as total, COUNT(DISTINCT employee_id) as empleados')
             ->groupBy('concept', 'concept_type')
             ->orderByRaw('ABS(SUM(amount)) DESC')
             ->limit(30)
             ->get();
 
-        $totPercep  = 0.0;
-        $totDeducc  = 0.0;
+        $totPercep = 0.0;
+        $totDeducc = 0.0;
         foreach ($byConcept as $r) {
             $isDed = str_starts_with(strtoupper(trim($r->concept ?? '')), 'D');
             $this->line(sprintf('  %-40s %s  emps=%d  $%s',
                 mb_substr($r->concept ?? '—', 0, 40),
                 str_pad($r->concept_type ?? '—', 12),
                 $r->empleados,
-                number_format((float)$r->total, 2)));
+                number_format((float) $r->total, 2)));
             if ($isDed) {
-                $totDeducc += (float)$r->total;
+                $totDeducc += (float) $r->total;
             } else {
-                $totPercep += (float)$r->total;
+                $totPercep += (float) $r->total;
             }
         }
         $this->line(sprintf('  Percepciones (P###) approx: $%s', number_format($totPercep, 2)));
@@ -103,7 +124,7 @@ class DebugNominaCommand extends Command
             ->get();
 
         foreach ($bySource as $row) {
-            $this->line(sprintf('  %-32s  %3d emps  $%s', $row->fuente, $row->empleados, number_format((float)$row->total, 2)));
+            $this->line(sprintf('  %-32s  %3d emps  $%s', $row->fuente, $row->empleados, number_format((float) $row->total, 2)));
         }
         $this->line('');
 
@@ -112,7 +133,7 @@ class DebugNominaCommand extends Command
         $byBranch = DB::table('fact_noi_movements as n')
             ->join('employee_branch_assignments as eba', function ($j) use ($dataIds) {
                 $j->on('eba.employee_id', '=', 'n.employee_id')
-                  ->whereIn('eba.period_id', $dataIds);
+                    ->whereIn('eba.period_id', $dataIds);
             })
             ->join('branches as b', 'eba.branch_id', '=', 'b.id')
             ->whereIn('n.period_id', $dataIds)
@@ -123,8 +144,8 @@ class DebugNominaCommand extends Command
 
         $totalAsignado = 0;
         foreach ($byBranch as $row) {
-            $this->line(sprintf('  %-30s  %3d emps  $%s', $row->sucursal, $row->empleados, number_format((float)$row->total, 2)));
-            $totalAsignado += (float)$row->total;
+            $this->line(sprintf('  %-30s  %3d emps  $%s', $row->sucursal, $row->empleados, number_format((float) $row->total, 2)));
+            $totalAsignado += (float) $row->total;
         }
         $this->line(sprintf('  %-30s           $%s', 'TOTAL ASIGNADO', number_format($totalAsignado, 2)));
         $this->line('');
@@ -142,10 +163,10 @@ class DebugNominaCommand extends Command
             ->selectRaw('SUM(amount) as total, COUNT(DISTINCT employee_id) as empleados')
             ->first();
 
-        $sinAsignadoTotal = (float)($noiTotal?->total ?? 0) - $totalAsignado;
+        $sinAsignadoTotal = (float) ($noiTotal?->total ?? 0) - $totalAsignado;
 
         $this->info('── 4. Resumen asignación ──');
-        $this->line(sprintf('  Total NOI            : %d emps  $%s', (int)($noiTotal?->empleados ?? 0), number_format((float)($noiTotal?->total ?? 0), 2)));
+        $this->line(sprintf('  Total NOI            : %d emps  $%s', (int) ($noiTotal?->empleados ?? 0), number_format((float) ($noiTotal?->total ?? 0), 2)));
         $this->line(sprintf('  Asignados (con EBA)  : %d emps  $%s', $byBranch->sum('empleados'), number_format($totalAsignado, 2)));
         $this->line(sprintf('  SIN ASIGNAR          :          $%s', number_format($sinAsignadoTotal, 2)));
         $this->line('');
@@ -160,7 +181,7 @@ class DebugNominaCommand extends Command
 
         $sinEbaIds = array_values(array_diff($noiAllIds, $ebaIds));
 
-        if (!empty($sinEbaIds)) {
+        if (! empty($sinEbaIds)) {
             $sinEba = DB::table('fact_noi_movements as n')
                 ->join('employees as e', 'n.employee_id', '=', 'e.id')
                 ->whereIn('n.period_id', $dataIds)
@@ -177,7 +198,7 @@ class DebugNominaCommand extends Command
                 $sinEba->map(fn ($r) => [
                     $r->employee_code ?? '—',
                     mb_substr($r->full_name, 0, 45),
-                    '$' . number_format((float)$r->total, 2),
+                    '$'.number_format((float) $r->total, 2),
                 ])->all()
             );
             $this->line('');
@@ -213,14 +234,14 @@ class DebugNominaCommand extends Command
             ->sum('amount');
 
         $targets = [
-            'Nómina (P001)'    => [1_075_509.70, $nomina],
+            'Nómina (P001)' => [1_075_509.70, $nomina],
             'Comisiones (P002)' => [716_885.13, $comisiones],
-            'Bonos (P1xx)'     => [291_655.85, $bonos],
+            'Bonos (P1xx)' => [291_655.85, $bonos],
         ];
 
         foreach ($targets as $label => [$target, $calc]) {
             $diff = $calc - $target;
-            $ok   = abs($diff) < 1.0 ? '<fg=green>✓</>' : '<fg=yellow>⚠</>';
+            $ok = abs($diff) < 1.0 ? '<fg=green>✓</>' : '<fg=yellow>⚠</>';
             $this->line(sprintf('  %s %-22s calculado=$%-14s target=$%-14s dif=%s',
                 $ok, $label,
                 number_format($calc, 2),
@@ -237,7 +258,7 @@ class DebugNominaCommand extends Command
         $this->line('  Total manual: $1,928,818.31 (NO FISCAL=$1,498,877.31 + FISCAL=$429,941.00)');
         $this->line('');
 
-        $this->info("══════════════════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════════════════');
         $this->line('');
 
         return self::SUCCESS;

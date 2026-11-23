@@ -44,7 +44,22 @@ final class ErExcelCharts
     }
 
     /**
+     * Agrega una gráfica nativa de Excel a la hoja con las series indicadas (las categorías se
+     * leen de $catCol en las filas $r1..$r2) y la devuelve.
+     *
+     * @param  Worksheet  $ws  hoja destino
+     * @param  string  $type  tipo de gráfica (DataSeries::TYPE_*)
+     * @param  string  $title  título
+     * @param  string  $catCol  columna de categorías
+     * @param  int  $headerRow  fila con el nombre de cada serie
+     * @param  int  $r1  primera fila de datos
+     * @param  int  $r2  última fila de datos
      * @param  list<array{col:string,color:string,transparent?:bool}>  $series  la fila $headerRow tiene el nombre de cada serie
+     * @param  string  $topLeft  celda superior izquierda donde se ancla
+     * @param  string  $bottomRight  celda inferior derecha
+     * @param  string  $axisFormat  formato numérico del eje
+     * @param  string  $grouping  agrupación (clustered/stacked)
+     * @param  bool  $horizontal  barras horizontales
      */
     public static function add(Worksheet $ws, string $type, string $title, string $catCol, int $headerRow, int $r1, int $r2, array $series, string $topLeft, string $bottomRight, string $axisFormat = '"$"#,##0', string $grouping = DataSeries::GROUPING_CLUSTERED, bool $horizontal = false): Chart
     {

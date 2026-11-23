@@ -34,6 +34,10 @@ use Illuminate\Support\Facades\Storage;
  *
  * Además clasifica el estado de control de cada item del dataset (completado, pendiente,
  * repetido, fuera de este periodo) y las señales de «posible concepto mal asignado».
+ *
+ * Lo usan EstadoResultadosDatasetBuilder (bloque de Validación del dataset) y
+ * EstadoResultadosControlController (endpoints de control de movimientos). Sólo lee BD y, para
+ * «no guardados», vuelve a leer el archivo original del disco; nunca modifica cifras.
  */
 class MovementControlService
 {
@@ -48,6 +52,7 @@ class MovementControlService
 
     public const NO_GUARDADO = 'no_guardado';
 
+    /** Etiquetas en español de cada estado de control. */
     public const STATUS_LABELS = [
         self::COMPLETADO => 'Guardado y completado',
         self::PENDIENTE => 'Pendiente de clasificar',
@@ -56,6 +61,7 @@ class MovementControlService
         self::NO_GUARDADO => 'Leído del archivo y no guardado',
     ];
 
+    /** Explicación en español de cada destino («placement») que asigna el reparto por fecha. */
     public const PLACEMENT_LABELS = [
         A::PERIODO => 'Entra en el periodo de su fecha',
         A::DUPLICADO => 'Repetido: otro archivo ya trae el mismo movimiento',
@@ -71,8 +77,10 @@ class MovementControlService
         'poliza_puente', 'retenciones_terceros', 'servicio_deuda', 'nomina_sucursal_noi',
     ];
 
+    /** Tope de referencias por validación (evita respuestas gigantes). */
     private const MAX_REFS = 5000;
 
+    /** @param  ClassificationService  $classifications  clasificaciones manuales vigentes por periodo */
     public function __construct(private readonly ClassificationService $classifications) {}
 
     // ───────────────────────────────────────────────────────────────────
@@ -83,6 +91,11 @@ class MovementControlService
      * Cargas vigentes que aportan al periodo (subidas en él o con movimientos repartidos a él)
      * y la partición completa de cada una.
      *
+     * Por archivo: leído (totales de la carga), guardado, aquí, en otros periodos, parte del
+     * periodo (leído − otros periodos) y NO guardado (leído − guardado; si ≠ 0 se agrega como
+     * parte visible). Para los repetidos indica contra qué archivo ganador se descartaron.
+     *
+     * @param  Period  $period  periodo cuya conciliación archivo ↔ importado se arma
      * @return array{uploads: list<array<string,mixed>>, totals: array<string,mixed>}
      */
     public function fileControl(Period $period): array
@@ -206,7 +219,13 @@ class MovementControlService
         ];
     }
 
-    /** @return list<int> */
+    /**
+     * Ids de cargas vigentes (scope active) que aportan al periodo: las subidas en él y las de
+     * otros periodos con al menos un movimiento repartido a él. Ordenados ascendentemente.
+     *
+     * @param  Period  $period  periodo
+     * @return list<int>
+     */
     public function contributingUploadIds(Period $period): array
     {
         $active = EstadoResultadosUpload::query()->active();
@@ -222,7 +241,10 @@ class MovementControlService
     /**
      * Para cada movimiento «duplicado», el movimiento vigente (ganador) con la misma huella.
      *
-     * @param  list<int>  $movementIds
+     * Ganador = primer movimiento (menor id) con la misma huella, dentro de periodo, dedup_key 0 y
+     * de una carga no reemplazada. Consulta en lotes de 500 huellas. Sin columna placement ⇒ [].
+     *
+     * @param  list<int>  $movementIds  ids de movimientos marcados como duplicado
      * @return array<int, array{upload_id:int, file:?string, source_row:int, period_id:int, account_slot:?string, date:?string}>
      */
     public function winnersFor(array $movementIds): array
@@ -257,7 +279,12 @@ class MovementControlService
         return $out;
     }
 
-    /** Etiqueta del periodo de cada id (para los datos del ganador de un duplicado). */
+    /**
+     * Etiqueta del periodo de cada id (para los datos del ganador de un duplicado).
+     *
+     * @param  array  $ids  ids de periodo (se ignoran vacíos y repetidos)
+     * @return array<int, string> id ⇒ etiqueta
+     */
     public function periodLabels(array $ids): array
     {
         $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
@@ -270,6 +297,10 @@ class MovementControlService
     // ───────────────────────────────────────────────────────────────────
 
     /**
+     * Estado de control de un item del dataset y su explicación en español. Prioridad:
+     * duplicado (por archivo o por UUID) → fuera de periodo → pendiente de clasificar →
+     * completado (conciliado / reconocido / excluido, indicando si fue manual o por regla).
+     *
      * @param  array<string,mixed>  $i  item interno del dataset (con impact/amounts)
      * @return array{status:string, label:string, sub:?string, explain:string, flags:list<array{key:string,label:string,severity:string}>}
      */
@@ -312,7 +343,16 @@ class MovementControlService
         return ['status' => $status, 'label' => self::STATUS_LABELS[$status], 'sub' => $sub, 'explain' => trim($explain), 'flags' => $flags];
     }
 
-    /** Señales de «posible concepto mal asignado» (no cambian ninguna cifra: sólo piden revisión). */
+    /**
+     * Señales de «posible concepto mal asignado» (no cambian ninguna cifra: sólo piden revisión).
+     *
+     * Señales: conciliado con ERP y reclasificado a mano (alta), sugerencia distinta (media),
+     * manual contra la regla automática (media), regla sólo por palabras (baja) y movimiento que
+     * suma sin sucursal reconocida (media). Items fuera de periodo o pendientes no llevan señales.
+     *
+     * @param  array<string,mixed>  $i  item interno del dataset
+     * @return list<array{key:string, severity:string, label:string}>
+     */
     private function flags(array $i): array
     {
         $flags = [];
@@ -352,6 +392,11 @@ class MovementControlService
     /**
      * Movimientos que explican una validación fallida. `files` = archivos con filas no guardadas.
      *
+     * @param  string  $key  clave de la validación (particion_bancos, huella_unica, particion_total…)
+     * @param  array  $items  todos los items del dataset
+     * @param  array  $scoped  items del alcance actual
+     * @param  array  $fileControl  resultado de fileControl()
+     * @param  string  $linkedApplied  Σ aplicado en vínculos ERP (sólo para el mensaje de conciliados)
      * @return array{items: list<array{fingerprint:?string, amount:string}>, files: list<array<string,mixed>>, note: ?string}
      */
     public function itemsForCheck(string $key, array $items, array $scoped, array $fileControl, string $linkedApplied = '0.00'): array
@@ -403,7 +448,9 @@ class MovementControlService
      * Referencias compactas a items (el front las resuelve contra dataset.movements; el redactor
      * anonimiza las de movimientos restringidos porque llevan `fingerprint`).
      *
-     * @return list<array{fingerprint:?string, amount:string}>
+     * @param  iterable  $items  items del dataset
+     * @param  callable|null  $amount  importe a mostrar por item (por defecto cargo + abono)
+     * @return list<array{fingerprint:?string, amount:string}> como máximo MAX_REFS referencias
      */
     public function refs(iterable $items, ?callable $amount = null): array
     {
@@ -426,6 +473,16 @@ class MovementControlService
      * Filas de los archivos que aportan al periodo y que el reparto dejó en OTRO periodo
      * (van a otro periodo, repetidas allá, sin periodo, cerrado/existente).
      *
+     * Paginado. El tratamiento mostrado es el manual vigente del periodo destino o el automático
+     * si ya se procesó (si no, «pendiente»). Aplica redacción de nómina/DG por fila.
+     *
+     * @param  Period  $period  periodo de referencia
+     * @param  int|null  $uploadId  limitar a una carga (debe aportar al periodo)
+     * @param  string|null  $placement  filtro: 'otro_periodo' o un placement del reparto
+     * @param  int  $page  página (1..n)
+     * @param  int  $perPage  filas por página
+     * @param  bool  $canNomina  el usuario puede ver detalle de nómina
+     * @param  bool  $canDg  el usuario puede ver detalle de Dirección General
      * @return array{data: list<array<string,mixed>>, total:int, page:int, per_page:int, last_page:int}
      */
     public function outsideRows(Period $period, ?int $uploadId, ?string $placement, int $page, int $perPage, bool $canNomina, bool $canDg): array
@@ -519,6 +576,11 @@ class MovementControlService
      * Filas leídas del archivo que NO quedaron guardadas: se vuelve a leer el archivo original
      * y se comparan las filas de origen contra los movimientos guardados de la carga.
      *
+     * Lee el archivo del disco EstadoResultadosUploadService::DISK con BankStatementParser; si
+     * falta o no se puede leer, el archivo se reporta con un mensaje (no lanza excepción).
+     *
+     * @param  Period  $period  periodo
+     * @param  int|null  $uploadId  limitar a una carga
      * @return array{files: list<array<string,mixed>>, data: list<array<string,mixed>>}
      */
     public function notSavedRows(Period $period, ?int $uploadId): array
@@ -577,6 +639,14 @@ class MovementControlService
 
     // ───────────────────────────────────────────────────────────────────
 
+    /**
+     * Tipo de parte de la partición: 'entra' (aquí), 'otro_periodo', el placement de exclusión
+     * (duplicado, sin_periodo, periodo_cerrado, periodo_existente) o 'fuera_periodo' (legado).
+     *
+     * @param  string  $placement  destino asignado por el reparto
+     * @param  bool  $in  el movimiento suma en su periodo
+     * @param  bool  $here  su periodo es el consultado
+     */
     private function partKind(string $placement, bool $in, bool $here): string
     {
         if ($in) {
@@ -589,6 +659,12 @@ class MovementControlService
         };
     }
 
+    /**
+     * Etiqueta en español de una parte de la partición.
+     *
+     * @param  string  $kind  resultado de partKind()
+     * @param  string|null  $periodLabel  periodo destino (para «Va a …»)
+     */
     private function partLabel(string $kind, ?string $periodLabel): string
     {
         return match ($kind) {
@@ -602,6 +678,15 @@ class MovementControlService
         };
     }
 
+    /**
+     * Explicación en español de por qué una fila de un archivo del periodo no suma aquí.
+     *
+     * @param  string  $placement  destino del reparto
+     * @param  bool  $in  suma en otro periodo
+     * @param  string|null  $periodLabel  periodo donde quedó guardada
+     * @param  array|null  $w  ganador si es duplicado (winnersFor)
+     * @param  array<int, string>  $labels  etiquetas de periodo por id
+     */
     private function outsideExplain(string $placement, bool $in, ?string $periodLabel, ?array $w, array $labels): string
     {
         if ($in) {
@@ -614,6 +699,15 @@ class MovementControlService
         return (self::PLACEMENT_LABELS[$placement] ?? 'Fuera de periodo').'. Se conserva en '.($periodLabel ?? 'el periodo donde se subió').' sin sumar.';
     }
 
+    /**
+     * Redacta una fila según permisos: siempre quita el override; sin ver_nomina oculta el
+     * empleado NOI; si la fila es de nómina/DG y el usuario no tiene permiso, borra concepto,
+     * referencias, folio, UUID, huella, etc. y la marca 'redacted' (los importes se conservan).
+     *
+     * @param  array  $row  fila pública
+     * @param  bool  $canNomina  permiso ver_nomina
+     * @param  bool  $canDg  permiso ver_dg
+     */
     private function redactRow(array $row, bool $canNomina, bool $canDg): array
     {
         $hidden = (! $canNomina && EstadoResultadosRedactor::isPayroll($row)) || (! $canDg && EstadoResultadosRedactor::isDg($row));
@@ -631,11 +725,22 @@ class MovementControlService
         return $row;
     }
 
+    /**
+     * Convierte un acumulador {count, cargos, abonos} a cadenas con 2 decimales y su total.
+     *
+     * @param  array  $t  acumulador con BigDecimal o importes
+     * @return array{count:int, cargos:string, abonos:string, total:string}
+     */
     private function triple(array $t): array
     {
         return ['count' => (int) $t['count'], 'cargos' => Money::str2($t['cargos']), 'abonos' => Money::str2($t['abonos']), 'total' => Money::str2(Money::of($t['cargos'])->plus(Money::of($t['abonos'])))];
     }
 
+    /**
+     * Totales en cero cuando ningún archivo aporta al periodo.
+     *
+     * @return array<string, mixed>
+     */
     private function emptyTotals(): array
     {
         return ['files' => 0, 'own_files' => 0, 'period_share' => ['count' => 0, 'cargos' => '0.00', 'abonos' => '0.00', 'total' => '0.00'],

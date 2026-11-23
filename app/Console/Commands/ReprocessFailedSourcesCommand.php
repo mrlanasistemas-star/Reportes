@@ -8,6 +8,17 @@ use App\Models\ReportUpload;
 use App\Services\ReportAnalysisService;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:reprocess-failed-sources` — reprocesa únicamente los uploads vigentes de NOI
+ * Nómina, NOI Fiscal y Rotación que estén en estado `failed`, e IMSS solo si está en error o si
+ * figura `processed` pero su auditoría es inconsistente (suma en cero o registros sin sucursal).
+ * No toca Cobranza, Cartera, Colocación ni Gastos.
+ *
+ * Escribe en BD: SÍ (reimporta las fuentes en error; para IMSS borra antes sus gastos).
+ *
+ * Ejemplo:
+ *   php artisan reportes:reprocess-failed-sources 21
+ */
 class ReprocessFailedSourcesCommand extends Command
 {
     protected $signature = 'reportes:reprocess-failed-sources
@@ -17,13 +28,20 @@ class ReprocessFailedSourcesCommand extends Command
 
     private const TARGET_CODES = ['noi_nomina', 'noi_nomina_fiscal', 'rotacion'];
 
+    /**
+     * Revisa cada fuente objetivo y reimporta las que lo requieren, informando el resultado.
+     *
+     * @param  ReportAnalysisService  $analysisService  Importador de archivos subidos.
+     * @return int SUCCESS al terminar (los errores de importación se reportan sin cambiar el código); FAILURE si el periodo no existe.
+     */
     public function handle(ReportAnalysisService $analysisService): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -37,14 +55,16 @@ class ReprocessFailedSourcesCommand extends Command
         foreach (self::TARGET_CODES as $code) {
             $upload = $this->latestUpload($periodId, $code);
 
-            if (!$upload) {
+            if (! $upload) {
                 $this->line("  [{$code}] sin archivo cargado — omitido.");
+
                 continue;
             }
 
             $status = (string) ($upload->status?->value ?? $upload->status);
             if ($status !== 'failed') {
                 $this->line("  [{$code}] status={$status} — no requiere reproceso.");
+
                 continue;
             }
 
@@ -55,7 +75,7 @@ class ReprocessFailedSourcesCommand extends Command
                 $run = $analysisService->analyze($upload);
                 $this->info("    → OK. Insertadas: {$run->rows_inserted}, omitidas: {$run->rows_skipped}, errores: {$run->rows_with_errors}.");
             } catch (\Throwable $e) {
-                $this->error('    → Error: ' . mb_strimwidth($e->getMessage(), 0, 300));
+                $this->error('    → Error: '.mb_strimwidth($e->getMessage(), 0, 300));
             }
         }
 
@@ -63,22 +83,22 @@ class ReprocessFailedSourcesCommand extends Command
         // auditoría resulta inconsistente (sin facts o suma en cero).
         $imssUpload = $this->latestUpload($periodId, 'imss');
 
-        if (!$imssUpload) {
+        if (! $imssUpload) {
             $this->line('  [imss] sin archivo cargado — omitido.');
         } else {
-            $imssStatus     = (string) ($imssUpload->status?->value ?? $imssUpload->status);
-            $imssQuery      = Expense::query()->where('period_id', $periodId)->where('category', 'IMSS');
-            $imssSum        = (float) (clone $imssQuery)->sum('amount');
-            $hasUnassigned  = (clone $imssQuery)->whereNull('branch_id')->exists();
+            $imssStatus = (string) ($imssUpload->status?->value ?? $imssUpload->status);
+            $imssQuery = Expense::query()->where('period_id', $periodId)->where('category', 'IMSS');
+            $imssSum = (float) (clone $imssQuery)->sum('amount');
+            $hasUnassigned = (clone $imssQuery)->whereNull('branch_id')->exists();
 
             $inconsistent = $imssStatus === 'failed'
                 || ($imssStatus === 'processed' && ($imssSum <= 0 || $hasUnassigned));
 
-            if (!$inconsistent) {
-                $this->line("  [imss] status={$imssStatus}, suma=\$" . number_format($imssSum, 2) . ' — consistente, no requiere reproceso.');
+            if (! $inconsistent) {
+                $this->line("  [imss] status={$imssStatus}, suma=\$".number_format($imssSum, 2).' — consistente, no requiere reproceso.');
             } else {
                 $anyReprocessed = true;
-                $this->warn("  [imss] status={$imssStatus}, suma=\$" . number_format($imssSum, 2) . " — inconsistente, reprocesando upload #{$imssUpload->id}…");
+                $this->warn("  [imss] status={$imssStatus}, suma=\$".number_format($imssSum, 2)." — inconsistente, reprocesando upload #{$imssUpload->id}…");
 
                 Expense::query()->where('period_id', $periodId)->where('category', 'IMSS')->delete();
 
@@ -86,13 +106,13 @@ class ReprocessFailedSourcesCommand extends Command
                     $run = $analysisService->analyze($imssUpload);
                     $this->info("    → OK. Insertadas: {$run->rows_inserted}, omitidas: {$run->rows_skipped}, errores: {$run->rows_with_errors}.");
                 } catch (\Throwable $e) {
-                    $this->error('    → Error: ' . mb_strimwidth($e->getMessage(), 0, 300));
+                    $this->error('    → Error: '.mb_strimwidth($e->getMessage(), 0, 300));
                 }
             }
         }
 
         $this->line('');
-        if (!$anyReprocessed) {
+        if (! $anyReprocessed) {
             $this->info('  No había fuentes en error. Nada que reprocesar.');
         } else {
             $this->info('  Reproceso finalizado.');
@@ -101,6 +121,11 @@ class ReprocessFailedSourcesCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * @param  int  $periodId  ID del periodo.
+     * @param  string  $code  Código de la fuente (data_sources.code).
+     * @return ReportUpload|null Último upload de esa fuente en el periodo.
+     */
     private function latestUpload(int $periodId, string $code): ?ReportUpload
     {
         return ReportUpload::query()

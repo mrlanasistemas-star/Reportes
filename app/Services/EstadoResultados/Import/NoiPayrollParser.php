@@ -37,13 +37,22 @@ use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
  */
 class NoiPayrollParser
 {
+    /** Límite defensivo de filas leídas. */
     private const MAX_ROWS = 50000;
 
+    /** Límite defensivo de columnas leídas. */
     private const MAX_COLS = 80;
 
+    /** @param  SpreadsheetSafetyInspector  $inspector  revisión del contenedor antes de abrirlo */
     public function __construct(private readonly SpreadsheetSafetyInspector $inspector = new SpreadsheetSafetyInspector) {}
 
     /**
+     * Lee la primera hoja del NOI y devuelve los renglones válidos por colaborador con sus
+     * totales de percepciones y deducciones. Sólo lectura (no toca BD). Lo usa
+     * CorporatePayrollUploadService.
+     *
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string|null  $extension  extensión original
      * @return array{rows_read:int, lines:list<array{source_row:int, employee_code:?string, employee_name:string, name_key:?string, concept:string, concept_type:?string, amount:string}>,
      *               employees:int, total_percepciones:string, total_deducciones:string, warnings:list<array{code:string,severity:string,message:string}>}
      *
@@ -58,8 +67,13 @@ class NoiPayrollParser
             $reader->setReadDataOnly(true);
             $reader->setReadFilter(new class(self::MAX_ROWS + 1, self::MAX_COLS) implements IReadFilter
             {
+                /**
+                 * @param  int  $rows  filas máximas a cargar
+                 * @param  int  $cols  columnas máximas a cargar
+                 */
                 public function __construct(private int $rows, private int $cols) {}
 
+                /** Sólo carga celdas dentro de los límites de filas/columnas. */
                 public function readCell($columnAddress, $row, $worksheetName = ''): bool
                 {
                     return (int) $row <= $this->rows && Coordinate::columnIndexFromString((string) $columnAddress) <= $this->cols;
@@ -183,6 +197,12 @@ class NoiPayrollParser
 
     // ── Reglas replicadas de NoiNominaImportService (sin modificar el original) ──
 
+    /**
+     * Índice de la fila de encabezados: la de mayor puntaje (encabezados conocidos) entre las
+     * primeras 20.
+     *
+     * @param  array  $rows  filas de la hoja
+     */
     private function detectHeaderRowIndex(array $rows): int
     {
         $bestIndex = 0;
@@ -206,7 +226,12 @@ class NoiPayrollParser
         return $bestIndex;
     }
 
-    /** @return array<string,int> */
+    /**
+     * Mapa campo ⇒ índice de columna según los alias del NOI (primera coincidencia).
+     *
+     * @param  array  $headerRow  fila de encabezados
+     * @return array<string,int>
+     */
     private function buildHeaderMap(array $headerRow): array
     {
         $aliases = [
@@ -232,6 +257,14 @@ class NoiPayrollParser
         return $map;
     }
 
+    /**
+     * Extrae de una fila: clave del trabajador, nombre (por encabezado o columnas B/A), concepto,
+     * tipo e importe (deducciones D### negativas se pasan a positivo).
+     *
+     * @param  array  $row  fila
+     * @param  array<string,int>  $map  mapa de encabezados
+     * @return array{employee_code:?string, employee_name:?string, concept:?string, concept_type:?string, amount:?float}
+     */
     private function mapRow(array $row, array $map): array
     {
         $col0 = $this->clean($row[0] ?? null);
@@ -258,6 +291,12 @@ class NoiPayrollParser
         ];
     }
 
+    /**
+     * ¿El renglón cuenta? Requiere nombre válido, concepto e importe distinto de 0, y que el
+     * concepto no sea acumulado/total/subtotal.
+     *
+     * @param  array  $m  resultado de mapRow()
+     */
     private function shouldInsertRow(array $m): bool
     {
         if (! $this->isValidEmployeeName($m['employee_name']) || ! $m['concept'] || $m['amount'] === null || (float) $m['amount'] == 0.0) {
@@ -267,6 +306,12 @@ class NoiPayrollParser
         return ! in_array($this->normalizeText((string) $m['concept']), ['acumulado', 'total', 'totales', 'subtotal', 'sub total'], true);
     }
 
+    /**
+     * ¿Es un renglón de totales del colaborador («Total …», «Subtotal», «Neto a pagar»…)? Se
+     * ignora para no contar dos veces lo ya leído por concepto.
+     *
+     * @param  string  $concept  concepto
+     */
     private function isTotalsRow(string $concept): bool
     {
         $c = $this->normalizeText($concept);
@@ -274,6 +319,12 @@ class NoiPayrollParser
         return (bool) preg_match('/^(total|totales|sub ?total)\b/', $c) || in_array($c, ['neto', 'neto a pagar', 'neto pagado', 'neto del periodo'], true);
     }
 
+    /**
+     * Tipo explícito de la columna TIPO (percepción/deducción, P/D) o inferido del texto.
+     *
+     * @param  string  $type  valor de la columna tipo
+     * @return string|null 'percepcion' | 'deduccion' | null
+     */
     private function normalizeType(string $type): ?string
     {
         $t = $this->normalizeText($type);
@@ -285,6 +336,13 @@ class NoiPayrollParser
         };
     }
 
+    /**
+     * Infiere el tipo por el código (P### / D###) o por palabras clave (sueldo, bono, prima… ⇒
+     * percepción; descuento, préstamo, IMSS, ISR… ⇒ deducción).
+     *
+     * @param  string|null  $concept  concepto
+     * @return string|null 'percepcion' | 'deduccion' | null
+     */
     private function inferConceptType(?string $concept): ?string
     {
         if (! $concept) {
@@ -312,11 +370,22 @@ class NoiPayrollParser
         return null;
     }
 
+    /**
+     * Clave numérica de «Clave del trabajador : N».
+     *
+     * @param  string|null  $value  celda
+     */
     private function extractEmployeeCode(?string $value): ?string
     {
         return $value && preg_match('/clave\s+del\s+trabajador\s*:\s*(\d+)/i', $value, $mm) ? $mm[1] : null;
     }
 
+    /**
+     * ¿El texto parece un nombre de colaborador? (no vacío, no guion, no «Clave del trabajador»
+     * ni títulos de columna como «Nombre del trabajador»).
+     *
+     * @param  string|null  $value  texto
+     */
     private function isValidEmployeeName(?string $value): bool
     {
         if (! $value) {
@@ -331,16 +400,31 @@ class NoiPayrollParser
         return $n !== '' && ! in_array($n, ['nombre', 'trabajador', 'empleado', 'nombre del trabajador', 'nombre trabajador', 'nombre empleado'], true);
     }
 
+    /**
+     * Encabezado a snake_case ASCII en minúsculas.
+     *
+     * @param  string  $value  encabezado
+     */
     private function normalizeHeader(string $value): string
     {
         return Str::of($value)->ascii()->lower()->replaceMatches('/[^a-z0-9]+/', '_')->trim('_')->value();
     }
 
+    /**
+     * Texto ASCII en minúsculas, sin signos y con espacios simples.
+     *
+     * @param  string  $value  texto
+     */
     private function normalizeText(string $value): string
     {
         return Str::of($value)->ascii()->lower()->replaceMatches('/[^a-z0-9\s]+/', ' ')->replaceMatches('/\s+/', ' ')->trim()->value();
     }
 
+    /**
+     * Celda a texto recortado; null si vacía.
+     *
+     * @param  mixed  $value  celda
+     */
     private function clean(mixed $value): ?string
     {
         if ($value === null) {
@@ -351,6 +435,13 @@ class NoiPayrollParser
         return $v !== '' ? $v : null;
     }
 
+    /**
+     * Importe de una celda como float (regla replicada del importador NOI): quita «$» y
+     * espacios; con coma y punto la coma es separador de miles; sólo coma ⇒ coma decimal.
+     *
+     * @param  mixed  $value  celda
+     * @return float|null null si no es numérico
+     */
     private function toDecimal(mixed $value): ?float
     {
         if ($value === null || $value === '') {
@@ -369,6 +460,11 @@ class NoiPayrollParser
         return is_numeric($v) ? (float) $v : null;
     }
 
+    /**
+     * ¿Todas las celdas de la fila están vacías?
+     *
+     * @param  array  $row  fila
+     */
     private function isEmptyRow(array $row): bool
     {
         foreach ($row as $v) {

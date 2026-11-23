@@ -19,11 +19,16 @@ use Illuminate\Support\Facades\Storage;
  */
 class EfectividadCobranzaPdfExporter
 {
+    /** @param  BrowsershotPdfRenderer  $renderer  motor de PDF (Chrome headless) */
     public function __construct(
         private readonly BrowsershotPdfRenderer $renderer,
     ) {}
 
-    /** Ruta RELATIVA (disco privado `local`) del PDF ya generado, o null si no existe. */
+    /**
+     * Ruta RELATIVA (disco privado `local`) del PDF ya generado, o null si no existe.
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     */
     public function existingRelativePath(EfectividadCobranzaRun $run): ?string
     {
         $path = $this->relativePath($run);
@@ -31,7 +36,13 @@ class EfectividadCobranzaPdfExporter
         return Storage::disk('local')->exists($path) ? $path : null;
     }
 
-    /** Genera (o regenera) el PDF y devuelve su ruta RELATIVA en el disco privado `local`. */
+    /**
+     * Genera (o regenera) el PDF y devuelve su ruta RELATIVA en el disco privado `local`.
+     * Usa result_rows de la ejecución (no recalcula) y la vista efectividad.efectividad-pdf.
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución terminada
+     * @return string ruta relativa del PDF
+     */
     public function export(EfectividadCobranzaRun $run): string
     {
         $run->loadMissing(['period', 'branch']);
@@ -51,6 +62,11 @@ class EfectividadCobranzaPdfExporter
         return $relativePath;
     }
 
+    /**
+     * Ruta relativa fija del PDF de la ejecución (un archivo por ejecución).
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     */
     private function relativePath(EfectividadCobranzaRun $run): string
     {
         return "efectividad_cobranza/efectividad_run{$run->id}.pdf";

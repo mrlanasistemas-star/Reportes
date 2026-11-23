@@ -6,7 +6,19 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
-/** Crédito de la empresa (LEROM, BBVA…) cuyo INTERÉS va entre EBIT y EBT. */
+/**
+ * Crédito de la empresa (LEROM, BBVA…) cuyo INTERÉS va entre EBIT y EBT
+ * (tabla `estado_resultados_credits`; la migración siembra LEROM y BBVA).
+ *
+ * Columnas clave:
+ *  - `key`: identificador único (lerom | bbva | …).
+ *  - `name` / `creditor`: nombre visible y acreedor.
+ *  - `periodicity`: semanal | mensual (frecuencia de pago de la tabla de amortización).
+ *  - `adjustment_concept`: concepto de ajuste del ER donde se refleja el interés
+ *    (intereses_lerom | intereses_bbva | otros_intereses).
+ *  - `bank_pattern`: regex del concepto bancario con el que se identifica el pago.
+ *  - `active`: si el crédito participa en el cálculo.
+ */
 class EstadoResultadosCredit extends Model
 {
     protected $table = 'estado_resultados_credits';
@@ -15,10 +27,15 @@ class EstadoResultadosCredit extends Model
 
     protected $casts = ['active' => 'boolean'];
 
+    /** Crédito con pagos semanales. */
     public const SEMANAL = 'semanal';
 
+    /** Crédito con pagos mensuales. */
     public const MENSUAL = 'mensual';
 
+    /**
+     * Todas las cargas de tablas de amortización del crédito (vigente y sustituidas).
+     */
     public function uploads(): HasMany
     {
         return $this->hasMany(EstadoResultadosAmortizationUpload::class, 'credit_id');
@@ -32,6 +49,10 @@ class EstadoResultadosCredit extends Model
             ->latestOfMany();
     }
 
+    /**
+     * Todos los renglones de amortización del crédito (de cualquier carga; filtrar por
+     * `upload_id` de la vigente cuando se requiera sólo la tabla actual).
+     */
     public function rows(): HasMany
     {
         return $this->hasMany(EstadoResultadosAmortizationRow::class, 'credit_id');

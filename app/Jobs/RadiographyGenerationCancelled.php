@@ -7,6 +7,4 @@ namespace App\Jobs;
  * generación mientras el Job corría. No es un error (no marca failed, no manda
  * correo de error, no reintenta): el run se queda como `cancelled`.
  */
-class RadiographyGenerationCancelled extends \RuntimeException
-{
-}
+class RadiographyGenerationCancelled extends \RuntimeException {}

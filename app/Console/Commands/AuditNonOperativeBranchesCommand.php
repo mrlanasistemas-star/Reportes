@@ -9,35 +9,34 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Diagnóstico y limpieza SEGURA de filas de `branches` que no son ninguna de
- * las 13 sucursales operativas (ni una de las regiones reconocidas:
- * Aguascalientes, Chihuahua, Durango, Pachuca, Tulancingo, Corporativo).
+ * Comando `branches:audit-non-operative` — diagnóstico y limpieza SEGURA de filas de
+ * `branches` que no son ninguna de las 13 sucursales operativas (ni una de las regiones
+ * reconocidas: Aguascalientes, Chihuahua, Durango, Pachuca, Tulancingo, Corporativo).
  *
  * Por qué puede existir esto: los importadores actuales (LendusCarteraFotoImportService,
  * LendusIngresosCobranzaImportService, LendusSaldosClienteImportService) YA usan
- * BranchResolverService::resolveOfficialBranchByName()/resolveRealBranchFromRoute()
- * y NUNCA crean una fila nueva para una ruta desconocida — se verificó leyendo su
- * código real. Si existen filas como "ATLIX-GTE" en un entorno, son HERENCIA de
- * datos/código anterior a ese resolver, no un bug que este comando repita.
+ * BranchResolverService::resolveOfficialBranchByName()/resolveRealBranchFromRoute() y NUNCA
+ * crean una fila nueva para una ruta desconocida — se verificó leyendo su código real. Si
+ * existen filas como "ATLIX-GTE" en un entorno, son HERENCIA de datos/código anterior a ese
+ * resolver, no un bug que este comando repita.
  *
  * Por defecto SOLO DIAGNOSTICA (no modifica nada):
- *  - Lista cada sucursal "extra", cuántas filas la referencian en cada tabla
- *    financiera/operativa real (fact_portfolios, fact_recoveries, etc.), y a
- *    qué sucursal real resolvería su nombre según BranchResolverService.
+ *  - Lista cada sucursal "extra", cuántas filas la referencian en cada tabla financiera/operativa
+ *    real (fact_portfolios, fact_recoveries, etc.) y a qué sucursal real resolvería su nombre.
  *
  * Con `--deactivate-unresolved`:
- *  - SOLO desactiva (is_active=false) las filas que el resolver NO puede mapear
- *    a ninguna sucursal real conocida. Nunca borra la fila, nunca toca sus
- *    referencias históricas (quedan disponibles para auditoría). Deja de
- *    aparecer en los selectores (que ya filtran por sucursal operativa), sin
- *    adivinar una atribución que no está demostrada.
+ *  - SOLO desactiva (is_active = false) las filas que el resolver NO puede mapear a ninguna
+ *    sucursal real conocida. Nunca borra la fila ni toca sus referencias históricas.
  *
- * La REASIGNACIÓN de las filas ya referenciadas (fact_portfolios.branch_id,
- * fact_recoveries.branch_id, etc.) hacia la sucursal real resuelta es un paso
- * deliberadamente MANUAL: afecta datos financieros reales en 16 tablas con
- * reglas de unicidad distintas y debe verificarse contra los datos reales del
- * entorno donde aparezca el problema antes de aplicarse — este comando nunca
- * la ejecuta automáticamente.
+ * La REASIGNACIÓN de las filas ya referenciadas hacia la sucursal real es un paso
+ * deliberadamente MANUAL: afecta datos financieros reales en 16 tablas con reglas de unicidad
+ * distintas; este comando nunca la ejecuta automáticamente.
+ *
+ * Escribe en BD: solo con `--deactivate-unresolved` (actualiza `branches.is_active`).
+ *
+ * Ejemplos:
+ *   php artisan branches:audit-non-operative
+ *   php artisan branches:audit-non-operative --deactivate-unresolved
  */
 class AuditNonOperativeBranchesCommand extends Command
 {
@@ -58,6 +57,13 @@ class AuditNonOperativeBranchesCommand extends Command
     /** Regiones reales reconocidas que NO son de las 13 operativas pero sí existen de verdad. */
     private const RECOGNIZED_NON_OPERATIVE = ['AGUASCALIENTES', 'CHIHUAHUA', 'DURANGO', 'PACHUCA', 'TULANCINGO', 'CORPORATIVO'];
 
+    /**
+     * Busca las sucursales fuera del catálogo reconocido, muestra su estado, referencias y mapeo
+     * y, si se pidió, desactiva las que no tienen mapeo conocido.
+     *
+     * @param  BranchResolverService  $resolver  Resolvedor de ruta → sucursal real.
+     * @return int Siempre self::SUCCESS.
+     */
     public function handle(BranchResolverService $resolver): int
     {
         $apply = (bool) $this->option('deactivate-unresolved');
@@ -116,6 +122,12 @@ class AuditNonOperativeBranchesCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Cuenta cuántas filas referencian la sucursal sumando todas las tablas de REFERENCING_TABLES.
+     *
+     * @param  int  $branchId  ID de la sucursal.
+     * @return int Total de referencias.
+     */
     private function referenceCount(int $branchId): int
     {
         $total = 0;

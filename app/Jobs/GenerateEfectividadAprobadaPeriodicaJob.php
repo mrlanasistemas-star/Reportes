@@ -55,12 +55,24 @@ class GenerateEfectividadAprobadaPeriodicaJob implements ShouldQueue
 
     public int $backoff = 30;
 
+    /**
+     * El timeout se toma de config('efectividad.job_timeout') (900 s por defecto).
+     * Lo despacha EfectividadCobranzaController.
+     *
+     * @param  int  $runId  Id de la ejecución (efectividad_cobranza_runs) a generar.
+     */
     public function __construct(
         public int $runId,
     ) {
         $this->timeout = (int) config('efectividad.job_timeout', 900);
     }
 
+    /**
+     * Evita que dos ejecuciones del mismo periodo+sucursal corran a la vez
+     * (WithoutOverlapping; libera a los 60 s y expira tras timeout+60 s).
+     *
+     * @return array<int,object> Middleware del Job.
+     */
     public function middleware(): array
     {
         $run = EfectividadCobranzaRun::query()->find($this->runId);
@@ -71,6 +83,26 @@ class GenerateEfectividadAprobadaPeriodicaJob implements ShouldQueue
         return [(new WithoutOverlapping($key))->releaseAfter(60)->expireAfter($this->timeout + 60)];
     }
 
+    /**
+     * Genera el reporte en 4 etapas (lectura de fuentes, cálculo, Excel, finalización):
+     * - Si la ejecución ya es terminal no hace nada (idempotencia); si se pidió
+     *   cancelar antes de empezar, la cierra como cancelada.
+     * - Marca el run como running con engine_version ENGINE_APROBADA_2026_10.
+     * - Llama a EfectividadCobranzaAprobadaReportService::generate(); si no hay
+     *   datos suficientes cierra como `blocked` (nunca muestra 0%).
+     * - Exporta el XLSX al disco 'local' (efectividad_cobranza/...) y valida que no esté vacío.
+     * - Publica el resultado con un UPDATE condicionado a que no exista
+     *   cancel_requested_at; si se canceló a último momento, borra el Excel.
+     * - Revisa cancelación cooperativa entre etapas y en cada callback de progreso.
+     * Efectos: actualiza el run (estado, etapas, filas, ruta del Excel), escribe el
+     * archivo y notifica (campana/correo) vía EfectividadCobranzaRunNotifier.
+     *
+     * @param  EfectividadCobranzaAprobadaReportService  $service  Motor aprobado (lee fact_portfolios y fact_recoveries).
+     * @param  EfectividadCobranzaAprobadaExcelExporter  $exporter  Genera el XLSX con el formato aprobado.
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Envía notificación y correo del resultado.
+     *
+     * @throws \Throwable Relanza errores técnicos para que la cola reintente (tries = 2).
+     */
     public function handle(
         EfectividadCobranzaAprobadaReportService $service,
         EfectividadCobranzaAprobadaExcelExporter $exporter,
@@ -202,7 +234,13 @@ class GenerateEfectividadAprobadaPeriodicaJob implements ShouldQueue
         $notifier->notify($run);
     }
 
-    /** @throws EfectividadCobranzaCancelledException si se solicitó detener la generación. */
+    /**
+     * Consulta en BD (no en el modelo en memoria) si el usuario pidió detener la generación.
+     *
+     * @param  EfectividadCobranzaRun  $run  Ejecución en curso.
+     *
+     * @throws EfectividadCobranzaCancelledException si se solicitó detener la generación.
+     */
     private function throwIfCancelRequested(EfectividadCobranzaRun $run): void
     {
         $cancelled = EfectividadCobranzaRun::query()->whereKey($run->id)->whereNotNull('cancel_requested_at')->exists();
@@ -212,6 +250,14 @@ class GenerateEfectividadAprobadaPeriodicaJob implements ShouldQueue
         }
     }
 
+    /**
+     * Cierra la ejecución como `cancelled` (no es error ni éxito), vacía las filas
+     * de resultado y notifica.
+     *
+     * @param  EfectividadCobranzaRun  $run  Ejecución a cerrar.
+     * @param  EfectividadCobranzaProgressTracker  $tracker  Registro de etapas (se detiene la etapa actual).
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Notificador del resultado.
+     */
     private function closeAsCancelled(EfectividadCobranzaRun $run, EfectividadCobranzaProgressTracker $tracker, EfectividadCobranzaRunNotifier $notifier): void
     {
         $tracker->halt('cancelled', 'La generación fue cancelada por solicitud del usuario.');
@@ -227,7 +273,16 @@ class GenerateEfectividadAprobadaPeriodicaJob implements ShouldQueue
         $notifier->notify($run);
     }
 
-    /** Bloqueo por datos: refleja honestamente qué falta según `coverage` del adaptador aprobado. */
+    /**
+     * Bloqueo por datos: refleja honestamente qué falta según `coverage` del
+     * adaptador aprobado. Si faltan fechas el tipo de falla es "columnas faltantes";
+     * en otro caso "datos faltantes". Registra una incidencia crítica EC-APR-* y notifica.
+     *
+     * @param  EfectividadCobranzaRun  $run  Ejecución a cerrar.
+     * @param  EfectividadCobranzaProgressTracker  $tracker  Registro de etapas.
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Notificador del resultado.
+     * @param  array  $coverage  Diagnóstico de cobertura (status, message) del servicio aprobado.
+     */
     private function closeAsBlocked(EfectividadCobranzaRun $run, EfectividadCobranzaProgressTracker $tracker, EfectividadCobranzaRunNotifier $notifier, array $coverage): void
     {
         $failureKind = match ($coverage['status']) {
@@ -259,6 +314,13 @@ class GenerateEfectividadAprobadaPeriodicaJob implements ShouldQueue
         $notifier->notify($run);
     }
 
+    /**
+     * Llamado por el worker cuando el Job falla definitivamente (incluye timeout y
+     * máximo de intentos). Si la ejecución sigue abierta la cierra como `failed`
+     * con una incidencia técnica (o como cancelada si el usuario lo pidió) y notifica.
+     *
+     * @param  \Throwable|null  $exception  Excepción final.
+     */
     public function failed(?\Throwable $exception): void
     {
         $run = EfectividadCobranzaRun::query()->find($this->runId);
@@ -313,6 +375,16 @@ class GenerateEfectividadAprobadaPeriodicaJob implements ShouldQueue
         $notifier->notify($run);
     }
 
+    /**
+     * Maneja un error técnico dentro de handle(): registra el detalle solo en el
+     * log; si se pidió cancelar, cierra como cancelada; si quedan intentos marca
+     * `retrying`; si no, cierra como `failed` con incidencia EC-TEC-ERROR y notifica.
+     *
+     * @param  EfectividadCobranzaRun  $run  Ejecución en curso.
+     * @param  EfectividadCobranzaProgressTracker  $tracker  Registro de etapas (para saber dónde falló).
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Notificador del resultado.
+     * @param  \Throwable  $exception  Error capturado.
+     */
     private function handleException(EfectividadCobranzaRun $run, EfectividadCobranzaProgressTracker $tracker, EfectividadCobranzaRunNotifier $notifier, \Throwable $exception): void
     {
         $stage = $tracker->current();

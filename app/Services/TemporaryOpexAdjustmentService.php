@@ -58,8 +58,12 @@ class TemporaryOpexAdjustmentService
      * nombre) para las que no lo tienen — así el conteo SIEMPRE coincide con
      * `sections.employees_gestores.length` que ve la UI.
      *
-     * @param  array<int, array{branch?:string, name?:string, _employee_ids?:int[]}>  $empGestoresRows
-     * @return array<int, int|string>
+     * Nota: con $branchId hace una sola lectura de `branches` (Branch::find) para
+     * obtener el nombre; si la sucursal no existe devuelve vacío.
+     *
+     * @param  array<int, array{branch?:string, name?:string, _employee_ids?:int[]}>  $empGestoresRows  Filas canónicas de colaboradores del periodo.
+     * @param  int|null  $branchId  Sucursal para acotar; null = todo el periodo.
+     * @return array<int, int|string> Ids primarios únicos (o claves sintéticas "__sin_id_…").
      */
     public function canonicalEmployeeIds(array $empGestoresRows, ?int $branchId = null): array
     {
@@ -79,12 +83,19 @@ class TemporaryOpexAdjustmentService
             $primary = $r['_employee_ids'][0] ?? null;
             $ids[] = $primary
                 ? (int) $primary
-                : ('__sin_id_' . $i . '_' . mb_strtoupper(trim((string) ($r['name'] ?? ''))));
+                : ('__sin_id_'.$i.'_'.mb_strtoupper(trim((string) ($r['name'] ?? ''))));
         }
 
         return array_values(array_unique($ids));
     }
 
+    /**
+     * Cuenta los colaboradores canónicos (ver canonicalEmployeeIds()), opcionalmente de una sucursal.
+     *
+     * @param  array  $empGestoresRows  Filas canónicas de colaboradores del periodo.
+     * @param  int|null  $branchId  Sucursal para acotar; null = todo el periodo.
+     * @return int Número de colaboradores únicos.
+     */
     public function canonicalEmployeeCount(array $empGestoresRows, ?int $branchId = null): int
     {
         return count($this->canonicalEmployeeIds($empGestoresRows, $branchId));
@@ -95,15 +106,18 @@ class TemporaryOpexAdjustmentService
      * request) — nunca confía en que el llamador ya lo validó. Devuelve null
      * si no hay ajuste activo (amount_per_employee <= 0, modo desconocido, o
      * falta el identificador que ese modo requiere).
+     *
+     * @param  array|null  $adjustment  Ajuste crudo (ver forma canónica en la clase).
+     * @return array|null Ajuste normalizado (monto redondeado a 2 decimales, notas recortadas) o null si no aplica.
      */
     public function normalize(?array $adjustment): ?array
     {
-        if (!is_array($adjustment)) {
+        if (! is_array($adjustment)) {
             return null;
         }
 
         $mode = $adjustment['mode'] ?? null;
-        if (!in_array($mode, ['employee', 'branch_each_employee', 'all_each_employee'], true)) {
+        if (! in_array($mode, ['employee', 'branch_each_employee', 'all_each_employee'], true)) {
             return null;
         }
 
@@ -116,7 +130,7 @@ class TemporaryOpexAdjustmentService
 
         if ($mode === 'employee') {
             $employeeId = (int) ($adjustment['employee_id'] ?? 0);
-            if (!$employeeId) {
+            if (! $employeeId) {
                 return null;
             }
 
@@ -125,7 +139,7 @@ class TemporaryOpexAdjustmentService
 
         if ($mode === 'branch_each_employee') {
             $branchId = (int) ($adjustment['branch_id'] ?? 0);
-            if (!$branchId) {
+            if (! $branchId) {
                 return null;
             }
 
@@ -147,12 +161,17 @@ class TemporaryOpexAdjustmentService
      * scope=general: amount_per_employee × colaboradores canónicos de TODO el
      *   periodo, SOLO si mode=all_each_employee.
      *
-     * @param  array<int, array{branch?:string, _employee_ids?:int[]}>  $empGestoresRows
+     * @param  array<int, array{branch?:string, _employee_ids?:int[]}>  $empGestoresRows  Filas canónicas de colaboradores del periodo.
+     * @param  array|null  $adjustment  Ajuste crudo (se normaliza aquí).
+     * @param  string  $scopeType  Alcance que se ve/exporta: 'employee', 'branch' o cualquier otro valor = general.
+     * @param  int|null  $branchId  Sucursal del alcance (scope=branch).
+     * @param  int|null  $employeeId  Colaborador del alcance (scope=employee).
+     * @return float Monto a sumar al OPEX del alcance (redondeado a 2 decimales).
      */
     public function totalForScope(array $empGestoresRows, ?array $adjustment, string $scopeType, ?int $branchId = null, ?int $employeeId = null): float
     {
         $adjustment = $this->normalize($adjustment);
-        if (!$adjustment) {
+        if (! $adjustment) {
             return 0.0;
         }
 
@@ -189,13 +208,14 @@ class TemporaryOpexAdjustmentService
      * consultan por el Excel de colaboradores — esa hoja ya excluye esas filas
      * por no poder resolver su OPEX automático (ver EmployeesHistoricoExportService).
      *
-     * @param  array<int, array{branch?:string, _employee_ids?:int[]}>  $empGestoresRows
-     * @return array<int|string, float>
+     * @param  array<int, array{branch?:string, _employee_ids?:int[]}>  $empGestoresRows  Filas canónicas de colaboradores del periodo.
+     * @param  array|null  $adjustment  Ajuste crudo (se normaliza aquí).
+     * @return array<int|string, float> employee_id (o clave sintética) => monto; vacío si no hay ajuste.
      */
     public function perEmployeeAmounts(array $empGestoresRows, ?array $adjustment): array
     {
         $adjustment = $this->normalize($adjustment);
-        if (!$adjustment) {
+        if (! $adjustment) {
             return [];
         }
 
@@ -215,11 +235,17 @@ class TemporaryOpexAdjustmentService
         return array_fill_keys($ids, $adjustment['amount_per_employee']);
     }
 
-    /** Cuántos colaboradores canónicos recibe este ajuste — para la UI ("Gestores afectados: 6"). */
+    /**
+     * Cuántos colaboradores canónicos recibe este ajuste — para la UI ("Gestores afectados: 6").
+     *
+     * @param  array  $empGestoresRows  Filas canónicas de colaboradores del periodo.
+     * @param  array|null  $adjustment  Ajuste crudo (se normaliza aquí).
+     * @return int 1 en modo employee; conteo de la sucursal o del periodo en los demás; 0 sin ajuste.
+     */
     public function affectedEmployeeCount(array $empGestoresRows, ?array $adjustment): int
     {
         $adjustment = $this->normalize($adjustment);
-        if (!$adjustment) {
+        if (! $adjustment) {
             return 0;
         }
 

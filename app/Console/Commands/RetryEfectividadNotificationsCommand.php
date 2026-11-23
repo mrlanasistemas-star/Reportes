@@ -7,14 +7,21 @@ use App\Services\Efectividad\EfectividadCobranzaRunNotifier;
 use Illuminate\Console\Command;
 
 /**
- * Reintenta correos/notificaciones internas de Efectividad de Cobranza que
- * fallaron (SMTP caído, sin configurar, etc.). Idempotente: el notificador
- * reclama cada envío con un UPDATE condicional y lleva registro por
- * destinatario, así que nunca duplica un correo ya entregado.
+ * Comando `efectividad:retry-notifications` — reintenta correos/notificaciones internas de
+ * Efectividad de Cobranza que fallaron (SMTP caído, sin configurar, etc.). Idempotente: el
+ * notificador reclama cada envío con un UPDATE condicional y lleva registro por destinatario,
+ * así que nunca duplica un correo ya entregado. Respeta el máximo de intentos
+ * (efectividad.notification_max_attempts, 5 por defecto).
  *
- * Solo considera ejecuciones que pasaron por el flujo de notificaciones
- * (`notification_status` no nulo) — nunca notifica retroactivamente
- * ejecuciones históricas anteriores a esta funcionalidad.
+ * Solo considera ejecuciones terminadas que pasaron por el flujo de notificaciones
+ * (`notification_status` no nulo) — nunca notifica retroactivamente ejecuciones históricas
+ * anteriores a esta funcionalidad.
+ *
+ * Escribe en BD: SÍ (estado de notificación de `efectividad_cobranza_runs`) y envía correos.
+ *
+ * Ejemplos:
+ *   php artisan efectividad:retry-notifications
+ *   php artisan efectividad:retry-notifications --run=42
  */
 class RetryEfectividadNotificationsCommand extends Command
 {
@@ -22,6 +29,13 @@ class RetryEfectividadNotificationsCommand extends Command
 
     protected $description = 'Reintenta las notificaciones (correo e internas) pendientes o fallidas de Efectividad de Cobranza.';
 
+    /**
+     * Busca ejecuciones con correo fallido (bajo el máximo de intentos) o sin notificación interna y
+     * reintenta ambas.
+     *
+     * @param  EfectividadCobranzaRunNotifier  $notifier  Notificador de ejecuciones.
+     * @return int Siempre self::SUCCESS.
+     */
     public function handle(EfectividadCobranzaRunNotifier $notifier): int
     {
         $maxAttempts = max(1, (int) config('efectividad.notification_max_attempts', 5));

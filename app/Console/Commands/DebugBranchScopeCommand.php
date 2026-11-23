@@ -8,32 +8,51 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Shows how every branch row in the DB resolves for the given period:
- * which fact rows it owns, whether it's operative, and why it's included/excluded.
+ * Comando `reportes:debug-branch-scope` — muestra cómo resuelve cada sucursal de la BD para el
+ * periodo: OPERATIVA, CORPORATIVO, FUERA DE ALCANCE o SIN RESOLVER, a qué sucursal real mapea
+ * y cuántas filas de hechos posee; advierte si no se encuentran exactamente 13 operativas.
+ *
+ * ADVERTENCIA: cuenta filas por `branch_id` también en `fact_noi_movements`, tabla que no tiene
+ * esa columna en el esquema actual (probable error SQL).
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-branch-scope 21
  */
 class DebugBranchScopeCommand extends Command
 {
-    protected $signature   = 'reportes:debug-branch-scope {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-branch-scope {period_id : ID del periodo mensual}';
+
     protected $description = 'Muestra cómo resuelve cada sucursal de la BD para el periodo dado (operativa, corporativo, fuera de alcance, sin resolver).';
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas y sucursales operativas.
+     */
     public function __construct(private readonly BranchResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Cuenta hechos por sucursal en los periodos de datos, clasifica cada sucursal e imprime la
+     * lista y el resumen.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -42,7 +61,7 @@ class DebugBranchScopeCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG BRANCH SCOPE — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         $branches = DB::table('branches')->orderBy('name')->get();
@@ -61,13 +80,13 @@ class DebugBranchScopeCommand extends Command
             }
         }
 
-        $operative    = $this->resolver->operativeFinancialBranches();
+        $operative = $this->resolver->operativeFinancialBranches();
         $operativeSet = array_map('strtoupper', $operative);
 
         $counts = ['operative' => 0, 'corporativo' => 0, 'out_of_scope' => 0, 'unresolved' => 0];
 
         foreach ($branches as $b) {
-            $real  = $this->resolver->resolveRealBranchFromRoute($b->name);
+            $real = $this->resolver->resolveRealBranchFromRoute($b->name);
             $upper = $real ? strtoupper(trim($real)) : null;
 
             if ($upper && in_array($upper, $operativeSet, true)) {
@@ -85,7 +104,7 @@ class DebugBranchScopeCommand extends Command
             }
 
             $totalFacts = array_sum($factCounts[(int) $b->id] ?? []);
-            $factsStr   = $totalFacts > 0 ? "<fg=white>{$totalFacts} filas</>" : '<fg=gray>sin datos</>';
+            $factsStr = $totalFacts > 0 ? "<fg=white>{$totalFacts} filas</>" : '<fg=gray>sin datos</>';
 
             $this->line(sprintf(
                 '  %s  %-40s → %-28s  %s',
@@ -111,6 +130,7 @@ class DebugBranchScopeCommand extends Command
         }
 
         $this->line('');
+
         return self::SUCCESS;
     }
 }

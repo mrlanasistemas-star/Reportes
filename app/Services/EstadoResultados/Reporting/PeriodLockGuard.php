@@ -14,8 +14,15 @@ use Illuminate\Support\Facades\Schema;
  */
 class PeriodLockGuard
 {
+    /** Memo por proceso de la existencia de estado_resultados_versions. */
     private static ?bool $tableExists = null;
 
+    /**
+     * Última versión (mayor número) del ER del periodo, aprobada o no.
+     *
+     * @param  Period|int  $period  periodo o su id
+     * @return EstadoResultadosVersion|null null si no hay versiones o no existe la tabla
+     */
     public function latest(Period|int $period): ?EstadoResultadosVersion
     {
         if (! $this->available()) {
@@ -28,6 +35,11 @@ class PeriodLockGuard
             ->first();
     }
 
+    /**
+     * Versión que bloquea el periodo: la última, sólo si está bloqueada (aprobada vigente).
+     *
+     * @param  Period|int  $period  periodo o su id
+     */
     public function lockedVersion(Period|int $period): ?EstadoResultadosVersion
     {
         $latest = $this->latest($period);
@@ -35,12 +47,24 @@ class PeriodLockGuard
         return $latest && $latest->isLocked() ? $latest : null;
     }
 
+    /**
+     * ¿El periodo está cerrado por una versión aprobada vigente?
+     *
+     * @param  Period|int  $period  periodo o su id
+     */
     public function isLocked(Period|int $period): bool
     {
         return $this->lockedVersion($period) !== null;
     }
 
-    /** @throws EstadoResultadosLockedException */
+    /**
+     * Rechaza la operación si el periodo está aprobado (HTTP 423). Sin bloqueo de fila: para
+     * escrituras dentro de transacción usar lockForWrite().
+     *
+     * @param  Period  $period  periodo a modificar
+     *
+     * @throws EstadoResultadosLockedException
+     */
     public function assertUnlocked(Period $period): void
     {
         if ($version = $this->lockedVersion($period)) {

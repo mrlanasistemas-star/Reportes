@@ -5,11 +5,28 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-queue-health` — diagnóstico rápido de la cola de jobs: conexión y
+ * driver configurados, jobs pendientes (tabla `jobs`), fallidos (`failed_jobs`), estado de
+ * UpdatePeriodDatabaseJob, corridas activas de period_database_update_runs y un veredicto con
+ * sugerencias de acción. Asume el driver "database".
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-queue-health
+ */
 class DebugQueueHealthCommand extends Command
 {
-    protected $signature   = 'reportes:debug-queue-health';
+    protected $signature = 'reportes:debug-queue-health';
+
     protected $description = 'Diagnóstico rápido de la cola de jobs: conexión, jobs pendientes, fallidos y sugerencias de acción.';
 
+    /**
+     * Imprime configuración, pendientes, fallidos, jobs de actualización, corridas activas y veredicto.
+     *
+     * @return int Código de salida (SUCCESS en el flujo normal).
+     */
     public function handle(): int
     {
         $this->line('');
@@ -20,7 +37,7 @@ class DebugQueueHealthCommand extends Command
 
         // ── Configuración ─────────────────────────────────────────────────────
         $connection = config('queue.default');
-        $driver     = config("queue.connections.{$connection}.driver");
+        $driver = config("queue.connections.{$connection}.driver");
         $this->info('── Configuración ─────────────────────────────────────────────────────');
         $this->line(sprintf('  QUEUE_CONNECTION : %s', $connection));
         $this->line(sprintf('  Driver           : %s', $driver));
@@ -32,8 +49,8 @@ class DebugQueueHealthCommand extends Command
         }
 
         // ── Jobs pendientes ────────────────────────────────────────────────────
-        $totalJobs    = DB::table('jobs')->count();
-        $defaultJobs  = DB::table('jobs')->where('queue', 'default')->count();
+        $totalJobs = DB::table('jobs')->count();
+        $defaultJobs = DB::table('jobs')->where('queue', 'default')->count();
         $reservedJobs = DB::table('jobs')->whereNotNull('reserved_at')->count();
 
         $this->info('── Jobs pendientes (tabla jobs) ──────────────────────────────────────');
@@ -112,7 +129,7 @@ class DebugQueueHealthCommand extends Command
             $payload = json_decode($j->payload, true);
             preg_match('/periodId";i:(\d+);s:\d+:"runId";i:(\d+)/', $payload['data']['command'] ?? '', $m);
             $periodId = $m[1] ?? '?';
-            $runId    = $m[2] ?? '?';
+            $runId = $m[2] ?? '?';
             $this->line(sprintf('  job_id=%d | period_id=%s | run_id=%s | attempts=%d | reserved=%s',
                 $j->id, $periodId, $runId, $j->attempts,
                 $j->reserved_at ? date('H:i:s', $j->reserved_at) : 'no'
@@ -136,7 +153,7 @@ class DebugQueueHealthCommand extends Command
         foreach ($activeRuns as $r) {
             $hasJob = DB::table('jobs')
                 ->where('payload', 'LIKE', '%UpdatePeriodDatabaseJob%')
-                ->where('payload', 'LIKE', '%runId%i:' . $r->id . ';%')
+                ->where('payload', 'LIKE', '%runId%i:'.$r->id.';%')
                 ->exists();
 
             $status = $hasJob
@@ -148,7 +165,7 @@ class DebugQueueHealthCommand extends Command
                 $r->queued_at ?? $r->created_at
             ));
 
-            if (!$hasJob && $r->status === 'queued') {
+            if (! $hasJob && $r->status === 'queued') {
                 $this->warn('    → Run huérfano. Usa "Reencolar job" en UI o cancela y vuelve a iniciar.');
             }
         }

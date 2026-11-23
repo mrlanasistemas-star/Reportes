@@ -11,25 +11,26 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Auditoría 07-sep-2026 (cierre, punto 16) — reconciliación matcher vs BD vs
- * export, por colaborador. SOLO diagnóstico (dry-run siempre) — nunca escribe.
+ * Comando `reports:audit-employee-expenses` — Auditoría 07-sep-2026 (cierre, punto 16):
+ * reconciliación matcher vs BD vs export, por colaborador. SOLO diagnóstico (dry-run siempre) —
+ * nunca escribe.
  *
- * Para cada colaborador (fila fusionada de buildAllEmployeeGestorRows(), MISMA
- * identidad — _employee_ids — que usa el export real) compara tres números que
- * DEBERÍAN coincidir después de aplicar las correcciones reales:
- *   A) monto_eligible_matcher     — lo que ExpenseObservationAttributionService
- *      (dry-run) dice que le pertenece HOY, aplicando la regla de prioridad
- *      completa (Observación > Justificación > alias > nombre > combinación >
+ * Para cada colaborador (fila fusionada de buildAllEmployeeGestorRows(), MISMA identidad —
+ * _employee_ids — que usa el export real) compara tres números que DEBERÍAN coincidir después de
+ * aplicar las correcciones reales:
+ *   A) monto_eligible_matcher — lo que ExpenseObservationAttributionService (dry-run) más
+ *      FinanciamientoMotosAssignmentService (motos/cascos) dicen que le pertenece HOY, con la
+ *      regla de prioridad completa (Observación > Justificación > alias > nombre > combinación >
  *      fuzzy > employee_id previo).
- *   B) monto_bd_atribuido         — lo que fact_expenses.employee_id tiene
- *      REALMENTE guardado ahora mismo (antes de cualquier --apply).
- *   C) opex_automatico_exportable — lo que buildEmployeeExpenseDetail() —
- *      fuente única de Web/Excel/PDF — expone HOY como "OPEX AUTOMÁTICO".
+ *   B) monto_bd_atribuido — lo que fact_expenses.employee_id tiene REALMENTE guardado ahora
+ *      (solo conceptos elegibles para atribución según OpexClassificationService).
+ *   C) opex_automatico_exportable — lo que buildEmployeeExpenseDetail() — fuente única de
+ *      Web/Excel/PDF — expone HOY como "OPEX AUTOMÁTICO".
  *
- * DIFERENCIA = A − C (matcher esperado vs lo que el colaborador ve/exporta).
- * Objetivo tras `reports:repair-expense-attribution {period} --apply`:
- * DIFERENCIAS = 0 para todos los colaboradores.
+ * DIFERENCIA = A − C (matcher esperado vs lo que el colaborador ve/exporta). Objetivo tras
+ * `reports:repair-expense-attribution {period} --apply`: DIFERENCIAS = 0 para todos.
  *
+ * Ejemplos:
  *   php artisan reports:audit-employee-expenses 21
  *   php artisan reports:audit-employee-expenses 21 --only-diff
  */
@@ -41,6 +42,16 @@ class ReportsAuditEmployeeExpensesCommand extends Command
 
     protected $description = 'Diagnóstico (dry-run) de reconciliación matcher vs BD vs export, por colaborador — objetivo DIFERENCIAS=0 tras el repair.';
 
+    /**
+     * Calcula A, B y C por colaborador, imprime la tabla (opcionalmente solo con diferencia), los
+     * fact_expense_id que explican cada diferencia y el resumen.
+     *
+     * @param  ExpenseObservationAttributionService  $attributionService  Matcher general de gastos por colaborador.
+     * @param  FinanciamientoMotosAssignmentService  $motosAssignment  Atribución de motos/cascos.
+     * @param  OpexClassificationService  $opexClassifier  Indica qué conceptos son atribuibles.
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Filas de colaboradores y detalle exportable.
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(
         ExpenseObservationAttributionService $attributionService,
         FinanciamientoMotosAssignmentService $motosAssignment,
@@ -48,14 +59,15 @@ class ReportsAuditEmployeeExpensesCommand extends Command
         RadiographySnapshotBuilder $snapshotBuilder,
     ): int {
         $period = Period::find((int) $this->argument('period'));
-        if (!$period) {
-            $this->error('No existe el periodo ID=' . $this->argument('period'));
+        if (! $period) {
+            $this->error('No existe el periodo ID='.$this->argument('period'));
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
 
         $this->info('════════════════════════════════════════════════════════════');
         $this->info("PERIODO: {$period->label} (ID {$period->id})");
@@ -71,18 +83,18 @@ class ReportsAuditEmployeeExpensesCommand extends Command
         // fila de Moto/Cascos aparecería como "diferencia" aunque esté correctamente
         // atribuida — falso positivo sistemático, no un problema real.
         $matcherResults = $attributionService->attributeForPeriod($period, $dataIds, dryRun: true);
-        $motosResults   = $motosAssignment->assignForPeriod($period, $dataIds, dryRun: true);
+        $motosResults = $motosAssignment->assignForPeriod($period, $dataIds, dryRun: true);
         $matcherAmountByEmployeeId = [];
         foreach ($matcherResults as $r) {
             $eid = $r['employee_id'] ?? null;
-            if (!$eid) {
+            if (! $eid) {
                 continue; // ambiguo/conflicto/branch_general/no_atribuible — no le pertenece a ningún colaborador
             }
             $matcherAmountByEmployeeId[$eid] = ($matcherAmountByEmployeeId[$eid] ?? 0.0) + (float) $r['amount'];
         }
         foreach ($motosResults as $r) {
             $eid = $r['employee_id'] ?? null;
-            if (!$eid) {
+            if (! $eid) {
                 continue; // sin_resolver — no le pertenece a ningún colaborador todavía
             }
             $matcherAmountByEmployeeId[$eid] = ($matcherAmountByEmployeeId[$eid] ?? 0.0) + (float) $r['amount'];
@@ -97,7 +109,7 @@ class ReportsAuditEmployeeExpensesCommand extends Command
             ->get();
         $bdAmountByEmployeeId = [];
         foreach ($bdRows as $r) {
-            if (!$opexClassifier->classify($r->category, $r->concept, OpexClassificationService::SOURCE_LENDUS)['eligible_for_attribution']) {
+            if (! $opexClassifier->classify($r->category, $r->concept, OpexClassificationService::SOURCE_LENDUS)['eligible_for_attribution']) {
                 continue;
             }
             $eid = (int) $r->employee_id;
@@ -113,32 +125,32 @@ class ReportsAuditEmployeeExpensesCommand extends Command
 
         foreach ($gestorRows as $row) {
             $employeeIds = $row['_employee_ids'] ?? [];
-            $primaryId   = $employeeIds[0] ?? null;
-            if (!$primaryId) {
+            $primaryId = $employeeIds[0] ?? null;
+            if (! $primaryId) {
                 continue;
             }
 
             $expenseDetail = $snapshotBuilder->buildEmployeeExpenseDetail($employeeIds, $primaryId);
-            $exportable    = round((float) $expenseDetail['automatic_total'], 2);
+            $exportable = round((float) $expenseDetail['automatic_total'], 2);
 
             $matcherAmount = 0.0;
-            $bdAmount      = 0.0;
+            $bdAmount = 0.0;
             $factIdsConDiff = [];
             foreach ($employeeIds as $eid) {
                 $matcherAmount += (float) ($matcherAmountByEmployeeId[$eid] ?? 0.0);
-                $bdAmount      += (float) ($bdAmountByEmployeeId[$eid] ?? 0.0);
+                $bdAmount += (float) ($bdAmountByEmployeeId[$eid] ?? 0.0);
             }
             $matcherAmount = round($matcherAmount, 2);
-            $bdAmount      = round($bdAmount, 2);
-            $diferencia    = round($matcherAmount - $exportable, 2);
+            $bdAmount = round($bdAmount, 2);
+            $diferencia = round($matcherAmount - $exportable, 2);
 
             if (abs($diferencia) > 0.01) {
                 // fact_expense_ids concretos donde el matcher propone un dueño DISTINTO
                 // al employee_id actual de la BD, dentro de este grupo de identidad.
                 foreach ($matcherResults as $r) {
-                    $proposedEid  = $r['employee_id'] ?? null;
-                    $previousEid  = $r['previous_employee_id'] ?? null;
-                    $belongsHere  = ($proposedEid && in_array($proposedEid, $employeeIds, true))
+                    $proposedEid = $r['employee_id'] ?? null;
+                    $previousEid = $r['previous_employee_id'] ?? null;
+                    $belongsHere = ($proposedEid && in_array($proposedEid, $employeeIds, true))
                         || ($previousEid && in_array($previousEid, $employeeIds, true));
                     if ($belongsHere && $proposedEid !== $previousEid) {
                         $factIdsConDiff[] = $r['fact_expense_id'];
@@ -147,15 +159,15 @@ class ReportsAuditEmployeeExpensesCommand extends Command
             }
 
             $rows[] = [
-                'employee_id'                 => $primaryId,
-                'nombre'                       => $row['name'] ?? '-',
-                'branch'                       => $row['branch'] ?? 'Sin asignar',
-                'cantidad_movimientos'         => count($employeeIds),
-                'monto_eligible_matcher'       => $matcherAmount,
-                'monto_bd_atribuido'           => $bdAmount,
-                'opex_automatico_exportable'   => $exportable,
-                'diferencia'                   => $diferencia,
-                'fact_expense_ids_diferencia'  => $factIdsConDiff,
+                'employee_id' => $primaryId,
+                'nombre' => $row['name'] ?? '-',
+                'branch' => $row['branch'] ?? 'Sin asignar',
+                'cantidad_movimientos' => count($employeeIds),
+                'monto_eligible_matcher' => $matcherAmount,
+                'monto_bd_atribuido' => $bdAmount,
+                'opex_automatico_exportable' => $exportable,
+                'diferencia' => $diferencia,
+                'fact_expense_ids_diferencia' => $factIdsConDiff,
             ];
 
             if (abs($diferencia) > 0.01) {
@@ -166,7 +178,7 @@ class ReportsAuditEmployeeExpensesCommand extends Command
 
         $onlyDiff = (bool) $this->option('only-diff');
         $header = ['ID', 'COLABORADOR', 'SUCURSAL', 'MOV.', 'MATCHER ($)', 'BD ($)', 'EXPORTABLE ($)', 'DIFERENCIA ($)'];
-        $table  = [];
+        $table = [];
         foreach ($rows as $r) {
             if ($onlyDiff && abs($r['diferencia']) <= 0.01) {
                 continue;
@@ -184,22 +196,22 @@ class ReportsAuditEmployeeExpensesCommand extends Command
         }
         $this->table($header, $table);
 
-        if (!$onlyDiff || $conDiferencia > 0) {
+        if (! $onlyDiff || $conDiferencia > 0) {
             $this->newLine();
             foreach ($rows as $r) {
                 if (abs($r['diferencia']) <= 0.01 || empty($r['fact_expense_ids_diferencia'])) {
                     continue;
                 }
-                $this->line("  → {$r['nombre']} (ID {$r['employee_id']}): fact_expense_ids con diferencia = [" . implode(', ', $r['fact_expense_ids_diferencia']) . ']');
+                $this->line("  → {$r['nombre']} (ID {$r['employee_id']}): fact_expense_ids con diferencia = [".implode(', ', $r['fact_expense_ids_diferencia']).']');
             }
         }
 
         $this->newLine();
         $this->info('════════════════════════════════════════════════════════════');
-        $this->info('COLABORADORES EVALUADOS: ' . count($rows));
-        $this->info('CON DIFERENCIA: ' . $conDiferencia);
-        $this->info('SIN DIFERENCIA: ' . (count($rows) - $conDiferencia));
-        $this->info('TOTAL DIFERENCIA: $' . number_format($totalDiferencia, 2));
+        $this->info('COLABORADORES EVALUADOS: '.count($rows));
+        $this->info('CON DIFERENCIA: '.$conDiferencia);
+        $this->info('SIN DIFERENCIA: '.(count($rows) - $conDiferencia));
+        $this->info('TOTAL DIFERENCIA: $'.number_format($totalDiferencia, 2));
         $this->info('════════════════════════════════════════════════════════════');
 
         return 0;

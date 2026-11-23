@@ -6,16 +6,22 @@ use App\Services\Pdf\BrowsershotPdfRenderer;
 use App\Services\Pdf\PdfRenderException;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
+use Symfony\Component\Process\Process;
 use Throwable;
 
 /**
- * Diagnóstico end-to-end del motor de PDF (retoma 21-sep-2026, punto 3) — comprueba
- * cada eslabón de la cadena Browsershot/Puppeteer/Chrome por separado, en el MISMO
- * orden en que BrowsershotPdfRenderer los necesita, para que un fallo diga exactamente
- * dónde está roto (Node vs Chrome vs HTML vs gráficas vs disco) en vez de un genérico
- * "no se pudo generar el PDF".
+ * Comando `reports:pdf-health` — diagnóstico end-to-end del motor de PDF (retoma 21-sep-2026,
+ * punto 3): comprueba cada eslabón de la cadena Browsershot/Puppeteer/Chrome por separado, en el
+ * MISMO orden en que BrowsershotPdfRenderer los necesita, para que un fallo diga exactamente
+ * dónde está roto (Node vs Chrome vs HTML vs gráficas vs disco) en vez de un genérico "no se
+ * pudo generar el PDF". Con `-v` muestra el detalle también de los componentes OK.
  *
+ * Escribe en BD: NO. Genera PDFs de prueba y un archivo sonda temporal en
+ * storage/app/radiografias (se borra al terminar).
+ *
+ * Ejemplos:
  *   php artisan reports:pdf-health
+ *   php artisan reports:pdf-health -v
  */
 class ReportsPdfHealthCommand extends Command
 {
@@ -25,15 +31,22 @@ class ReportsPdfHealthCommand extends Command
 
     private const LABEL_WIDTH = 12;
 
+    /**
+     * Ejecuta cada verificación, deriva el estado de Browsershot y Puppeteer, e imprime una línea
+     * OK/FALLO por componente.
+     *
+     * @param  BrowsershotPdfRenderer  $renderer  Renderizador real de PDF.
+     * @return int SUCCESS si todo el motor está operativo; FAILURE si algún componente falló.
+     */
     public function handle(BrowsershotPdfRenderer $renderer): int
     {
         $allOk = true;
         $results = [];
 
-        $results['Node']      = $this->checkNode();
-        $results['Chrome']    = $this->checkChrome();
-        $results['Storage']   = $this->checkStorageWrite();
-        $results['HTML PDF']  = $this->checkHtmlPdf($renderer);
+        $results['Node'] = $this->checkNode();
+        $results['Chrome'] = $this->checkChrome();
+        $results['Storage'] = $this->checkStorageWrite();
+        $results['HTML PDF'] = $this->checkHtmlPdf($renderer);
         $results['Chart PDF'] = $this->checkChartPdf($renderer);
         $results['Browsershot'] = $results['HTML PDF']['ok'] && $results['Chart PDF']['ok']
             ? ['ok' => true, 'detail' => 'Render real vía Browsershot funcionando.']
@@ -57,8 +70,8 @@ class ReportsPdfHealthCommand extends Command
             $dots = str_pad('', max(3, self::LABEL_WIDTH - strlen($label)), '.');
             $status = $r['ok'] ? '<fg=green>OK</>' : '<fg=red>FALLO</>';
             $this->line(sprintf('%s %s %s', $label, $dots, $status));
-            if (!$r['ok'] || $this->output->isVerbose()) {
-                $this->line('  ' . $r['detail']);
+            if (! $r['ok'] || $this->output->isVerbose()) {
+                $this->line('  '.$r['detail']);
             }
         }
         $this->newLine();
@@ -74,7 +87,12 @@ class ReportsPdfHealthCommand extends Command
         return self::FAILURE;
     }
 
-    /** @return array{ok: bool, detail: string} */
+    /**
+     * Verifica Node: la ruta de BROWSERSHOT_NODE_BINARY si está configurada o, si no, que `node
+     * --version` responda desde el PATH del sistema.
+     *
+     * @return array{ok: bool, detail: string}
+     */
     private function checkNode(): array
     {
         $configured = config('pdf.browsershot.node_binary');
@@ -87,23 +105,28 @@ class ReportsPdfHealthCommand extends Command
         // Sin override en .env: Browsershot resuelve 'node' del PATH del sistema —
         // se prueba directo con Process, igual que hará Symfony\Process internamente.
         try {
-            $process = new \Symfony\Component\Process\Process(['node', '--version']);
+            $process = new Process(['node', '--version']);
             $process->setTimeout(10);
             $process->run();
 
             return $process->isSuccessful()
-                ? ['ok' => true, 'detail' => 'node --version (PATH del sistema): ' . trim($process->getOutput())]
+                ? ['ok' => true, 'detail' => 'node --version (PATH del sistema): '.trim($process->getOutput())]
                 : ['ok' => false, 'detail' => "'node' no está en el PATH del sistema (define BROWSERSHOT_NODE_BINARY en .env)."];
         } catch (Throwable $e) {
-            return ['ok' => false, 'detail' => 'No se pudo invocar node: ' . $e->getMessage()];
+            return ['ok' => false, 'detail' => 'No se pudo invocar node: '.$e->getMessage()];
         }
     }
 
-    /** @return array{ok: bool, detail: string} */
+    /**
+     * Verifica que la ruta de Chrome/Chromium configurada (BROWSERSHOT_CHROME_PATH /
+     * PUPPETEER_EXECUTABLE_PATH) exista.
+     *
+     * @return array{ok: bool, detail: string}
+     */
     private function checkChrome(): array
     {
         $chromePath = config('pdf.browsershot.chrome_path');
-        if (!$chromePath) {
+        if (! $chromePath) {
             return ['ok' => false, 'detail' => 'BROWSERSHOT_CHROME_PATH / PUPPETEER_EXECUTABLE_PATH no está definido en .env.'];
         }
 
@@ -112,13 +135,17 @@ class ReportsPdfHealthCommand extends Command
             : ['ok' => false, 'detail' => "La ruta configurada no existe: {$chromePath}"];
     }
 
-    /** @return array{ok: bool, detail: string} */
+    /**
+     * Escribe y borra un archivo sonda en storage/app/radiografias para comprobar permisos.
+     *
+     * @return array{ok: bool, detail: string}
+     */
     private function checkStorageWrite(): array
     {
         $directory = storage_path('app/radiografias');
         try {
             File::ensureDirectoryExists($directory);
-            $probe = $directory . '/.pdf-health-probe';
+            $probe = $directory.'/.pdf-health-probe';
             File::put($probe, (string) now()->timestamp);
             $ok = File::exists($probe);
             File::delete($probe);
@@ -127,17 +154,22 @@ class ReportsPdfHealthCommand extends Command
                 ? ['ok' => true, 'detail' => "Escritura verificada en {$directory}"]
                 : ['ok' => false, 'detail' => "No se pudo confirmar la escritura en {$directory}"];
         } catch (Throwable $e) {
-            return ['ok' => false, 'detail' => "No se pudo escribir en {$directory}: " . $e->getMessage()];
+            return ['ok' => false, 'detail' => "No se pudo escribir en {$directory}: ".$e->getMessage()];
         }
     }
 
-    /** @return array{ok: bool, detail: string} */
+    /**
+     * Renderiza un HTML mínimo a PDF con el renderizador real y valida el resultado.
+     *
+     * @param  BrowsershotPdfRenderer  $renderer  Renderizador real de PDF.
+     * @return array{ok: bool, detail: string}
+     */
     private function checkHtmlPdf(BrowsershotPdfRenderer $renderer): array
     {
         $probePath = storage_path('app/radiografias/.pdf-health-html-probe.pdf');
         try {
             $renderer->renderHtmlToFile(
-                '<html><body style="font-family:Helvetica"><h1>reports:pdf-health</h1><p>Probe HTML ' . now()->toDateTimeString() . '</p></body></html>',
+                '<html><body style="font-family:Helvetica"><h1>reports:pdf-health</h1><p>Probe HTML '.now()->toDateTimeString().'</p></body></html>',
                 $probePath,
                 ['wait_for_ready' => false],
             );
@@ -158,21 +190,26 @@ class ReportsPdfHealthCommand extends Command
         }
     }
 
-    /** @return array{ok: bool, detail: string} */
+    /**
+     * Renderiza un HTML con gráfica/SVG a PDF para validar el render de gráficas.
+     *
+     * @param  BrowsershotPdfRenderer  $renderer  Renderizador real de PDF.
+     * @return array{ok: bool, detail: string}
+     */
     private function checkChartPdf(BrowsershotPdfRenderer $renderer): array
     {
         $chartJsPath = public_path('vendor/chartjs/chart.umd.js');
-        if (!is_file($chartJsPath)) {
+        if (! is_file($chartJsPath)) {
             return ['ok' => false, 'detail' => "No existe {$chartJsPath} (chart.umd.js) — necesario para las gráficas del PDF."];
         }
 
         $probePath = storage_path('app/radiografias/.pdf-health-chart-probe.pdf');
         $html = '<html><body>'
-            . '<script>window.__PDF_READY__ = false;</script>'
-            . '<canvas id="c" width="300" height="150"></canvas>'
-            . '<script>' . file_get_contents($chartJsPath) . '</script>'
-            . '<script>new Chart(document.getElementById("c"), {type:"bar", data:{labels:["A","B"], datasets:[{data:[1,2]}]}}); window.__PDF_READY__ = true;</script>'
-            . '</body></html>';
+            .'<script>window.__PDF_READY__ = false;</script>'
+            .'<canvas id="c" width="300" height="150"></canvas>'
+            .'<script>'.file_get_contents($chartJsPath).'</script>'
+            .'<script>new Chart(document.getElementById("c"), {type:"bar", data:{labels:["A","B"], datasets:[{data:[1,2]}]}}); window.__PDF_READY__ = true;</script>'
+            .'</body></html>';
 
         try {
             $renderer->renderHtmlToFile($html, $probePath, ['wait_for_ready' => true, 'ready_timeout' => 20000]);

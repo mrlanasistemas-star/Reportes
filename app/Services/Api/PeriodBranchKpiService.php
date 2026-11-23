@@ -44,11 +44,27 @@ class PeriodBranchKpiService
     /** @var array<int, array> memo por petición */
     private array $memo = [];
 
+    /**
+     * @param  RadiografiaExportService  $exportService  Fuente del snapshot general del reporte.
+     */
     public function __construct(
         private readonly RadiografiaExportService $exportService,
     ) {}
 
     /**
+     * KPIs de un periodo: lista de sucursales, bloque corporativo, bloque
+     * consolidado y conciliación (EBITDA y cartera) entre sucursales y total.
+     *
+     * Si el periodo no tiene radiografía generada devuelve status
+     * not_available con el mensaje de la excepción (y lo registra en el log).
+     * Cada sucursal del snapshot se empata por nombre (mayúsculas, sin
+     * espacios extremos) con la tabla branches para obtener id, atribución,
+     * rutas del catálogo, rotación y percepciones/deducciones NOI.
+     *
+     * Efectos: lee snapshot (caché) y BD (branches, sucursales, NOI,
+     * asignaciones, periods); memoiza el resultado por periodo en la instancia.
+     *
+     * @param  Period  $period  Periodo consultado.
      * @return array{status:string, message:?string, calculated_at:?string, branches:list<array>, corporate:?array, consolidated:?array, reconciliation:?array}
      */
     public function forPeriod(Period $period): array
@@ -142,6 +158,18 @@ class PeriodBranchKpiService
         ];
     }
 
+    /**
+     * KPIs de una sucursal a partir de su fila del calculador de radiografía.
+     *
+     * La cartera vencida se calcula como la suma de los 5 tramos de mora; se
+     * agregan nómina (con NOI), rotación y efectividad (siempre null a nivel
+     * sucursal en esta API).
+     *
+     * @param  array  $row  Fila de branch_radiography.branches.
+     * @param  array|null  $noi  Percepciones/deducciones NOI de la sucursal; null si no hay branch en BD.
+     * @param  float|null  $turnover  Índice de rotación de la sucursal (%).
+     * @return array<string, mixed> KPIs de la sucursal.
+     */
     private function branchKpis(array $row, ?array $noi, ?float $turnover): array
     {
         $cartera = (float) ($row['valor_cartera'] ?? 0);
@@ -160,7 +188,21 @@ class PeriodBranchKpiService
         ]);
     }
 
-    /** Bloque común sucursal/consolidado — mismas claves y funciones canónicas. */
+    /**
+     * Bloque común sucursal/consolidado — mismas claves y funciones canónicas.
+     *
+     * Traduce las claves internas en español de la fila del calculador a la
+     * forma pública de la API (colocación, recuperación con componentes y
+     * exclusiones, cartera, gastos, comisiones, fondeo, seguros y EBITDA). El
+     * EBITDA, gastos totales y margen se obtienen de las funciones *For() de
+     * BranchRadiographyCalculator; la cartera vigente nunca es negativa.
+     *
+     * @param  array  $row  Fila del calculador (sucursal o global).
+     * @param  float  $cartera  Cartera total.
+     * @param  float  $vencida  Cartera vencida.
+     * @param  array  $buckets  Tramos de mora ya armados (contratos y monto).
+     * @return array<string, mixed>
+     */
     private function financialKpis(array $row, float $cartera, float $vencida, array $buckets): array
     {
         $ebitda = BranchRadiographyCalculator::ebitdaFinalFor($row);
@@ -237,6 +279,13 @@ class PeriodBranchKpiService
         ];
     }
 
+    /**
+     * KPIs de Nómina y Capital Humano de una sucursal.
+     *
+     * @param  array  $row  Fila del calculador.
+     * @param  array|null  $noi  Percepciones/deducciones NOI; null → los campos noi_* salen null.
+     * @return array<string, mixed> Total, desglose, IMSS patronal, gastos de empleados, deducciones informativas y NOI.
+     */
     private function payrollKpis(array $row, ?array $noi): array
     {
         return [
@@ -251,6 +300,19 @@ class PeriodBranchKpiService
         ];
     }
 
+    /**
+     * Bloque CORPORATIVO / SIN SUCURSAL.
+     *
+     * Incluye la nómina de colaboradores sin sucursal operativa (con detalle
+     * por empleado), los gastos solo como referencia (excluidos del OPEX por
+     * regla), los excedentes recibidos de las sucursales y su contribución al
+     * EBITDA consolidado (= −nómina corporativa). Colocación, recuperación y
+     * cartera se marcan not_attributable.
+     *
+     * @param  array  $unassigned  branch_radiography.unassigned del snapshot.
+     * @param  array  $sections  sections del snapshot (usa corporate_funding).
+     * @return array<string, mixed>
+     */
     private function corporateBlock(array $unassigned, array $sections): array
     {
         $nomina = BranchRadiographyCalculator::nominaTotalFor($unassigned);
@@ -299,6 +361,20 @@ class PeriodBranchKpiService
         ];
     }
 
+    /**
+     * Bloque CONSOLIDADO (total de la empresa).
+     *
+     * Parte de los mismos KPIs que una sucursal calculados sobre la fila
+     * GLOBAL del calculador y luego sobrescribe con las cifras de portada
+     * (snapshot.summary) donde el reporte las define distinto: colocación,
+     * recuperación, mora, OPEX, fondeo, seguros, EBITDA y nómina. Agrega
+     * rotación general, efectividad de cobranza histórica y saldos de caja.
+     *
+     * @param  array  $snapshot  Snapshot general completo.
+     * @param  array  $global  branch_radiography.global.
+     * @param  array  $sections  sections del snapshot.
+     * @return array<string, mixed>
+     */
     private function consolidatedBlock(array $snapshot, array $global, array $sections): array
     {
         $s = $snapshot['summary'] ?? [];
@@ -366,6 +442,12 @@ class PeriodBranchKpiService
      * agrupadas — misma regla que computeNoiPercepcionesDeduccionesForBranch()
      * (empleados con asignación al branch en ESTE period_id).
      *
+     * Nota: en la práctica se ejecuta una sola consulta agrupada por
+     * branch y tipo de concepto; los movimientos se toman de los periodos de
+     * datos (semanales base + el propio periodo).
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @param  array  $branchIds  IDs de branches a considerar (si está vacío no consulta).
      * @return array<int, array{percepciones: float, deducciones: float}>
      */
     private function noiByBranch(Period $period, array $branchIds): array
@@ -394,6 +476,15 @@ class PeriodBranchKpiService
         return $out;
     }
 
+    /**
+     * IDs de periodos donde viven los datos de un periodo: sus semanales base
+     * más el propio periodo, o solo el propio si no tiene semanales.
+     *
+     * Carga todos los periodos (Period::all()) para resolver la jerarquía.
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @return array<int, int> IDs de periodos de datos.
+     */
     private function dataIdsFor(Period $period): array
     {
         $weekly = $period->resolveBaseWeeklyIds(Period::all());
@@ -401,6 +492,13 @@ class PeriodBranchKpiService
         return empty($weekly) ? [$period->id] : array_values(array_unique(array_merge($weekly, [$period->id])));
     }
 
+    /**
+     * Redondea a 2 decimales los valores numéricos de un mapa (los no
+     * numéricos se conservan).
+     *
+     * @param  array  $map  Mapa concepto → monto.
+     * @return array Mapa con montos redondeados.
+     */
     private function roundMap(array $map): array
     {
         $out = [];
@@ -411,6 +509,13 @@ class PeriodBranchKpiService
         return $out;
     }
 
+    /**
+     * Llave de comparación de nombres: texto en mayúsculas sin espacios
+     * extremos (no quita acentos).
+     *
+     * @param  mixed  $value  Nombre de sucursal/branch.
+     * @return string Nombre normalizado para comparar.
+     */
     private function eq(mixed $value): string
     {
         return mb_strtoupper(trim((string) $value));

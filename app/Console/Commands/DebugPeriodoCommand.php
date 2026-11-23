@@ -5,7 +5,6 @@ namespace App\Console\Commands;
 use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\Expense;
-use App\Models\FinancialProduct;
 use App\Models\MonthlyEmployeeSummary;
 use App\Models\NoiMovement;
 use App\Models\Period;
@@ -15,25 +14,43 @@ use App\Models\Recovery;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-periodo` — diagnóstico general de datos en BD para un periodo (solo
+ * lectura): conteos por tabla, sumatorias financieras, nómina, buckets de cartera por días
+ * vencidos, sucursales reales por prefijo de contrato, productos normalizados, promotores/gestores,
+ * gastos y ejemplos de `fact_portfolios`.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-periodo 21
+ */
 class DebugPeriodoCommand extends Command
 {
-    protected $signature   = 'reportes:debug-periodo {periodId : ID del periodo a diagnosticar}';
+    protected $signature = 'reportes:debug-periodo {periodId : ID del periodo a diagnosticar}';
+
     protected $description = 'Diagnóstico de datos en BD para un periodo. Solo lectura.';
 
+    /**
+     * Imprime las secciones 1–9 del diagnóstico del periodo.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
-        $id     = (int) $this->argument('periodId');
+        $id = (int) $this->argument('periodId');
         $period = Period::query()->find($id);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("No existe periodo con id={$id}.");
+
             return 1;
         }
 
-        $this->info("═══════════════════════════════════════════════════════");
+        $this->info('═══════════════════════════════════════════════════════');
         $this->info("  DIAGNÓSTICO PERIODO  #{$id}  —  {$period->label}");
         $this->info("  {$period->start_date} → {$period->end_date}");
-        $this->info("═══════════════════════════════════════════════════════");
+        $this->info('═══════════════════════════════════════════════════════');
 
         // ── 1. CONTEOS POR TABLA ─────────────────────────────────────────
         $this->line('');
@@ -65,12 +82,12 @@ class DebugPeriodoCommand extends Command
         $this->line('');
         $this->info('── 2. SUMATORIAS FINANCIERAS ───────────────────────────');
         $recuperacion = (float) Recovery::query()->where('period_id', $id)->sum('total_amount');
-        $colocacion   = (float) Placement::query()->where('period_id', $id)->sum('amount');
-        $cartera      = (float) Portfolio::query()->where('period_id', $id)->sum('balance');
-        $vencidaPD    = (float) Portfolio::query()->where('period_id', $id)->sum('past_due_balance');
-        $vencidaDays  = (float) Portfolio::query()->where('period_id', $id)->where('days_past_due', '>', 0)->sum('balance');
-        $capitalDue   = (float) Portfolio::query()->where('period_id', $id)->whereNotNull('capital_due')->sum('capital_due');
-        $gastos       = (float) Expense::query()->where('period_id', $id)->sum('amount');
+        $colocacion = (float) Placement::query()->where('period_id', $id)->sum('amount');
+        $cartera = (float) Portfolio::query()->where('period_id', $id)->sum('balance');
+        $vencidaPD = (float) Portfolio::query()->where('period_id', $id)->sum('past_due_balance');
+        $vencidaDays = (float) Portfolio::query()->where('period_id', $id)->where('days_past_due', '>', 0)->sum('balance');
+        $capitalDue = (float) Portfolio::query()->where('period_id', $id)->whereNotNull('capital_due')->sum('capital_due');
+        $gastos = (float) Expense::query()->where('period_id', $id)->sum('amount');
 
         $vencidaEfectiva = $capitalDue > 0 ? $capitalDue : ($vencidaPD > 0 ? $vencidaPD : $vencidaDays);
         $mora = $cartera > 0 ? round(($vencidaEfectiva / $cartera) * 100, 2) : 0;
@@ -78,14 +95,14 @@ class DebugPeriodoCommand extends Command
         $this->table(
             ['Métrica', 'Valor', 'Nota'],
             [
-                ['Recuperación total',            '$' . number_format($recuperacion, 2), ''],
-                ['Colocación total',              '$' . number_format($colocacion, 2), ''],
-                ['Cartera total',                 '$' . number_format($cartera, 2), ''],
-                ['Cartera vencida (past_due_balance)', '$' . number_format($vencidaPD, 2), ''],
-                ['Cartera vencida (days>0 * balance)', '$' . number_format($vencidaDays, 2), 'proxy'],
-                ['Capital atrasado (capital_due)',   '$' . number_format($capitalDue, 2), 'preferido'],
-                ['Mora % (con capital_due)',         $mora . '%', ''],
-                ['Gastos totales',                '$' . number_format($gastos, 2), ''],
+                ['Recuperación total',            '$'.number_format($recuperacion, 2), ''],
+                ['Colocación total',              '$'.number_format($colocacion, 2), ''],
+                ['Cartera total',                 '$'.number_format($cartera, 2), ''],
+                ['Cartera vencida (past_due_balance)', '$'.number_format($vencidaPD, 2), ''],
+                ['Cartera vencida (days>0 * balance)', '$'.number_format($vencidaDays, 2), 'proxy'],
+                ['Capital atrasado (capital_due)',   '$'.number_format($capitalDue, 2), 'preferido'],
+                ['Mora % (con capital_due)',         $mora.'%', ''],
+                ['Gastos totales',                '$'.number_format($gastos, 2), ''],
             ]
         );
 
@@ -107,24 +124,24 @@ class DebugPeriodoCommand extends Command
                 $noiConceptTypes->map(fn ($r) => [
                     $r->tipo,
                     $r->cnt,
-                    '$' . number_format($r->total, 2),
+                    '$'.number_format($r->total, 2),
                 ])->toArray()
             );
         }
 
-        $pagos  = (float) DB::table('fact_noi_movements')->where('period_id', $id)->whereRaw("LOWER(COALESCE(concept_type,'')) = 'percepcion'")->sum('amount');
-        $deduc  = (float) DB::table('fact_noi_movements')->where('period_id', $id)->whereRaw("LOWER(COALESCE(concept_type,'')) IN ('deduccion','descuento')")->sum('amount');
-        $neto   = $pagos - $deduc;
+        $pagos = (float) DB::table('fact_noi_movements')->where('period_id', $id)->whereRaw("LOWER(COALESCE(concept_type,'')) = 'percepcion'")->sum('amount');
+        $deduc = (float) DB::table('fact_noi_movements')->where('period_id', $id)->whereRaw("LOWER(COALESCE(concept_type,'')) IN ('deduccion','descuento')")->sum('amount');
+        $neto = $pagos - $deduc;
         $this->line("  Percepciones: \${$neto} | Deducciones: \${$deduc} | Neto nómina: \${$neto}");
 
         // ── 4. CARTERA — BUCKETS POR DÍAS VENCIDOS ────────────────────────
         $this->line('');
         $this->info('── 4. CARTERA — BUCKETS POR DÍAS VENCIDOS ──────────────');
         $buckets = [
-            ['label' => 'Al corriente (0)',  'min' => 0,   'max' => 0  ],
-            ['label' => 'Mora 1-30',         'min' => 1,   'max' => 30 ],
-            ['label' => 'Mora 31-60',        'min' => 31,  'max' => 60 ],
-            ['label' => 'Mora 61-90',        'min' => 61,  'max' => 90 ],
+            ['label' => 'Al corriente (0)',  'min' => 0,   'max' => 0],
+            ['label' => 'Mora 1-30',         'min' => 1,   'max' => 30],
+            ['label' => 'Mora 31-60',        'min' => 31,  'max' => 60],
+            ['label' => 'Mora 61-90',        'min' => 61,  'max' => 90],
             ['label' => 'Mora 91-120',       'min' => 91,  'max' => 120],
             ['label' => 'Mora 120+',         'min' => 121, 'max' => 99999],
         ];
@@ -137,19 +154,21 @@ class DebugPeriodoCommand extends Command
                 ->selectRaw('COUNT(*) as cnt, SUM(balance) as saldo, SUM(past_due_balance) as venc_pd, SUM(COALESCE(capital_due, 0)) as capital_due')
                 ->first();
 
-            $cnt = (int)($data?->cnt ?? 0);
-            if ($cnt === 0) continue;
+            $cnt = (int) ($data?->cnt ?? 0);
+            if ($cnt === 0) {
+                continue;
+            }
 
-            $saldo   = (float)($data?->saldo ?? 0);
-            $vencida = (float)($data?->capital_due ?? 0) > 0
-                ? (float)($data?->capital_due ?? 0)
-                : ((float)($data?->venc_pd ?? 0) > 0 ? (float)($data?->venc_pd ?? 0) : ($b['min'] > 0 ? $saldo : 0));
+            $saldo = (float) ($data?->saldo ?? 0);
+            $vencida = (float) ($data?->capital_due ?? 0) > 0
+                ? (float) ($data?->capital_due ?? 0)
+                : ((float) ($data?->venc_pd ?? 0) > 0 ? (float) ($data?->venc_pd ?? 0) : ($b['min'] > 0 ? $saldo : 0));
 
             $bucketRows[] = [
                 $b['label'],
                 $cnt,
-                '$' . number_format($saldo, 2),
-                '$' . number_format($vencida, 2),
+                '$'.number_format($saldo, 2),
+                '$'.number_format($vencida, 2),
             ];
         }
         if (empty($bucketRows)) {
@@ -177,8 +196,8 @@ class DebugPeriodoCommand extends Command
                 ['Sucursal', 'Contratos', 'Cartera', 'Vencida'],
                 $sucursalesReales->map(fn ($r) => [
                     $r->sucursal, $r->contratos,
-                    '$' . number_format($r->cartera, 2),
-                    '$' . number_format($r->vencida, 2),
+                    '$'.number_format($r->cartera, 2),
+                    '$'.number_format($r->vencida, 2),
                 ])->toArray()
             );
         }
@@ -216,7 +235,7 @@ class DebugPeriodoCommand extends Command
             $this->line('  → Productos en Colocación (Ministraciones):');
             $this->table(
                 ['Producto', 'Operaciones', 'Total'],
-                $prodsPla->map(fn ($r) => [$r->producto, $r->cnt, '$' . number_format($r->total, 2)])->toArray()
+                $prodsPla->map(fn ($r) => [$r->producto, $r->cnt, '$'.number_format($r->total, 2)])->toArray()
             );
         }
 
@@ -233,7 +252,7 @@ class DebugPeriodoCommand extends Command
             $this->line('  → Productos en Cartera (Saldos):');
             $this->table(
                 ['Producto', 'Contratos', 'Cartera'],
-                $prodsPor->map(fn ($r) => [$r->producto, $r->contratos, '$' . number_format($r->cartera, 2)])->toArray()
+                $prodsPor->map(fn ($r) => [$r->producto, $r->contratos, '$'.number_format($r->cartera, 2)])->toArray()
             );
         }
 
@@ -258,7 +277,7 @@ class DebugPeriodoCommand extends Command
                 $promosPla->map(fn ($r) => [
                     mb_strimwidth($r->gestor ?? '(sin nombre)', 0, 35),
                     $r->ops,
-                    '$' . number_format($r->total, 2),
+                    '$'.number_format($r->total, 2),
                 ])->toArray()
             );
         } else {
@@ -285,7 +304,7 @@ class DebugPeriodoCommand extends Command
                     mb_strimwidth($r->gestor ?? '(sin nombre)', 0, 35),
                     $r->codigo ?? '—',
                     $r->contratos,
-                    '$' . number_format($r->cartera, 2),
+                    '$'.number_format($r->cartera, 2),
                 ])->toArray()
             );
         }
@@ -311,7 +330,7 @@ class DebugPeriodoCommand extends Command
                     mb_strimwidth($r->cat, 0, 30),
                     mb_strimwidth($r->suc, 0, 25),
                     $r->cnt,
-                    '$' . number_format($r->total, 2),
+                    '$'.number_format($r->total, 2),
                 ])->toArray()
             );
         }
@@ -341,8 +360,8 @@ class DebugPeriodoCommand extends Command
                     $r->contract ?? '—',
                     mb_strimwidth($r->promoter_name ?? $r->promoter_code ?? '—', 0, 20),
                     mb_strimwidth($r->product_name ?? '—', 0, 15),
-                    number_format((float)$r->balance, 2),
-                    number_format((float)$r->capital_due, 2),
+                    number_format((float) $r->balance, 2),
+                    number_format((float) $r->capital_due, 2),
                     $r->days_past_due,
                 ])->toArray()
             );

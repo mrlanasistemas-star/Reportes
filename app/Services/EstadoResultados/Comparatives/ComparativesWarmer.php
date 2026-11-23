@@ -14,12 +14,22 @@ use Illuminate\Support\Facades\Log;
  * Este servicio arma EXACTAMENTE la misma consulta que abre la pestaña (modos por defecto,
  * consolidado, sin usuario = sin redacción) para que los resúmenes por periodo y las bases
  * queden en caché firmada. No cambia ninguna cifra: sólo adelanta el mismo cálculo.
+ *
+ * Lo invocan WarmEstadoResultadosComparativesJob (cola, encolado por EstadoResultadosController
+ * vía dispatchFor) y el comando WarmEstadoResultadosComparativesCommand.
  */
 class ComparativesWarmer
 {
+    /** @param  ComparisonService  $service  servicio de comparativas cuyo cálculo se adelanta */
     public function __construct(private readonly ComparisonService $service) {}
 
-    /** @return array{ms:int, peak_memory_mb:int, periods:array} diagnóstico del cálculo */
+    /**
+     * Ejecuta el cálculo de comparativas por defecto (consolidado, sin usuario, sin gráficas) para
+     * dejar en caché los resúmenes de los periodos de contraste.
+     *
+     * @param  Period  $period  periodo mensual a precalentar
+     * @return array{ms:int, peak_memory_mb:int, periods:array} diagnóstico del cálculo
+     */
     public function warm(Period $period): array
     {
         return $this->service->build($period, null, null, ['charts' => false])['diagnostics'];
@@ -29,6 +39,12 @@ class ComparativesWarmer
      * Encola el precalentado del periodo si la cola es asíncrona. Con la cola `sync` (pruebas,
      * entornos sin worker configurado) no hace nada: calentar en la misma petición sólo la haría
      * más lenta. Nunca falla la petición que lo pide.
+     *
+     * Se desactiva con config estado_resultados.cache.precalentar; sólo aplica a periodos mensuales.
+     * Si el encolado falla, registra un warning en el log y devuelve false.
+     *
+     * @param  Period  $period  periodo a precalentar
+     * @return bool true si el job quedó encolado
      */
     public static function dispatchFor(Period $period): bool
     {

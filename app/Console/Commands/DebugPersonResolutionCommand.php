@@ -8,42 +8,63 @@ use App\Services\PersonIdentityResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-person-resolution` — muestra la resolución de identidad por persona
+ * del NOI (regular + fiscal) con PersonIdentityResolverService: resumen de resueltos por método
+ * y, para los no resueltos, el motivo, los candidatos/matches y los códigos revisados.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-person-resolution 21
+ */
 class DebugPersonResolutionCommand extends Command
 {
-    protected $signature   = 'reportes:debug-person-resolution {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-person-resolution {period_id : ID del periodo}';
+
     protected $description = 'Muestra resolución de identidad por persona del NOI (regular + fiscal). Para no-resueltos: explica motivo, matches y códigos revisados.';
 
+    /**
+     * @param  PersonIdentityResolverService  $resolver  Resolvedor de identidad de personas.
+     */
     public function __construct(private readonly PersonIdentityResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Resuelve los periodos de datos, ejecuta la resolución de identidad para las personas NOI e
+     * imprime el resumen y el detalle de no resueltos.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
 
         $this->line('');
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG RESOLUCIÓN PERSONAS — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // Get employees + their assignment status
         $employees = DB::table('employees as e')
             ->leftJoin('employee_branch_assignments as eba', function ($j) use ($dataIds, $periodId) {
                 $j->on('eba.employee_id', '=', 'e.id')
-                  ->whereIn('eba.period_id', array_merge([$periodId], $dataIds));
+                    ->whereIn('eba.period_id', array_merge([$periodId], $dataIds));
             })
             ->leftJoin('branches as b', 'eba.branch_id', '=', 'b.id')
             ->join('fact_noi_movements as n', function ($j) use ($dataIds) {
@@ -68,17 +89,18 @@ class DebugPersonResolutionCommand extends Command
 
         if ($employees->isEmpty()) {
             $this->warn('  Sin empleados en NOI para este periodo.');
+
             return self::SUCCESS;
         }
 
         // Source flags
         $fiscalEmployeeIds = $this->resolveFiscalEmployeeIds($dataIds);
 
-        $resolved   = $employees->filter(fn ($e) => $e->branch_name !== null);
+        $resolved = $employees->filter(fn ($e) => $e->branch_name !== null);
         $unresolved = $employees->filter(fn ($e) => $e->branch_name === null);
 
         $this->line("  Total: {$employees->count()}  |  Con sucursal: {$resolved->count()}  |  Sin sucursal: {$unresolved->count()}");
-        $this->line("  De NOI fiscal: " . count($fiscalEmployeeIds));
+        $this->line('  De NOI fiscal: '.count($fiscalEmployeeIds));
         $this->line('');
 
         // ── Resolved summary ─────────────────────────────────────────────
@@ -89,7 +111,7 @@ class DebugPersonResolutionCommand extends Command
             mb_substr((string) $e->branch_name, 0, 18),
             mb_substr((string) ($e->match_type ?? '—'), 0, 12),
             (int) $e->movements,
-            '$' . number_format((float) $e->total_amount, 2),
+            '$'.number_format((float) $e->total_amount, 2),
         ])->all();
         $this->table(['Nombre', 'Fuente', 'Sucursal', 'Método', 'Movs.', 'Total NOI'], $rows);
         $this->line('');
@@ -98,6 +120,7 @@ class DebugPersonResolutionCommand extends Command
         if ($unresolved->isEmpty()) {
             $this->info('  ✓ Todas las personas tienen sucursal asignada.');
             $this->line('');
+
             return self::SUCCESS;
         }
 
@@ -136,13 +159,13 @@ class DebugPersonResolutionCommand extends Command
             $isFiscal = in_array($emp->id, $fiscalEmployeeIds, true);
 
             $trace = $this->resolver->buildResolutionTrace(
-                employeeId:      (int) $emp->id,
-                fullName:        (string) $emp->full_name,
-                allEmployees:    $allEmployees,
-                sampleMovs:      $sampleMovs[(int) $emp->id] ?? collect(),
-                employeeCode:    $emp->employee_code ?? null,
+                employeeId: (int) $emp->id,
+                fullName: (string) $emp->full_name,
+                allEmployees: $allEmployees,
+                sampleMovs: $sampleMovs[(int) $emp->id] ?? collect(),
+                employeeCode: $emp->employee_code ?? null,
                 historicalBranch: $historical[(int) $emp->id]->branch_name ?? null,
-                dataIds:         $dataIds,
+                dataIds: $dataIds,
             );
 
             $this->line(sprintf(
@@ -152,14 +175,14 @@ class DebugPersonResolutionCommand extends Command
             ));
 
             $this->line("  Normalizado:    {$trace['normalized_name']}");
-            $this->line("  Movimientos:    {$emp->movements}  |  Monto: $" . number_format((float) $emp->total_amount, 2));
+            $this->line("  Movimientos:    {$emp->movements}  |  Monto: $".number_format((float) $emp->total_amount, 2));
 
             // Detected codes
             $codes = $trace['detected_codes'];
-            $this->line("  Código empl.:   " . ($codes['employee_code'] ?? 'N/D'));
-            $this->line("  Prefijo contr.: " . ($codes['contract_prefix'] ?? 'N/D'));
-            $this->line("  Sucursal hint:  " . ($codes['branch_hint'] ?? 'N/D'));
-            if (!empty($codes['raw_clues'])) {
+            $this->line('  Código empl.:   '.($codes['employee_code'] ?? 'N/D'));
+            $this->line('  Prefijo contr.: '.($codes['contract_prefix'] ?? 'N/D'));
+            $this->line('  Sucursal hint:  '.($codes['branch_hint'] ?? 'N/D'));
+            if (! empty($codes['raw_clues'])) {
                 foreach ($codes['raw_clues'] as $clue) {
                     $this->line("  Pista:          {$clue}");
                 }
@@ -167,24 +190,24 @@ class DebugPersonResolutionCommand extends Command
 
             // Ministraciones check
             $pm = $trace['placement_match'] ?? null;
-            if (!($trace['checked_ministraciones'] ?? false)) {
-                $this->line("  Ministraciones: <fg=gray>no revisado</>");
+            if (! ($trace['checked_ministraciones'] ?? false)) {
+                $this->line('  Ministraciones: <fg=gray>no revisado</>');
             } elseif ($pm) {
                 $methodLabel = $pm['method'] === 'exact' ? 'exacto' : "variante {$pm['score']}%";
                 $this->line(sprintf(
-                    "  Ministraciones: <fg=green>%s</> → sucursal %s  (%s, método=%s)",
+                    '  Ministraciones: <fg=green>%s</> → sucursal %s  (%s, método=%s)',
                     $pm['code'], $codes['placement_branch'] ?? '?', $methodLabel, $pm['method']
                 ));
             } else {
-                $this->line("  Ministraciones: <fg=red>no encontrado</> — no aparece como promotor en colocación");
+                $this->line('  Ministraciones: <fg=red>no encontrado</> — no aparece como promotor en colocación');
             }
 
             // Candidate matches
-            if (!empty($trace['candidate_matches'])) {
+            if (! empty($trace['candidate_matches'])) {
                 $this->line('  Posibles matches:');
                 foreach ($trace['candidate_matches'] as $m) {
                     $flag = $m['score'] >= 80 ? '<fg=yellow>[SOBRE UMBRAL]</>' : '';
-                    $this->line(sprintf("    · %-28s  score %s%%  %s  %s",
+                    $this->line(sprintf('    · %-28s  score %s%%  %s  %s',
                         mb_substr($m['name'], 0, 28), $m['score'], $m['reason'], $flag));
                 }
             } else {
@@ -192,10 +215,10 @@ class DebugPersonResolutionCommand extends Command
             }
 
             // Sample movements
-            if (!empty($trace['sample_movements'])) {
+            if (! empty($trace['sample_movements'])) {
                 $this->line('  Muestra de movimientos:');
                 foreach ($trace['sample_movements'] as $mov) {
-                    $this->line(sprintf("    · [%s] %-30s  $%s  fuente=%s  código=%s",
+                    $this->line(sprintf('    · [%s] %-30s  $%s  fuente=%s  código=%s',
                         $mov['date'] ?? '—',
                         mb_substr($mov['concept'], 0, 30),
                         number_format($mov['amount'], 2),
@@ -218,18 +241,18 @@ class DebugPersonResolutionCommand extends Command
             }
 
             $typeColor = match ($resType) {
-                'exact_name_has_branch'   => 'fg=green',
-                'exact_name_no_branch'    => 'fg=yellow',
-                'fuzzy_match_has_branch'  => 'fg=green',
-                'fuzzy_match_no_branch'   => 'fg=yellow',
-                'possible_match'          => 'fg=yellow',
-                'manual_branch_required'  => 'fg=red',
-                default                   => 'fg=white',
+                'exact_name_has_branch' => 'fg=green',
+                'exact_name_no_branch' => 'fg=yellow',
+                'fuzzy_match_has_branch' => 'fg=green',
+                'fuzzy_match_no_branch' => 'fg=yellow',
+                'possible_match' => 'fg=yellow',
+                'manual_branch_required' => 'fg=red',
+                default => 'fg=white',
             };
             $this->line("  <{$typeColor}>Tipo resolución: {$resType}</>");
 
-            $this->line('  <fg=red>Motivo:</>     ' . $trace['reason']);
-            $this->line('  <fg=cyan>Sugerencia:</> ' . $trace['suggested_action']);
+            $this->line('  <fg=red>Motivo:</>     '.$trace['reason']);
+            $this->line('  <fg=cyan>Sugerencia:</> '.$trace['suggested_action']);
             $this->line('');
         }
 
@@ -237,14 +260,14 @@ class DebugPersonResolutionCommand extends Command
         $this->info('── Resumen por tipo ──────────────────────────────────────────────────');
         $typeCounts = [];
         foreach ($unresolved as $emp) {
-            $trace     = $this->resolver->buildResolutionTrace(
-                employeeId:      (int) $emp->id,
-                fullName:        (string) $emp->full_name,
-                allEmployees:    $allEmployees,
-                sampleMovs:      collect(),
-                employeeCode:    $emp->employee_code ?? null,
+            $trace = $this->resolver->buildResolutionTrace(
+                employeeId: (int) $emp->id,
+                fullName: (string) $emp->full_name,
+                allEmployees: $allEmployees,
+                sampleMovs: collect(),
+                employeeCode: $emp->employee_code ?? null,
                 historicalBranch: null,
-                dataIds:         $dataIds,
+                dataIds: $dataIds,
             );
             $best = $trace['candidate_matches'][0] ?? null;
             if ($best && $best['score'] >= 100.0) {
@@ -264,12 +287,18 @@ class DebugPersonResolutionCommand extends Command
 
         $this->info('── Resumen ───────────────────────────────────────────────────────────');
         $montoSin = $unresolved->sum('total_amount');
-        $this->line("  Sin sucursal: {$unresolved->count()}  |  Monto sin sucursal: $" . number_format((float) $montoSin, 2));
+        $this->line("  Sin sucursal: {$unresolved->count()}  |  Monto sin sucursal: $".number_format((float) $montoSin, 2));
         $this->line('');
 
         return self::SUCCESS;
     }
 
+    /**
+     * Obtiene los employee_id distintos que aparecen en los uploads de NOI Fiscal de los periodos.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<int> IDs de empleados presentes en NOI Fiscal.
+     */
     private function resolveFiscalEmployeeIds(array $dataIds): array
     {
         $fiscalUploadIds = DB::table('report_uploads as ru')
@@ -279,7 +308,9 @@ class DebugPersonResolutionCommand extends Command
             ->pluck('ru.id')
             ->toArray();
 
-        if (empty($fiscalUploadIds)) return [];
+        if (empty($fiscalUploadIds)) {
+            return [];
+        }
 
         return DB::table('fact_noi_movements')
             ->whereIn('report_upload_id', $fiscalUploadIds)

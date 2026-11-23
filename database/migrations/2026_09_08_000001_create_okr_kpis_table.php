@@ -8,11 +8,11 @@ return new class extends Migration
 {
     /**
      * Módulo OKR (08-sep-2026) — catálogo de KPI. `code` es la llave técnica
-     * estable (nunca el nombre visual) — ver docs/OKR.md. `provider_key`
+     * estable (nunca el nombre visual) — ver docs/MANUAL-DESARROLLADOR.md. `provider_key`
      * identifica la entrada en OkrKpiProviderRegistry que sabe resolver el
      * valor real desde Reportería (RadiografiaExportService::buildSnapshot());
      * NULL cuando el KPI es manual (sin fuente canónica todavía — ver
-     * docs/OKR.md "KPI sin fuente automática").
+     * docs/MANUAL-DESARROLLADOR.md "KPI sin fuente automática").
      */
     public function up(): void
     {

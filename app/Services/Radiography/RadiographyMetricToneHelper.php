@@ -13,34 +13,45 @@ namespace App\Services\Radiography;
 class RadiographyMetricToneHelper
 {
     private const INCREASE_GOOD = 'increase_good';
+
     private const DECREASE_GOOD = 'decrease_good';
-    private const NEUTRAL       = 'neutral';
+
+    private const NEUTRAL = 'neutral';
 
     private const DIRECTIONS = [
-        'Recuperación'                   => self::INCREASE_GOOD,
-        'Ingreso base EBITDA'            => self::INCREASE_GOOD,
-        'Colocación'                     => self::INCREASE_GOOD,
-        'Valor cartera'                  => self::INCREASE_GOOD,
-        'Cartera vencida'                => self::DECREASE_GOOD,
-        'Mora %'                         => self::DECREASE_GOOD,
-        'OPEX'                           => self::DECREASE_GOOD,
-        'Gastos'                         => self::DECREASE_GOOD,
-        'Gastos Totales'                 => self::DECREASE_GOOD,
-        'EBITDA'                         => self::INCREASE_GOOD,
-        'Margen EBITDA'                  => self::INCREASE_GOOD,
-        'Préstamos activos (contratos)'  => self::INCREASE_GOOD,
-        'Bajas del periodo'              => self::DECREASE_GOOD,
-        'Rotación %'                     => self::DECREASE_GOOD,
-        'Nómina y Capital Humano'        => self::NEUTRAL,
-        'IMSS'                           => self::NEUTRAL,
-        'Percepciones'                   => self::NEUTRAL,
-        'Deducciones (informativo)'      => self::NEUTRAL,
-        'Neto pagado a trabajadores'     => self::NEUTRAL,
-        'Plantilla'                      => self::NEUTRAL,
-        'Altas del periodo'              => self::NEUTRAL,
+        'Recuperación' => self::INCREASE_GOOD,
+        'Ingreso base EBITDA' => self::INCREASE_GOOD,
+        'Colocación' => self::INCREASE_GOOD,
+        'Valor cartera' => self::INCREASE_GOOD,
+        'Cartera vencida' => self::DECREASE_GOOD,
+        'Mora %' => self::DECREASE_GOOD,
+        'OPEX' => self::DECREASE_GOOD,
+        'Gastos' => self::DECREASE_GOOD,
+        'Gastos Totales' => self::DECREASE_GOOD,
+        'EBITDA' => self::INCREASE_GOOD,
+        'Margen EBITDA' => self::INCREASE_GOOD,
+        'Préstamos activos (contratos)' => self::INCREASE_GOOD,
+        'Bajas del periodo' => self::DECREASE_GOOD,
+        'Rotación %' => self::DECREASE_GOOD,
+        'Nómina y Capital Humano' => self::NEUTRAL,
+        'IMSS' => self::NEUTRAL,
+        'Percepciones' => self::NEUTRAL,
+        'Deducciones (informativo)' => self::NEUTRAL,
+        'Neto pagado a trabajadores' => self::NEUTRAL,
+        'Plantilla' => self::NEUTRAL,
+        'Altas del periodo' => self::NEUTRAL,
     ];
 
-    /** 'good' | 'bad' | 'neutral' — nunca cambia la cifra, solo el tono a aplicar. */
+    /**
+     * Tono de una variación: 'good' | 'bad' | 'neutral'. Nunca cambia la cifra, solo
+     * el tono a aplicar. Variación 0 o métrica sin dirección definida = neutral; en
+     * métricas donde subir es mejor, subir es 'good'; donde bajar es mejor
+     * (mora, OPEX, cartera vencida, rotación...), bajar es 'good'.
+     *
+     * @param  string  $label  Nombre visible de la métrica (debe coincidir con DIRECTIONS).
+     * @param  float  $varPct  Variación porcentual contra el periodo de comparación.
+     * @return string 'good', 'bad' o 'neutral'.
+     */
     public static function toneFor(string $label, float $varPct): string
     {
         if ($varPct == 0.0) {
@@ -57,12 +68,18 @@ class RadiographyMetricToneHelper
         return ($direction === self::INCREASE_GOOD) === $isIncrease ? 'good' : 'bad';
     }
 
-    /** Clase CSS lista para usar en los blades PDF ('pos'|'negv'|'') — ver pdf/layout.blade.php. */
+    /**
+     * Clase CSS lista para usar en los blades PDF ('pos'|'negv'|'') — ver pdf/layout.blade.php.
+     *
+     * @param  string  $label  Nombre visible de la métrica.
+     * @param  float  $varPct  Variación porcentual.
+     * @return string 'pos' (bueno), 'negv' (malo) o '' (neutral).
+     */
     public static function toneClass(string $label, float $varPct): string
     {
         return match (self::toneFor($label, $varPct)) {
             'good' => 'pos',
-            'bad'  => 'negv',
+            'bad' => 'negv',
             default => '',
         };
     }

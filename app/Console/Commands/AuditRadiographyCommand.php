@@ -3,40 +3,59 @@
 namespace App\Console\Commands;
 
 use App\Models\Period;
+use App\Services\Radiography\BranchRadiographyCalculator;
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-radiography` — auditoría MAESTRA de la Radiografía financiera:
+ * calcula las métricas clave con BranchRadiographyCalculator (cartera, otorgamientos,
+ * recuperación, buckets de mora, OPEX, nómina, utilidad, saldos de caja, intersucursales y una
+ * rotación aproximada por NOI) y produce una tabla de estados con acción recomendada,
+ * opcionalmente contra la referencia fija de Abril 2026.
+ *
+ * Con `--full` ejecuta además, vía Artisan::call, los sub-comandos de auditoría de cada módulo
+ * e imprime su salida (algunos argumentos que pasa pueden no existir en el sub-comando).
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-radiography 14
+ *   php artisan reportes:audit-radiography 14 --compare-reference
+ *   php artisan reportes:audit-radiography 14 --full
+ */
 class AuditRadiographyCommand extends Command
 {
-    protected $signature   = 'reportes:audit-radiography
+    protected $signature = 'reportes:audit-radiography
                                 {period_id}
                                 {--compare-reference : comparar contra referencia Abril 2026}
                                 {--full              : ejecutar todos los sub-comandos y mostrar su salida completa}';
+
     protected $description = 'Auditoría maestra de radiografía financiera: ejecuta todos los módulos y produce tabla de estados';
 
     // ── Referencias Abril 2026 ────────────────────────────────────────────────
     private const REF = [
-        'valor_cartera'         => 39_130_054.53,
-        'otorgamientos'         => 13_351_612.00,
-        'recuperacion'          => 18_323_749.55,
-        'mora_0_30'             => 1_057_765.00,
-        'mora_31_60'            => 926_001.80,
-        'mora_61_90'            => 913_414.71,
-        'mora_91_120'           => 816_584.91,
-        'mora_120_plus'         => 9_919_472.02,
-        'envio_corporativo'     => 3_076_800.00,
-        'gastos_operativos'     => 837_384.28,
-        'nomina'                => 2_501_589.43,
-        'gastos_totales'        => 3_222_315.50,
-        'utilidad'              => 2_404_894.57,
-        'saldo_inicial'         => 646_672.52,
-        'saldo_final'           => 494_827.52,
-        'interbranch_activos'   => 449_425.00,
-        'interbranch_neto'      => 0.00,
-        'rotacion_bajas'        => 8,
-        'rotacion_promedio'     => 123,
-        'rotacion_indice'       => 6.50,
+        'valor_cartera' => 39_130_054.53,
+        'otorgamientos' => 13_351_612.00,
+        'recuperacion' => 18_323_749.55,
+        'mora_0_30' => 1_057_765.00,
+        'mora_31_60' => 926_001.80,
+        'mora_61_90' => 913_414.71,
+        'mora_91_120' => 816_584.91,
+        'mora_120_plus' => 9_919_472.02,
+        'envio_corporativo' => 3_076_800.00,
+        'gastos_operativos' => 837_384.28,
+        'nomina' => 2_501_589.43,
+        'gastos_totales' => 3_222_315.50,
+        'utilidad' => 2_404_894.57,
+        'saldo_inicial' => 646_672.52,
+        'saldo_final' => 494_827.52,
+        'interbranch_activos' => 449_425.00,
+        'interbranch_neto' => 0.00,
+        'rotacion_bajas' => 8,
+        'rotacion_promedio' => 123,
+        'rotacion_indice' => 6.50,
     ];
 
     private const EXCL_CATS = [
@@ -45,24 +64,31 @@ class AuditRadiographyCommand extends Command
         'Préstamos Intersucursales',
     ];
 
+    /**
+     * Calcula las métricas, ejecuta opcionalmente los sub-comandos, imprime la tabla resumen con
+     * estado por módulo, la lista de acciones y los pasos de reproceso sugeridos.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         $this->line('');
-        $this->info("════════════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA MAESTRA RADIOGRAFÍA — {$period->label} (ID {$period->id})");
-        $this->info("════════════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════════════');
 
         // ── Calcular métricas del sistema ─────────────────────────────────────
         $m = $this->computeMetrics($period, $dataIds, $allPeriods);
@@ -91,7 +117,7 @@ class AuditRadiographyCommand extends Command
                 $this->line(str_repeat('═', 70));
 
                 if (Artisan::call($cmd, $args) !== 0) {
-                    $this->warn("  ⚠ Comando terminó con error.");
+                    $this->warn('  ⚠ Comando terminó con error.');
                 }
                 $this->line(Artisan::output());
             }
@@ -99,15 +125,15 @@ class AuditRadiographyCommand extends Command
 
         // ── Tabla resumen ─────────────────────────────────────────────────────
         $this->line('');
-        $this->info("════════════════════════════════════════════════════════════════════════");
-        $this->info("  TABLA RESUMEN — " . ($this->option('compare-reference') ? 'CON REFERENCIA ABRIL 2026' : 'SIN REFERENCIA'));
-        $this->info("════════════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════════════');
+        $this->info('  TABLA RESUMEN — '.($this->option('compare-reference') ? 'CON REFERENCIA ABRIL 2026' : 'SIN REFERENCIA'));
+        $this->info('════════════════════════════════════════════════════════════════════════');
 
         $rows = [
             //  [Módulo, sistema, ref_key, estado, acción]
             ['Valor cartera',          $m['valor_cartera'],      'valor_cartera',       null, null],
             ['Otorgamientos',          $m['otorgamientos'],      'otorgamientos',       null, null],
-            ['Recuperación (Ingresos)',$m['recuperacion'],       'recuperacion',        null, null],
+            ['Recuperación (Ingresos)', $m['recuperacion'],       'recuperacion',        null, null],
             ['Mora 0-30 días',         $m['mora_0_30'],          'mora_0_30',           null, null],
             ['Mora 31-60 días',        $m['mora_31_60'],         'mora_31_60',          null, null],
             ['Mora 61-90 días',        $m['mora_61_90'],         'mora_61_90',          null, null],
@@ -115,54 +141,58 @@ class AuditRadiographyCommand extends Command
             ['Mora 120+ días',         $m['mora_120_plus'],      'mora_120_plus',       null, null],
             ['Envío corporativo',      $m['envio_corporativo'],  'envio_corporativo',   null, null],
             ['Gastos operativos',      $m['gastos_operativos'],  'gastos_operativos',   null, null],
-            ['Nómina y Capital Humano',$m['nomina'],             'nomina',              null, null],
+            ['Nómina y Capital Humano', $m['nomina'],             'nomina',              null, null],
             ['Gastos totales',         $m['gastos_totales'],     'gastos_totales',      null, null],
             ['Utilidad',               $m['utilidad'],           'utilidad',            null, null],
             ['Saldo inicial caja',     $m['saldo_inicial'],      'saldo_inicial',       null, null],
             ['Saldo final caja',       $m['saldo_final'],        'saldo_final',         null, null],
-            ['Intersucursales activos',$m['interbranch_activos'],'interbranch_activos', null, null],
+            ['Intersucursales activos', $m['interbranch_activos'], 'interbranch_activos', null, null],
             ['Intersucursales neto',   $m['interbranch_neto'],   'interbranch_neto',    null, null],
             ['Rotación bajas',         $m['rotacion_bajas'],     'rotacion_bajas',      null, null],
             ['Rotación promedio',      $m['rotacion_promedio'],  'rotacion_promedio',   null, null],
             ['Rotación índice %',      $m['rotacion_indice'],    'rotacion_indice',     null, null],
         ];
 
-        $hdr = str_pad('Módulo', 30) .
-            str_pad('Sistema', 20) .
-            ($this->option('compare-reference') ? str_pad('Referencia', 20) . str_pad('Diferencia', 16) : '') .
+        $hdr = str_pad('Módulo', 30).
+            str_pad('Sistema', 20).
+            ($this->option('compare-reference') ? str_pad('Referencia', 20).str_pad('Diferencia', 16) : '').
             'Estado';
         $this->line($hdr);
         $this->line(str_repeat('─', $this->option('compare-reference') ? 100 : 70));
 
-        foreach ($rows as [$lbl, $sysVal, $refKey, , ]) {
-            $ref   = self::REF[$refKey] ?? null;
+        foreach ($rows as [$lbl, $sysVal, $refKey]) {
+            $ref = self::REF[$refKey] ?? null;
             [$estado, $accion] = $this->classify($sysVal, $ref, $refKey);
 
             $sysStr = is_int($sysVal)
-                ? (string)$sysVal
-                : '$' . number_format((float)$sysVal, 2);
+                ? (string) $sysVal
+                : '$'.number_format((float) $sysVal, 2);
 
             if ($this->option('compare-reference') && $ref !== null) {
-                $refStr  = is_int($ref) ? (string)$ref : '$' . number_format((float)$ref, 2);
-                $diff    = (float)$sysVal - (float)$ref;
-                $sign    = $diff >= 0 ? '+' : '';
+                $refStr = is_int($ref) ? (string) $ref : '$'.number_format((float) $ref, 2);
+                $diff = (float) $sysVal - (float) $ref;
+                $sign = $diff >= 0 ? '+' : '';
                 $diffStr = is_int($ref)
-                    ? $sign . number_format(abs($diff), 2)
-                    : $sign . '$' . number_format(abs($diff), 2);
-                $line = str_pad(mb_substr($lbl, 0, 28), 30) .
-                    str_pad($sysStr, 20) .
-                    str_pad($refStr, 20) .
-                    str_pad($diffStr, 16) .
+                    ? $sign.number_format(abs($diff), 2)
+                    : $sign.'$'.number_format(abs($diff), 2);
+                $line = str_pad(mb_substr($lbl, 0, 28), 30).
+                    str_pad($sysStr, 20).
+                    str_pad($refStr, 20).
+                    str_pad($diffStr, 16).
                     $estado;
             } else {
-                $line = str_pad(mb_substr($lbl, 0, 28), 30) .
-                    str_pad($sysStr, 20) .
+                $line = str_pad(mb_substr($lbl, 0, 28), 30).
+                    str_pad($sysStr, 20).
                     $estado;
             }
 
-            if (str_starts_with($estado, 'OK')) $this->info("  {$line}");
-            elseif (str_starts_with($estado, 'Casi')) $this->warn("  {$line}");
-            else $this->error("  {$line}");
+            if (str_starts_with($estado, 'OK')) {
+                $this->info("  {$line}");
+            } elseif (str_starts_with($estado, 'Casi')) {
+                $this->warn("  {$line}");
+            } else {
+                $this->error("  {$line}");
+            }
         }
 
         // ── Acciones recomendadas ─────────────────────────────────────────────
@@ -181,18 +211,28 @@ class AuditRadiographyCommand extends Command
 
         $this->line('');
         $this->line('  Reproceso final:');
-        $this->line("    php artisan optimize:clear");
+        $this->line('    php artisan optimize:clear');
         $this->line("    php artisan run-database-update {$period->id} --force-reset");
         $this->line("    php artisan generar-radiografia {$period->id}");
 
         return 0;
     }
 
+    /**
+     * Calcula todas las métricas del sistema para el periodo (fuente única del calculador para
+     * cartera/mora/colocación/recuperación/OPEX/nómina; consultas directas para envío a
+     * corporativo e intersucursales; rotación comparando empleados NOI contra el periodo anterior).
+     *
+     * @param  Period  $period  Periodo auditado.
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  Collection  $allPeriods  Todos los periodos (para hallar el anterior).
+     * @return array<string,float|int> Métricas indexadas igual que REF.
+     */
     private function computeMetrics(Period $period, array $dataIds, $allPeriods): array
     {
         // FUENTE ÚNICA para cartera/mora/colocación/recuperación: BranchRadiographyCalculator
         // (las mismas 13 sucursales oficiales que usan audit-utilidad, audit-moras, Excel y PDF).
-        $calc   = app(\App\Services\Radiography\BranchRadiographyCalculator::class);
+        $calc = app(BranchRadiographyCalculator::class);
         $result = $calc->buildBranches($period, $dataIds, []);
         $global = $calc->sumGlobal($result['branches'], $result['unassigned']);
 
@@ -229,7 +269,7 @@ class AuditRadiographyCommand extends Command
             + (float) $global['vacaciones'] + (float) $global['prima_vacacional'];
         $nomExtra = 0.0;
         foreach ($global['nomina_detalle'] ?? [] as $lbl => $amt) {
-            if (!in_array($lbl, ['Préstamo Personal', 'Subsidio para el Empleo APL'], true)) {
+            if (! in_array($lbl, ['Préstamo Personal', 'Subsidio para el Empleo APL'], true)) {
                 $nomExtra += $amt;
             }
         }
@@ -238,8 +278,8 @@ class AuditRadiographyCommand extends Command
         $gastosTotal = $gastosOp + $nomina;
 
         // Saldo inicial / final
-        $saldoInicial = (float)($period->saldo_inicial_caja ?? 0);
-        $saldoFinal   = $period->saldo_final_caja !== null ? (float)$period->saldo_final_caja : 0.0;
+        $saldoInicial = (float) ($period->saldo_inicial_caja ?? 0);
+        $saldoFinal = $period->saldo_final_caja !== null ? (float) $period->saldo_final_caja : 0.0;
 
         // Utilidad
         $utilidad = $saldoInicial + $recuperacion - $otorgamientos - $gastosTotal;
@@ -253,56 +293,70 @@ class AuditRadiographyCommand extends Command
         $interbranchNeto = 0.0; // siempre es $0 para misma empresa
 
         // Rotación
-        $currentEmps  = DB::table('fact_noi_movements')
+        $currentEmps = DB::table('fact_noi_movements')
             ->whereIn('period_id', $dataIds)
             ->whereNotNull('employee_id')
             ->distinct()->pluck('employee_id')->toArray();
         $currentCount = count($currentEmps);
 
-        $prevPeriod  = $allPeriods->filter(fn ($p) => $p->id < $period->id)->sortByDesc('id')->first();
-        $bajas = 0; $prevCount = 0;
+        $prevPeriod = $allPeriods->filter(fn ($p) => $p->id < $period->id)->sortByDesc('id')->first();
+        $bajas = 0;
+        $prevCount = 0;
         if ($prevPeriod) {
             $prevWeeklyIds = $prevPeriod->resolveBaseWeeklyIds($allPeriods);
-            $prevDataIds   = array_values(array_unique(array_merge(empty($prevWeeklyIds) ? [] : $prevWeeklyIds, [$prevPeriod->id])));
-            $prevEmps      = DB::table('fact_noi_movements')->whereIn('period_id', $prevDataIds)->whereNotNull('employee_id')->distinct()->pluck('employee_id')->toArray();
-            $prevCount     = count($prevEmps);
-            $currentSet    = array_flip($currentEmps);
-            foreach ($prevEmps as $emp) { if (!isset($currentSet[$emp])) $bajas++; }
+            $prevDataIds = array_values(array_unique(array_merge(empty($prevWeeklyIds) ? [] : $prevWeeklyIds, [$prevPeriod->id])));
+            $prevEmps = DB::table('fact_noi_movements')->whereIn('period_id', $prevDataIds)->whereNotNull('employee_id')->distinct()->pluck('employee_id')->toArray();
+            $prevCount = count($prevEmps);
+            $currentSet = array_flip($currentEmps);
+            foreach ($prevEmps as $emp) {
+                if (! isset($currentSet[$emp])) {
+                    $bajas++;
+                }
+            }
         }
         $promedio = $prevCount > 0 ? (int) round(($prevCount + $currentCount) / 2) : $currentCount;
-        $indice   = $promedio > 0 ? round($bajas / $promedio * 100, 2) : 0.0;
+        $indice = $promedio > 0 ? round($bajas / $promedio * 100, 2) : 0.0;
 
         return [
-            'valor_cartera'        => $valorCartera,
-            'otorgamientos'        => $otorgamientos,
-            'recuperacion'         => $recuperacion,
-            'mora_0_30'            => (float)($moraBuckets->b0 ?? 0),
-            'mora_31_60'           => (float)($moraBuckets->b1 ?? 0),
-            'mora_61_90'           => (float)($moraBuckets->b2 ?? 0),
-            'mora_91_120'          => (float)($moraBuckets->b3 ?? 0),
-            'mora_120_plus'        => (float)($moraBuckets->b4 ?? 0),
-            'envio_corporativo'    => $envio,
-            'gastos_operativos'    => $gastosOp,
-            'nomina'               => $nomina,
-            'gastos_totales'       => $gastosTotal,
-            'utilidad'             => $utilidad,
-            'saldo_inicial'        => $saldoInicial,
-            'saldo_final'          => $saldoFinal,
-            'interbranch_activos'  => $interbranchActivos,
-            'interbranch_neto'     => $interbranchNeto,
-            'rotacion_bajas'       => $bajas,
-            'rotacion_promedio'    => $promedio,
-            'rotacion_indice'      => $indice,
+            'valor_cartera' => $valorCartera,
+            'otorgamientos' => $otorgamientos,
+            'recuperacion' => $recuperacion,
+            'mora_0_30' => (float) ($moraBuckets->b0 ?? 0),
+            'mora_31_60' => (float) ($moraBuckets->b1 ?? 0),
+            'mora_61_90' => (float) ($moraBuckets->b2 ?? 0),
+            'mora_91_120' => (float) ($moraBuckets->b3 ?? 0),
+            'mora_120_plus' => (float) ($moraBuckets->b4 ?? 0),
+            'envio_corporativo' => $envio,
+            'gastos_operativos' => $gastosOp,
+            'nomina' => $nomina,
+            'gastos_totales' => $gastosTotal,
+            'utilidad' => $utilidad,
+            'saldo_inicial' => $saldoInicial,
+            'saldo_final' => $saldoFinal,
+            'interbranch_activos' => $interbranchActivos,
+            'interbranch_neto' => $interbranchNeto,
+            'rotacion_bajas' => $bajas,
+            'rotacion_promedio' => $promedio,
+            'rotacion_indice' => $indice,
         ];
     }
 
+    /**
+     * Clasifica la diferencia sistema vs referencia según tolerancias y causas conocidas por
+     * módulo (falta fuente, archivo/corte, mapping, fórmula, revisión manual, casi OK…).
+     *
+     * @param  mixed  $sys  Valor del sistema.
+     * @param  mixed  $ref  Valor de referencia (null = sin referencia).
+     * @param  string  $key  Llave de la métrica.
+     * @return array{0:string,1:string} [estado, acción sugerida].
+     */
     private function classify(mixed $sys, mixed $ref, string $key): array
     {
         if ($ref === null) {
             return ['Sin referencia', ''];
         }
 
-        $diff = abs((float)$sys - (float)$ref);
+        $diff = abs((float) $sys - (float) $ref);
 
         if ($diff < 1) {
             return ['OK', ''];
@@ -312,10 +366,10 @@ class AuditRadiographyCommand extends Command
         $knownArchiveIssues = ['otorgamientos'];
         $knownMappingIssues = ['gastos_operativos', 'mora_0_30', 'mora_31_60', 'mora_61_90', 'mora_91_120', 'mora_120_plus'];
         $knownMissingSource = ['saldo_inicial', 'saldo_final'];
-        $knownFormula       = ['utilidad', 'gastos_totales'];
-        $knownManual        = ['envio_corporativo', 'rotacion_bajas', 'rotacion_promedio', 'rotacion_indice'];
+        $knownFormula = ['utilidad', 'gastos_totales'];
+        $knownManual = ['envio_corporativo', 'rotacion_bajas', 'rotacion_promedio', 'rotacion_indice'];
 
-        if (in_array($key, $knownMissingSource) && (float)$sys == 0) {
+        if (in_array($key, $knownMissingSource) && (float) $sys == 0) {
             return ['Falta fuente', 'Configurar en admin de periodos'];
         }
         if (in_array($key, $knownArchiveIssues) && $diff > 100_000) {
@@ -331,37 +385,47 @@ class AuditRadiographyCommand extends Command
             return ['Requiere revisión manual', 'Comparar vs ACUMULADOS ABRIL SUCURSALES.xls'];
         }
 
-        if ($diff < 5_000)   return ['Casi OK',              'Investigar delta menor'];
-        if ($diff < 100_000) return ['Diferencia moderada',  'Auditar sub-módulo correspondiente'];
+        if ($diff < 5_000) {
+            return ['Casi OK',              'Investigar delta menor'];
+        }
+        if ($diff < 100_000) {
+            return ['Diferencia moderada',  'Auditar sub-módulo correspondiente'];
+        }
 
         return ['Diferencia alta', 'Ejecutar audit específico'];
     }
 
+    /**
+     * Arma la lista de acciones recomendadas según qué métricas se desvían de la referencia.
+     *
+     * @param  array<string,float|int>  $m  Métricas de computeMetrics().
+     * @return array<int,string> Acciones legibles.
+     */
     private function buildActionList(array $m): array
     {
         $actions = [];
         $ref = self::REF;
 
         if ($m['saldo_inicial'] == 0) {
-            $actions[] = "Configurar saldo_inicial_caja en el periodo (ref: \$" . number_format($ref['saldo_inicial'], 2) . ")";
+            $actions[] = 'Configurar saldo_inicial_caja en el periodo (ref: $'.number_format($ref['saldo_inicial'], 2).')';
         }
         if ($m['saldo_final'] == 0) {
-            $actions[] = "Configurar saldo_final_caja en el periodo (ref: \$" . number_format($ref['saldo_final'], 2) . ")";
+            $actions[] = 'Configurar saldo_final_caja en el periodo (ref: $'.number_format($ref['saldo_final'], 2).')';
         }
         if (abs($m['otorgamientos'] - $ref['otorgamientos']) > 1_000) {
-            $actions[] = "Revisar colocación: ejecutar reportes:audit-placements {period_id} --compare-reference --by-product --by-branch";
+            $actions[] = 'Revisar colocación: ejecutar reportes:audit-placements {period_id} --compare-reference --by-product --by-branch';
         }
         if (abs($m['gastos_operativos'] - $ref['gastos_operativos']) > 1_000) {
-            $actions[] = "Revisar categorización de gastos: Renta Oficina (\$" . number_format($ref['gastos_operativos'], 2) . " ref). Posible exclusión por LENDUS_PRESENT_CATS";
+            $actions[] = 'Revisar categorización de gastos: Renta Oficina ($'.number_format($ref['gastos_operativos'], 2).' ref). Posible exclusión por LENDUS_PRESENT_CATS';
         }
         if (abs($m['nomina'] - $ref['nomina']) > 1_000) {
-            $actions[] = "Investigar diferencias nómina: Pensión Alimenticia +\$2,646, Financiamiento Motos +\$423, conceptos inválidos +\$334";
+            $actions[] = 'Investigar diferencias nómina: Pensión Alimenticia +$2,646, Financiamiento Motos +$423, conceptos inválidos +$334';
         }
         if (abs($m['envio_corporativo'] - $ref['envio_corporativo']) > 1_000) {
-            $actions[] = "Investigar envío corporativo: sistema \$" . number_format($m['envio_corporativo'], 2) . " vs ref \$" . number_format($ref['envio_corporativo'], 2) . " (faltan \$253,000)";
+            $actions[] = 'Investigar envío corporativo: sistema $'.number_format($m['envio_corporativo'], 2).' vs ref $'.number_format($ref['envio_corporativo'], 2).' (faltan $253,000)';
         }
         if (abs($m['recuperacion'] - $ref['recuperacion']) > 5_000) {
-            $actions[] = "Auditar recuperación: ejecutar reportes:audit-income {period_id} --compare-reference --by-concept";
+            $actions[] = 'Auditar recuperación: ejecutar reportes:audit-income {period_id} --compare-reference --by-concept';
         }
 
         return $actions;

@@ -8,6 +8,7 @@ use App\Models\Period;
 use App\Services\Api\ApiPeriodRange;
 use App\Services\Api\FinancialMetricRegistry;
 use App\Services\Api\PeriodWeeklyActivityService;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -15,13 +16,29 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 /**
  * GET /api/v1/periods/{periodId}/weekly-activity (2026-11-17) — colocación y
  * recuperación de un MES repartidas en sus semanas componentes, por sucursal y por
- * colaborador. Ver PeriodWeeklyActivityService y docs/api-reporteria.md §15.
+ * colaborador. Ver PeriodWeeklyActivityService y docs/MANUAL-DESARROLLADOR.md §15.
  *
  * financial.read para entrar; el bloque de colaboradores exige además
  * employees.read (misma doble verificación token+consumidor que PeriodKpiController).
  */
 class PeriodWeeklyActivityController extends Controller
 {
+    /**
+     * Devuelve la actividad semanal (colocación y recuperación) de un periodo mensual.
+     *
+     * Solo lectura. El bloque `branches` se filtra a las sucursales que el
+     * consumidor puede ver; `employees` a colaboradores cuya sucursal asignada
+     * es accesible. `unassigned`, `unidentified` y `reconciliation` solo se
+     * exponen a consumidores con alcance general (si no, null).
+     *
+     * @param  Request  $request  `include` = branches,employees (por defecto ambos).
+     * @param  int  $periodId  ID del periodo; debe ser mensual con semanas componentes.
+     * @return JsonResponse {period, status, message, source, definition_version, calculated_at,
+     *                      radiography_version, granularity, weeks, branches?, employees?, reconciliation}.
+     *
+     * @throws ModelNotFoundException 404 si el periodo no existe.
+     * @throws HttpException 403 si pide employees sin employees.read (token y consumidor); 422 si el periodo no es mensual con semanas o `include` es inválido.
+     */
     public function show(Request $request, int $periodId): JsonResponse
     {
         // Servicio fresco por petición (lleva memo; nunca cruza peticiones).
@@ -86,6 +103,14 @@ class PeriodWeeklyActivityController extends Controller
         return response()->json($out);
     }
 
+    /**
+     * Interpreta el parámetro `include` (lista separada por comas, sin duplicados).
+     *
+     * @param  Request  $request  Petición con `include` opcional (por defecto "branches,employees").
+     * @return list<string> Bloques pedidos: subconjunto de ['branches', 'employees'].
+     *
+     * @throws HttpException 422 si viene vacío o con valores desconocidos.
+     */
     private function includes(Request $request): array
     {
         $raw = trim((string) $request->query('include', 'branches,employees'));

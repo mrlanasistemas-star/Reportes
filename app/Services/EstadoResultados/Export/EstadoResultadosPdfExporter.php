@@ -13,11 +13,23 @@ use App\Services\Pdf\PdfRenderException;
  */
 class EstadoResultadosPdfExporter
 {
+    /**
+     * @param  BrowsershotPdfRenderer  $renderer  motor de PDF (Chrome headless)
+     * @param  EstadoResultadosExportContext  $context  contexto de presentación compartido con Excel
+     */
     public function __construct(
         private readonly BrowsershotPdfRenderer $renderer,
         private readonly EstadoResultadosExportContext $context,
     ) {}
 
+    /**
+     * HTML de la vista estado-resultados.pdf con el contexto y las gráficas SVG.
+     *
+     * @param  array  $dataset  dataset resuelto (ya redactado)
+     * @param  array|null  $comparisons  payload de ComparisonService (o null)
+     * @param  string|null  $comparisonsError  mensaje si las comparativas fallaron
+     * @param  array<string,int>  $pages  números de página reales por ancla (segunda pasada)
+     */
     public function html(array $dataset, ?array $comparisons = null, ?string $comparisonsError = null, array $pages = []): string
     {
         $x = $this->context->make($dataset, $comparisons, $comparisonsError);

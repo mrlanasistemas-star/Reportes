@@ -38,14 +38,21 @@ use Illuminate\Support\Facades\Schema;
  */
 class FinancialExpenseService
 {
+    /** Alcance donde se aplican los intereses (los créditos son de la empresa, no de sucursal). */
     public const CONSOLIDADO = 'CONSOLIDADO';
 
+    /** Origen del ajuste cuando lo alimenta la tabla de amortización. */
     public const ORIGIN_TABLE = 'tabla_amortizacion';
 
+    /** Origen del ajuste capturado a mano en «Ajustes». */
     public const ORIGIN_MANUAL = 'manual';
 
+    /** Memo por proceso de la existencia de la tabla de renglones. */
     private static ?bool $available = null;
 
+    /**
+     * ¿Existe la tabla de renglones de amortización? (en pruebas no se memoriza).
+     */
     public static function available(): bool
     {
         if (app()->runningUnitTests()) {
@@ -55,7 +62,11 @@ class FinancialExpenseService
         return self::$available ??= Schema::hasTable('estado_resultados_amortization_rows');
     }
 
-    /** @return Collection<int, EstadoResultadosCredit> */
+    /**
+     * Créditos activos con su carga vigente (y quién la subió).
+     *
+     * @return Collection<int, EstadoResultadosCredit>
+     */
     public function credits(): Collection
     {
         if (! self::available()) {
@@ -355,7 +366,13 @@ class FinancialExpenseService
         ];
     }
 
-    /** @return array<string, array{state:string, amount:?string}>|null */
+    /**
+     * Ajustes congelados en el snapshot CONSOLIDADO de una versión (para mostrar lo que quedó
+     * aprobado). null si no hay snapshot o no pasa la verificación de hash.
+     *
+     * @param  int  $versionId  versión aprobada
+     * @return array<string, array{state:string, amount:?string}>|null
+     */
     private function frozenAdjustments(int $versionId): ?array
     {
         $snapshot = EstadoResultadosVersionSnapshot::query()->where('version_id', $versionId)->where('scope_key', self::CONSOLIDADO)->first();
@@ -375,7 +392,12 @@ class FinancialExpenseService
         return $out;
     }
 
-    /** @return array<string,mixed> */
+    /**
+     * Resumen público de una carga de tabla de amortización (totales, rango de fechas, avisos).
+     *
+     * @param  EstadoResultadosAmortizationUpload  $u  carga
+     * @return array<string,mixed>
+     */
     public static function uploadPayload(EstadoResultadosAmortizationUpload $u): array
     {
         return [

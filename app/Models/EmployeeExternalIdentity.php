@@ -10,6 +10,15 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * sistema externo (futuro MR Lana People, Auditoría, etc.). El vínculo nunca
  * se crea por coincidencia automática de nombre — ver
  * App\Services\Api\EmployeeExternalIdentityService::link().
+ *
+ * Tabla: `employee_external_identities`. Cada fila vincula un colaborador con su
+ * ID en otro sistema.
+ *
+ * Columnas clave:
+ * - `system_code`: código del sistema externo.
+ * - `external_id`/`external_type`: identificador y tipo de entidad en ese sistema.
+ * - `verified_at` (datetime) / `verification_method`: cuándo y cómo se verificó el vínculo.
+ * - `active` (bool): si el vínculo sigue vigente.
  */
 class EmployeeExternalIdentity extends Model
 {
@@ -28,6 +37,7 @@ class EmployeeExternalIdentity extends Model
         'active' => 'boolean',
     ];
 
+    /** Colaborador interno al que corresponde la identidad externa. */
     public function employee(): BelongsTo
     {
         return $this->belongsTo(Employee::class);

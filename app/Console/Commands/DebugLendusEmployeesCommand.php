@@ -6,24 +6,42 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-lendus-employees` — estadísticas del directorio de empleados Lendus
+ * (`lendus_employee_directory`): activos/inactivos, operativos, sucursales inferidas, matches
+ * contra los empleados NOI del periodo, personas resueltas por el directorio y muestra de
+ * empleados NOI sin match.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-lendus-employees 21
+ */
 class DebugLendusEmployeesCommand extends Command
 {
-    protected $signature   = 'reportes:debug-lendus-employees {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-lendus-employees {period_id : ID del periodo}';
+
     protected $description = 'Muestra estadísticas del directorio de empleados Lendus: activos/inactivos, operativos, matches contra NOI, sucursales inferidas y personas resueltas.';
 
+    /**
+     * Imprime las secciones de estadísticas del directorio y su cruce con NOI del periodo.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
 
         $this->line('');
         $this->info('══════════════════════════════════════════════════════════════════════');
@@ -32,11 +50,11 @@ class DebugLendusEmployeesCommand extends Command
         $this->line('');
 
         // ── Directorio stats ──────────────────────────────────────────────────
-        $total      = DB::table('lendus_employee_directory')->count();
-        $activos    = DB::table('lendus_employee_directory')->where('estatus', 'ACTIVO')->count();
-        $inactivos  = DB::table('lendus_employee_directory')->where('estatus', '!=', 'ACTIVO')->whereNotNull('estatus')->count();
+        $total = DB::table('lendus_employee_directory')->count();
+        $activos = DB::table('lendus_employee_directory')->where('estatus', 'ACTIVO')->count();
+        $inactivos = DB::table('lendus_employee_directory')->where('estatus', '!=', 'ACTIVO')->whereNotNull('estatus')->count();
         $operativos = DB::table('lendus_employee_directory')->where('is_operational', true)->count();
-        $admins     = DB::table('lendus_employee_directory')->where('is_operational', false)->count();
+        $admins = DB::table('lendus_employee_directory')->where('is_operational', false)->count();
         $conSucursal = DB::table('lendus_employee_directory')->whereNotNull('inferred_branch_id')->count();
         $sinSucursal = DB::table('lendus_employee_directory')->whereNull('inferred_branch_id')->count();
 
@@ -53,6 +71,7 @@ class DebugLendusEmployeesCommand extends Command
         if ($total === 0) {
             $this->warn('  Sin registros en el directorio. Carga primero el Reporte de empleados Lendus.');
             $this->line('');
+
             return self::SUCCESS;
         }
 
@@ -103,7 +122,9 @@ class DebugLendusEmployeesCommand extends Command
                 $bestScore = 0.0;
                 foreach ($lendusNormalized as $ln) {
                     similar_text($emp->normalized_name, $ln, $pct);
-                    if ($pct > $bestScore) $bestScore = $pct;
+                    if ($pct > $bestScore) {
+                        $bestScore = $pct;
+                    }
                 }
                 if ($bestScore >= 85.0) {
                     $fuzzyMatches++;
@@ -139,7 +160,7 @@ class DebugLendusEmployeesCommand extends Command
             $rows = $resolvedByLendus->map(fn ($r) => [
                 mb_substr($r->full_name, 0, 30),
                 mb_substr($r->branch_name, 0, 20),
-                number_format($r->confidence * 100, 0) . '%',
+                number_format($r->confidence * 100, 0).'%',
             ])->all();
             $this->table(['Nombre', 'Sucursal', 'Confianza'], $rows);
         } else {
@@ -156,21 +177,27 @@ class DebugLendusEmployeesCommand extends Command
             $sampleNoMatch = [];
             $count = 0;
             foreach ($noiEmployees as $emp) {
-                if ($count >= 10) break;
-                if (isset($lendusSet[$emp->normalized_name])) continue;
+                if ($count >= 10) {
+                    break;
+                }
+                if (isset($lendusSet[$emp->normalized_name])) {
+                    continue;
+                }
 
                 $bestScore = 0.0;
                 foreach ($lendusNormalized as $ln) {
                     similar_text($emp->normalized_name, $ln, $pct);
-                    if ($pct > $bestScore) $bestScore = $pct;
+                    if ($pct > $bestScore) {
+                        $bestScore = $pct;
+                    }
                 }
                 if ($bestScore < 85.0) {
-                    $sampleNoMatch[] = [mb_substr($emp->full_name, 0, 32), $emp->normalized_name, round($bestScore, 1) . '%'];
+                    $sampleNoMatch[] = [mb_substr($emp->full_name, 0, 32), $emp->normalized_name, round($bestScore, 1).'%'];
                     $count++;
                 }
             }
 
-            if (!empty($sampleNoMatch)) {
+            if (! empty($sampleNoMatch)) {
                 $this->table(['Nombre NOI', 'Normalizado', 'Mejor score Lendus'], $sampleNoMatch);
             }
             $this->line('');

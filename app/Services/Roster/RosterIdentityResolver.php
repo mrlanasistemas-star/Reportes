@@ -29,9 +29,18 @@ use Illuminate\Support\Facades\Schema;
  */
 class RosterIdentityResolver
 {
+    /**
+     * @param  PersonIdentityResolverService  $names  Normalizador de nombres de persona.
+     */
     public function __construct(private readonly PersonIdentityResolverService $names) {}
 
     /**
+     * Agrupa registros de empleado en personas (ver reglas 1 y 2 de la clase).
+     *
+     * Primero agrupa por nombre normalizado partiendo por rechazos explícitos
+     * (homónimos con llave "nombre#idMenor"); después fusiona grupos unidos por
+     * alias conciliado, salvo homónimos o rechazos entre miembros.
+     *
      * @param  iterable<object{id:int, full_name:?string, normalized_name:?string}>  $employees
      * @return array{groups: array<string, array{employee_ids:int[], name:string, nombre_original:string, links:string[], homonym:bool}>, stats: array{merged_same_name:int, merged_by_alias:int, homonyms_split:int}}
      */
@@ -116,7 +125,12 @@ class RosterIdentityResolver
         return ['groups' => $groups, 'stats' => $stats];
     }
 
-    /** @return array<string, true> */
+    /**
+     * Rechazos explícitos de coincidencia que involucran a los empleados dados.
+     *
+     * @param  int[]  $ids  employee_id evaluados.
+     * @return array<string, true> pair_key => true ([] si la tabla no existe).
+     */
     private function rejectedPairs(array $ids): array
     {
         if ($ids === [] || ! Schema::hasTable('employee_match_rejections')) {
@@ -140,8 +154,8 @@ class RosterIdentityResolver
      * Pares (nombre alias, employee_id dueño) donde AMBOS lados están en el
      * conjunto evaluado y el alias es un nombre distinto al del dueño.
      *
-     * @param  array<string, int[]>  $byName
-     * @return array<int, array{0:string, 1:int}>
+     * @param  array<string, int[]>  $byName  nombre normalizado => employee_ids.
+     * @return array<int, array{0:string, 1:int}> [alias, employee_id dueño]; [] si la tabla no existe.
      */
     private function aliasLinks(array $byName): array
     {
@@ -166,6 +180,12 @@ class RosterIdentityResolver
         return $out;
     }
 
+    /**
+     * Llave del grupo con ese nombre, solo si es único (con homónimos separados devuelve null).
+     *
+     * @param  array<string, array<string, mixed>>  $groups  Grupos armados.
+     * @param  string  $name  Nombre normalizado.
+     */
     private function keyOfName(array $groups, string $name): ?string
     {
         $keys = array_keys(array_filter($groups, fn ($g) => $g['name'] === $name));
@@ -173,6 +193,12 @@ class RosterIdentityResolver
         return count($keys) === 1 ? (string) $keys[0] : null;
     }
 
+    /**
+     * Llave del grupo que contiene al employee_id indicado.
+     *
+     * @param  array<string, array<string, mixed>>  $groups  Grupos armados.
+     * @param  int  $id  employee_id.
+     */
     private function keyOfId(array $groups, int $id): ?string
     {
         foreach ($groups as $k => $g) {
@@ -189,8 +215,13 @@ class RosterIdentityResolver
      * parecidos donde una solo aparece en NOI normal y la otra solo en NOI
      * fiscal. No se fusionan (falta evidencia); se devuelven para conciliar.
      *
-     * @param  array<string, array{name:string, normal:bool, fiscal:bool}>  $present
-     * @return array<string, array{key:string, nombre:string, percent:float}>
+     * Compara con similar_text() cada persona solo-fiscal contra las solo-normal
+     * y toma la mejor coincidencia ≥ umbral; la marca en ambos sentidos.
+     *
+     * @param  array<string, array{name:string, normal:bool, fiscal:bool}>  $present  Personas presentes por llave.
+     * @param  array<string, string>  $originals  llave => nombre original (para mostrar).
+     * @param  float  $threshold  Porcentaje mínimo de similitud (0-100).
+     * @return array<string, array{key:string, nombre:string, percent:float}> llave => su posible duplicado.
      */
     public function unlinkedNearDuplicates(array $present, array $originals, float $threshold = 90.0): array
     {

@@ -25,23 +25,40 @@ use Illuminate\Support\Str;
  * Síncrono a propósito: el administrador necesita saber AHORA si el servidor
  * de correo aceptó el mensaje. "Aceptado" significa solo eso: el transporte
  * lo tomó para su envío. Nunca se afirma que el destinatario lo recibió.
+ *
+ * Lo usa el módulo de Usuarios (alta y botón "Reenviar invitación").
  */
 class UserInvitationService
 {
+    /** Aún no se ha intentado enviar la invitación. */
     public const STATUS_PENDING = 'pending';
+
+    /** El servidor de correo aceptó el mensaje para su envío. */
     public const STATUS_ACCEPTED = 'accepted';
+
+    /** El último intento de envío falló. */
     public const STATUS_FAILED = 'failed';
 
+    /** Mensajes que se muestran al administrador tras el intento de envío. */
     public const MSG_ACCEPTED = 'El servidor de correo aceptó la invitación para su envío.';
+
     public const MSG_FAILED = 'No se pudo enviar la invitación. El usuario fue creado y puedes intentar enviarla nuevamente.';
 
     /**
      * Envía el correo con las credenciales de acceso.
      *
+     * Efectos en BD (tabla `users`): incrementa welcome_email_attempts y fija
+     * welcome_email_status / welcome_email_sent_at / welcome_email_error /
+     * welcome_email_last_attempt_at. En un reenvío aceptado también reemplaza
+     * el hash de la contraseña y el remember_token (cierra sesiones "recordadas").
+     * Nunca lanza excepción: los errores del transporte se registran en el log
+     * (con la causa de technicalCause()) y se devuelve sent=false.
+     *
+     * @param  User  $user  Usuario destinatario.
      * @param  string|null  $plainPassword  Contraseña temporal en claro ya asignada
-     *                                       al usuario (alta). Si es null, se genera
-     *                                       una nueva y se asigna solo si el envío
-     *                                       se acepta (reenvío).
+     *                                      al usuario (alta). Si es null, se genera
+     *                                      una nueva y se asigna solo si el envío
+     *                                      se acepta (reenvío).
      * @return array{sent:bool, message:string, regenerated:bool, temporary_password:?string}
      */
     public function send(User $user, ?string $plainPassword = null): array
@@ -93,6 +110,12 @@ class UserInvitationService
         }
     }
 
+    /**
+     * Minutos de vigencia configurados para el broker de restablecimiento de
+     * contraseña (`auth.passwords.<broker>.expire`, 60 por defecto).
+     *
+     * @return int Minutos de expiración.
+     */
     public function expiresInMinutes(): int
     {
         $broker = config('auth.defaults.passwords', 'users');
@@ -100,7 +123,15 @@ class UserInvitationService
         return (int) config("auth.passwords.{$broker}.expire", 60);
     }
 
-    /** Estado normalizado (filas anteriores a la columna welcome_email_status se deducen). */
+    /**
+     * Estado normalizado (filas anteriores a la columna welcome_email_status se deducen).
+     *
+     * Si no hay status guardado: con fecha de envío = accepted; con error = failed;
+     * en otro caso = pending.
+     *
+     * @param  User  $user  Usuario a evaluar.
+     * @return string Una de las constantes STATUS_*.
+     */
     public static function statusOf(User $user): string
     {
         if ($user->welcome_email_status) {
@@ -118,6 +149,9 @@ class UserInvitationService
      * el administrador, SIN exponer secretos. El detalle técnico completo queda
      * únicamente en el log del servidor. La causa técnica normalizada (clave corta)
      * se puede consultar con {@see self::technicalCause()} para diagnóstico interno.
+     *
+     * @param  \Throwable  $e  Excepción lanzada por el transporte de correo.
+     * @return string Mensaje en español que se guarda en welcome_email_error.
      */
     private function friendlyReason(\Throwable $e): string
     {
@@ -139,6 +173,12 @@ class UserInvitationService
     /**
      * Clasifica el error del transporte en una causa técnica corta y estable, sin
      * incluir datos sensibles. Útil para el log y el diagnóstico de Sistemas.
+     *
+     * Busca fragmentos conocidos en el mensaje (en minúsculas); el orden de las
+     * reglas importa porque gana la primera coincidencia.
+     *
+     * @param  \Throwable  $e  Excepción del transporte.
+     * @return string Clave corta (auth_app_password, auth_credentials, tls, dns, timeout, ..., unknown).
      */
     public static function technicalCause(\Throwable $e): string
     {

@@ -8,38 +8,60 @@ use App\Services\EmployeeNameCanonicalizer;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-nomina-asignacion` — diagnóstico de la asignación de nómina NOI por
+ * sucursal: totales generales, empleados con asignación directa (employee_branch_assignments),
+ * sin asignación, resolución alternativa por actividad (colocación, cartera, cobranza) y por
+ * fusión canónica de nombres, top SIN ASIGNAR, asignados por sucursal y alias fusionados.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-nomina-asignacion 21
+ */
 class ReportesDebugNominaAsignacion extends Command
 {
     protected $signature = 'reportes:debug-nomina-asignacion {period_id : ID del periodo mensual}';
+
     protected $description = 'Diagnóstico de asignación de nómina NOI por sucursal: muestra SIN ASIGNAR y por qué.';
 
+    /**
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Normalizador canónico de nombres.
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas y sucursales operativas.
+     */
     public function __construct(
         private readonly EmployeeNameCanonicalizer $canonicalizer,
-        private readonly BranchResolverService     $resolver,
+        private readonly BranchResolverService $resolver,
     ) {
         parent::__construct();
     }
 
+    /**
+     * Imprime las secciones 1–7 del diagnóstico de asignación de nómina.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
 
         $this->line('');
         $this->info("══════ DEBUG NÓMINA ASIGNACIÓN — {$period->label} (ID #{$periodId}) ══════");
-        $this->line('Data IDs: ' . implode(', ', $dataIds));
+        $this->line('Data IDs: '.implode(', ', $dataIds));
         $this->line('');
 
         // ── 1. Totales generales ────────────────────────────────────────────
@@ -50,8 +72,8 @@ class ReportesDebugNominaAsignacion extends Command
             ->selectRaw('COUNT(DISTINCT employee_id) as empleados, SUM(amount) as total')
             ->first();
 
-        $this->line(sprintf('   Empleados distintos : %d', (int)($totNoi?->empleados ?? 0)));
-        $this->line(sprintf('   Total nómina NOI    : $%s', number_format((float)($totNoi?->total ?? 0), 2)));
+        $this->line(sprintf('   Empleados distintos : %d', (int) ($totNoi?->empleados ?? 0)));
+        $this->line(sprintf('   Total nómina NOI    : $%s', number_format((float) ($totNoi?->total ?? 0), 2)));
         $this->line('');
 
         // ── 2. Con EBA (asignación directa) ────────────────────────────────
@@ -97,7 +119,7 @@ class ReportesDebugNominaAsignacion extends Command
         $this->line('');
 
         // ── 5. Resolver vía canonical merge ────────────────────────────────
-        if (!empty($sinEbaIds)) {
+        if (! empty($sinEbaIds)) {
             $this->info('── 4. Resolución por alias + actividad (sin EBA)');
 
             $sinEbaRows = DB::table('employees')
@@ -105,22 +127,22 @@ class ReportesDebugNominaAsignacion extends Command
                 ->select('id', 'full_name', 'normalized_name', 'employee_code')
                 ->get();
 
-            $allNormNames   = $sinEbaRows->map(fn ($r) => $this->canonicalizer->normalize($r->full_name ?? ''))->all();
-            $activityNorms  = array_keys($activityMap);
-            $canonicalMap   = $this->canonicalizer->buildCanonicalMap(
+            $allNormNames = $sinEbaRows->map(fn ($r) => $this->canonicalizer->normalize($r->full_name ?? ''))->all();
+            $activityNorms = array_keys($activityMap);
+            $canonicalMap = $this->canonicalizer->buildCanonicalMap(
                 array_values(array_unique(array_merge($allNormNames, $activityNorms))),
                 $allNormNames
             );
 
-            $resolvedCount  = 0;
-            $stillSin       = [];
+            $resolvedCount = 0;
+            $stillSin = [];
 
             foreach ($sinEbaRows as $emp) {
-                $norm      = $this->canonicalizer->normalize($emp->full_name ?? '');
+                $norm = $this->canonicalizer->normalize($emp->full_name ?? '');
                 $canonical = $canonicalMap[$norm] ?? $norm;
 
                 $branch = $activityMap[$norm] ?? $activityMap[$canonical] ?? null;
-                if (!$branch) {
+                if (! $branch) {
                     foreach ($canonicalMap as $alias => $can) {
                         if ($can === $canonical && isset($activityMap[$alias])) {
                             $branch = $activityMap[$alias];
@@ -141,13 +163,13 @@ class ReportesDebugNominaAsignacion extends Command
                         ->sum('amount');
 
                     $stillSin[] = [
-                        'id'        => $emp->id,
-                        'nombre'    => $emp->full_name,
-                        'codigo'    => $emp->employee_code,
-                        'norm'      => $norm,
+                        'id' => $emp->id,
+                        'nombre' => $emp->full_name,
+                        'codigo' => $emp->employee_code,
+                        'norm' => $norm,
                         'canonical' => $canonical,
-                        'total'     => $noiTotal,
-                        'en_alias'  => ($canonical !== $norm) ? 'SÍ → ' . $canonical : 'NO',
+                        'total' => $noiTotal,
+                        'en_alias' => ($canonical !== $norm) ? 'SÍ → '.$canonical : 'NO',
                     ];
                 }
             }
@@ -157,7 +179,7 @@ class ReportesDebugNominaAsignacion extends Command
             $this->line('');
 
             // ── 6. Top SIN ASIGNAR ─────────────────────────────────────────
-            if (!empty($stillSin)) {
+            if (! empty($stillSin)) {
                 usort($stillSin, fn ($a, $b) => $b['total'] <=> $a['total']);
                 $top = array_slice($stillSin, 0, 30);
 
@@ -170,7 +192,7 @@ class ReportesDebugNominaAsignacion extends Command
                         mb_substr($r['nombre'], 0, 40),
                         mb_substr($r['norm'], 0, 40),
                         mb_substr($r['canonical'], 0, 40),
-                        '$' . number_format($r['total'], 2),
+                        '$'.number_format($r['total'], 2),
                         $r['en_alias'],
                     ], array_keys($top), $top)
                 );
@@ -186,7 +208,7 @@ class ReportesDebugNominaAsignacion extends Command
         $byBranchNomina = DB::table('fact_noi_movements as n')
             ->join('employee_branch_assignments as eba', function ($j) use ($dataIds) {
                 $j->on('eba.employee_id', '=', 'n.employee_id')
-                  ->whereIn('eba.period_id', $dataIds);
+                    ->whereIn('eba.period_id', $dataIds);
             })
             ->join('branches as b', 'eba.branch_id', '=', 'b.id')
             ->whereIn('n.period_id', $dataIds)
@@ -196,16 +218,16 @@ class ReportesDebugNominaAsignacion extends Command
             ->get();
 
         foreach ($byBranchNomina as $row) {
-            $this->line(sprintf('   %-30s $%s', $row->branch, number_format((float)$row->total, 2)));
+            $this->line(sprintf('   %-30s $%s', $row->branch, number_format((float) $row->total, 2)));
         }
         $this->line('');
 
         // ── 7. Alias fusionados ────────────────────────────────────────────
         $this->info('── 7. Alias fusionados detectados (cross-fuente)');
         $allNameCandidates = $this->collectAllNames($dataIds);
-        $allNormKeys       = array_keys($allNameCandidates);
-        $mergeMap          = $this->canonicalizer->buildCanonicalMap($allNormKeys);
-        $aliases           = array_filter($mergeMap, fn ($canonical, $key) => $key !== $canonical, ARRAY_FILTER_USE_BOTH);
+        $allNormKeys = array_keys($allNameCandidates);
+        $mergeMap = $this->canonicalizer->buildCanonicalMap($allNormKeys);
+        $aliases = array_filter($mergeMap, fn ($canonical, $key) => $key !== $canonical, ARRAY_FILTER_USE_BOTH);
 
         if (empty($aliases)) {
             $this->line('   <fg=green>Sin alias fusionados detectados.</>');
@@ -219,9 +241,17 @@ class ReportesDebugNominaAsignacion extends Command
         $this->line('');
 
         $this->info('══════ FIN DEBUG NÓMINA ══════');
+
         return self::SUCCESS;
     }
 
+    /**
+     * Construye un índice nombre normalizado → sucursal real a partir de la actividad del promotor
+     * en colocación, cartera y cobranza (gana la primera fuente que lo resuelva).
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<string,string> Nombre normalizado => sucursal real.
+     */
     private function buildActivityLookup(array $dataIds): array
     {
         $lookup = [];
@@ -237,7 +267,7 @@ class ReportesDebugNominaAsignacion extends Command
             ->each(function ($row) use (&$lookup) {
                 $norm = $this->canonicalizer->normalize($row->promoter_name);
                 $real = $this->resolver->resolveRealBranchFromRoute($row->branch);
-                if ($real && !isset($lookup[$norm])) {
+                if ($real && ! isset($lookup[$norm])) {
                     $lookup[$norm] = $real;
                 }
             });
@@ -253,7 +283,7 @@ class ReportesDebugNominaAsignacion extends Command
             ->each(function ($row) use (&$lookup) {
                 $norm = $this->canonicalizer->normalize($row->promoter_name);
                 $real = $this->resolver->resolveRealBranchFromRoute($row->branch);
-                if ($real && !isset($lookup[$norm])) {
+                if ($real && ! isset($lookup[$norm])) {
                     $lookup[$norm] = $real;
                 }
             });
@@ -269,7 +299,7 @@ class ReportesDebugNominaAsignacion extends Command
             ->each(function ($row) use (&$lookup) {
                 $norm = $this->canonicalizer->normalize($row->promoter_name);
                 $real = $this->resolver->resolveRealBranchFromRoute($row->branch);
-                if ($real && !isset($lookup[$norm])) {
+                if ($real && ! isset($lookup[$norm])) {
                     $lookup[$norm] = $real;
                 }
             });
@@ -277,6 +307,13 @@ class ReportesDebugNominaAsignacion extends Command
         return $lookup;
     }
 
+    /**
+     * Junta los nombres distintos de NOI y de promotores de las demás fuentes indexados por su forma
+     * canónica.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<string,string> Nombre normalizado => nombre original.
+     */
     private function collectAllNames(array $dataIds): array
     {
         $names = [];

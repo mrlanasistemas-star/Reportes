@@ -24,21 +24,32 @@ use ZipArchive;
  */
 class EfectividadExcelReader
 {
+    /** Archivo de Saldos por Cliente (foto de cartera). */
     public const TIPO_CARTERA = 'cartera';
 
+    /** Archivo de Ingresos Cobranza. */
     public const TIPO_INGRESOS = 'ingresos';
 
+    /** Tamaño descomprimido máximo del XLSX (bytes). */
     private const MAX_DESCOMPRIMIDO = 300 * 1024 * 1024;
 
+    /** Razón de compresión máxima (anti ZIP bomb). */
     private const MAX_RATIO = 200;
 
+    /** Número máximo de partes del ZIP. */
     private const MAX_ENTRADAS = 5000;
 
+    /** Filas revisadas para encontrar el encabezado. */
     private const FILAS_BUSQUEDA_ENCABEZADO = 20;
 
+    /** @param  EfectividadV12Calculator  $calc  utilidades de normalización/fechas del motor V12 */
     public function __construct(private readonly EfectividadV12Calculator $calc = new EfectividadV12Calculator) {}
 
     /**
+     * Lee el primer Excel/hoja con encabezado reconocible y devuelve su tipo, fecha/rango,
+     * columnas mapeadas (V12ColumnMap), filas (sólo valores) y un resumen.
+     *
+     * @param  string  $ruta  ruta del .xlsx
      * @return array{tipo:string, fecha:?string, desde:?string, hasta:?string, columnas:list<string>, filas:list<array<string,mixed>>, resumen:array<string,mixed>}
      *
      * @throws EfectividadArchivoException
@@ -112,6 +123,20 @@ class EfectividadExcelReader
         throw new EfectividadArchivoException('No parece un reporte de Lendus: no se encontró el encabezado de "Saldos por Cliente" ni de "Ingresos Cobranza".');
     }
 
+    /**
+     * Valida y resume lo leído. CARTERA: columnas obligatorias, fecha del título y al menos un
+     * contrato. INGRESOS: columnas obligatorias y rango de fecha de transacción (ampliado al
+     * rango declarado en el encabezado de Lendus si lo contiene).
+     *
+     * @param  string  $tipo  TIPO_CARTERA | TIPO_INGRESOS
+     * @param  array  $titulo  líneas de texto previas al encabezado
+     * @param  array  $columnas  campos mapeados
+     * @param  array  $filas  filas leídas
+     * @param  int  $totalColumnas  columnas del archivo
+     * @return array<string, mixed>
+     *
+     * @throws EfectividadArchivoException si falta algo obligatorio
+     */
     private function resultado(string $tipo, array $titulo, array $columnas, array $filas, int $totalColumnas): array
     {
         $contratos = [];
@@ -185,6 +210,13 @@ class EfectividadExcelReader
         return implode(', ', array_map(fn ($c) => $mapa[$c][0][0] ?? $c, $campos));
     }
 
+    /**
+     * ¿La fila es un encabezado? CONTRATO + SUBSTATUS ⇒ cartera; CONTRATO + FECHA TRANSACCION ⇒
+     * ingresos.
+     *
+     * @param  array  $valores  celdas de la fila
+     * @return string|null tipo o null si no es encabezado
+     */
     private function tipoEncabezado(array $valores): ?string
     {
         $norm = array_map(fn ($v) => $this->calc->normalizar($v), $valores);
@@ -220,11 +252,24 @@ class EfectividadExcelReader
         return null;
     }
 
+    /**
+     * Valor plano de una celda (fechas a Y-m-d).
+     *
+     * @param  mixed  $v  valor
+     */
     private function plano(mixed $v): mixed
     {
         return $v instanceof DateTimeInterface ? $v->format('Y-m-d') : $v;
     }
 
+    /**
+     * Revisión del contenedor ZIP antes de abrirlo: estructura, número de partes, tamaño
+     * descomprimido y razón de compresión.
+     *
+     * @param  string  $ruta  ruta del archivo
+     *
+     * @throws EfectividadArchivoException si es inválido o sospechoso
+     */
     private function validarZip(string $ruta): void
     {
         $zip = new ZipArchive;

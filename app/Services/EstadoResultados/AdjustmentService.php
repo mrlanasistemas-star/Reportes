@@ -23,15 +23,22 @@ use Illuminate\Support\Facades\DB;
  * (intereses_lerom / intereses_bbva / otros_intereses) se alimentan en el consolidado desde
  * la tabla de amortización (FinancialExpenseService::overlay) con estado «capturado» y origen
  * «tabla_amortizacion»; `amortization` trae el detalle (pagos, capital excluido, diferencia).
+ *
+ * Lo usan EstadoResultadosDatasetBuilder (D&A, resultado financiero, ISR) y el controlador del
+ * ER (pestaña «Ajustes»: captura y bitácora).
  */
 class AdjustmentService
 {
+    /** Sin dato: el subtotal afectado queda incompleto (nunca se asume $0). */
     public const SIN_INFORMACION = 'sin_informacion';
 
+    /** Confirmado explícitamente en $0.00. */
     public const CONFIRMADO_CERO = 'confirmado_cero';
 
+    /** Importe capturado (positivo; la sección define el signo). */
     public const CAPTURADO = 'capturado';
 
+    /** Estados válidos de un ajuste. */
     public const STATES = [self::SIN_INFORMACION, self::CONFIRMADO_CERO, self::CAPTURADO];
 
     /** concepto => [label, sección, efecto, ¿afecta el resultado?] */
@@ -48,7 +55,15 @@ class AdjustmentService
         'capital_deuda' => ['label' => 'Capital de deuda pagado', 'section' => 'flujo', 'effect' => 'Flujo de financiamiento (no afecta resultado)', 'affects' => false],
     ];
 
-    /** @return array<string, array<string,mixed>> */
+    /**
+     * Ajustes del periodo/alcance para TODOS los conceptos del catálogo (los no capturados salen
+     * como sin_informacion con importe null) y, en el consolidado, los intereses alimentados por
+     * la tabla de amortización cuando no hay captura manual (FinancialExpenseService::overlay).
+     *
+     * @param  int  $periodId  periodo
+     * @param  string  $scopeKey  alcance (CONSOLIDADO o sucursal)
+     * @return array<string, array<string,mixed>> concepto ⇒ meta + state, amount, notes, origin, amortization
+     */
     public function forPeriod(int $periodId, string $scopeKey): array
     {
         $rows = EstadoResultadosAdjustment::query()
@@ -80,6 +95,21 @@ class AdjustmentService
         return app(FinancialExpenseService::class)->overlay($periodId, $scopeKey, $out);
     }
 
+    /**
+     * Guarda (crea o actualiza) un ajuste y registra el cambio en la bitácora, dentro de una
+     * transacción con la fila del periodo bloqueada (re-verifica que no esté aprobado).
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $scopeKey  alcance
+     * @param  string  $concept  concepto de CONCEPTS
+     * @param  string  $state  estado de STATES
+     * @param  mixed  $amount  importe (sólo con «capturado»; debe ser ≥ 0)
+     * @param  string|null  $notes  notas del cambio
+     * @param  int|null  $userId  usuario que edita
+     *
+     * @throws \InvalidArgumentException concepto/estado no válido o importe vacío/negativo
+     * @throws Reporting\EstadoResultadosLockedException si el periodo está aprobado (423)
+     */
     public function save(Period $period, string $scopeKey, string $concept, string $state, mixed $amount, ?string $notes, ?int $userId): EstadoResultadosAdjustment
     {
         app(PeriodLockGuard::class)->assertUnlocked($period); // versión aprobada ⇒ HTTP 423
@@ -125,7 +155,13 @@ class AdjustmentService
         });
     }
 
-    /** @return list<array<string,mixed>> */
+    /**
+     * Bitácora de cambios de ajustes del periodo/alcance (últimos 200, más reciente primero).
+     *
+     * @param  int  $periodId  periodo
+     * @param  string  $scopeKey  alcance
+     * @return list<array<string,mixed>>
+     */
     public function logs(int $periodId, string $scopeKey): array
     {
         return EstadoResultadosAdjustmentLog::query()

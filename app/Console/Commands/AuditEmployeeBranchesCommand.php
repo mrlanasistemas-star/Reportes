@@ -9,6 +9,21 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-employee-branches` — auditoría de las asignaciones
+ * empleado → sucursal del periodo para las personas detectadas en NOI/NOI Fiscal.
+ *
+ * Por persona muestra estado (asignado, manual, revisar, sin_asignar), método de match,
+ * registros y monto NOI, y — solo para los casos fuzzy/unmatched no revisados a mano — los
+ * dos mejores candidatos con su confianza (vía PersonIdentityResolverService). Si el periodo
+ * no tiene asignaciones, sugiere correr `reportes:automatch-employee-branches --apply`.
+ *
+ * Escribe en BD: NO — no modifica datos (solo CSV con `--export`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-employee-branches 5
+ *   php artisan reportes:audit-employee-branches 5 --detail --export
+ */
 class AuditEmployeeBranchesCommand extends Command
 {
     protected $signature = 'reportes:audit-employee-branches
@@ -18,19 +33,28 @@ class AuditEmployeeBranchesCommand extends Command
 
     protected $description = 'Auditoría de asignaciones empleado→sucursal: estado, método, candidatos y motivo por persona. No modifica datos.';
 
+    /**
+     * Delimita la población a empleados con movimientos NOI, carga sus asignaciones del periodo,
+     * diagnostica candidatos solo para las asignaciones ambiguas y arma el resumen por estado,
+     * el detalle (`--detail`) y el CSV (`--export`).
+     *
+     * @param  PersonIdentityResolverService  $resolver  Resolvedor de identidades (traza de candidatos).
+     * @return int self::SUCCESS al terminar; self::FAILURE si el periodo no existe.
+     */
     public function handle(PersonIdentityResolverService $resolver): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
 
         $this->line('');
         $this->info('════════════════════════════════════════════════════════════');
@@ -63,6 +87,7 @@ class AuditEmployeeBranchesCommand extends Command
         if ($assignments->isEmpty()) {
             $this->warn('  No hay asignaciones para las personas de NOI en este periodo. Ejecuta primero el automatch:');
             $this->line("  php artisan reportes:automatch-employee-branches {$periodId} --apply");
+
             return self::SUCCESS;
         }
 
@@ -77,7 +102,7 @@ class AuditEmployeeBranchesCommand extends Command
         // Only rows resolved via the last-resort fuzzy path (or left unmatched) warrant a
         // second opinion — historical/exact/majority are deterministic, non-ambiguous
         // resolutions and don't need candidate diagnosis or manual review.
-        $needsDiagnosis = $assignments->filter(fn ($a) => !$a->was_manual_reviewed
+        $needsDiagnosis = $assignments->filter(fn ($a) => ! $a->was_manual_reviewed
             && in_array($a->match_type, ['unmatched', 'fuzzy'], true));
 
         $diagnoses = [];
@@ -142,30 +167,30 @@ class AuditEmployeeBranchesCommand extends Command
             $c2 = $cands[1] ?? null;
 
             $rows[] = [
-                'empleado'              => $a->full_name ?? "Emp #{$a->employee_id}",
-                'identificador'         => $a->employee_code ?? '',
-                'nombre_normalizado'    => $a->normalized_name ?? '',
-                'registros'             => (int) ($movStats[$a->employee_id]->cnt ?? 0),
-                'monto'                 => (float) ($movStats[$a->employee_id]->monto ?? 0),
-                'candidato_1'           => $c1['name'] ?? '',
-                'sucursal_candidato_1'  => $c1['branch'] ?? '',
-                'confianza_1'           => $c1['score'] ?? '',
-                'candidato_2'           => $c2['name'] ?? '',
-                'sucursal_candidato_2'  => $c2['branch'] ?? '',
-                'confianza_2'           => $c2['score'] ?? '',
-                'sucursal_asignada'     => $a->branch_name ?? '',
-                'metodo'                => $a->match_type ?? '',
-                'estado'                => $estado,
-                'motivo'                => $a->notes ?? '',
+                'empleado' => $a->full_name ?? "Emp #{$a->employee_id}",
+                'identificador' => $a->employee_code ?? '',
+                'nombre_normalizado' => $a->normalized_name ?? '',
+                'registros' => (int) ($movStats[$a->employee_id]->cnt ?? 0),
+                'monto' => (float) ($movStats[$a->employee_id]->monto ?? 0),
+                'candidato_1' => $c1['name'] ?? '',
+                'sucursal_candidato_1' => $c1['branch'] ?? '',
+                'confianza_1' => $c1['score'] ?? '',
+                'candidato_2' => $c2['name'] ?? '',
+                'sucursal_candidato_2' => $c2['branch'] ?? '',
+                'confianza_2' => $c2['score'] ?? '',
+                'sucursal_asignada' => $a->branch_name ?? '',
+                'metodo' => $a->match_type ?? '',
+                'estado' => $estado,
+                'motivo' => $a->notes ?? '',
             ];
         }
 
         $summary = collect($rows)->countBy('estado');
         $this->line('');
         $this->info('════ RESUMEN ════');
-        $this->line(str_pad('Total asignaciones', 30) . count($rows));
+        $this->line(str_pad('Total asignaciones', 30).count($rows));
         foreach (['asignado', 'manual', 'revisar', 'sin_asignar'] as $key) {
-            $this->line(str_pad(ucfirst(str_replace('_', ' ', $key)), 30) . ($summary[$key] ?? 0));
+            $this->line(str_pad(ucfirst(str_replace('_', ' ', $key)), 30).($summary[$key] ?? 0));
         }
 
         if ($this->option('detail')) {
@@ -175,9 +200,9 @@ class AuditEmployeeBranchesCommand extends Command
                 '  %-25s %-14s %-6s %10s  %-20s %-6s  %-20s %-6s  %-10s %-10s',
                 'EMPLEADO', 'ID', 'REGS', 'MONTO', 'CANDIDATO 1', 'CONF1', 'CANDIDATO 2', 'CONF2', 'MÉTODO', 'ESTADO',
             ));
-            $this->line('  ' . str_repeat('─', 150));
+            $this->line('  '.str_repeat('─', 150));
             foreach ($rows as $r) {
-                if (!in_array($r['estado'], ['revisar', 'sin_asignar'], true)) {
+                if (! in_array($r['estado'], ['revisar', 'sin_asignar'], true)) {
                     continue;
                 }
                 $this->line(sprintf(
@@ -187,9 +212,9 @@ class AuditEmployeeBranchesCommand extends Command
                     $r['registros'],
                     number_format($r['monto'], 2),
                     mb_substr((string) $r['candidato_1'], 0, 20),
-                    $r['confianza_1'] !== '' ? $r['confianza_1'] . '%' : '—',
+                    $r['confianza_1'] !== '' ? $r['confianza_1'].'%' : '—',
                     mb_substr((string) $r['candidato_2'], 0, 20),
-                    $r['confianza_2'] !== '' ? $r['confianza_2'] . '%' : '—',
+                    $r['confianza_2'] !== '' ? $r['confianza_2'].'%' : '—',
                     $r['metodo'],
                     $r['estado'],
                 ));
@@ -205,10 +230,16 @@ class AuditEmployeeBranchesCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV con una fila por persona y sus candidatos.
+     *
+     * @param  int  $periodId  ID del periodo (va en el nombre del archivo).
+     * @param  array  $rows  Filas construidas en handle().
+     */
     private function exportCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $file = "empleado_sucursal_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "empleado_sucursal_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
 
         $headers = [
@@ -217,7 +248,7 @@ class AuditEmployeeBranchesCommand extends Command
             'Candidato 2', 'Sucursal candidato 2', 'Confianza 2',
             'Sucursal asignada', 'Método', 'Estado', 'Motivo',
         ];
-        $csv = static fn (string $v): string => '"' . str_replace('"', '""', $v) . '"';
+        $csv = static fn (string $v): string => '"'.str_replace('"', '""', $v).'"';
 
         $lines = [implode(',', $headers)];
         foreach ($rows as $r) {

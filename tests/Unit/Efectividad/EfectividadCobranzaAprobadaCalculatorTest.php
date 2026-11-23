@@ -4,14 +4,14 @@ use App\Services\Efectividad\EfectividadCobranzaAprobadaCalculator;
 
 /**
  * Cada caso aquí corresponde a una regla verificada línea por línea contra el
- * VBA real (ver docs/efectividad-cobranza-aprobada.md) — no contra los
+ * VBA real (ver docs/MANUAL-DESARROLLADOR.md) — no contra los
  * antecedentes históricos previos. Donde el antecedente y el VBA real
  * coinciden, se nota; donde el VBA real es más específico o distinto, el
  * test fija ESE comportamiento.
  */
 function calc(): EfectividadCobranzaAprobadaCalculator
 {
-    return new EfectividadCobranzaAprobadaCalculator();
+    return new EfectividadCobranzaAprobadaCalculator;
 }
 
 function ingreso(array $overrides = []): array

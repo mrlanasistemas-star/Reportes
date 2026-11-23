@@ -9,6 +9,20 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-nomina-periodo` — auditoría del KPI de Nómina (NOI neto) con la
+ * fuente única BranchRadiographyCalculator: valida los uploads vigentes por fuente y explica
+ * cada peso incluido/excluido. KPI = percepciones NOI − deducciones NOI + IMSS patronal
+ * operativo + gastos de empleados Lendus (Motos, Enganche, Cascos, Finiquito, Médicos).
+ * Compara contra el target de regresión de Junio 2026 (periodo 21: $2,482,478.55); en otros
+ * periodos la diferencia no implica error.
+ *
+ * Escribe en BD: NO (solo CSV con `--export`). Devuelve FAILURE si no coincide con el target.
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-nomina-periodo 21
+ *   php artisan reportes:audit-nomina-periodo 21 --detail --export
+ */
 class AuditNominaPeriodoCommand extends Command
 {
     protected $signature = 'reportes:audit-nomina-periodo
@@ -20,25 +34,34 @@ class AuditNominaPeriodoCommand extends Command
 
     private const NOI_SOURCES = ['noi_nomina', 'noi_nomina_fiscal'];
 
+    /**
+     * Imprime: 1) uploads vigentes por fuente, 2) totales de control NOI crudos, 3) clasificación
+     * NOI del calculador, 4) desglose IMSS + gastos de empleados, 5) IMSS excluido, 6) detalle por
+     * sucursal (`--detail`) y 7) resumen contra el target.
+     *
+     * @param  BranchRadiographyCalculator  $calc  Calculador oficial de la Radiografía.
+     * @return int SUCCESS si la nómina neta coincide con el target; FAILURE si no o si el periodo no existe.
+     */
     public function handle(BranchRadiographyCalculator $calc): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
 
         $this->line('');
         $this->info('════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA NÓMINA — {$period->label} (ID {$periodId})");
         $this->info('  Regla: KPI Nómina = NOI normal + NOI fiscal, percepciones − deducciones.');
-        $this->info('  dataIds: ' . implode(', ', $dataIds));
+        $this->info('  dataIds: '.implode(', ', $dataIds));
         $this->info('════════════════════════════════════════════════════════════');
 
         // ── 1. Uploads vigentes por fuente ──────────────────────────────────
@@ -55,6 +78,7 @@ class AuditNominaPeriodoCommand extends Command
 
             if ($uploads->isEmpty()) {
                 $this->line("  [{$code}] sin upload en este periodo.");
+
                 continue;
             }
 
@@ -63,7 +87,7 @@ class AuditNominaPeriodoCommand extends Command
             $this->line(sprintf(
                 '  [%s] vigente=#%d (%s, status=%s)%s',
                 $code, $vigente->id, $vigente->original_name, $statusLabel,
-                $uploads->count() > 1 ? ' — ' . ($uploads->count() - 1) . ' upload(s) anterior(es) ignorado(s)' : '',
+                $uploads->count() > 1 ? ' — '.($uploads->count() - 1).' upload(s) anterior(es) ignorado(s)' : '',
             ));
         }
 
@@ -78,7 +102,7 @@ class AuditNominaPeriodoCommand extends Command
                     ->join('report_uploads as ru', 'n.report_upload_id', '=', 'ru.id')
                     ->whereIn('n.period_id', $dataIds)->where('ru.data_source_id', $sourceId)
                     ->where('n.concept_type', 'percepcion')->sum('n.amount');
-                $ded  = (float) DB::table('fact_noi_movements as n')
+                $ded = (float) DB::table('fact_noi_movements as n')
                     ->join('report_uploads as ru', 'n.report_upload_id', '=', 'ru.id')
                     ->whereIn('n.period_id', $dataIds)->where('ru.data_source_id', $sourceId)
                     ->where('n.concept_type', 'deduccion')->sum('n.amount');
@@ -88,9 +112,9 @@ class AuditNominaPeriodoCommand extends Command
 
         // ── 3. Fuente única canónica: BranchRadiographyCalculator ──────────────
         $branchResult = $calc->buildBranches($period, $dataIds);
-        $branches     = $branchResult['branches'];
-        $unassigned   = $branchResult['unassigned'];
-        $global       = $calc->sumGlobal($branches, $unassigned);
+        $branches = $branchResult['branches'];
+        $unassigned = $branchResult['unassigned'];
+        $global = $calc->sumGlobal($branches, $unassigned);
 
         // nomina_total + comisiones + bonos + ... + otros_percepciones ya trae TODAS las
         // deducciones NOI restadas (regla vigente 2026-07: ninguna excepción, ver
@@ -119,7 +143,9 @@ class AuditNominaPeriodoCommand extends Command
             $this->line('');
             $this->info('  ── Deducciones NOI por concepto (afectan_total = sí) ──');
             foreach ((array) ($global['nomina_detalle'] ?? []) as $label => $amt) {
-                if ((float) $amt == 0.0) continue;
+                if ((float) $amt == 0.0) {
+                    continue;
+                }
                 $this->line(sprintf('    %-45s $%s  (signed: -%s)', $label, number_format($amt, 2), number_format($amt, 2)));
             }
         }
@@ -131,7 +157,9 @@ class AuditNominaPeriodoCommand extends Command
         $this->line('   Lendus [Financiamiento de Motos, Enganche, Cascos, Finiquito, Gastos médicos]');
         $this->line('   YA están incluidos en el KPI Nómina — este desglose es el detalle, no algo aparte)');
         foreach ((array) ($global['nomina_informativo'] ?? []) as $label => $amt) {
-            if ((float) $amt == 0.0) continue;
+            if ((float) $amt == 0.0) {
+                continue;
+            }
             $this->line(sprintf('    %-45s $%s', $label, number_format($amt, 2)));
         }
         $this->info(sprintf('  IMSS patronal:              $%s', number_format($imssPatronal, 2)));
@@ -140,7 +168,7 @@ class AuditNominaPeriodoCommand extends Command
         // ── 5. IMSS por separado ────────────────────────────────────────────
         $this->line('');
         $this->info('════ 5. IMSS (auditado aparte — reportes:audit-imss) ════');
-        $imssExcluido  = (array) ($unassigned['imss_excluido'] ?? []);
+        $imssExcluido = (array) ($unassigned['imss_excluido'] ?? []);
         $this->line(sprintf('  IMSS operativo (13 sucursales, SÍ se suma a Nómina): $%s', number_format($imssPatronal, 2)));
         foreach ($imssExcluido as $branchName => $amt) {
             $this->line(sprintf('  IMSS excluido — %-20s $%s (no operativa, fuera del reporte)', $branchName, number_format($amt, 2)));
@@ -152,7 +180,9 @@ class AuditNominaPeriodoCommand extends Command
             $this->info('════ 6. DETALLE POR SUCURSAL ════');
             foreach ($branches as $b) {
                 $brNeto = BranchRadiographyCalculator::nominaTotalFor($b);
-                if ($brNeto == 0.0 && empty($b['nomina_detalle']) && empty($b['nomina_informativo'])) continue;
+                if ($brNeto == 0.0 && empty($b['nomina_detalle']) && empty($b['nomina_informativo'])) {
+                    continue;
+                }
                 $this->line(sprintf('  %-15s Neto: $%s', $b['sucursal'], number_format($brNeto, 2)));
             }
             $unassignedNeto = BranchRadiographyCalculator::nominaTotalFor($unassigned);
@@ -194,6 +224,17 @@ class AuditNominaPeriodoCommand extends Command
         return $ok ? self::SUCCESS : self::FAILURE;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV con percepciones, cada deducción, los conceptos
+     * informativos y los totales.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $global  Resultado global del calculador.
+     * @param  float  $percepciones  Percepciones brutas NOI.
+     * @param  float  $deducciones  Total de deducciones NOI.
+     * @param  float  $nominaNeta  KPI de nómina.
+     * @param  float  $imssMasGastosEmpleados  IMSS patronal + gastos de empleados (ya incluidos en el KPI).
+     */
     private function exportCsv(
         int $periodId,
         array $global,
@@ -202,10 +243,10 @@ class AuditNominaPeriodoCommand extends Command
         float $nominaNeta,
         float $imssMasGastosEmpleados,
     ): void {
-        $dir  = 'auditorias';
-        $file = "nomina_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "nomina_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
-        $csv  = static fn (string $v): string => '"' . str_replace('"', '""', $v) . '"';
+        $csv = static fn (string $v): string => '"'.str_replace('"', '""', $v).'"';
 
         $lines = [implode(',', ['Sección', 'Concepto', 'Display Amount', 'Signed Amount', 'Afecta Total', 'Motivo'])];
 

@@ -15,13 +15,22 @@ namespace App\Services\Api;
  *                 (nunca una regla de negocio nueva — documentado por métrica)
  *  - 'special'  → resuelto aparte (rotación, ver FinancialMetricResolver)
  *  - 'legacy_section' → sections.efectividad_cobranza (versión YA EXISTENTE,
- *                 nunca la "Aprobada" — ver docs/efectividad-cobranza-aprobada.md)
+ *                 nunca la "Aprobada" — ver docs/MANUAL-DESARROLLADOR.md)
  */
 class FinancialMetricRegistry
 {
     public const DEFINITION_VERSION = 'v1';
 
-    /** @return array<string, array<string, mixed>> */
+    /**
+     * Catálogo completo de métricas públicas indexado por su `code`.
+     *
+     * Cada definición incluye: label (nombre en español), unit (MXN|percentage),
+     * direction (increase|decrease|neutral: qué dirección es "mejor"), source,
+     * summary_key/derived_from según la fuente, scopes permitidos y, cuando
+     * aplica, una `definition` textual de la regla.
+     *
+     * @return array<string, array<string, mixed>>
+     */
     public static function definitions(): array
     {
         return [
@@ -70,7 +79,7 @@ class FinancialMetricRegistry
                 'label' => 'Cartera vigente', 'unit' => 'MXN', 'direction' => 'increase',
                 'source' => 'derived', 'derived_from' => ['portfolio_total', 'portfolio_overdue'],
                 'scopes' => ['general', 'branch', 'employee'],
-                'definition' => 'portfolio_total - portfolio_overdue — identidad matemática (vigente = total − vencida), no existe un campo "cartera vigente" ya calculado en el sistema (ver auditoría Fase 4.1, docs/correcciones-financieras.md). Devuelve null si el resultado sería negativo (inconsistencia de datos), nunca un valor inválido.',
+                'definition' => 'portfolio_total - portfolio_overdue — identidad matemática (vigente = total − vencida), no existe un campo "cartera vigente" ya calculado en el sistema (ver auditoría Fase 4.1, docs/MANUAL-DESARROLLADOR.md). Devuelve null si el resultado sería negativo (inconsistencia de datos), nunca un valor inválido.',
             ],
             'turnover' => [
                 'label' => 'Rotación de personal', 'unit' => 'percentage', 'direction' => 'decrease',
@@ -82,16 +91,28 @@ class FinancialMetricRegistry
                 'label' => 'Efectividad de cobranza (histórica)', 'unit' => 'percentage', 'direction' => 'increase',
                 'source' => 'legacy_section',
                 'scopes' => ['general', 'branch', 'employee'],
-                'definition' => 'Vigente/Atrasado/Vencido + % recuperado de mora respecto al mes anterior. Versión YA EXISTENTE — NO la calculadora "Aprobada" (bloqueada, ver docs/efectividad-cobranza-aprobada.md).',
+                'definition' => 'Vigente/Atrasado/Vencido + % recuperado de mora respecto al mes anterior. Versión YA EXISTENTE — NO la calculadora "Aprobada" (bloqueada, ver docs/MANUAL-DESARROLLADOR.md).',
             ],
         ];
     }
 
+    /**
+     * Indica si un código de métrica existe en el catálogo.
+     *
+     * @param  string  $code  Código público de la métrica (p. ej. "ebitda").
+     * @return bool true si está definida.
+     */
     public static function exists(string $code): bool
     {
         return array_key_exists($code, self::definitions());
     }
 
+    /**
+     * Obtiene la definición de una métrica.
+     *
+     * @param  string  $code  Código público de la métrica.
+     * @return array<string, mixed>|null Definición, o null si el código no existe.
+     */
     public static function get(string $code): ?array
     {
         return self::definitions()[$code] ?? null;

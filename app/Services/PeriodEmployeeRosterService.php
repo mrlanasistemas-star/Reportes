@@ -9,6 +9,7 @@ use App\Services\Roster\RosterIdentityResolver;
 use App\Services\Roster\RosterMovementEvidenceCollector;
 use App\Services\Roster\RosterMovementEvidenceCollector as Ev;
 use App\Services\Roster\RosterMovementStatus as S;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -41,13 +42,25 @@ use Illuminate\Support\Facades\Schema;
  * Idempotente: siempre borra el roster del periodo antes de reinsertar. Las
  * decisiones de conciliación viven aparte (period_employee_movement_reviews) y
  * se vuelven a aplicar en cada reconstrucción.
+ *
+ * Quién lo usa: RotacionDerivedFromNoiService / ImssFromNoiFiscalService durante
+ * "Actualizar BD" (buildForPeriod), el comando reportes:audit-roster-periodo
+ * (computeForPeriod) y los selectores de colaboradores y la atribución de gastos
+ * (rosterRowsForSelector).
  */
 class PeriodEmployeeRosterService
 {
     /** Caída de plantilla que sugiere archivo NOI incompleto, no bajas simultáneas. */
     private const MASS_DROP_RATIO = 0.20;
+
     private const MASS_DROP_MIN_PREV = 10;
 
+    /**
+     * @param  BranchResolverService  $branchResolver  Determina si una sucursal es de las operativas oficiales (isSheetBranch).
+     * @param  PersonIdentityResolverService  $identityResolver  Resolutor de identidad de personas (inyectado; no se usa directamente en esta clase).
+     * @param  RosterMovementEvidenceCollector  $evidence  Recolecta evidencia de solo lectura: directorio laboral, finiquitos, colocación, reapariciones, conciliaciones.
+     * @param  RosterIdentityResolver  $identities  Agrupa registros Employee en personas reales (mismo nombre, alias, homónimos separados).
+     */
     public function __construct(
         private readonly BranchResolverService $branchResolver,
         private readonly PersonIdentityResolverService $identityResolver,
@@ -58,7 +71,13 @@ class PeriodEmployeeRosterService
     /**
      * Calcula y PERSISTE el roster del periodo.
      *
-     * @return array<string, mixed>
+     * Efecto en BD: reemplaza (borra e inserta en una transacción) todas las
+     * filas de period_employee_rosters del periodo.
+     *
+     * @param  Period  $period  Periodo mensual.
+     * @return array<string, mixed> Cifras del periodo (ver stats()).
+     *
+     * @throws \InvalidArgumentException Si el periodo no es mensual.
      */
     public function buildForPeriod(Period $period): array
     {
@@ -72,16 +91,28 @@ class PeriodEmployeeRosterService
      * Calcula el roster del periodo SIN escribir nada (también lo usa
      * `reportes:audit-roster-periodo --dry-run/--diff` para diagnosticar en producción).
      *
+     * Pasos: (1) presencia NOI normal/fiscal por employee_id; (2) agrupación en
+     * personas reales; (3) cruce con el roster ACTIVO del mes anterior por
+     * employee_id y llave; (4) sucursal del periodo con fallback histórico;
+     * (5) recolección de evidencia (directorio laboral válido y posterior,
+     * finiquitos, colocación, reapariciones, conciliaciones, caída masiva de
+     * plantilla ≥20 % con ≥10 activos previos); detección de duplicados probables
+     * (emparejamiento mutuo ausencia↔alta ≥85 %); (6) clasificación de presentes
+     * y (7) de ausentes. Solo lee BD.
+     *
+     * @param  Period  $period  Periodo mensual.
      * @return array{rows: array<int, array<string, mixed>>, stats: array<string, mixed>}
+     *
+     * @throws \InvalidArgumentException Si el periodo no es mensual.
      */
     public function computeForPeriod(Period $period): array
     {
-        if (!$period->isMonthly()) {
+        if (! $period->isMonthly()) {
             throw new \InvalidArgumentException('El roster de empleados solo se construye para periodos mensuales.');
         }
 
         $allPeriods = Period::all();
-        $dataIds    = $this->dataIdsFor($period, $allPeriods);
+        $dataIds = $this->dataIdsFor($period, $allPeriods);
 
         // ── 1. Empleados (employee_id crudo) con movimiento NOI este periodo, por fuente ──
         $byEmployeeId = $this->noiPresence($dataIds);
@@ -95,7 +126,7 @@ class PeriodEmployeeRosterService
         ];
 
         $rawEmployeeIds = array_keys($byEmployeeId);
-        $employees      = Employee::query()->whereIn('id', $rawEmployeeIds)->get(['id', 'full_name', 'normalized_name'])->keyBy('id');
+        $employees = Employee::query()->whereIn('id', $rawEmployeeIds)->get(['id', 'full_name', 'normalized_name'])->keyBy('id');
 
         // ── 2. Identidad: personas reales del periodo (ver RosterIdentityResolver) ──
         $identity = $this->identities->group($employees->values());
@@ -128,7 +159,10 @@ class PeriodEmployeeRosterService
         foreach ($byIdentity as $key => $data) {
             $match = null;
             foreach ($data['employee_ids'] as $eid) {
-                if (isset($prevKeyById[$eid])) { $match = $prevKeyById[$eid]; break; }
+                if (isset($prevKeyById[$eid])) {
+                    $match = $prevKeyById[$eid];
+                    break;
+                }
             }
             if ($match === null && $prevActive->has($key)) {
                 $match = $key;
@@ -158,27 +192,31 @@ class PeriodEmployeeRosterService
         }
 
         $nameOf = [];
-        foreach ($byIdentity as $k => $d) { $nameOf[$k] = $d['name']; }
-        foreach ($absentKeys as $k) { $nameOf[$k] = (string) $prevActive[$k]->nombre_normalizado; }
+        foreach ($byIdentity as $k => $d) {
+            $nameOf[$k] = $d['name'];
+        }
+        foreach ($absentKeys as $k) {
+            $nameOf[$k] = (string) $prevActive[$k]->nombre_normalizado;
+        }
         $nameCounts = array_count_values($nameOf);
         $allNames = array_values(array_unique($nameOf));
 
         $dirEvidence = $this->evidence->directoryEvidenceFor($period);
-        $snapshot    = $dirEvidence['valid'];
-        $later       = $dirEvidence['later'];
-        $directory   = $this->evidence->directoryStatusByName($snapshot, $allNames);
-        $laterDir    = $this->evidence->directoryStatusByName($later, $allNames);
+        $snapshot = $dirEvidence['valid'];
+        $later = $dirEvidence['later'];
+        $directory = $this->evidence->directoryStatusByName($snapshot, $allNames);
+        $laterDir = $this->evidence->directoryStatusByName($later, $allNames);
         $prevDataIds = $prevPeriod ? $this->dataIdsFor($prevPeriod, $allPeriods) : [];
-        $finiquitos  = $this->evidence->finiquitoEmployees(array_values(array_unique(array_merge($dataIds, $prevDataIds))));
-        $activity    = $this->evidence->placementActivity($dataIds);
+        $finiquitos = $this->evidence->finiquitoEmployees(array_values(array_unique(array_merge($dataIds, $prevDataIds))));
+        $activity = $this->evidence->placementActivity($dataIds);
         $prevActivity = $this->evidence->placementActivity($prevDataIds);
-        $reappears   = $this->evidence->reappearsLater($period, $absentIdentities);
+        $reappears = $this->evidence->reappearsLater($period, $absentIdentities);
         $priorRecord = $hasBaseline ? $this->evidence->lastPriorRecord($period, $newIdentities) : [];
-        $reviews     = $this->evidence->latestReviews($period);
+        $reviews = $this->evidence->latestReviews($period);
 
         $prevActiveCount = $prevActive->count();
         $dropRatio = $prevActiveCount > 0 ? (($prevActiveCount - count($byIdentity)) / $prevActiveCount) : 0.0;
-        $massDrop  = $prevActiveCount >= self::MASS_DROP_MIN_PREV && $dropRatio >= self::MASS_DROP_RATIO;
+        $massDrop = $prevActiveCount >= self::MASS_DROP_MIN_PREV && $dropRatio >= self::MASS_DROP_RATIO;
 
         $ctx = compact('snapshot', 'later', 'directory', 'laterDir', 'finiquitos', 'activity', 'prevActivity', 'reappears', 'priorRecord', 'reviews', 'massDrop', 'dropRatio', 'currentSources', 'period', 'prevPeriod', 'nameCounts');
 
@@ -189,7 +227,7 @@ class PeriodEmployeeRosterService
             $confirmedByReview = ($this->reviewFor($k, $name, $ctx)?->decision ?? null) === S::DECISION_CONFIRMAR;
             $dir = $this->dirStatus($name, $ctx, 'directory');
             $isConfirmable = $confirmedByReview || $this->finiquitoFor($absentIdentities[$k], $ctx) !== null || (($dir['status'] ?? null) === 'INACTIVO');
-            if (!$isConfirmable && !isset($reappears[$k])) {
+            if (! $isConfirmable && ! isset($reappears[$k])) {
                 $unconfirmedAbsent[$k] = $prevActive[$k]->nombre_original;
             }
         }
@@ -218,16 +256,24 @@ class PeriodEmployeeRosterService
         foreach ($byIdentity as $key => $data) {
             $branchId = null;
             foreach ($data['employee_ids'] as $eid) {
-                if (isset($currentAssignments[$eid])) { $branchId = (int) $currentAssignments[$eid]; break; }
+                if (isset($currentAssignments[$eid])) {
+                    $branchId = (int) $currentAssignments[$eid];
+                    break;
+                }
             }
             if ($branchId === null) {
                 foreach ($data['employee_ids'] as $eid) {
-                    if (isset($historicalMap[$eid])) { $branchId = $historicalMap[$eid]; break; }
+                    if (isset($historicalMap[$eid])) {
+                        $branchId = $historicalMap[$eid];
+                        break;
+                    }
                 }
             }
-            $branch     = $branchId ? $branches->get($branchId) : null;
+            $branch = $branchId ? $branches->get($branchId) : null;
             $branchName = $branch?->name;
-            if (!$branchId) $sinSucursal++;
+            if (! $branchId) {
+                $sinSucursal++;
+            }
 
             $prevKey = $prevKeyOf[$key];
             [$movement, $status, $note, $items] = $this->classifyPresent(
@@ -257,7 +303,13 @@ class PeriodEmployeeRosterService
         return ['rows' => $rows, 'stats' => $stats];
     }
 
-    /** @return array<int, array{normal:bool, fiscal:bool}> */
+    /**
+     * Presencia de cada employee_id en NOI Nómina y/o NOI Nómina Fiscal dentro
+     * de los periodos de datos indicados (fact_noi_movements unido a su fuente).
+     *
+     * @param  array<int, int>  $dataIds  Semanas base del mes + el propio mes.
+     * @return array<int, array{normal:bool, fiscal:bool}> employee_id => banderas por archivo.
+     */
     private function noiPresence(array $dataIds): array
     {
         $movementRows = DB::table('fact_noi_movements as fnm')
@@ -284,7 +336,12 @@ class PeriodEmployeeRosterService
         return $byEmployeeId;
     }
 
-    /** Llave de identidad de una fila persistida (filas antiguas: el nombre). */
+    /**
+     * Llave de identidad de una fila persistida (filas antiguas: el nombre).
+     *
+     * @param  object  $r  Fila de period_employee_rosters.
+     * @return string employee_key, o nombre_normalizado si la fila no la tiene.
+     */
     private function rowKey(object $r): string
     {
         $key = trim((string) ($r->employee_key ?? ''));
@@ -292,7 +349,12 @@ class PeriodEmployeeRosterService
         return $key !== '' ? $key : (string) $r->nombre_normalizado;
     }
 
-    /** @return int[] employee_id de la fila + los del grupo guardados en la evidencia. */
+    /**
+     * Todos los employee_id que representa una fila persistida del roster.
+     *
+     * @param  object  $r  Fila de period_employee_rosters.
+     * @return int[] employee_id de la fila + los del grupo guardados en la evidencia.
+     */
     private function rowEmployeeIds(object $r): array
     {
         $ids = [(int) $r->employee_id];
@@ -304,12 +366,28 @@ class PeriodEmployeeRosterService
         return array_values(array_unique($ids));
     }
 
-    /** Decisión autorizada por llave; filas antiguas se conciliaban por nombre. */
+    /**
+     * Decisión autorizada por llave; filas antiguas se conciliaban por nombre.
+     * El respaldo por nombre solo aplica si la llave ES el nombre y no hay
+     * homónimos en el roster.
+     *
+     * @param  string  $key  employee_key de la persona.
+     * @param  string  $name  Nombre normalizado.
+     * @param  array  $ctx  Contexto de evidencia (usa 'reviews' y 'nameCounts').
+     * @return object|null Última conciliación aplicable (decision, reviewer, note, created_at) o null.
+     */
     private function reviewFor(string $key, string $name, array $ctx): ?object
     {
         return $ctx['reviews'][$key] ?? ($key !== $name || ($ctx['nameCounts'][$name] ?? 1) > 1 ? null : ($ctx['reviews'][$name] ?? null));
     }
 
+    /**
+     * Concepto de finiquito NOI registrado para cualquiera de los employee_id de la persona.
+     *
+     * @param  array<int, int>  $employeeIds  Registros de la persona.
+     * @param  array  $ctx  Contexto de evidencia (usa 'finiquitos').
+     * @return string|null Nombre del concepto de finiquito, o null si no hay.
+     */
     private function finiquitoFor(array $employeeIds, array $ctx): ?string
     {
         foreach ($employeeIds as $id) {
@@ -324,6 +402,11 @@ class PeriodEmployeeRosterService
     /**
      * Estatus del directorio para un nombre. Si en el roster hay más de una
      * persona con ese nombre (homónimos) el directorio no permite atribuirlo.
+     *
+     * @param  string  $name  Nombre normalizado.
+     * @param  array  $ctx  Contexto de evidencia.
+     * @param  string  $which  'directory' (corte válido para el periodo) o 'laterDir' (corte posterior).
+     * @return array|null Registro del directorio (status, codes, puesto...) o null.
      */
     private function dirStatus(string $name, array $ctx, string $which): ?array
     {
@@ -334,7 +417,15 @@ class PeriodEmployeeRosterService
         return $ctx[$which][$name] ?? null;
     }
 
-    /** @return array<int, array{fuente:string, detalle:string}> */
+    /**
+     * Renglones de evidencia del directorio laboral para mostrar en la conciliación
+     * (estatus en el corte válido y, solo informativo, en el corte posterior).
+     *
+     * @param  string  $name  Nombre normalizado.
+     * @param  array  $ctx  Contexto de evidencia.
+     * @param  bool  $mentionMissing  true = informar también cuando no aparece en el directorio (caso ausentes).
+     * @return array<int, array{fuente:string, detalle:string}>
+     */
     private function directoryItems(string $name, array $ctx, bool $mentionMissing): array
     {
         $items = [];
@@ -358,18 +449,33 @@ class PeriodEmployeeRosterService
     }
 
     /**
-     * @param  array<string, mixed>  $data
+     * Clasifica a una persona PRESENTE en la nómina del periodo.
+     *
+     * Orden de reglas: posible duplicado interno (NOI normal vs fiscal sin vínculo)
+     * → si estaba el mes anterior: contradicción con directorio INACTIVO,
+     * cambio de sucursal, sin actividad comercial o activo confirmado → sin roster
+     * previo: plantilla inicial → parecido a una ausencia: continuidad conciliada o
+     * registro duplicado → contradicción por INACTIVO (salvo reingreso esperado)
+     * → reingreso tras baja confirmada o retorno tras ausencia → alta confirmada.
+     *
+     * @param  string  $key  employee_key de la persona.
+     * @param  array<string, mixed>  $data  Grupo de identidad (name, nombre_original, employee_ids, normal, fiscal, homonym, links).
+     * @param  string|null  $branchName  Sucursal resuelta para el periodo.
+     * @param  object|null  $prevRow  Fila activa del mes anterior emparejada, o null.
+     * @param  bool  $hasBaseline  Si existe roster activo del mes anterior.
      * @param  array{nombre:string, percent:float, resolved?:bool}|null  $absentMatch
      * @param  array{key:string, nombre:string, percent:float}|null  $nearDup
+     * @param  array  $ctx  Contexto de evidencia.
      * @return array{0:string, 1:string, 2:string, 3:array<int, array{fuente:string, detalle:string}>}
+     *                                                                                                 [movement_type, reconciliation_status, nota legible, evidencia].
      */
     private function classifyPresent(string $key, array $data, ?string $branchName, ?object $prevRow, bool $hasBaseline, ?array $absentMatch, ?array $nearDup, array $ctx): array
     {
         $name = $data['name'];
         $files = array_values(array_filter([$data['normal'] ? 'NOI Nómina' : null, $data['fiscal'] ? 'NOI Nómina Fiscal' : null]));
-        $items = [['fuente' => 'NOI', 'detalle' => 'Presente en ' . implode(' + ', $files) . ' de ' . $ctx['period']->label . '.']];
+        $items = [['fuente' => 'NOI', 'detalle' => 'Presente en '.implode(' + ', $files).' de '.$ctx['period']->label.'.']];
         foreach ($data['links'] as $link) {
-            $items[] = ['fuente' => 'Identidad', 'detalle' => $link . '.'];
+            $items[] = ['fuente' => 'Identidad', 'detalle' => $link.'.'];
         }
         if ($data['homonym']) {
             $items[] = ['fuente' => 'Identidad', 'detalle' => 'Homónimo con clave NOI distinta: se cuenta como persona separada.'];
@@ -386,7 +492,7 @@ class PeriodEmployeeRosterService
         if ($dirInactive && $cutAfterPeriod) {
             $items[] = ['fuente' => 'Directorio laboral', 'detalle' => "El corte ({$ctx['snapshot']['effective_cut']}) es posterior al cierre del periodo: su INACTIVO indica una baja posterior, no contradice el pago de {$ctx['period']->label}."];
         }
-        $dirInactiveWithoutFiniquito = $dirInactive && !$cutAfterPeriod && $finiquito === null;
+        $dirInactiveWithoutFiniquito = $dirInactive && ! $cutAfterPeriod && $finiquito === null;
 
         if ($nearDup !== null) {
             $items[] = ['fuente' => 'Identidad', 'detalle' => sprintf('Nombre %.0f%% similar a "%s" del mismo periodo (uno solo en NOI normal, otro solo en NOI fiscal) sin vínculo conciliado.', $nearDup['percent'], $nearDup['nombre'])];
@@ -417,7 +523,7 @@ class PeriodEmployeeRosterService
             return [S::MOVEMENT_ACTIVO, S::ACTIVO_CONFIRMADO, 'En nómina este periodo y el anterior.', $items];
         }
 
-        if (!$hasBaseline) {
+        if (! $hasBaseline) {
             return [S::MOVEMENT_ACTIVO, S::PLANTILLA_INICIAL,
                 'No hay roster del periodo anterior para comparar: se registra como plantilla, no como alta.', $items];
         }
@@ -438,7 +544,7 @@ class PeriodEmployeeRosterService
         // Tras una baja confirmada, un directorio ANTERIOR al periodo todavía lo
         // muestra INACTIVO: es lo esperado en un reingreso, no una contradicción.
         $expectedInactive = ($prior['confirmed_baja'] ?? false) && ($ctx['snapshot']['kind'] ?? null) === Ev::DIR_PRIOR;
-        if ($dirInactiveWithoutFiniquito && !$expectedInactive) {
+        if ($dirInactiveWithoutFiniquito && ! $expectedInactive) {
             return [S::MOVEMENT_ALTA, S::CONTRADICCION_FUENTES,
                 'Aparece nuevo en la nómina NOI, pero el directorio laboral válido para el periodo lo marca INACTIVO. Requiere conciliación.', $items];
         }
@@ -449,7 +555,7 @@ class PeriodEmployeeRosterService
 
                 return [S::MOVEMENT_ALTA, S::REINGRESO, "Reingreso: tuvo baja confirmada en {$prior['period']} y vuelve a nómina.", $items];
             }
-            $items[] = ['fuente' => 'Roster', 'detalle' => "Último registro anterior: {$prior['period']} (" . S::label($prior['status']) . ').'];
+            $items[] = ['fuente' => 'Roster', 'detalle' => "Último registro anterior: {$prior['period']} (".S::label($prior['status']).').'];
 
             return [S::MOVEMENT_ACTIVO, S::RETORNO_TRAS_AUSENCIA,
                 "Vuelve a nómina tras una ausencia sin baja confirmada (último registro: {$prior['period']}). No cuenta como alta.", $items];
@@ -459,9 +565,21 @@ class PeriodEmployeeRosterService
     }
 
     /**
+     * Clasifica a una persona activa el mes anterior que NO aparece en la nómina
+     * del periodo. Dejar de aparecer nunca es baja por sí solo; reglas en orden:
+     * conciliación autorizada → reaparece después → finiquito NOI → directorio
+     * válido INACTIVO → probable duplicado con alta nueva → contradicción con
+     * directorio ACTIVO del periodo → sigue colocando → archivo NOI faltante o
+     * caída masiva → solo evidencia posterior (informativa) → vigencia
+     * desconocida / posible baja.
+     *
+     * @param  string  $key  employee_key de la persona.
+     * @param  object  $prevRow  Fila activa del mes anterior.
      * @param  int[]  $employeeIds
      * @param  array{key:string, nombre:string, percent:float}|null  $altaMatch
+     * @param  array  $ctx  Contexto de evidencia.
      * @return array{0:string, 1:string, 2:string, 3:array<int, array{fuente:string, detalle:string}>}
+     *                                                                                                 [movement_type, reconciliation_status, nota legible, evidencia].
      */
     private function classifyAbsent(string $key, object $prevRow, array $employeeIds, ?array $altaMatch, array $ctx): array
     {
@@ -478,7 +596,7 @@ class PeriodEmployeeRosterService
         if ($review !== null) {
             $who = $review->reviewer ?: 'usuario autorizado';
             $when = substr((string) $review->created_at, 0, 16);
-            $items[] = ['fuente' => 'Conciliación', 'detalle' => "{$who} · {$when}" . ($review->note ? " · {$review->note}" : '')];
+            $items[] = ['fuente' => 'Conciliación', 'detalle' => "{$who} · {$when}".($review->note ? " · {$review->note}" : '')];
 
             return $review->decision === S::DECISION_CONFIRMAR
                 ? [S::MOVEMENT_BAJA, S::BAJA_CONFIRMADA, "Baja confirmada por conciliación autorizada ({$who}, {$when}).", $items]
@@ -496,7 +614,7 @@ class PeriodEmployeeRosterService
         $finiquito = $this->finiquitoFor($employeeIds, $ctx);
         if ($finiquito !== null) {
             $items[] = ['fuente' => 'NOI', 'detalle' => "Concepto de finiquito: {$finiquito}."];
-            if (!($status === 'ACTIVO' && $kind === Ev::DIR_PERIOD)) {
+            if (! ($status === 'ACTIVO' && $kind === Ev::DIR_PERIOD)) {
                 return [S::MOVEMENT_BAJA, S::BAJA_CONFIRMADA, "Baja confirmada: NOI registra {$finiquito}.", $items];
             }
 
@@ -534,8 +652,8 @@ class PeriodEmployeeRosterService
         }
 
         // 8. Archivo NOI faltante / incompleto.
-        $missingFile = ($prevRow->source === 'noi_nomina_fiscal' && !$ctx['currentSources']['fiscal'])
-            || ($prevRow->source === 'noi_nomina' && !$ctx['currentSources']['normal']);
+        $missingFile = ($prevRow->source === 'noi_nomina_fiscal' && ! $ctx['currentSources']['fiscal'])
+            || ($prevRow->source === 'noi_nomina' && ! $ctx['currentSources']['normal']);
         if ($missingFile) {
             $file = $prevRow->source === 'noi_nomina_fiscal' ? 'NOI Nómina Fiscal' : 'NOI Nómina';
             $items[] = ['fuente' => 'NOI', 'detalle' => "{$file} no está cargado en {$ctx['period']->label}."];
@@ -570,50 +688,89 @@ class PeriodEmployeeRosterService
         return [S::MOVEMENT_AUSENCIA, S::POSIBLE_BAJA, 'No aparece en la nómina ni como INACTIVO en el directorio laboral del periodo. Posible baja: confírmala o descártala en la conciliación.', $items];
     }
 
+    /**
+     * Indica si un colaborador comercial (por puesto o porque colocó el mes
+     * anterior) no registró colocación en el periodo. Dato informativo, nunca baja.
+     *
+     * @param  string  $name  Nombre normalizado.
+     * @param  array|null  $dir  Registro del directorio laboral (puesto, codes).
+     * @param  array  $ctx  Contexto de evidencia (activity, prevActivity).
+     * @return bool false también cuando no hay colocación cargada para el periodo.
+     */
     private function lacksCommercialActivity(string $name, ?array $dir, array $ctx): bool
     {
-        if (!$ctx['activity']['loaded']) {
+        if (! $ctx['activity']['loaded']) {
             return false; // sin colocación cargada no se puede afirmar nada
         }
         $codes = $dir['codes'] ?? [];
         $isCommercial = $this->evidence->isCommercialPosition($dir['puesto'] ?? null)
             || $this->evidence->hasCommercialActivity($ctx['prevActivity'], $name, $codes);
 
-        return $isCommercial && !$this->evidence->hasCommercialActivity($ctx['activity'], $name, $codes);
+        return $isCommercial && ! $this->evidence->hasCommercialActivity($ctx['activity'], $name, $codes);
     }
 
+    /**
+     * Arma una fila de period_employee_rosters. requires_review se deriva del
+     * estatus (RosterMovementStatus::isPending) y la evidencia se guarda como JSON.
+     *
+     * @param  Period  $period  Periodo del roster.
+     * @param  int  $employeeId  employee_id representativo de la persona.
+     * @param  string  $key  employee_key.
+     * @param  string  $name  Nombre normalizado.
+     * @param  string|null  $original  Nombre como viene en la fuente.
+     * @param  mixed  $branchId  Sucursal (se convierte a int o null).
+     * @param  string|null  $branchName  Nombre de la sucursal.
+     * @param  bool  $operativa  Si la sucursal es operativa oficial.
+     * @param  string|null  $source  noi_nomina, noi_nomina_fiscal o ambos (default noi_nomina).
+     * @param  bool  $normal  Aparece en NOI normal.
+     * @param  bool  $fiscal  Aparece en NOI fiscal.
+     * @param  bool  $active  Activo en el periodo (false para ausencias).
+     * @param  string  $movement  movement_type.
+     * @param  string  $status  reconciliation_status.
+     * @param  string  $note  Nota legible.
+     * @param  array  $evidence  Evidencia (items, employee_ids, identity).
+     * @param  mixed  $now  Marca de tiempo para created_at/updated_at.
+     * @return array<string, mixed>
+     */
     private function row(Period $period, int $employeeId, string $key, string $name, ?string $original, $branchId, ?string $branchName, bool $operativa, ?string $source,
         bool $normal, bool $fiscal, bool $active, string $movement, string $status, string $note, array $evidence, $now): array
     {
         return [
-            'period_id'                => $period->id,
-            'employee_id'              => $employeeId,
-            'employee_key'             => $key,
-            'nombre_normalizado'       => $name,
-            'nombre_original'          => $original,
-            'branch_id'                => $branchId ? (int) $branchId : null,
-            'branch_name'              => $branchName,
-            'is_branch_operativa'      => $operativa,
-            'source'                   => $source ?: 'noi_nomina',
+            'period_id' => $period->id,
+            'employee_id' => $employeeId,
+            'employee_key' => $key,
+            'nombre_normalizado' => $name,
+            'nombre_original' => $original,
+            'branch_id' => $branchId ? (int) $branchId : null,
+            'branch_name' => $branchName,
+            'is_branch_operativa' => $operativa,
+            'source' => $source ?: 'noi_nomina',
             'appears_in_nomina_normal' => $normal,
             'appears_in_nomina_fiscal' => $fiscal,
-            'is_active_for_period'     => $active,
-            'movement_type'            => $movement,
-            'reconciliation_status'    => $status,
-            'reconciliation_note'      => $note,
-            'movement_evidence'        => json_encode($evidence, JSON_UNESCAPED_UNICODE),
-            'requires_review'          => S::isPending($status),
-            'created_at'               => $now,
-            'updated_at'               => $now,
+            'is_active_for_period' => $active,
+            'movement_type' => $movement,
+            'reconciliation_status' => $status,
+            'reconciliation_note' => $note,
+            'movement_evidence' => json_encode($evidence, JSON_UNESCAPED_UNICODE),
+            'requires_review' => S::isPending($status),
+            'created_at' => $now,
+            'updated_at' => $now,
         ];
     }
 
-    /** @param array<int, array<string, mixed>> $rows */
+    /**
+     * Reemplaza el roster persistido del periodo en una transacción (borra e
+     * inserta en lotes de 500). Si la migración de evidencia aún no corrió,
+     * omite las columnas movement_evidence y requires_review.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array<int, array<string, mixed>>  $rows  Filas calculadas.
+     */
     private function persist(Period $period, array $rows): void
     {
         // Despliegue en curso (migración 2026_10_18 aún sin correr): se omiten las columnas nuevas.
         $hasEvidence = Schema::hasColumn('period_employee_rosters', 'movement_evidence');
-        if (!$hasEvidence) {
+        if (! $hasEvidence) {
             $rows = array_map(fn ($r) => array_diff_key($r, ['movement_evidence' => 1, 'requires_review' => 1]), $rows);
         }
 
@@ -628,7 +785,15 @@ class PeriodEmployeeRosterService
     /**
      * Cifras del periodo — cada una cuenta EXACTAMENTE lo que dice su nombre.
      *
-     * @param array<int, array<string, mixed>> $rows
+     * @param  array<int, array<string, mixed>>  $rows  Filas del roster (presentes y ausentes).
+     * @param  int|null  $prevPeriodId  Periodo mensual anterior usado como base.
+     * @param  int  $sinSucursal  Presentes sin sucursal resuelta.
+     * @param  array  $identityStats  Estadísticas de RosterIdentityResolver (fusiones, homónimos).
+     * @param  bool  $massDrop  Si se detectó caída masiva de plantilla.
+     * @param  float  $dropRatio  Proporción de caída vs el mes anterior.
+     * @param  array|null  $snapshot  Directorio laboral válido para el periodo.
+     * @param  array|null  $later  Directorio laboral posterior al periodo.
+     * @return array<string, mixed>
      */
     private function stats(array $rows, ?int $prevPeriodId, int $sinSucursal, array $identityStats, bool $massDrop, float $dropRatio, ?array $snapshot, ?array $later): array
     {
@@ -638,38 +803,43 @@ class PeriodEmployeeRosterService
 
         return [
             // Personas (deduplicadas) en NOI normal o fiscal del periodo.
-            'active_count'          => $active->count(),
-            'con_sucursal'          => $active->whereNotNull('branch_id')->count(),
-            'sin_sucursal'          => $sinSucursal,
+            'active_count' => $active->count(),
+            'con_sucursal' => $active->whereNotNull('branch_id')->count(),
+            'sin_sucursal' => $sinSucursal,
             // movement_type='alta' = altas confirmadas + reingresos + altas con contradicción (lo que usa Rotación).
-            'altas'                 => $c->where('movement_type', S::MOVEMENT_ALTA)->count(),
-            'altas_confirmadas'     => $c->where('reconciliation_status', S::ALTA_CONFIRMADA)->count(),
-            'reingresos'            => $c->where('reconciliation_status', S::REINGRESO)->count(),
-            'cambios_sucursal'      => $c->where('reconciliation_status', S::CAMBIO_SUCURSAL)->count(),
-            'retornos'              => $c->where('reconciliation_status', S::RETORNO_TRAS_AUSENCIA)->count(),
+            'altas' => $c->where('movement_type', S::MOVEMENT_ALTA)->count(),
+            'altas_confirmadas' => $c->where('reconciliation_status', S::ALTA_CONFIRMADA)->count(),
+            'reingresos' => $c->where('reconciliation_status', S::REINGRESO)->count(),
+            'cambios_sucursal' => $c->where('reconciliation_status', S::CAMBIO_SUCURSAL)->count(),
+            'retornos' => $c->where('reconciliation_status', S::RETORNO_TRAS_AUSENCIA)->count(),
             // Solo bajas CONFIRMADAS — lo que cuentan Rotación y reportes.
-            'bajas'                 => $c->where('movement_type', S::MOVEMENT_BAJA)->count(),
-            'ausencias'             => $absent->count(),
-            'posibles_bajas'        => $absent->where('reconciliation_status', S::POSIBLE_BAJA)->count(),
-            'ausencias_temporales'  => $absent->whereIn('reconciliation_status', [S::NO_LOCALIZADO, S::AUSENCIA_JUSTIFICADA])->count(),
-            'bajas_pendientes'      => $absent->where('requires_review', true)->count(),
+            'bajas' => $c->where('movement_type', S::MOVEMENT_BAJA)->count(),
+            'ausencias' => $absent->count(),
+            'posibles_bajas' => $absent->where('reconciliation_status', S::POSIBLE_BAJA)->count(),
+            'ausencias_temporales' => $absent->whereIn('reconciliation_status', [S::NO_LOCALIZADO, S::AUSENCIA_JUSTIFICADA])->count(),
+            'bajas_pendientes' => $absent->where('requires_review', true)->count(),
             'pendientes_conciliacion' => $c->where('requires_review', true)->count(),
-            'contradicciones'       => $c->where('reconciliation_status', S::CONTRADICCION_FUENTES)->count(),
-            'por_categoria'         => $c->countBy('reconciliation_status')->all(),
-            'prev_period_id'        => $prevPeriodId,
+            'contradicciones' => $c->where('reconciliation_status', S::CONTRADICCION_FUENTES)->count(),
+            'por_categoria' => $c->countBy('reconciliation_status')->all(),
+            'prev_period_id' => $prevPeriodId,
             'duplicados_fusionados' => (int) ($identityStats['merged_same_name'] ?? 0) + (int) ($identityStats['merged_by_alias'] ?? 0),
-            'vinculos_alias'        => (int) ($identityStats['merged_by_alias'] ?? 0),
-            'homonimos_separados'   => (int) ($identityStats['homonyms_split'] ?? 0),
-            'mass_drop_detected'    => $massDrop,
-            'drop_ratio'            => round($dropRatio, 4),
+            'vinculos_alias' => (int) ($identityStats['merged_by_alias'] ?? 0),
+            'homonimos_separados' => (int) ($identityStats['homonyms_split'] ?? 0),
+            'mass_drop_detected' => $massDrop,
+            'drop_ratio' => round($dropRatio, 4),
             'posibles_coincidencias_nombre' => $c->where('reconciliation_status', S::REGISTRO_DUPLICADO)->where('is_active_for_period', false)->count(),
             'posibles_duplicados_presentes' => $active->where('reconciliation_status', S::REGISTRO_DUPLICADO)->count(),
-            'directorio_laboral'    => $snapshot['label'] ?? null,
-            'directorio_tipo'       => $snapshot['kind'] ?? null,
-            'directorio_posterior'  => $later['label'] ?? null,
+            'directorio_laboral' => $snapshot['label'] ?? null,
+            'directorio_tipo' => $snapshot['kind'] ?? null,
+            'directorio_posterior' => $later['label'] ?? null,
         ];
     }
 
+    /**
+     * Cifras en cero (periodo sin movimientos NOI).
+     *
+     * @return array<string, mixed> Mismas llaves que stats().
+     */
     private function emptyStats(): array
     {
         return [
@@ -682,7 +852,13 @@ class PeriodEmployeeRosterService
         ];
     }
 
-    /** @return int[] periodos semanales base + el propio mes (donde quedan los fact_* reales). */
+    /**
+     * IDs de periodo donde viven los datos del periodo.
+     *
+     * @param  Period  $period  Periodo a resolver.
+     * @param  mixed  $allPeriods  Colección de todos los periodos (evita reconsultar).
+     * @return int[] periodos semanales base + el propio mes (donde quedan los fact_* reales).
+     */
     private function dataIdsFor(Period $period, $allPeriods): array
     {
         $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
@@ -690,7 +866,16 @@ class PeriodEmployeeRosterService
         return array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
     }
 
-    /** @return array{0: \Illuminate\Support\Collection, 1: array<int,int>, 2: \Illuminate\Support\Collection} */
+    /**
+     * Sucursales de los colaboradores: asignación del periodo
+     * (employee_branch_assignments) y, para quien no la tenga, la asignación con
+     * mayor period_id de cualquier otro periodo; más los modelos Branch usados.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array<int, int>  $rawEmployeeIds  Registros Employee del periodo.
+     * @return array{0: Collection, 1: array<int,int>, 2: Collection}
+     *                                                                [employee_id => branch_id del periodo, employee_id => branch_id histórico, Branch por id].
+     */
     private function resolveBranchMaps(Period $period, array $rawEmployeeIds): array
     {
         $currentAssignments = DB::table('employee_branch_assignments')
@@ -701,7 +886,7 @@ class PeriodEmployeeRosterService
 
         $historicalMap = [];
         $needFallback = array_values(array_diff($rawEmployeeIds, $currentAssignments->keys()->all()));
-        if (!empty($needFallback)) {
+        if (! empty($needFallback)) {
             $historyRows = DB::table('employee_branch_assignments')
                 ->whereIn('employee_id', $needFallback)
                 ->whereNotNull('branch_id')
@@ -728,9 +913,9 @@ class PeriodEmployeeRosterService
      * umbral contra la MISMA alta sin ser la misma persona; exigir el mejor
      * candidato en ambos sentidos filtra esos falsos positivos.
      *
-     * @param array<string,string> $absentCandidates llave => nombreOriginal
-     * @param array<string,string> $altaCandidates llave => nombreOriginal
-     * @param array<string,string> $nameOf llave => nombre normalizado
+     * @param  array<string,string>  $absentCandidates  llave => nombreOriginal
+     * @param  array<string,string>  $altaCandidates  llave => nombreOriginal
+     * @param  array<string,string>  $nameOf  llave => nombre normalizado
      * @return array<string,array{key:string,nombre:string,percent:float}> ausente => mejor alta
      */
     private function bestMutualNameMatches(array $absentCandidates, array $altaCandidates, array $nameOf): array
@@ -746,10 +931,10 @@ class PeriodEmployeeRosterService
             foreach ($altaCandidates as $altaKey => $__) {
                 similar_text($nameOf[$absentKey] ?? (string) $absentKey, $nameOf[$altaKey] ?? (string) $altaKey, $percent);
 
-                if (!isset($bestAltaForAbsent[$absentKey]) || $percent > $bestAltaForAbsent[$absentKey][1]) {
+                if (! isset($bestAltaForAbsent[$absentKey]) || $percent > $bestAltaForAbsent[$absentKey][1]) {
                     $bestAltaForAbsent[$absentKey] = [$altaKey, $percent];
                 }
-                if (!isset($bestAbsentForAlta[$altaKey]) || $percent > $bestAbsentForAlta[$altaKey][1]) {
+                if (! isset($bestAbsentForAlta[$altaKey]) || $percent > $bestAbsentForAlta[$altaKey][1]) {
                     $bestAbsentForAlta[$altaKey] = [$absentKey, $percent];
                 }
             }
@@ -798,8 +983,8 @@ class PeriodEmployeeRosterService
             if ($persisted->isNotEmpty()) {
                 return $this->formatSelectorRows($persisted->map(fn ($r) => [
                     'employee_id' => (int) $r->employee_id,
-                    'name'        => $r->nombre_original,
-                    'branch_id'   => $r->branch_id ? (int) $r->branch_id : null,
+                    'name' => $r->nombre_original,
+                    'branch_id' => $r->branch_id ? (int) $r->branch_id : null,
                     'branch_name' => $r->branch_name,
                     'is_branch_operativa' => (bool) $r->is_branch_operativa,
                 ])->all());
@@ -809,11 +994,18 @@ class PeriodEmployeeRosterService
         return $this->formatSelectorRows($this->computeRosterRowsOnTheFly($period));
     }
 
+    /**
+     * Ordena las filas del selector por nombre y cuenta las que no tienen
+     * sucursal operativa.
+     *
+     * @param  array<int, array{employee_id:int,name:string,branch_id:?int,branch_name:?string,is_branch_operativa:bool}>  $rows
+     * @return array{rows: array, sin_sucursal: int}
+     */
     private function formatSelectorRows(array $rows): array
     {
         $sinSucursal = 0;
         foreach ($rows as $r) {
-            if (!$r['branch_id'] || !$r['is_branch_operativa']) {
+            if (! $r['branch_id'] || ! $r['is_branch_operativa']) {
                 $sinSucursal++;
             }
         }
@@ -825,6 +1017,10 @@ class PeriodEmployeeRosterService
     /**
      * Misma identidad/resolución de sucursal que buildForPeriod(), pero sin
      * persistir y sin calcular altas/bajas — usable para periodos no mensuales.
+     * Toma a cualquier employee_id con movimientos en fact_noi_movements.
+     *
+     * @param  Period  $period  Periodo de cualquier tipo.
+     * @return array<int, array{employee_id:int,name:string,branch_id:?int,branch_name:?string,is_branch_operativa:bool}>
      */
     private function computeRosterRowsOnTheFly(Period $period): array
     {
@@ -853,20 +1049,26 @@ class PeriodEmployeeRosterService
         foreach ($groups as $data) {
             $branchId = null;
             foreach ($data['employee_ids'] as $eid) {
-                if (isset($currentAssignments[$eid])) { $branchId = (int) $currentAssignments[$eid]; break; }
+                if (isset($currentAssignments[$eid])) {
+                    $branchId = (int) $currentAssignments[$eid];
+                    break;
+                }
             }
             if ($branchId === null) {
                 foreach ($data['employee_ids'] as $eid) {
-                    if (isset($historicalMap[$eid])) { $branchId = $historicalMap[$eid]; break; }
+                    if (isset($historicalMap[$eid])) {
+                        $branchId = $historicalMap[$eid];
+                        break;
+                    }
                 }
             }
-            $branch     = $branchId ? $branches->get($branchId) : null;
+            $branch = $branchId ? $branches->get($branchId) : null;
             $branchName = $branch?->name;
 
             $rows[] = [
                 'employee_id' => $data['employee_ids'][0],
-                'name'        => $data['nombre_original'],
-                'branch_id'   => $branchId,
+                'name' => $data['nombre_original'],
+                'branch_id' => $branchId,
                 'branch_name' => $branchName,
                 'is_branch_operativa' => $branchName ? $this->branchResolver->isSheetBranch($branchName) : false,
             ];

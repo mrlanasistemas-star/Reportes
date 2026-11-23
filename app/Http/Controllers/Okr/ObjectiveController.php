@@ -7,27 +7,37 @@ use App\Http\Controllers\Okr\Concerns\ResolvesOperativeBranches;
 use App\Http\Requests\Okr\StoreObjectiveRequest;
 use App\Models\Branch;
 use App\Models\Employee;
+use App\Models\OkrAuditLog;
 use App\Models\OkrKpi;
 use App\Models\OkrObjective;
+use App\Models\OkrPlacementUpload;
 use App\Models\Period;
 use App\Models\User;
+use App\Services\Access\DataScopeService;
 use App\Services\Okr\OkrActivationService;
 use App\Services\Okr\OkrAuditLogger;
+use App\Services\Okr\OkrBaselineGuard;
 use App\Services\Okr\OkrCalendarService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use App\Services\Okr\OkrKpiValueResolver;
 use App\Services\Okr\OkrObjectiveVisibilityService;
+use App\Services\Okr\OkrPersonnelResolver;
 use App\Services\Okr\OkrProgressCalculator;
 use App\Services\Okr\OkrSnapshotService;
 use App\Services\Okr\OkrTrackingPeriodResolver;
+use App\Services\Okr\OkrWeeklyPlacementResolver;
 use App\Services\Okr\OkrWeightValidator;
+use Carbon\Carbon;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Módulo OKR (08-sep-2026) — wizard de creación + seguimiento (secciones 22/24
@@ -36,7 +46,7 @@ use Inertia\Response;
  */
 class ObjectiveController extends Controller
 {
-    use ResolvesOperativeBranches, AuthorizesRequests;
+    use AuthorizesRequests, ResolvesOperativeBranches;
 
     /** Parte C4 del cierre (17-sep-2026) — lookups dinámicos nunca cacheables. */
     private const NO_STORE_HEADERS = ['Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma' => 'no-cache'];
@@ -46,6 +56,19 @@ class ObjectiveController extends Controller
      * sucursal" — sección 46/AP del pedido: nunca cargar la lista completa).
      * Reutiliza OkrEmployeeBranchResolver → employee_branch_assignments, la
      * MISMA fuente que ya usa Reportería — nunca una asignación inventada.
+     *
+     * Un usuario sin acceso gerencial solo recibe su propio colaborador
+     * vinculado. Con `mode=history` devuelve participantes (actuales o en baja)
+     * de OKR existentes; por defecto devuelve colaboradores vigentes de la
+     * sucursal con puesto, código, ruta, fuente de pertenencia, señales y
+     * conflicto de sucursal. Respuesta sin caché. Solo lectura.
+     *
+     * @param  Request  $request  `branch_id`, `search` y `mode` opcionales.
+     * @param  OkrEmployeeBranchResolver  $resolver  Pertenencia y vigencia de colaboradores.
+     * @return JsonResponse `{ employees, total_in_branch, roster_period, roster, can_reconcile_branch }` (o variante history).
+     *
+     * @throws AuthorizationException Si no tiene `okr.view`.
+     * @throws ValidationException Si los filtros no son válidos.
      */
     public function employeesLookup(Request $request, OkrEmployeeBranchResolver $resolver): JsonResponse
     {
@@ -57,7 +80,7 @@ class ObjectiveController extends Controller
         // wizard de asignación (okr.create, admin/gerencial). Un colaborador
         // autenticado NO debe poder usarlo como directorio general; solo ve
         // su propio Employee vinculado (si tiene uno), nunca el de otros.
-        if (!$request->user()->hasManagerialAccess()) {
+        if (! $request->user()->hasManagerialAccess()) {
             $own = $request->user()->employee_id ? Employee::find($request->user()->employee_id) : null;
             $employees = $own ? [['id' => $own->id, 'full_name' => $own->full_name, 'is_active' => $own->is_active]] : [];
 
@@ -68,8 +91,8 @@ class ObjectiveController extends Controller
         // Fase 6.4 — un gerencial con alcance restringido nunca recibe el directorio
         // de TODAS las sucursales: sin sucursal elegida se usa la primera de las suyas
         // (una sucursal ajena ya la rechaza EnsureBranchScope con 403).
-        $branchId = app(\App\Services\Access\DataScopeService::class)->resolveBranch($request->user(), $branchId);
-        $personnel = app(\App\Services\Okr\OkrPersonnelResolver::class);
+        $branchId = app(DataScopeService::class)->resolveBranch($request->user(), $branchId);
+        $personnel = app(OkrPersonnelResolver::class);
 
         // 15-oct-2026 — dos listas distintas: 'assign' (default) solo
         // colaboradores VIGENTES de la sucursal para NUEVAS asignaciones;
@@ -86,7 +109,7 @@ class ObjectiveController extends Controller
             $participants = Employee::query()->whereIn('id', $ids)
                 ->when($search !== '', fn ($q) => $q->where('full_name', 'like', "%{$search}%"))
                 ->orderBy('full_name')->limit(50)->get(['id', 'full_name'])
-                ->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name . (($active[$e->id] ?? false) ? '' : ' (baja)'), 'is_active' => $active[$e->id] ?? false]);
+                ->map(fn ($e) => ['id' => $e->id, 'full_name' => $e->full_name.(($active[$e->id] ?? false) ? '' : ' (baja)'), 'is_active' => $active[$e->id] ?? false]);
 
             return response()->json(['employees' => $participants, 'mode' => 'history'], 200, self::NO_STORE_HEADERS);
         }
@@ -132,6 +155,16 @@ class ObjectiveController extends Controller
      * Búsqueda ligera de Objectives para el filtro "Objective / OKR" de
      * Seguimiento (docs/imagenesOKR/9.png) — permite cambiar de OKR sin volver
      * al Dashboard. Nunca precarga todos los Objectives del sistema.
+     *
+     * Aplica el scope de visibilidad, excluye cancelados y filtra por
+     * sucursal (incluye hijos de esa sucursal), colaborador (individual o
+     * titular), traslape con periodo y texto en el título. Máximo 30, sin caché.
+     *
+     * @param  Request  $request  Filtros opcionales `branch_id`, `employee_id`, `period_id`, `search`.
+     * @param  OkrObjectiveVisibilityService  $visibility  Scope central de visibilidad OKR.
+     * @return JsonResponse `{ objectives: [{id, title, label, scope_type}] }`.
+     *
+     * @throws AuthorizationException Si no tiene `okr.view`.
      */
     public function objectivesLookup(Request $request, OkrObjectiveVisibilityService $visibility): JsonResponse
     {
@@ -173,7 +206,7 @@ class ObjectiveController extends Controller
             ->map(fn ($o) => [
                 'id' => $o->id,
                 'title' => $o->title,
-                'label' => ($o->scope_type === OkrObjective::SCOPE_BRANCH ? 'Sucursal ' . ($o->branch?->name ?? '') : 'Gestor ' . ($o->employee?->full_name ?? '')) . ' — ' . $o->title,
+                'label' => ($o->scope_type === OkrObjective::SCOPE_BRANCH ? 'Sucursal '.($o->branch?->name ?? '') : 'Gestor '.($o->employee?->full_name ?? '')).' — '.$o->title,
                 'scope_type' => $o->scope_type,
             ]);
 
@@ -185,23 +218,35 @@ class ObjectiveController extends Controller
      * 09-sep-2026) — nunca guarda nada. Deja ver el valor que Reportería
      * tiene ANTES de crear/activar el Objective, para que el usuario sepa qué
      * va a congelarse sin adivinar.
+     *
+     * KPI manual o individual sin colaborador → `available=false` con mensaje
+     * para captura manual. KPI automático → busca el periodo de seguimiento de
+     * `start_date` y pide el valor a OkrKpiValueResolver para el alcance dado.
+     * El alcance `general` exige alcance de datos general. Respuesta sin caché.
+     *
+     * @param  Request  $request  `kpi_id`, `scope_type` (general/branch/employee), `branch_id`, `employee_id`, `start_date`.
+     * @param  OkrKpiValueResolver  $resolver  Obtiene el valor del KPI desde Reportería.
+     * @param  OkrTrackingPeriodResolver  $periodResolver  Periodo financiero que contiene la fecha de inicio.
+     * @return JsonResponse `{ available, value, period, source, scope_type, message }`.
+     *
+     * @throws AuthorizationException Si no tiene `okr.create`.
      */
     public function baselinePreview(Request $request, OkrKpiValueResolver $resolver, OkrTrackingPeriodResolver $periodResolver): JsonResponse
     {
         $this->authorize('okr.create');
 
         $data = $request->validate([
-            'kpi_id'      => ['required', 'integer', 'exists:okr_kpis,id'],
-            'scope_type'  => ['required', 'in:general,branch,employee'],
-            'branch_id'   => ['nullable', 'integer', 'exists:branches,id'],
+            'kpi_id' => ['required', 'integer', 'exists:okr_kpis,id'],
+            'scope_type' => ['required', 'in:general,branch,employee'],
+            'branch_id' => ['nullable', 'integer', 'exists:branches,id'],
             'employee_id' => ['nullable', 'integer', 'exists:employees,id'],
-            'start_date'  => ['required', 'date'],
+            'start_date' => ['required', 'date'],
         ]);
 
         // Fase 6.4 — el valor general (todas las sucursales) solo para alcance general;
         // un branch_id ajeno ya lo rechaza EnsureBranchScope.
         if ($data['scope_type'] === 'general') {
-            app(\App\Services\Access\DataScopeService::class)->requireGeneral($request->user(), 'La línea base general');
+            app(DataScopeService::class)->requireGeneral($request->user(), 'La línea base general');
         }
 
         $kpi = OkrKpi::query()->findOrFail($data['kpi_id']);
@@ -221,7 +266,7 @@ class ObjectiveController extends Controller
             ], 200, self::NO_STORE_HEADERS);
         }
 
-        if (!$kpi->isAutomatic()) {
+        if (! $kpi->isAutomatic()) {
             return response()->json([
                 'available' => false, 'value' => null, 'period' => null, 'source' => 'manual',
                 'scope_type' => $data['scope_type'],
@@ -230,20 +275,36 @@ class ObjectiveController extends Controller
         }
 
         $period = $periodResolver->getPeriodForDate($data['start_date']);
-        $value  = $period
+        $value = $period
             ? $resolver->getValue($kpi, $data['scope_type'], $data['branch_id'] ?? null, $data['employee_id'] ?? null, $period)
             : null;
 
         return response()->json([
             'available' => $value !== null,
-            'value'     => $value,
-            'period'    => $period ? ['id' => $period->id, 'label' => $period->label, 'start_date' => $period->start_date?->toDateString(), 'end_date' => $period->end_date?->toDateString()] : null,
-            'source'    => $value !== null ? $kpi->provider_key : ($isEmployee ? 'manual_individual' : $kpi->provider_key),
+            'value' => $value,
+            'period' => $period ? ['id' => $period->id, 'label' => $period->label, 'start_date' => $period->start_date?->toDateString(), 'end_date' => $period->end_date?->toDateString()] : null,
+            'source' => $value !== null ? $kpi->provider_key : ($isEmployee ? 'manual_individual' : $kpi->provider_key),
             'scope_type' => $data['scope_type'],
-            'message'   => $value === null && $isEmployee ? 'No se encontró base automática para este gestor. Captúrala manualmente.' : null,
+            'message' => $value === null && $isEmployee ? 'No se encontró base automática para este gestor. Captúrala manualmente.' : null,
         ], 200, self::NO_STORE_HEADERS);
     }
 
+    /**
+     * Crea la asignación OKR en BORRADOR: el Objective principal (sucursal o
+     * colaborador), sus Key Results y, para alcance sucursal, cada OKR
+     * individual hijo con sus propios KR. Todo en una sola transacción y con
+     * bitácora (`created`, líneas base manuales).
+     *
+     * La ponderación del Objective principal debe sumar 100%. La fecha fin se
+     * calcula con OkrCalendarService (fin inclusivo de la semana N). Si no se
+     * indica responsable se usa el usuario actual.
+     *
+     * @param  StoreObjectiveRequest  $request  Asignación validada y autorizada (`okr.create`).
+     * @param  OkrWeightValidator  $weightValidator  Inyectado pero no usado en este método.
+     * @param  OkrCalendarService  $calendar  Calcula la fecha fin.
+     * @param  OkrAuditLogger  $logger  Bitácora OKR.
+     * @return RedirectResponse Redirige a la ficha del OKR o regresa con error de ponderación.
+     */
     public function store(StoreObjectiveRequest $request, OkrWeightValidator $weightValidator, OkrCalendarService $calendar, OkrAuditLogger $logger): RedirectResponse
     {
         $data = $request->validated();
@@ -254,28 +315,28 @@ class ObjectiveController extends Controller
         }
 
         $employeeId = $data['scope_type'] === OkrObjective::SCOPE_EMPLOYEE ? $data['employee_id'] : null;
-        $branchId   = $data['branch_id'] ?? null;
+        $branchId = $data['branch_id'] ?? null;
         $individualRows = $data['scope_type'] === OkrObjective::SCOPE_BRANCH ? ($data['individual_objectives'] ?? []) : [];
 
         $objective = DB::transaction(function () use ($data, $employeeId, $branchId, $individualRows, $calendar, $logger) {
-            $startDate = \Carbon\Carbon::parse($data['start_date']);
+            $startDate = Carbon::parse($data['start_date']);
             $responsibleId = $data['responsible_user_id'] ?? auth()->id();
             $endDate = $calendar->endDate($startDate, (int) $data['duration_weeks']);
 
             $objective = OkrObjective::query()->create([
-                'parent_id'            => $data['parent_id'] ?? null,
-                'scope_type'           => $data['scope_type'],
-                'branch_id'            => $branchId,
-                'employee_id'          => $employeeId,
-                'title'                => $data['title'],
-                'responsible_user_id'  => $responsibleId,
-                'created_by'           => auth()->id(),
-                'start_date'           => $startDate,
+                'parent_id' => $data['parent_id'] ?? null,
+                'scope_type' => $data['scope_type'],
+                'branch_id' => $branchId,
+                'employee_id' => $employeeId,
+                'title' => $data['title'],
+                'responsible_user_id' => $responsibleId,
+                'created_by' => auth()->id(),
+                'start_date' => $startDate,
                 // Fin INCLUSIVO de la semana N (ver OkrCalendarService) — antes
                 // addWeeks($n) dejaba un día de más (bug corregido punto 6).
-                'end_date'             => $endDate,
-                'duration_weeks'       => $data['duration_weeks'],
-                'lifecycle_status'     => OkrObjective::STATUS_DRAFT,
+                'end_date' => $endDate,
+                'duration_weeks' => $data['duration_weeks'],
+                'lifecycle_status' => OkrObjective::STATUS_DRAFT,
             ]);
 
             $this->createKeyResults($objective, $data['key_results'], $logger);
@@ -291,17 +352,17 @@ class ObjectiveController extends Controller
             // transacción (principal + individuales + KRs) se revierte.
             foreach ($individualRows as $row) {
                 $child = OkrObjective::query()->create([
-                    'parent_id'            => $objective->id,
-                    'scope_type'           => OkrObjective::SCOPE_EMPLOYEE,
-                    'branch_id'            => $objective->branch_id,
-                    'employee_id'          => $row['employee_id'],
-                    'title'                => $row['title'],
-                    'responsible_user_id'  => $responsibleId,
-                    'created_by'           => auth()->id(),
-                    'start_date'           => $startDate,
-                    'end_date'             => $endDate,
-                    'duration_weeks'       => $data['duration_weeks'],
-                    'lifecycle_status'     => OkrObjective::STATUS_DRAFT,
+                    'parent_id' => $objective->id,
+                    'scope_type' => OkrObjective::SCOPE_EMPLOYEE,
+                    'branch_id' => $objective->branch_id,
+                    'employee_id' => $row['employee_id'],
+                    'title' => $row['title'],
+                    'responsible_user_id' => $responsibleId,
+                    'created_by' => auth()->id(),
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'duration_weeks' => $data['duration_weeks'],
+                    'lifecycle_status' => OkrObjective::STATUS_DRAFT,
                 ]);
                 $logger->log('objective', $child->id, auth()->id(), 'created', reason: "OKR individual creado junto con el Objective de sucursal #{$objective->id}.");
                 $this->createKeyResults($child, $row['key_results'] ?? [], $logger);
@@ -317,7 +378,12 @@ class ObjectiveController extends Controller
      * Crea los Key Results de un Objective. Una línea base capturada para un
      * KPI automático solo llega aquí si StoreObjectiveRequest ya verificó que
      * Reportería no tiene dato para ese alcance y que trae motivo: se marca
-     * como 'manual_authorized' y el motivo queda en la bitácora.
+     * como 'manual_authorized' y el motivo queda en la bitácora. En OKR
+     * individual la línea base siempre se marca como manual individual.
+     *
+     * @param  OkrObjective  $objective  Objective recién creado.
+     * @param  array  $keyResults  Filas de KR validadas.
+     * @param  OkrAuditLogger  $logger  Bitácora OKR.
      */
     private function createKeyResults(OkrObjective $objective, array $keyResults, OkrAuditLogger $logger): void
     {
@@ -325,16 +391,16 @@ class ObjectiveController extends Controller
 
         foreach ($keyResults as $krData) {
             $reason = trim((string) ($krData['baseline_manual_reason'] ?? ''));
-            $isAuthorizedManual = !$isIndividual && ($krData['baseline_value'] ?? null) !== null && $reason !== '';
+            $isAuthorizedManual = ! $isIndividual && ($krData['baseline_value'] ?? null) !== null && $reason !== '';
 
             $kr = $objective->keyResults()->create([
-                'kpi_id'          => $krData['kpi_id'],
-                'description'     => $krData['description'],
-                'baseline_value'  => $krData['baseline_value'] ?? null,
+                'kpi_id' => $krData['kpi_id'],
+                'description' => $krData['description'],
+                'baseline_value' => $krData['baseline_value'] ?? null,
                 // OKR individual (16-oct-2026): línea base MANUAL del gestor, siempre.
-                'baseline_source' => $isIndividual ? \App\Services\Okr\OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL : ($isAuthorizedManual ? 'manual_authorized' : null),
-                'target_value'    => $krData['target_value'],
-                'weight'          => $krData['weight'],
+                'baseline_source' => $isIndividual ? OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL : ($isAuthorizedManual ? 'manual_authorized' : null),
+                'target_value' => $krData['target_value'],
+                'weight' => $krData['weight'],
             ]);
 
             if ($isIndividual) {
@@ -345,6 +411,23 @@ class ObjectiveController extends Controller
         }
     }
 
+    /**
+     * Página Inertia `Okr/Show` (seguimiento de un OKR).
+     *
+     * Precarga todas las relaciones (KR con snapshots, hijos, check-ins,
+     * acciones, evidencias, alertas sin leer, cartas y Warnings) y arma:
+     * payload de KR, cumplimiento real/esperado/proyectado y desviación del
+     * Objective, resumen de pesos, bitácora del Objective y sus KR,
+     * contribución sucursal↔gestores (solo KPI no porcentuales), estado de la
+     * carga semanal de colocación por semana (si hay KR de colocación),
+     * seguimiento por gestor, persona evaluada, permisos del usuario y
+     * catálogos de filtros. Solo lectura.
+     *
+     * @param  OkrObjective  $objective  OKR a mostrar.
+     * @return Response Página de seguimiento.
+     *
+     * @throws AuthorizationException Si no puede ver el OKR.
+     */
     public function show(OkrObjective $objective): Response
     {
         $this->authorize('view', $objective);
@@ -393,7 +476,7 @@ class ObjectiveController extends Controller
         // Bitácora de auditoría (sección AD del pedido) — "una meta no se puede
         // modificar silenciosamente": cambios del Objective mismo + de sus KR.
         $keyResultIds = $objective->keyResults->pluck('id')->all();
-        $auditLogs = \App\Models\OkrAuditLog::query()
+        $auditLogs = OkrAuditLog::query()
             ->where(fn ($q) => $q->where('auditable_type', 'objective')->where('auditable_id', $objective->id))
             ->orWhere(fn ($q) => $q->where('auditable_type', 'key_result')->whereIn('auditable_id', $keyResultIds))
             ->with('user:id,name')
@@ -414,7 +497,7 @@ class ObjectiveController extends Controller
         // MISMO kpi_id — nunca mezcla KPIs distintos.
         $contributions = [];
         if ($objective->scope_type === OkrObjective::SCOPE_BRANCH && $objective->children->isNotEmpty()) {
-            $placementResolver = app(\App\Services\Okr\OkrWeeklyPlacementResolver::class);
+            $placementResolver = app(OkrWeeklyPlacementResolver::class);
 
             // Parte 14 del cierre (04-oct-2026) — en LOTE para TODOS los hijos a
             // la vez (agrupados por su semana actual, normalmente la misma para
@@ -433,7 +516,7 @@ class ObjectiveController extends Controller
                 $childRows = [];
                 foreach ($objective->children as $child) {
                     $childKr = $child->keyResults->firstWhere('kpi_id', $parentKr->kpi_id);
-                    if (!$childKr) {
+                    if (! $childKr) {
                         continue;
                     }
                     // Parte 9/10 del cierre (04-oct-2026): colocación de ESTA
@@ -445,7 +528,7 @@ class ObjectiveController extends Controller
 
                     $childRows[] = [
                         'employee' => $child->employee?->full_name ?? $child->title,
-                'employee_id' => $child->employee_id,
+                        'employee_id' => $child->employee_id,
                         'employee_active' => $child->employee?->is_active ?? true,
                         'target_value' => (float) $childKr->target_value,
                         'current_value' => $childKr->current_value !== null ? (float) $childKr->current_value : null,
@@ -457,7 +540,7 @@ class ObjectiveController extends Controller
                 if (empty($childRows)) {
                     continue;
                 }
-                $sumTarget  = array_sum(array_column($childRows, 'target_value'));
+                $sumTarget = array_sum(array_column($childRows, 'target_value'));
                 $sumCurrent = array_sum(array_map(fn ($r) => $r['current_value'] ?? 0, $childRows));
                 $branchTarget = (float) $parentKr->target_value;
                 $contributions[] = [
@@ -482,15 +565,15 @@ class ObjectiveController extends Controller
         // que no lo usan).
         $placementWeeks = [];
         if ($objective->keyResults->contains(fn ($kr) => $kr->kpi->provider_key === 'reporteria.placement')) {
-            $uploads = $objective->placementUploads()->where('status', \App\Models\OkrPlacementUpload::STATUS_ACTIVE)->get()->keyBy('week_number');
+            $uploads = $objective->placementUploads()->where('status', OkrPlacementUpload::STATUS_ACTIVE)->get()->keyBy('week_number');
             // Un OKR individual sin carga propia se alimenta del archivo de su
             // sucursal (una sola carga de evidencia, 14-oct-2026).
             $parentUploads = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE && $objective->parent_id
-                ? \App\Models\OkrPlacementUpload::query()->where('okr_objective_id', $objective->parent_id)->where('status', \App\Models\OkrPlacementUpload::STATUS_ACTIVE)->get()->keyBy('week_number')
+                ? OkrPlacementUpload::query()->where('okr_objective_id', $objective->parent_id)->where('status', OkrPlacementUpload::STATUS_ACTIVE)->get()->keyBy('week_number')
                 : collect();
             // Importe CONTADO por semana (sin movimientos repetidos de semanas
             // anteriores y, para un gestor, solo sus movimientos).
-            $counted = app(\App\Services\Okr\OkrWeeklyPlacementResolver::class)->resolve($objective, (int) $objective->duration_weeks)['weeks'] ?? [];
+            $counted = app(OkrWeeklyPlacementResolver::class)->resolve($objective, (int) $objective->duration_weeks)['weeks'] ?? [];
             for ($w = 1; $w <= (int) $objective->duration_weeks; $w++) {
                 $upload = $uploads->get($w);
                 $fromParent = $upload === null ? $parentUploads->get($w) : null;
@@ -545,11 +628,11 @@ class ObjectiveController extends Controller
                     'generated_at' => $objective->commitmentLetter->generated_at->toDateTimeString(),
                     'is_signed' => $objective->commitmentLetter->isSigned(),
                     'download_url' => route('okr.commitment-letters.download', $objective->commitmentLetter),
-                    'view_url' => route('okr.commitment-letters.download', $objective->commitmentLetter) . '?view=1',
+                    'view_url' => route('okr.commitment-letters.download', $objective->commitmentLetter).'?view=1',
                     // Fase 5 (19-oct-2026): visor integrado + copia firmada + archivo presente.
                     'file_available' => $objective->commitmentLetter->hasStoredFile(),
                     'signed_uploaded_at' => $objective->commitmentLetter->signed_uploaded_at?->toDateTimeString(),
-                    'signed_view_url' => $objective->commitmentLetter->isSigned() ? route('okr.commitment-letters.download', $objective->commitmentLetter) . '?view=1&signed=1' : null,
+                    'signed_view_url' => $objective->commitmentLetter->isSigned() ? route('okr.commitment-letters.download', $objective->commitmentLetter).'?view=1&signed=1' : null,
                     'immediate_boss' => $objective->commitmentLetter->snapshot['immediate_boss'] ?? null,
                 ] : null,
                 // 15-oct-2026: historial de cartas (vigente y anuladas) y persona evaluada.
@@ -559,7 +642,7 @@ class ObjectiveController extends Controller
                     'generated_at' => $l->generated_at?->toDateTimeString(), 'generated_by' => $l->generatedByUser?->name,
                     'is_signed' => $l->isSigned(), 'voided_at' => $l->voided_at?->toDateTimeString(), 'void_reason' => $l->void_reason,
                     'voided_by' => $l->voidedByUser?->name, 'download_url' => route('okr.commitment-letters.download', $l),
-                    'view_url' => route('okr.commitment-letters.download', $l) . '?view=1',
+                    'view_url' => route('okr.commitment-letters.download', $l).'?view=1',
                 ]),
                 'accountable' => $objective->accountableEmployee ? ['id' => $objective->accountableEmployee->id, 'full_name' => $objective->accountableEmployee->full_name] : null,
                 'subject' => $this->subjectPayload($objective),
@@ -570,9 +653,9 @@ class ObjectiveController extends Controller
                 'generated_at' => $w->generated_at->toDateTimeString(), 'is_signed' => $w->isSigned(),
                 'voided_at' => $w->voided_at?->toDateTimeString(), 'void_reason' => $w->void_reason,
                 'download_url' => route('okr.warnings.download', $w),
-                'view_url' => route('okr.warnings.download', $w) . '?view=1',
+                'view_url' => route('okr.warnings.download', $w).'?view=1',
                 'file_available' => $w->hasStoredFile(),
-                'signed_view_url' => $w->isSigned() ? route('okr.warnings.download', $w) . '?view=1&signed=1' : null,
+                'signed_view_url' => $w->isSigned() ? route('okr.warnings.download', $w).'?view=1&signed=1' : null,
             ]),
             // Parte 5/7 del cierre (04-oct-2026) — catálogo de KPI para el
             // editor de Key Results en DRAFT (ver Show.vue): un Objective
@@ -594,7 +677,7 @@ class ObjectiveController extends Controller
             // Filtro "Seguimiento" (docs/imagenesOKR/9.png) — cambiar de
             // sucursal/colaborador/OKR/periodo sin volver al Dashboard.
             'filterBranches' => $this->filterBranches(),
-            'filterPeriods'  => Period::query()->where('type', 'monthly')->orderByDesc('id')->limit(24)->get()->map(fn ($p) => ['id' => $p->id, 'label' => $p->label]),
+            'filterPeriods' => Period::query()->where('type', 'monthly')->orderByDesc('id')->limit(24)->get()->map(fn ($p) => ['id' => $p->id, 'label' => $p->label]),
             // Para el selector "Responsable" del check-in (acción correctiva).
             'users' => User::query()->orderBy('name')->get(['id', 'name']),
         ]);
@@ -606,6 +689,10 @@ class ObjectiveController extends Controller
      * línea base congelada, meta, real, incremento alcanzado, cumplimiento,
      * semáforo, histórico semanal y evidencias. Solo lectura de lo ya evaluado
      * por OkrSnapshotService — nunca recalcula metas ni bases aquí.
+     *
+     * @param  OkrObjective  $objective  OKR de sucursal con `children` y sus relaciones precargadas.
+     * @param  OkrProgressCalculator  $calc  Fórmula canónica de cumplimiento.
+     * @return array<int, array<string, mixed>> Una tarjeta por OKR individual; vacío si no es de sucursal o no tiene hijos.
      */
     private function gestorTracking(OkrObjective $objective, OkrProgressCalculator $calc): array
     {
@@ -614,7 +701,7 @@ class ObjectiveController extends Controller
         }
 
         $employeeResolver = app(OkrEmployeeBranchResolver::class);
-        $placementResolver = app(\App\Services\Okr\OkrWeeklyPlacementResolver::class);
+        $placementResolver = app(OkrWeeklyPlacementResolver::class);
         $started = $objective->children->filter(fn ($c) => $c->hasStarted());
         $weeklyByChild = [];
         foreach ($started->groupBy(fn ($c) => $c->currentWeekNumber()) as $week => $group) {
@@ -622,7 +709,7 @@ class ObjectiveController extends Controller
         }
 
         $activeMap = $employeeResolver->activeMap($objective->children->pluck('employee_id')->filter()->all());
-        $positions = app(\App\Services\Okr\OkrPersonnelResolver::class)->positionsFor($objective->children->pluck('employee_id')->filter()->values()->all());
+        $positions = app(OkrPersonnelResolver::class)->positionsFor($objective->children->pluck('employee_id')->filter()->values()->all());
         $activation = app(OkrActivationService::class);
 
         return $objective->children->map(function (OkrObjective $child) use ($calc, $activeMap, $weeklyByChild, $positions, $activation) {
@@ -673,7 +760,15 @@ class ObjectiveController extends Controller
         })->values()->all();
     }
 
-    /** Revisión previa a activar (sucursal + cada OKR individual) — sin efectos. */
+    /**
+     * Revisión previa a activar (sucursal + cada OKR individual) — sin efectos.
+     *
+     * @param  OkrObjective  $objective  OKR a revisar.
+     * @param  OkrActivationService  $activation  Calcula `readiness()` (qué falta para activar).
+     * @return JsonResponse `{ objective, children }` sin caché.
+     *
+     * @throws AuthorizationException Si no tiene `assign` sobre el OKR.
+     */
     public function activationCheck(OkrObjective $objective, OkrActivationService $activation): JsonResponse
     {
         $this->authorize('assign', $objective);
@@ -686,22 +781,29 @@ class ObjectiveController extends Controller
         ], 200, self::NO_STORE_HEADERS);
     }
 
-    /** Persona evaluada por este OKR (gestor o titular de sucursal) con su puesto vigente. */
+    /**
+     * Persona evaluada por este OKR (gestor o titular de sucursal) con su puesto
+     * vigente, número de empleado, sucursal, jefe inmediato (confirmado por la
+     * carta vigente o sugerido del directorio) y vigencia.
+     *
+     * @param  OkrObjective  $objective  OKR con `employee`/`accountableEmployee` y `commitmentLetter`.
+     * @return array<string, mixed>|null null si no hay persona evaluada.
+     */
     private function subjectPayload(OkrObjective $objective): ?array
     {
         $employee = $objective->scope_type === OkrObjective::SCOPE_EMPLOYEE ? $objective->employee : $objective->accountableEmployee;
-        if (!$employee) {
+        if (! $employee) {
             return null;
         }
 
-        $profile = app(\App\Services\Okr\OkrPersonnelResolver::class)->profileFor($employee->id);
+        $profile = app(OkrPersonnelResolver::class)->profileFor($employee->id);
         // 4.5 (19-oct-2026): ficha de la PERSONA EVALUADA — número de empleado,
         // sucursal y jefe inmediato. El jefe sale de la carta vigente (confirmado);
         // si aún no hay carta, se muestra la sugerencia del directorio marcada
         // "por confirmar" — nunca el creador del OKR.
         $letterBoss = $objective->commitmentLetter?->snapshot['immediate_boss'] ?? null;
         $suggested = $letterBoss === null && $objective->branch_id
-            ? app(\App\Services\Okr\OkrPersonnelResolver::class)->suggestImmediateBoss($employee->id, (int) $objective->branch_id)
+            ? app(OkrPersonnelResolver::class)->suggestImmediateBoss($employee->id, (int) $objective->branch_id)
             : null;
 
         return [
@@ -715,6 +817,19 @@ class ObjectiveController extends Controller
         ];
     }
 
+    /**
+     * Activa un OKR en borrador: OkrActivationService::attempt() congela la
+     * línea base y cambia el estado en BD. Con `include_children=1` en un OKR
+     * de sucursal también intenta activar sus OKR individuales; los que no se
+     * pueden activar se informan en un aviso.
+     *
+     * @param  Request  $request  Flag `include_children`.
+     * @param  OkrObjective  $objective  OKR a activar.
+     * @param  OkrActivationService  $activation  Servicio de activación.
+     * @return RedirectResponse A la ficha con éxito/aviso, o de regreso con el bloqueo y la acción sugerida.
+     *
+     * @throws AuthorizationException Si no tiene `assign` sobre el OKR.
+     */
     public function activate(Request $request, OkrObjective $objective, OkrActivationService $activation): RedirectResponse
     {
         $this->authorize('assign', $objective);
@@ -732,7 +847,7 @@ class ObjectiveController extends Controller
         if ($objective->scope_type === OkrObjective::SCOPE_BRANCH && $request->boolean('include_children')) {
             $children = $activation->activateChildren($objective, (int) auth()->id());
             if ($children['activated']) {
-                $message .= ' También se activaron ' . count($children['activated']) . ' OKR individual(es).';
+                $message .= ' También se activaron '.count($children['activated']).' OKR individual(es).';
             }
             if ($children['failed']) {
                 $detail = collect($children['failed'])->map(fn ($reason, $name) => "{$name}: {$reason}")->implode(' | ');
@@ -745,6 +860,16 @@ class ObjectiveController extends Controller
         return redirect()->route('okr.show', $objective)->with('success', $message);
     }
 
+    /**
+     * Recalcula el progreso del OKR desde Reportería (OkrSnapshotService) y
+     * rellena snapshots de semanas faltantes; escribe en KR y snapshots.
+     *
+     * @param  OkrObjective  $objective  OKR a recalcular.
+     * @param  OkrSnapshotService  $snapshotService  Servicio de evaluación.
+     * @return RedirectResponse Regresa con el número de semanas rellenadas.
+     *
+     * @throws AuthorizationException Si no tiene `update` sobre el OKR.
+     */
     public function refresh(OkrObjective $objective, OkrSnapshotService $snapshotService): RedirectResponse
     {
         $this->authorize('update', $objective);
@@ -756,15 +881,30 @@ class ObjectiveController extends Controller
             : 'Progreso recalculado desde Reportería.');
     }
 
+    /**
+     * "Editar meta" de un KR de un OKR no cerrado: cambia meta y/o peso con
+     * motivo obligatorio; cada cambio real se registra en la bitácora y se
+     * guarda en una transacción. Si cambia el peso, la suma resultante de
+     * todos los KR debe quedar en 100% o no se guarda nada.
+     *
+     * @param  Request  $request  `key_result_id`, `target_value`, `weight`, `reason`.
+     * @param  OkrObjective  $objective  OKR dueño del KR.
+     * @param  OkrWeightValidator  $weightValidator  Inyectado pero no usado en este método.
+     * @param  OkrAuditLogger  $logger  Bitácora OKR.
+     * @return RedirectResponse Regresa con éxito o con error de ponderación.
+     *
+     * @throws AuthorizationException Si no tiene `update` sobre el OKR.
+     * @throws HttpException 422 si el OKR es de solo lectura; 404 si el KR no es de este OKR.
+     */
     public function updateGoal(Request $request, OkrObjective $objective, OkrWeightValidator $weightValidator, OkrAuditLogger $logger): RedirectResponse
     {
         $this->authorize('update', $objective);
         abort_if($objective->isReadOnly(), 422, 'Este OKR está cerrado/cancelado — es de solo lectura.');
         $request->validate([
             'key_result_id' => ['required', 'integer', 'exists:okr_key_results,id'],
-            'target_value'  => ['nullable', 'numeric'],
-            'weight'        => ['nullable', 'numeric', 'min:0.01', 'max:100'],
-            'reason'        => ['required', 'string', 'min:5', 'max:500'],
+            'target_value' => ['nullable', 'numeric'],
+            'weight' => ['nullable', 'numeric', 'min:0.01', 'max:100'],
+            'reason' => ['required', 'string', 'min:5', 'max:500'],
         ]);
 
         $kr = $objective->keyResults()->findOrFail($request->integer('key_result_id'));
@@ -807,6 +947,17 @@ class ObjectiveController extends Controller
      * de un KR a otro en dos pasos (60/40 → 70/30: el primer paso solo, por sí
      * mismo, ya rompía el 100%). Aquí se reciben TODOS los pesos nuevos juntos,
      * se valida una sola vez, y se guardan todos en una sola transacción.
+     *
+     * Debe incluir exactamente todos los KR del Objective y sumar 100%; cada
+     * peso que cambie se registra en la bitácora con el motivo.
+     *
+     * @param  Request  $request  `weights[]` (`key_result_id`, `weight`) y `reason`.
+     * @param  OkrObjective  $objective  OKR no cerrado.
+     * @param  OkrAuditLogger  $logger  Bitácora OKR.
+     * @return RedirectResponse Regresa con éxito o con el error de validación.
+     *
+     * @throws AuthorizationException Si no tiene `update` sobre el OKR.
+     * @throws HttpException 422 si el OKR es de solo lectura.
      */
     public function updateWeights(Request $request, OkrObjective $objective, OkrAuditLogger $logger): RedirectResponse
     {
@@ -814,10 +965,10 @@ class ObjectiveController extends Controller
         abort_if($objective->isReadOnly(), 422, 'Este OKR está cerrado/cancelado — es de solo lectura.');
 
         $data = $request->validate([
-            'weights'                  => ['required', 'array', 'min:1'],
-            'weights.*.key_result_id'  => ['required', 'integer'],
-            'weights.*.weight'         => ['required', 'numeric', 'min:0.01', 'max:100'],
-            'reason'                   => ['required', 'string', 'min:5', 'max:500'],
+            'weights' => ['required', 'array', 'min:1'],
+            'weights.*.key_result_id' => ['required', 'integer'],
+            'weights.*.weight' => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'reason' => ['required', 'string', 'min:5', 'max:500'],
         ]);
 
         $krs = $objective->keyResults()->get()->keyBy('id');
@@ -849,6 +1000,15 @@ class ObjectiveController extends Controller
         return back()->with('success', 'Ponderación redistribuida — cambios registrados en la bitácora.');
     }
 
+    /**
+     * Cancela un OKR: marca `lifecycle_status = cancelled` y lo elimina
+     * lógicamente (soft delete) para conservar el histórico.
+     *
+     * @param  OkrObjective  $objective  OKR a cancelar.
+     * @return RedirectResponse Al dashboard OKR con mensaje de éxito.
+     *
+     * @throws AuthorizationException Si no tiene `delete` sobre el OKR.
+     */
     public function destroy(OkrObjective $objective): RedirectResponse
     {
         $this->authorize('delete', $objective);

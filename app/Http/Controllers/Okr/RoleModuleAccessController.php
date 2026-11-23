@@ -5,10 +5,12 @@ namespace App\Http\Controllers\Okr;
 use App\Http\Controllers\Controller;
 use App\Services\Access\ActionPermissionService;
 use App\Services\Access\ModuleAccessService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Guarda qué módulos ve cada rol (14-oct-2026) — tarjeta "Módulos por rol" de
@@ -18,6 +20,20 @@ class RoleModuleAccessController extends Controller
 {
     use AuthorizesRequests;
 
+    /**
+     * Guarda la matriz "rol → módulos visibles".
+     *
+     * Valida que cada rol configurable traiga un arreglo (puede ir vacío) de
+     * claves existentes en ModuleAccessService::MODULES y lo persiste vía
+     * ModuleAccessService::save().
+     *
+     * @param  Request  $request  Campo `access[rol][]` con claves de módulo.
+     * @param  ModuleAccessService  $access  Servicio que persiste el acceso por rol.
+     * @return RedirectResponse Regresa con mensaje de éxito.
+     *
+     * @throws AuthorizationException Si no tiene `okr.admin`.
+     * @throws ValidationException Si la matriz no es válida.
+     */
     public function update(Request $request, ModuleAccessService $access): RedirectResponse
     {
         $this->authorize('okr.admin');
@@ -37,6 +53,13 @@ class RoleModuleAccessController extends Controller
     /**
      * Guarda la matriz de permisos por ACCIÓN (Fase 7 de la auditoría, 15-oct-2026)
      * — eliminar/exportar dentro de cada módulo, complementaria a update() arriba.
+     *
+     * @param  Request  $request  Campo `actions[rol][modulo][]` con claves de ActionPermissionService::ACTIONS.
+     * @param  ActionPermissionService  $permissions  Servicio que persiste los permisos por acción.
+     * @return RedirectResponse Regresa con mensaje de éxito.
+     *
+     * @throws AuthorizationException Si no tiene `okr.admin`.
+     * @throws ValidationException Si la matriz no es válida.
      */
     public function updateActions(Request $request, ActionPermissionService $permissions): RedirectResponse
     {

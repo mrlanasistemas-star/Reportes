@@ -25,6 +25,16 @@ use RuntimeException;
  */
 class EfectividadV4ReferenceWorkbook
 {
+    /**
+     * Carga el libro de referencia (con caché JSON opcional por sha1 del archivo) y devuelve
+     * entradas y resultados esperados.
+     *
+     * @param  string  $path  ruta del .xlsm de referencia
+     * @param  string|null  $cacheDir  directorio de caché (null = sin caché)
+     * @return array<string, mixed>
+     *
+     * @throws RuntimeException si el libro no existe o le faltan hojas
+     */
     public function load(string $path, ?string $cacheDir = null): array
     {
         if (! is_file($path)) {
@@ -49,7 +59,12 @@ class EfectividadV4ReferenceWorkbook
         return $data;
     }
 
-    /** @return array<string, list<list<mixed>>> */
+    /**
+     * Lee todas las hojas (sólo valores; fechas marcadas como ['__d' => Y-m-d]).
+     *
+     * @param  string  $path  ruta del libro
+     * @return array<string, list<list<mixed>>>
+     */
     private function readSheets(string $path): array
     {
         $reader = new Reader(new Options(SHOULD_FORMAT_DATES: false, SHOULD_PRESERVE_EMPTY_ROWS: true));
@@ -73,6 +88,15 @@ class EfectividadV4ReferenceWorkbook
         return $out;
     }
 
+    /**
+     * Arma fotos, INGRESOS, _HIST_INGRESOS, parámetros de corte, filas esperadas e incidencias
+     * esperadas a partir de las hojas.
+     *
+     * @param  array  $sheets  hojas leídas
+     * @return array<string, mixed>
+     *
+     * @throws RuntimeException si falta una hoja requerida
+     */
     private function build(array $sheets): array
     {
         foreach (array_merge(EfectividadV4Calculator::NOMBRES_FOTO, ['INGRESOS', '_HIST_INGRESOS', 'EFECTIVIDAD']) as $req) {
@@ -117,7 +141,14 @@ class EfectividadV4ReferenceWorkbook
         ];
     }
 
-    /** Fila 1 = encabezados (la macro exige eliminar las filas de título del exportado). */
+    /**
+     * Fila 1 = encabezados (la macro exige eliminar las filas de título del exportado).
+     *
+     * @param  array  $rows  filas de la hoja
+     * @param  array  $mapa  alias de columnas
+     * @param  bool  $conRef  agregar 'ref' = número de fila
+     * @return array{columnas: list<string>, filas: list<array>}
+     */
     private function tabla(array $rows, array $mapa, bool $conRef): array
     {
         $idx = EfectividadV4ColumnMap::resolver($rows[0] ?? [], $mapa);
@@ -138,6 +169,11 @@ class EfectividadV4ReferenceWorkbook
         return ['columnas' => array_keys($idx), 'filas' => $filas];
     }
 
+    /**
+     * Valor plano (desmarca fechas ['__d' => …]).
+     *
+     * @param  mixed  $v  valor
+     */
     private function plano(mixed $v): mixed
     {
         return is_array($v) && isset($v['__d']) ? $v['__d'] : $v;
@@ -172,6 +208,12 @@ class EfectividadV4ReferenceWorkbook
         return $out;
     }
 
+    /**
+     * Incidencias esperadas de la hoja _AUDITORIA_EFECTIVIDAD (desde la fila 6).
+     *
+     * @param  array  $rows  filas de la hoja
+     * @return array<string, mixed>
+     */
     private function incidencias(array $rows): array
     {
         $out = [];

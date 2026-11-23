@@ -3,8 +3,10 @@
 namespace App\Http\Responses;
 
 use App\Services\Access\ModuleAccessService;
+use Illuminate\Http\Request;
 use Laravel\Fortify\Contracts\LoginResponse as LoginResponseContract;
 use Laravel\Fortify\Fortify;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * config('fortify.home') = '/dashboard', pero no todos los roles ven el
@@ -16,8 +18,20 @@ use Laravel\Fortify\Fortify;
  */
 class LoginResponse implements LoginResponseContract
 {
+    /**
+     * @param  ModuleAccessService  $access  Servicio que define módulos visibles y la URL de aterrizaje por rol.
+     */
     public function __construct(private readonly ModuleAccessService $access) {}
 
+    /**
+     * Respuesta tras un login exitoso de Fortify. Para peticiones JSON
+     * devuelve `{two_factor: false}`; si el usuario no tiene acceso al
+     * Dashboard lo redirige a la URL "intended" o, si no hay, a su primer
+     * módulo permitido; en otro caso, a la URL "intended" o al home de Fortify.
+     *
+     * @param  Request  $request  Petición del login.
+     * @return Response JSON o redirección.
+     */
     public function toResponse($request)
     {
         if ($request->wantsJson()) {

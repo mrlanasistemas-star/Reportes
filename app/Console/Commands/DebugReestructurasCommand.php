@@ -7,26 +7,44 @@ use App\Support\RegionNorteFilter;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-reestructuras` — diagnóstico de reestructuras: filas cuyo producto
+ * coincide con REESTRUCTURA/UNIFICACIÓN/A LA MEDIDA/INSOLUTOS/RECURSOS PROPIOS en
+ * Ministraciones, Cobranza y Saldos, con la decisión sugerida (incluir/excluir) y un resumen
+ * ejecutivo.
+ *
+ * Escribe en BD: NO — solo lectura. Usa REGEXP (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-reestructuras 14
+ */
 class DebugReestructurasCommand extends Command
 {
-    protected $signature   = 'reportes:debug-reestructuras {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-reestructuras {period_id : ID del periodo mensual}';
+
     protected $description = 'Diagnóstico de reestructuras: filas REESTRUCTURA/UNIFICACION/A LA MEDIDA/INSOLUTOS/RECURSOS PROPIOS en Ministraciones, Cobranza y Saldos con decisión sugerida.';
 
     private const PATTERN = 'REESTRUCTURA|UNIFICACION|UNIFICACIÓN|A LA MEDIDA|INSOLUTOS|RECURSOS PROPIOS|CREDITOS SALDOS INSOLUTOS';
 
+    /**
+     * Imprime las secciones 1–4 (colocación, cobranza, cartera y resumen).
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -34,11 +52,11 @@ class DebugReestructurasCommand extends Command
         $nonOp = RegionNorteFilter::names();
 
         $this->line('');
-        $this->info("══════════════════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════════════════');
         $this->info("  DEBUG REESTRUCTURAS — {$period->label} (ID #{$periodId})");
-        $this->info("══════════════════════════════════════════════════════════════");
-        $this->line("  Data IDs      : [" . implode(', ', $dataIds) . "]");
-        $this->line("  Patrón        : " . self::PATTERN);
+        $this->info('══════════════════════════════════════════════════════════════');
+        $this->line('  Data IDs      : ['.implode(', ', $dataIds).']');
+        $this->line('  Patrón        : '.self::PATTERN);
         $this->line('');
 
         // ── 1. MINISTRACIONES (fact_placements) ────────────────────────
@@ -56,27 +74,27 @@ class DebugReestructurasCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $totalPlace    = 0.0;
-        $totalNoCount  = 0.0;
-        $totalOpPlace  = 0.0;
+        $totalPlace = 0.0;
+        $totalNoCount = 0.0;
+        $totalOpPlace = 0.0;
 
         foreach ($placements as $r) {
-            $isNonOp    = RegionNorteFilter::isNonOperative($r->sucursal);
-            $product    = mb_strtoupper($r->product_name);
-            $isRRPP     = str_contains($product, 'RECURSOS PROPIOS');
+            $isNonOp = RegionNorteFilter::isNonOperative($r->sucursal);
+            $product = mb_strtoupper($r->product_name);
+            $isRRPP = str_contains($product, 'RECURSOS PROPIOS');
 
             if ($isNonOp) {
                 $decision = 'NO CUENTA (sucursal no operativa)';
-                $marker   = '<fg=red>✗</>';
-                $totalNoCount += (float)$r->total;
+                $marker = '<fg=red>✗</>';
+                $totalNoCount += (float) $r->total;
             } elseif ($isRRPP) {
                 $decision = 'NO CUENTA EN COLOCACIÓN (recursos propios = no hay dinero nuevo)';
-                $marker   = '<fg=red>✗</>';
-                $totalNoCount += (float)$r->total;
+                $marker = '<fg=red>✗</>';
+                $totalNoCount += (float) $r->total;
             } else {
                 $decision = 'REVISAR (posible reestructura/unificación — identificar incremento neto)';
-                $marker   = '<fg=yellow>~</>';
-                $totalOpPlace += (float)$r->total;
+                $marker = '<fg=yellow>~</>';
+                $totalOpPlace += (float) $r->total;
             }
 
             $this->line(sprintf(
@@ -85,11 +103,11 @@ class DebugReestructurasCommand extends Command
                 mb_substr($r->product_name, 0, 42),
                 mb_substr($r->sucursal, 0, 28),
                 $r->cnt,
-                number_format((float)$r->total, 2),
+                number_format((float) $r->total, 2),
                 $decision
             ));
 
-            $totalPlace += (float)$r->total;
+            $totalPlace += (float) $r->total;
         }
 
         $this->line('');
@@ -121,26 +139,26 @@ class DebugReestructurasCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $totalRecov        = 0.0;
-        $totalRecovCounts  = 0.0;
+        $totalRecov = 0.0;
+        $totalRecovCounts = 0.0;
         $totalRecovNoCount = 0.0;
 
         foreach ($recoveries as $r) {
             $isNonOp = RegionNorteFilter::isNonOperative($r->sucursal);
-            $isPago  = ($r->trans === 'PAGO');
+            $isPago = ($r->trans === 'PAGO');
 
             if ($isNonOp) {
                 $decision = 'NO CUENTA (sucursal no operativa)';
-                $marker   = '<fg=red>✗</>';
-                $totalRecovNoCount += (float)$r->total;
+                $marker = '<fg=red>✗</>';
+                $totalRecovNoCount += (float) $r->total;
             } elseif ($isPago) {
                 $decision = 'CUENTA en recuperación (PAGO real)';
-                $marker   = '<fg=green>✓</>';
-                $totalRecovCounts += (float)$r->total;
+                $marker = '<fg=green>✓</>';
+                $totalRecovCounts += (float) $r->total;
             } else {
-                $decision = 'NO CUENTA en recuperación (' . ($r->trans ?? 'sin transacción') . ')';
-                $marker   = '<fg=yellow>~</>';
-                $totalRecovNoCount += (float)$r->total;
+                $decision = 'NO CUENTA en recuperación ('.($r->trans ?? 'sin transacción').')';
+                $marker = '<fg=yellow>~</>';
+                $totalRecovNoCount += (float) $r->total;
             }
 
             $this->line(sprintf(
@@ -151,11 +169,11 @@ class DebugReestructurasCommand extends Command
                 mb_substr($r->trans ?? '(null)', 0, 12),
                 mb_substr($r->concepto ?? '(null)', 0, 25),
                 $r->cnt,
-                number_format((float)$r->total, 2),
+                number_format((float) $r->total, 2),
                 $decision
             ));
 
-            $totalRecov += (float)$r->total;
+            $totalRecov += (float) $r->total;
         }
 
         $this->line('');
@@ -179,21 +197,21 @@ class DebugReestructurasCommand extends Command
             ->orderByDesc('saldo')
             ->get();
 
-        $totalPortfolio   = 0.0;
+        $totalPortfolio = 0.0;
         $totalPortfNoCount = 0.0;
-        $totalPortfCounts  = 0.0;
+        $totalPortfCounts = 0.0;
 
         foreach ($portfolios as $r) {
             $isNonOp = RegionNorteFilter::isNonOperative($r->sucursal);
 
             if ($isNonOp) {
                 $decision = 'NO CUENTA (sucursal no operativa)';
-                $marker   = '<fg=red>✗</>';
-                $totalPortfNoCount += (float)$r->saldo;
+                $marker = '<fg=red>✗</>';
+                $totalPortfNoCount += (float) $r->saldo;
             } else {
                 $decision = 'CUENTA en cartera (saldo vigente real)';
-                $marker   = '<fg=green>✓</>';
-                $totalPortfCounts += (float)$r->saldo;
+                $marker = '<fg=green>✓</>';
+                $totalPortfCounts += (float) $r->saldo;
             }
 
             $this->line(sprintf(
@@ -202,12 +220,12 @@ class DebugReestructurasCommand extends Command
                 mb_substr($r->product_name, 0, 40),
                 mb_substr($r->sucursal, 0, 28),
                 $r->cnt,
-                number_format((float)$r->saldo, 2),
-                number_format((float)$r->mora, 2),
+                number_format((float) $r->saldo, 2),
+                number_format((float) $r->mora, 2),
                 $decision
             ));
 
-            $totalPortfolio += (float)$r->saldo;
+            $totalPortfolio += (float) $r->saldo;
         }
 
         $this->line('');
@@ -228,7 +246,7 @@ class DebugReestructurasCommand extends Command
         $this->line('  de recuperación del debug-cobranza. Esta sección solo los identifica.');
         $this->line('');
 
-        $this->info("══════════════════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════════════════');
         $this->line('');
 
         return self::SUCCESS;

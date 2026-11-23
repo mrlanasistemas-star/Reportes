@@ -12,6 +12,7 @@ use App\Services\EstadoResultados\Import\EstadoResultadosImportException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Gastos financieros del Estado de Resultados (intereses LEROM / BBVA desde la tabla de
@@ -23,8 +24,18 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
  */
 class EstadoResultadosFinancialExpensesController extends Controller
 {
+    /**
+     * @param  DataScopeService  $dataScope  Valida que el usuario tenga alcance general (todas las sucursales).
+     */
     public function __construct(private readonly DataScopeService $dataScope) {}
 
+    /**
+     * Panel de gastos financieros del periodo: créditos, tabla vigente e intereses que caen en el mes.
+     *
+     * @param  Period  $period  Debe ser mensual (422 si no).
+     * @param  FinancialExpenseService  $service  Arma el panel.
+     * @return JsonResponse Panel en JSON; 403 si el usuario no tiene alcance general.
+     */
     public function show(Request $request, Period $period, FinancialExpenseService $service): JsonResponse
     {
         abort_unless($period->type === 'monthly', 422, 'El Estado de Resultados se genera sobre periodos mensuales.');
@@ -33,6 +44,19 @@ class EstadoResultadosFinancialExpensesController extends Controller
         return response()->json($service->panel($period));
     }
 
+    /**
+     * Sube o sustituye la tabla de amortización de un crédito activo.
+     *
+     * Efectos: AmortizationUploadService guarda el archivo y escribe en BD la carga y sus renglones;
+     * la carga vigente anterior queda sustituida. Si el mismo archivo ya era el vigente responde
+     * idempotente sin cambiar nada.
+     *
+     * @param  Request  $request  `file` (obligatorio) y `notes` (opcional, máx. 2000).
+     * @param  string  $credit  Llave del crédito (`key`, p.ej. lerom | bbva); 404 si no existe o está inactivo.
+     * @param  AmortizationUploadService  $service  Lee y persiste la tabla.
+     * @return JsonResponse Mensaje en español, bandera `idempotent`, carga `replaced` (o null) y la nueva `upload`;
+     *                      en error de lectura, el mensaje/detalles/errores con el código que indique la excepción.
+     */
     public function upload(Request $request, string $credit, AmortizationUploadService $service): JsonResponse
     {
         $this->requireGeneral($request);
@@ -64,6 +88,14 @@ class EstadoResultadosFinancialExpensesController extends Controller
         ]);
     }
 
+    /**
+     * Descarga una plantilla .xlsx de ejemplo para la tabla de amortización.
+     *
+     * No exige alcance general. Genera un archivo temporal que se borra después de enviarse.
+     *
+     * @param  Request  $request  `credito` opcional (llave) para personalizar la plantilla y el nombre del archivo.
+     * @param  AmortizationTemplate  $template  Generador del Excel.
+     */
     public function template(Request $request, AmortizationTemplate $template): BinaryFileResponse
     {
         $credit = $request->filled('credito')
@@ -76,6 +108,11 @@ class EstadoResultadosFinancialExpensesController extends Controller
         ])->deleteFileAfterSend();
     }
 
+    /**
+     * Exige sesión iniciada y alcance general; los gastos financieros sólo existen en el consolidado.
+     *
+     * @throws HttpException 403 si no hay usuario o su alcance es restringido.
+     */
     private function requireGeneral(Request $request): void
     {
         $user = $request->user();

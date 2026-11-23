@@ -7,35 +7,58 @@ use App\Services\BranchResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-cartera-raw` — depuración de cartera por sucursal: totales brutos
+ * (todas las sucursales), saldo actual, saldo capital, total atrasado y contratos con mora por
+ * cada una de las 13 sucursales operativas, comparación del global contra el target fijo de
+ * Abril 2026, sucursales excluidas del global (Norte, Corporativo, AGS o desconocida) y el
+ * caso de San Juan del Río.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-cartera-raw 14
+ */
 class DebugCarteraRawCommand extends Command
 {
-    protected $signature   = 'reportes:debug-cartera-raw {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-cartera-raw {period_id : ID del periodo}';
+
     protected $description = 'Debug cartera por sucursal: saldo actual, saldo capital, mora, exclusiones.';
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas y sucursales operativas.
+     */
     public function __construct(private readonly BranchResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Construye el mapa de sucursales operativas, agrega la cartera por sucursal real e imprime las
+     * cinco secciones del diagnóstico.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge($weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge($weeklyIds, [$period->id])));
 
         $this->line('');
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG CARTERA RAW — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── Resuelve branch_id → sucursal operativa ───────────────────────────
@@ -43,8 +66,9 @@ class DebugCarteraRawCommand extends Command
         $excludedBranchIds = [];
         foreach (DB::table('branches')->get() as $b) {
             $real = $this->resolver->resolveRealBranchFromRoute($b->name);
-            if (!$real) {
+            if (! $real) {
                 $excludedBranchIds[] = (int) $b->id;
+
                 continue;
             }
             if ($this->resolver->isSheetBranch($real)) {
@@ -57,9 +81,9 @@ class DebugCarteraRawCommand extends Command
         // ── Totales brutos ────────────────────────────────────────────────────
         $total = DB::table('fact_portfolios')->whereIn('period_id', $dataIds);
         $totalContratos = (clone $total)->count();
-        $totalBalance   = (float) (clone $total)->sum('balance');
-        $totalCapital   = (float) (clone $total)->sum('capital_due');
-        $totalAtrasado  = (float) (clone $total)->sum('past_due_balance');
+        $totalBalance = (float) (clone $total)->sum('balance');
+        $totalCapital = (float) (clone $total)->sum('capital_due');
+        $totalAtrasado = (float) (clone $total)->sum('past_due_balance');
 
         $this->info('── 1. Totales brutos (TODAS las sucursales, incluye Norte/Corp) ──');
         $this->line(sprintf('  Contratos   : %s', number_format($totalContratos)));
@@ -85,14 +109,14 @@ class DebugCarteraRawCommand extends Command
         }
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($bySuc[$suc])) {
+            if (! $suc || ! isset($bySuc[$suc])) {
                 continue;
             }
-            $bySuc[$suc]['contratos']     += (int) $row->contratos;
-            $bySuc[$suc]['saldo_actual']  += (float) $row->saldo_actual;
+            $bySuc[$suc]['contratos'] += (int) $row->contratos;
+            $bySuc[$suc]['saldo_actual'] += (float) $row->saldo_actual;
             $bySuc[$suc]['saldo_capital'] += (float) $row->saldo_capital;
-            $bySuc[$suc]['total_atrasado']+= (float) $row->total_atrasado;
-            $bySuc[$suc]['con_mora']      += (int) $row->con_mora;
+            $bySuc[$suc]['total_atrasado'] += (float) $row->total_atrasado;
+            $bySuc[$suc]['con_mora'] += (int) $row->con_mora;
         }
 
         $tableRows = [];
@@ -102,13 +126,13 @@ class DebugCarteraRawCommand extends Command
             $tableRows[] = [
                 $suc,
                 number_format($d['contratos']),
-                '$' . number_format($d['saldo_actual'], 2),
-                '$' . number_format($d['saldo_capital'], 2),
-                '$' . number_format($d['total_atrasado'], 2),
+                '$'.number_format($d['saldo_actual'], 2),
+                '$'.number_format($d['saldo_capital'], 2),
+                '$'.number_format($d['total_atrasado'], 2),
                 $d['con_mora'],
             ];
         }
-        $tableRows[] = ['GLOBAL (SUMA)', '—', '$' . number_format($globalSaldo, 2), '—', '—', '—'];
+        $tableRows[] = ['GLOBAL (SUMA)', '—', '$'.number_format($globalSaldo, 2), '—', '—', '—'];
 
         $this->table(
             ['Sucursal', 'Contratos', 'Saldo actual', 'Saldo capital', 'Total atrasado', 'Con mora'],
@@ -117,15 +141,15 @@ class DebugCarteraRawCommand extends Command
 
         // ── Comparación vs target ─────────────────────────────────────────────
         $target = 39_130_054.53;
-        $diff   = $globalSaldo - $target;
-        $pct    = abs($diff / $target) * 100;
+        $diff = $globalSaldo - $target;
+        $pct = abs($diff / $target) * 100;
 
         $this->line('');
         $this->info('── 3. Comparación vs target ──');
         $this->line(sprintf('  Calculado (13 suc.)  : $%s', number_format($globalSaldo, 2)));
         $this->line(sprintf('  Target Abril 2026    : $%s', number_format($target, 2)));
         $status = abs($diff) < 1 ? '<fg=green>OK</>' : ($pct < 1 ? '<fg=yellow>CERCA (%.2f%%)</>' : '<fg=red>DIF (%.2f%%)</>');
-        $this->line(sprintf("  Diferencia           : \$%s  %s", number_format($diff, 2), sprintf(str_replace('%.2f', number_format($pct, 2), $status))));
+        $this->line(sprintf('  Diferencia           : $%s  %s', number_format($diff, 2), sprintf(str_replace('%.2f', number_format($pct, 2), $status))));
         $this->line('');
 
         // ── Sucursales excluidas del GLOBAL ───────────────────────────────────
@@ -156,7 +180,7 @@ class DebugCarteraRawCommand extends Command
         // ── SAN JUAN DEL RÍO ─────────────────────────────────────────────────
         $this->line('');
         $this->info('── 5. SAN JUAN DEL RÍO — sucursal cerrada ──');
-        $sjrVal   = $bySuc['SAN JUAN DEL RÍO'] ?? [];
+        $sjrVal = $bySuc['SAN JUAN DEL RÍO'] ?? [];
         $sjrSaldo = (float) ($sjrVal['saldo_actual'] ?? 0);
         $this->line(sprintf('  Contratos con cartera : %d', $sjrVal['contratos'] ?? 0));
         $this->line(sprintf('  Saldo actual (cartera): $%s', number_format($sjrSaldo, 2)));
@@ -172,6 +196,12 @@ class DebugCarteraRawCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Explica por qué una sucursal queda fuera del global según su nombre.
+     *
+     * @param  string  $branchName  Nombre de la sucursal.
+     * @return string Norte | Corporativo | AGS (no en 13) | Desconocido.
+     */
     private function classifyExclusion(string $branchName): string
     {
         $up = strtoupper(trim($branchName));
@@ -184,6 +214,7 @@ class DebugCarteraRawCommand extends Command
         if (str_contains($up, 'AGUASCALIENTES')) {
             return 'AGS (no en 13)';
         }
+
         return 'Desconocido';
     }
 }

@@ -2,7 +2,11 @@
 
 namespace App\Jobs;
 
+use App\Models\Branch;
+use App\Models\Period;
 use App\Services\DashboardTrendService;
+use App\Services\RadiografiaExportService;
+use App\Services\Reporting\OperativeBranchService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -26,13 +30,23 @@ class WarmDashboardTrendCacheJob implements ShouldQueue
     use SerializesModels;
 
     public int $timeout = 300;
+
     public int $tries = 1;
 
-    /** 16-oct-2026 — periodo recién generado cuya radiografía general se precalienta (comparativo/OKR). */
-    public function __construct(public ?int $periodId = null)
-    {
-    }
+    /**
+     * @param  int|null  $periodId  Periodo recién generado cuya radiografía general se precalienta (comparativo/OKR); null = solo tendencia general.
+     */
+    public function __construct(public ?int $periodId = null) {}
 
+    /**
+     * Precalienta en caché: (1) la tendencia general del dashboard, (2) el snapshot
+     * general del periodo indicado (RadiografiaExportService::buildSnapshot) y
+     * (3) la tendencia de cada sucursal operativa, con tope de ~200 s. Errores se
+     * registran como warning y nunca se relanzan. Lo despachan GenerateRadiographyJob,
+     * DashboardController y RadiografiaExportService.
+     *
+     * @param  DashboardTrendService  $trendService  Servicio de tendencia EBITDA/OPEX.
+     */
     public function handle(DashboardTrendService $trendService): void
     {
         @ini_set('memory_limit', '512M');
@@ -45,19 +59,19 @@ class WarmDashboardTrendCacheJob implements ShouldQueue
             // El comparativo y la línea base OKR leen el snapshot GENERAL del
             // periodo (cacheado por summary): construirlo aquí evita que el primer
             // usuario espere ~10-25 s en pantalla.
-            if ($this->periodId !== null && ($period = \App\Models\Period::query()->find($this->periodId))) {
-                app(\App\Services\RadiografiaExportService::class)->buildSnapshot($period);
+            if ($this->periodId !== null && ($period = Period::query()->find($this->periodId))) {
+                app(RadiografiaExportService::class)->buildSnapshot($period);
             }
 
             // Fase 7.1 — tendencia por sucursal: con la corrida general de cada periodo
             // ya cacheada (arriba), cada punto de sucursal es solo una proyección
             // (~0.2 s), así que se precalientan las 13 operativas. Con tope de tiempo:
             // si no alcanza, la request del usuario calcula lo que falte (igual de exacto).
-            foreach (app(\App\Services\Reporting\OperativeBranchService::class)->names() as $name) {
+            foreach (app(OperativeBranchService::class)->names() as $name) {
                 if (microtime(true) - $jobStarted > 200) {
                     break;
                 }
-                $branchId = \App\Models\Branch::query()->where('name', $name)->value('id');
+                $branchId = Branch::query()->where('name', $name)->value('id');
                 if ($branchId) {
                     $trendService->build((int) $branchId);
                 }
@@ -67,7 +81,7 @@ class WarmDashboardTrendCacheJob implements ShouldQueue
             // precalentamiento — nunca debe reintentar ni fallar el job padre.
             Log::warning('WarmDashboardTrendCacheJob: no se pudo precalentar la caché de tendencia.', [
                 'exception' => get_class($exception),
-                'message'   => $exception->getMessage(),
+                'message' => $exception->getMessage(),
             ]);
         }
     }

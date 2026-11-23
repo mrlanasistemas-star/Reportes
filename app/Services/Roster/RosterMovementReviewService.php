@@ -15,13 +15,33 @@ use Illuminate\Validation\ValidationException;
  * la baja o descartarla. Cada decisión queda en la bitácora
  * period_employee_movement_reviews (nunca se borra; la última manda) y se
  * vuelve a aplicar cada vez que el roster se reconstruye.
+ *
+ * La usa el módulo Colaboradores (acción `colaboradores.conciliar`).
  */
 class RosterMovementReviewService
 {
+    /**
+     * @param  RotacionDerivedFromNoiService  $rotation  Reconstruye roster y Rotación del periodo.
+     */
     public function __construct(private readonly RotacionDerivedFromNoiService $rotation) {}
 
     /**
+     * Registra la decisión (confirmar o descartar baja) para una fila ausente
+     * de nómina del periodo y recalcula el periodo.
+     *
+     * Efectos: inserta en period_employee_movement_reviews (con status_before)
+     * y llama a RotacionDerivedFromNoiService::deriveForPeriod(). Si el recálculo
+     * falla, reporta la excepción y aplica la decisión directamente sobre la
+     * fila del roster (applyInPlace()) devolviendo una advertencia.
+     *
+     * @param  Period  $period  Periodo conciliado.
+     * @param  string  $nombreNormalizado  employee_key de la fila del roster.
+     * @param  string  $decision  DECISION_CONFIRMAR o DECISION_DESCARTAR.
+     * @param  string  $note  Justificación capturada (queda en bitácora).
+     * @param  User  $user  Usuario que autoriza.
      * @return array{applied:bool, status:string, warning:?string}
+     *
+     * @throws ValidationException Si la decisión es inválida o la fila no es una ausencia del periodo.
      */
     public function review(Period $period, string $nombreNormalizado, string $decision, string $note, User $user): array
     {
@@ -76,6 +96,17 @@ class RosterMovementReviewService
         return ['applied' => $warning === null, 'status' => (string) $after, 'warning' => $warning];
     }
 
+    /**
+     * Respaldo cuando no se pudo reconstruir el periodo: actualiza la fila
+     * ausente del roster con el movimiento/estatus de la decisión y una nota
+     * con el usuario y la justificación. Limpia requires_review si existe la columna.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  string  $name  employee_key.
+     * @param  string  $decision  Decisión tomada.
+     * @param  User  $user  Usuario que autorizó.
+     * @param  string  $note  Justificación.
+     */
     private function applyInPlace(Period $period, string $name, string $decision, User $user, string $note): void
     {
         $confirm = $decision === S::DECISION_CONFIRMAR;

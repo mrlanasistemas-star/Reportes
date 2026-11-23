@@ -7,7 +7,7 @@ namespace App\Services\Efectividad\V12;
  * ("MR LANA - EFECTIVIDAD V12.9.4 | APORTE POR BUCKET CONTRA SANO").
  *
  * Referencia funcional: `docs/efectividad/ultimaVersion/` (archivo de Córdoba).
- * Documentación: `docs/efectividad/v12/README.md`. El motor V4 se conserva como
+ * Documentación: `docs/MANUAL-DESARROLLADOR.md`. El motor V4 se conserva como
  * referencia histórica en `App\Services\Efectividad\V4`.
  *
  * Reglas principales:
@@ -57,11 +57,20 @@ class EfectividadV12Calculator
     public const MODOS = ['DIARIO', 'ACUMULADO', 'SEMANAL'];
 
     /**
+     * Ejecuta el motor V12.9.4 completo: prepara la corrida (fechas, fotos e historial),
+     * resuelve gestores por día, genera amortizaciones desde saldos, aplica ingresos, concilia
+     * netos, registra trazabilidad, construye y valida los buckets Sano/Atraso/Vencido y arma
+     * las filas, la conciliación de cartera y el estado del reporte (PRELIMINAR/CONCILIADO).
+     * Función pura (sin BD).
+     *
      * @param  array{modo:string, domingo_base:mixed, fecha_corte:mixed}  $parametros
      * @param  array<int, array{columnas: list<string>, filas: iterable<array<string,mixed>>}>  $fotos  índice = días desde el domingo base
      * @param  array{columnas: list<string>, filas: iterable<array<string,mixed>>}  $ingresos  ingresos del corte (validación de encabezados)
      * @param  array{columnas: list<string>, filas: iterable<array<string,mixed>>}  $historial  historial de ingresos (corte + semanas previas, sin duplicar)
+     * @param  bool  $conTraza  incluir la trazabilidad por cuota en el resultado
      * @return array<string,mixed>
+     *
+     * @throws V12Exception si faltan columnas/fotografías o los parámetros no son válidos
      */
     public function calculate(array $parametros, array $fotos, array $ingresos, array $historial, bool $conTraza = false): array
     {
@@ -223,7 +232,11 @@ class EfectividadV12Calculator
         ];
     }
 
-    /** @return array<string,float> */
+    /**
+     * Acumulador de totales en cero.
+     *
+     * @return array<string,float>
+     */
     public static function totalesVacios(): array
     {
         return ['sano_pc' => 0.0, 'sano_cob' => 0.0, 'atraso_pc' => 0.0, 'atraso_cob' => 0.0, 'vencido_pc' => 0.0, 'vencido_cob' => 0.0, 'cobranza_total' => 0.0];
@@ -231,21 +244,41 @@ class EfectividadV12Calculator
 
     // --- Helpers públicos (lector de Excel / servicio de la calculadora) ---
 
+    /**
+     * Normalización de texto del motor (V12Vba::norm).
+     *
+     * @param  mixed  $valor  texto
+     */
     public function normalizar(mixed $valor): string
     {
         return V12Vba::norm($valor);
     }
 
+    /**
+     * Fecha a número de día (días desde 1970-01-01 UTC) con las reglas del motor.
+     *
+     * @param  mixed  $valor  fecha
+     */
     public function leerFecha(mixed $valor): ?int
     {
         return V12Vba::fecha($valor);
     }
 
+    /**
+     * Número de día → Y-m-d.
+     *
+     * @param  int  $dia  día
+     */
     public function ymd(int $dia): string
     {
         return V12Vba::ymd($dia);
     }
 
+    /**
+     * Valor numérico con las reglas del motor (V12Vba::num).
+     *
+     * @param  mixed  $valor  valor
+     */
     public function numero(mixed $valor): float
     {
         return V12Vba::num($valor);

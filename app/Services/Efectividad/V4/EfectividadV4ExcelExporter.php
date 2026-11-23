@@ -45,10 +45,15 @@ class EfectividadV4ExcelExporter
     private const COB_AZUL = '185D7B';
 
     /**
+     * Genera el XLSX (hojas EFECTIVIDAD, _AUDITORIA_EFECTIVIDAD y FUENTES) y lo guarda.
+     *
      * @param  list<array<string,mixed>>  $filas  `filas` de EfectividadV4Calculator::calculate()
      * @param  array<string,string>  $parametros  `parametros` del cálculo (modo, domingo_base, fecha_corte, inicio_ingresos, fin_ingresos)
-     * @param  list<array<string,mixed>>  $incidencias
+     * @param  list<array<string,mixed>>  $incidencias  incidencias de auditoría
+     * @param  string  $outputPath  ruta de salida
      * @param  array<string,mixed>  $fuentes  resumen de fotografías/ingresos usados (hoja FUENTES)
+     * @param  string  $engineVersion  versión del motor impresa
+     * @return string ruta generada
      */
     public function export(array $filas, array $parametros, array $incidencias, string $outputPath, array $fuentes = [], string $engineVersion = EfectividadV4Calculator::ENGINE_VERSION): string
     {
@@ -78,6 +83,15 @@ class EfectividadV4ExcelExporter
         return $outputPath;
     }
 
+    /**
+     * Hoja EFECTIVIDAD con el layout de la macro (bandas de título, parámetros, bloques
+     * Sano/Atraso/Vencido/Total/Mora, filas y totales), lista para imprimir.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array  $filas  filas del cálculo
+     * @param  array  $p  parámetros
+     * @param  string  $engine  versión del motor
+     */
     private function hojaEfectividad(Worksheet $ws, array $filas, array $p, string $engine): void
     {
         $ws->getTabColor()->setRGB(self::MR_VERDE);
@@ -233,6 +247,14 @@ class EfectividadV4ExcelExporter
         $ws->setSelectedCell('A1');
     }
 
+    /**
+     * Hoja _AUDITORIA_EFECTIVIDAD con las incidencias (también la usa el exportador de la
+     * calculadora).
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array  $incidencias  incidencias
+     * @param  array  $p  parámetros (domingo base, corte…)
+     */
     public function hojaAuditoria(Worksheet $ws, array $incidencias, array $p): void
     {
         $ws->setTitle('_AUDITORIA_EFECTIVIDAD');
@@ -274,6 +296,14 @@ class EfectividadV4ExcelExporter
         $ws->freezePane('A6');
     }
 
+    /**
+     * Hoja FUENTES: fotografías e ingresos usados en el cálculo.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array  $fuentes  resumen de fuentes
+     * @param  array  $p  parámetros
+     * @param  string  $engine  versión del motor
+     */
     private function hojaFuentes(Worksheet $ws, array $fuentes, array $p, string $engine): void
     {
         $ws->setTitle('FUENTES');
@@ -298,6 +328,18 @@ class EfectividadV4ExcelExporter
         $ws->getColumnDimension('C')->setWidth(18);
     }
 
+    /**
+     * Banda combinada centrada con color de fondo/texto.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $rango  rango a combinar
+     * @param  string  $texto  texto
+     * @param  string  $bg  fondo RGB
+     * @param  string  $fg  texto RGB
+     * @param  int  $size  tamaño de fuente
+     * @param  bool  $bold  negrita
+     * @param  bool  $italic  cursiva
+     */
     private function banda(Worksheet $ws, string $rango, string $texto, string $bg, string $fg, int $size, bool $bold, bool $italic = false): void
     {
         $ws->mergeCells($rango);
@@ -308,6 +350,17 @@ class EfectividadV4ExcelExporter
         $s->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER)->setVertical(Alignment::VERTICAL_CENTER);
     }
 
+    /**
+     * Celda/rango de encabezado con fondo, texto en negrita y alineación.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $rango  rango a estilizar
+     * @param  string  $texto  texto
+     * @param  string  $bg  fondo RGB
+     * @param  string  $fg  texto RGB
+     * @param  string  $h  alineación horizontal
+     * @param  string|null  $ancla  celda donde se escribe (por defecto el rango)
+     */
     private function celda(Worksheet $ws, string $rango, string $texto, string $bg, string $fg, string $h, ?string $ancla = null): void
     {
         $ws->setCellValue($ancla ?? $rango, $texto);
@@ -317,11 +370,21 @@ class EfectividadV4ExcelExporter
         $s->getAlignment()->setHorizontal($h)->setVertical(Alignment::VERTICAL_CENTER);
     }
 
+    /**
+     * Índice de columna (1-based) → letra.
+     *
+     * @param  int  $n  índice
+     */
     private function col(int $n): string
     {
         return Coordinate::stringFromColumnIndex($n);
     }
 
+    /**
+     * Y-m-d → d/m/Y.
+     *
+     * @param  string  $ymd  fecha
+     */
     private function dmy(string $ymd): string
     {
         return date('d/m/Y', strtotime($ymd));

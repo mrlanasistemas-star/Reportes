@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Models\OkrObjective;
 use App\Policies\OkrObjectivePolicy;
+use App\Services\Okr\OkrPersonnelResolver;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 
@@ -46,12 +47,19 @@ class OkrServiceProvider extends ServiceProvider
      */
     private const MANAGERIAL_PERMISSIONS = ['okr.create'];
 
+    /**
+     * Registra OkrPersonnelResolver como instancia por petición/job.
+     */
     public function register(): void
     {
         // Una sola lectura del directorio vigente por petición/job (15-oct-2026).
-        $this->app->scoped(\App\Services\Okr\OkrPersonnelResolver::class);
+        $this->app->scoped(OkrPersonnelResolver::class);
     }
 
+    /**
+     * Define los Gates de cadena `okr.*` (admin-only, gerenciales o cualquier
+     * autenticado) y registra OkrObjectivePolicy para acciones sobre un Objective concreto.
+     */
     public function boot(): void
     {
         foreach (self::PERMISSIONS as $permission) {

@@ -25,22 +25,44 @@ final class EfectividadV4Incidents
         'FECHA' => ['Contrato sin fecha de primer pago', 'Sin cuotas Sano programadas', 'Verifica Fecha primer pago / Fecha siguiente pago del contrato.'],
     ];
 
+    /**
+     * Etiqueta en español de un código de incidencia.
+     *
+     * @param  string  $codigo  código
+     */
     public static function etiqueta(string $codigo): string
     {
         return self::CATALOGO[$codigo][0] ?? $codigo;
     }
 
+    /**
+     * Tratamiento financiero aplicado a la incidencia.
+     *
+     * @param  string  $codigo  código
+     */
     public static function tratamiento(string $codigo): string
     {
         return self::CATALOGO[$codigo][1] ?? 'Revisar';
     }
 
+    /**
+     * Acción recomendada al usuario.
+     *
+     * @param  string  $codigo  código
+     */
     public static function accion(string $codigo): string
     {
         return self::CATALOGO[$codigo][2] ?? 'Revisar el movimiento.';
     }
 
-    /** Reemplaza (idempotente ante reintentos) la bitácora de la ejecución. */
+    /**
+     * Reemplaza (idempotente ante reintentos) la bitácora de la ejecución: borra las incidencias
+     * previas e inserta las nuevas en bloques de 500.
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     * @param  array  $incidencias  incidencias del cálculo
+     * @return array<string, array<string, mixed>> resumen por código
+     */
     public static function persist(EfectividadCobranzaRun $run, array $incidencias): array
     {
         DB::table('efectividad_cobranza_run_incidents')->where('efectividad_cobranza_run_id', $run->id)->delete();
@@ -72,7 +94,12 @@ final class EfectividadV4Incidents
         return self::resumen($incidencias);
     }
 
-    /** @return array<string, array{codigo:string, etiqueta:string, cantidad:int, importe:float, tratamiento:string}> */
+    /**
+     * Resumen por código: cantidad, importe total, etiqueta y tratamiento.
+     *
+     * @param  array  $incidencias  incidencias
+     * @return array<string, array{codigo:string, etiqueta:string, cantidad:int, importe:float, tratamiento:string}>
+     */
     public static function resumen(array $incidencias): array
     {
         $out = [];

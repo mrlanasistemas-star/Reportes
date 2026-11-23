@@ -22,6 +22,11 @@ enum EfectividadCobranzaStage: string
     case BuildExcel = 'build_excel';
     case Finish = 'finish';
 
+    /**
+     * Nombre corto de la etapa, en español, que se muestra en la barra de progreso.
+     *
+     * @return string Etiqueta visible para el usuario.
+     */
     public function label(): string
     {
         return match ($this) {
@@ -37,6 +42,11 @@ enum EfectividadCobranzaStage: string
         };
     }
 
+    /**
+     * Texto explicativo de lo que hace el Job durante esta etapa (se muestra bajo la etiqueta).
+     *
+     * @return string Descripción para el usuario.
+     */
     public function description(): string
     {
         return match ($this) {
@@ -52,17 +62,32 @@ enum EfectividadCobranzaStage: string
         };
     }
 
+    /**
+     * Indica si la etapa reporta registros procesados/totales (barra determinada)
+     * o si debe mostrarse con indicador indeterminado.
+     *
+     * @return bool true si la etapa es medible.
+     */
     public function measurable(): bool
     {
         return in_array($this, [self::PreparePortfolio, self::ProcessIncome], true);
     }
 
+    /**
+     * Posición 1-based de la etapa dentro del flujo (orden de declaración de los casos).
+     *
+     * @return int Número de etapa.
+     */
     public function position(): int
     {
         return array_search($this, self::cases(), true) + 1;
     }
 
-    /** @return array<int,array{key:string,label:string,description:string,measurable:bool,position:int}> */
+    /**
+     * Catálogo completo de etapas para enviar al frontend (pantalla de progreso).
+     *
+     * @return array<int,array{key:string,label:string,description:string,measurable:bool,position:int}>
+     */
     public static function catalog(): array
     {
         return array_map(fn (self $s) => [

@@ -22,6 +22,13 @@ use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
  */
 class EstadoResultadosReportResolver
 {
+    /**
+     * @param  EstadoResultadosDatasetBuilder  $builder  cálculo en vivo
+     * @param  ReportStatusEvaluator  $evaluator  estado derivado del dataset en vivo
+     * @param  PeriodLockGuard  $guard  versión aprobada vigente / última versión
+     * @param  EstadoResultadosRedactor  $redactor  redacción por permisos
+     * @param  EstadoResultadosAbilities  $abilities  permisos ver_nomina / ver_dg
+     */
     public function __construct(
         private readonly EstadoResultadosDatasetBuilder $builder,
         private readonly ReportStatusEvaluator $evaluator,
@@ -33,7 +40,14 @@ class EstadoResultadosReportResolver
     /**
      * Dataset listo para el usuario (redactado según sus permisos).
      *
+     * @param  Period  $period  periodo
+     * @param  string  $scope  alcance (CONSOLIDADO o sucursal)
+     * @param  User|null  $user  usuario que consulta (define la redacción)
+     * @param  int|null  $versionNumber  versión explícita (?version=N) o null
+     * @return array dataset con meta.report y meta.redactions
+     *
      * @throws \InvalidArgumentException alcance no válido / no incluido en la versión
+     * @throws EstadoResultadosGovernanceException 404 si la versión pedida no existe
      */
     public function resolve(Period $period, string $scope, ?User $user, ?int $versionNumber = null): array
     {
@@ -46,7 +60,16 @@ class EstadoResultadosReportResolver
         );
     }
 
-    /** Dataset con gobierno, SIN redacción (uso interno: p. ej. buscar movimientos para clasificar). */
+    /**
+     * Dataset con gobierno, SIN redacción (uso interno: p. ej. buscar movimientos para clasificar).
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $scope  alcance
+     * @param  int|null  $versionNumber  versión explícita o null (vigente/en vivo)
+     *
+     * @throws \InvalidArgumentException alcance no incluido en la versión
+     * @throws EstadoResultadosGovernanceException 404 si la versión pedida no existe
+     */
     public function unredacted(Period $period, string $scope, ?int $versionNumber = null): array
     {
         $version = $this->servedVersion($period, $versionNumber);
@@ -63,8 +86,10 @@ class EstadoResultadosReportResolver
      *  - En vivo → una sola sesión de Radiografía + EstadoResultadosDatasetBuilder::buildEach.
      * Cada dataset trae `meta.report` igual que unredacted().
      *
+     * @param  Period  $period  periodo
      * @param  list<string>|null  $scopes  null = todos los alcances disponibles
      * @param  callable(string, array): void  $each  ($scopeKey, $dataset)
+     * @param  int|null  $versionNumber  versión explícita o null
      */
     public function eachUnredacted(Period $period, ?array $scopes, callable $each, ?int $versionNumber = null): void
     {
@@ -87,6 +112,14 @@ class EstadoResultadosReportResolver
         });
     }
 
+    /**
+     * Agrega meta.report a un dataset en vivo: estado derivado por ReportStatusEvaluator,
+     * número de versión en preparación (última + 1), bloqueos y resumen de la versión previa.
+     *
+     * @param  Period  $period  periodo
+     * @param  array  $dataset  dataset del builder
+     * @param  EstadoResultadosVersion|null  $latest  última versión existente (puede estar reabierta)
+     */
     private function withLiveMeta(Period $period, array $dataset, ?EstadoResultadosVersion $latest): array
     {
         $eval = $this->evaluator->evaluate($dataset);
@@ -107,7 +140,13 @@ class EstadoResultadosReportResolver
         return $dataset;
     }
 
-    /** @return list<array{key:string,label:string}> */
+    /**
+     * Alcances disponibles: los congelados en la versión servida o los del cálculo en vivo.
+     *
+     * @param  Period  $period  periodo
+     * @param  int|null  $versionNumber  versión explícita o null
+     * @return list<array{key:string,label:string}>
+     */
     public function scopes(Period $period, ?int $versionNumber = null): array
     {
         $version = $this->servedVersion($period, $versionNumber);
@@ -115,7 +154,14 @@ class EstadoResultadosReportResolver
         return $version ? array_values((array) $version->scopes) : $this->builder->scopes($period);
     }
 
-    /** Versión que se sirve: la pedida explícitamente o la aprobada vigente (null = en vivo). */
+    /**
+     * Versión que se sirve: la pedida explícitamente o la aprobada vigente (null = en vivo).
+     *
+     * @param  Period  $period  periodo
+     * @param  int|null  $versionNumber  número de versión pedido
+     *
+     * @throws EstadoResultadosGovernanceException 404 si la versión pedida no existe
+     */
     public function servedVersion(Period $period, ?int $versionNumber = null): ?EstadoResultadosVersion
     {
         if ($versionNumber !== null) {
@@ -130,6 +176,15 @@ class EstadoResultadosReportResolver
         return $this->guard->lockedVersion($period);
     }
 
+    /**
+     * Dataset congelado de un alcance de la versión (verificado contra su hash por
+     * datasetVerified()) con meta.report de versión aprobada/sustituida.
+     *
+     * @param  EstadoResultadosVersion  $version  versión servida
+     * @param  string  $scope  alcance
+     *
+     * @throws \InvalidArgumentException si el alcance no forma parte de la versión
+     */
     private function fromSnapshot(EstadoResultadosVersion $version, string $scope): array
     {
         $snapshot = EstadoResultadosVersionSnapshot::query()->where('version_id', $version->id)->where('scope_key', $scope)->first();
@@ -168,6 +223,14 @@ class EstadoResultadosReportResolver
         return $dataset;
     }
 
+    /**
+     * Bloque meta.report completo: valores por defecto + los indicados, con status_label
+     * siempre coherente con el estado final. issued_at = momento de emisión (CDMX).
+     *
+     * @param  array  $dataset  dataset (para criterio, versión de reglas y generated_at)
+     * @param  array  $values  valores específicos (status obligatorio)
+     * @return array<string, mixed>
+     */
     private function reportMeta(array $dataset, array $values): array
     {
         $status = $values['status'];

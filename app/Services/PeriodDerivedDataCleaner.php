@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Expense;
+use App\Models\LendusEmployeeDirectory;
 use App\Models\MonthlyEmployeeSummary;
 use App\Models\NoiMovement;
 use App\Models\Period;
@@ -10,8 +11,8 @@ use App\Models\PeriodBranchSummary;
 use App\Models\PeriodCorporateSummary;
 use App\Models\PeriodIncident;
 use App\Models\PeriodRadiographyExport;
+use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
-use App\Models\LendusEmployeeDirectory;
 use App\Models\Placement;
 use App\Models\Portfolio;
 use App\Models\Recovery;
@@ -20,11 +21,25 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Limpia los datos derivados de un periodo o de una carga para poder reprocesar sin
+ * duplicar: registros importados (fact_*), resúmenes consolidados y reportes generados
+ * (Excel/PDF). Lo usan ReportUploadService (al reemplazar un archivo), el reproceso de
+ * periodos (DatabaseUpdateService / --force-reset) y GenerateRadiographyJob.
+ */
 class PeriodDerivedDataCleaner
 {
     /**
-     * Delete ALL derived data for a period so it can be reprocessed cleanly.
-     * Does NOT touch: employees, branches, users, catalogs, audit runs, uploads.
+     * Borra TODOS los datos derivados de un periodo para reprocesarlo desde cero.
+     *
+     * Borra: movimientos NOI, colocación, recuperación, cartera, gastos, fact_rotacion,
+     * resúmenes mensuales por colaborador, reportes generados (archivos y registros) y
+     * los PeriodSummary con sus hijos (sucursal, corporativo, incidencias). Después pone
+     * TODAS las cargas del periodo en status 'pending' para que se vuelvan a procesar.
+     * NO toca: colaboradores, sucursales, usuarios, catálogos, corridas de auditoría ni
+     * los archivos subidos. Escribe en el log.
+     *
+     * @param  Period  $period  Periodo a limpiar.
      */
     public function clearForPeriod(Period $period): void
     {
@@ -57,7 +72,7 @@ class PeriodDerivedDataCleaner
         }
 
         // ── 5. Invalidate uploads so UI shows them as needing reprocess ─────
-        \App\Models\ReportUpload::query()
+        ReportUpload::query()
             ->where('period_id', $period->id)
             ->update(['status' => 'pending']);
 
@@ -65,9 +80,13 @@ class PeriodDerivedDataCleaner
     }
 
     /**
-     * Delete only the data rows imported by a single ReportUpload.
-     * Leaves consolidated summaries untouched (they'll be stale but not duplicated).
-     * Use before re-running a single upload.
+     * Borra solo los registros importados por una carga (report_upload_id): NOI,
+     * colocación, recuperación, cartera, gastos, directorio Lendus y fact_rotacion.
+     *
+     * Los resúmenes consolidados no se tocan (quedan desactualizados, pero sin
+     * duplicar). Usar antes de volver a procesar una sola carga. Escribe en el log.
+     *
+     * @param  ReportUpload  $upload  Carga cuyos datos se eliminan.
      */
     public function clearForUpload(ReportUpload $upload): void
     {
@@ -85,9 +104,13 @@ class PeriodDerivedDataCleaner
     }
 
     /**
-     * Delete only the generated report artifacts (Excel/PDF files + export records).
-     * Leaves raw fact data and period summaries intact.
-     * Use before regenerating a radiography without full reprocess.
+     * Borra solo los reportes generados del periodo: archivos Excel/PDF en el disco por
+     * defecto y sus registros en period_radiography_exports (de todos los resúmenes).
+     *
+     * Deja intactos los datos importados y los resúmenes. Usar antes de regenerar una
+     * radiografía sin reprocesar todo. Escribe en el log.
+     *
+     * @param  Period  $period  Periodo cuyos reportes se eliminan.
      */
     public function clearGeneratedReports(Period $period): void
     {
@@ -114,22 +137,30 @@ class PeriodDerivedDataCleaner
             ->delete();
 
         Log::info('PeriodDerivedDataCleaner: clearGeneratedReports done', [
-            'period_id'     => $period->id,
+            'period_id' => $period->id,
             'deleted_files' => $exports->count(),
         ]);
     }
 
     /**
-     * Delete only the prior run(s)/export(s)/file(s) that share the EXACT SAME
-     * identity being (re)generated now (period_id + report_type + scope +
-     * comparison_period_id + branch_id + employee_id). A simple report and a
-     * comparativo mes vs mes for the same period must coexist — this replaces the
-     * old clearGeneratedReports() call inside GenerateRadiographyJob, which wiped
-     * every export for the period regardless of report kind.
+     * Borra solo las corridas, exportaciones y archivos previos con la MISMA identidad
+     * exacta que se está (re)generando (period_id + report_type + scope +
+     * comparison_period_id + branch_id + employee_id). Un reporte simple y un
+     * comparativo mes vs mes del mismo periodo deben convivir — esto reemplaza la
+     * antigua llamada a clearGeneratedReports() dentro de GenerateRadiographyJob, que
+     * borraba todas las exportaciones del periodo sin importar el tipo de reporte.
+     *
+     * Efectos: borra archivos del disco, filas de period_radiography_exports y de
+     * period_radiography_runs; escribe en el log.
+     *
+     * @param  Period  $period  Periodo del reporte.
+     * @param  array  $identity  Claves report_type (default 'simple'), scope (default 'general'),
+     *                           comparison_period_id, branch_id, employee_id (default null).
+     * @param  int|null  $excludeRunId  Corrida actual que NO debe borrarse.
      */
     public function clearGeneratedReportsForIdentity(Period $period, array $identity, ?int $excludeRunId = null): void
     {
-        $query = \App\Models\PeriodRadiographyRun::query()
+        $query = PeriodRadiographyRun::query()
             ->where('period_id', $period->id)
             ->where('report_type', $identity['report_type'] ?? 'simple')
             ->where('scope', $identity['scope'] ?? 'general')
@@ -158,12 +189,12 @@ class PeriodDerivedDataCleaner
         }
 
         PeriodRadiographyExport::query()->whereIn('run_id', $priorRuns->pluck('id'))->delete();
-        \App\Models\PeriodRadiographyRun::query()->whereIn('id', $priorRuns->pluck('id'))->delete();
+        PeriodRadiographyRun::query()->whereIn('id', $priorRuns->pluck('id'))->delete();
 
         Log::info('PeriodDerivedDataCleaner: clearGeneratedReportsForIdentity done', [
-            'period_id'     => $period->id,
-            'identity'      => $identity,
-            'deleted_runs'  => $priorRuns->count(),
+            'period_id' => $period->id,
+            'identity' => $identity,
+            'deleted_runs' => $priorRuns->count(),
             'deleted_files' => $exports->count(),
         ]);
     }

@@ -6,6 +6,19 @@ use App\Models\Period;
 use App\Services\EmployeeBranchAutoMatchService;
 use Illuminate\Console\Command;
 
+/**
+ * Comando `reportes:automatch-employee-branches` — reconstruye las asignaciones AUTOMÁTICAS
+ * empleado → sucursal de un periodo con EmployeeBranchAutoMatchService (histórico, nombre
+ * exacto, mayoría, fuzzy), preservando las asignaciones manuales y sin reprocesar NOI,
+ * Rotación, IMSS, Cobranza, Cartera, Colocación ni Gastos.
+ *
+ * Sin `--apply` solo valida que el periodo exista (no escribe nada).
+ * Escribe en BD: SÍ con `--apply` (`employee_branch_assignments`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:automatch-employee-branches 21
+ *   php artisan reportes:automatch-employee-branches 21 --apply --detail
+ */
 class AutomatchEmployeeBranchesCommand extends Command
 {
     protected $signature = 'reportes:automatch-employee-branches
@@ -15,13 +28,22 @@ class AutomatchEmployeeBranchesCommand extends Command
 
     protected $description = 'Reconstruye las asignaciones automáticas de empleado→sucursal de un periodo (preserva manuales), sin reprocesar NOI/Rotación/IMSS/Cobranza/Cartera/Colocación/Gastos.';
 
+    /**
+     * Valida el periodo y, con `--apply`, ejecuta el automatch mostrando el avance por etapa y el
+     * resumen por método; sugiere revisar con `reportes:audit-employee-branches` si quedan
+     * pendientes.
+     *
+     * @param  EmployeeBranchAutoMatchService  $service  Servicio de asignación automática.
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(EmployeeBranchAutoMatchService $service): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -30,9 +52,10 @@ class AutomatchEmployeeBranchesCommand extends Command
         $this->info("  AUTOMATCH EMPLEADO→SUCURSAL — {$period->label} (ID {$periodId})");
         $this->info('══════════════════════════════════════════════════');
 
-        if (!$this->option('apply')) {
+        if (! $this->option('apply')) {
             $this->line('  Modo validación (sin --apply): no se escriben cambios.');
             $this->line("  Ejecuta: php artisan reportes:automatch-employee-branches {$periodId} --apply");
+
             return self::SUCCESS;
         }
 

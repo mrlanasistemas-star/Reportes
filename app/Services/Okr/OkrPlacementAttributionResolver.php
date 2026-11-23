@@ -39,26 +39,64 @@ use Illuminate\Support\Facades\DB;
  */
 class OkrPlacementAttributionResolver
 {
+    /** Movimiento atribuido a un gestor. */
     public const STATUS_ATTRIBUTED = 'attributed';
 
+    /** Movimiento pendiente de atribución (solo suma al total de la sucursal). */
     public const STATUS_PENDING = 'pending';
 
-    /** @var array<int, array{upload_id:int, label:?string, start:?string, end:?string}>|null */
+    /**
+     * Caché en memoria de las cargas del directorio Lendus con su periodo, ordenadas de la más reciente a la más antigua.
+     *
+     * @var array<int, array{upload_id:int, label:?string, start:?string, end:?string}>|null
+     */
     private ?array $directoryUploads = null;
 
-    /** @var array<string, array> */
+    /**
+     * Caché "código|carga" => nombres normalizados encontrados y ámbito (current/history/portfolio).
+     *
+     * @var array<string, array>
+     */
     private array $codeCache = [];
 
-    /** @var array<string, int[]> */
+    /**
+     * Caché nombre normalizado => ids de Employee (orden ascendente).
+     *
+     * @var array<string, int[]>
+     */
     private array $employeeIdsByNorm = [];
 
-    /** @var array<string, array{branches:string[], label:?string}> */
+    /**
+     * Caché "empleado|fecha" => sucursales oficiales del periodo y etiqueta del periodo.
+     *
+     * @var array<string, array{branches:string[], label:?string}>
+     */
     private array $periodBranchCache = [];
 
-    /** @var array<int, string>|null */
+    /**
+     * Caché normalized_name => full_name de todos los empleados (para sugerencias).
+     *
+     * @var array<int, string>|null
+     */
     private ?array $allNames = null;
 
     /**
+     * Atribuye un movimiento de colocación a un gestor siguiendo el orden de la
+     * clase. Con número de empleado: identidad por código (directorio de la
+     * fecha → histórico → cartera), validación como colaborador en Reportería
+     * y, si el archivo no trae sucursal, coherencia con la sucursal asignada en
+     * el periodo. Sin código: nombre exacto, sin varios códigos activos y sin
+     * contradicción de sucursal (modo estricto). Cualquier duda → pendiente,
+     * con sugerencias de nombres parecidos solo para conciliar.
+     *
+     * Efecto: lecturas de BD con cachés en memoria de la instancia (pensado
+     * para procesar un archivo completo con la misma instancia).
+     *
+     * @param  string|null  $code  Número de empleado del archivo.
+     * @param  string|null  $name  Nombre del gestor en el archivo.
+     * @param  string|null  $referenceDate  Fecha del movimiento (Y-m-d).
+     * @param  string|null  $objectiveBranchName  Sucursal del OKR al que se carga.
+     * @param  bool  $rowHasBranch  Si la fila del archivo trae sucursal propia.
      * @return array{employee_id:?int, status:string, method:?string, note:?string, suggestions:string[]}
      */
     public function resolve(?string $code, ?string $name, ?string $referenceDate, ?string $objectiveBranchName, bool $rowHasBranch): array
@@ -76,16 +114,16 @@ class OkrPlacementAttributionResolver
 
             $employeeId = $this->canonicalEmployeeId($byCode['norm']);
             if ($employeeId === null) {
-                return $this->pending("El número de empleado {$code} corresponde a " . mb_strtoupper($byCode['norm']) . ', que no está registrado como colaborador en Reportería.', $normName);
+                return $this->pending("El número de empleado {$code} corresponde a ".mb_strtoupper($byCode['norm']).', que no está registrado como colaborador en Reportería.', $normName);
             }
 
-            if (!$rowHasBranch && ($mismatch = $this->periodBranchMismatch($employeeId, $referenceDate, $objectiveBranchName))) {
-                return $this->pending("El número de empleado {$code} es de " . mb_strtoupper($byCode['norm']) . ", pero {$mismatch}. El archivo no trae sucursal: confirma a quién corresponde.", null);
+            if (! $rowHasBranch && ($mismatch = $this->periodBranchMismatch($employeeId, $referenceDate, $objectiveBranchName))) {
+                return $this->pending("El número de empleado {$code} es de ".mb_strtoupper($byCode['norm']).", pero {$mismatch}. El archivo no trae sucursal: confirma a quién corresponde.", null);
             }
 
             $note = $byCode['note'];
             if ($normName !== null && $normName !== $byCode['norm']) {
-                $note = trim(($note ? $note . ' ' : '') . 'El nombre del archivo (' . mb_strtoupper($normName) . ') no coincide con el del número de empleado; se usó el número de empleado.');
+                $note = trim(($note ? $note.' ' : '').'El nombre del archivo ('.mb_strtoupper($normName).') no coincide con el del número de empleado; se usó el número de empleado.');
             }
 
             return ['employee_id' => $employeeId, 'status' => self::STATUS_ATTRIBUTED, 'method' => $byCode['method'], 'note' => $note ?: null, 'suggestions' => []];
@@ -97,22 +135,27 @@ class OkrPlacementAttributionResolver
 
         $employeeId = $this->canonicalEmployeeId($normName);
         if ($employeeId === null) {
-            return $this->pending('No hay un colaborador registrado con el nombre exacto ' . mb_strtoupper($normName) . '.', $normName);
+            return $this->pending('No hay un colaborador registrado con el nombre exacto '.mb_strtoupper($normName).'.', $normName);
         }
 
         $codes = $this->activeDirectoryCodesForName($normName, $referenceDate);
         if (count($codes) > 1) {
-            return $this->pending('El nombre ' . mb_strtoupper($normName) . ' tiene ' . count($codes) . ' números de empleado activos (' . implode(', ', $codes) . '); el archivo debe traer el número de empleado.', null);
+            return $this->pending('El nombre '.mb_strtoupper($normName).' tiene '.count($codes).' números de empleado activos ('.implode(', ', $codes).'); el archivo debe traer el número de empleado.', null);
         }
 
         if (($mismatch = $this->periodBranchMismatch($employeeId, $referenceDate, $objectiveBranchName, strict: true)) !== null) {
-            return $this->pending('Por nombre coincide con ' . mb_strtoupper($normName) . ", pero {$mismatch}. Confírmalo con su número de empleado.", null);
+            return $this->pending('Por nombre coincide con '.mb_strtoupper($normName).", pero {$mismatch}. Confírmalo con su número de empleado.", null);
         }
 
         return ['employee_id' => $employeeId, 'status' => self::STATUS_ATTRIBUTED, 'method' => 'name_exact', 'note' => null, 'suggestions' => []];
     }
 
-    /** Misma normalización de nombre que Employee.normalized_name (minúsculas, sin acentos, espacios colapsados). */
+    /**
+     * Misma normalización de nombre que Employee.normalized_name (minúsculas, sin acentos, espacios colapsados).
+     *
+     * @param  string  $value  Nombre original.
+     * @return string Nombre normalizado.
+     */
     public static function normalizeName(string $value): string
     {
         $value = mb_strtolower(trim($value));
@@ -123,15 +166,22 @@ class OkrPlacementAttributionResolver
 
     /**
      * Pasos 1 y 3: identidad (normalized_name) de un número de empleado.
+     * Busca el código en el directorio Lendus de la fecha; si no aparece, en
+     * todo el histórico; si tampoco, como promoter_code en fact_portfolios.
+     * Un código con varias personas solo se resuelve si el nombre exacto del
+     * archivo es uno de sus titulares.
      *
+     * @param  string  $code  Código en mayúsculas sin espacios extremos.
+     * @param  string|null  $normName  Nombre normalizado del archivo (desempate en códigos compartidos).
+     * @param  string|null  $referenceDate  Fecha del movimiento.
      * @return array{norm:?string, method:?string, note:?string}
      */
     private function identityFromCode(string $code, ?string $normName, ?string $referenceDate): array
     {
         $directory = $this->directoryUploadFor($referenceDate);
-        $key = $code . '|' . ($directory['upload_id'] ?? 0);
+        $key = $code.'|'.($directory['upload_id'] ?? 0);
 
-        if (!isset($this->codeCache[$key])) {
+        if (! isset($this->codeCache[$key])) {
             $namesIn = fn (?int $uploadId) => DB::table('lendus_employee_directory')
                 ->whereRaw('UPPER(TRIM(codigo)) = ?', [$code])
                 ->when($uploadId !== null, fn ($q) => $q->where('report_upload_id', $uploadId))
@@ -162,7 +212,7 @@ class OkrPlacementAttributionResolver
 
         ['names' => $names, 'scope' => $scope] = $this->codeCache[$key];
         $where = match ($scope) {
-            'current' => 'en el directorio Lendus ' . ($directory['label'] ?? 'vigente'),
+            'current' => 'en el directorio Lendus '.($directory['label'] ?? 'vigente'),
             'history' => 'en el histórico del directorio Lendus',
             default => 'en la cartera Lendus',
         };
@@ -184,15 +234,22 @@ class OkrPlacementAttributionResolver
         // Código compartido: el nombre exacto del archivo puede elegir a UNO de
         // los titulares de ese código — nunca a alguien fuera de esa lista.
         if ($normName !== null && in_array($normName, $names, true)) {
-            return ['norm' => $normName, 'method' => $method . '+name', 'note' => "El número de empleado {$code} está registrado para " . count($names) . " personas {$where}; se identificó por el nombre exacto del archivo."];
+            return ['norm' => $normName, 'method' => $method.'+name', 'note' => "El número de empleado {$code} está registrado para ".count($names)." personas {$where}; se identificó por el nombre exacto del archivo."];
         }
 
         $list = implode(', ', array_map('mb_strtoupper', $names));
 
-        return ['norm' => null, 'method' => null, 'note' => "El número de empleado {$code} está registrado para " . count($names) . " personas distintas {$where} ({$list}). No se atribuye a nadie hasta conciliarlo."];
+        return ['norm' => null, 'method' => null, 'note' => "El número de empleado {$code} está registrado para ".count($names)." personas distintas {$where} ({$list}). No se atribuye a nadie hasta conciliarlo."];
     }
 
-    /** Carga del directorio Lendus vigente para la FECHA del movimiento. */
+    /**
+     * Carga del directorio Lendus vigente para la FECHA del movimiento: la cuyo
+     * periodo contiene la fecha; si no, la más reciente anterior; si la fecha
+     * es anterior a todo, la última de la lista. Sin fecha: la más reciente.
+     *
+     * @param  string|null  $date  Fecha (Y-m-d).
+     * @return array{upload_id:int, label:?string, start:?string, end:?string}|null Carga elegida, o null si no hay directorio.
+     */
     private function directoryUploadFor(?string $date): ?array
     {
         if ($this->directoryUploads === null) {
@@ -229,7 +286,14 @@ class OkrPlacementAttributionResolver
         return end($uploads) ?: null; // fecha anterior a todo el histórico: la más antigua
     }
 
-    /** @return string[] códigos ACTIVOS distintos del nombre en el directorio de la fecha. */
+    /**
+     * Códigos ACTIVOS distintos asociados a un nombre en el directorio de la
+     * fecha (más de uno impide atribuir solo por nombre).
+     *
+     * @param  string  $normName  Nombre normalizado.
+     * @param  string|null  $date  Fecha del movimiento.
+     * @return string[] códigos ACTIVOS distintos del nombre en el directorio de la fecha.
+     */
     private function activeDirectoryCodesForName(string $normName, ?string $date): array
     {
         $directory = $this->directoryUploadFor($date);
@@ -247,10 +311,15 @@ class OkrPlacementAttributionResolver
             ->unique()->values()->all();
     }
 
-    /** Paso 2: id canónico (menor id del grupo con el mismo normalized_name). */
+    /**
+     * Paso 2: id canónico (menor id del grupo con el mismo normalized_name).
+     *
+     * @param  string  $normName  Nombre normalizado.
+     * @return int|null Id canónico o null si no existe como colaborador.
+     */
     private function canonicalEmployeeId(string $normName): ?int
     {
-        if (!array_key_exists($normName, $this->employeeIdsByNorm)) {
+        if (! array_key_exists($normName, $this->employeeIdsByNorm)) {
             $this->employeeIdsByNorm[$normName] = Employee::query()->where('normalized_name', $normName)->orderBy('id')->pluck('id')->map(fn ($v) => (int) $v)->all();
         }
 
@@ -263,6 +332,12 @@ class OkrPlacementAttributionResolver
      * coincide o si no hay dato del periodo (falta de dato no es contradicción).
      * Con $strict, dos sucursales distintas en el mismo periodo también son
      * contradicción (atribución por nombre).
+     *
+     * @param  int  $employeeId  Id canónico del colaborador.
+     * @param  string|null  $date  Fecha del movimiento.
+     * @param  string|null  $objectiveBranchName  Sucursal del OKR (se normaliza a sucursal oficial).
+     * @param  bool  $strict  true en atribución por nombre.
+     * @return string|null Explicación de la contradicción o null.
      */
     private function periodBranchMismatch(int $employeeId, ?string $date, ?string $objectiveBranchName, bool $strict = false): ?string
     {
@@ -278,16 +353,24 @@ class OkrPlacementAttributionResolver
 
         if (count($info['branches']) > 1) {
             // Dos sucursales en el mismo periodo: solo bloquea la atribución por nombre.
-            return $strict ? "{$period} aparece en " . implode(' y ', $info['branches']) . ' (información contradictoria)' : null;
+            return $strict ? "{$period} aparece en ".implode(' y ', $info['branches']).' (información contradictoria)' : null;
         }
 
         return BranchRouteCatalog::normalize($info['branches'][0]) === $target ? null : "{$period} está asignado a {$info['branches'][0]}";
     }
 
-    /** @return array{branches:string[], label:?string} */
+    /**
+     * Sucursales oficiales donde está la persona (todos sus ids canónicos) en
+     * el periodo que contiene la fecha y tiene asignación o nómina para ella:
+     * employee_branch_assignments + period_employee_rosters activos.
+     *
+     * @param  int  $employeeId  Id del colaborador.
+     * @param  string  $date  Fecha del movimiento.
+     * @return array{branches:string[], label:?string} Sucursales y nombre visible del periodo.
+     */
     private function periodBranches(int $employeeId, string $date): array
     {
-        $key = $employeeId . '|' . $date;
+        $key = $employeeId.'|'.$date;
         if (isset($this->periodBranchCache[$key])) {
             return $this->periodBranchCache[$key];
         }
@@ -319,18 +402,30 @@ class OkrPlacementAttributionResolver
         return $this->periodBranchCache[$key] = ['branches' => $names, 'label' => (trim((string) ($period->custom_name ?? '')) !== '' ? $period->custom_name : $period->name)];
     }
 
-    /** @return array{employee_id:null, status:string, method:null, note:string, suggestions:string[]} */
+    /**
+     * Resultado "pendiente de atribución", agregando a la nota nombres parecidos como sugerencia.
+     *
+     * @param  string  $note  Motivo en español.
+     * @param  string|null  $normName  Nombre normalizado para buscar parecidos (null = sin sugerencias).
+     * @return array{employee_id:null, status:string, method:null, note:string, suggestions:string[]}
+     */
     private function pending(string $note, ?string $normName): array
     {
         $suggestions = $normName !== null ? $this->similarNames($normName) : [];
         if ($suggestions !== []) {
-            $note .= ' Posibles coincidencias para conciliar (no se asignan automáticamente): ' . implode(', ', $suggestions) . '.';
+            $note .= ' Posibles coincidencias para conciliar (no se asignan automáticamente): '.implode(', ', $suggestions).'.';
         }
 
         return ['employee_id' => null, 'status' => self::STATUS_PENDING, 'method' => null, 'note' => $note, 'suggestions' => $suggestions];
     }
 
-    /** Nombres parecidos — SOLO ayuda para conciliar, jamás asignación. @return string[] */
+    /**
+     * Nombres parecidos — SOLO ayuda para conciliar, jamás asignación.
+     * Distancia Levenshtein ≤ 3, máximo 3 sugerencias.
+     *
+     * @param  string  $normName  Nombre normalizado de referencia.
+     * @return string[] Nombres completos en mayúsculas.
+     */
     private function similarNames(string $normName): array
     {
         $this->allNames ??= Employee::query()->distinct()->pluck('full_name', 'normalized_name')->all();

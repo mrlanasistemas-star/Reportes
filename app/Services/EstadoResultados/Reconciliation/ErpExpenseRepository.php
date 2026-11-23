@@ -22,9 +22,16 @@ use Illuminate\Support\Facades\DB;
  */
 class ErpExpenseRepository
 {
+    /** @param  BranchRadiographyCalculator  $branchCalculator  mapa de sucursales de Radiografía */
     public function __construct(private readonly BranchRadiographyCalculator $branchCalculator) {}
 
-    /** @return list<array<string,mixed>> */
+    /**
+     * Filas ERP del universo con su universo (radiografia/corporativo/sin_sucursal/no_operativa),
+     * folio normalizado, importe, fechas, categoría y huella. Sólo lectura.
+     *
+     * @param  list<int>  $dataIds  universo de period_id
+     * @return list<array<string,mixed>> [] si no hay fuente gastos_erp o universo vacío
+     */
     public function forDataIds(array $dataIds): array
     {
         $sourceId = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
@@ -94,7 +101,10 @@ class ErpExpenseRepository
      * Folios normalizados que existen en el ERP FUERA de los dataIds del periodo
      * (para avisar "folio registrado en ERP de otro periodo" en lugar de tratarlo como nuevo).
      *
-     * @param  list<string>  $folios
+     * Recorre en bloques de 1000 todas las filas ERP fuera del universo (sólo lectura).
+     *
+     * @param  list<int>  $dataIds  universo del periodo (se excluye)
+     * @param  list<string>  $folios  folios normalizados a buscar
      * @return array<string, list<array{period_code:string, amount:string, date:?string}>>
      */
     public function foliosOutside(array $dataIds, array $folios): array

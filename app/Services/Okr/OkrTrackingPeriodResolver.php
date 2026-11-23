@@ -5,6 +5,7 @@ namespace App\Services\Okr;
 use App\Models\Period;
 use App\Models\PeriodSummary;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 
 /**
@@ -25,9 +26,10 @@ use Illuminate\Support\Carbon;
  */
 class OkrTrackingPeriodResolver
 {
-    public function __construct(private readonly OkrCalendarService $calendar)
-    {
-    }
+    /**
+     * @param  OkrCalendarService  $calendar  Aritmética de semanas del OKR (fin de semana N).
+     */
+    public function __construct(private readonly OkrCalendarService $calendar) {}
 
     /**
      * Periodo mensual GENERADO cuyo rango [start_date, end_date] contiene $date.
@@ -35,6 +37,11 @@ class OkrTrackingPeriodResolver
      * semana en curso del mes actual), cae al último mes generado ANTERIOR o
      * igual a esa fecha — el dato real más cercano disponible, nunca uno futuro
      * ni "el más reciente que exista" sin relación con la fecha pedida.
+     *
+     * Efecto: consultas de lectura sobre period_summaries/periods.
+     *
+     * @param  CarbonInterface|\DateTimeInterface|string  $date  Fecha a ubicar.
+     * @return Period|null Periodo mensual generado, o null si no hay ninguno anterior o igual a la fecha.
      */
     public function getPeriodForDate(CarbonInterface|\DateTimeInterface|string $date): ?Period
     {
@@ -62,6 +69,10 @@ class OkrTrackingPeriodResolver
      * Periodo real para la semana N (1-based) de un Objective — resuelto según
      * SU fecha calendario (fin de esa semana), nunca "el último mensual
      * generado" sin relación con qué semana se está evaluando.
+     *
+     * @param  CarbonInterface|\DateTimeInterface|string  $objectiveStartDate  Fecha de inicio del Objective.
+     * @param  int  $weekNumber  Semana a evaluar; < 1 devuelve null.
+     * @return Period|null Periodo correspondiente al fin de esa semana.
      */
     public function getPeriodForObjectiveWeek(CarbonInterface|\DateTimeInterface|string $objectiveStartDate, int $weekNumber): ?Period
     {
@@ -77,6 +88,8 @@ class OkrTrackingPeriodResolver
      * fecha — únicamente para contextos que genuinamente no tienen una fecha
      * propia (ej. catálogo). NUNCA usar esto para evaluar el progreso de una
      * semana concreta de un Objective (ese es exactamente el bug corregido).
+     *
+     * @return Period|null Último periodo mensual generado, o null si no hay.
      */
     public function latestGenerated(): ?Period
     {
@@ -85,6 +98,12 @@ class OkrTrackingPeriodResolver
         return $periodId ? Period::find($periodId) : null;
     }
 
+    /**
+     * Consulta base: resúmenes de periodo con radiografía generada (status
+     * 'generated', no invalidada) unidos a periods de tipo mensual.
+     *
+     * @return Builder Builder sobre PeriodSummary con join a periods.
+     */
     private function generatedMonthlyQuery()
     {
         return PeriodSummary::query()

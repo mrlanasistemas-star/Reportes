@@ -3,33 +3,58 @@
 namespace App\Console\Commands;
 
 use App\Models\Period;
+use App\Services\BranchResolverService;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-branch-snapshot` — construye el snapshot por sucursal con
+ * BranchRadiographyCalculator, suma el GLOBAL y lo compara contra los targets fijos de Abril
+ * 2026. Muestra métricas por sucursal (cartera, colocación, recuperación, buckets de mora,
+ * gastos, nómina, excedentes, fondeo), el detalle de recuperación, los branch_id excluidos del
+ * global (cartera y recuperación PAGO, clasificando lo incluido por el fallback Pass2 por
+ * prefijo de acreditado, lo de CORPORATIVO pendiente y lo realmente excluido) y el caso de San
+ * Juan del Río como sucursal cerrada con cartera remanente.
+ *
+ * Escribe en BD: NO — solo lectura. Usa JSON_EXTRACT/REGEXP (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-branch-snapshot 14
+ */
 class DebugBranchSnapshotCommand extends Command
 {
-    protected $signature   = 'reportes:debug-branch-snapshot {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-branch-snapshot {period_id : ID del periodo mensual}';
+
     protected $description = 'Debug: construye snapshot por sucursal, suma GLOBAL y compara contra targets Abril 2026.';
 
+    /**
+     * @param  BranchRadiographyCalculator  $calculator  Calculador oficial de la Radiografía.
+     */
     public function __construct(private readonly BranchRadiographyCalculator $calculator)
     {
         parent::__construct();
     }
 
+    /**
+     * Calcula el snapshot e imprime todas las secciones de diagnóstico.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -38,16 +63,16 @@ class DebugBranchSnapshotCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG BRANCH SNAPSHOT — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── Construir summaries ───────────────────────────────────────────────
         $this->line('  Construyendo branch summaries (resolviendo branch_id → sucursal real)...');
-        $result     = $this->calculator->buildBranches($period, $dataIds);
-        $branches   = $result['branches'];
+        $result = $this->calculator->buildBranches($period, $dataIds);
+        $branches = $result['branches'];
         $unassigned = $result['unassigned'];
-        $global     = $this->calculator->sumGlobal($branches, $unassigned);
-        $this->line('  OK — ' . count($branches) . ' sucursales operativas procesadas.');
+        $global = $this->calculator->sumGlobal($branches, $unassigned);
+        $this->line('  OK — '.count($branches).' sucursales operativas procesadas.');
         $this->line('');
 
         // ── Tabla principal por sucursal ──────────────────────────────────────
@@ -151,19 +176,19 @@ class DebugBranchSnapshotCommand extends Command
         ];
 
         foreach ($targets as [$label, $key, $target]) {
-            $val  = (float) ($global[$key] ?? 0);
+            $val = (float) ($global[$key] ?? 0);
             $diff = $val - $target;
-            $pct  = $target > 0 ? abs($diff / $target) * 100 : 0;
+            $pct = $target > 0 ? abs($diff / $target) * 100 : 0;
 
             if (abs($diff) < 1) {
                 $status = '<fg=green>✓ OK   </>';
-                $diffStr = '<fg=green>' . number_format($diff, 2) . '</>';
+                $diffStr = '<fg=green>'.number_format($diff, 2).'</>';
             } elseif ($pct < 0.1) {
                 $status = '<fg=yellow>~ CERCA</>';
-                $diffStr = '<fg=yellow>' . number_format($diff, 2) . '</>';
+                $diffStr = '<fg=yellow>'.number_format($diff, 2).'</>';
             } else {
                 $status = '<fg=red>✗ DIF  </>';
-                $diffStr = '<fg=red>' . number_format($diff, 2) . '</>';
+                $diffStr = '<fg=red>'.number_format($diff, 2).'</>';
             }
 
             $this->line(sprintf(
@@ -202,13 +227,13 @@ class DebugBranchSnapshotCommand extends Command
         $this->info('── Branch IDs excluidos del GLOBAL (no resueltos a las 13 sucursales) ──');
         $this->line('');
 
-        $maps         = $this->calculator->buildBranchMap();
+        $maps = $this->calculator->buildBranchMap();
         $operativeIds = array_keys($maps['operative']);
 
         $unresolvedPortfolio = DB::table('fact_portfolios as po')
             ->join('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $dataIds)
-            ->when(!empty($operativeIds), fn ($q) => $q->whereNotIn('po.branch_id', $operativeIds))
+            ->when(! empty($operativeIds), fn ($q) => $q->whereNotIn('po.branch_id', $operativeIds))
             ->selectRaw('b.name as branch_name, SUM(po.balance) as cartera, COUNT(*) as filas')
             ->groupBy('po.branch_id', 'b.name')
             ->orderByDesc('cartera')
@@ -231,13 +256,13 @@ class DebugBranchSnapshotCommand extends Command
         $this->line('');
 
         // Recovery: classify each non-operative branch as Pass2-included vs truly excluded
-        $resolver = app(\App\Services\BranchResolverService::class);
+        $resolver = app(BranchResolverService::class);
 
         $unresolvedRecovery = DB::table('fact_recoveries as r')
             ->join('branches as b', 'r.branch_id', '=', 'b.id')
             ->whereIn('r.period_id', $dataIds)
             ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(r.raw_payload, '$.transaction')) = 'PAGO'")
-            ->when(!empty($operativeIds), fn ($q) => $q->whereNotIn('r.branch_id', $operativeIds))
+            ->when(! empty($operativeIds), fn ($q) => $q->whereNotIn('r.branch_id', $operativeIds))
             ->selectRaw("r.branch_id, b.name as branch_name, LEFT(JSON_UNQUOTE(JSON_EXTRACT(r.raw_payload, '$.accredited_name')), 3) as prefix3, SUM(r.total_amount) as total, COUNT(*) as filas")
             ->groupByRaw('r.branch_id, b.name, LEFT(JSON_UNQUOTE(JSON_EXTRACT(r.raw_payload, \'$.accredited_name\')), 3)')
             ->orderByDesc('total')
@@ -255,34 +280,34 @@ class DebugBranchSnapshotCommand extends Command
                 }
             }
 
-            $pass2Rows       = [];
-            $excludedRows    = [];
+            $pass2Rows = [];
+            $excludedRows = [];
             $corpPendingRows = [];  // CORPORATIVO branches with operative prefix — pending user decision
 
             foreach ($unresolvedRecovery as $r) {
-                $prefix3  = strtoupper(trim((string) $r->prefix3));
+                $prefix3 = strtoupper(trim((string) $r->prefix3));
                 $resolved = $resolver->resolveBranchNameFromCode($prefix3);
-                $isSheet  = $resolved ? $resolver->isSheetBranch($resolved) : false;
+                $isSheet = $resolved ? $resolver->isSheetBranch($resolved) : false;
                 $isCorpId = in_array((int) ($r->branch_id ?? 0), $corpIds, true);
 
                 if ($isCorpId && $isSheet) {
                     // CORPORATIVO branch with operative prefix: excluded by calculator, flag for user
-                    $label = $r->branch_name . '→' . $resolved;
+                    $label = $r->branch_name.'→'.$resolved;
                     $corpPendingRows[$label] = ($corpPendingRows[$label] ?? 0) + (float) $r->total;
                 } elseif ($isCorpId) {
                     // CORPORATIVO with own prefix (ZUR): excluded
-                    $label = $r->branch_name . ' [CORPORATIVO]';
+                    $label = $r->branch_name.' [CORPORATIVO]';
                     $excludedRows[$label] = ($excludedRows[$label] ?? 0) + (float) $r->total;
                 } elseif ($isSheet) {
-                    $label = $r->branch_name . '→' . $resolved;
+                    $label = $r->branch_name.'→'.$resolved;
                     $pass2Rows[$label] = ($pass2Rows[$label] ?? 0) + (float) $r->total;
                 } else {
-                    $label = $r->branch_name . ' [' . ($resolved ?? '???') . ']';
+                    $label = $r->branch_name.' ['.($resolved ?? '???').']';
                     $excludedRows[$label] = ($excludedRows[$label] ?? 0) + (float) $r->total;
                 }
             }
 
-            if (!empty($pass2Rows)) {
+            if (! empty($pass2Rows)) {
                 arsort($pass2Rows);
                 $this->line('  <fg=green>Recuperación incluida vía fallback (accredited_name prefix, Pass2):</>');
                 foreach ($pass2Rows as $label => $total) {
@@ -291,7 +316,7 @@ class DebugBranchSnapshotCommand extends Command
                 $this->line('');
             }
 
-            if (!empty($corpPendingRows)) {
+            if (! empty($corpPendingRows)) {
                 arsort($corpPendingRows);
                 $this->warn('  CORPORATIVO con prefix → sucursal operativa (EXCLUIDO por calculador — pendiente decisión usuario):');
                 foreach ($corpPendingRows as $label => $total) {
@@ -300,7 +325,7 @@ class DebugBranchSnapshotCommand extends Command
                 $this->line('');
             }
 
-            if (!empty($excludedRows)) {
+            if (! empty($excludedRows)) {
                 arsort($excludedRows);
                 $this->warn('  Recuperación verdaderamente excluida (Norte/Corp/desconocido):');
                 foreach ($excludedRows as $label => $total) {
@@ -340,7 +365,7 @@ class DebugBranchSnapshotCommand extends Command
                 ->where('branch_id', $sjrBranch->id)
                 ->where(function ($q) {
                     $q->whereNull('product_name')
-                      ->orWhereRaw("product_name NOT REGEXP ?", ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS']);
+                        ->orWhereRaw('product_name NOT REGEXP ?', ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS']);
                 })
                 ->count();
 
@@ -356,7 +381,7 @@ class DebugBranchSnapshotCommand extends Command
             $this->line(sprintf('  Recuperación TOTAL    : $%s', number_format((float) ($sjrSummary['recuperacion_total'] ?? 0), 2)));
             $this->line(sprintf('  Colocación nueva      : %s', $sjrNewPlacements === 0
                 ? '<fg=green>$0 — OK, sucursal cerrada sin originación nueva</>'
-                : '<fg=yellow>$' . number_format((float) ($sjrSummary['colocacion'] ?? 0), 2) . ' — VERIFICAR</>'));
+                : '<fg=yellow>$'.number_format((float) ($sjrSummary['colocacion'] ?? 0), 2).' — VERIFICAR</>'));
             $this->line('');
             $this->line('  <fg=green>CONCLUSIÓN: San Juan del Río se mantiene dentro del GLOBAL como sucursal</>');
             $this->line('  <fg=green>  cerrada con cartera remanente. Colocación = $0 es correcto y esperado.</>');
@@ -370,8 +395,12 @@ class DebugBranchSnapshotCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * @param  float|int  $val  Monto.
+     * @return string Monto con formato "$1,234.56".
+     */
     private function fmt(float|int $val): string
     {
-        return '$' . number_format((float) $val, 2);
+        return '$'.number_format((float) $val, 2);
     }
 }

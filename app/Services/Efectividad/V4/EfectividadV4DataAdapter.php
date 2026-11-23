@@ -57,7 +57,15 @@ class EfectividadV4DataAdapter
     ];
 
     /**
+     * Ventana de cálculo de un periodo SEMANAL: domingo base, fecha de corte, rango reportado,
+     * semana y fechas de las fotografías requeridas según el modo (semanal o diario con corte).
+     *
+     * @param  Period  $period  periodo semanal
+     * @param  string  $modo  modo de la ejecución
+     * @param  string|null  $corte  día de corte (modo diario)
      * @return array{modo:string, domingo_base:string, fecha_corte:string, inicio:string, fin:string, semana_inicio:string, semana_fin:string, fechas_foto: list<string>}
+     *
+     * @throws EfectividadV4Exception EC-V4-PERIODO si el periodo no es semanal o no tiene fechas
      */
     public function window(Period $period, string $modo = EfectividadCobranzaRun::MODE_SEMANAL, ?string $corte = null): array
     {
@@ -288,6 +296,15 @@ class EfectividadV4DataAdapter
 
     // ------------------------------------------------------------------
 
+    /**
+     * Diagnóstico de ingresos del rango (conteos, días, nulos, historial disponible, semana
+     * previa) con incidencias y si requiere confirmación del usuario. Sólo lectura.
+     *
+     * @param  array  $w  ventana de window()
+     * @param  int|null  $branchId  sucursal
+     * @param  Collection  $snapshots  fotografías de cartera disponibles
+     * @return array<string, mixed>
+     */
     private function ingresosResumen(array $w, ?int $branchId, Collection $snapshots): array
     {
         $issues = [];
@@ -377,7 +394,16 @@ class EfectividadV4DataAdapter
         ];
     }
 
-    /** @return array{0: list<array>, 1: list<array>, 2: array<string,int>} */
+    /**
+     * Filas de ingresos que pueden afectar el corte (por fecha de transacción o de cuota en el
+     * rango) en formato del motor, deduplicando cargas solapadas; reporta progreso.
+     *
+     * @param  array  $w  ventana
+     * @param  int|null  $branchId  sucursal
+     * @param  array  $observados  contratos vistos en las fotografías
+     * @param  callable|null  $onProgress  callback de progreso
+     * @return array{0: list<array>, 1: list<array>, 2: array<string,int>} [ingresos del corte, historial, estadísticas]
+     */
     private function ingresosFilas(array $w, ?int $branchId, array $observados, ?callable $onProgress): array
     {
         // Movimientos que pueden afectar el corte: reconocimiento = max(transacción, cuota) dentro del rango,
@@ -483,11 +509,22 @@ class EfectividadV4DataAdapter
         return $ymd.' 23:59:59';
     }
 
+    /**
+     * Valor a float conservando null.
+     *
+     * @param  mixed  $v  valor
+     */
     private function f(mixed $v): ?float
     {
         return $v === null ? null : (float) $v;
     }
 
+    /**
+     * Nombre de la fotografía por índice (Domingo base … Domingo corte).
+     *
+     * @param  string  $fecha  fecha de la foto
+     * @param  int  $i  índice (días desde el domingo base)
+     */
     private function diaSemana(string $fecha, int $i): string
     {
         $dias = ['Domingo base', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo corte'];
@@ -495,6 +532,11 @@ class EfectividadV4DataAdapter
         return $dias[$i] ?? date('l', strtotime($fecha));
     }
 
+    /**
+     * Mensaje público (máx. 300 caracteres) del último procesamiento fallido de una carga.
+     *
+     * @param  ReportUpload  $u  carga
+     */
     private function ultimoError(ReportUpload $u): ?string
     {
         $log = DB::table('process_runs')->where('report_upload_id', $u->id)->orderByDesc('id')->value('log');

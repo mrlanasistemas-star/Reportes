@@ -50,6 +50,7 @@ final class RosterMovementStatus
     /** Fila antigua (antes de esta clasificación) que nunca se reclasificó. */
     public const SIN_CLASIFICAR = 'sin_clasificar';
 
+    // Valores de period_employee_rosters.movement_type
     public const MOVEMENT_ALTA = 'alta';
 
     public const MOVEMENT_ACTIVO = 'activo';
@@ -58,6 +59,7 @@ final class RosterMovementStatus
 
     public const MOVEMENT_AUSENCIA = 'ausencia';
 
+    // Decisiones de la conciliación autorizada (period_employee_movement_reviews.decision)
     public const DECISION_CONFIRMAR = 'confirmar_baja';
 
     public const DECISION_DESCARTAR = 'descartar_baja';
@@ -72,6 +74,7 @@ final class RosterMovementStatus
         self::SIN_CLASIFICAR,
     ];
 
+    /** Etiqueta en español de cada categoría para la UI y exportes. */
     public const LABELS = [
         self::ALTA_CONFIRMADA => 'Alta confirmada',
         self::REINGRESO => 'Reingreso',
@@ -100,7 +103,16 @@ final class RosterMovementStatus
         'pendiente_conciliacion' => self::NO_LOCALIZADO,
     ];
 
-    /** Categoría efectiva de una fila (incluye filas antiguas sin clasificar). */
+    /**
+     * Categoría efectiva de una fila (incluye filas antiguas sin clasificar).
+     *
+     * Traduce valores LEGACY; sin estatus: activa = alta/activo confirmado según
+     * movement_type, ausente = SIN_CLASIFICAR.
+     *
+     * @param  string|null  $status  reconciliation_status guardado.
+     * @param  string|null  $movementType  movement_type guardado.
+     * @param  bool  $isActive  is_active_for_period.
+     */
     public static function resolve(?string $status, ?string $movementType, bool $isActive): string
     {
         if ($status !== null && $status !== '') {
@@ -114,17 +126,32 @@ final class RosterMovementStatus
         return self::SIN_CLASIFICAR;
     }
 
+    /**
+     * ¿La categoría exige conciliación autorizada (está en PENDING)?
+     *
+     * @param  string  $status  Categoría ya resuelta.
+     */
     public static function isPending(string $status): bool
     {
         return in_array($status, self::PENDING, true);
     }
 
-    /** Una baja cuenta como hecho SOLO si fue confirmada con evidencia. */
+    /**
+     * Una baja cuenta como hecho SOLO si fue confirmada con evidencia.
+     *
+     * @param  string|null  $status  reconciliation_status.
+     * @param  string|null  $movementType  movement_type.
+     */
     public static function isConfirmedBaja(?string $status, ?string $movementType): bool
     {
         return $movementType === self::MOVEMENT_BAJA && $status === self::BAJA_CONFIRMADA;
     }
 
+    /**
+     * Etiqueta legible de la categoría (la misma clave si no tiene etiqueta).
+     *
+     * @param  string  $status  Categoría.
+     */
     public static function label(string $status): string
     {
         return self::LABELS[$status] ?? $status;

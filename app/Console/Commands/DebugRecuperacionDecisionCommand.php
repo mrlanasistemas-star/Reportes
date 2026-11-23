@@ -7,12 +7,27 @@ use App\Services\BranchResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-recuperacion-decision` — análisis de decisión para la recuperación
+ * PAGO: clasifica cada fila por sucursal × prefijo de acreditado (Pass1 = branch_id directo,
+ * Pass2 = fallback por prefijo, CORPORATIVO, Norte, etc.), muestra el funnel, el detalle
+ * agrupado, los 6 escenarios de inclusión/exclusión (SCENARIO_LABELS) contra el target fijo de
+ * Abril 2026, el análisis del gap contra el total PAGO del archivo crudo y el caso de San Juan
+ * del Río como sucursal cerrada.
+ *
+ * Escribe en BD: NO — solo lectura. Usa JSON_EXTRACT (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-recuperacion-decision 14
+ */
 class DebugRecuperacionDecisionCommand extends Command
 {
-    protected $signature   = 'reportes:debug-recuperacion-decision {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-recuperacion-decision {period_id : ID del periodo mensual}';
+
     protected $description = 'Recuperación: 6 escenarios de inclusión/exclusión, funnel detallado fila-por-fila.';
 
     private const TARGET = 18_323_749.55;
+
     // Verified 2026-05-17: scan de raw Excel upload #4 → 50,529 filas PAGO
     private const RAW_FILE_PAGO_TOTAL = 19_890_385.24;
 
@@ -25,24 +40,33 @@ class DebugRecuperacionDecisionCommand extends Command
         'F' => 'Actual (A) — nota explícita SJR sucursal cerrada',
     ];
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas, prefijos y sucursales operativas.
+     */
     public function __construct(private readonly BranchResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Construye los mapas de sucursales, clasifica todas las filas PAGO e imprime las secciones 1–6.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -51,17 +75,17 @@ class DebugRecuperacionDecisionCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG RECUPERACIÓN DECISION — Periodo #{$periodId}");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
-        $this->line('  Target: $' . number_format(self::TARGET, 2));
-        $this->line('  Raw PAGO verificado (upload #4, escaneo 2026-05-17): $' . number_format(self::RAW_FILE_PAGO_TOTAL, 2));
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
+        $this->line('  Target: $'.number_format(self::TARGET, 2));
+        $this->line('  Raw PAGO verificado (upload #4, escaneo 2026-05-17): $'.number_format(self::RAW_FILE_PAGO_TOTAL, 2));
         $this->line('');
 
         // ── Build branch maps ─────────────────────────────────────────────────
-        $operativeMap    = [];
-        $corporativoIds  = [];
+        $operativeMap = [];
+        $corporativoIds = [];
         foreach (DB::table('branches')->get() as $b) {
             $real = $this->resolver->resolveRealBranchFromRoute($b->name);
-            if (!$real) {
+            if (! $real) {
                 continue;
             }
             if ($this->resolver->isSheetBranch($real)) {
@@ -107,9 +131,9 @@ class DebugRecuperacionDecisionCommand extends Command
         // ── Classify each branch×prefix row ───────────────────────────────────
         $classified = [];
         foreach ($allPago as $row) {
-            $bid     = (int) $row->branch_id;
+            $bid = (int) $row->branch_id;
             $prefix3 = strtoupper(trim((string) $row->prefix3));
-            $total   = (float) $row->total;
+            $total = (float) $row->total;
 
             $isCorporativoId = in_array($bid, $corporativoIds, true);
 
@@ -128,49 +152,49 @@ class DebugRecuperacionDecisionCommand extends Command
             if (in_array($bid, $operativeIds, true)) {
                 $pass = 'PASS1';
                 $decision_A = 'INCLUIDO';
-                $reason     = 'branch_id directo en operativeMap';
-                $sucursal   = $operativeMap[$bid];
+                $reason = 'branch_id directo en operativeMap';
+                $sucursal = $operativeMap[$bid];
             } elseif ($isCorporativoId && $isOperativePrefix) {
                 $pass = 'CORP_OPE';
                 $decision_A = 'EXCLUIDO';
-                $reason     = "CORPORATIVO (id=$bid) con prefix $prefix3 → $resolvedByPrefix";
-                $sucursal   = $resolvedByPrefix;
+                $reason = "CORPORATIVO (id=$bid) con prefix $prefix3 → $resolvedByPrefix";
+                $sucursal = $resolvedByPrefix;
             } elseif ($isCorporativoId) {
                 $pass = 'CORP_OWN';
                 $decision_A = 'EXCLUIDO';
-                $reason     = "CORPORATIVO (id=$bid) con prefix $prefix3 (ZUR/propio)";
-                $sucursal   = $resolvedByPrefix ?? 'CORPORATIVO';
+                $reason = "CORPORATIVO (id=$bid) con prefix $prefix3 (ZUR/propio)";
+                $sucursal = $resolvedByPrefix ?? 'CORPORATIVO';
             } elseif ($isNorte) {
                 $pass = 'NORTE';
                 $decision_A = 'EXCLUIDO';
-                $reason     = "Norte ({$resolvedByName})";
-                $sucursal   = $resolvedByPrefix ?? $resolvedByName;
+                $reason = "Norte ({$resolvedByName})";
+                $sucursal = $resolvedByPrefix ?? $resolvedByName;
             } elseif ($isOperativePrefix) {
                 $pass = 'PASS2';
                 $decision_A = 'INCLUIDO';
-                $reason     = "prefix $prefix3 → $resolvedByPrefix (Pass2)";
-                $sucursal   = $resolvedByPrefix;
+                $reason = "prefix $prefix3 → $resolvedByPrefix (Pass2)";
+                $sucursal = $resolvedByPrefix;
             } else {
                 $pass = 'UNKNOWN';
                 $decision_A = 'EXCLUIDO';
-                $reason     = "prefix $prefix3 no resuelve a sucursal operativa";
-                $sucursal   = $resolvedByPrefix ?? '???';
+                $reason = "prefix $prefix3 no resuelve a sucursal operativa";
+                $sucursal = $resolvedByPrefix ?? '???';
             }
 
             $classified[] = [
-                'bid'          => $bid,
-                'branch_name'  => (string) $row->branch_name,
-                'prefix3'      => $prefix3,
-                'sucursal'     => (string) $sucursal,
-                'capital'      => (float) $row->capital,
-                'interest'     => (float) $row->interest,
-                'tax'          => (float) $row->tax,
-                'charges'      => (float) $row->charges,
-                'total'        => $total,
-                'pagos'        => (int) $row->pagos,
-                'pass'         => $pass,
-                'decision_A'   => $decision_A,
-                'reason'       => $reason,
+                'bid' => $bid,
+                'branch_name' => (string) $row->branch_name,
+                'prefix3' => $prefix3,
+                'sucursal' => (string) $sucursal,
+                'capital' => (float) $row->capital,
+                'interest' => (float) $row->interest,
+                'tax' => (float) $row->tax,
+                'charges' => (float) $row->charges,
+                'total' => $total,
+                'pagos' => (int) $row->pagos,
+                'pass' => $pass,
+                'decision_A' => $decision_A,
+                'reason' => $reason,
             ];
         }
 
@@ -178,12 +202,12 @@ class DebugRecuperacionDecisionCommand extends Command
         $this->info('── 2. Funnel de decisión PAGO ──');
 
         $passGroups = [
-            'PASS1'    => ['label' => 'Pass1 (branch_id directo operativo)', 'total' => 0.0, 'filas' => 0],
-            'PASS2'    => ['label' => 'Pass2 (prefix → operativa, no corporativo)', 'total' => 0.0, 'filas' => 0],
+            'PASS1' => ['label' => 'Pass1 (branch_id directo operativo)', 'total' => 0.0, 'filas' => 0],
+            'PASS2' => ['label' => 'Pass2 (prefix → operativa, no corporativo)', 'total' => 0.0, 'filas' => 0],
             'CORP_OPE' => ['label' => 'CORPORATIVO con prefix → operativa (pendiente decisión)', 'total' => 0.0, 'filas' => 0],
             'CORP_OWN' => ['label' => 'CORPORATIVO con prefix propio (ZUR) — excluido', 'total' => 0.0, 'filas' => 0],
-            'NORTE'    => ['label' => 'Norte (CH/DG prefix, excluido)', 'total' => 0.0, 'filas' => 0],
-            'UNKNOWN'  => ['label' => 'Unknown (prefix sin resolución operativa)', 'total' => 0.0, 'filas' => 0],
+            'NORTE' => ['label' => 'Norte (CH/DG prefix, excluido)', 'total' => 0.0, 'filas' => 0],
+            'UNKNOWN' => ['label' => 'Unknown (prefix sin resolución operativa)', 'total' => 0.0, 'filas' => 0],
         ];
 
         foreach ($classified as $row) {
@@ -194,8 +218,8 @@ class DebugRecuperacionDecisionCommand extends Command
         foreach ($passGroups as $key => $g) {
             $color = match ($key) {
                 'PASS1', 'PASS2' => 'green',
-                'CORP_OPE'       => 'yellow',
-                default          => 'red',
+                'CORP_OPE' => 'yellow',
+                default => 'red',
             };
             $this->line(sprintf("  <fg={$color}>%-50s  %5d pagos  \$%s</>",
                 $g['label'], $g['filas'], number_format($g['total'], 2)));
@@ -207,18 +231,18 @@ class DebugRecuperacionDecisionCommand extends Command
         $this->line('');
         $this->line(sprintf('  %-38s  %-5s  %-23s  %-8s  %-8s  %-8s  %-8s  %-13s  %-8s  %-6s  %s',
             'Sucursal BD', 'Pref', 'Sucursal resuelta', 'Capital', 'Interés', 'Imp.', 'Cargos', 'Total PAGO', 'Pagos', 'Pass', 'Decisión (A)'));
-        $this->line('  ' . str_repeat('─', 165));
+        $this->line('  '.str_repeat('─', 165));
         foreach ($classified as $row) {
             $color = $row['decision_A'] === 'INCLUIDO' ? 'green' : 'red';
             $this->line(sprintf("  <fg={$color}>%-38s  %-5s  %-23s  %8s  %8s  %8s  %8s  %13s  %6d  %-6s  %s</>",
                 mb_substr($row['branch_name'], 0, 38),
                 $row['prefix3'],
                 mb_substr($row['sucursal'], 0, 23),
-                '$' . number_format($row['capital'], 0),
-                '$' . number_format($row['interest'], 0),
-                '$' . number_format($row['tax'], 0),
-                '$' . number_format($row['charges'], 0),
-                '$' . number_format($row['total'], 2),
+                '$'.number_format($row['capital'], 0),
+                '$'.number_format($row['interest'], 0),
+                '$'.number_format($row['tax'], 0),
+                '$'.number_format($row['charges'], 0),
+                '$'.number_format($row['total'], 2),
                 $row['pagos'],
                 $row['pass'],
                 mb_substr($row['reason'], 0, 60)
@@ -233,9 +257,9 @@ class DebugRecuperacionDecisionCommand extends Command
         $scen = $this->computeScenarios($classified);
 
         foreach (self::SCENARIO_LABELS as $key => $label) {
-            $val   = $scen[$key];
-            $diff  = $val - self::TARGET;
-            $pct   = abs($diff / self::TARGET) * 100;
+            $val = $scen[$key];
+            $diff = $val - self::TARGET;
+            $pct = abs($diff / self::TARGET) * 100;
             $color = $pct < 1 ? 'green' : ($pct < 5 ? 'yellow' : 'red');
             $this->line(sprintf("  [%s] %-53s  calc=\$%-14s  <fg={$color}>dif=%+.2f (%.2f%%)</>",
                 $key, mb_substr($label, 0, 53),
@@ -308,15 +332,18 @@ class DebugRecuperacionDecisionCommand extends Command
     }
 
     /**
-     * @param array $classified  Cada elemento tiene: pass, decision_A, total
-     * @return array ['A'=>float, 'B'=>float, ..., 'F'=>float]
+     * Suma el total de las filas clasificadas bajo cada escenario A–F según su "pass" (PASS1,
+     * PASS2, CORP_OPE, Norte…), para comparar el efecto de cada regla de inclusión.
+     *
+     * @param  array  $classified  Cada elemento tiene: pass, decision_A, total.
+     * @return array<string,float> ['A' => float, 'B' => float, ..., 'F' => float].
      */
     private function computeScenarios(array $classified): array
     {
-        $scen = array_fill_keys(['A','B','C','D','E','F'], 0.0);
+        $scen = array_fill_keys(['A', 'B', 'C', 'D', 'E', 'F'], 0.0);
 
         foreach ($classified as $row) {
-            $pass  = $row['pass'];
+            $pass = $row['pass'];
             $total = $row['total'];
 
             // A: Pass1 + Pass2 (actual — CORPORATIVO excluido)

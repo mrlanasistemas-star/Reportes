@@ -18,6 +18,9 @@ class PeriodDataIds
      * (semanas base) y un servicio reutilizado —worker de cola, procesador— podía
      * seguir usando un universo viejo. Es una sola consulta; quien necesite reutilizar
      * el resultado en una operación lo hace a través de RadiographyBaseProvider::session().
+     *
+     * @param  Period  $period  periodo del ER
+     * @return list<int> period_id del universo (semanas base + el propio periodo)
      */
     public function for(Period $period): array
     {

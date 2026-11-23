@@ -3,6 +3,7 @@
 namespace App\Services\Okr;
 
 use App\Models\Employee;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -25,9 +26,15 @@ use Illuminate\Support\Facades\DB;
  */
 class OkrPersonnelResolver
 {
+    /** Caché en memoria del directorio vigente ([] = no hay directorio; null = aún no consultado). */
     private ?array $directoryCache = null;
 
-    /** @return array{upload_id:int, period_id:?int, period_label:?string, period_end:?string}|null */
+    /**
+     * Carga del directorio Lendus vigente: la de periodo con fecha fin más
+     * reciente (desempate por id de carga). Se cachea en la instancia.
+     *
+     * @return array{upload_id:int, period_id:?int, period_label:?string, period_end:?string}|null
+     */
     public function currentDirectory(): ?array
     {
         if ($this->directoryCache !== null) {
@@ -52,12 +59,18 @@ class OkrPersonnelResolver
         return $this->directoryCache ?: null;
     }
 
-    /** Filas del directorio vigente para una persona (todas sus variantes de nombre canónico). */
-    private function directoryRowsFor(int $employeeId): \Illuminate\Support\Collection
+    /**
+     * Filas del directorio vigente para una persona (todas las filas con su
+     * normalized_name, p. ej. si tiene dos códigos).
+     *
+     * @param  int  $employeeId  Id de Employee.
+     * @return Collection Filas de lendus_employee_directory (vacía si no hay directorio o nombre).
+     */
+    private function directoryRowsFor(int $employeeId): Collection
     {
         $directory = $this->currentDirectory();
         $norm = Employee::query()->whereKey($employeeId)->value('normalized_name');
-        if (!$directory || !$norm) {
+        if (! $directory || ! $norm) {
             return collect();
         }
 
@@ -68,6 +81,10 @@ class OkrPersonnelResolver
     }
 
     /**
+     * Perfil laboral vigente de un colaborador: puesto, estatus, sucursal
+     * inferida, código Lendus y fuente legible. Prefiere la fila ACTIVA.
+     *
+     * @param  int  $employeeId  Id de Employee.
      * @return array{position:?string, status:?string, branch_id:?int, branch_name:?string, code:?string, source:?string}
      */
     public function profileFor(int $employeeId): array
@@ -83,16 +100,21 @@ class OkrPersonnelResolver
             'branch_id' => $row?->inferred_branch_id ? (int) $row->inferred_branch_id : null,
             'branch_name' => $row?->inferred_branch_name,
             'code' => $row?->codigo,
-            'source' => $row ? 'Directorio de colaboradores Lendus · ' . ($directory['period_label'] ?? 'periodo vigente') : null,
+            'source' => $row ? 'Directorio de colaboradores Lendus · '.($directory['period_label'] ?? 'periodo vigente') : null,
         ];
     }
 
-    /** Puestos por id de empleado (lote, para listas). @return array<int, ?string> */
+    /**
+     * Puestos por id de empleado (lote, para listas). Prefiere la fila ACTIVA.
+     *
+     * @param  int[]  $employeeIds  Ids de Employee.
+     * @return array<int, ?string> id => puesto (null si no hay).
+     */
     public function positionsFor(array $employeeIds): array
     {
         $directory = $this->currentDirectory();
         $employees = Employee::query()->whereIn('id', $employeeIds)->pluck('normalized_name', 'id');
-        if (!$directory || $employees->isEmpty()) {
+        if (! $directory || $employees->isEmpty()) {
             return array_fill_keys($employeeIds, null);
         }
 
@@ -119,12 +141,12 @@ class OkrPersonnelResolver
      * INACTIVO (ninguna fila activa) — segunda señal de baja además de la
      * nómina NOI (15-oct-2026).
      *
-     * @return string[]
+     * @return string[] Nombres normalizados solo inactivos.
      */
     public function inactiveOnlyNames(): array
     {
         $directory = $this->currentDirectory();
-        if (!$directory) {
+        if (! $directory) {
             return [];
         }
 
@@ -147,12 +169,14 @@ class OkrPersonnelResolver
      * excluyen de asignaciones individuales de OKR aquí, nunca se borran del
      * directorio original.
      *
-     * @return string[]
+     * Patrones: '%VACANTE%', 'PLAZA %', '%POR CONTRATAR%', '%SIN ASIGNAR%' en `nombre`.
+     *
+     * @return string[] Nombres normalizados de plazas/vacantes.
      */
     public function vacancyPlaceholderNames(): array
     {
         $directory = $this->currentDirectory();
-        if (!$directory) {
+        if (! $directory) {
             return [];
         }
 
@@ -175,12 +199,12 @@ class OkrPersonnelResolver
      * NOI del periodo (alta reciente, vacaciones, incapacidad) — sin NOI no es
      * una baja confirmada.
      *
-     * @return string[]
+     * @return string[] Nombres normalizados con alguna fila activa.
      */
     public function activeDirectoryNames(): array
     {
         $directory = $this->currentDirectory();
-        if (!$directory) {
+        if (! $directory) {
             return [];
         }
 
@@ -199,7 +223,7 @@ class OkrPersonnelResolver
      * las cargas del directorio: el código es estable aunque cambie el periodo.
      * Es la llave con la que la cartera identifica al promotor (promoter_code).
      *
-     * @param  string[]  $normalizedNames
+     * @param  string[]  $normalizedNames  Nombres normalizados a consultar.
      * @return array<string, string[]> normalized_name => códigos
      */
     public function directoryCodesByName(array $normalizedNames): array
@@ -223,13 +247,13 @@ class OkrPersonnelResolver
     /**
      * Fila del directorio VIGENTE por persona (prefiere la ACTIVA).
      *
-     * @param  string[]  $normalizedNames
-     * @return array<string, object>
+     * @param  string[]  $normalizedNames  Nombres normalizados a consultar.
+     * @return array<string, object> normalized_name => fila (codigo, estatus, puesto, sucursal inferida).
      */
     public function currentDirectoryRows(array $normalizedNames): array
     {
         $directory = $this->currentDirectory();
-        if (!$directory || $normalizedNames === []) {
+        if (! $directory || $normalizedNames === []) {
             return [];
         }
 
@@ -252,12 +276,13 @@ class OkrPersonnelResolver
      * fila en `employee_branch_assignments` (alta reciente, sin movimientos
      * transaccionales todavía) — nunca sustituye una asignación ya resuelta.
      *
-     * @return int[]
+     * @param  int  $branchId  Sucursal oficial.
+     * @return int[] Ids de Employee (todos los ids con esos nombres normalizados).
      */
     public function employeeIdsByInferredBranch(int $branchId): array
     {
         $directory = $this->currentDirectory();
-        if (!$directory) {
+        if (! $directory) {
             return [];
         }
 
@@ -276,11 +301,18 @@ class OkrPersonnelResolver
         return Employee::query()->whereIn('normalized_name', $normNames)->pluck('id')->map(fn ($id) => (int) $id)->all();
     }
 
-    /** Puestos ACTIVOS de una sucursal en el directorio vigente (sin vacantes). */
-    private function activeByPosition(int $branchId, string $position): \Illuminate\Support\Collection
+    /**
+     * Personas ACTIVAS de una sucursal con un puesto exacto en el directorio
+     * vigente (excluye nombres que empiezan con "VACANTE"), únicas por nombre.
+     *
+     * @param  int  $branchId  Sucursal inferida.
+     * @param  string  $position  Puesto exacto (p. ej. 'SUBGERENTE', 'GERENTE'), sin distinguir mayúsculas.
+     * @return Collection Filas (nombre, normalized_name, puesto).
+     */
+    private function activeByPosition(int $branchId, string $position): Collection
     {
         $directory = $this->currentDirectory();
-        if (!$directory) {
+        if (! $directory) {
             return collect();
         }
 
@@ -298,7 +330,12 @@ class OkrPersonnelResolver
     /**
      * Sugerencia de jefe inmediato con su fundamento — nunca un hecho hasta
      * que un usuario autorizado la confirme en la revisión del documento.
+     * Gestor → subgerente activo único (si no hay, gerente); subgerente o
+     * coordinador no regional → gerente activo único. Ambigüedad o falta de
+     * puesto → sin sugerencia, con la explicación en 'basis'.
      *
+     * @param  int  $employeeId  Colaborador evaluado.
+     * @param  int  $branchId  Sucursal del OKR.
      * @return array{name:?string, position:?string, employee_id:?int, basis:string, is_suggestion:bool}
      */
     public function suggestImmediateBoss(int $employeeId, int $branchId): array
@@ -317,7 +354,7 @@ class OkrPersonnelResolver
 
         $chain = match (true) {
             str_contains($position, 'GESTOR') => ['SUBGERENTE', 'GERENTE'],
-            $position === 'SUBGERENTE', str_starts_with($position, 'COORDINADOR') && !str_contains($position, 'REGIONAL') => ['GERENTE'],
+            $position === 'SUBGERENTE', str_starts_with($position, 'COORDINADOR') && ! str_contains($position, 'REGIONAL') => ['GERENTE'],
             default => [],
         };
         if ($chain === []) {
@@ -345,7 +382,12 @@ class OkrPersonnelResolver
         return $none('No hay subgerente ni gerente activo registrado en la sucursal — captura el jefe inmediato.');
     }
 
-    /** Gerente activo ÚNICO de la sucursal (sugerencia de titular del OKR de sucursal). */
+    /**
+     * Gerente activo ÚNICO de la sucursal (sugerencia de titular del OKR de sucursal).
+     *
+     * @param  int  $branchId  Sucursal.
+     * @return array{employee_id:int, name:string, position:string}|null null si no hay exactamente uno o no existe como Employee.
+     */
     public function suggestBranchManager(int $branchId): ?array
     {
         $managers = $this->activeByPosition($branchId, 'GERENTE');

@@ -2,6 +2,7 @@
 
 namespace App\Services\Okr;
 
+use App\Models\Branch;
 use App\Models\OkrKpi;
 use App\Models\Period;
 use App\Services\RadiografiaExportService;
@@ -18,18 +19,33 @@ use RuntimeException;
  */
 class OkrKpiValueResolver
 {
+    /**
+     * @param  RadiografiaExportService  $exportService  Fuente canónica del snapshot de radiografía.
+     * @param  OkrKpiProviderRegistry  $registry  Registro de providers KPI → clave de summary.
+     */
     public function __construct(
         private readonly RadiografiaExportService $exportService,
         private readonly OkrKpiProviderRegistry $registry,
-    ) {
-    }
+    ) {}
 
     /**
+     * Valor real de un KPI automático para un alcance y periodo, leído del
+     * snapshot de Reportería. Devuelve null si el KPI es manual, no soporta el
+     * alcance, el provider no está registrado, no hay radiografía generada o
+     * el alcance no tiene datos (nunca cae al valor general).
+     *
+     * Efecto: construye el snapshot de radiografía (lecturas de BD / posible caché del export).
+     *
+     * @param  OkrKpi  $kpi  KPI del catálogo.
      * @param  string  $scopeType  'general'|'branch'|'employee'
+     * @param  int|null  $branchId  Sucursal (alcance branch).
+     * @param  int|null  $employeeId  Colaborador (alcance employee).
+     * @param  Period  $period  Periodo mensual de Reportería a consultar.
+     * @return float|null Valor del KPI o null si no disponible.
      */
     public function getValue(OkrKpi $kpi, string $scopeType, ?int $branchId, ?int $employeeId, Period $period): ?float
     {
-        if (!$kpi->isAutomatic() || !$kpi->supportsScope($scopeType)) {
+        if (! $kpi->isAutomatic() || ! $kpi->supportsScope($scopeType)) {
             return null;
         }
 
@@ -54,11 +70,24 @@ class OkrKpiValueResolver
         return isset($snapshot['summary'][$summaryKey]) ? (float) $snapshot['summary'][$summaryKey] : null;
     }
 
+    /**
+     * Atajo a la constante de alcance general.
+     *
+     * @return string 'general'.
+     */
     private static function scopeGeneral(): string
     {
         return OkrKpiProviderRegistry::SCOPE_GENERAL;
     }
 
+    /**
+     * Arma el $config de buildSnapshot() según el alcance (scope + branch_id/employee_id).
+     *
+     * @param  string  $scopeType  Alcance.
+     * @param  int|null  $branchId  Sucursal, solo se incluye en alcance branch.
+     * @param  int|null  $employeeId  Colaborador, solo se incluye en alcance employee.
+     * @return array<string, mixed> Configuración para el snapshot.
+     */
     private function configFor(string $scopeType, ?int $branchId, ?int $employeeId): array
     {
         $config = ['scope' => $scopeType];
@@ -77,6 +106,10 @@ class OkrKpiValueResolver
      * generada — un estado real y esperable (OKR puede crearse antes de que el
      * periodo tenga Reportería cerrada), nunca un error que deba romper la
      * pantalla OKR. Se registra en logs para diagnóstico, se devuelve null.
+     *
+     * @param  Period  $period  Periodo a consultar.
+     * @param  array<string, mixed>  $config  Configuración de alcance.
+     * @return array|null Snapshot completo o null si no hay radiografía.
      */
     private function buildSnapshotSafely(Period $period, array $config): ?array
     {
@@ -97,6 +130,14 @@ class OkrKpiValueResolver
      * a nivel empleado). Lee sections.rotation.indice (general) o busca la fila
      * de la sucursal en sections.rotation.por_sucursal — MISMA agregación que
      * ya usa Reportería (buildRotationData()), nunca recalculada aquí.
+     *
+     * La fila de sucursal se busca por NOMBRE (comparación en mayúsculas sin espacios extremos).
+     *
+     * @param  string  $providerKey  Provider especial (solo 'reporteria.turnover' está soportado).
+     * @param  string  $scopeType  Alcance (employee siempre devuelve null).
+     * @param  int|null  $branchId  Sucursal para alcance branch.
+     * @param  Period  $period  Periodo a consultar.
+     * @return float|null Índice de rotación o null si no disponible.
      */
     private function resolveSpecial(string $providerKey, string $scopeType, ?int $branchId, Period $period): ?float
     {
@@ -113,7 +154,7 @@ class OkrKpiValueResolver
         }
 
         $rotation = $snapshot['sections']['rotation'] ?? null;
-        if (!is_array($rotation)) {
+        if (! is_array($rotation)) {
             return null;
         }
 
@@ -122,8 +163,8 @@ class OkrKpiValueResolver
         }
 
         // scope=branch: busca por nombre de sucursal dentro de por_sucursal.
-        $branchName = $branchId ? \App\Models\Branch::find($branchId)?->name : null;
-        if (!$branchName) {
+        $branchName = $branchId ? Branch::find($branchId)?->name : null;
+        if (! $branchName) {
             return null;
         }
         $branchNameUpper = mb_strtoupper(trim($branchName));

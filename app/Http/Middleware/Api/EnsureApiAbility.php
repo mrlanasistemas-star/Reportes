@@ -25,16 +25,26 @@ use Symfony\Component\HttpFoundation\Response;
  */
 class EnsureApiAbility
 {
+    /**
+     * Exige que el usuario de la petición sea un ApiConsumer activo y que,
+     * para CADA ability pedida, tanto el token (tokenCan) como el consumidor
+     * (hasAbility) la tengan. Responde 403 JSON en cuanto falla una.
+     *
+     * @param  Request  $request  Petición autenticada con token Sanctum.
+     * @param  Closure  $next  Siguiente capa del pipeline.
+     * @param  string  ...$abilities  Abilities requeridas (ej. "employees.read").
+     * @return Response Respuesta de la siguiente capa o 403 JSON.
+     */
     public function handle(Request $request, Closure $next, string ...$abilities): Response
     {
         $consumer = $request->user();
 
-        if (!$consumer instanceof ApiConsumer || !$consumer->is_active) {
+        if (! $consumer instanceof ApiConsumer || ! $consumer->is_active) {
             return response()->json(['message' => 'Consumidor inactivo o no autorizado.'], 403);
         }
 
         foreach ($abilities as $ability) {
-            if (!$consumer->tokenCan($ability) || !$consumer->hasAbility($ability)) {
+            if (! $consumer->tokenCan($ability) || ! $consumer->hasAbility($ability)) {
                 return response()->json(['message' => "El token no tiene el permiso requerido: {$ability}."], 403);
             }
         }

@@ -7,24 +7,43 @@ use App\Services\SaveheartsRuleService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-polizas-crece` — muestra las filas de pólizas/Savehearts: las CRECE
+ * (30% entra al EBITDA, con producto, contrato, concepto, operación, total, % y monto
+ * reconocido) y las no-CRECE (100% excluidas), con la razón de cada clasificación según
+ * SaveheartsRuleService.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-polizas-crece 21
+ */
 class DebugPolizasCreceCommand extends Command
 {
-    protected $signature   = 'reportes:debug-polizas-crece {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-polizas-crece {period_id : ID del periodo}';
+
     protected $description = 'Muestra filas de pólizas/savehearts CRECE: producto, contrato, concepto, operación, total, %, monto EBITDA, excluido, razón.';
 
+    /**
+     * Carga las filas Savehearts de los periodos de datos y las imprime separadas en CRECE y no-CRECE.
+     *
+     * @param  SaveheartsRuleService  $savehearts  Reglas de reconocimiento de Savehearts/CRECE.
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(SaveheartsRuleService $savehearts): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$periodId]
         )));
@@ -35,17 +54,17 @@ class DebugPolizasCreceCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
 
         // Summary counts
-        $totalRows   = DB::table('fact_recoveries')->whereIn('period_id', $dataIds)->count();
+        $totalRows = DB::table('fact_recoveries')->whereIn('period_id', $dataIds)->count();
         $saveheartsAll = DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->where('is_savehearts', true)
             ->count();
-        $creceRows   = DB::table('fact_recoveries')
+        $creceRows = DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->where('is_savehearts', true)
             ->where('savehearts_crece_share', '>', 0)
             ->count();
-        $sumCrece30  = (float) DB::table('fact_recoveries')
+        $sumCrece30 = (float) DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->sum('savehearts_crece_share');
         $sumExcluido = (float) DB::table('fact_recoveries')
@@ -68,6 +87,7 @@ class DebugPolizasCreceCommand extends Command
         if ($saveheartsAll === 0) {
             $this->info('  <fg=green>Sin filas de pólizas/savehearts en este periodo.</>');
             $this->line('');
+
             return self::SUCCESS;
         }
 
@@ -99,8 +119,9 @@ class DebugPolizasCreceCommand extends Command
         } else {
             $headers = ['Contrato', 'Producto', 'Promotor', 'Sucursal', 'Operación', 'Concepto', 'Total', '30%', 'Excl.', 'Razón', 'Fecha'];
             $rows = $creceDetail->map(function ($r) {
-                $pct     = $r->total_amount > 0 ? round($r->savehearts_crece_share / $r->total_amount * 100, 1) : 30;
-                $excl    = round((float)$r->total_amount - (float)$r->savehearts_crece_share, 2);
+                $pct = $r->total_amount > 0 ? round($r->savehearts_crece_share / $r->total_amount * 100, 1) : 30;
+                $excl = round((float) $r->total_amount - (float) $r->savehearts_crece_share, 2);
+
                 return [
                     mb_substr((string) $r->contract, 0, 16),
                     mb_substr((string) $r->product_name, 0, 16),
@@ -108,9 +129,9 @@ class DebugPolizasCreceCommand extends Command
                     mb_substr((string) $r->sucursal, 0, 16),
                     mb_substr((string) $r->operacion, 0, 14),
                     mb_substr((string) $r->concepto, 0, 20),
-                    '$' . number_format((float)$r->total_amount, 2),
-                    '$' . number_format((float)$r->savehearts_crece_share, 2),
-                    '$' . number_format($excl, 2),
+                    '$'.number_format((float) $r->total_amount, 2),
+                    '$'.number_format((float) $r->savehearts_crece_share, 2),
+                    '$'.number_format($excl, 2),
                     "CRECE {$pct}%",
                     (string) $r->payment_date,
                 ];
@@ -152,7 +173,7 @@ class DebugPolizasCreceCommand extends Command
                 mb_substr((string) $r->sucursal, 0, 16),
                 mb_substr((string) $r->operacion, 0, 14),
                 mb_substr((string) $r->concepto, 0, 20),
-                '$' . number_format((float)$r->total_amount, 2),
+                '$'.number_format((float) $r->total_amount, 2),
                 'No-CRECE → 100% excl.',
                 (string) $r->payment_date,
             ])->all();

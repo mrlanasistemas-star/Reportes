@@ -35,6 +35,7 @@ use Illuminate\Support\Facades\Storage;
  */
 class EstadoResultadosUploadService
 {
+    /** Cuentas bancarias que se cargan (clave = layout del parser). */
     public const SLOTS = [
         BankStatementParser::LAYOUT_ADMINISTRATIVA => 'Cuenta administrativa / corporativa',
         BankStatementParser::LAYOUT_EXCEDENTES => 'Cuenta de excedentes',
@@ -49,18 +50,36 @@ class EstadoResultadosUploadService
         2 => 'Archivo 2 (opcional)',
     ];
 
+    /** Número del archivo opcional (el único que se puede quitar). */
     public const OPTIONAL_PART = 2;
 
+    /** Disco de Storage donde se guardan originales y rechazados. */
     public const DISK = 'local';
 
+    /** Extensiones permitidas. */
     public const EXTENSIONS = ['xlsx', 'xlsm', 'xls'];
 
+    /**
+     * @param  BankStatementParser  $parser  lector/validador del Excel
+     * @param  SucursalNormalizer  $sucursales  normaliza la columna SUCURSAL
+     * @param  MovementPeriodAllocator  $allocator  reparto de movimientos por fecha
+     */
     public function __construct(
         private readonly BankStatementParser $parser,
         private readonly SucursalNormalizer $sucursales,
         private readonly MovementPeriodAllocator $allocator,
     ) {}
 
+    /**
+     * Carga un estado de cuenta subido desde la web (delegando en importPath()).
+     *
+     * @param  Period  $period  periodo mensual
+     * @param  UploadedFile  $file  archivo subido
+     * @param  string  $slot  cuenta (clave de SLOTS)
+     * @param  int|null  $userId  usuario
+     * @param  int  $part  1 (obligatorio) o 2 (opcional)
+     * @return EstadoResultadosUpload carga publicada
+     */
     public function upload(Period $period, UploadedFile $file, string $slot, ?int $userId, int $part = 1): EstadoResultadosUpload
     {
         return $this->importPath($period, (string) $file->getRealPath(), $file->getClientOriginalName(), $slot, $userId, $file, $part);
@@ -78,6 +97,9 @@ class EstadoResultadosUploadService
         return (int) round(self::maxMb() * 1024 * 1024);
     }
 
+    /**
+     * Máximo en MB por archivo (config estado_resultados.import.max_mb; mínimo 0.001).
+     */
     public static function maxMb(): float
     {
         return max(0.001, (float) config('estado_resultados.import.max_mb', 10));
@@ -91,6 +113,19 @@ class EstadoResultadosUploadService
      * concurrentes), intento registrado con sus errores por fila y copia del
      * original (también si se rechaza). Una carga sólo queda publicada si TODO
      * el archivo es válido y la transacción termina.
+     *
+     * @param  Period  $period  periodo mensual
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $originalName  nombre original (de él sale la extensión)
+     * @param  string  $slot  cuenta (clave de SLOTS)
+     * @param  int|null  $userId  usuario
+     * @param  UploadedFile|null  $file  archivo subido (si viene de la web)
+     * @param  int  $part  1 o 2
+     * @return EstadoResultadosUpload carga publicada
+     *
+     * @throws EstadoResultadosDuplicateUploadException el mismo archivo ya está activo (idempotente)
+     * @throws EstadoResultadosImportException archivo/cuenta/periodo inválido o carga concurrente (409)
+     * @throws EstadoResultadosLockedException periodo aprobado (423)
      */
     public function importPath(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file = null, int $part = 1): EstadoResultadosUpload
     {
@@ -163,6 +198,13 @@ class EstadoResultadosUploadService
         return $upload;
     }
 
+    /**
+     * Clave del candado de carga por periodo + cuenta (+ archivo 2).
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $slot  cuenta
+     * @param  int  $part  1 o 2
+     */
     private static function lockKey(Period $period, string $slot, int $part): string
     {
         // El archivo 1 conserva la llave de siempre; el 2 tiene la suya (candados independientes).
@@ -174,6 +216,16 @@ class EstadoResultadosUploadService
      * como reemplazada (sigue en el historial) y se borran sus movimientos que no estén en un
      * periodo aprobado. Después se re-sincroniza el reparto por fecha: si el archivo 1 trae
      * los mismos movimientos (antes «duplicados»), vuelven a contar UNA vez.
+     * Si la cuenta ya estaba procesada, sus cargas vuelven a «cargado» (falta procesar).
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $slot  cuenta
+     * @param  int  $part  debe ser OPTIONAL_PART (2)
+     * @param  int|null  $userId  usuario
+     * @return EstadoResultadosUpload carga retirada
+     *
+     * @throws EstadoResultadosImportException cuenta inválida, archivo 1, carga en curso (409) o nada que quitar (404)
+     * @throws EstadoResultadosLockedException periodo aprobado (423)
      */
     public function removePart(Period $period, string $slot, int $part, ?int $userId): EstadoResultadosUpload
     {
@@ -224,7 +276,12 @@ class EstadoResultadosUploadService
         }
     }
 
-    /** Retira una carga (sustituida o quitada): borra sus movimientos no congelados y la marca reemplazada. */
+    /**
+     * Retira una carga (sustituida o quitada): borra sus movimientos no congelados y la marca reemplazada.
+     *
+     * @param  EstadoResultadosUpload  $old  carga a retirar
+     * @param  int|null  $supersededBy  carga que la sustituye (null si sólo se quita)
+     */
     private function retire(EstadoResultadosUpload $old, ?int $supersededBy): void
     {
         $guard = app(PeriodLockGuard::class);
@@ -242,7 +299,15 @@ class EstadoResultadosUploadService
         ]);
     }
 
-    /** Extensión permitida, tamaño máximo y contenido real (firma binaria) coherente con la extensión. */
+    /**
+     * Extensión permitida, tamaño máximo y contenido real (firma binaria) coherente con la extensión.
+     *
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $originalName  nombre original
+     * @param  int|null  $reportedSize  tamaño reportado por la subida
+     *
+     * @throws EstadoResultadosImportException si no pasa alguna validación
+     */
     public function validateFile(string $absolutePath, string $originalName, ?int $reportedSize = null): void
     {
         $ext = mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
@@ -275,7 +340,13 @@ class EstadoResultadosUploadService
         }
     }
 
-    /** @return list<array<string,mixed>> intentos recientes con sus errores por fila. */
+    /**
+     * Intentos de carga recientes del periodo (más reciente primero).
+     *
+     * @param  Period  $period  periodo
+     * @param  int  $limit  máximo de intentos
+     * @return list<array<string,mixed>> intentos recientes con sus errores por fila.
+     */
     public function attempts(Period $period, int $limit = 30): array
     {
         return EstadoResultadosImportAttempt::query()
@@ -288,6 +359,14 @@ class EstadoResultadosUploadService
             ->all();
     }
 
+    /**
+     * Intento de carga en formato público: ciclo de vida (el de su carga si se validó), avisos,
+     * cuenta/archivo, estado, mensaje, errores por fila (hasta $maxErrors) y autor.
+     *
+     * @param  EstadoResultadosImportAttempt  $a  intento
+     * @param  int  $maxErrors  máximo de errores incluidos
+     * @return array<string, mixed>
+     */
     public static function attemptPayload(EstadoResultadosImportAttempt $a, int $maxErrors = 200): array
     {
         $upload = $a->upload_id ? $a->upload : null;
@@ -332,7 +411,17 @@ class EstadoResultadosUploadService
         ];
     }
 
-    /** @param list<array{row:?int, column:?string, message:string}> $errors */
+    /**
+     * Cierra el intento: guarda hasta 1000 errores y actualiza estado, ciclo de vida, mensaje,
+     * carga asociada y ruta del original (los null no se sobrescriben).
+     *
+     * @param  EstadoResultadosImportAttempt  $attempt  intento
+     * @param  string  $status  completado | duplicado | rechazado
+     * @param  string  $message  mensaje en español
+     * @param  list<array{row:?int, column:?string, message:string}>  $errors  errores por fila
+     * @param  int|null  $uploadId  carga publicada o existente
+     * @param  string|null  $storedPath  ruta del original guardado
+     */
     private function finishAttempt(EstadoResultadosImportAttempt $attempt, string $status, string $message, array $errors, ?int $uploadId = null, ?string $storedPath = null): void
     {
         $now = now();
@@ -365,7 +454,13 @@ class EstadoResultadosUploadService
         ], fn ($v) => $v !== null));
     }
 
-    /** Conserva el original de un intento rechazado (auditoría), si no excede el máximo permitido. */
+    /**
+     * Conserva el original de un intento rechazado (auditoría), si no excede el máximo permitido.
+     * Nunca lanza.
+     *
+     * @param  EstadoResultadosImportAttempt  $attempt  intento rechazado
+     * @param  string  $absolutePath  ruta del archivo
+     */
     private function keepRejectedOriginal(EstadoResultadosImportAttempt $attempt, string $absolutePath): void
     {
         try {
@@ -381,6 +476,23 @@ class EstadoResultadosUploadService
         }
     }
 
+    /**
+     * Importación propiamente dicha (con el candado ya tomado): rechaza el mismo archivo ya
+     * activo, lee y valida el Excel, verifica que la estructura sea la de la cuenta elegida,
+     * guarda el original y, en una transacción con la fila del periodo bloqueada, sustituye la
+     * carga anterior de la misma cuenta/archivo, inserta los movimientos normalizados y
+     * re-sincroniza el reparto por fecha. Las fechas fuera del periodo no se rechazan.
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $originalName  nombre original
+     * @param  string  $slot  cuenta
+     * @param  int|null  $userId  usuario
+     * @param  UploadedFile|null  $file  archivo subido
+     * @param  int  $part  1 o 2
+     *
+     * @throws EstadoResultadosDuplicateUploadException|EstadoResultadosImportException|EstadoResultadosLockedException
+     */
     private function doImport(Period $period, string $absolutePath, string $originalName, string $slot, ?int $userId, ?UploadedFile $file, int $part = 1): EstadoResultadosUpload
     {
         $hash = hash_file('sha256', $absolutePath) ?: '';
@@ -587,6 +699,13 @@ class EstadoResultadosUploadService
         ]);
     }
 
+    /**
+     * Etiqueta de cuenta «Cuenta ****1234»: últimos 4 dígitos enmascarados en la referencia
+     * bancaria o, si no, 4 dígitos al final del nombre del archivo.
+     *
+     * @param  array  $movements  movimientos leídos
+     * @param  string  $originalName  nombre del archivo
+     */
     private function detectAccountLabel(array $movements, string $originalName): ?string
     {
         foreach ($movements as $m) {

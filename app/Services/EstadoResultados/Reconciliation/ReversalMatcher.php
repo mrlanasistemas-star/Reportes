@@ -13,11 +13,18 @@ use Illuminate\Support\Str;
  */
 class ReversalMatcher
 {
+    /**
+     * @param  int  $days  máximo de días entre cargo y abono
+     * @param  string  $pattern  alternativas regex (sin delimitadores) de texto de reverso
+     */
     public function __construct(
         private readonly int $days = 3,
         private readonly string $pattern = 'REVERS|CANCELACION',
     ) {}
 
+    /**
+     * Instancia con config estado_resultados.reversos.dias / .patron.
+     */
     public static function fromConfig(): self
     {
         return new self(
@@ -27,6 +34,9 @@ class ReversalMatcher
     }
 
     /**
+     * Empareja cargos con abonos de reverso (excluye traspasos). Cada abono se usa una sola vez;
+     * cada par recibe una clave RV-nnn y la evidencia en texto.
+     *
      * @param  list<array{fingerprint:string, account_slot:string, cargo:string, abono:string, movement_date:string, source_row:int, folio_normalized:?string, concept:?string, bank_reference:?string}>  $movements  movimientos en periodo
      * @return array<string, array{key:string, counterpart:string, evidence:string}>
      */
@@ -67,6 +77,11 @@ class ReversalMatcher
         return $out;
     }
 
+    /**
+     * Concepto + referencia bancaria en mayúsculas sin acentos.
+     *
+     * @param  array  $m  movimiento
+     */
     private function text(array $m): string
     {
         return mb_strtoupper(Str::ascii(($m['concept'] ?? '').' '.($m['bank_reference'] ?? '')));

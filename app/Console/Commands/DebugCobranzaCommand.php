@@ -8,37 +8,58 @@ use App\Support\RegionNorteFilter;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-cobranza` — diagnóstico de cobranza en `fact_recoveries`: totales
+ * globales por componente, totales por Transacción y por Concepto (raw_payload), top 20
+ * combinaciones Transacción × Concepto, el filtro preciso de Región Norte sobre PAGO
+ * (sucursal inequívoca, prefijo de acreditado CH/DG, zona Norte) más la exclusión de
+ * Corporativo/Falso (RegionNorteFilter + OperationalExclusion), las rutas genéricas
+ * conservadas y la diferencia contra los targets fijos de Abril 2026.
+ *
+ * Escribe en BD: NO — solo lectura. Usa JSON_EXTRACT/REGEXP (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-cobranza 14
+ */
 class DebugCobranzaCommand extends Command
 {
-    protected $signature   = 'reportes:debug-cobranza {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-cobranza {period_id : ID del periodo mensual}';
+
     protected $description = 'Diagnóstico de cobranza en BD: totales por Transacción/Estatus, desglose capital/interés/impuesto/cargos, diferencia contra target.';
 
     // Referencia manual Abril 2026
-    private const TARGET_TOTAL_INGRESOS  = 18_332_149.55;
-    private const TARGET_RECUPERACION    = 18_323_749.55;
+    private const TARGET_TOTAL_INGRESOS = 18_332_149.55;
 
+    private const TARGET_RECUPERACION = 18_323_749.55;
+
+    /**
+     * Resuelve los periodos de datos e imprime las secciones 1–6 del diagnóstico.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
 
         $this->line('');
-        $this->info("══════════════════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════════════════');
         $this->info("  DEBUG COBRANZA — {$period->label} (ID #{$periodId})");
-        $this->info("══════════════════════════════════════════════════════════════");
-        $this->line("  Data IDs: [" . implode(', ', $dataIds) . "]");
+        $this->info('══════════════════════════════════════════════════════════════');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── 1. Totales globales en fact_recoveries ─────────────────────
@@ -48,12 +69,12 @@ class DebugCobranzaCommand extends Command
             ->selectRaw('COUNT(*) as filas, SUM(capital) as capital, SUM(interest) as interes, SUM(tax) as impuesto, SUM(charges) as cargos, SUM(total_amount) as total')
             ->first();
 
-        $totalBD = (float)($glob->total ?? 0);
+        $totalBD = (float) ($glob->total ?? 0);
         $this->line(sprintf('  Filas            : %d', $glob->filas ?? 0));
-        $this->line(sprintf('  Capital          : $%s  (manual ref: $12,883,858.49)', number_format((float)($glob->capital ?? 0), 2)));
-        $this->line(sprintf('  Interés          : $%s  (manual ref: $4,545,211.24)', number_format((float)($glob->interes ?? 0), 2)));
-        $this->line(sprintf('  Impuesto         : $%s  (manual ref: $727,231.40)', number_format((float)($glob->impuesto ?? 0), 2)));
-        $this->line(sprintf('  Cargos/Multas    : $%s  (manual ref: $149,384.52 + $18,063.90)', number_format((float)($glob->cargos ?? 0), 2)));
+        $this->line(sprintf('  Capital          : $%s  (manual ref: $12,883,858.49)', number_format((float) ($glob->capital ?? 0), 2)));
+        $this->line(sprintf('  Interés          : $%s  (manual ref: $4,545,211.24)', number_format((float) ($glob->interes ?? 0), 2)));
+        $this->line(sprintf('  Impuesto         : $%s  (manual ref: $727,231.40)', number_format((float) ($glob->impuesto ?? 0), 2)));
+        $this->line(sprintf('  Cargos/Multas    : $%s  (manual ref: $149,384.52 + $18,063.90)', number_format((float) ($glob->cargos ?? 0), 2)));
         $this->line(sprintf('  Total importado  : $%s', number_format($totalBD, 2)));
         $this->line('');
 
@@ -69,8 +90,8 @@ class DebugCobranzaCommand extends Command
         $totalByTrans = 0.0;
         foreach ($rows as $r) {
             $transLabel = $r->transaccion ?: '(NULL / vacío)';
-            $this->line(sprintf('  %-30s filas=%-6d total=$%s', mb_substr($transLabel, 0, 30), $r->filas, number_format((float)$r->total, 2)));
-            $totalByTrans += (float)$r->total;
+            $this->line(sprintf('  %-30s filas=%-6d total=$%s', mb_substr($transLabel, 0, 30), $r->filas, number_format((float) $r->total, 2)));
+            $totalByTrans += (float) $r->total;
         }
         $this->line(sprintf('  %-30s SUMA:  $%s', '', number_format($totalByTrans, 2)));
         $this->line('');
@@ -86,7 +107,7 @@ class DebugCobranzaCommand extends Command
 
         foreach ($byConcepto as $r) {
             $label = $r->concepto ?: '(NULL)';
-            $this->line(sprintf('  %-35s filas=%-6d total=$%s', mb_substr($label, 0, 35), $r->filas, number_format((float)$r->total, 2)));
+            $this->line(sprintf('  %-35s filas=%-6d total=$%s', mb_substr($label, 0, 35), $r->filas, number_format((float) $r->total, 2)));
         }
         $this->line('');
 
@@ -113,7 +134,7 @@ class DebugCobranzaCommand extends Command
                 mb_substr($r->transaccion ?? '(null)', 0, 20),
                 mb_substr($r->concepto ?? '(null)', 0, 25),
                 $r->filas,
-                number_format((float)$r->total, 2)));
+                number_format((float) $r->total, 2)));
         }
         $this->line('');
 
@@ -208,7 +229,7 @@ class DebugCobranzaCommand extends Command
         )->sum('r.total_amount');
 
         $targetRec = self::TARGET_RECUPERACION;
-        $diffOp    = $pagoOperativo - $targetRec;
+        $diffOp = $pagoOperativo - $targetRec;
 
         $this->line(sprintf('  PAGO bruto total              : $%s', number_format($pagoBruto, 2)));
         $this->line(sprintf('  ── Excluido por Norte ─────────────────────────────────────────'));
@@ -240,16 +261,16 @@ class DebugCobranzaCommand extends Command
                 COUNT(*) as filas,
                 SUM(r.total_amount) as total
             ")
-            ->groupByRaw("b.id, b.name")
+            ->groupByRaw('b.id, b.name')
             ->orderByDesc('total')
             ->limit(20)
             ->get();
 
         foreach ($topExcluidos as $row) {
             $branchLower = strtolower($row->sucursal ?? '');
-            $isNorte     = in_array($branchLower, $unambig, true);
-            $acr         = substr($row->acreditado_muestra ?? '', 0, 8);
-            $acr2        = substr($acr, 0, 2);
+            $isNorte = in_array($branchLower, $unambig, true);
+            $acr = substr($row->acreditado_muestra ?? '', 0, 8);
+            $acr2 = substr($acr, 0, 2);
             $reason = $isNorte ? 'Norte inequívoca' :
                 (preg_match('/^(CH|DG)\d/', $acr) ? "prefijo {$acr2} (Norte)" :
                     "zona Norte:{$row->zona_muestra}");
@@ -258,7 +279,7 @@ class DebugCobranzaCommand extends Command
                 mb_substr($row->acreditado_muestra ?? '(null)', 0, 10),
                 mb_substr($row->zona_muestra ?? '(null)', 0, 8),
                 $row->filas,
-                number_format((float)$row->total, 2),
+                number_format((float) $row->total, 2),
                 $reason));
         }
         $this->line('');
@@ -282,16 +303,16 @@ class DebugCobranzaCommand extends Command
         } else {
             foreach ($genericRows as $row) {
                 $this->line(sprintf('  ~ %-22s filas=%-4d $%s  [conservada — no es Norte según payload]',
-                    mb_substr($row->sucursal, 0, 22), $row->filas, number_format((float)$row->total, 2)));
+                    mb_substr($row->sucursal, 0, 22), $row->filas, number_format((float) $row->total, 2)));
             }
         }
         $this->line('');
 
         // ── 6. Diferencia contra targets ──────────────────────────────
         $this->info('── 6. Diferencia contra targets ──');
-        $targetIng    = self::TARGET_TOTAL_INGRESOS;
-        $diffRec      = $totalBD - $targetRec;
-        $diffIng      = $totalBD - $targetIng;
+        $targetIng = self::TARGET_TOTAL_INGRESOS;
+        $diffRec = $totalBD - $targetRec;
+        $diffIng = $totalBD - $targetIng;
 
         $this->line(sprintf('  Total importado BD (bruto) : $%s', number_format($totalBD, 2)));
         $this->line(sprintf('  PAGO operativo (Norte out) : $%s   dif vs target=%s',
@@ -301,7 +322,7 @@ class DebugCobranzaCommand extends Command
         $this->line(sprintf('  Target total ingresos      : $%s', number_format($targetIng, 2)));
         $this->line('');
 
-        $this->info("══════════════════════════════════════════════════════════════");
+        $this->info('══════════════════════════════════════════════════════════════');
         $this->line('');
 
         return self::SUCCESS;

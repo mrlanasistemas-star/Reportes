@@ -13,6 +13,7 @@ use App\Services\OpexClassificationService;
 use App\Services\Radiography\BranchRadiographyCalculator;
 use App\Services\Radiography\RadiographySnapshotBuilder;
 use App\Services\Roster\RosterMovementStatus;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
@@ -75,6 +76,11 @@ class EmployeePeriodKpiService
     /** @var array<int, array> memo por petición */
     private array $memo = [];
 
+    /**
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Filas de gestores, periodos de datos y métricas financieras del colaborador.
+     * @param  OpexClassificationService  $opexClassifier  Decide qué gastos son atribuibles al colaborador y si son OPEX o nómina.
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Normaliza nombres de gestor para empatar rutas de cartera.
+     */
     public function __construct(
         private readonly RadiographySnapshotBuilder $snapshotBuilder,
         private readonly OpexClassificationService $opexClassifier,
@@ -82,6 +88,14 @@ class EmployeePeriodKpiService
     ) {}
 
     /**
+     * KPIs de todos los colaboradores del reporte para un periodo.
+     *
+     * Sin radiografía vigente → not_available (sin filas). Con radiografía:
+     * cachea 12 h el resultado de compute() con llave por periodo + id/
+     * updated_at de la radiografía vigente (se invalida al regenerar) y lo
+     * memoiza en la instancia.
+     *
+     * @param  Period  $period  Periodo consultado.
      * @return array{status:string, message:?string, calculated_at:?string, radiography_version:?int, rows:list<array>, unidentified:list<array>}
      */
     public function forPeriod(Period $period): array
@@ -119,6 +133,13 @@ class EmployeePeriodKpiService
      * (buildEfectividadCobranza(periodo, nombre de la fila)). Es costosa (lee
      * el DPD de toda la cartera), por eso solo se ofrece en el endpoint de un
      * colaborador (/employees/{id}/periods), nunca en listados masivos.
+     *
+     * Cachea 12 h por periodo + versión de radiografía + nombre del
+     * colaborador. Si no hay % calculable devuelve status not_available (nunca 0%).
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @param  string  $reportName  Nombre del colaborador tal como aparece en la fila del reporte.
+     * @return array<string, mixed> status, % de efectividad, recuperado de mora, cartera en mora previa y composición vigente/atrasado/vencido.
      */
     public function effectivenessFor(Period $period, string $reportName): array
     {
@@ -156,6 +177,13 @@ class EmployeePeriodKpiService
         });
     }
 
+    /**
+     * Radiografía vigente del periodo: la última PeriodSummary con status
+     * "generated" y sin invalidar.
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @return PeriodSummary|null Radiografía vigente, o null si no existe.
+     */
     public function currentSummary(Period $period): ?PeriodSummary
     {
         return PeriodSummary::query()
@@ -166,6 +194,22 @@ class EmployeePeriodKpiService
             ->first();
     }
 
+    /**
+     * Cálculo sin caché de los KPIs por colaborador.
+     *
+     * Obtiene las filas de gestores del reporte y, en lote: OPEX automático
+     * atribuible (fact_expenses clasificado como Lendus), movimientos NOI
+     * (en bloques de 500 empleados), empleados, asignaciones del periodo,
+     * branches, roster del periodo y rutas de cartera. Las filas sin
+     * employee_id van a `unidentified`; el resto se arma con buildRow() y se
+     * ordena por nombre.
+     *
+     * Solo lectura sobre BD.
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @param  PeriodSummary  $summary  Radiografía vigente (su id se devuelve como versión).
+     * @return array<string, mixed> Resultado con status ok, rows y unidentified.
+     */
     private function compute(Period $period, PeriodSummary $summary): array
     {
         $gestorRows = $this->snapshotBuilder->buildAllEmployeeGestorRows($period);
@@ -287,6 +331,36 @@ class EmployeePeriodKpiService
         ];
     }
 
+    /**
+     * Arma la fila pública de un colaborador (posiblemente varios
+     * employee_id fusionados por identidad).
+     *
+     * - Id canónico: el menor employee_id del grupo.
+     * - Sucursal: asignación del periodo (source "assignment"); si no hay, el
+     *   branch cuyo nombre coincide con la sucursal de la fila del reporte
+     *   (source "report_row"). `branch_status` solo es "known" con asignación.
+     * - OPEX y NOI se suman sobre TODOS los ids; las percepciones se reparten
+     *   en conceptos con classifyPercepcionConcept().
+     * - EBITDA/margen/mora: computeEmployeeFinancialMetrics() con ajuste manual 0.
+     * - Estado operativo ACTIVO si tiene recuperación, colocación u OPEX > 0;
+     *   si no, BAJA. Estado laboral desde el roster del periodo.
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @param  array  $row  Fila de gestor del reporte.
+     * @param  array  $ids  employee_id del grupo (sin duplicados).
+     * @param  Collection  $employees  Empleados indexados por id.
+     * @param  array  $assignmentByEmployee  employee_id → branch_id del periodo.
+     * @param  Collection  $branches  Branches indexados por id.
+     * @param  array  $branchByName  Nombre en mayúsculas → Branch.
+     * @param  Collection  $rosterByEmployee  Filas de period_employee_rosters por employee_id.
+     * @param  array  $opexByEmployee  OPEX atribuible total por employee_id.
+     * @param  array  $opexPureByEmployee  Parte OPEX pura por employee_id.
+     * @param  array  $opexItemsByEmployee  Partidas de gasto por employee_id.
+     * @param  array  $noi  Movimientos NOI por employee_id.
+     * @param  array  $routesByNorm  Rutas de cartera por nombre normalizado del gestor.
+     * @param  array  $routesByCode  Rutas de cartera por código de promotor.
+     * @return array<string, mixed> Fila con employee, sucursal, rutas, estado laboral y KPIs.
+     */
     private function buildRow(
         Period $period, array $row, array $ids, $employees, array $assignmentByEmployee, $branches, array $branchByName,
         $rosterByEmployee, array $opexByEmployee, array $opexPureByEmployee, array $opexItemsByEmployee, array $noi,
@@ -470,6 +544,10 @@ class EmployeePeriodKpiService
      * la del periodo componente más reciente (misma regla que
      * EmployeeBranchHistoryResolver::resolveForPeriod()). Nunca "la más reciente".
      *
+     * Consulta employee_branch_assignments en bloques de 500 empleados.
+     *
+     * @param  Period  $period  Periodo consultado.
+     * @param  array  $employeeIds  IDs de empleados.
      * @return array<int, int> employee_id => branch_id
      */
     private function assignmentsFor(Period $period, array $employeeIds): array
@@ -507,6 +585,10 @@ class EmployeePeriodKpiService
      * Rutas de cartera Lendus del periodo por gestor (nombre normalizado y
      * código de promotor). Una sola consulta.
      *
+     * Cada fila agrupada de fact_portfolios se registra en ambos índices
+     * (nombre y código) cuando tiene ambos datos, sumando contratos y saldo.
+     *
+     * @param  array  $dataIds  Periodos de datos del periodo consultado.
      * @return array{0: array<string, array<string, array>>, 1: array<string, array<string, array>>}
      */
     private function portfolioRoutes(array $dataIds): array
@@ -539,6 +621,13 @@ class EmployeePeriodKpiService
         return [$byNorm, $byCode];
     }
 
+    /**
+     * Suma contratos y saldo de una entrada de ruta a la existente.
+     *
+     * @param  array|null  $current  Entrada acumulada (null si es la primera).
+     * @param  array  $entry  Nueva entrada {contracts, balance}.
+     * @return array Entrada acumulada.
+     */
     private function mergeRouteEntry(?array $current, array $entry): array
     {
         if ($current === null) {
@@ -548,7 +637,20 @@ class EmployeePeriodKpiService
         return ['contracts' => $current['contracts'] + $entry['contracts'], 'balance' => $current['balance'] + $entry['balance']];
     }
 
-    /** @return list<array{route:string, catalog_route:?string, catalog_branch:?string, active:?bool, source:string, contracts:?int, balance:?float}> */
+    /**
+     * Rutas del colaborador en el periodo, sin duplicar, a partir de tres
+     * fuentes en orden: 1) el branch asignado si es una ruta del catálogo
+     * oficial; 2) la cartera Lendus por nombre canónico y por código de
+     * promotor; 3) la ruta que ya trae la fila del reporte. Cada ruta se
+     * enriquece con su ruta/sucursal del catálogo (BranchRouteCatalog) y
+     * acumula sus fuentes en `sources`.
+     *
+     * @param  array  $row  Fila de gestor del reporte.
+     * @param  Branch|null  $branch  Branch atribuido en el periodo.
+     * @param  array  $routesByNorm  Rutas de cartera por nombre normalizado.
+     * @param  array  $routesByCode  Rutas de cartera por código de promotor.
+     * @return list<array{route:string, catalog_route:?string, catalog_branch:?string, active:?bool, source:string, contracts:?int, balance:?float}>
+     */
     private function routesFor(array $row, ?Branch $branch, array $routesByNorm, array $routesByCode): array
     {
         $routes = [];

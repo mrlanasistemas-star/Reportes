@@ -3,8 +3,8 @@
 namespace App\Services\EstadoResultados\Comparatives;
 
 use App\Models\Period;
-use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use App\Services\EstadoResultados\Classification\ConceptCatalogService;
+use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use App\Services\EstadoResultados\PeriodDataIds;
 use App\Services\EstadoResultados\Support\Dimensions;
 use Illuminate\Support\Facades\DB;
@@ -28,15 +28,27 @@ use Illuminate\Support\Facades\Schema;
  */
 class InputSignature
 {
+    /** Versión del formato de la firma de comparativas (subir invalida toda la caché de resúmenes). */
     private const COMPARATIVES_VERSION = 'cmp-1';
 
     /** Formato de la base de Radiografía en caché (subir si cambia su estructura). */
     public const BASE_VERSION = 'base-1';
 
+    /** Huella del código memorizada por proceso (se calcula una sola vez). */
     private static ?string $codeFingerprint = null;
 
+    /** @param  PeriodDataIds  $dataIds  universo de period_id de Radiografía asociados al periodo */
     public function __construct(private readonly PeriodDataIds $dataIds) {}
 
+    /**
+     * Firma SHA-256 de todos los insumos del dataset en vivo de un periodo/alcance (Radiografía +
+     * insumos propios del ER: cargas, movimientos, conciliación, clasificaciones, ajustes, corridas,
+     * versiones, catálogo de conceptos, NOI corporativo y amortizaciones). Sólo lectura de BD.
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $scope  alcance (CONSOLIDADO o sucursal)
+     * @return string hash hexadecimal; cambia si cambia cualquier insumo
+     */
     public function for(Period $period, string $scope): string
     {
         $ids = $this->dataIds->for($period);
@@ -81,6 +93,9 @@ class InputSignature
      * Firma SÓLO de los insumos de la base de Radiografía (RadiographyBaseProvider). No cambia al
      * clasificar, ajustar o procesar estados de cuenta: esas acciones reutilizan la base ya
      * calculada y sólo recalculan la parte propia del ER, que nunca se guarda en caché.
+     *
+     * @param  Period  $period  periodo
+     * @return string hash SHA-256 de la base de Radiografía
      */
     public function radiography(Period $period): string
     {
@@ -96,7 +111,9 @@ class InputSignature
      * id/estado/updated_at), agregados baratos de hechos, catálogos, huella del código y fecha
      * del día (Radiografía tiene métricas relativas a la fecha: la caché nunca cruza días).
      *
-     * @param  list<int>  $ids
+     * @param  Period  $period  periodo
+     * @param  list<int>  $ids  period_id de Radiografía (PeriodDataIds)
+     * @return array<string, mixed> partes de la firma
      */
     private function radiographyParts(Period $period, array $ids): array
     {
@@ -121,7 +138,16 @@ class InputSignature
         ];
     }
 
-    /** [conteo, id máximo, updated_at máximo] — tolera tablas/columnas ausentes. */
+    /**
+     * [conteo, id máximo, updated_at máximo] — tolera tablas/columnas ausentes.
+     *
+     * Las columnas de cada tabla se memorizan en una variable estática del proceso.
+     *
+     * @param  string  $table  tabla a agregar
+     * @param  string|null  $col  columna de filtro (period_id…); null = tabla completa
+     * @param  array  $ids  valores del filtro (vacío con $col ⇒ [0])
+     * @return array marcador ['sin_tabla'], ['sin_columna'] o los agregados como cadenas
+     */
     private function aggregate(string $table, ?string $col, array $ids): array
     {
         static $columns = [];
@@ -156,6 +182,13 @@ class InputSignature
         return array_values(array_map(fn ($v) => $v === null ? null : (string) $v, $row));
     }
 
+    /**
+     * Huella del código del módulo: ruta + mtime + tamaño de cada .php de EstadoResultados y
+     * Radiography, más el mtime de config/estado_resultados.php. Desplegar código nuevo invalida
+     * la caché. Lee el sistema de archivos una sola vez por proceso.
+     *
+     * @return string SHA-1 de las marcas ordenadas
+     */
     private static function codeFingerprint(): string
     {
         if (self::$codeFingerprint !== null) {

@@ -5,26 +5,53 @@ namespace App\Services;
 use App\Models\Employee;
 use App\Models\Period;
 use App\Models\PeriodSummary;
-use App\Services\EmployeeNameCanonicalizer;
 use App\Services\Pdf\BrowsershotPdfRenderer;
 use App\Services\Radiography\BranchRadiographyCalculator;
+use App\Services\Radiography\RadiographyChartSvgBuilder;
 use App\Services\Radiography\RadiographySnapshotBuilder;
+use App\Services\Radiography\RadiographyStyleHelper;
 use App\Services\Radiography\RadiographyWorkbookBuilder;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use RuntimeException;
 
+/**
+ * Exportación de la Radiografía Financiera mensual (Excel y PDF) y fuente del
+ * snapshot que consume la vista web del reporte.
+ *
+ * Para qué sirve en el negocio: produce los entregables del cierre mensual
+ * (libro general, por sucursal, por gestor y comparativos mes/bimestre/trimestre)
+ * a partir de la radiografía vigente del periodo (PeriodSummary generado y no
+ * invalidado), aplicando —solo en memoria— el ajuste manual efímero de OPEX que
+ * el usuario indique en la descarga. Nunca escribe datos financieros en BD.
+ *
+ * Quién la usa: MonthlyReportController (vista previa, descargas Excel/PDF,
+ * comparativos), DashboardController (gráficas ejecutivas), la API v1 y el
+ * comando `radiografia:precalentar` / jobs de precalentado de caché.
+ *
+ * Caché: el estado general de cada periodo se guarda 12 h (con candado para que
+ * solo un proceso lo calcule en frío) y los alcances sucursal/colaborador se
+ * proyectan desde él; las claves incluyen summary.id/updated_at, así que se
+ * invalidan solas al regenerar la radiografía. Los archivos se escriben en
+ * storage/app/radiografias.
+ */
 class RadiografiaExportService
 {
+    /**
+     * @param  RadiographyWorkbookBuilder  $workbookBuilder  Arma los libros de Excel (general, sucursal, gestor, comparativo).
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Calcula el snapshot financiero del periodo y sus proyecciones por alcance.
+     * @param  TemporaryOpexAdjustmentService  $temporaryAdjustment  Fuente única del ajuste manual efímero de OPEX.
+     * @param  BrowsershotPdfRenderer  $pdfRenderer  Renderiza vistas Blade a PDF con Chrome headless.
+     */
     public function __construct(
         private RadiographyWorkbookBuilder $workbookBuilder,
         private RadiographySnapshotBuilder $snapshotBuilder,
-        private \App\Services\TemporaryOpexAdjustmentService $temporaryAdjustment,
+        private TemporaryOpexAdjustmentService $temporaryAdjustment,
         private BrowsershotPdfRenderer $pdfRenderer,
     ) {}
 
@@ -34,10 +61,10 @@ class RadiografiaExportService
      * BrowsershotPdfRenderer vía Browsershot::margins()).
      */
     private const PDF_MARGINS = [
-        'general'     => ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14],
+        'general' => ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14],
         'comparative' => ['top' => 18, 'right' => 14, 'bottom' => 22, 'left' => 14],
-        'branch'      => ['top' => 20, 'right' => 14, 'bottom' => 18, 'left' => 14],
-        'employee'    => ['top' => 20, 'right' => 14, 'bottom' => 18, 'left' => 14],
+        'branch' => ['top' => 20, 'right' => 14, 'bottom' => 18, 'left' => 14],
+        'employee' => ['top' => 20, 'right' => 14, 'bottom' => 18, 'left' => 14],
     ];
 
     /**
@@ -47,6 +74,14 @@ class RadiografiaExportService
      * seguidos del mismo comparativo. Cachea el snapshot ya calculado por un rato
      * corto, invalidado automáticamente si el summary se regenera (cambia su
      * updated_at). No cambia ningún cálculo, solo evita repetirlo.
+     *
+     * TTL: corrida general 12 h (vía generalStateCached o clave directa);
+     * alcances proyectados y configuraciones no proyectables 180 s.
+     *
+     * @param  Period  $period  Periodo del reporte.
+     * @param  PeriodSummary  $summary  Radiografía vigente del periodo (su id/updated_at forman la clave).
+     * @param  array  $config  Configuración de alcance (scope, branch_id, employee_id, manual_adjustment, included_branch_ids...).
+     * @return array Snapshot del reporte.
      */
     private function buildSnapshotCached(Period $period, PeriodSummary $summary, array $config = []): array
     {
@@ -98,6 +133,14 @@ class RadiografiaExportService
 
     private const PROJECTABLE_CONFIG_KEYS = ['scope', 'branch_id', 'employee_id', 'manual_adjustment'];
 
+    /**
+     * Indica si la configuración puede resolverse proyectando la corrida general
+     * cacheada: solo contiene llaves de PROJECTABLE_CONFIG_KEYS y un scope
+     * general/branch/employee.
+     *
+     * @param  array  $config  Configuración del snapshot.
+     * @return bool true si se sirve desde el estado general.
+     */
     private function isProjectableConfig(array $config): bool
     {
         if (array_diff(array_keys($config), self::PROJECTABLE_CONFIG_KEYS) !== []) {
@@ -117,13 +160,17 @@ class RadiografiaExportService
      * los meses recientes se mantienen calientes con `radiografia:precalentar`
      * (scheduler): la API v1 ya no paga los ~10-25 s en su propia petición.
      *
+     * Además guarda un memo por instancia limitado a 3 periodos.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  PeriodSummary  $summary  Radiografía vigente.
      * @return array{snapshot: array, empGestores: array, gm: array}
      */
     private function generalStateCached(Period $period, PeriodSummary $summary): array
     {
         $key = $this->generalStateKey($period, $summary);
 
-        if (!isset($this->generalStateMemo[$key])) {
+        if (! isset($this->generalStateMemo[$key])) {
             // Tope pequeño: en un worker de cola de larga vida el memo nunca debe crecer sin límite.
             if (count($this->generalStateMemo) >= 3) {
                 array_shift($this->generalStateMemo);
@@ -134,6 +181,13 @@ class RadiografiaExportService
         return $this->generalStateMemo[$key];
     }
 
+    /**
+     * Clave de caché del estado general: periodo + id y updated_at del resumen.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  PeriodSummary  $summary  Radiografía vigente.
+     * @return string Clave "radiography_general_state:{period}:{summary}:{timestamp}".
+     */
     private function generalStateKey(Period $period, PeriodSummary $summary): string
     {
         return sprintf('radiography_general_state:%d:%d:%d', $period->id, $summary->id, $summary->updated_at?->timestamp ?? 0);
@@ -147,6 +201,9 @@ class RadiografiaExportService
      * ofrece candados, calcula por su cuenta — exactamente el comportamiento anterior,
      * nunca un error nuevo. No cambia ningún cálculo: sólo quién lo ejecuta.
      *
+     * @param  string  $key  Clave de caché (generalStateKey()).
+     * @param  Period  $period  Periodo.
+     * @param  PeriodSummary  $summary  Radiografía vigente.
      * @return array{snapshot: array, empGestores: array, gm: array}
      */
     private function resolveGeneralState(string $key, Period $period, PeriodSummary $summary): array
@@ -183,10 +240,17 @@ class RadiografiaExportService
         }
     }
 
+    /**
+     * Candado de caché para calcular el estado general (duración
+     * radiografia.cache.lock_segundos, mínimo 30 s).
+     *
+     * @param  string  $key  Clave del estado general.
+     * @return Lock|null null si el store de caché no soporta candados (se registra un warning).
+     */
     private function generalStateLock(string $key): ?Lock
     {
         try {
-            return Cache::lock('lock:' . $key, max(30, (int) config('radiografia.cache.lock_segundos', 300)));
+            return Cache::lock('lock:'.$key, max(30, (int) config('radiografia.cache.lock_segundos', 300)));
         } catch (\Throwable $e) {
             // Store sin soporte de candados: se calcula sin candado, como antes.
             Log::warning('Radiografía: el store de caché no ofrece candados; se calcula sin candado.', ['error' => $e->getMessage()]);
@@ -195,13 +259,19 @@ class RadiografiaExportService
         }
     }
 
-    /** Guarda el estado y la marca de cuándo se calculó (la usa el precalentado para refrescar antes de que caduque). */
+    /**
+     * Guarda el estado y la marca de cuándo se calculó (la usa el precalentado para refrescar antes de que caduque).
+     * TTL = radiografia.cache.ttl_horas (12 h por defecto). Un fallo al guardar solo se registra en log.
+     *
+     * @param  string  $key  Clave del estado general.
+     * @param  array  $state  Estado calculado por RadiographySnapshotBuilder::buildGeneralState().
+     */
     private function storeGeneralState(string $key, array $state): void
     {
         $ttl = max(1, (int) config('radiografia.cache.ttl_horas', 12)) * 3600;
         try {
             Cache::put($key, $state, $ttl);
-            Cache::put($key . ':calculado_en', now()->getTimestamp(), $ttl);
+            Cache::put($key.':calculado_en', now()->getTimestamp(), $ttl);
         } catch (\Throwable $e) {
             // El resultado ya está calculado: no se pierde la petición por un fallo al guardar.
             Log::warning('Radiografía: no se pudo guardar el estado general en caché.', ['key' => $key, 'error' => $e->getMessage()]);
@@ -219,7 +289,11 @@ class RadiografiaExportService
      *   - 'ocupado'    otro proceso lo está calculando ahora mismo: no duplica.
      * Lanza RuntimeException si el periodo no tiene radiografía vigente.
      *
+     * @param  Period  $period  Periodo a precalentar.
      * @param  int|null  $refreshAfterSeconds  null = nunca refrescar un valor presente; 0 = refrescar siempre
+     * @return string 'caliente' | 'calculado' | 'refrescado' | 'ocupado'.
+     *
+     * @throws RuntimeException Si el periodo no tiene radiografía vigente.
      */
     public function warmGeneralState(Period $period, ?int $refreshAfterSeconds = null): string
     {
@@ -231,18 +305,18 @@ class RadiografiaExportService
             if ($refreshAfterSeconds === null) {
                 return 'caliente';
             }
-            $computedAt = Cache::get($key . ':calculado_en');
+            $computedAt = Cache::get($key.':calculado_en');
             if (is_numeric($computedAt) && (now()->getTimestamp() - (int) $computedAt) < $refreshAfterSeconds) {
                 return 'caliente';
             }
         }
 
         $lock = $this->generalStateLock($key);
-        if ($lock !== null && !$lock->get()) {
+        if ($lock !== null && ! $lock->get()) {
             return 'ocupado';
         }
         try {
-            if (!$present && is_array(Cache::get($key))) {
+            if (! $present && is_array(Cache::get($key))) {
                 return 'caliente';
             }
             $this->storeGeneralState($key, $this->snapshotBuilder->buildGeneralState($period, $summary));
@@ -253,6 +327,15 @@ class RadiografiaExportService
         }
     }
 
+    /**
+     * Clave de caché de un snapshot proyectado: periodo, resumen, updated_at y
+     * md5 del config.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  PeriodSummary  $summary  Radiografía vigente.
+     * @param  array  $config  Configuración del alcance.
+     * @return string Clave "radiography_snapshot:...".
+     */
     private function snapshotCacheKey(Period $period, PeriodSummary $summary, array $config): string
     {
         return sprintf(
@@ -264,18 +347,28 @@ class RadiografiaExportService
         );
     }
 
+    /**
+     * Genera el Excel general de la radiografía (sin caché de snapshot) y lo
+     * guarda en storage/app/radiografias. Sube memory_limit a 1024M.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración pasada tal cual a RadiographySnapshotBuilder::build().
+     * @return string Ruta absoluta del .xlsx generado.
+     *
+     * @throws RuntimeException Si el periodo no tiene radiografía vigente.
+     */
     public function export(Period $period, array $config = []): string
     {
         @ini_set('memory_limit', '1024M');
 
         $summary = $this->requireSummary($period);
 
-        $snapshot    = $this->snapshotBuilder->build($period, $summary, $config);
+        $snapshot = $this->snapshotBuilder->build($period, $summary, $config);
         $spreadsheet = $this->workbookBuilder->buildFromSnapshot($period, $summary, $snapshot);
 
-        $directory  = storage_path('app/radiografias');
+        $directory = storage_path('app/radiografias');
         File::ensureDirectoryExists($directory);
-        $outputPath = $directory . '/radiografia_' . ($period->code ?: $period->id) . '_' . now()->format('Ymd_His') . '.xlsx';
+        $outputPath = $directory.'/radiografia_'.($period->code ?: $period->id).'_'.now()->format('Ymd_His').'.xlsx';
 
         $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
         $writer->setPreCalculateFormulas(false);
@@ -288,6 +381,16 @@ class RadiografiaExportService
         return $outputPath;
     }
 
+    /**
+     * Genera el PDF general de la radiografía (vista reports.radiography-pdf con
+     * gráficas ejecutivas) y lo guarda en storage/app/radiografias.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración pasada a RadiographySnapshotBuilder::build().
+     * @return string Ruta absoluta del .pdf generado.
+     *
+     * @throws RuntimeException Si el periodo no tiene radiografía vigente.
+     */
     public function exportPdf(Period $period, array $config = []): string
     {
         @ini_set('memory_limit', '1024M');
@@ -297,16 +400,16 @@ class RadiografiaExportService
 
         $snapshot = $this->snapshotBuilder->build($period, $summary, $config);
 
-        $directory  = storage_path('app/radiografias');
+        $directory = storage_path('app/radiografias');
         File::ensureDirectoryExists($directory);
-        $outputPath = $directory . '/radiografia_' . ($period->code ?: $period->id) . '_' . now()->format('Ymd_His') . '.pdf';
+        $outputPath = $directory.'/radiografia_'.($period->code ?: $period->id).'_'.now()->format('Ymd_His').'.pdf';
 
         $this->pdfRenderer->renderViewToFile('reports.radiography-pdf', array_merge([
-            'period'   => $period,
+            'period' => $period,
             'snapshot' => $snapshot,
         ], $this->executiveChartsViewData($snapshot)), $outputPath, [
-            'margins'     => self::PDF_MARGINS['general'],
-            'footer_left' => 'MR LANA · Radiografía Financiera · ' . strtoupper($period->label),
+            'margins' => self::PDF_MARGINS['general'],
+            'footer_left' => 'MR LANA · Radiografía Financiera · '.strtoupper($period->label),
         ]);
 
         return $outputPath;
@@ -349,13 +452,20 @@ class RadiografiaExportService
      * actual, y el test de integración de arriba queda como red de seguridad
      * permanente — si algún cambio futuro rompe la reconciliación Web=Excel, ese test
      * lo detecta.
+     *
+     * @param  Period  $period  Periodo actual del reporte.
+     * @param  array  $config  Configuración de la descarga (ver arriba).
+     * @return string Ruta absoluta del .xlsx generado en storage/app/radiografias.
+     *
+     * @throws RuntimeException Si falta compare_period_id/branch_id/employee_id según el tipo, o no hay radiografía vigente.
+     * @throws ModelNotFoundException Si el periodo de comparación no existe.
      */
     public function exportWithConfig(Period $period, array $config): string
     {
         @ini_set('memory_limit', '1024M');
 
-        $summary  = $this->requireSummary($period);
-        $scope      = $config['scope'] ?? 'general';
+        $summary = $this->requireSummary($period);
+        $scope = $config['scope'] ?? 'general';
         $reportType = $config['report_type'] ?? 'simple';
         // Ajuste manual EFÍMERO de alcance GENERAL (reversión 07-sep-2026, cierre,
         // punto 1) — el snapshot general SIEMPRE se construye a través de este mismo
@@ -372,12 +482,12 @@ class RadiografiaExportService
 
         if (in_array($reportType, ['month_vs_month', 'bimester_vs_bimester', 'quarter_vs_quarter'])) {
             $comparePeriodId = (int) ($config['compare_period_id'] ?? 0);
-            if (!$comparePeriodId) {
+            if (! $comparePeriodId) {
                 throw new RuntimeException('Se requiere compare_period_id para reportes comparativos.');
             }
             $comparePeriod = Period::findOrFail($comparePeriodId);
             $compareSummary = $this->requireSummary($comparePeriod);
-            $compareSnap    = $this->buildSnapshotCached($comparePeriod, $compareSummary);
+            $compareSnap = $this->buildSnapshotCached($comparePeriod, $compareSummary);
 
             // General: el comparativo es EL MISMO libro que el reporte simple (mismas
             // pestañas, secciones y gráficas), con columnas de comparación en cada
@@ -389,10 +499,10 @@ class RadiografiaExportService
             } else {
                 $spreadsheet = $this->workbookBuilder->buildComparativeFromSnapshots($period, $snapshot, $comparePeriod, $compareSnap, $config);
             }
-            $suffix = 'comparativo_' . $comparePeriod->code . '_vs_' . ($period->code ?: $period->id);
+            $suffix = 'comparativo_'.$comparePeriod->code.'_vs_'.($period->code ?: $period->id);
         } elseif ($scope === 'branch') {
             $branchId = (int) ($config['branch_id'] ?? 0);
-            if (!$branchId) {
+            if (! $branchId) {
                 throw new RuntimeException('Se requiere branch_id para reportes por sucursal.');
             }
             // Ajuste manual EFÍMERO de SUCURSAL (cierre 17-sep-2026, ronda 2, A5 Caso
@@ -400,10 +510,10 @@ class RadiografiaExportService
             // jamás pudo llevar un ajuste. Ver TemporaryOpexAdjustmentService.
             [$branchExtraAmount, $branchExtraNotes] = $this->resolveBranchManualAdjustmentFor($period, $config, $branchId);
             $spreadsheet = $this->workbookBuilder->buildBranchFromSnapshot($period, $summary, $snapshot, $branchId, $branchExtraAmount, $branchExtraNotes);
-            $suffix      = 'sucursal_' . $branchId;
+            $suffix = 'sucursal_'.$branchId;
         } elseif ($scope === 'employee') {
-            $employeeId    = (int) ($config['employee_id'] ?? 0);
-            if (!$employeeId) {
+            $employeeId = (int) ($config['employee_id'] ?? 0);
+            if (! $employeeId) {
                 throw new RuntimeException('Se requiere employee_id para reportes por gestor.');
             }
             // Ajuste manual EFÍMERO de esta descarga (reversión 07-sep-2026, cierre)
@@ -412,15 +522,15 @@ class RadiografiaExportService
             // employee_id (nunca se filtra a otro colaborador).
             [$extraAmount, $extraNotes] = $this->resolveManualAdjustmentFor($period, $config, $employeeId);
             $spreadsheet = $this->workbookBuilder->buildEmployeeFromSnapshot($period, $summary, $snapshot, $employeeId, $extraAmount, $extraNotes);
-            $suffix      = 'gestor_' . $employeeId;
+            $suffix = 'gestor_'.$employeeId;
         } else {
             $spreadsheet = $this->workbookBuilder->buildFromSnapshot($period, $summary, $snapshot);
-            $suffix      = 'general';
+            $suffix = 'general';
         }
 
-        $directory  = storage_path('app/radiografias');
+        $directory = storage_path('app/radiografias');
         File::ensureDirectoryExists($directory);
-        $outputPath = $directory . '/radiografia_' . ($period->code ?: $period->id) . '_' . $suffix . '_' . now()->format('Ymd_His') . '.xlsx';
+        $outputPath = $directory.'/radiografia_'.($period->code ?: $period->id).'_'.$suffix.'_'.now()->format('Ymd_His').'.xlsx';
 
         $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
         $writer->setPreCalculateFormulas(false);
@@ -433,6 +543,18 @@ class RadiografiaExportService
         return $outputPath;
     }
 
+    /**
+     * Equivalente PDF de exportWithConfig(): elige la vista Blade según el tipo
+     * (comparativo con gráficas, sucursal, gestor o general), aplica el ajuste
+     * manual efímero de sucursal o gestor cuando corresponde y renderiza con
+     * Browsershot usando los márgenes de PDF_MARGINS.
+     *
+     * @param  Period  $period  Periodo actual del reporte.
+     * @param  array  $config  scope, report_type, branch_id, employee_id, compare_period_id, manual_adjustment.
+     * @return string Ruta absoluta del .pdf generado en storage/app/radiografias.
+     *
+     * @throws RuntimeException Si falta un identificador requerido, la sucursal/empleado no existe en el snapshot o no hay radiografía vigente.
+     */
     public function exportPdfWithConfig(Period $period, array $config): string
     {
         @ini_set('memory_limit', '1024M');
@@ -440,7 +562,7 @@ class RadiografiaExportService
         $summary = $this->requireSummary($period);
         $summary->loadMissing(['branchSummaries', 'incidents']);
 
-        $scope      = $config['scope'] ?? 'general';
+        $scope = $config['scope'] ?? 'general';
         $reportType = $config['report_type'] ?? 'simple';
         // Mismo fix que exportWithConfig() (ver comentario ahí) — el ajuste manual
         // GENERAL debe llegar también al PDF, no solo a Web/Excel.
@@ -448,7 +570,7 @@ class RadiografiaExportService
         $snapshot = $this->buildSnapshotCached($period, $summary, $generalSnapshotConfig);
 
         if (in_array($reportType, ['month_vs_month', 'bimester_vs_bimester', 'quarter_vs_quarter'], true)) {
-            $viewData      = $this->comparativeViewData($period, $config, $summary, $snapshot);
+            $viewData = $this->comparativeViewData($period, $config, $summary, $snapshot);
             $comparePeriod = $viewData['comparePeriod'];
             // Retoma 21-sep-2026 (pedido "todo debe llevar gráficas"): el PDF comparativo
             // era solo una tabla — se agregan las MISMAS gráficas que ya muestra el
@@ -457,16 +579,16 @@ class RadiografiaExportService
             // CHART_PERCENT_METRICS), para que Web y PDF nunca se vean distintos.
             $viewData = array_merge($viewData, $this->comparativeChartsViewData($viewData['rows']));
 
-            $view      = 'reports.radiography-pdf-comparative';
-            $margins   = self::PDF_MARGINS['comparative'];
-            $footerLeft = 'MR LANA · Comparativo · ' . strtoupper($comparePeriod->label) . ' vs ' . strtoupper($period->label);
-            $suffix    = 'comparativo_' . $comparePeriod->code;
+            $view = 'reports.radiography-pdf-comparative';
+            $margins = self::PDF_MARGINS['comparative'];
+            $footerLeft = 'MR LANA · Comparativo · '.strtoupper($comparePeriod->label).' vs '.strtoupper($period->label);
+            $suffix = 'comparativo_'.$comparePeriod->code;
         } elseif ($scope === 'branch') {
             $branchId = (int) ($config['branch_id'] ?? 0);
-            if (!$branchId) {
+            if (! $branchId) {
                 throw new RuntimeException('Se requiere branch_id para reportes por sucursal.');
             }
-            $branchRow  = $this->resolveBranchRow($snapshot, $branchId);
+            $branchRow = $this->resolveBranchRow($snapshot, $branchId);
             // Ajuste manual EFÍMERO de SUCURSAL (cierre 17-sep-2026, ronda 2, A5 Caso 2)
             // — se suma a gastos_operativos ANTES de resolveBranchPdfData() (que
             // calcula gastosTotales/ebitda/margen leyendo ese mismo campo vía
@@ -481,18 +603,18 @@ class RadiografiaExportService
 
             $view = 'reports.radiography-pdf-branch';
             $viewData = array_merge($branchData, [
-                'period'     => $period,
-                'snap'       => $snapshot,
-                'branchRow'  => $branchRow,
+                'period' => $period,
+                'snap' => $snapshot,
+                'branchRow' => $branchRow,
                 'extraAmount' => $branchExtraAmount,
-                'extraNotes'  => $branchExtraNotes,
+                'extraNotes' => $branchExtraNotes,
             ]);
-            $margins    = self::PDF_MARGINS['branch'];
-            $footerLeft = 'MR LANA · Radiografía Financiera · ' . strtoupper($branchRow['sucursal'] ?? 'Sucursal');
-            $suffix = 'sucursal_' . $branchId;
+            $margins = self::PDF_MARGINS['branch'];
+            $footerLeft = 'MR LANA · Radiografía Financiera · '.strtoupper($branchRow['sucursal'] ?? 'Sucursal');
+            $suffix = 'sucursal_'.$branchId;
         } elseif ($scope === 'employee') {
             $employeeId = (int) ($config['employee_id'] ?? 0);
-            if (!$employeeId) {
+            if (! $employeeId) {
                 throw new RuntimeException('Se requiere employee_id para reportes por gestor.');
             }
             // Ajuste manual EFÍMERO de esta descarga (reversión 07-sep-2026, cierre)
@@ -506,31 +628,31 @@ class RadiografiaExportService
 
             $view = 'reports.radiography-pdf-employee';
             $viewData = array_merge($empData, [
-                'period'      => $period,
-                'snap'        => $snapshot,
+                'period' => $period,
+                'snap' => $snapshot,
                 'extraAmount' => $empData['expenseDetail']['manual_total'] ?? 0.0,
-                'extraNotes'  => $empData['expenseDetail']['manual_notes'] ?? '',
+                'extraNotes' => $empData['expenseDetail']['manual_notes'] ?? '',
             ]);
-            $margins    = self::PDF_MARGINS['employee'];
-            $footerLeft = 'MR LANA · Radiografía Financiera · ' . strtoupper($empData['empName'] ?? 'Gestor');
-            $suffix = 'gestor_' . $employeeId;
+            $margins = self::PDF_MARGINS['employee'];
+            $footerLeft = 'MR LANA · Radiografía Financiera · '.strtoupper($empData['empName'] ?? 'Gestor');
+            $suffix = 'gestor_'.$employeeId;
         } else {
             $view = 'reports.radiography-pdf';
             $viewData = array_merge([
-                'period'   => $period,
+                'period' => $period,
                 'snapshot' => $snapshot,
             ], $this->executiveChartsViewData($snapshot));
-            $margins    = self::PDF_MARGINS['general'];
-            $footerLeft = 'MR LANA · Radiografía Financiera · ' . strtoupper($period->label);
+            $margins = self::PDF_MARGINS['general'];
+            $footerLeft = 'MR LANA · Radiografía Financiera · '.strtoupper($period->label);
             $suffix = 'general';
         }
 
-        $directory  = storage_path('app/radiografias');
+        $directory = storage_path('app/radiografias');
         File::ensureDirectoryExists($directory);
-        $outputPath = $directory . '/radiografia_' . ($period->code ?: $period->id) . '_' . $suffix . '_' . now()->format('Ymd_His') . '.pdf';
+        $outputPath = $directory.'/radiografia_'.($period->code ?: $period->id).'_'.$suffix.'_'.now()->format('Ymd_His').'.pdf';
 
         $this->pdfRenderer->renderViewToFile($view, $viewData, $outputPath, [
-            'margins'     => $margins,
+            'margins' => $margins,
             'footer_left' => $footerLeft,
         ]);
 
@@ -545,13 +667,14 @@ class RadiografiaExportService
      * nunca dos fórmulas divergentes. Devuelve null si el snapshot no trae branch_radiography
      * completo (p.ej. un snapshot de alcance sucursal/colaborador).
      *
+     * @param  array  $snapshot  Snapshot general del periodo.
      * @return array{moraBuckets:array,gastosTopN:array,categorias:array,categoriaLabels:array,categoriaCounts:array,categoriaColors:array,sucursalRows:array}|null
      */
     public function buildExecutiveChartsData(array $snapshot): ?array
     {
-        $brGlobal   = $snapshot['branch_radiography']['global'] ?? null;
+        $brGlobal = $snapshot['branch_radiography']['global'] ?? null;
         $brBranches = $snapshot['branch_radiography']['branches'] ?? [];
-        if (!$brGlobal || empty($brBranches)) {
+        if (! $brGlobal || empty($brBranches)) {
             return null;
         }
 
@@ -571,9 +694,9 @@ class RadiografiaExportService
         foreach ($brBranches as $b) {
             $ebitda = BranchRadiographyCalculator::ebitdaFinalFor($b);
             $categorias[] = [
-                'nombre'    => $b['sucursal'],
-                'ebitda'    => round($ebitda, 2),
-                'categoria' => \App\Services\Radiography\RadiographyStyleHelper::ebitdaCategory($ebitda),
+                'nombre' => $b['sucursal'],
+                'ebitda' => round($ebitda, 2),
+                'categoria' => RadiographyStyleHelper::ebitdaCategory($ebitda),
             ];
         }
         usort($categorias, fn ($x, $y) => strcmp($x['nombre'], $y['nombre']));
@@ -582,10 +705,10 @@ class RadiografiaExportService
         // (RadiographyStyleHelper::ebitdaCategoryBadgeColors()) — nunca un color nuevo
         // inventado para esta gráfica.
         $categoriaColorMap = [
-            'DIAMANTE'  => '#0369A1',
-            'MASTER'    => '#7C3AED',
-            'SENIOR'    => '#00B050',
-            'JUNIOR'    => '#92400E',
+            'DIAMANTE' => '#0369A1',
+            'MASTER' => '#7C3AED',
+            'SENIOR' => '#00B050',
+            'JUNIOR' => '#92400E',
             'MANTENIDO' => '#B91C1C',
         ];
         $categoriaColors = array_map(fn ($label) => $categoriaColorMap[$label] ?? '#94A3B8', array_keys($categoriaCounts));
@@ -593,21 +716,21 @@ class RadiografiaExportService
         $sucursalRows = [];
         foreach ($brBranches as $b) {
             $sucursalRows[] = [
-                'sucursal'     => $b['sucursal'],
-                'colocacion'   => round((float) ($b['colocacion'] ?? 0), 2),
+                'sucursal' => $b['sucursal'],
+                'colocacion' => round((float) ($b['colocacion'] ?? 0), 2),
                 'recuperacion' => round((float) ($b['recuperacion_total'] ?? 0), 2),
             ];
         }
         usort($sucursalRows, fn ($x, $y) => strcmp($x['sucursal'], $y['sucursal']));
 
         return [
-            'moraBuckets'     => $moraBuckets,
-            'gastosTopN'      => $gastosTopN,
-            'categorias'      => $categorias,
+            'moraBuckets' => $moraBuckets,
+            'gastosTopN' => $gastosTopN,
+            'categorias' => $categorias,
             'categoriaLabels' => array_keys($categoriaCounts),
             'categoriaCounts' => array_values($categoriaCounts),
             'categoriaColors' => $categoriaColors,
-            'sucursalRows'    => $sucursalRows,
+            'sucursalRows' => $sucursalRows,
         ];
     }
 
@@ -619,6 +742,10 @@ class RadiografiaExportService
      * solo motor). 'executiveCharts' => false cuando el snapshot no trae
      * branch_radiography completo (alcance sucursal/colaborador) — el blade omite la
      * sección completa en ese caso.
+     * Lee public/vendor/chartjs/chart.umd.js para incrustar Chart.js en el PDF.
+     *
+     * @param  array  $snapshot  Snapshot general del periodo.
+     * @return array<string, mixed> Variables para la vista Blade.
      */
     private function executiveChartsViewData(array $snapshot): array
     {
@@ -629,20 +756,21 @@ class RadiografiaExportService
 
         return [
             'executiveCharts' => true,
-            'chartJsInline'   => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
-            'moraBuckets'     => $data['moraBuckets'],
-            'gastosTopN'      => $data['gastosTopN'],
-            'categorias'      => $data['categorias'],
+            'chartJsInline' => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
+            'moraBuckets' => $data['moraBuckets'],
+            'gastosTopN' => $data['gastosTopN'],
+            'categorias' => $data['categorias'],
             'categoriaLabels' => $data['categoriaLabels'],
             'categoriaCounts' => $data['categoriaCounts'],
             'categoriaColors' => $data['categoriaColors'],
-            'sucursalRows'    => $data['sucursalRows'],
+            'sucursalRows' => $data['sucursalRows'],
         ];
     }
 
     /** Mismos grupos de métricas que resources/js/lib/comparative-metrics.ts — nunca divergen entre Web y PDF. */
     private const COMPARATIVE_CHART_CURRENCY_METRICS = ['Recuperación', 'Colocación', 'EBITDA', 'OPEX', 'Valor cartera'];
-    private const COMPARATIVE_CHART_PERCENT_METRICS  = ['Margen EBITDA', 'Mora %', 'Rotación %'];
+
+    private const COMPARATIVE_CHART_PERCENT_METRICS = ['Margen EBITDA', 'Mora %', 'Rotación %'];
 
     /**
      * Datos de gráficas del PDF comparativo (retoma 21-sep-2026) — reshaping puro sobre
@@ -651,13 +779,16 @@ class RadiografiaExportService
      * composición de cartera (Valor cartera − Cartera vencida = sana) que ya dibuja
      * ComparativePreview.vue con ApexCharts — aquí se renderizan con Chart.js dentro
      * del PDF (Browsershot ejecuta JS real, ver BrowsershotPdfRenderer).
+     *
+     * @param  array<int, array{label:string, prev:float, curr:float, diff:float, var_pct:float, fmt:string}>  $rows  Filas del comparativo.
+     * @return array<string, mixed> Series de gráficas (monto, porcentaje y dona de cartera) más Chart.js en línea.
      */
     private function comparativeChartsViewData(array $rows): array
     {
         $findRow = fn (string $label) => collect($rows)->firstWhere('label', $label);
 
         $currencyRows = array_values(array_filter(array_map($findRow, self::COMPARATIVE_CHART_CURRENCY_METRICS)));
-        $percentRows  = array_values(array_filter(array_map($findRow, self::COMPARATIVE_CHART_PERCENT_METRICS)));
+        $percentRows = array_values(array_filter(array_map($findRow, self::COMPARATIVE_CHART_PERCENT_METRICS)));
 
         $carteraRow = $findRow('Valor cartera');
         $vencidaRow = $findRow('Cartera vencida');
@@ -669,15 +800,15 @@ class RadiografiaExportService
         };
 
         return [
-            'chartJsInline'       => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
+            'chartJsInline' => file_get_contents(public_path('vendor/chartjs/chart.umd.js')),
             'chartLabelsCurrency' => array_column($currencyRows, 'label'),
-            'chartPrevCurrency'   => array_column($currencyRows, 'prev'),
-            'chartCurrCurrency'   => array_column($currencyRows, 'curr'),
-            'chartLabelsPercent'  => array_column($percentRows, 'label'),
-            'chartPrevPercent'    => array_column($percentRows, 'prev'),
-            'chartCurrPercent'    => array_column($percentRows, 'curr'),
-            'carteraDonutPrev'    => $carteraComposicion('prev'),
-            'carteraDonutCurr'    => $carteraComposicion('curr'),
+            'chartPrevCurrency' => array_column($currencyRows, 'prev'),
+            'chartCurrCurrency' => array_column($currencyRows, 'curr'),
+            'chartLabelsPercent' => array_column($percentRows, 'label'),
+            'chartPrevPercent' => array_column($percentRows, 'prev'),
+            'chartCurrPercent' => array_column($percentRows, 'curr'),
+            'carteraDonutPrev' => $carteraComposicion('prev'),
+            'carteraDonutCurr' => $carteraComposicion('curr'),
         ];
     }
 
@@ -686,44 +817,59 @@ class RadiografiaExportService
      * separados de su renderizado — reutilizados tanto por exportPdfWithConfig()
      * (PDF vía Browsershot) como por el "Ver" web de un run comparativo (misma plantilla,
      * renderizada como página normal), así ambos nunca se desincronizan.
+     *
+     * @param  Period  $period  Periodo actual.
+     * @param  array  $config  report_type, compare_period_id, scope, branch_id, employee_id.
+     * @param  PeriodSummary|null  $summary  Radiografía vigente ya cargada (si no, se busca).
+     * @param  array|null  $snapshot  Snapshot actual ya calculado (si no, se obtiene de caché).
+     * @return array{period: Period, comparePeriod: Period, rows: array, scopeLabel: string, reportType: string, currentComposite: mixed, compareComposite: mixed}
+     *
+     * @throws RuntimeException Si falta compare_period_id o el periodo comparado no tiene radiografía vigente.
+     * @throws ModelNotFoundException Si el periodo de comparación no existe.
      */
     public function comparativeViewData(Period $period, array $config, ?PeriodSummary $summary = null, ?array $snapshot = null): array
     {
-        $summary  ??= $this->requireSummary($period);
+        $summary ??= $this->requireSummary($period);
         $snapshot ??= $this->buildSnapshotCached($period, $summary);
 
         $reportType = $config['report_type'] ?? 'month_vs_month';
         $comparePeriodId = (int) ($config['compare_period_id'] ?? 0);
-        if (!$comparePeriodId) {
+        if (! $comparePeriodId) {
             throw new RuntimeException('Se requiere compare_period_id para reportes comparativos.');
         }
 
-        $comparePeriod  = Period::findOrFail($comparePeriodId);
+        $comparePeriod = Period::findOrFail($comparePeriodId);
         $compareSummary = $this->requireSummary($comparePeriod);
-        $compareSnap    = $this->buildSnapshotCached($comparePeriod, $compareSummary);
+        $compareSnap = $this->buildSnapshotCached($comparePeriod, $compareSummary);
 
         [$rows, $scopeLabel] = $this->buildComparativeRows($snapshot, $compareSnap, $config);
 
         return [
-            'period'           => $period,
-            'comparePeriod'    => $comparePeriod,
-            'rows'             => $rows,
-            'scopeLabel'       => $scopeLabel,
-            'reportType'       => $reportType,
+            'period' => $period,
+            'comparePeriod' => $comparePeriod,
+            'rows' => $rows,
+            'scopeLabel' => $scopeLabel,
+            'reportType' => $reportType,
             'currentComposite' => $snapshot['period']['composite'] ?? null,
             'compareComposite' => $compareSnap['period']['composite'] ?? null,
         ];
     }
 
     /**
-     * Resolve a single branch's row from branch_radiography.branches, given a branch_id.
-     * Same two-step resolution used for the Excel branch export (sections.branches → name →
-     * branch_radiography row).
+     * Obtiene la fila de una sucursal en branch_radiography.branches a partir de su
+     * branch_id. Misma resolución en dos pasos que el Excel por sucursal
+     * (sections.branches → nombre → fila de branch_radiography).
+     *
+     * @param  array  $snapshot  Snapshot general del periodo.
+     * @param  int  $branchId  Sucursal solicitada.
+     * @return array Fila de radiografía de la sucursal.
+     *
+     * @throws RuntimeException Si la sucursal no está en el snapshot o no tiene datos de radiografía.
      */
     private function resolveBranchRow(array $snapshot, int $branchId): array
     {
         $branchSection = collect($snapshot['sections']['branches'] ?? [])->firstWhere('branch_id', $branchId);
-        if (!$branchSection) {
+        if (! $branchSection) {
             throw new RuntimeException("Sucursal ID {$branchId} no encontrada en el snapshot del periodo.");
         }
         $branchName = strtoupper(trim($branchSection['nombre']));
@@ -731,7 +877,7 @@ class RadiografiaExportService
         $branchRow = collect($snapshot['branch_radiography']['branches'] ?? [])
             ->first(fn ($b) => strtoupper(trim($b['sucursal'])) === $branchName);
 
-        if (!$branchRow) {
+        if (! $branchRow) {
             throw new RuntimeException("Sin datos de radiografía para la sucursal {$branchSection['nombre']} en este periodo.");
         }
 
@@ -764,30 +910,37 @@ class RadiografiaExportService
      *    aquí) — mismo criterio, sin duplicar cálculo financiero, solo reshaping.
      *  - Efectividad de cobranza: reutiliza buildEfectividadCobranza($period, null,
      *    $branchId), la MISMA llamada que ya hace applyBranchScope() para Web.
+     *  - Gráficas: SVG generados con RadiographyChartSvgBuilder.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array  $snapshot  Snapshot general.
+     * @param  int  $branchId  Sucursal.
+     * @param  array  $branchRow  Fila de radiografía (ya con el ajuste manual sumado a gastos_operativos si aplica).
+     * @return array<string, mixed> Variables para la vista reports.radiography-pdf-branch.
      */
     private function resolveBranchPdfData(Period $period, array $snapshot, int $branchId, array $branchRow): array
     {
         $branchName = (string) ($branchRow['sucursal'] ?? '');
 
-        $rec     = (float) ($branchRow['recuperacion_total'] ?? 0);
-        $coloc   = (float) ($branchRow['colocacion'] ?? 0);
+        $rec = (float) ($branchRow['recuperacion_total'] ?? 0);
+        $coloc = (float) ($branchRow['colocacion'] ?? 0);
         $cartera = (float) ($branchRow['valor_cartera'] ?? 0);
-        $gastos  = (float) ($branchRow['gastos_operativos'] ?? 0);
+        $gastos = (float) ($branchRow['gastos_operativos'] ?? 0);
 
         $bucketFields = [
-            'mora_1_30'     => 'mora_0_30',
-            'mora_31_60'    => 'mora_31_60',
-            'mora_61_90'    => 'mora_61_90',
-            'mora_91_120'   => 'mora_91_120',
+            'mora_1_30' => 'mora_0_30',
+            'mora_31_60' => 'mora_31_60',
+            'mora_61_90' => 'mora_61_90',
+            'mora_91_120' => 'mora_91_120',
             'mora_120_plus' => 'mora_120_plus',
         ];
-        $moraBuckets  = [];
-        $vencida      = 0.0;
+        $moraBuckets = [];
+        $vencida = 0.0;
         $cntMoraTotal = 0;
         foreach ($bucketFields as $bucketKey => $field) {
             $monto = (float) ($branchRow[$field] ?? 0);
-            $cnt   = (int) ($branchRow["{$field}_cnt"] ?? 0);
-            $vencida      += $monto;
+            $cnt = (int) ($branchRow["{$field}_cnt"] ?? 0);
+            $vencida += $monto;
             $cntMoraTotal += $cnt;
             $moraBuckets[$bucketKey] = ['contratos' => $cnt, 'monto' => $monto];
         }
@@ -796,16 +949,16 @@ class RadiografiaExportService
         $mora = $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0;
 
         $recoveryComponents = [
-            'capital_recuperado'      => (float) ($branchRow['capital_recuperado']      ?? 0),
-            'interes_recuperado'      => (float) ($branchRow['interes_recuperado']      ?? 0),
-            'impuesto_recuperado'     => (float) ($branchRow['impuesto_recuperado']     ?? 0),
-            'charges'                 => (float) ($branchRow['charges']                 ?? 0),
-            'cargos_adicionales'      => (float) ($branchRow['cargos_adicionales']      ?? 0),
-            'excedente_recuperado'    => (float) ($branchRow['excedente_recuperado']    ?? 0),
-            'comision_apertura'       => (float) ($branchRow['comision_apertura']       ?? 0),
-            'cargos_inicio'           => (float) ($branchRow['cargos_inicio']           ?? 0),
+            'capital_recuperado' => (float) ($branchRow['capital_recuperado'] ?? 0),
+            'interes_recuperado' => (float) ($branchRow['interes_recuperado'] ?? 0),
+            'impuesto_recuperado' => (float) ($branchRow['impuesto_recuperado'] ?? 0),
+            'charges' => (float) ($branchRow['charges'] ?? 0),
+            'cargos_adicionales' => (float) ($branchRow['cargos_adicionales'] ?? 0),
+            'excedente_recuperado' => (float) ($branchRow['excedente_recuperado'] ?? 0),
+            'comision_apertura' => (float) ($branchRow['comision_apertura'] ?? 0),
+            'cargos_inicio' => (float) ($branchRow['cargos_inicio'] ?? 0),
             'seguro_crece_reconocido' => (float) ($branchRow['seguro_crece_reconocido'] ?? 0),
-            'otros_recuperacion'      => (float) ($branchRow['otros_recuperacion']      ?? 0),
+            'otros_recuperacion' => (float) ($branchRow['otros_recuperacion'] ?? 0),
         ];
 
         $placementsByProduct = collect($snapshot['sections']['placement_by_branch_product'] ?? [])
@@ -823,12 +976,12 @@ class RadiografiaExportService
         // "Nómina y Capital Humano" (nominaTotalFor() también incluye IMSS patronal y gastos
         // de empleados vía nómina, que no vienen de fact_noi_movements) — nunca se presenta
         // como si sumara contra ese KPI.
-        $branchCalc     = app(BranchRadiographyCalculator::class);
+        $branchCalc = app(BranchRadiographyCalculator::class);
         $payrollByBranch = collect($snapshot['sections']['payroll_by_branch_concept'] ?? [])
             ->first(fn ($_, $k) => strtoupper(trim($k)) === strtoupper(trim($branchName))) ?? [];
 
         $percepciones = [];
-        $deducciones  = [];
+        $deducciones = [];
         foreach ($payrollByBranch as $concept => $amount) {
             $amount = (float) $amount;
             if ($amount == 0.0) {
@@ -841,25 +994,25 @@ class RadiografiaExportService
             }
         }
         $payrollDetail = [
-            'percepciones'       => $percepciones,
-            'deducciones'        => $deducciones,
+            'percepciones' => $percepciones,
+            'deducciones' => $deducciones,
             'percepciones_total' => round((float) array_sum(array_column($percepciones, 'monto')), 2),
-            'deducciones_total'  => round((float) array_sum(array_column($deducciones, 'monto')), 2),
+            'deducciones_total' => round((float) array_sum(array_column($deducciones, 'monto')), 2),
         ];
 
-        $nomina        = BranchRadiographyCalculator::nominaTotalFor($branchRow);
-        $ingresoBase   = BranchRadiographyCalculator::ingresoEbitdaBaseFor($branchRow);
+        $nomina = BranchRadiographyCalculator::nominaTotalFor($branchRow);
+        $ingresoBase = BranchRadiographyCalculator::ingresoEbitdaBaseFor($branchRow);
         $gastosTotales = BranchRadiographyCalculator::gastosTotalesFor($branchRow);
-        $ebitda        = BranchRadiographyCalculator::ebitdaFinalFor($branchRow);
-        $margen        = BranchRadiographyCalculator::margenEbitdaFor($branchRow);
-        $categoria     = \App\Services\Radiography\RadiographyStyleHelper::ebitdaCategory($ebitda);
-        $catColors     = \App\Services\Radiography\RadiographyStyleHelper::categoryColors($categoria);
+        $ebitda = BranchRadiographyCalculator::ebitdaFinalFor($branchRow);
+        $margen = BranchRadiographyCalculator::margenEbitdaFor($branchRow);
+        $categoria = RadiographyStyleHelper::ebitdaCategory($ebitda);
+        $catColors = RadiographyStyleHelper::categoryColors($categoria);
 
         $gastosDetalle = (array) ($branchRow['gastos_detalle'] ?? []);
         arsort($gastosDetalle);
 
-        $fondeo      = (float) ($branchRow['prestamos_fondea'] ?? 0);
-        $excedente   = (float) ($branchRow['excedentes']       ?? 0);
+        $fondeo = (float) ($branchRow['prestamos_fondea'] ?? 0);
+        $excedente = (float) ($branchRow['excedentes'] ?? 0);
 
         // warmDataIds() ANTES de buildEfectividadCobranza(): $this->snapshotBuilder es el
         // mismo objeto usado arriba para $snapshot, pero buildSnapshot()/buildSnapshotCached()
@@ -872,7 +1025,7 @@ class RadiografiaExportService
         $this->snapshotBuilder->warmDataIds($period);
         $efectividad = $this->snapshotBuilder->buildEfectividadCobranza($period, null, $branchId);
 
-        $charts = app(\App\Services\Radiography\RadiographyChartSvgBuilder::class);
+        $charts = app(RadiographyChartSvgBuilder::class);
 
         $chartRecuperacionVsColocacion = $charts->horizontalBarChart([
             ['label' => 'Recuperación', 'value' => $rec],
@@ -886,7 +1039,7 @@ class RadiografiaExportService
 
         $moraBucketLabels = [
             'al_corriente' => 'Al corriente', 'mora_1_30' => 'Mora 1-30', 'mora_31_60' => 'Mora 31-60',
-            'mora_61_90'   => 'Mora 61-90',   'mora_91_120' => 'Mora 91-120', 'mora_120_plus' => 'Mora 120+',
+            'mora_61_90' => 'Mora 61-90',   'mora_91_120' => 'Mora 91-120', 'mora_120_plus' => 'Mora 120+',
         ];
         $chartMoraPorBucket = $charts->horizontalBarChart(
             array_map(fn ($k, $b) => ['label' => $moraBucketLabels[$k] ?? $k, 'value' => (float) $b['monto']], array_keys($moraBuckets), $moraBuckets),
@@ -925,38 +1078,33 @@ class RadiografiaExportService
             'gastosDetalle' => $gastosDetalle, 'fondeo' => $fondeo, 'excedente' => $excedente,
             'efectividad' => $efectividad,
             'chartRecuperacionVsColocacion' => $chartRecuperacionVsColocacion,
-            'chartCarteraSanaVsVencida'     => $chartCarteraSanaVsVencida,
-            'chartMoraPorBucket'            => $chartMoraPorBucket,
-            'chartEbitda'                   => $chartEbitda,
-            'chartNominaComposicion'        => $chartNominaComposicion,
-            'chartColocacionPorProducto'    => $chartColocacionPorProducto,
-            'chartEfectividad'              => $chartEfectividad,
+            'chartCarteraSanaVsVencida' => $chartCarteraSanaVsVencida,
+            'chartMoraPorBucket' => $chartMoraPorBucket,
+            'chartEbitda' => $chartEbitda,
+            'chartNominaComposicion' => $chartNominaComposicion,
+            'chartColocacionPorProducto' => $chartColocacionPorProducto,
+            'chartEfectividad' => $chartEfectividad,
         ];
     }
 
-    /**
-     * Resolve a single employee's gestor metrics. Identidad PRIMERO por employee_id, vía
-     * RadiographySnapshotBuilder::findEmployeeGestorRowByEmployeeId() — la MISMA vinculación
-     * robusta que usa Web (applyEmployeeScope()), en vez de comparar texto contra el nombre
-     * de display de la fila ya expuesta (frágil: causa raíz real de "funciona un mes, falla
-     * otro" — ver auditoría 2026-08-24). El nombre solo se usa como fallback explícito.
-     */
     /**
      * Ajuste manual EFÍMERO de esta request/descarga (reversión 07-sep-2026,
      * cierre) — nunca lee/escribe BD. Solo aplica si `manual_adjustment.scope`
      * es 'employee' Y su `employee_id` es EXACTAMENTE este colaborador; nunca
      * "se filtra" a otro colaborador que comparta grupo NOI fusionado.
      *
-     * @return array{0: float, 1: string}
-     */
-    /**
      * Cierre 17-sep-2026, ronda 2 — delega en TemporaryOpexAdjustmentService (fuente
      * ÚNICA): solo aplica si mode='employee' y el employee_id coincide EXACTO
      * (nunca "de paso" a otro colaborador).
+     *
+     * @param  Period  $period  Periodo (para obtener las filas de gestores).
+     * @param  array  $config  Configuración de la descarga (usa manual_adjustment).
+     * @param  int  $employeeId  Colaborador del reporte.
+     * @return array{0: float, 1: string} [monto aplicable (0 si no aplica), nota].
      */
     private function resolveManualAdjustmentFor(Period $period, array $config, int $employeeId): array
     {
-        if (!isset($config['manual_adjustment'])) {
+        if (! isset($config['manual_adjustment'])) {
             return [0.0, ''];
         }
         $empGestores = $this->snapshotBuilder->buildAllEmployeeGestorRows($period);
@@ -969,10 +1117,18 @@ class RadiografiaExportService
         return [$amount, (string) ($adjustment['notes'] ?? '')];
     }
 
-    /** Monto/nota del ajuste manual EFÍMERO de SUCURSAL para este periodo/branch — ver TemporaryOpexAdjustmentService. */
+    /**
+     * Monto/nota del ajuste manual EFÍMERO de SUCURSAL para este periodo/branch — ver TemporaryOpexAdjustmentService.
+     * Nunca lee/escribe BD de ajustes.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración de la descarga (usa manual_adjustment).
+     * @param  int  $branchId  Sucursal del reporte.
+     * @return array{0: float, 1: string} [monto aplicable (0 si no aplica), nota].
+     */
     private function resolveBranchManualAdjustmentFor(Period $period, array $config, int $branchId): array
     {
-        if (!isset($config['manual_adjustment'])) {
+        if (! isset($config['manual_adjustment'])) {
             return [0.0, ''];
         }
         $empGestores = $this->snapshotBuilder->buildAllEmployeeGestorRows($period);
@@ -985,20 +1141,41 @@ class RadiografiaExportService
         return [$amount, (string) ($adjustment['notes'] ?? '')];
     }
 
+    /**
+     * Métricas de un gestor para su PDF. Identidad PRIMERO por employee_id, vía
+     * RadiographySnapshotBuilder::findEmployeeGestorRowByEmployeeId() — la MISMA vinculación
+     * robusta que usa Web (applyEmployeeScope()), en vez de comparar texto contra el nombre
+     * de display de la fila ya expuesta (frágil: causa raíz real de "funciona un mes, falla
+     * otro" — ver auditoría 2026-08-24). El nombre solo se usa como fallback explícito
+     * (igualdad normalizada y, después, contención parcial).
+     *
+     * Construye desgloses (nómina NOI, OPEX automático + ajuste manual, recuperación,
+     * colocación, mora, efectividad), gráficas SVG y el EBITDA del gestor
+     * (Ingreso base EBITDA − (Gastos + Nómina neta)).
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array  $snapshot  Snapshot general.
+     * @param  int  $employeeId  Colaborador.
+     * @param  float  $extraExpenseAmount  Ajuste manual efímero de OPEX a sumar.
+     * @param  string  $extraExpenseNotes  Nota del ajuste.
+     * @return array<string, mixed> Variables para la vista reports.radiography-pdf-employee.
+     *
+     * @throws RuntimeException Si el empleado no existe.
+     */
     private function resolveEmployeeRow(Period $period, array $snapshot, int $employeeId, float $extraExpenseAmount = 0.0, string $extraExpenseNotes = ''): array
     {
         $employee = Employee::find($employeeId);
-        if (!$employee) {
+        if (! $employee) {
             throw new RuntimeException("Empleado ID {$employeeId} no encontrado.");
         }
 
         $canonicalizer = app(EmployeeNameCanonicalizer::class);
-        $target        = $canonicalizer->normalize($employee->full_name ?? '');
+        $target = $canonicalizer->normalize($employee->full_name ?? '');
 
         $empRow = $this->snapshotBuilder->findEmployeeGestorRowByEmployeeId($period, $employeeId);
 
         $empGest = $snapshot['sections']['employees_gestores'] ?? [];
-        if (!$empRow) {
+        if (! $empRow) {
             foreach ($empGest as $e) {
                 if ($canonicalizer->normalize($e['name'] ?? '') === $target) {
                     $empRow = $e;
@@ -1006,7 +1183,7 @@ class RadiografiaExportService
                 }
             }
         }
-        if (!$empRow) {
+        if (! $empRow) {
             foreach ($empGest as $e) {
                 $norm = $canonicalizer->normalize($e['name'] ?? '');
                 if ($norm && (str_contains($norm, $target) || str_contains($target, $norm))) {
@@ -1016,44 +1193,44 @@ class RadiografiaExportService
             }
         }
 
-        $pagos       = (float)($empRow['pagos']       ?? 0);
-        $bonos       = (float)($empRow['bonos']       ?? 0);
-        $desctos     = (float)($empRow['descuentos']  ?? 0);
-        $neto        = (float)($empRow['neto']        ?? ($pagos + $bonos - $desctos));
-        $coloc       = (float)($empRow['colocacion']  ?? 0);
-        $rec         = (float)($empRow['recuperacion'] ?? 0);
-        $cartera     = (float)($empRow['cartera']     ?? 0);
-        $vencida     = (float)($empRow['vencida']     ?? 0);
-        $mora        = $cartera > 0 ? round($vencida / $cartera * 100, 2) : (float)($empRow['mora'] ?? 0);
-        $ingresoBase = (float)($empRow['ingreso_ebitda_base'] ?? 0);
+        $pagos = (float) ($empRow['pagos'] ?? 0);
+        $bonos = (float) ($empRow['bonos'] ?? 0);
+        $desctos = (float) ($empRow['descuentos'] ?? 0);
+        $neto = (float) ($empRow['neto'] ?? ($pagos + $bonos - $desctos));
+        $coloc = (float) ($empRow['colocacion'] ?? 0);
+        $rec = (float) ($empRow['recuperacion'] ?? 0);
+        $cartera = (float) ($empRow['cartera'] ?? 0);
+        $vencida = (float) ($empRow['vencida'] ?? 0);
+        $mora = $cartera > 0 ? round($vencida / $cartera * 100, 2) : (float) ($empRow['mora'] ?? 0);
+        $ingresoBase = (float) ($empRow['ingreso_ebitda_base'] ?? 0);
 
         // ── Desgloses canónicos (2026-08-25) — MISMOS campos internos que ya usa Web
         // (RadiographySnapshotBuilder::applyEmployeeScope()) y el Excel de gestor
         // (RadiographyWorkbookBuilder::buildEmployeeFromSnapshot()) — nunca recalculados
         // aparte, para que Web = Excel = PDF muestren siempre la misma historia. Ver
         // buildEmployeesGestores() por el origen de estos campos "_"-internos.
-        $employeeIdsForNoi = !empty($empRow['_employee_ids']) ? $empRow['_employee_ids'] : [$employeeId];
-        $percepDeducc      = app(BranchRadiographyCalculator::class)
+        $employeeIdsForNoi = ! empty($empRow['_employee_ids']) ? $empRow['_employee_ids'] : [$employeeId];
+        $percepDeducc = app(BranchRadiographyCalculator::class)
             ->computeNoiPercepcionesDeduccionesForEmployees($this->snapshotBuilder->resolveDataIdsPublic($period), $employeeIdsForNoi);
 
         // OPEX del gestor = automático (fact_expenses) + ajuste manual EFÍMERO de
         // esta descarga — misma fuente que Web/Excel. Ver buildEmployeeExpenseDetail().
         $expenseDetail = $this->snapshotBuilder->buildEmployeeExpenseDetail($employeeIdsForNoi, $employeeId, $extraExpenseAmount, $extraExpenseNotes);
-        $gastos        = $expenseDetail['total'];
-        $payrollDetail     = $this->snapshotBuilder->buildEmployeePayrollDetail($employeeIdsForNoi, $percepDeducc);
+        $gastos = $expenseDetail['total'];
+        $payrollDetail = $this->snapshotBuilder->buildEmployeePayrollDetail($employeeIdsForNoi, $percepDeducc);
 
         $recoveryComponents = $empRow['_recovery_components'] ?? null;
-        $recoveryByProduct  = $empRow['_recovery_by_product'] ?? [];
+        $recoveryByProduct = $empRow['_recovery_by_product'] ?? [];
         $placementsByProduct = $empRow['_placements_by_product'] ?? [];
-        $moraBuckets        = $empRow['_mora_buckets'] ?? [];
-        $efectividad        = $this->snapshotBuilder->buildEfectividadCobranza($period, $empRow['name'] ?? null);
+        $moraBuckets = $empRow['_mora_buckets'] ?? [];
+        $efectividad = $this->snapshotBuilder->buildEfectividadCobranza($period, $empRow['name'] ?? null);
 
         // ── Gráficas del PDF — SVG server-side sobre el MISMO dataset canónico de
         // arriba (nunca recalculado aparte). Cada builder devuelve '' si no hay datos
         // reales que graficar — el blade omite la sección completa en ese caso, nunca
         // un recuadro vacío. Ver RadiographyChartSvgBuilder por qué SVG (dompdf no
         // ejecuta JS/canvas, así que una librería de charts basada en JS no aplica).
-        $charts = app(\App\Services\Radiography\RadiographyChartSvgBuilder::class);
+        $charts = app(RadiographyChartSvgBuilder::class);
 
         $chartRecuperacionVsColocacion = $charts->horizontalBarChart([
             ['label' => 'Recuperación', 'value' => $rec],
@@ -1068,11 +1245,11 @@ class RadiografiaExportService
         // Mismas etiquetas que RadiographySnapshotBuilder::moraBucketDefs() y el blade de
         // gestor — solo texto de presentación, no recalcula montos.
         $moraBucketLabels = [
-            'al_corriente'  => 'Al corriente',
-            'mora_1_30'     => 'Mora 1-30',
-            'mora_31_60'    => 'Mora 31-60',
-            'mora_61_90'    => 'Mora 61-90',
-            'mora_91_120'   => 'Mora 91-120',
+            'al_corriente' => 'Al corriente',
+            'mora_1_30' => 'Mora 1-30',
+            'mora_31_60' => 'Mora 31-60',
+            'mora_61_90' => 'Mora 61-90',
+            'mora_91_120' => 'Mora 91-120',
             'mora_120_plus' => 'Mora 120+',
         ];
         $chartMoraPorBucket = $charts->horizontalBarChart(
@@ -1108,122 +1285,138 @@ class RadiografiaExportService
         ], 'Efectividad de cobranza');
 
         return [
-            'empName'   => $employee->full_name,
+            'empName' => $employee->full_name,
             'empBranch' => $empRow['branch'] ?? 'Sin asignar',
-            'pagos'     => $pagos,
-            'bonos'     => $bonos,
-            'desctos'   => $desctos,
-            'gastos'    => $gastos,
+            'pagos' => $pagos,
+            'bonos' => $bonos,
+            'desctos' => $desctos,
+            'gastos' => $gastos,
             'expenseDetail' => $expenseDetail,
-            'neto'      => $neto,
-            'coloc'     => $coloc,
-            'ops'       => (int)($empRow['operaciones'] ?? 0),
-            'rec'       => $rec,
-            'cartera'   => $cartera,
-            'vencida'   => $vencida,
-            'mora'      => $mora,
+            'neto' => $neto,
+            'coloc' => $coloc,
+            'ops' => (int) ($empRow['operaciones'] ?? 0),
+            'rec' => $rec,
+            'cartera' => $cartera,
+            'vencida' => $vencida,
+            'mora' => $mora,
             'ingresoBase' => $ingresoBase,
-            'payrollDetail'       => $payrollDetail,
-            'recoveryComponents'  => $recoveryComponents,
-            'recoveryByProduct'   => $recoveryByProduct,
+            'payrollDetail' => $payrollDetail,
+            'recoveryComponents' => $recoveryComponents,
+            'recoveryByProduct' => $recoveryByProduct,
             'placementsByProduct' => $placementsByProduct,
-            'moraBuckets'         => $moraBuckets,
-            'efectividad'         => $efectividad,
+            'moraBuckets' => $moraBuckets,
+            'efectividad' => $efectividad,
             'chartRecuperacionVsColocacion' => $chartRecuperacionVsColocacion,
-            'chartCarteraSanaVsVencida'     => $chartCarteraSanaVsVencida,
-            'chartMoraPorBucket'            => $chartMoraPorBucket,
-            'chartEbitda'                   => $chartEbitda,
-            'chartNominaComposicion'        => $chartNominaComposicion,
-            'chartColocacionPorProducto'    => $chartColocacionPorProducto,
-            'chartRecuperacionPorProducto'  => $chartRecuperacionPorProducto,
-            'chartEfectividad'              => $chartEfectividad,
+            'chartCarteraSanaVsVencida' => $chartCarteraSanaVsVencida,
+            'chartMoraPorBucket' => $chartMoraPorBucket,
+            'chartEbitda' => $chartEbitda,
+            'chartNominaComposicion' => $chartNominaComposicion,
+            'chartColocacionPorProducto' => $chartColocacionPorProducto,
+            'chartRecuperacionPorProducto' => $chartRecuperacionPorProducto,
+            'chartEfectividad' => $chartEfectividad,
             // EBITDA = Ingreso base EBITDA (mismos componentes que BranchRadiographyCalculator::
             // ingresoEbitdaBaseFor(), agregados por gestor) − (Gastos + NóminaNeta). NUNCA
             // Recuperación − Colocación (esa fórmula quedó obsoleta, ver criterio final 2026-07).
-            'utilidad'  => $utilidadFinal = $ingresoBase - ($gastos + $pagos + $bonos - $desctos),
-            'margen'    => $ingresoBase > 0 ? round($utilidadFinal / $ingresoBase * 100, 2) : 0.0,
-            'ebitdaCategoria' => $ebitdaCategoriaFinal = \App\Services\Radiography\RadiographyStyleHelper::ebitdaCategory($utilidadFinal),
+            'utilidad' => $utilidadFinal = $ingresoBase - ($gastos + $pagos + $bonos - $desctos),
+            'margen' => $ingresoBase > 0 ? round($utilidadFinal / $ingresoBase * 100, 2) : 0.0,
+            'ebitdaCategoria' => $ebitdaCategoriaFinal = RadiographyStyleHelper::ebitdaCategory($utilidadFinal),
             // Colores ARGB (formato Excel, "FFrrggbb") de la MISMA fuente que usa el
             // badge de categoría en Excel — se convierten a "#rrggbb" en el blade.
-            'ebitdaCategoriaColors' => \App\Services\Radiography\RadiographyStyleHelper::categoryColors($ebitdaCategoriaFinal),
+            'ebitdaCategoriaColors' => RadiographyStyleHelper::categoryColors($ebitdaCategoriaFinal),
         ];
     }
 
     /**
-     * Build the comparative metrics rows (prev/curr/diff/var%), respecting scope
-     * general|branch|employee — same metric set and logic as
-     * RadiographyWorkbookBuilder::buildComparativeFromSnapshots().
+     * Arma las filas de métricas del comparativo (anterior/actual/diferencia/var %)
+     * respetando el alcance general|branch|employee — mismo conjunto de métricas y
+     * lógica que RadiographyWorkbookBuilder::buildComparativeFromSnapshots().
+     * General agrega nómina NOI y rotación; gestor usa un conjunto simple de 5
+     * métricas. Var % = 100 cuando el valor anterior es 0 y el actual no.
+     *
+     * @param  array  $currentSnap  Snapshot del periodo actual.
+     * @param  array  $compareSnap  Snapshot del periodo comparado.
+     * @param  array  $config  scope, branch_id, employee_id.
+     * @return array{0: array<int, array{label:string, prev:float, curr:float, diff:float, var_pct:float, fmt:string}>, 1: string} [filas, etiqueta del alcance].
      */
     private function buildComparativeRows(array $currentSnap, array $compareSnap, array $config): array
     {
-        $scope    = $config['scope']       ?? 'general';
-        $branchId = $config['branch_id']   ?? null;
-        $empId    = $config['employee_id'] ?? null;
+        $scope = $config['scope'] ?? 'general';
+        $branchId = $config['branch_id'] ?? null;
+        $empId = $config['employee_id'] ?? null;
 
         $scopeLabel = 'General';
         $branchName = null;
 
         if ($scope === 'branch' && $branchId) {
-            $branchRow  = collect($currentSnap['sections']['branches'] ?? [])->firstWhere('branch_id', (int)$branchId);
+            $branchRow = collect($currentSnap['sections']['branches'] ?? [])->firstWhere('branch_id', (int) $branchId);
             $branchName = $branchRow['nombre'] ?? "Sucursal #{$branchId}";
             $scopeLabel = $branchName;
         } elseif ($scope === 'employee' && $empId) {
-            $emp        = Employee::find($empId);
+            $emp = Employee::find($empId);
             $scopeLabel = $emp->full_name ?? "Empleado #{$empId}";
         }
 
         $branchVal = function (array $snap, string $field) use ($branchId, $branchName): float {
-            if (!$branchId) return 0.0;
-            $brUp     = strtoupper(trim($branchName ?? ''));
+            if (! $branchId) {
+                return 0.0;
+            }
+            $brUp = strtoupper(trim($branchName ?? ''));
             $branches = $snap['sections']['branches'] ?? [];
-            $row = collect($branches)->firstWhere('branch_id', (int)$branchId);
-            if (!$row) { $row = collect($branches)->first(fn ($b) => strtoupper($b['nombre'] ?? '') === $brUp); }
-            return (float)($row[$field] ?? 0);
+            $row = collect($branches)->firstWhere('branch_id', (int) $branchId);
+            if (! $row) {
+                $row = collect($branches)->first(fn ($b) => strtoupper($b['nombre'] ?? '') === $brUp);
+            }
+
+            return (float) ($row[$field] ?? 0);
         };
 
         $canonicalizer = app(EmployeeNameCanonicalizer::class);
         $empVal = function (array $snap, string $field) use ($empId, $canonicalizer): float {
-            if (!$empId) return 0.0;
-            $emp    = Employee::find($empId);
+            if (! $empId) {
+                return 0.0;
+            }
+            $emp = Employee::find($empId);
             $target = $canonicalizer->normalize($emp->full_name ?? '');
             foreach ($snap['sections']['employees_gestores'] ?? [] as $r) {
                 if ($canonicalizer->normalize($r['name'] ?? '') === $target) {
-                    return (float)($r[$field] ?? 0);
+                    return (float) ($r[$field] ?? 0);
                 }
             }
+
             return 0.0;
         };
 
         $get = function (array $snap, string $path) use ($scope, $branchVal, $empVal, $branchId, $empId): float {
             if ($scope === 'branch' && $branchId) {
                 return match ($path) {
-                    'cartera'      => $branchVal($snap, 'cartera'),
-                    'colocacion'   => $branchVal($snap, 'colocacion'),
+                    'cartera' => $branchVal($snap, 'cartera'),
+                    'colocacion' => $branchVal($snap, 'colocacion'),
                     'recuperacion' => $branchVal($snap, 'recuperacion'),
-                    'gastos'       => $branchVal($snap, 'gastos'),
-                    'mora'         => $branchVal($snap, 'mora'),
-                    'vencida'      => $branchVal($snap, 'vencida'),
-                    default        => 0.0,
+                    'gastos' => $branchVal($snap, 'gastos'),
+                    'mora' => $branchVal($snap, 'mora'),
+                    'vencida' => $branchVal($snap, 'vencida'),
+                    default => 0.0,
                 };
             }
             if ($scope === 'employee' && $empId) {
                 return match ($path) {
                     'recuperacion' => $empVal($snap, 'recuperacion'),
-                    'colocacion'   => $empVal($snap, 'colocacion'),
-                    'cartera'      => $empVal($snap, 'cartera'),
-                    'vencida'      => $empVal($snap, 'vencida'),
-                    'gastos'       => $empVal($snap, 'gastos'),
-                    default        => 0.0,
+                    'colocacion' => $empVal($snap, 'colocacion'),
+                    'cartera' => $empVal($snap, 'cartera'),
+                    'vencida' => $empVal($snap, 'vencida'),
+                    'gastos' => $empVal($snap, 'gastos'),
+                    default => 0.0,
                 };
             }
+
             return match ($path) {
-                'cartera'      => (float)($snap['summary']['portfolio_total']   ?? 0),
-                'colocacion'   => (float)($snap['summary']['placement_total']   ?? 0),
-                'recuperacion' => (float)($snap['summary']['recovery_total']    ?? 0),
-                'gastos'       => (float)($snap['summary']['expenses_total']    ?? 0),
-                'vencida'      => (float)($snap['summary']['overdue_portfolio'] ?? 0),
-                'mora'         => (float)($snap['summary']['mora_index']        ?? 0),
-                default        => 0.0,
+                'cartera' => (float) ($snap['summary']['portfolio_total'] ?? 0),
+                'colocacion' => (float) ($snap['summary']['placement_total'] ?? 0),
+                'recuperacion' => (float) ($snap['summary']['recovery_total'] ?? 0),
+                'gastos' => (float) ($snap['summary']['expenses_total'] ?? 0),
+                'vencida' => (float) ($snap['summary']['overdue_portfolio'] ?? 0),
+                'mora' => (float) ($snap['summary']['mora_index'] ?? 0),
+                default => 0.0,
             };
         };
 
@@ -1235,18 +1428,20 @@ class RadiografiaExportService
             $rowSource = function (array $snap) use ($scope, $branchName): array {
                 if ($scope === 'branch' && $branchName) {
                     $brUp = strtoupper(trim($branchName));
+
                     return collect($snap['branch_radiography']['branches'] ?? [])
                         ->first(fn ($b) => strtoupper(trim($b['sucursal'] ?? '')) === $brUp) ?? [];
                 }
+
                 return $snap['branch_radiography']['global'] ?? [];
             };
             $cmpRow = $rowSource($compareSnap);
             $curRow = $rowSource($currentSnap);
 
-            $moraTotalFor = fn (array $row) => (float)($row['mora_0_30'] ?? 0) + (float)($row['mora_31_60'] ?? 0)
-                + (float)($row['mora_61_90'] ?? 0) + (float)($row['mora_91_120'] ?? 0) + (float)($row['mora_120_plus'] ?? 0);
-            $moraPctFor = fn (array $row) => (float)($row['valor_cartera'] ?? 0) > 0
-                ? round($moraTotalFor($row) / (float)$row['valor_cartera'] * 100, 2) : 0.0;
+            $moraTotalFor = fn (array $row) => (float) ($row['mora_0_30'] ?? 0) + (float) ($row['mora_31_60'] ?? 0)
+                + (float) ($row['mora_61_90'] ?? 0) + (float) ($row['mora_91_120'] ?? 0) + (float) ($row['mora_120_plus'] ?? 0);
+            $moraPctFor = fn (array $row) => (float) ($row['valor_cartera'] ?? 0) > 0
+                ? round($moraTotalFor($row) / (float) $row['valor_cartera'] * 100, 2) : 0.0;
 
             $ingBasePrev = BranchRadiographyCalculator::ingresoEbitdaBaseFor($cmpRow);
             $ingBaseCurr = BranchRadiographyCalculator::ingresoEbitdaBaseFor($curRow);
@@ -1254,30 +1449,30 @@ class RadiografiaExportService
             $gastosTotCurr = BranchRadiographyCalculator::gastosTotalesFor($curRow);
 
             $metricValues = [
-                ['Recuperación',                (float)($cmpRow['recuperacion_total'] ?? 0), (float)($curRow['recuperacion_total'] ?? 0), 'currency'],
+                ['Recuperación',                (float) ($cmpRow['recuperacion_total'] ?? 0), (float) ($curRow['recuperacion_total'] ?? 0), 'currency'],
                 ['Ingreso base EBITDA',          $ingBasePrev, $ingBaseCurr, 'currency'],
-                ['Colocación',                   (float)($cmpRow['colocacion'] ?? 0), (float)($curRow['colocacion'] ?? 0), 'currency'],
-                ['Valor cartera',                (float)($cmpRow['valor_cartera'] ?? 0), (float)($curRow['valor_cartera'] ?? 0), 'currency'],
+                ['Colocación',                   (float) ($cmpRow['colocacion'] ?? 0), (float) ($curRow['colocacion'] ?? 0), 'currency'],
+                ['Valor cartera',                (float) ($cmpRow['valor_cartera'] ?? 0), (float) ($curRow['valor_cartera'] ?? 0), 'currency'],
                 ['Cartera vencida',              $moraTotalFor($cmpRow), $moraTotalFor($curRow), 'currency'],
                 ['Mora %',                       $moraPctFor($cmpRow), $moraPctFor($curRow), 'percent'],
-                ['OPEX',                         (float)($cmpRow['gastos_operativos'] ?? 0), (float)($curRow['gastos_operativos'] ?? 0), 'currency'],
+                ['OPEX',                         (float) ($cmpRow['gastos_operativos'] ?? 0), (float) ($curRow['gastos_operativos'] ?? 0), 'currency'],
                 ['Nómina y Capital Humano',      BranchRadiographyCalculator::nominaTotalFor($cmpRow), BranchRadiographyCalculator::nominaTotalFor($curRow), 'currency'],
                 ['Gastos Totales',               $gastosTotPrev, $gastosTotCurr, 'currency'],
                 ['EBITDA',                       $ingBasePrev - $gastosTotPrev, $ingBaseCurr - $gastosTotCurr, 'currency'],
                 ['Margen EBITDA',                BranchRadiographyCalculator::margenEbitdaFor($cmpRow), BranchRadiographyCalculator::margenEbitdaFor($curRow), 'percent'],
-                ['Préstamos activos (contratos)', (float)($cmpRow['contratos'] ?? 0), (float)($curRow['contratos'] ?? 0), 'integer'],
-                ['IMSS',                         (float)($cmpRow['imss_patronal'] ?? 0), (float)($curRow['imss_patronal'] ?? 0), 'currency'],
+                ['Préstamos activos (contratos)', (float) ($cmpRow['contratos'] ?? 0), (float) ($curRow['contratos'] ?? 0), 'integer'],
+                ['IMSS',                         (float) ($cmpRow['imss_patronal'] ?? 0), (float) ($curRow['imss_patronal'] ?? 0), 'currency'],
             ];
             if ($scope === 'general') {
                 $rotCmp = $compareSnap['sections']['rotation'] ?? [];
                 $rotCur = $currentSnap['sections']['rotation'] ?? [];
-                $metricValues[] = ['Percepciones',              (float)($compareSnap['summary']['noi_percepciones'] ?? 0), (float)($currentSnap['summary']['noi_percepciones'] ?? 0), 'currency'];
-                $metricValues[] = ['Deducciones (informativo)', (float)($compareSnap['summary']['noi_deducciones']  ?? 0), (float)($currentSnap['summary']['noi_deducciones']  ?? 0), 'currency'];
-                $metricValues[] = ['Neto pagado a trabajadores', (float)($compareSnap['summary']['noi_neto_pagado'] ?? 0), (float)($currentSnap['summary']['noi_neto_pagado'] ?? 0), 'currency'];
-                $metricValues[] = ['Plantilla',                 (float)($rotCmp['current_count'] ?? $rotCmp['promedio'] ?? 0), (float)($rotCur['current_count'] ?? $rotCur['promedio'] ?? 0), 'integer'];
-                $metricValues[] = ['Altas del periodo',          (float)($rotCmp['altas'] ?? 0), (float)($rotCur['altas'] ?? 0), 'integer'];
-                $metricValues[] = ['Bajas del periodo',          (float)($rotCmp['bajas'] ?? 0), (float)($rotCur['bajas'] ?? 0), 'integer'];
-                $metricValues[] = ['Rotación %',                 (float)($rotCmp['indice'] ?? 0), (float)($rotCur['indice'] ?? 0), 'percent'];
+                $metricValues[] = ['Percepciones',              (float) ($compareSnap['summary']['noi_percepciones'] ?? 0), (float) ($currentSnap['summary']['noi_percepciones'] ?? 0), 'currency'];
+                $metricValues[] = ['Deducciones (informativo)', (float) ($compareSnap['summary']['noi_deducciones'] ?? 0), (float) ($currentSnap['summary']['noi_deducciones'] ?? 0), 'currency'];
+                $metricValues[] = ['Neto pagado a trabajadores', (float) ($compareSnap['summary']['noi_neto_pagado'] ?? 0), (float) ($currentSnap['summary']['noi_neto_pagado'] ?? 0), 'currency'];
+                $metricValues[] = ['Plantilla',                 (float) ($rotCmp['current_count'] ?? $rotCmp['promedio'] ?? 0), (float) ($rotCur['current_count'] ?? $rotCur['promedio'] ?? 0), 'integer'];
+                $metricValues[] = ['Altas del periodo',          (float) ($rotCmp['altas'] ?? 0), (float) ($rotCur['altas'] ?? 0), 'integer'];
+                $metricValues[] = ['Bajas del periodo',          (float) ($rotCmp['bajas'] ?? 0), (float) ($rotCur['bajas'] ?? 0), 'integer'];
+                $metricValues[] = ['Rotación %',                 (float) ($rotCmp['indice'] ?? 0), (float) ($rotCur['indice'] ?? 0), 'percent'];
             }
 
             foreach ($metricValues as [$label, $prev, $curr, $fmt]) {
@@ -1309,16 +1504,23 @@ class RadiografiaExportService
     }
 
     /**
-     * Build the snapshot for use in the web preview page — general o proyectado a un
+     * Snapshot para la vista previa web — general o proyectado a un
      * scope (sucursal/colaborador) según $config['scope']/'branch_id'/'employee_id'.
      * Pasa por el mismo caché de 180s que Excel/PDF (buildSnapshotCached ya incluye el
      * config completo en su clave), así que cambiar de filtro repetidamente durante la
      * misma sesión no recalcula desde cero cada vez.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración de alcance y ajuste manual.
+     * @return array Snapshot listo para la vista.
+     *
+     * @throws RuntimeException Si el periodo no tiene radiografía vigente.
      */
     public function buildSnapshot(Period $period, array $config = []): array
     {
         $summary = $this->requireSummary($period);
         $summary->loadMissing(['branchSummaries', 'incidents']);
+
         return $this->buildSnapshotCached($period, $summary, $config);
     }
 
@@ -1334,6 +1536,14 @@ class RadiografiaExportService
      * comparativo (comparativoData() → comparativeViewData() → aquí, sin overrides,
      * es el único llamador que puede tocar un summary distinto al que ya validó el
      * controlador). Mismo criterio de "vigente" que el resto del código ahora.
+     *
+     * Devuelve la radiografía vigente del periodo: status 'generated', no
+     * invalidada, la de mayor id, con branchSummaries e incidents cargados.
+     *
+     * @param  Period  $period  Periodo.
+     * @return PeriodSummary Resumen vigente.
+     *
+     * @throws RuntimeException Si no existe una radiografía vigente.
      */
     private function requireSummary(Period $period): PeriodSummary
     {
@@ -1345,8 +1555,8 @@ class RadiografiaExportService
             ->latest('id')
             ->first();
 
-        if (!$summary) {
-            throw new \RuntimeException("No existe una radiografía vigente para el periodo {$period->label}.");
+        if (! $summary) {
+            throw new RuntimeException("No existe una radiografía vigente para el periodo {$period->label}.");
         }
 
         return $summary;

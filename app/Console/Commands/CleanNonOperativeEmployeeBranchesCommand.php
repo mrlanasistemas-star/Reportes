@@ -4,13 +4,30 @@ namespace App\Console\Commands;
 
 use App\Models\Period;
 use App\Services\BranchResolverService;
-use App\Services\PersonIdentityResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:clean-non-operative-employee-branches` — detecta y CORRIGE las
+ * asignaciones empleado → sucursal del periodo que apuntan a rutas u oficinas no operativas
+ * (todo lo que no sea una de las 13 OPERATIVE_BRANCHES ni CORPORATIVO).
+ *
+ * Para cada asignación intenta, en orden: 1) sucursal por código de empleado (directorio
+ * Lendus), 2) directorio Lendus por nombre, 3) colocación (promotor), 4) cobranza (promotor);
+ * si nada resuelve, deja `branch_id = NULL` y `match_type = unmatched` para asignación manual.
+ *
+ * ADVERTENCIA: no tiene modo dry-run — siempre escribe. La comparación de nombres es exacta
+ * sobre UPPER(TRIM(name)) contra la lista fija (p. ej. 'CORDOBA' sin acento), por lo que
+ * conviene verificar antes que los nombres en `branches` coincidan.
+ * Escribe en BD: SÍ (`employee_branch_assignments.branch_id`, `notes`, `match_type`).
+ *
+ * Ejemplo:
+ *   php artisan reportes:clean-non-operative-employee-branches 21
+ */
 class CleanNonOperativeEmployeeBranchesCommand extends Command
 {
-    protected $signature   = 'reportes:clean-non-operative-employee-branches {period_id : ID del periodo}';
+    protected $signature = 'reportes:clean-non-operative-employee-branches {period_id : ID del periodo}';
+
     protected $description = 'Detecta y corrige asignaciones de sucursal que apuntan a rutas/oficinas no operativas.';
 
     private const OPERATIVE_BRANCHES = [
@@ -22,31 +39,42 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
     // CORPORATIVO is allowed but not operative (excluded from most metrics)
     private const ALLOWED_BRANCHES = ['CORPORATIVO'];
 
+    /**
+     * @param  BranchResolverService  $branchResolver  Resolvedor de sucursal por código de empleado.
+     */
     public function __construct(
         private readonly BranchResolverService $branchResolver,
     ) {
         parent::__construct();
     }
 
+    /**
+     * Busca las asignaciones del periodo con sucursal no permitida, las corrige con la primera
+     * fuente que resuelva una sucursal operativa (o las deja sin sucursal) e imprime el resumen y
+     * hasta 20 ejemplos.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$periodId])));
 
         $this->line('');
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  LIMPIEZA SUCURSALES NO OPERATIVAS — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // Get operative branch IDs
@@ -83,16 +111,17 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
             $this->info('  ✓ Sin asignaciones con rutas/oficinas no operativas.');
             $this->line('');
             $this->info('NON OPERATIVE ASSIGNMENTS: 0');
+
             return self::SUCCESS;
         }
 
         $this->warn("  Se encontraron {$nonOperative->count()} asignación(es) con sucursal no operativa:");
         $this->line('');
 
-        $revisadas   = 0;
-        $corregidas  = 0;
+        $revisadas = 0;
+        $corregidas = 0;
         $sinSucursal = 0;
-        $ejemplos    = [];
+        $ejemplos = [];
 
         // Pre-load operative branch IDs from DB
         $operativeBranchMap = DB::table('branches')
@@ -112,7 +141,7 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
                     if ($branchId) {
                         DB::table('employee_branch_assignments')
                             ->where('id', $row->assignment_id)
-                            ->update(['branch_id' => $branchId, 'notes' => 'Corregido: sucursal por código empleado. Antigua: ' . $row->current_branch_name]);
+                            ->update(['branch_id' => $branchId, 'notes' => 'Corregido: sucursal por código empleado. Antigua: '.$row->current_branch_name]);
                         $ejemplos[] = "✓ {$row->full_name}: {$row->current_branch_name} → {$branchName} (por código {$row->employee_code})";
                         $corregidas++;
                         $resolved = true;
@@ -121,7 +150,7 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
             }
 
             // Paso 2: Lendus directory por nombre
-            if (!$resolved) {
+            if (! $resolved) {
                 $lendusRecord = DB::table('lendus_employee_directory')
                     ->where('normalized_name', $row->normalized_name)
                     ->whereNotNull('inferred_branch_id')
@@ -132,7 +161,7 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
                     $branchName = DB::table('branches')->where('id', $lendusRecord->inferred_branch_id)->value('name');
                     DB::table('employee_branch_assignments')
                         ->where('id', $row->assignment_id)
-                        ->update(['branch_id' => $lendusRecord->inferred_branch_id, 'notes' => 'Corregido: directorio Lendus. Antigua: ' . $row->current_branch_name]);
+                        ->update(['branch_id' => $lendusRecord->inferred_branch_id, 'notes' => 'Corregido: directorio Lendus. Antigua: '.$row->current_branch_name]);
                     $ejemplos[] = "✓ {$row->full_name}: {$row->current_branch_name} → {$branchName} (directorio Lendus)";
                     $corregidas++;
                     $resolved = true;
@@ -140,7 +169,7 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
             }
 
             // Paso 3: Colocación/ministraciones
-            if (!$resolved) {
+            if (! $resolved) {
                 $placementBranchId = DB::table('fact_placements as p')
                     ->join('branches as b', 'p.branch_id', '=', 'b.id')
                     ->where('p.normalized_promoter_name', $row->normalized_name)
@@ -152,7 +181,7 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
                     $branchName = DB::table('branches')->where('id', $placementBranchId)->value('name');
                     DB::table('employee_branch_assignments')
                         ->where('id', $row->assignment_id)
-                        ->update(['branch_id' => $placementBranchId, 'notes' => 'Corregido: colocación. Antigua: ' . $row->current_branch_name]);
+                        ->update(['branch_id' => $placementBranchId, 'notes' => 'Corregido: colocación. Antigua: '.$row->current_branch_name]);
                     $ejemplos[] = "✓ {$row->full_name}: {$row->current_branch_name} → {$branchName} (colocación)";
                     $corregidas++;
                     $resolved = true;
@@ -160,7 +189,7 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
             }
 
             // Paso 4: Cobranza/código promotor
-            if (!$resolved) {
+            if (! $resolved) {
                 $cobranzaBranchId = DB::table('fact_recoveries as r')
                     ->join('branches as b', 'r.branch_id', '=', 'b.id')
                     ->whereRaw('LOWER(r.promoter_name) = ?', [$row->normalized_name])
@@ -172,7 +201,7 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
                     $branchName = DB::table('branches')->where('id', $cobranzaBranchId)->value('name');
                     DB::table('employee_branch_assignments')
                         ->where('id', $row->assignment_id)
-                        ->update(['branch_id' => $cobranzaBranchId, 'notes' => 'Corregido: cobranza. Antigua: ' . $row->current_branch_name]);
+                        ->update(['branch_id' => $cobranzaBranchId, 'notes' => 'Corregido: cobranza. Antigua: '.$row->current_branch_name]);
                     $ejemplos[] = "✓ {$row->full_name}: {$row->current_branch_name} → {$branchName} (cobranza)";
                     $corregidas++;
                     $resolved = true;
@@ -180,10 +209,10 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
             }
 
             // Paso 5: Sin resolución → dejar sin sucursal
-            if (!$resolved) {
+            if (! $resolved) {
                 DB::table('employee_branch_assignments')
                     ->where('id', $row->assignment_id)
-                    ->update(['branch_id' => null, 'match_type' => 'unmatched', 'notes' => 'branch_id nulificado: era ruta/oficina no operativa (' . $row->current_branch_name . '). Requiere asignación manual.']);
+                    ->update(['branch_id' => null, 'match_type' => 'unmatched', 'notes' => 'branch_id nulificado: era ruta/oficina no operativa ('.$row->current_branch_name.'). Requiere asignación manual.']);
                 $ejemplos[] = "✗ {$row->full_name}: {$row->current_branch_name} → sin sucursal (sin resolución)";
                 $sinSucursal++;
             }
@@ -197,13 +226,13 @@ class CleanNonOperativeEmployeeBranchesCommand extends Command
         $this->line("  Dejadas sin sucursal:            {$sinSucursal}");
         $this->line('');
 
-        if (!empty($ejemplos)) {
+        if (! empty($ejemplos)) {
             $this->info('── Ejemplos ──────────────────────────────────────────────────────────');
             foreach (array_slice($ejemplos, 0, 20) as $ej) {
                 $this->line("  {$ej}");
             }
             if (count($ejemplos) > 20) {
-                $this->line("  ... y " . (count($ejemplos) - 20) . " más.");
+                $this->line('  ... y '.(count($ejemplos) - 20).' más.');
             }
         }
 

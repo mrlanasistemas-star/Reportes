@@ -6,28 +6,49 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-nomina-sources` — compara las dos fuentes de nómina NOI (NOMINANUEVA =
+ * noi_nomina y NOMINAF = noi_nomina_fiscal) por concepto: total y empleados únicos por fuente,
+ * conceptos clave, solapamiento de empleados entre fuentes, conceptos más importantes,
+ * comparación contra los targets fijos de Abril 2026, distribución por sucursal (vía
+ * employee_branch_assignments) y por tipo de nómina.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-nomina-sources 14
+ */
 class DebugNominaSourcesCommand extends Command
 {
-    protected $signature   = 'reportes:debug-nomina-sources {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-nomina-sources {period_id : ID del periodo mensual}';
+
     protected $description = 'Nómina: NOMINANUEVA vs NOMINAF por concepto, solapamiento de empleados, totales vs targets Abril 2026.';
 
-    private const TARGET_NOMINA     = 1_075_509.70;
-    private const TARGET_COMISIONES =   716_885.13;
-    private const TARGET_BONOS      =   291_655.85;
+    private const TARGET_NOMINA = 1_075_509.70;
 
+    private const TARGET_COMISIONES = 716_885.13;
+
+    private const TARGET_BONOS = 291_655.85;
+
+    /**
+     * Localiza los uploads de cada fuente NOI e imprime las secciones 1–6.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -36,7 +57,7 @@ class DebugNominaSourcesCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG NÓMINA SOURCES — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // ── Uploads para cada fuente ──────────────────────────────────────────
@@ -62,7 +83,7 @@ class DebugNominaSourcesCommand extends Command
             ->join('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
             ->whereIn('n.period_id', $dataIds)
             ->whereIn('ds.code', ['noi_nomina', 'noi_nomina_fiscal'])
-            ->selectRaw("ds.code, ru.original_name, COUNT(DISTINCT n.employee_id) as empleados, COUNT(*) as filas, SUM(n.amount) as total")
+            ->selectRaw('ds.code, ru.original_name, COUNT(DISTINCT n.employee_id) as empleados, COUNT(*) as filas, SUM(n.amount) as total')
             ->groupBy('ds.id', 'ds.code', 'ru.id', 'ru.original_name')
             ->orderByDesc('total')
             ->get();
@@ -70,7 +91,7 @@ class DebugNominaSourcesCommand extends Command
         foreach ($bySource as $s) {
             $this->line(sprintf('  %-25s %-18s : %3d emps  %5d filas  $%s',
                 $s->code, mb_substr($s->original_name ?? '—', 0, 18),
-                $s->empleados, $s->filas, number_format((float)$s->total, 2)));
+                $s->empleados, $s->filas, number_format((float) $s->total, 2)));
         }
         $this->line('');
 
@@ -78,11 +99,11 @@ class DebugNominaSourcesCommand extends Command
         $this->info('── 2. Conceptos clave por fuente ──');
 
         $keyConceptExprs = [
-            'Sueldo (P001)'     => "concept LIKE 'P001%'",
+            'Sueldo (P001)' => "concept LIKE 'P001%'",
             'Comisiones (P002)' => "concept LIKE 'P002%'",
             'Bonos (P108/109/120/123)' => "concept REGEXP '^P(108|109|120|123)'",
             'Todas percepciones' => "LOWER(COALESCE(concept_type,'')) = 'percepcion'",
-            'Todas deducciones'  => "LOWER(COALESCE(concept_type,'')) IN ('deduccion','descuento')",
+            'Todas deducciones' => "LOWER(COALESCE(concept_type,'')) IN ('deduccion','descuento')",
         ];
 
         $sourceRows = [];
@@ -105,12 +126,12 @@ class DebugNominaSourcesCommand extends Command
                     ->whereIn('report_upload_id', $srcUploadIds)
                     ->whereRaw($expr)
                     ->sum('amount');
-                $row[$label] = '$' . number_format($val, 2);
+                $row[$label] = '$'.number_format($val, 2);
             }
             $sourceRows[] = $row;
         }
 
-        if (!empty($sourceRows)) {
+        if (! empty($sourceRows)) {
             $headers = array_keys($sourceRows[0]);
             $this->table($headers, array_map('array_values', $sourceRows));
         }
@@ -154,7 +175,7 @@ class DebugNominaSourcesCommand extends Command
         $this->line(sprintf('  Solo en NOMINAF        : %d', count($soloFiscal)));
         $this->line('');
 
-        if (!empty($solapados)) {
+        if (! empty($solapados)) {
             $this->warn(sprintf('  ⚠ %d empleados aparecen en AMBAS fuentes — verificar si son duplicados.', count($solapados)));
             $solapSueldos = DB::table('fact_noi_movements as n')
                 ->join('employees as e', 'n.employee_id', '=', 'e.id')
@@ -173,7 +194,7 @@ class DebugNominaSourcesCommand extends Command
                     mb_substr($r->full_name, 0, 35),
                     $r->employee_code,
                     $r->report_upload_id,
-                    '$' . number_format((float)$r->total, 2),
+                    '$'.number_format((float) $r->total, 2),
                 ])->all()
             );
             $this->line('');
@@ -187,7 +208,7 @@ class DebugNominaSourcesCommand extends Command
             ->whereIn('n.period_id', $dataIds)
             ->whereIn('ds.code', ['noi_nomina', 'noi_nomina_fiscal'])
             ->whereRaw("n.concept REGEXP '^P(001|002|108|109|120|123)'")
-            ->selectRaw("n.concept, n.concept_type, ds.code as fuente, COUNT(DISTINCT n.employee_id) as emps, SUM(n.amount) as total")
+            ->selectRaw('n.concept, n.concept_type, ds.code as fuente, COUNT(DISTINCT n.employee_id) as emps, SUM(n.amount) as total')
             ->groupBy('n.concept', 'n.concept_type', 'ds.id', 'ds.code')
             ->orderByDesc('total')
             ->get();
@@ -199,7 +220,7 @@ class DebugNominaSourcesCommand extends Command
                 $r->concept_type,
                 $r->fuente,
                 $r->emps,
-                '$' . number_format((float)$r->total, 2),
+                '$'.number_format((float) $r->total, 2),
             ])->all()
         );
         $this->line('');
@@ -207,16 +228,16 @@ class DebugNominaSourcesCommand extends Command
         // ── 5. Comparación vs targets ──────────────────────────────────────────
         $this->info('── 5. Totales combinados (NOMINANUEVA + NOMINAF) vs targets Abril 2026 ──');
 
-        $nomina     = (float) DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)
+        $nomina = (float) DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)
             ->where('concept', 'P001 SUELDO')->where('concept_type', 'percepcion')->sum('amount');
         $comisiones = (float) DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)
             ->whereRaw("concept LIKE 'P002%'")->sum('amount');
-        $bonos      = (float) DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)
+        $bonos = (float) DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)
             ->whereRaw("concept REGEXP '^P(108|109|120|123)'")->sum('amount');
 
-        $this->printDiff('Nómina P001 SUELDO',         $nomina,     self::TARGET_NOMINA);
-        $this->printDiff('Comisiones P002',             $comisiones, self::TARGET_COMISIONES);
-        $this->printDiff('Bonos P108/P109/P120/P123',  $bonos,      self::TARGET_BONOS);
+        $this->printDiff('Nómina P001 SUELDO', $nomina, self::TARGET_NOMINA);
+        $this->printDiff('Comisiones P002', $comisiones, self::TARGET_COMISIONES);
+        $this->printDiff('Bonos P108/P109/P120/P123', $bonos, self::TARGET_BONOS);
         $this->line('');
 
         // ── 5b. Distribución por sucursal via employee_branch_assignments ───────
@@ -228,7 +249,7 @@ class DebugNominaSourcesCommand extends Command
             ->whereIn('n.period_id', $dataIds)
             ->whereRaw("n.concept LIKE 'P001%'")
             ->where('n.concept_type', 'percepcion')
-            ->selectRaw("b.name as sucursal, COUNT(DISTINCT n.employee_id) as emps, SUM(n.amount) as total")
+            ->selectRaw('b.name as sucursal, COUNT(DISTINCT n.employee_id) as emps, SUM(n.amount) as total')
             ->groupBy('b.id', 'b.name')
             ->orderByDesc('total')
             ->get();
@@ -241,7 +262,7 @@ class DebugNominaSourcesCommand extends Command
             ->whereRaw("n.concept LIKE 'P001%'")
             ->where('n.concept_type', 'percepcion')
             ->whereNull('eba.employee_id')
-            ->selectRaw("COUNT(DISTINCT n.employee_id) as emps, SUM(n.amount) as total")
+            ->selectRaw('COUNT(DISTINCT n.employee_id) as emps, SUM(n.amount) as total')
             ->first();
 
         $totalSinAsignar = (float) ($unassigned->total ?? 0);
@@ -274,7 +295,7 @@ class DebugNominaSourcesCommand extends Command
 
         foreach ($byType as $r) {
             $this->line(sprintf('  %-30s  %-25s  %3d emps  $%s',
-                mb_substr($r->payroll_type, 0, 30), $r->code, $r->emps, number_format((float)$r->total, 2)));
+                mb_substr($r->payroll_type, 0, 30), $r->code, $r->emps, number_format((float) $r->total, 2)));
         }
         $this->line('');
 
@@ -284,10 +305,17 @@ class DebugNominaSourcesCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Imprime calculado vs target con diferencia y porcentaje coloreado.
+     *
+     * @param  string  $label  Etiqueta.
+     * @param  float  $calc  Valor calculado.
+     * @param  float  $target  Valor objetivo.
+     */
     private function printDiff(string $label, float $calc, float $target): void
     {
-        $diff  = $calc - $target;
-        $pct   = $target > 0 ? abs($diff / $target) * 100 : 0;
+        $diff = $calc - $target;
+        $pct = $target > 0 ? abs($diff / $target) * 100 : 0;
         $color = $pct < 1 ? 'green' : ($pct < 5 ? 'yellow' : 'red');
         $this->line(sprintf("  %-38s  calc=\$%-13s  tgt=\$%-13s  <fg={$color}>dif=%+.2f (%.2f%%)</>",
             $label,

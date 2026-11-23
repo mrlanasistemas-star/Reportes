@@ -14,9 +14,14 @@ class PeriodCalendar
 {
     public const MONTHS = [1 => 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
+    /** Periodos mensuales memorizados (una consulta por instancia). */
     private ?Collection $all = null;
 
-    /** @return Collection<int,Period> */
+    /**
+     * Todos los periodos mensuales (sin TEST-*) ordenados por fecha de inicio; se consulta una vez.
+     *
+     * @return Collection<int,Period>
+     */
     public function monthly(): Collection
     {
         return $this->all ??= Period::query()
@@ -26,6 +31,12 @@ class PeriodCalendar
             ->get();
     }
 
+    /**
+     * Periodo mensual inmediatamente anterior (el de inicio más reciente antes de $period).
+     *
+     * @param  Period  $period  periodo de referencia
+     * @return Period|null null si no hay anterior
+     */
     public function previous(Period $period): ?Period
     {
         return $this->monthly()->filter(fn (Period $p) => $p->start_date->lt($period->start_date))->last();
@@ -37,6 +48,12 @@ class PeriodCalendar
         return $this->monthly()->filter(fn (Period $p) => (int) $p->year === $year && (int) $p->month === $month)->last();
     }
 
+    /**
+     * Periodo del mismo mes de reporte del año anterior.
+     *
+     * @param  Period  $period  periodo de referencia
+     * @return Period|null null si no existe en el sistema
+     */
     public function sameMonthPreviousYear(Period $period): ?Period
     {
         return $this->byYearMonth((int) $period->year - 1, (int) $period->month);
@@ -63,7 +80,17 @@ class PeriodCalendar
         return $out;
     }
 
-    /** Rejilla entre dos periodos (inclusive), máximo $max meses. @return list<array{year:int,month:int,period:?Period}> */
+    /**
+     * Rejilla entre dos periodos (inclusive), máximo $max meses. Si vienen invertidos se
+     * intercambian.
+     *
+     * @param  Period  $from  periodo inicial
+     * @param  Period  $to  periodo final
+     * @param  int  $max  número máximo de meses permitido
+     * @return list<array{year:int,month:int,period:?Period}>
+     *
+     * @throws \InvalidArgumentException si el rango excede $max meses
+     */
     public function range(Period $from, Period $to, int $max = 24): array
     {
         if ([(int) $from->year, (int) $from->month] > [(int) $to->year, (int) $to->month]) {
@@ -79,6 +106,12 @@ class PeriodCalendar
         return $grid;
     }
 
+    /**
+     * Etiqueta «Mes Año» en español (p. ej. «Junio 2026»).
+     *
+     * @param  int  $year  año
+     * @param  int  $month  mes 1–12
+     */
     public static function monthLabel(int $year, int $month): string
     {
         return (self::MONTHS[$month] ?? (string) $month).' '.$year;

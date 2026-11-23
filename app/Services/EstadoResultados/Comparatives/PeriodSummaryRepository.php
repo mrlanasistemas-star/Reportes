@@ -24,13 +24,20 @@ use Illuminate\Support\Facades\Log;
  */
 class PeriodSummaryRepository
 {
+    /** Vida de la caché en vivo (1 día); los snapshots aprobados se guardan 30 días. */
     private const TTL_SECONDS = 86400;
 
     /** @var array<int,array> memo por petición */
     private array $memo = [];
 
+    /** Contadores de diagnóstico (snapshots, aciertos/fallos de caché, alcances calculados, ms). */
     public array $stats = ['snapshot' => 0, 'cache_hit' => 0, 'cache_miss' => 0, 'built_scopes' => 0, 'ms_building' => 0.0];
 
+    /**
+     * @param  EstadoResultadosReportResolver  $resolver  punto único que entrega datasets (snapshot o en vivo)
+     * @param  PeriodSummaryExtractor  $extractor  reduce cada dataset a su resumen
+     * @param  InputSignature  $signature  firma determinista de insumos para la caché en vivo
+     */
     public function __construct(
         private readonly EstadoResultadosReportResolver $resolver,
         private readonly PeriodSummaryExtractor $extractor,
@@ -38,6 +45,13 @@ class PeriodSummaryRepository
     ) {}
 
     /**
+     * Resúmenes de TODOS los alcances de un periodo (memo por petición + caché).
+     *
+     * Con versión aprobada: caché por id+hash del snapshot (30 días). Sin ella: caché por firma de
+     * insumos (1 día), con un candado por periodo (300 s, espera hasta 240 s) para que sólo un
+     * proceso calcule; si el candado expira se calcula sin guardar. Eleva memory_limit a 1024M.
+     *
+     * @param  Period  $period  periodo
      * @return array{source:string, cache:string, signature:?string, scopes:list<array{key:string,label:string}>, summaries:array<string,array>}
      */
     public function bundle(Period $period): array
@@ -91,7 +105,12 @@ class PeriodSummaryRepository
         return $this->memo[$period->id] = $bundle;
     }
 
-    /** Resumen de un alcance; null si el alcance no existe en ese periodo. */
+    /**
+     * Resumen de un alcance; null si el alcance no existe en ese periodo.
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $scope  alcance (CONSOLIDADO o sucursal)
+     */
     public function summary(Period $period, string $scope): ?array
     {
         return $this->bundle($period)['summaries'][$scope] ?? null;
@@ -103,6 +122,11 @@ class PeriodSummaryRepository
      * en vivo → una sesión de Radiografía + buildEach (la base costosa se calcula una vez).
      * Si la iteración falla a mitad (p. ej. un snapshot alterado o un alcance ausente), se
      * recurre a alcance por alcance para conservar los demás y reportar el error de ese alcance.
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $source  'snapshot' o 'en_vivo'
+     * @param  string|null  $sig  firma de insumos (sólo en vivo)
+     * @return array<string, mixed> bundle con source, cache, signature, scopes, summaries y errors
      */
     private function compute(Period $period, string $source, ?string $sig): array
     {
@@ -132,7 +156,12 @@ class PeriodSummaryRepository
         ];
     }
 
-    /** Respaldo: alcance por alcance, aislando el error de cada uno. */
+    /**
+     * Respaldo: alcance por alcance, aislando el error de cada uno (se registra en el log).
+     *
+     * @param  Period  $period  periodo
+     * @return array{0:array, 1:array<string,array>, 2:array<string,string>} [alcances, resúmenes, errores por alcance]
+     */
     private function computeEach(Period $period): array
     {
         $scopes = $this->resolver->scopes($period);

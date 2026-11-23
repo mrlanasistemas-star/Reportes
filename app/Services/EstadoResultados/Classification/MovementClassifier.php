@@ -28,7 +28,11 @@ class MovementClassifier
      */
     private array $catalog = [];
 
-    /** @param  list<array<string,mixed>>  $rules */
+    /**
+     * Carga las reglas activas del catálogo para la corrida en curso.
+     *
+     * @param  list<array<string,mixed>>  $rules  ConceptCatalogService::activeRules()
+     */
     public function useCatalog(array $rules): static
     {
         $this->catalog = $rules;
@@ -37,6 +41,10 @@ class MovementClassifier
     }
 
     /**
+     * Clasifica un movimiento. Precedencia: fuera de periodo/duplicado → traspaso entre cuentas
+     * propias → (abonos) catálogo o reglas de abono → (cargos) conciliación ERP (total, parcial
+     * con excedente pendiente, duplicado UUID, folios en revisión) → catálogo → reglas de cargo.
+     *
      * @param  array<string,mixed>  $m  movimiento (columnas de estado_resultados_movements)
      * @param  array<string,mixed>|null  $rec  resultado del reconciliador (sólo cargos en periodo)
      * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
@@ -96,6 +104,15 @@ class MovementClassifier
         return $this->classifyCargo($concept, $text, $kind, $m, $status, $rec);
     }
 
+    /**
+     * Reglas para abonos (entradas). Ninguna convierte un abono en ingreso operativo: excedentes,
+     * provisiones y fondeo de deuda son flujo interno; descuentos son recuperación; reembolsos,
+     * posibles ingresos no operativos y el resto quedan pendientes; pólizas son puente.
+     *
+     * @param  string  $concept  concepto normalizado
+     * @param  string  $text  concepto + observaciones normalizados
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
+     */
     private function classifyAbono(string $concept, string $text): array
     {
         $noIngreso = ' Un abono bancario nunca se registra como ingreso operativo en automático.';
@@ -126,6 +143,21 @@ class MovementClassifier
         return $this->out(T::PENDIENTE, null, 'abono_sin_regla', 'Abono sin regla de clasificación.'.$noIngreso, true);
     }
 
+    /**
+     * Reglas para cargos NO conciliados con ERP: retenciones (balance), servicio de deuda
+     * (capital, intereses vía tabla de amortización), pólizas puente; en sucursal operativa la
+     * nómina ya está en Radiografía (NOI) y lo demás queda pendiente; en Corporativo DG queda
+     * pendiente, nómina/finiquito es nómina corporativa y lo demás pendiente; sin sucursal,
+     * pendiente.
+     *
+     * @param  string  $concept  concepto normalizado
+     * @param  string  $text  concepto + observaciones normalizados
+     * @param  string  $kind  tipo de sucursal (operativa, agrupado, corporativo, desconocida, vacia)
+     * @param  array  $m  movimiento
+     * @param  string  $status  estado de conciliación ERP
+     * @param  array|null  $rec  resultado del reconciliador
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
+     */
     private function classifyCargo(string $concept, string $text, string $kind, array $m, string $status, ?array $rec): array
     {
         // Préstamos ("PAGO PRESTAMOS QUINCENA 17") NUNCA son nómina aunque mencionen la quincena.
@@ -175,7 +207,14 @@ class MovementClassifier
         return $this->out(T::PENDIENTE, $suggested, 'sin_sucursal', 'Cargo sin sucursal reconocible ('.($m['sucursal_raw'] ?: 'vacía').'). Requiere revisión.', true);
     }
 
-    /** Sugerencia (NUNCA aplicada en automático) para un cargo que requiere revisión. */
+    /**
+     * Sugerencia (NUNCA aplicada en automático) para un cargo que requiere revisión.
+     *
+     * @param  string  $concept  concepto normalizado
+     * @param  string  $kind  tipo de sucursal
+     * @param  array  $m  movimiento
+     * @return string|null tratamiento sugerido o null sin evidencia
+     */
     private function suggestForCargo(string $concept, string $kind, array $m): ?string
     {
         if (preg_match('/COLEGIATURA|ESCUELA|PASEADOR|VETERINARIO|JARDINERO|LAVANDERIA|FAMILIA|ENTRENADOR|EQUITACION|JIUJITSU|CASA DG/', $concept)) {
@@ -207,12 +246,22 @@ class MovementClassifier
         return null;
     }
 
+    /**
+     * ¿El concepto menciona a Dirección General («DG» como palabra o «DIRECCION GENERAL»)?
+     *
+     * @param  string  $concept  concepto normalizado
+     */
     private function hasDg(string $concept): bool
     {
         return (bool) preg_match('/\bDG\b|DIRECCION GENERAL/', $concept);
     }
 
-    /** Regla del catálogo de conceptos que gana para el movimiento (null = ninguna coincide). */
+    /**
+     * Regla del catálogo de conceptos que gana para el movimiento (null = ninguna coincide).
+     *
+     * @param  array  $m  movimiento
+     * @return array|null resultado de ConceptCatalogService::outcome()
+     */
     private function fromCatalog(array $m): ?array
     {
         if ($this->catalog === []) {
@@ -223,11 +272,26 @@ class MovementClassifier
         return $hit['rule'] !== null ? ConceptCatalogService::outcome($hit['rule'], $hit['others']) : null;
     }
 
+    /**
+     * Normaliza texto (mayúsculas, sin acentos, espacios simples).
+     *
+     * @param  string|null  $v  texto
+     */
     private function norm(?string $v): string
     {
         return ConceptCatalogService::normalize($v);
     }
 
+    /**
+     * Resultado de clasificación con la forma estándar.
+     *
+     * @param  string  $treatment  tratamiento asignado
+     * @param  string|null  $suggested  sugerencia para revisión
+     * @param  string  $rule  código de regla
+     * @param  string  $reason  explicación en español
+     * @param  bool  $review  requiere revisión
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
+     */
     private function out(string $treatment, ?string $suggested, string $rule, string $reason, bool $review = false): array
     {
         return ['treatment' => $treatment, 'suggested' => $suggested, 'rule' => $rule, 'reason' => $reason, 'review' => $review];

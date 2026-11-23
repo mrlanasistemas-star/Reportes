@@ -6,8 +6,10 @@ use App\Models\Period;
 use App\Services\ExpenseObservationAttributionService;
 use App\Services\OpexClassificationService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 
@@ -44,17 +46,29 @@ class ReportsAuditExpenseAttributionCommand extends Command
 
     protected $description = 'Diagnóstico (dry-run) de atribución de OPEX a colaboradores vía Observación/Justificación del Excel de Gastos Lendus.';
 
+    /**
+     * Clasifica todo el universo A del upload de gastos del periodo con OpexClassificationService,
+     * ejecuta el matcher en dry-run sobre el universo B y muestra totales por resultado
+     * (colaborador, branch_general, ambiguo, conflicto, sin destino), ejemplos de cada caso y
+     * reasignaciones propuestas; con `--export` escribe además el .xlsx de detalle
+     * (storage/app/audits/). Nunca escribe en BD.
+     *
+     * @param  ExpenseObservationAttributionService  $service  Matcher de gastos por Observación/Justificación (dry-run).
+     * @param  OpexClassificationService  $opexClassifier  Clasificador canónico de OPEX.
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(ExpenseObservationAttributionService $service, OpexClassificationService $opexClassifier): int
     {
         $period = Period::find((int) $this->argument('period'));
-        if (!$period) {
-            $this->error('No existe el periodo ID=' . $this->argument('period'));
+        if (! $period) {
+            $this->error('No existe el periodo ID='.$this->argument('period'));
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(empty($weeklyIds) ? [] : $weeklyIds, [$period->id])));
 
         // ── PERIODO / ARCHIVO ──────────────────────────────────────────────
         $this->info('════════════════════════════════════════════════════════════');
@@ -70,7 +84,7 @@ class ReportsAuditExpenseAttributionCommand extends Command
             : null;
 
         if ($upload) {
-            $this->info("ARCHIVO: {$upload->original_name} (report_uploads.id={$upload->id}, subido " . ($upload->uploaded_at ?? '—') . ')');
+            $this->info("ARCHIVO: {$upload->original_name} (report_uploads.id={$upload->id}, subido ".($upload->uploaded_at ?? '—').')');
         } else {
             $this->warn('ARCHIVO: no hay ningún upload de gastos_lendus_excel para este periodo.');
         }
@@ -96,22 +110,23 @@ class ReportsAuditExpenseAttributionCommand extends Command
 
         $classifiedAll = $allRows->map(function ($row) use ($opexClassifier) {
             $row->classification = $opexClassifier->classify($row->category, $row->concept, OpexClassificationService::SOURCE_LENDUS);
+
             return $row;
         });
 
-        $opexRowsA    = $classifiedAll->filter(fn ($r) => $r->classification['is_opex']);
-        $nonOpexRowsA = $classifiedAll->filter(fn ($r) => !$r->classification['is_opex']);
+        $opexRowsA = $classifiedAll->filter(fn ($r) => $r->classification['is_opex']);
+        $nonOpexRowsA = $classifiedAll->filter(fn ($r) => ! $r->classification['is_opex']);
 
         $this->comment('UNIVERSO A — OPEX TOTAL FINANCIERO (todas las filas del upload, incluidas las que no tienen Observación/Justificación):');
-        $this->line('  Filas totales: ' . $classifiedAll->count() . ' | Monto total: $' . number_format($classifiedAll->sum('amount'), 2));
-        $this->line('  Filas OPEX puro (is_opex=true): ' . $opexRowsA->count() . ' | Monto: $' . number_format($opexRowsA->sum('amount'), 2));
-        $this->line('  Filas NO-OPEX (' . $nonOpexRowsA->count() . ' | $' . number_format($nonOpexRowsA->sum('amount'), 2) . '), por tipo:');
+        $this->line('  Filas totales: '.$classifiedAll->count().' | Monto total: $'.number_format($classifiedAll->sum('amount'), 2));
+        $this->line('  Filas OPEX puro (is_opex=true): '.$opexRowsA->count().' | Monto: $'.number_format($opexRowsA->sum('amount'), 2));
+        $this->line('  Filas NO-OPEX ('.$nonOpexRowsA->count().' | $'.number_format($nonOpexRowsA->sum('amount'), 2).'), por tipo:');
         $byExclusionType = $nonOpexRowsA->groupBy(fn ($r) => $r->classification['type']);
         foreach ($byExclusionType as $type => $group) {
-            $eligibleNote = $type === \App\Services\OpexClassificationService::TYPE_NOMINA_EMPLEADO
+            $eligibleNote = $type === OpexClassificationService::TYPE_NOMINA_EMPLEADO
                 ? ' (NO es OPEX, pero SÍ es atribuible a la persona que lo recibió — Finiquito/Médicos/Motos)'
                 : ' (nunca atribuible a un colaborador)';
-            $this->line("    - {$type}: " . $group->count() . ' filas | $' . number_format($group->sum('amount'), 2) . $eligibleNote);
+            $this->line("    - {$type}: ".$group->count().' filas | $'.number_format($group->sum('amount'), 2).$eligibleNote);
         }
         $this->newLine();
 
@@ -120,39 +135,40 @@ class ReportsAuditExpenseAttributionCommand extends Command
         $montoOpexEvaluable = collect($results)->sum('amount');
 
         $this->comment('UNIVERSO B — EVALUABLE PARA MATCH DE PERSONA (elegibles para atribución: OPEX puro + Nómina-empleado de A — NUNCA incluye Nómina cubierta por NOI/Fondeo/Excedentes/Pólizas):');
-        $this->line('  Filas: ' . count($results) . ' | Monto: $' . number_format($montoOpexEvaluable, 2) . ' (puede incluir Finiquito/Médicos — ver POR CONCEPTO/CATEGORÍA para distinguirlos del OPEX puro)');
+        $this->line('  Filas: '.count($results).' | Monto: $'.number_format($montoOpexEvaluable, 2).' (puede incluir Finiquito/Médicos — ver POR CONCEPTO/CATEGORÍA para distinguirlos del OPEX puro)');
         $this->newLine();
 
         if (empty($results)) {
             $this->comment('No hay gastos OPEX evaluables en este periodo (o falta el roster de colaboradores del periodo).');
+
             return 0;
         }
 
-        $yaCorrecto     = array_values(array_filter($results, fn ($r) => $r['estado'] === 'ya_correcto'));
-        $atribuido      = array_values(array_filter($results, fn ($r) => $r['estado'] === 'atribuido'));
-        $porObs         = array_values(array_filter($atribuido, fn ($r) => $r['fuente'] === 'observation'));
-        $porJust        = array_values(array_filter($atribuido, fn ($r) => $r['fuente'] === 'justification'));
-        $conflictos     = array_values(array_filter($results, fn ($r) => $r['estado'] === 'conflicto'));
-        $ambiguos       = array_values(array_filter($results, fn ($r) => $r['estado'] === 'ambiguo'));
-        $branchGeneral  = array_values(array_filter($results, fn ($r) => $r['estado'] === 'branch_general'));
-        $noAtribuible   = array_values(array_filter($results, fn ($r) => $r['estado'] === 'no_atribuible'));
+        $yaCorrecto = array_values(array_filter($results, fn ($r) => $r['estado'] === 'ya_correcto'));
+        $atribuido = array_values(array_filter($results, fn ($r) => $r['estado'] === 'atribuido'));
+        $porObs = array_values(array_filter($atribuido, fn ($r) => $r['fuente'] === 'observation'));
+        $porJust = array_values(array_filter($atribuido, fn ($r) => $r['fuente'] === 'justification'));
+        $conflictos = array_values(array_filter($results, fn ($r) => $r['estado'] === 'conflicto'));
+        $ambiguos = array_values(array_filter($results, fn ($r) => $r['estado'] === 'ambiguo'));
+        $branchGeneral = array_values(array_filter($results, fn ($r) => $r['estado'] === 'branch_general'));
+        $noAtribuible = array_values(array_filter($results, fn ($r) => $r['estado'] === 'no_atribuible'));
 
-        $montoEncontrados     = collect($atribuido)->sum('amount') + collect($yaCorrecto)->sum('amount');
-        $montoBranchGeneral   = collect($branchGeneral)->sum('amount');
-        $montoAmbiguo         = collect($ambiguos)->sum('amount');
-        $montoConflicto       = collect($conflictos)->sum('amount');
-        $montoSinDestinoReal  = collect($noAtribuible)->sum('amount');
+        $montoEncontrados = collect($atribuido)->sum('amount') + collect($yaCorrecto)->sum('amount');
+        $montoBranchGeneral = collect($branchGeneral)->sum('amount');
+        $montoAmbiguo = collect($ambiguos)->sum('amount');
+        $montoConflicto = collect($conflictos)->sum('amount');
+        $montoSinDestinoReal = collect($noAtribuible)->sum('amount');
 
         // ── ATRIBUCIÓN ───────────────────────────────────────────────────
         $this->comment('ATRIBUCIÓN');
-        $this->line('  Con colaborador (nuevo + ya correcto): ' . (count($atribuido) + count($yaCorrecto)) . ' | $' . number_format($montoEncontrados, 2));
-        $this->line('    - Encontrados y asignados ahora: ' . count($atribuido) . ' (por Observación: ' . count($porObs) . ', por Justificación: ' . count($porJust) . ')');
-        $this->line('    - Ya estaban correctos: ' . count($yaCorrecto));
-        $this->line('    - Reasignados (tenían otro employee_id y cambiaron): ' . count(array_filter($atribuido, fn ($r) => $r['previous_employee_id'] !== null)));
-        $this->line('  General de sucursal (branch_general — sin colaborador, pero NO es un error: renta/luz/agua/limpieza/etc. con sucursal ya resuelta): ' . count($branchGeneral) . ' | $' . number_format($montoBranchGeneral, 2));
-        $this->line('  Ambiguo: ' . count($ambiguos) . ' | $' . number_format($montoAmbiguo, 2));
-        $this->line('  Conflicto (Observación ≠ Justificación): ' . count($conflictos) . ' | $' . number_format($montoConflicto, 2));
-        $this->line('  Verdaderamente sin destino (ni colaborador ni sucursal resuelta): ' . count($noAtribuible) . ' | $' . number_format($montoSinDestinoReal, 2));
+        $this->line('  Con colaborador (nuevo + ya correcto): '.(count($atribuido) + count($yaCorrecto)).' | $'.number_format($montoEncontrados, 2));
+        $this->line('    - Encontrados y asignados ahora: '.count($atribuido).' (por Observación: '.count($porObs).', por Justificación: '.count($porJust).')');
+        $this->line('    - Ya estaban correctos: '.count($yaCorrecto));
+        $this->line('    - Reasignados (tenían otro employee_id y cambiaron): '.count(array_filter($atribuido, fn ($r) => $r['previous_employee_id'] !== null)));
+        $this->line('  General de sucursal (branch_general — sin colaborador, pero NO es un error: renta/luz/agua/limpieza/etc. con sucursal ya resuelta): '.count($branchGeneral).' | $'.number_format($montoBranchGeneral, 2));
+        $this->line('  Ambiguo: '.count($ambiguos).' | $'.number_format($montoAmbiguo, 2));
+        $this->line('  Conflicto (Observación ≠ Justificación): '.count($conflictos).' | $'.number_format($montoConflicto, 2));
+        $this->line('  Verdaderamente sin destino (ni colaborador ni sucursal resuelta): '.count($noAtribuible).' | $'.number_format($montoSinDestinoReal, 2));
         $this->line('  Duplicados evitados: N/A — el servicio SOLO reasigna employee_id/branch_id de filas fact_expenses ya existentes (UPDATE), nunca inserta filas nuevas.');
         $this->newLine();
 
@@ -166,7 +182,7 @@ class ReportsAuditExpenseAttributionCommand extends Command
         }
         uasort($byEmployee, fn ($a, $b) => $b['monto'] <=> $a['monto']);
 
-        $this->comment('POR COLABORADOR (' . count($byEmployee) . ' colaboradores con gasto atribuido):');
+        $this->comment('POR COLABORADOR ('.count($byEmployee).' colaboradores con gasto atribuido):');
         foreach ($byEmployee as $eid => $d) {
             $this->line(sprintf('  employee_id=%s | %s | %s | %d gasto(s) | $%s', $eid, $d['nombre'], $d['sucursal'] ?? 'sin sucursal', $d['cantidad'], number_format($d['monto'], 2)));
         }
@@ -174,10 +190,10 @@ class ReportsAuditExpenseAttributionCommand extends Command
 
         // ── NO ENCONTRADOS — CLASIFICACIÓN FINAL (agrupado, sección 6 del pedido) ──
         $this->comment('NO ENCONTRADOS — CLASIFICACIÓN FINAL:');
-        $this->line('  GENERAL SUCURSAL: cantidad ' . count($branchGeneral) . ' | monto $' . number_format($montoBranchGeneral, 2));
-        $this->line('  AMBIGUOS: cantidad ' . count($ambiguos) . ' | monto $' . number_format($montoAmbiguo, 2));
-        $this->line('  CONFLICTOS: cantidad ' . count($conflictos) . ' | monto $' . number_format($montoConflicto, 2));
-        $this->line('  SIN INFORMACIÓN (verdaderamente sin destino): cantidad ' . count($noAtribuible) . ' | monto $' . number_format($montoSinDestinoReal, 2));
+        $this->line('  GENERAL SUCURSAL: cantidad '.count($branchGeneral).' | monto $'.number_format($montoBranchGeneral, 2));
+        $this->line('  AMBIGUOS: cantidad '.count($ambiguos).' | monto $'.number_format($montoAmbiguo, 2));
+        $this->line('  CONFLICTOS: cantidad '.count($conflictos).' | monto $'.number_format($montoConflicto, 2));
+        $this->line('  SIN INFORMACIÓN (verdaderamente sin destino): cantidad '.count($noAtribuible).' | monto $'.number_format($montoSinDestinoReal, 2));
         $this->newLine();
 
         // ── OPEX SIN DESTINO — invariante (sección 8 del pedido) ────────────
@@ -192,11 +208,11 @@ class ReportsAuditExpenseAttributionCommand extends Command
         // branch_id en NULL para filas que SÍ tienen un destino resoluble, lo que
         // daría falsos positivos.
         $this->comment('OPEX SIN DESTINO (invariante — debe tender a 0):');
-        $this->line('  count = ' . count($noAtribuible) . ' | amount = $' . number_format($montoSinDestinoReal, 2));
-        if (!empty($noAtribuible)) {
+        $this->line('  count = '.count($noAtribuible).' | amount = $'.number_format($montoSinDestinoReal, 2));
+        if (! empty($noAtribuible)) {
             $this->warn('  Filas sin colaborador, sin sucursal resuelta y sin ambigüedad/conflicto pendiente (revisar manualmente):');
             foreach ($noAtribuible as $r) {
-                $this->warn("    fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$" . number_format($r['amount'], 2) . ' | ' . ($r['reason'] ?? ''));
+                $this->warn("    fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$".number_format($r['amount'], 2).' | '.($r['reason'] ?? ''));
             }
         }
         $this->newLine();
@@ -218,7 +234,7 @@ class ReportsAuditExpenseAttributionCommand extends Command
 
         $this->comment('POR CONCEPTO:');
         foreach ($byConcept as $concept => $data) {
-            $this->line("  {$concept}: registros={$data['registros']} encontrados={$data['encontrados']} no_encontrados={$data['no_encontrados']} monto_atribuible=\$" . number_format($data['monto'], 2));
+            $this->line("  {$concept}: registros={$data['registros']} encontrados={$data['encontrados']} no_encontrados={$data['no_encontrados']} monto_atribuible=\$".number_format($data['monto'], 2));
         }
         $this->newLine();
 
@@ -238,7 +254,7 @@ class ReportsAuditExpenseAttributionCommand extends Command
 
         $this->comment('POR CATEGORÍA:');
         foreach ($byCategory as $category => $data) {
-            $this->line("  {$category}: registros={$data['registros']} encontrados={$data['encontrados']} no_encontrados={$data['no_encontrados']} monto_atribuible=\$" . number_format($data['monto'], 2));
+            $this->line("  {$category}: registros={$data['registros']} encontrados={$data['encontrados']} no_encontrados={$data['no_encontrados']} monto_atribuible=\$".number_format($data['monto'], 2));
         }
         $this->newLine();
 
@@ -257,23 +273,23 @@ class ReportsAuditExpenseAttributionCommand extends Command
                 $this->line("  Justificación: {$r['justification']}");
             }
             $this->line("  → employee_id={$r['employee_id']} ({$r['employee_name']})");
-            $this->line('  → sucursal histórica=' . ($r['branch_name'] ?? 'sin resolver'));
-            $this->line("  → método={$r['fuente']}_{$r['metodo']} confianza=" . number_format($r['confianza'], 2));
-            $this->line('  → monto=$' . number_format($r['amount'], 2));
+            $this->line('  → sucursal histórica='.($r['branch_name'] ?? 'sin resolver'));
+            $this->line("  → método={$r['fuente']}_{$r['metodo']} confianza=".number_format($r['confianza'], 2));
+            $this->line('  → monto=$'.number_format($r['amount'], 2));
         }
         $this->newLine();
 
         // ── AMBIGUOS — candidatos y score ────────────────────────────────
         $ambiguousLimit = max(1, (int) $this->option('ambiguous'));
         $ambiguousExamples = array_slice($ambiguos, 0, $ambiguousLimit);
-        if (!empty($ambiguousExamples)) {
-            $this->comment('AMBIGUOS (hasta ' . $ambiguousLimit . ' de ' . count($ambiguos) . '):');
+        if (! empty($ambiguousExamples)) {
+            $this->comment('AMBIGUOS (hasta '.$ambiguousLimit.' de '.count($ambiguos).'):');
             foreach ($ambiguousExamples as $r) {
                 $this->newLine();
-                $this->line("fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$" . number_format($r['amount'], 2));
-                $this->line('  Texto (' . $r['fuente'] . '): ' . ($r['fuente'] === 'justification' ? $r['justification'] : $r['observation']));
-                $this->line('  Razón: ' . ($r['reason'] ?? '—'));
-                if (!empty($r['candidates'])) {
+                $this->line("fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$".number_format($r['amount'], 2));
+                $this->line('  Texto ('.$r['fuente'].'): '.($r['fuente'] === 'justification' ? $r['justification'] : $r['observation']));
+                $this->line('  Razón: '.($r['reason'] ?? '—'));
+                if (! empty($r['candidates'])) {
                     $this->line('  Candidatos considerados:');
                     foreach ($r['candidates'] as $c) {
                         $this->line(sprintf('    - employee_id=%s | %s | score=%s%% | método=%s', $c['employee_id'] ?? '—', $c['name'] ?? '—', $c['score'] ?? '—', $c['method'] ?? '—'));
@@ -283,25 +299,25 @@ class ReportsAuditExpenseAttributionCommand extends Command
             $this->newLine();
         }
 
-        if (!empty($conflictos)) {
+        if (! empty($conflictos)) {
             $this->comment('CONFLICTOS (requieren revisión manual — Observación y Justificación nombran personas distintas):');
             foreach (array_slice($conflictos, 0, 10) as $r) {
-                $this->error("  fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | Observación=\"{$r['observation']}\" | Justificación=\"{$r['justification']}\" | \$" . number_format($r['amount'], 2));
+                $this->error("  fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | Observación=\"{$r['observation']}\" | Justificación=\"{$r['justification']}\" | \$".number_format($r['amount'], 2));
             }
             $this->newLine();
         }
 
         $notFoundLimit = max(1, (int) $this->option('not-found'));
         $notFoundExamples = array_slice($noAtribuible, 0, $notFoundLimit);
-        if (!empty($notFoundExamples)) {
-            $this->comment('SIN INFORMACIÓN — verdaderamente sin destino (hasta ' . $notFoundLimit . ' de ' . count($noAtribuible) . '):');
+        if (! empty($notFoundExamples)) {
+            $this->comment('SIN INFORMACIÓN — verdaderamente sin destino (hasta '.$notFoundLimit.' de '.count($noAtribuible).'):');
             foreach ($notFoundExamples as $r) {
                 $this->newLine();
-                $this->line("fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$" . number_format($r['amount'], 2));
-                $this->line('  Observación: ' . ($r['observation'] ?? '—'));
-                $this->line('  Justificación: ' . ($r['justification'] ?? '—'));
-                $this->line('  Solicitante original (columna Empleado): ' . ($r['raw_employee_name'] ?? '—'));
-                $this->line('  Razón: ' . ($r['reason'] ?? '—'));
+                $this->line("fact_expenses.id={$r['fact_expense_id']} | {$r['concept']} | \$".number_format($r['amount'], 2));
+                $this->line('  Observación: '.($r['observation'] ?? '—'));
+                $this->line('  Justificación: '.($r['justification'] ?? '—'));
+                $this->line('  Solicitante original (columna Empleado): '.($r['raw_employee_name'] ?? '—'));
+                $this->line('  Razón: '.($r['reason'] ?? '—'));
             }
             $this->newLine();
         }
@@ -309,16 +325,16 @@ class ReportsAuditExpenseAttributionCommand extends Command
         // ── NÚMEROS REALES — resumen final ──────────────────────────────
         $this->info('════════════════════════════════════════════════════════════');
         $this->info('NÚMEROS REALES');
-        $this->info('TOTAL fact_expenses del upload: ' . $classifiedAll->count());
-        $this->info('TOTAL OPEX: ' . $opexRowsA->count() . ' registros | $' . number_format($opexRowsA->sum('amount'), 2));
-        $this->info('OPEX con colaborador: ' . (count($atribuido) + count($yaCorrecto)) . ' | $' . number_format($montoEncontrados, 2));
-        $this->info('OPEX general de sucursal: ' . count($branchGeneral) . ' | $' . number_format($montoBranchGeneral, 2));
-        $this->info('OPEX ambiguo: ' . count($ambiguos) . ' | $' . number_format($montoAmbiguo, 2));
-        $this->info('OPEX conflicto: ' . count($conflictos) . ' | $' . number_format($montoConflicto, 2));
-        $this->info('OPEX sin destino: ' . count($noAtribuible) . ' | $' . number_format($montoSinDestinoReal, 2));
-        $this->info('No-OPEX excluido: ' . $nonOpexRowsA->count() . ' | $' . number_format($nonOpexRowsA->sum('amount'), 2));
-        $this->info('Reasignaciones propuestas: ' . count(array_filter($atribuido, fn ($r) => $r['previous_employee_id'] !== null)));
-        $this->info('Reasignaciones ya correctas: ' . count($yaCorrecto));
+        $this->info('TOTAL fact_expenses del upload: '.$classifiedAll->count());
+        $this->info('TOTAL OPEX: '.$opexRowsA->count().' registros | $'.number_format($opexRowsA->sum('amount'), 2));
+        $this->info('OPEX con colaborador: '.(count($atribuido) + count($yaCorrecto)).' | $'.number_format($montoEncontrados, 2));
+        $this->info('OPEX general de sucursal: '.count($branchGeneral).' | $'.number_format($montoBranchGeneral, 2));
+        $this->info('OPEX ambiguo: '.count($ambiguos).' | $'.number_format($montoAmbiguo, 2));
+        $this->info('OPEX conflicto: '.count($conflictos).' | $'.number_format($montoConflicto, 2));
+        $this->info('OPEX sin destino: '.count($noAtribuible).' | $'.number_format($montoSinDestinoReal, 2));
+        $this->info('No-OPEX excluido: '.$nonOpexRowsA->count().' | $'.number_format($nonOpexRowsA->sum('amount'), 2));
+        $this->info('Reasignaciones propuestas: '.count(array_filter($atribuido, fn ($r) => $r['previous_employee_id'] !== null)));
+        $this->info('Reasignaciones ya correctas: '.count($yaCorrecto));
         $this->info('════════════════════════════════════════════════════════════');
 
         if ($this->option('export')) {
@@ -335,11 +351,11 @@ class ReportsAuditExpenseAttributionCommand extends Command
      * a un .xlsx para revisión humana. Nunca escribe en fact_expenses — es un
      * export de solo lectura.
      */
-    private function exportToExcel(Period $period, ?object $upload, array $results, \Illuminate\Support\Collection $classifiedAll): string
+    private function exportToExcel(Period $period, ?object $upload, array $results, Collection $classifiedAll): string
     {
         $byId = collect($results)->keyBy('fact_expense_id');
 
-        $spreadsheet = new Spreadsheet();
+        $spreadsheet = new Spreadsheet;
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->setTitle('Auditoria OPEX');
 
@@ -356,10 +372,10 @@ class ReportsAuditExpenseAttributionCommand extends Command
 
         $destinationTypeFor = fn (string $estado) => match ($estado) {
             'atribuido', 'ya_correcto' => 'employee',
-            'branch_general'           => 'branch_general',
-            'ambiguo'                  => 'ambiguous',
-            'conflicto'                => 'conflict',
-            default                    => 'unresolved',
+            'branch_general' => 'branch_general',
+            'ambiguo' => 'ambiguous',
+            'conflicto' => 'conflict',
+            default => 'unresolved',
         };
 
         $row = 2;
@@ -396,7 +412,7 @@ class ReportsAuditExpenseAttributionCommand extends Command
             $row++;
         }
 
-        $lastCol = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($headers));
+        $lastCol = Coordinate::stringFromColumnIndex(count($headers));
         $sheet->setAutoFilter("A1:{$lastCol}1");
         foreach (range('A', $lastCol) as $col) {
             $sheet->getColumnDimension($col)->setAutoSize(true);
@@ -404,7 +420,7 @@ class ReportsAuditExpenseAttributionCommand extends Command
 
         $directory = storage_path('app/audits');
         File::ensureDirectoryExists($directory);
-        $path = $directory . "/opex_attribution_period_{$period->id}.xlsx";
+        $path = $directory."/opex_attribution_period_{$period->id}.xlsx";
         IOFactory::createWriter($spreadsheet, 'Xlsx')->save($path);
 
         return $path;

@@ -19,12 +19,21 @@ class EfectividadExportService
     /** Filas de tabla por imagen PNG: más largas se dividen en varias imágenes numeradas. */
     private const FILAS_POR_IMAGEN = 34;
 
+    /**
+     * @param  BrowsershotPdfRenderer  $renderer  motor PDF/PNG (Chrome headless)
+     * @param  EfectividadCalculadoraExcelExporter  $excel  exportador XLSX
+     */
     public function __construct(
         private readonly BrowsershotPdfRenderer $renderer,
         private readonly EfectividadCalculadoraExcelExporter $excel,
     ) {}
 
-    /** @return string ruta absoluta del PDF temporal */
+    /**
+     * PDF A4 horizontal del resultado con la plantilla efectividad.calculadora-reporte.
+     *
+     * @param  array  $r  resultado de EfectividadCalculadoraService (titulo, filas…)
+     * @return string ruta absoluta del PDF temporal
+     */
     public function pdf(array $r): string
     {
         $html = view('efectividad.calculadora-reporte', [
@@ -45,6 +54,7 @@ class EfectividadExportService
      * XLSX con el mismo resultado y formato que el PDF/imagen, más la bitácora de
      * incidencias en una segunda hoja.
      *
+     * @param  array  $r  resultado del cálculo
      * @return string ruta absoluta del XLSX temporal
      */
     public function xlsx(array $r): string
@@ -52,7 +62,13 @@ class EfectividadExportService
         return $this->excel->export($r, $this->tmp('xlsx'));
     }
 
-    /** @return array{ruta:string, tipo:string} PNG único o ZIP con imágenes numeradas */
+    /**
+     * Imagen(es) PNG del resultado: una por bloque de ~34 filas; si hay más de una se entregan
+     * en un ZIP. El directorio auxiliar se borra siempre.
+     *
+     * @param  array  $r  resultado del cálculo
+     * @return array{ruta:string, tipo:string} PNG único o ZIP con imágenes numeradas
+     */
     public function png(array $r): array
     {
         $paginas = $this->paginar($r['filas']);
@@ -90,7 +106,13 @@ class EfectividadExportService
         }
     }
 
-    /** Corta por bloques sin separar un subtotal de su oficina cuando es posible. */
+    /**
+     * Corta por bloques sin separar un subtotal de su oficina cuando es posible.
+     * Corte normal en FILAS_POR_IMAGEN si la fila no es de promotor; forzado a +12 filas.
+     *
+     * @param  array  $filas  filas del reporte
+     * @return list<array> páginas (al menos una, posiblemente vacía)
+     */
     private function paginar(array $filas): array
     {
         $paginas = [];
@@ -112,6 +134,11 @@ class EfectividadExportService
         return $paginas ?: [[]];
     }
 
+    /**
+     * Ruta temporal aleatoria en efectividad-tmp/exports (crea el directorio 0700).
+     *
+     * @param  string  $ext  extensión
+     */
     private function tmp(string $ext): string
     {
         $dir = EfectividadWorkspace::raiz().DIRECTORY_SEPARATOR.'exports';

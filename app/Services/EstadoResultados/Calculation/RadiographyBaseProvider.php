@@ -42,11 +42,17 @@ class RadiographyBaseProvider
      */
     private array $cache = [];
 
+    /** Profundidad de sesiones anidadas (0 = fuera de sesión, sin memo). */
     private int $sessionDepth = 0;
 
     /** Diagnóstico de la petición: cuántas bases salieron de caché y cuántas se calcularon. */
     public array $stats = ['cache_hit' => 0, 'computed' => 0, 'ms_computing' => 0.0];
 
+    /**
+     * @param  BranchRadiographyCalculator  $calculator  calculadora canónica de Radiografía
+     * @param  PeriodDataIds  $dataIds  universo de period_id
+     * @param  InputSignature|null  $signature  firma de insumos (se resuelve perezosamente)
+     */
     public function __construct(
         private readonly BranchRadiographyCalculator $calculator,
         private readonly PeriodDataIds $dataIds,
@@ -54,6 +60,10 @@ class RadiographyBaseProvider
     ) {}
 
     /**
+     * Base de Radiografía del periodo: dentro de una sesión se memoriza por periodo; fuera de
+     * ella siempre pasa por compute() (caché firmada o cálculo).
+     *
+     * @param  Period  $period  periodo
      * @return array{global: array, branches: array<string,array>, unassigned: array, cartera: array, rotacion: array, data_ids: list<int>}
      */
     public function for(Period $period): array
@@ -87,6 +97,9 @@ class RadiographyBaseProvider
         }
     }
 
+    /**
+     * ¿Hay una sesión abierta (la base se está reutilizando)?
+     */
     public function inSession(): bool
     {
         return $this->sessionDepth > 0;
@@ -95,6 +108,13 @@ class RadiographyBaseProvider
     /**
      * Base desde la caché firmada o, si no existe, calculada una sola vez (con candado para que
      * dos peticiones simultáneas del mismo periodo no la calculen en paralelo).
+     *
+     * Se desactiva con config estado_resultados.cache.base_radiografia. TTL configurable
+     * (base_ttl_minutos, 720 por defecto). Candado de 300 s con espera de 120 s; si expira la
+     * espera se calcula sin guardar. Un fallo al guardar en caché sólo se registra en el log.
+     *
+     * @param  Period  $period  periodo
+     * @return array base de Radiografía
      */
     private function compute(Period $period): array
     {
@@ -135,6 +155,11 @@ class RadiographyBaseProvider
         }
     }
 
+    /**
+     * Calcula la base (sin caché) y acumula estadísticas de tiempo.
+     *
+     * @param  Period  $period  periodo
+     */
     private function calculate(Period $period): array
     {
         $t = microtime(true);
@@ -146,6 +171,13 @@ class RadiographyBaseProvider
         }
     }
 
+    /**
+     * Ejecuta el mismo camino de Radiografía: buildBranches + sumGlobal, cartera global sin
+     * filtro y rotación. Sucursales indexadas por nombre.
+     *
+     * @param  Period  $period  periodo
+     * @return array{global: array, branches: array<string,array>, unassigned: array, cartera: array, rotacion: array, data_ids: list<int>}
+     */
     private function build(Period $period): array
     {
         $dataIds = $this->dataIds->for($period);
@@ -172,6 +204,9 @@ class RadiographyBaseProvider
     /**
      * Plantilla/rotación (informativo) — misma fuente única que Radiografía
      * (RadiographySnapshotBuilder::buildRotationData): fact_rotacion con source='derived_noi'.
+     *
+     * @param  Period  $period  periodo
+     * @return array{disponible:bool, altas:int, bajas:int, plantilla:float, indice:?float, por_sucursal:array}
      */
     private function rotacion(Period $period): array
     {

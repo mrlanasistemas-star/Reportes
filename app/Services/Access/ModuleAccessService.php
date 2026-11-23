@@ -11,6 +11,10 @@ use Illuminate\Support\Facades\DB;
  * middleware EnsureModuleAccess, el menú (prop compartida auth.modules) y el
  * aterrizaje después del login. El admin siempre ve todo y no se configura;
  * gerencial y colaborador se editan en "Usuarios y accesos".
+ *
+ * Persiste en la tabla `role_module_access` (rol, módulo) con caché permanente
+ * (CACHE_KEY) que se invalida al guardar. Además recorta los módulos de alcance
+ * general a usuarios restringidos por sucursal (GENERAL_SCOPE_MODULES).
  */
 class ModuleAccessService
 {
@@ -33,13 +37,16 @@ class ModuleAccessService
         'roles' => ['label' => 'Roles y permisos', 'url' => '/roles', 'description' => 'Roles, módulos y acciones permitidas.'],
     ];
 
+    /** Roles configurables de respaldo si el catálogo de roles no devuelve ninguno. */
     public const CONFIGURABLE_ROLES = [User::ROLE_GERENCIAL, User::ROLE_COLABORADOR];
 
+    /** Matriz usada cuando la tabla `role_module_access` aún no existe. */
     private const DEFAULTS = [
         User::ROLE_GERENCIAL => ['dashboard', 'carga', 'periodos', 'colaboradores', 'reportes', 'efectividad', 'okr'],
         User::ROLE_COLABORADOR => ['okr'],
     ];
 
+    /** Clave de caché de la matriz rol → módulos. */
     private const CACHE_KEY = 'role_module_access.v1';
 
     /**
@@ -51,7 +58,14 @@ class ModuleAccessService
      */
     public const GENERAL_SCOPE_MODULES = ['carga', 'periodos', 'estado_resultados'];
 
-    /** @return array<string, list<string>> rol => módulos permitidos (solo roles configurables). */
+    /**
+     * Matriz rol → módulos permitidos según lo guardado en BD (con caché).
+     *
+     * Solo incluye roles configurables y módulos existentes en MODULES (en el
+     * orden del menú). Si la tabla no existe devuelve DEFAULTS.
+     *
+     * @return array<string, list<string>> rol => módulos permitidos (solo roles configurables).
+     */
     public function matrix(): array
     {
         try {
@@ -73,13 +87,22 @@ class ModuleAccessService
         return $matrix;
     }
 
-    /** 16-oct-2026 — roles del sistema + personalizados (todos menos admin). @return list<string> */
+    /**
+     * 16-oct-2026 — roles del sistema + personalizados (todos menos admin).
+     *
+     * @return list<string>
+     */
     private function configurableRoles(): array
     {
         return app(RoleCatalogService::class)->configurableKeys() ?: self::CONFIGURABLE_ROLES;
     }
 
-    /** Clave de permisos del usuario: su propio rol si es configurable; si no, su nivel base. */
+    /**
+     * Clave de permisos del usuario: su propio rol si es configurable; si no, su nivel base.
+     *
+     * @param  User  $user  Usuario no administrador.
+     * @return string Clave de rol a buscar en la matriz.
+     */
     private function permissionKeyFor(User $user): string
     {
         return in_array($user->role, $this->configurableRoles(), true)
@@ -87,19 +110,37 @@ class ModuleAccessService
             : ($user->isGerencial() ? User::ROLE_GERENCIAL : User::ROLE_COLABORADOR);
     }
 
-    /** @param list<string> $modules */
+    /**
+     * Guarda los módulos de un solo rol (atajo de save()).
+     *
+     * @param  string  $role  Clave del rol.
+     * @param  list<string>  $modules  Módulos permitidos.
+     */
     public function saveRole(string $role, array $modules): void
     {
         $this->save([$role => $modules]);
     }
 
+    /**
+     * Borra todos los módulos asignados a un rol (al eliminar el rol) e invalida la caché.
+     *
+     * @param  string  $role  Clave del rol.
+     */
     public function deleteRole(string $role): void
     {
         DB::table('role_module_access')->where('role', $role)->delete();
         Cache::forget(self::CACHE_KEY);
     }
 
-    /** @return list<string> */
+    /**
+     * Módulos efectivos del usuario (los que ve en menú y puede abrir).
+     *
+     * Regla: sin usuario = ninguno; admin = todos; resto = los de su rol menos
+     * GENERAL_SCOPE_MODULES si su alcance por sucursal está restringido.
+     *
+     * @param  User|null  $user  Usuario autenticado.
+     * @return list<string>
+     */
     public function modulesFor(?User $user): array
     {
         if (! $user) {
@@ -117,13 +158,25 @@ class ModuleAccessService
         return $modules;
     }
 
-    /** Módulos del ROL del usuario, antes de aplicar su alcance por sucursal. @return list<string> */
+    /**
+     * Módulos del ROL del usuario, antes de aplicar su alcance por sucursal.
+     *
+     * @param  User  $user  Usuario.
+     * @return list<string>
+     */
     public function roleModulesFor(User $user): array
     {
         return $user->isAdmin() ? array_keys(self::MODULES) : ($this->matrix()[$this->permissionKeyFor($user)] ?? []);
     }
 
-    /** ¿Su rol tiene el módulo, pero su alcance restringido por sucursal se lo impide? */
+    /**
+     * ¿Su rol tiene el módulo, pero su alcance restringido por sucursal se lo impide?
+     *
+     * Sirve para mostrar un mensaje específico en lugar de un 403 genérico.
+     *
+     * @param  User|null  $user  Usuario autenticado.
+     * @param  string  $module  Clave del módulo.
+     */
     public function blockedByScope(?User $user, string $module): bool
     {
         return $user !== null
@@ -132,12 +185,25 @@ class ModuleAccessService
             && ! $this->allows($user, $module);
     }
 
+    /**
+     * ¿El usuario puede entrar al módulo? (incluye el recorte por alcance).
+     *
+     * @param  User|null  $user  Usuario autenticado.
+     * @param  string  $module  Clave del módulo.
+     */
     public function allows(?User $user, string $module): bool
     {
         return in_array($module, $this->modulesFor($user), true);
     }
 
-    /** Primer módulo permitido; si no tiene ninguno, su perfil (siempre accesible). */
+    /**
+     * Primer módulo permitido; si no tiene ninguno, su perfil (siempre accesible).
+     *
+     * Se usa como redirección después del login.
+     *
+     * @param  User|null  $user  Usuario autenticado.
+     * @return string URL relativa de aterrizaje.
+     */
     public function landingUrlFor(?User $user): string
     {
         $first = $this->modulesFor($user)[0] ?? null;
@@ -145,7 +211,15 @@ class ModuleAccessService
         return $first ? self::MODULES[$first]['url'] : '/settings/profile';
     }
 
-    /** @param array<string, list<string>> $matrix */
+    /**
+     * Guarda la matriz rol → módulos en `role_module_access` dentro de una transacción.
+     *
+     * Por cada rol enviado y configurable: borra sus filas e inserta las nuevas
+     * (descarta módulos desconocidos). Los roles no enviados no se tocan.
+     * Invalida la caché al terminar.
+     *
+     * @param  array<string, list<string>>  $matrix  rol => módulos.
+     */
     public function save(array $matrix): void
     {
         DB::transaction(function () use ($matrix) {
@@ -164,7 +238,11 @@ class ModuleAccessService
         Cache::forget(self::CACHE_KEY);
     }
 
-    /** Catálogo para la UI. */
+    /**
+     * Catálogo para la UI.
+     *
+     * @return list<array{key:string, label:string, description:string}>
+     */
     public function catalog(): array
     {
         return collect(self::MODULES)

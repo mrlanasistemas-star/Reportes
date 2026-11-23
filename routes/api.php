@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Route;
 
 // Fase 1 — API general de reportería, servidor a servidor (Sanctum personal
 // access tokens emitidos a App\Models\ApiConsumer, NUNCA a User). Ver
-// docs/api-reporteria.md. /health es la única ruta pública (sin datos
+// docs/MANUAL-DESARROLLADOR.md. /health es la única ruta pública (sin datos
 // sensibles) — todo lo demás exige token + ability + rate limit + auditoría.
 
 Route::get('/v1/health', [HealthController::class, 'index']);

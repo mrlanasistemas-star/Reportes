@@ -4,8 +4,11 @@ namespace App\Http\Controllers\Okr;
 
 use App\Http\Controllers\Controller;
 use App\Services\Okr\OkrEmployeeBranchResolver;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Prioridad 5 del cierre OKR — conciliación AUTORIZADA de sucursal cuando dos
@@ -16,9 +19,25 @@ use Illuminate\Http\Request;
  */
 class BranchReconciliationController extends Controller
 {
+    /**
+     * Registra la sucursal correcta de un colaborador cuando las fuentes del
+     * periodo se contradicen.
+     *
+     * Valida colaborador/sucursal/notas, delega en
+     * OkrEmployeeBranchResolver::reconcileBranch() (escribe una fila en
+     * okr_branch_reconciliations) y devuelve la pertenencia ya resuelta para
+     * que la UI pueda continuar con la asignación de OKR.
+     *
+     * @param  Request  $request  Campos `employee_id`, `branch_id` y `notes` (opcional).
+     * @param  OkrEmployeeBranchResolver  $resolver  Servicio que resuelve/concilia la sucursal del colaborador.
+     * @return JsonResponse Éxito con `reconciliation_id` y `membership`, o 422 con el mensaje del RuntimeException.
+     *
+     * @throws AuthorizationException Si el usuario no tiene `okr.admin`.
+     * @throws ValidationException Si los datos no son válidos.
+     */
     public function store(Request $request, OkrEmployeeBranchResolver $resolver): JsonResponse
     {
-        \Illuminate\Support\Facades\Gate::authorize('okr.admin');
+        Gate::authorize('okr.admin');
         $data = $request->validate([
             'employee_id' => ['required', 'integer', 'exists:employees,id'],
             'branch_id' => ['required', 'integer', 'exists:branches,id'],
@@ -38,7 +57,7 @@ class BranchReconciliationController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Sucursal conciliada: ' . ($membership['branch_name'] ?? 'sucursal elegida') . '. Ya puedes asignarle OKR en esa sucursal.',
+            'message' => 'Sucursal conciliada: '.($membership['branch_name'] ?? 'sucursal elegida').'. Ya puedes asignarle OKR en esa sucursal.',
             'reconciliation_id' => $rec->id,
             'membership' => $membership,
         ]);

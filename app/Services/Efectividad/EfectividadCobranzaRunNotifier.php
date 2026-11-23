@@ -30,6 +30,12 @@ use Illuminate\Support\Facades\Mail;
  */
 class EfectividadCobranzaRunNotifier
 {
+    /**
+     * Notifica por ambos canales una ejecución terminal (recarga el modelo; si aún no termina
+     * no hace nada).
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     */
     public function notify(EfectividadCobranzaRun $run): void
     {
         $run->refresh();
@@ -42,6 +48,14 @@ class EfectividadCobranzaRunNotifier
         $this->sendMail($run);
     }
 
+    /**
+     * Notificación interna (tabla notifications) a los destinatarios de la ejecución. Reclama
+     * el canal con un UPDATE condicional sobre in_app_notified_at; si falla, libera el reclamo
+     * y registra el error en el log (no lanza).
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     * @return bool true si esta llamada envió las notificaciones
+     */
     public function notifyInApp(EfectividadCobranzaRun $run): bool
     {
         $claimed = EfectividadCobranzaRun::query()
@@ -71,6 +85,11 @@ class EfectividadCobranzaRunNotifier
     }
 
     /**
+     * Envía el correo de fin de ejecución: reclama el canal (estado nulo o fallido y menos de
+     * efectividad.notification_max_attempts intentos), envía a cada destinatario pendiente y
+     * registra el estado final. Nunca lanza por fallas SMTP.
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución terminal
      * @return string estado final del correo (sent|failed|skipped|…)
      */
     public function sendMail(EfectividadCobranzaRun $run): string
@@ -163,7 +182,12 @@ class EfectividadCobranzaRunNotifier
         return true;
     }
 
-    /** @return Collection<int,User> */
+    /**
+     * Usuarios destinatarios de la ejecución (EfectividadCobranzaRun::recipientUserIds()).
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     * @return Collection<int,User>
+     */
     private function recipients(EfectividadCobranzaRun $run)
     {
         $ids = $run->recipientUserIds();
@@ -171,6 +195,14 @@ class EfectividadCobranzaRunNotifier
         return $ids === [] ? collect() : User::query()->whereIn('id', $ids)->get();
     }
 
+    /**
+     * Guarda el estado final del correo (y notified_at si se envió).
+     *
+     * @param  EfectividadCobranzaRun  $run  ejecución
+     * @param  string  $status  estado final
+     * @param  string|null  $error  motivo de falla
+     * @return string el mismo estado
+     */
     private function finishMail(EfectividadCobranzaRun $run, string $status, ?string $error): string
     {
         $run->forceFill([

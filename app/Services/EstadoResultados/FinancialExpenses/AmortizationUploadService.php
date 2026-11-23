@@ -26,19 +26,45 @@ use Illuminate\Support\Facades\Storage;
  */
 class AmortizationUploadService
 {
+    /** Extensiones permitidas (incluye CSV). */
     public const EXTENSIONS = ['xlsx', 'xlsm', 'xls', 'csv'];
 
+    /** Disco de Storage donde se guarda el original. */
     public const DISK = 'local';
 
+    /** @param  AmortizationScheduleParser  $parser  lector de la tabla */
     public function __construct(private readonly AmortizationScheduleParser $parser) {}
 
-    /** @return array{upload: EstadoResultadosAmortizationUpload, idempotent: bool, replaced: ?EstadoResultadosAmortizationUpload} */
+    /**
+     * Carga la tabla de un crédito subida desde la web (delegando en importPath()).
+     *
+     * @param  EstadoResultadosCredit  $credit  crédito (LEROM, BBVA…)
+     * @param  UploadedFile  $file  archivo
+     * @param  int|null  $userId  usuario
+     * @param  string|null  $notes  notas de la carga
+     * @return array{upload: EstadoResultadosAmortizationUpload, idempotent: bool, replaced: ?EstadoResultadosAmortizationUpload}
+     */
     public function upload(EstadoResultadosCredit $credit, UploadedFile $file, ?int $userId, ?string $notes = null): array
     {
         return $this->importPath($credit, (string) $file->getRealPath(), $file->getClientOriginalName(), $userId, $notes, $file->getSize() ?: null);
     }
 
-    /** @return array{upload: EstadoResultadosAmortizationUpload, idempotent: bool, replaced: ?EstadoResultadosAmortizationUpload} */
+    /**
+     * Valida y lee la tabla; si es el mismo archivo que la vigente devuelve idempotente. Guarda
+     * el original en disco y, en una transacción con el crédito bloqueado, crea la carga
+     * vigente con sus totales, inserta los renglones (bloques de 500) y marca la anterior como
+     * «sustituida».
+     *
+     * @param  EstadoResultadosCredit  $credit  crédito
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $originalName  nombre original
+     * @param  int|null  $userId  usuario
+     * @param  string|null  $notes  notas
+     * @param  int|null  $reportedSize  tamaño reportado
+     * @return array{upload: EstadoResultadosAmortizationUpload, idempotent: bool, replaced: ?EstadoResultadosAmortizationUpload}
+     *
+     * @throws EstadoResultadosImportException archivo inválido o tabla con errores
+     */
     public function importPath(EstadoResultadosCredit $credit, string $absolutePath, string $originalName, ?int $userId, ?string $notes = null, ?int $reportedSize = null): array
     {
         $this->validateFile($absolutePath, $originalName, $reportedSize);
@@ -115,7 +141,15 @@ class AmortizationUploadService
         return ['upload' => $upload[0], 'idempotent' => false, 'replaced' => $upload[1]];
     }
 
-    /** Mismo patrón que EstadoResultadosUploadService::validateFile, con CSV admitido. */
+    /**
+     * Mismo patrón que EstadoResultadosUploadService::validateFile, con CSV admitido.
+     *
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $originalName  nombre original
+     * @param  int|null  $reportedSize  tamaño reportado
+     *
+     * @throws EstadoResultadosImportException si no pasa alguna validación
+     */
     public function validateFile(string $absolutePath, string $originalName, ?int $reportedSize = null): void
     {
         $ext = mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION));

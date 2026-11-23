@@ -31,7 +31,17 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class OkrObjectiveVisibilityService
 {
-    /** Aplica el scope de visibilidad a un builder de OkrObjective — reutilizable en cualquier query. */
+    /**
+     * Aplica el scope de visibilidad a un builder de OkrObjective — reutilizable en cualquier query.
+     *
+     * Admin/gerencial general: sin filtro. Resto: responsable, OKR de sus
+     * sucursales (gerencial restringido, incluidos hijos de OKR de sucursal) o
+     * dueño del OKR individual.
+     *
+     * @param  Builder  $query  Consulta sobre OkrObjective.
+     * @param  User  $user  Usuario que consulta.
+     * @return Builder La misma consulta con el filtro aplicado.
+     */
     public function applyScope(Builder $query, User $user): Builder
     {
         if ($this->seesEverything($user)) {
@@ -59,7 +69,13 @@ class OkrObjectiveVisibilityService
         });
     }
 
-    /** Misma regla que applyScope(), para un Objective YA cargado en memoria (Policy::view(), checks puntuales). */
+    /**
+     * Misma regla que applyScope(), para un Objective YA cargado en memoria (Policy::view(), checks puntuales).
+     *
+     * @param  User  $user  Usuario que consulta.
+     * @param  OkrObjective  $objective  Objective a verificar (puede cargar la relación parent).
+     * @return bool true si el usuario puede verlo.
+     */
     public function canView(User $user, OkrObjective $objective): bool
     {
         if ($this->seesEverything($user)) {
@@ -88,6 +104,10 @@ class OkrObjectiveVisibilityService
      * Usado también por checkin/uploadEvidence (11 del pedido): el dueño
      * puede dar seguimiento a SU Objective aunque no sea responsible_user_id,
      * sin que eso amplíe sus privilegios de edición/activación/emisión.
+     *
+     * @param  User  $user  Usuario a verificar.
+     * @param  OkrObjective  $objective  Objective a verificar.
+     * @return bool true si es el colaborador evaluado del OKR individual.
      */
     public function isOwner(User $user, OkrObjective $objective): bool
     {
@@ -96,6 +116,13 @@ class OkrObjectiveVisibilityService
             && (int) $objective->employee_id === (int) $user->employee_id;
     }
 
+    /**
+     * El usuario es el responsable administrativo (responsible_user_id) del Objective.
+     *
+     * @param  User  $user  Usuario a verificar.
+     * @param  OkrObjective  $objective  Objective a verificar.
+     * @return bool true si coincide el responsable.
+     */
     public function isResponsible(User $user, OkrObjective $objective): bool
     {
         return $objective->responsible_user_id !== null
@@ -106,6 +133,9 @@ class OkrObjectiveVisibilityService
      * Fase 6.4 — admin, o gerencial con alcance GENERAL por sucursal
      * (DataScopeService). Un gerencial restringido (p. ej. solo ATLIXCO) ya no
      * "ve todo": ve lo propio + los OKR de sus sucursales.
+     *
+     * @param  User  $user  Usuario a verificar.
+     * @return bool true si ve todos los Objectives sin filtro.
      */
     public function seesEverything(User $user): bool
     {
@@ -113,7 +143,13 @@ class OkrObjectiveVisibilityService
             || ($user->hasManagerialAccess() && app(DataScopeService::class)->isGeneral($user));
     }
 
-    /** Sucursales de un gerencial restringido; null si no aplica (admin/general o colaborador). @return list<int>|null */
+    /**
+     * Sucursales permitidas de un usuario con acceso gerencial (según DataScopeService);
+     * null si no tiene acceso gerencial (o si DataScopeService no restringe).
+     *
+     * @param  User  $user  Usuario a consultar.
+     * @return list<int>|null Ids de sucursal permitidos.
+     */
     private function managerialBranchIds(User $user): ?array
     {
         if (! $user->hasManagerialAccess()) {

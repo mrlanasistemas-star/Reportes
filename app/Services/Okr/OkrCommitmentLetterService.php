@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\Pdf\BrowsershotPdfRenderer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -29,8 +30,17 @@ use RuntimeException;
  */
 class OkrCommitmentLetterService
 {
+    /** Mensaje acordado cuando falta confirmar el jefe inmediato. */
     public const BOSS_MISSING_MESSAGE = 'No es posible emitir la Carta Compromiso porque falta confirmar el jefe inmediato.';
 
+    /**
+     * @param  OkrCalendarService  $calendar  Aritmética de fechas del OKR.
+     * @param  OkrDocumentFolioGenerator  $folioGenerator  Folio CC-AÑO-000000.
+     * @param  BrowsershotPdfRenderer  $renderer  Motor que renderiza la vista Blade a PDF.
+     * @param  OkrPersonnelResolver  $personnel  Puesto, jefe inmediato y gerente sugeridos desde el directorio laboral.
+     * @param  OkrAuditLogger  $logger  Auditoría de emisión/anulación.
+     * @param  OkrDocumentIssuer  $issuer  Escritura atómica del PDF, candado y compensación.
+     */
     public function __construct(
         private readonly OkrCalendarService $calendar,
         private readonly OkrDocumentFolioGenerator $folioGenerator,
@@ -38,9 +48,15 @@ class OkrCommitmentLetterService
         private readonly OkrPersonnelResolver $personnel,
         private readonly OkrAuditLogger $logger,
         private readonly OkrDocumentIssuer $issuer,
-    ) {
-    }
+    ) {}
 
+    /**
+     * Persona evaluada a nombre de quien se emite la carta: el gestor en un OKR
+     * individual, el titular (accountableEmployee) en un OKR de sucursal.
+     *
+     * @param  OkrObjective  $objective  Objective de la carta.
+     * @return Employee|null Colaborador evaluado, o null si no hay.
+     */
     public function subjectFor(OkrObjective $objective): ?Employee
     {
         $objective->loadMissing(['employee', 'accountableEmployee']);
@@ -50,7 +66,12 @@ class OkrCommitmentLetterService
 
     /**
      * Datos laborales del sujeto + sugerencias, para la pantalla de revisión.
+     * Sugiere jefe inmediato (si hay sucursal) y, en OKR de sucursal sin
+     * titular, el gerente de la sucursal como posible titular.
      *
+     * Efecto: solo lecturas.
+     *
+     * @param  OkrObjective  $objective  Objective de la carta.
      * @return array{subject: ?array, profile: array, boss_suggestion: ?array, accountable_suggestion: ?array}
      */
     public function reviewContext(OkrObjective $objective): array
@@ -58,7 +79,7 @@ class OkrCommitmentLetterService
         $subject = $this->subjectFor($objective);
         $profile = $subject ? $this->personnel->profileFor($subject->id) : ['position' => null, 'source' => null, 'status' => null];
         $boss = $subject && $objective->branch_id ? $this->personnel->suggestImmediateBoss($subject->id, (int) $objective->branch_id) : null;
-        $accountableSuggestion = $objective->scope_type === OkrObjective::SCOPE_BRANCH && $objective->branch_id && !$objective->accountable_employee_id
+        $accountableSuggestion = $objective->scope_type === OkrObjective::SCOPE_BRANCH && $objective->branch_id && ! $objective->accountable_employee_id
             ? $this->personnel->suggestBranchManager((int) $objective->branch_id)
             : null;
 
@@ -71,9 +92,20 @@ class OkrCommitmentLetterService
     }
 
     /**
+     * Construye el contenido congelado de la carta (snapshot): colaborador,
+     * número de empleado (Lendus, con clave NOI aparte), puesto, sucursal,
+     * jefe inmediato validado (se descarta si bossIssue() lo rechaza),
+     * responsable administrativo, fechas y los KR de ESTE Objective con línea
+     * base, incremento, meta y peso.
+     *
+     * Efecto: solo lecturas (carga relaciones y consulta el directorio laboral).
+     *
+     * @param  OkrObjective  $objective  Objective de la carta.
+     * @param  string  $place  Lugar de emisión que se imprime en la carta.
      * @param  array{position?: ?string, immediate_boss?: ?string, observations?: ?string}  $overrides
-     *   position: solo se usa si el directorio vigente NO tiene puesto.
-     *   immediate_boss: confirmación/corrección del jefe inmediato (obligatoria para emitir).
+     *                                                                                                  position: solo se usa si el directorio vigente NO tiene puesto.
+     *                                                                                                  immediate_boss: confirmación/corrección del jefe inmediato (obligatoria para emitir).
+     * @return array<string, mixed> Snapshot de la carta.
      */
     public function buildSnapshot(OkrObjective $objective, string $place, array $overrides = []): array
     {
@@ -131,9 +163,9 @@ class OkrCommitmentLetterService
                 'baseline_source' => $kr->baseline_source,
                 'baseline_locked' => $kr->baseline_locked_at !== null,
                 'baseline_label' => match (true) {
-                    $kr->baseline_source === OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL => 'Línea base manual del gestor' . ($kr->baseline_locked_at ? ' (congelada)' : ''),
-                    $kr->baseline_source === 'manual_authorized' => 'Línea base manual autorizada' . ($kr->baseline_locked_at ? ' (congelada)' : ''),
-                    default => 'Línea base' . ($kr->baseline_locked_at ? ' congelada (Reportería)' : ''),
+                    $kr->baseline_source === OkrBaselineGuard::SOURCE_MANUAL_INDIVIDUAL => 'Línea base manual del gestor'.($kr->baseline_locked_at ? ' (congelada)' : ''),
+                    $kr->baseline_source === 'manual_authorized' => 'Línea base manual autorizada'.($kr->baseline_locked_at ? ' (congelada)' : ''),
+                    default => 'Línea base'.($kr->baseline_locked_at ? ' congelada (Reportería)' : ''),
                 },
                 'increment_value' => $kr->baseline_value !== null ? round((float) $kr->target_value - (float) $kr->baseline_value, 2) : null,
                 'target_value' => $kr->target_value,
@@ -148,10 +180,16 @@ class OkrCommitmentLetterService
      * administrativo o el creador del OKR (usuarios del sistema, típicamente el
      * admin), salvo que esa misma persona sea el jefe sugerido por el
      * directorio laboral vigente (subgerente/gerente activo de la sucursal).
+     * La comparación de nombres es sin acentos, en mayúsculas y espacios compactados.
+     *
+     * @param  OkrObjective  $objective  Objective de la carta.
+     * @param  Employee|null  $subject  Colaborador evaluado.
+     * @param  string  $boss  Nombre de jefe capturado.
+     * @return string|null Motivo del rechazo (para el mensaje) o null si es aceptable.
      */
     private function bossIssue(OkrObjective $objective, ?Employee $subject, string $boss): ?string
     {
-        $norm = fn (?string $v) => $v === null ? '' : \Illuminate\Support\Str::of($v)->ascii()->upper()->squish()->value();
+        $norm = fn (?string $v) => $v === null ? '' : Str::of($v)->ascii()->upper()->squish()->value();
         $bossNorm = $norm($boss);
 
         if ($subject && $bossNorm === $norm($subject->full_name)) {
@@ -179,6 +217,8 @@ class OkrCommitmentLetterService
      * Datos indispensables faltantes — se muestran ANTES de emitir; nunca se
      * emite con huecos.
      *
+     * @param  OkrObjective  $objective  Objective (para distinguir sucursal/individual en el texto).
+     * @param  array  $snapshot  Snapshot generado por buildSnapshot().
      * @return array<string, string> campo => explicación
      */
     public function missingFields(OkrObjective $objective, array $snapshot): array
@@ -198,12 +238,12 @@ class OkrCommitmentLetterService
             'objective_title' => 'Objetivo principal',
         ];
         foreach ($labels as $key => $label) {
-            if (!is_string($snapshot[$key] ?? null) || trim($snapshot[$key]) === '') {
+            if (! is_string($snapshot[$key] ?? null) || trim($snapshot[$key]) === '') {
                 $missing[$key] = $label;
             }
         }
-        if (!empty($snapshot['immediate_boss_issue'])) {
-            $missing['immediate_boss'] = 'Jefe inmediato confirmado (' . $snapshot['immediate_boss_issue'] . ')';
+        if (! empty($snapshot['immediate_boss_issue'])) {
+            $missing['immediate_boss'] = 'Jefe inmediato confirmado ('.$snapshot['immediate_boss_issue'].')';
         }
         if (empty($snapshot['key_results'])) {
             $missing['key_results'] = 'Key Results con meta (este OKR no tiene KR configurados)';
@@ -212,11 +252,21 @@ class OkrCommitmentLetterService
         return $missing;
     }
 
-    /** DRAFT/revisión — previsualización READ-ONLY, nunca se persiste nada. */
+    /**
+     * DRAFT/revisión — previsualización READ-ONLY, nunca se persiste nada en BD.
+     *
+     * Efecto: escribe un PDF temporal en storage/app/tmp (el llamador debe
+     * entregarlo y borrarlo).
+     *
+     * @param  OkrObjective  $objective  Objective de la carta.
+     * @param  string  $place  Lugar de emisión.
+     * @param  array  $overrides  Mismas correcciones que buildSnapshot().
+     * @return string Ruta absoluta del PDF temporal.
+     */
     public function renderPreviewPdf(OkrObjective $objective, string $place, array $overrides = []): string
     {
         $snapshot = $this->buildSnapshot($objective, $place, $overrides);
-        $path = storage_path('app/tmp/okr-carta-preview-' . $objective->id . '-' . uniqid() . '.pdf');
+        $path = storage_path('app/tmp/okr-carta-preview-'.$objective->id.'-'.uniqid().'.pdf');
 
         $this->renderer->renderViewToFile('reports.okr-commitment-letter-pdf', [
             'folio' => 'VISTA PREVIA — SIN EMITIR', 'snapshot' => $snapshot,
@@ -227,6 +277,23 @@ class OkrCommitmentLetterService
     }
 
     /**
+     * Emite la Carta Compromiso definitiva. Si ya hay una vigente la devuelve
+     * tal cual (inmutable). Exige OKR activado y datos completos; si existe una
+     * carta anulada previa, la nueva queda marcada como su sustituta. La
+     * emisión corre bajo candado exclusivo por OKR + transacción, y si otra
+     * solicitud ganó la carrera se devuelve la misma carta. Ante fallo se
+     * compensa (se borran PDF y fila provisional).
+     *
+     * Efecto: INSERT/UPDATE en okr_commitment_letters, PDF en disco 'local'
+     * (okr-commitment-letters/{objective}/{folio}.pdf), auditoría.
+     *
+     * @param  OkrObjective  $objective  Objective activado.
+     * @param  User  $user  Usuario emisor.
+     * @param  string  $place  Lugar de emisión.
+     * @param  array  $overrides  Correcciones de revisión (puesto, jefe inmediato, observaciones).
+     * @return OkrCommitmentLetter Carta vigente.
+     *
+     * @throws OkrCommitmentLetterIncompleteException si faltan datos indispensables.
      * @throws RuntimeException si el Objective no está activado o faltan datos.
      */
     public function generate(OkrObjective $objective, User $user, string $place, array $overrides = []): OkrCommitmentLetter
@@ -248,11 +315,11 @@ class OkrCommitmentLetterService
             if (isset($missing['immediate_boss'])) {
                 $others = array_diff_key($missing, ['immediate_boss' => true]);
                 throw new OkrCommitmentLetterIncompleteException(
-                    self::BOSS_MISSING_MESSAGE . ($others !== [] ? ' También falta: ' . implode(', ', $others) . '.' : ''),
+                    self::BOSS_MISSING_MESSAGE.($others !== [] ? ' También falta: '.implode(', ', $others).'.' : ''),
                     $missing,
                 );
             }
-            throw new OkrCommitmentLetterIncompleteException('Faltan datos indispensables para emitir la Carta Compromiso: ' . implode(', ', $missing) . '.', $missing);
+            throw new OkrCommitmentLetterIncompleteException('Faltan datos indispensables para emitir la Carta Compromiso: '.implode(', ', $missing).'.', $missing);
         }
 
         $replaces = $objective->commitmentLetters()->where('status', OkrCommitmentLetter::STATUS_VOIDED)->latest('id')->value('id');
@@ -268,7 +335,7 @@ class OkrCommitmentLetterService
         // transacciones) — nunca dos vigentes, ni "emitida" sin PDF, ni huérfanos.
         $state = new \ArrayObject(['path' => null, 'id' => null]); // objeto: se comparte entre closures (fn() copia los arrays)
         try {
-            return $this->issuer->exclusively('okr-documents:' . $objective->id, fn () => DB::transaction(function () use ($objective, $user, $place, $snapshot, $replaces, $state) {
+            return $this->issuer->exclusively('okr-documents:'.$objective->id, fn () => DB::transaction(function () use ($objective, $user, $place, $snapshot, $replaces, $state) {
                 OkrObjective::query()->whereKey($objective->id)->lockForUpdate()->first();
                 $current = OkrCommitmentLetter::query()->where('okr_objective_id', $objective->id)
                     ->where('status', OkrCommitmentLetter::STATUS_ISSUED)->latest('id')->first();
@@ -292,10 +359,23 @@ class OkrCommitmentLetterService
         }
     }
 
+    /**
+     * Inserta la carta con folio provisional, fija el folio definitivo con su
+     * id, escribe el PDF de forma atómica, actualiza folio/ruta y audita.
+     * Registra id y ruta en $state para la compensación.
+     *
+     * @param  OkrObjective  $objective  Objective de la carta.
+     * @param  User  $user  Usuario emisor.
+     * @param  string  $place  Lugar de emisión.
+     * @param  array  $snapshot  Contenido congelado.
+     * @param  int|null  $replaces  Id de la carta anulada a la que sustituye.
+     * @param  \ArrayObject  $state  Estado compartido ['path', 'id'].
+     * @return OkrCommitmentLetter Carta recargada.
+     */
     private function issueLetter(OkrObjective $objective, User $user, string $place, array $snapshot, ?int $replaces, \ArrayObject $state): OkrCommitmentLetter
     {
         $letter = OkrCommitmentLetter::query()->create([
-            'folio' => 'PENDIENTE-' . uniqid(), // se fija abajo, ya con id real
+            'folio' => 'PENDIENTE-'.uniqid(), // se fija abajo, ya con id real
             'okr_objective_id' => $objective->id,
             'subject_employee_id' => $snapshot['subject_employee_id'],
             'status' => OkrCommitmentLetter::STATUS_ISSUED,
@@ -310,7 +390,7 @@ class OkrCommitmentLetterService
 
         $folio = $this->folioGenerator->forId('CC', $letter->id);
         $disk = 'local';
-        $path = 'okr-commitment-letters/' . $objective->id . "/{$folio}.pdf";
+        $path = 'okr-commitment-letters/'.$objective->id."/{$folio}.pdf";
 
         $this->issuer->writePdf($disk, $path, fn (string $tmp) => $this->renderer->renderViewToFile('reports.okr-commitment-letter-pdf', [
             'folio' => $folio, 'snapshot' => $snapshot,
@@ -328,6 +408,15 @@ class OkrCommitmentLetterService
     /**
      * Anulación auditada (15-oct-2026): el PDF y el folio se conservan; la carta
      * deja de ser vigente y puede emitirse otra con folio nuevo.
+     *
+     * Efecto: UPDATE de la carta (status anulado, voided_at/by, motivo) y auditoría, en transacción.
+     *
+     * @param  OkrCommitmentLetter  $letter  Carta a anular.
+     * @param  User  $user  Usuario que anula.
+     * @param  string  $reason  Motivo obligatorio.
+     * @return OkrCommitmentLetter Carta recargada.
+     *
+     * @throws RuntimeException Si ya estaba anulada.
      */
     public function void(OkrCommitmentLetter $letter, User $user, string $reason): OkrCommitmentLetter
     {
@@ -338,7 +427,7 @@ class OkrCommitmentLetterService
         DB::transaction(function () use ($letter, $user, $reason) {
             $letter->update(['status' => OkrCommitmentLetter::STATUS_VOIDED, 'voided_at' => now(), 'voided_by' => $user->id, 'void_reason' => $reason]);
             $this->logger->log('objective', $letter->okr_objective_id, $user->id, 'commitment_letter_voided', null, $letter->folio, null,
-                ($letter->isSigned() ? '[Tenía copia firmada] ' : '') . $reason);
+                ($letter->isSigned() ? '[Tenía copia firmada] ' : '').$reason);
         });
 
         return $letter->fresh();

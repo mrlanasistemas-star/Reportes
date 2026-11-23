@@ -24,8 +24,14 @@ final class V12Auditoria
     /** @var list<array<string,mixed>> */
     public array $conciliacion = [];
 
+    /** @param  V12Corrida  $c  estado compartido de la corrida */
     public function __construct(private readonly V12Corrida $c) {}
 
+    /**
+     * MR_RegistrarTrazabilidad: registra por cuota su importe original, previo, estimado y
+     * calidad (COMPROBADO / INFERIDO); una meta inferida dentro del periodo genera incidencia
+     * META-INFERIDA. Llena $traza.
+     */
     public function trazabilidad(): void
     {
         $c = $this->c;
@@ -113,6 +119,12 @@ final class V12Auditoria
         }
     }
 
+    /**
+     * MR_ConciliarCartera: compara por contrato el saldo de la foto base contra la de cierre
+     * explicado por cobros, cierres de refinanciamiento comprobados y metas; registra
+     * diferencias y desapariciones sin soporte (incidencias). Nunca modifica el reporte.
+     * Llena $conciliacion.
+     */
     public function conciliarCartera(): void
     {
         $c = $this->c;
@@ -306,6 +318,11 @@ final class V12Auditoria
         ];
     }
 
+    /**
+     * Número de día → d/m/Y.
+     *
+     * @param  int  $f  día
+     */
     private function dmy(int $f): string
     {
         return V12Vba::dmy($f);

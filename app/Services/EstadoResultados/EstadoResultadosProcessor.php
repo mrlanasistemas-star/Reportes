@@ -38,9 +38,18 @@ use Illuminate\Support\Facades\Schema;
  *
  * No inserta ni borra movimientos: reprocesar N veces deja exactamente el mismo
  * estado. Las clasificaciones manuales viven aparte y no se tocan.
+ *
+ * Lo invocan la cola (RunEstadoResultadosTaskJob, botón «Procesar») y
+ * EstadoResultadosDatasetBuilder. Cada ejecución queda registrada en estado_resultados_runs.
  */
 class EstadoResultadosProcessor
 {
+    /**
+     * @param  ErpExpenseRepository  $erp  gastos ERP del universo del periodo
+     * @param  MovementClassifier  $classifier  reglas automáticas de clasificación
+     * @param  PeriodDataIds  $dataIds  universo de period_id de Radiografía
+     * @param  NoiPayrollRepository  $noi  nómina NOI del periodo (evidencia de pagos de nómina)
+     */
     public function __construct(
         private readonly ErpExpenseRepository $erp,
         private readonly MovementClassifier $classifier,
@@ -48,11 +57,30 @@ class EstadoResultadosProcessor
         private readonly NoiPayrollRepository $noi,
     ) {}
 
+    /**
+     * Clave del candado de caché que impide dos procesamientos simultáneos del mismo periodo.
+     *
+     * @param  int  $periodId  id del periodo
+     */
     public static function lockKey(int $periodId): string
     {
         return 'estado_resultados:procesar:'.$periodId;
     }
 
+    /**
+     * Procesa (concilia y clasifica) el periodo y registra la corrida.
+     *
+     * Efectos: Cache::lock por periodo (config estado_resultados.procesamiento.lock_segundos,
+     * mínimo 30 s); crea un EstadoResultadosRun «en_proceso» y lo cierra en «ok» (con resumen,
+     * firma ERP y firma de insumos) o «error» (con el mensaje, y relanza la excepción).
+     *
+     * @param  Period  $period  periodo a procesar
+     * @param  int|null  $userId  usuario que lo solicita (null = sistema)
+     * @return EstadoResultadosRun corrida finalizada
+     *
+     * @throws Reporting\EstadoResultadosLockedException si el periodo está aprobado (423)
+     * @throws ProcessingLockedException si otro proceso ya tiene el candado del periodo
+     */
     public function process(Period $period, ?int $userId = null): EstadoResultadosRun
     {
         // Un periodo con versión aprobada vigente no se reprocesa (tampoco desde CLI o cola).
@@ -92,6 +120,21 @@ class EstadoResultadosProcessor
         }
     }
 
+    /**
+     * Núcleo del procesamiento (pasos 2–7 de la clase).
+     *
+     * Antes de la transacción: sincroniza el reparto por fecha (MovementPeriodAllocator::sync),
+     * lee ERP y movimientos, detecta reversos, concilia cargos contra ERP (incluidos folios de
+     * otros periodos), empareja traspasos, carga NOI y candidatos a reembolso y el catálogo de
+     * conceptos. Dentro de la transacción (con lockForWrite del periodo): por cada movimiento
+     * clasifica, aplica evidencia NOI/reembolso/reverso, deriva dimensiones y fechas de
+     * reconocimiento, actualiza la fila (forceFill + save), regenera TODOS los vínculos del
+     * periodo y marca las cargas como procesadas.
+     *
+     * @param  Period  $period  periodo
+     * @param  EstadoResultadosRun  $run  corrida en curso (id para los vínculos)
+     * @return array{erp_signature:string, input_signature:string, summary:array<string,mixed>}
+     */
     private function run(Period $period, EstadoResultadosRun $run): array
     {
         // Todos los archivos cargados (de cualquier periodo) aportan los movimientos cuya FECHA
@@ -373,7 +416,11 @@ class EstadoResultadosProcessor
         ];
     }
 
-    /** ¿El resultado de clasificación corresponde a un pago de nómina? */
+    /**
+     * ¿El resultado de clasificación corresponde a un pago de nómina?
+     *
+     * @param  array  $c  resultado de clasificación (treatment, suggested, rule…)
+     */
     private function isPayroll(array $c): bool
     {
         return $c['treatment'] === Treatment::NOMINA_CORPORATIVA
@@ -386,7 +433,13 @@ class EstadoResultadosProcessor
      * NOI al GLOBAL). Si el beneficiario es un colaborador NOI (llave de nombre exacta), el pago
      * bancario es sólo EVIDENCIA de pago: fuente que reconoce = NOI, no se crea otro gasto.
      *
-     * @return array{0:array, 1:?array}
+     * Nombre ambiguo ⇒ pendiente con revisión; nómina corporativa con NOI sin sucursal operativa
+     * en el periodo ⇒ pendiente (posible doble conteo); en otro caso conserva la clasificación.
+     *
+     * @param  array  $c  clasificación automática del movimiento
+     * @param  EstadoResultadosMovement  $m  movimiento bancario (cargo)
+     * @param  array  $noi  nómina NOI del universo (NoiPayrollRepository::forDataIds)
+     * @return array{0:array, 1:?array} [clasificación final, colaborador NOI encontrado o null]
      */
     private function applyNoiEvidence(array $c, EstadoResultadosMovement $m, array $noi): array
     {
@@ -410,6 +463,15 @@ class EstadoResultadosProcessor
         return [$c, null];
     }
 
+    /**
+     * Ajusta la clasificación de un abono de reembolso según el resultado de RefundMatcher:
+     * vinculado (reduce la línea del gasto), gasto de Radiografía (requiere revisión) o ambiguo.
+     * Un reembolso nunca es ingreso.
+     *
+     * @param  array  $c  clasificación automática
+     * @param  array  $refund  resultado de RefundMatcher::match (status, target, candidates)
+     * @return array clasificación final
+     */
     private function applyRefund(array $c, array $refund): array
     {
         return match ($refund['status']) {
@@ -423,6 +485,27 @@ class EstadoResultadosProcessor
         };
     }
 
+    /**
+     * Fila para estado_resultados_reconciliation_links (vínculo con evidencia entre un
+     * movimiento y su contraparte: ERP, NOI, otro movimiento bancario).
+     *
+     * @param  Period  $period  periodo
+     * @param  EstadoResultadosRun  $run  corrida que genera el vínculo
+     * @param  string  $mfp  huella del movimiento
+     * @param  string  $targetType  erp | noi | banco
+     * @param  string  $target  huella/id de la contraparte
+     * @param  string  $kind  conciliacion | evidencia_noi | reverso | reembolso | traspaso
+     * @param  string|null  $match  tipo de emparejamiento (1:1, 1:N…)
+     * @param  string|null  $group  clave de grupo/par
+     * @param  string  $applied  importe aplicado
+     * @param  string  $movementAmount  importe del movimiento
+     * @param  string|null  $targetAmount  importe de la contraparte
+     * @param  string  $movementPending  saldo pendiente del movimiento
+     * @param  string  $targetPending  saldo pendiente de la contraparte
+     * @param  int|null  $delta  diferencia en días entre fechas
+     * @param  array  $evidence  evidencia (se guarda como JSON)
+     * @return array<string, mixed>
+     */
     private function link(Period $period, EstadoResultadosRun $run, string $mfp, string $targetType, string $target, string $kind, ?string $match, ?string $group, string $applied, string $movementAmount, ?string $targetAmount, string $movementPending, string $targetPending, ?int $delta, array $evidence): array
     {
         $now = now();
@@ -439,10 +522,15 @@ class EstadoResultadosProcessor
         ];
     }
 
+    /** Memo fecha ⇒ id del periodo mensual que la contiene (periodForDate). */
     private array $periodCache = [];
 
-    /** Periodo MENSUAL cuyo rango contiene la fecha (para movimientos fuera del periodo); null si no existe. */
-    /** Motivo de un movimiento "estacionado" por el reparto por fecha (null = fecha fuera del periodo). */
+    /**
+     * Motivo de un movimiento "estacionado" por el reparto por fecha (null = fecha fuera del periodo).
+     *
+     * @param  EstadoResultadosMovement  $m  movimiento
+     * @return string|null duplicado_otro_archivo | sin_periodo_mensual | periodo_destino_aprobado | periodo_destino_existente
+     */
     public static function parkedKind(EstadoResultadosMovement $m): ?string
     {
         return match ($m->placement ?? null) {
@@ -454,6 +542,12 @@ class EstadoResultadosProcessor
         };
     }
 
+    /**
+     * Periodo MENSUAL cuyo rango contiene la fecha (para movimientos fuera del periodo); null si
+     * no existe. Memorizado por fecha.
+     *
+     * @param  string  $date  fecha Y-m-d
+     */
     private function periodForDate(string $date): ?int
     {
         if (! array_key_exists($date, $this->periodCache)) {
@@ -465,11 +559,27 @@ class EstadoResultadosProcessor
         return $this->periodCache[$date];
     }
 
+    /**
+     * Resultado de clasificación con la misma forma que MovementClassifier.
+     *
+     * @param  string  $treatment  tratamiento asignado (Treatment::*)
+     * @param  string|null  $suggested  tratamiento sugerido para revisión
+     * @param  string  $rule  código de la regla aplicada
+     * @param  string  $reason  explicación en español
+     * @param  bool  $review  requiere revisión humana
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
+     */
     private function out(string $treatment, ?string $suggested, string $rule, string $reason, bool $review = false): array
     {
         return ['treatment' => $treatment, 'suggested' => $suggested, 'rule' => $rule, 'reason' => $reason, 'review' => $review];
     }
 
+    /**
+     * Datos de un movimiento que necesita ReversalMatcher (cargo/abono, fecha, folio, concepto).
+     *
+     * @param  EstadoResultadosMovement  $m  movimiento
+     * @return array<string, mixed>
+     */
     private function rowInput(EstadoResultadosMovement $m): array
     {
         return [
@@ -479,6 +589,13 @@ class EstadoResultadosProcessor
         ];
     }
 
+    /**
+     * Datos de un cargo que necesitan el conciliador ERP y el clasificador (huella, folio,
+     * importe, fecha, sucursal, UUID, fila y cuenta).
+     *
+     * @param  EstadoResultadosMovement  $m  movimiento
+     * @return array<string, mixed>
+     */
     private function movementInput(EstadoResultadosMovement $m): array
     {
         return [
@@ -497,7 +614,10 @@ class EstadoResultadosProcessor
     /**
      * Empareja traspasos: salida (cargo) de una cuenta ↔ entrada (abono) en la OTRA cuenta,
      * mismo importe exacto y fecha con diferencia ≤ 1 día. Determinista (orden fijo).
+     * Sólo considera movimientos dentro del periodo cuyo concepto/referencia dice «TRASPASO»;
+     * cada entrada se usa una sola vez (primera coincidencia).
      *
+     * @param  mixed  $movements  colección Eloquent de movimientos del periodo
      * @return array<int, string> movement id => clave del par
      */
     private function pairTransfers($movements): array

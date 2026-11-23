@@ -41,12 +41,21 @@ final class ReportStatus
         .'Gastos por fecha de pago (ERP de gastos y estados de cuenta conciliados); CAPEX, capital de deuda, '
         .'traspasos y movimientos personales quedan fuera del resultado.';
 
+    /**
+     * Etiqueta en español de un estado (o la clave misma si es desconocida).
+     *
+     * @param  string  $status  clave del estado
+     */
     public static function label(string $status): string
     {
         return self::LABELS[$status] ?? $status;
     }
 
-    /** @return list<array{key:string,label:string}> */
+    /**
+     * Catálogo de estados para la UI.
+     *
+     * @return list<array{key:string,label:string}>
+     */
     public static function catalog(): array
     {
         return array_map(fn ($k, $l) => ['key' => $k, 'label' => $l], array_keys(self::LABELS), self::LABELS);

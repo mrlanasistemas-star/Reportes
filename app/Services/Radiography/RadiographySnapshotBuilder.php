@@ -6,7 +6,6 @@ use App\Models\Branch;
 use App\Models\Employee;
 use App\Models\Expense;
 use App\Models\MonthlyEmployeeSummary;
-use App\Models\NoiMovement;
 use App\Models\Period;
 use App\Models\PeriodBranchSummary;
 use App\Models\PeriodSummary;
@@ -14,31 +13,55 @@ use App\Models\Placement;
 use App\Models\Portfolio;
 use App\Models\Recovery;
 use App\Services\BranchResolverService;
+use App\Services\CanonicalEmployeeResolver;
 use App\Services\EmployeeNameCanonicalizer;
-use App\Support\OperationalExclusion;
-use App\Support\RegionNorteFilter;
+use App\Services\ImssFromNoiFiscalService;
+use App\Services\OpexClassificationService;
+use App\Services\Roster\RosterMovementStatus;
+use App\Services\TemporaryOpexAdjustmentService;
+use Carbon\Carbon;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
- * Builds a single comprehensive snapshot array from all DB tables.
- * Used as the single source of truth for Excel, PDF, web preview, and email.
+ * Construye el "snapshot" completo de la Radiografía financiera de un periodo: un
+ * solo arreglo con resumen de KPIs, radiografía por sucursal, secciones de detalle
+ * (nómina, productos, gestores, mora, recuperación, gastos, fondeos, rotación,
+ * IMSS, préstamos activos, efectividad de cobranza), incidencias y gráficas.
+ *
+ * Es la FUENTE ÚNICA de verdad para el Excel (RadiographyWorkbookBuilder), el PDF,
+ * la vista previa web, el dashboard, la API/OKR y el correo. Las métricas por
+ * sucursal y GLOBAL salen de BranchRadiographyCalculator (nunca se recalculan aquí
+ * con otra fórmula). Lo usan RadiografiaExportService, PeriodRadiographyService,
+ * GenerateRadiographyJob y EmployeesHistoricoExportService.
+ *
+ * Flujo de build(): resolver periodos de datos (semanas base / meses de cierre) →
+ * calcular sucursales y GLOBAL → armar summary y secciones → guardia de cuadre de
+ * Recuperación → proyectar alcance (sucursal/colaborador) o ajuste manual general.
+ * Alcances y ajustes manuales son EFÍMEROS: este servicio solo lee la BD.
  */
 class RadiographySnapshotBuilder
 {
-    private array $branchCache        = [];
-    private array $dataIds            = [];
-    private array $closingDataIds     = [];
-    private array $branchCalcGlobal   = [];
+    private array $branchCache = [];
+
+    private array $dataIds = [];
+
+    private array $closingDataIds = [];
+
+    private array $branchCalcGlobal = [];
+
     private array $branchCalcBranches = [];
 
     // Cacheado por la última llamada a build(scope=general) en esta instancia — permite
     // proyectar sucursal/colaborador vía projectScope() sin repetir la agregación pesada de
     // fact_* (ver projectScope() y reports:audit-scopes).
     private array $lastEmpGestores = [];
-    private array $lastGm          = [];
-    private ?int  $lastPeriodId    = null;
+
+    private array $lastGm = [];
+
+    private ?int $lastPeriodId = null;
 
     /** Conflictos de identidad detectados en la ÚLTIMA llamada a buildEmployeesGestores() — ver detectEmployeeIdentityConflicts(). */
     private array $lastIdentityConflicts = [];
@@ -51,19 +74,44 @@ class RadiographySnapshotBuilder
      */
     private array $lastGestorMergeMap = [];
 
+    /**
+     * @param  EmployeeNameCanonicalizer  $canonicalizer  Normaliza nombres de colaboradores/gestores para fusionar variantes.
+     * @param  BranchRadiographyCalculator  $branchCalculator  Fuente canónica de métricas por sucursal y fórmulas de KPI.
+     * @param  OpexClassificationService  $opexClassifier  Clasificación canónica de conceptos OPEX.
+     * @param  TemporaryOpexAdjustmentService  $temporaryAdjustment  Ajuste manual efímero de OPEX.
+     */
     public function __construct(
         private readonly EmployeeNameCanonicalizer $canonicalizer,
         private readonly BranchRadiographyCalculator $branchCalculator,
-        private readonly \App\Services\OpexClassificationService $opexClassifier,
-        private readonly \App\Services\TemporaryOpexAdjustmentService $temporaryAdjustment,
+        private readonly OpexClassificationService $opexClassifier,
+        private readonly TemporaryOpexAdjustmentService $temporaryAdjustment,
     ) {}
 
+    /**
+     * Construye el snapshot completo del periodo.
+     * Pasos: resuelve dataIds (semanas base + periodo) y closingDataIds (mes de
+     * cierre para cartera/mora); calcula sucursales y GLOBAL con
+     * BranchRadiographyCalculator; agrega el seguro CRECE/COMADRES informativo;
+     * arma summary (cartera, mora, colocación, recuperación, OPEX, Nómina y Capital
+     * Humano, Ingreso base EBITDA, EBITDA, margen y categoría), todas las secciones y
+     * gráficas; agrega incidencias (incluida la crítica de colaboradores NOI sin
+     * sucursal); valida el cuadre de Recuperación; guarda en memoria el estado general
+     * para proyecciones posteriores; y por último aplica alcance o ajuste manual.
+     * Efectos: solo lectura de BD; cachea estado en propiedades de la instancia.
+     *
+     * @param  Period  $period  Periodo a reportar.
+     * @param  PeriodSummary  $summary  Resumen persistido del periodo (global_metrics, sucursales, incidencias).
+     * @param  array  $config  Configuración: scope (general|branch|employee), branch_id, employee_id, included_branch_ids, manual_adjustment...
+     * @return array Snapshot completo (period, summary, branch_radiography, sections, charts, scope).
+     *
+     * @throws \RuntimeException Si la guardia de cuadre de Recuperación detecta diferencias (ver assertRecoveryReconciles()).
+     */
     public function build(Period $period, PeriodSummary $summary, array $config = []): array
     {
-        $this->branchCache    = [];
-        $this->dataIds        = $this->resolveDataIds($period);
+        $this->branchCache = [];
+        $this->dataIds = $this->resolveDataIds($period);
         $this->closingDataIds = $this->resolveClosingDataIds($period);
-        $includedBranchIds    = $config['included_branch_ids'] ?? [];
+        $includedBranchIds = $config['included_branch_ids'] ?? [];
 
         $gm = $summary->global_metrics ?? [];
 
@@ -73,7 +121,7 @@ class RadiographySnapshotBuilder
         // No se ejecutan queries propias aquí para evitar dos lógicas distintas.
 
         // Seguro CRECE/COMADRES — informativo, NO se resta de colocacion_total.
-        $gm['seguro_crece_comadres_informativo'] = (float)(DB::table('fact_placements as p')
+        $gm['seguro_crece_comadres_informativo'] = (float) (DB::table('fact_placements as p')
             ->whereIn('p.period_id', $this->dataIds)
             ->whereRaw("UPPER(JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(p.raw_payload), '$.credit_origin'))) IN ('DESEMBOLSO', 'REFINANCIAMIENTO')")
             ->whereRaw("UPPER(COALESCE(p.product_name,'')) LIKE '%CRECE%' OR UPPER(COALESCE(p.product_name,'')) LIKE '%COMADRES%'")
@@ -103,18 +151,18 @@ class RadiographySnapshotBuilder
                 ->value('total') ?? 0;
         }
 
-        // gasto_total is resolved AFTER branchCalcGlobal is built below (see override section)
+        // gasto_total se resuelve DESPUÉS de construir branchCalcGlobal abajo (ver sección de reemplazo)
 
-        $payroll           = $this->buildPayroll($period);
+        $payroll = $this->buildPayroll($period);
         $empGestoresResult = $this->buildEmployeesGestores($period);
-        $empGestores       = $empGestoresResult['rows'];
-        $mergedIncidents   = $empGestoresResult['merged_incidents'];
+        $empGestores = $empGestoresResult['rows'];
+        $mergedIncidents = $empGestoresResult['merged_incidents'];
 
-        $interbranchLoans     = $this->buildInterbranchLoans($period);
-        $mergedIncidents      = array_merge($mergedIncidents, $interbranchLoans['incidents'] ?? []);
+        $interbranchLoans = $this->buildInterbranchLoans($period);
+        $mergedIncidents = array_merge($mergedIncidents, $interbranchLoans['incidents'] ?? []);
 
         $payrollByBranchResult = $this->buildPayrollByBranchConceptResolved($period);
-        $mergedIncidents       = array_merge($mergedIncidents, $payrollByBranchResult['incidents'] ?? []);
+        $mergedIncidents = array_merge($mergedIncidents, $payrollByBranchResult['incidents'] ?? []);
 
         // Empleados NOI activos sin sucursal resuelta afectan directamente IMSS y Rotación
         // derivados — nunca se ocultan en "sin asignar" silenciosamente (regla 2026-07-23).
@@ -125,54 +173,54 @@ class RadiographySnapshotBuilder
             ->count();
         if ($rosterSinSucursal > 0) {
             $mergedIncidents[] = [
-                'type'     => 'roster_sin_sucursal',
+                'type' => 'roster_sin_sucursal',
                 'severity' => 'critical',
-                'message'  => "{$rosterSinSucursal} colaborador(es) activo(s) en NOI sin sucursal resuelta (ni periodo actual ni histórico) — excluidos de IMSS y Rotación derivados. Ver hoja IMSS / pestaña ROTACIÓN, sección auditoría.",
+                'message' => "{$rosterSinSucursal} colaborador(es) activo(s) en NOI sin sucursal resuelta (ni periodo actual ni histórico) — excluidos de IMSS y Rotación derivados. Ver hoja IMSS / pestaña ROTACIÓN, sección auditoría.",
             ];
         }
 
-        // Reconcile payroll total: if buildPayroll returned 0 but employees_gestores has pagos, derive from it
+        // Conciliación de nómina: si buildPayroll devolvió 0 pero employees_gestores tiene pagos, se deriva de ahí
         if (($payroll['pagos'] + $payroll['bonos']) == 0.0) {
             $egPagos = collect($empGestores)->sum('pagos');
             $egBonos = collect($empGestores)->sum('bonos');
             if (($egPagos + $egBonos) > 0) {
-                $payroll['pagos']      = round($egPagos, 2);
-                $payroll['bonos']      = round($egBonos, 2);
+                $payroll['pagos'] = round($egPagos, 2);
+                $payroll['bonos'] = round($egBonos, 2);
                 $payroll['descuentos'] = round(collect($empGestores)->sum('descuentos'), 2);
-                $payroll['neto']       = round(collect($empGestores)->sum('neto'), 2);
+                $payroll['neto'] = round(collect($empGestores)->sum('neto'), 2);
                 if ($payroll['total_empleados'] === 0) {
                     $payroll['total_empleados'] = collect($empGestores)->filter(fn ($r) => ($r['pagos'] + $r['bonos']) > 0)->count();
                 }
             }
         }
 
-        // Build per-branch and GLOBAL data using BranchRadiographyCalculator.
-        // Returns ['branches' => [...13 summaries...], 'unassigned' => [...]]
+        // Datos por sucursal y GLOBAL con BranchRadiographyCalculator.
+        // Devuelve ['branches' => [...13 resúmenes...], 'unassigned' => [...]]
         // GLOBAL = suma de 13 sucursales + unassigned (solo nómina/comisiones/bonos/gastos).
-        // Cartera / recuperación / colocación / mora ONLY from branches (not unassigned).
-        $branchCalcResult   = $this->branchCalculator->buildBranches($period, $this->dataIds, $includedBranchIds, $this->closingDataIds);
+        // Cartera / recuperación / colocación / mora SOLO de las sucursales (no de sin asignar).
+        $branchCalcResult = $this->branchCalculator->buildBranches($period, $this->dataIds, $includedBranchIds, $this->closingDataIds);
         $branchCalcBranches = $branchCalcResult['branches'];
         $branchCalcUnassigned = $branchCalcResult['unassigned'];
-        $branchCalcGlobal   = $this->branchCalculator->sumGlobal($branchCalcBranches, $branchCalcUnassigned);
-        $this->branchCalcGlobal   = $branchCalcGlobal;   // fuente única (global) para cartera/mora
+        $branchCalcGlobal = $this->branchCalculator->sumGlobal($branchCalcBranches, $branchCalcUnassigned);
+        $this->branchCalcGlobal = $branchCalcGlobal;   // fuente única (global) para cartera/mora
         $this->branchCalcBranches = $branchCalcBranches; // fuente única (por sucursal) para cartera/mora
 
-        // Prefer BranchRadiographyCalculator totals for the primary summary metrics
-        $calcRecuperacion= (float) $branchCalcGlobal['recuperacion_total'];
-        $calcColocacion  = (float) $branchCalcGlobal['colocacion'];
+        // Para las métricas principales del summary se prefieren los totales de BranchRadiographyCalculator
+        $calcRecuperacion = (float) $branchCalcGlobal['recuperacion_total'];
+        $calcColocacion = (float) $branchCalcGlobal['colocacion'];
 
         // Valor cartera / Cartera vencida: fuente "Saldos Por Cliente" (Saldo actual), único
         // filtro = excluir Aguascalientes/AGS. Incluye TODAS las sucursales/rutas, no solo las
         // 13 oficiales — distinto del resto de KPIs (cartera/colocación/recuperación/mora por
         // sucursal), que sí están limitados a las 13 sucursales operativas.
         $carteraGlobalSinFiltro = $this->branchCalculator->computeCarteraGlobalSinFiltro($this->closingDataIds);
-        $calcCartera   = (float) $carteraGlobalSinFiltro['valor_cartera'];
+        $calcCartera = (float) $carteraGlobalSinFiltro['valor_cartera'];
         $calcMoraTotal = (float) $carteraGlobalSinFiltro['cartera_vencida'];
 
         if ($calcCartera > 0) {
-            $gm['valor_cartera_total']   = $calcCartera;
+            $gm['valor_cartera_total'] = $calcCartera;
             $gm['cartera_vencida_total'] = $calcMoraTotal;
-            $gm['mora_porcentaje']       = $calcCartera > 0 ? round($calcMoraTotal / $calcCartera * 100, 2) : 0;
+            $gm['mora_porcentaje'] = $calcCartera > 0 ? round($calcMoraTotal / $calcCartera * 100, 2) : 0;
         }
         if ($calcRecuperacion > 0) {
             $gm['recuperacion_total'] = $calcRecuperacion;
@@ -181,16 +229,16 @@ class RadiographySnapshotBuilder
             $gm['colocacion_total'] = $calcColocacion;
         }
 
-        // Gastos: authoritative source is BranchRadiographyCalculator.
+        // Gastos: la fuente autorizada es BranchRadiographyCalculator.
         // gastos_operativos = gastos_erp_total + gastos_lendus_total (Pólizas Lendus excluded — in seguros_puente).
         $calcGastosOp = (float) ($branchCalcGlobal['gastos_operativos'] ?? 0);
         if ($calcGastosOp > 0 || ($gm['gasto_total'] ?? 0) == 0) {
-            $gm['gasto_total']        = $calcGastosOp;
-            $gm['gasto_erp']          = (float) ($branchCalcGlobal['gastos_erp_total'] ?? 0);
-            $gm['gasto_lendus']       = (float) ($branchCalcGlobal['gastos_lendus_total'] ?? 0);
+            $gm['gasto_total'] = $calcGastosOp;
+            $gm['gasto_erp'] = (float) ($branchCalcGlobal['gastos_erp_total'] ?? 0);
+            $gm['gasto_lendus'] = (float) ($branchCalcGlobal['gastos_lendus_total'] ?? 0);
             $gm['seguros_lendus_puente'] = (float) ($branchCalcGlobal['seguros_lendus_puente'] ?? 0);
-            $gm['excedentes_total']   = (float) ($branchCalcGlobal['excedentes'] ?? 0);
-            $gm['fondeo_total']       = (float) ($branchCalcGlobal['prestamos_fondea'] ?? 0);
+            $gm['excedentes_total'] = (float) ($branchCalcGlobal['excedentes'] ?? 0);
+            $gm['fondeo_total'] = (float) ($branchCalcGlobal['prestamos_fondea'] ?? 0);
         }
 
         // ── EBITDA, Ingreso base EBITDA y Margen EBITDA — CRITERIO FINAL (2026-07) ──────
@@ -205,128 +253,128 @@ class RadiographySnapshotBuilder
         // caja — únicamente Ingreso base EBITDA (intereses+impuestos+moratorios+comisión de
         // apertura+cargos adicionales+excedentes+30% Seguro CRECE) menos Gastos Totales (OPEX +
         // Nómina y Capital Humano).
-        $nominaParaEbitda       = BranchRadiographyCalculator::nominaTotalFor($branchCalcGlobal);
-        $opexParaEbitda         = (float) ($branchCalcGlobal['gastos_operativos'] ?? 0);
-        $totalGastosEbitda      = BranchRadiographyCalculator::gastosTotalesFor($branchCalcGlobal);
-        $ingresoEbitdaBase      = BranchRadiographyCalculator::ingresoEbitdaBaseFor($branchCalcGlobal);
-        $ebitdaGlobal           = BranchRadiographyCalculator::ebitdaFinalFor($branchCalcGlobal);
-        $capitalRecuperado      = (float) ($branchCalcGlobal['capital_recuperado'] ?? 0);
-        $impuestoRecuperado     = (float) ($branchCalcGlobal['impuesto_recuperado'] ?? 0);
-        $interesRecuperado      = (float) ($branchCalcGlobal['interes_recuperado'] ?? 0);
-        $cargosInicioComision   = (float) ($branchCalcGlobal['comision_apertura'] ?? 0);
-        $cargosCalendario       = (float) ($branchCalcGlobal['cargos_adicionales'] ?? 0);
-        $cargosVencimiento      = (float) ($branchCalcGlobal['charges'] ?? 0);
-        $excedenteRecuperado    = (float) ($branchCalcGlobal['excedente_recuperado'] ?? 0);
-        $seguroCreceReconocido  = (float) ($branchCalcGlobal['seguro_crece_reconocido'] ?? 0);
+        $nominaParaEbitda = BranchRadiographyCalculator::nominaTotalFor($branchCalcGlobal);
+        $opexParaEbitda = (float) ($branchCalcGlobal['gastos_operativos'] ?? 0);
+        $totalGastosEbitda = BranchRadiographyCalculator::gastosTotalesFor($branchCalcGlobal);
+        $ingresoEbitdaBase = BranchRadiographyCalculator::ingresoEbitdaBaseFor($branchCalcGlobal);
+        $ebitdaGlobal = BranchRadiographyCalculator::ebitdaFinalFor($branchCalcGlobal);
+        $capitalRecuperado = (float) ($branchCalcGlobal['capital_recuperado'] ?? 0);
+        $impuestoRecuperado = (float) ($branchCalcGlobal['impuesto_recuperado'] ?? 0);
+        $interesRecuperado = (float) ($branchCalcGlobal['interes_recuperado'] ?? 0);
+        $cargosInicioComision = (float) ($branchCalcGlobal['comision_apertura'] ?? 0);
+        $cargosCalendario = (float) ($branchCalcGlobal['cargos_adicionales'] ?? 0);
+        $cargosVencimiento = (float) ($branchCalcGlobal['charges'] ?? 0);
+        $excedenteRecuperado = (float) ($branchCalcGlobal['excedente_recuperado'] ?? 0);
+        $seguroCreceReconocido = (float) ($branchCalcGlobal['seguro_crece_reconocido'] ?? 0);
         // "Venta"/"ingreso base EBITDA" — mismo valor, dos nombres (venta_global se conserva
         // para no romper consumidores existentes; ingreso_ebitda_base es el nombre canónico).
-        $ventaGlobal            = $ingresoEbitdaBase;
-        $margenEbitda           = BranchRadiographyCalculator::margenEbitdaFor($branchCalcGlobal);
+        $ventaGlobal = $ingresoEbitdaBase;
+        $margenEbitda = BranchRadiographyCalculator::margenEbitdaFor($branchCalcGlobal);
 
         $snapshot = [
             'period' => [
-                'id'         => $period->id,
-                'label'      => $period->label,
-                'code'       => $period->code,
+                'id' => $period->id,
+                'label' => $period->label,
+                'code' => $period->code,
                 'start_date' => optional($period->start_date)->format('d/m/Y'),
-                'end_date'   => optional($period->end_date)->format('d/m/Y'),
-                'composite'  => $this->buildPeriodCompositeMeta($period),
+                'end_date' => optional($period->end_date)->format('d/m/Y'),
+                'composite' => $this->buildPeriodCompositeMeta($period),
             ],
             'saldo_inicial_caja' => (float) ($period->saldo_inicial_caja ?? 0),
-            'saldo_final_caja'   => ($period->saldo_final_caja !== null) ? (float) $period->saldo_final_caja : null,
+            'saldo_final_caja' => ($period->saldo_final_caja !== null) ? (float) $period->saldo_final_caja : null,
             'generated_at' => now('America/Mexico_City')->format('d/m/Y H:i'),
-            'version'      => $summary->version ?? 1,
+            'version' => $summary->version ?? 1,
             'branch_radiography' => [
-                'branches'   => $branchCalcBranches,
-                'global'     => $branchCalcGlobal,
+                'branches' => $branchCalcBranches,
+                'global' => $branchCalcGlobal,
                 'unassigned' => $branchCalcUnassigned,
             ],
             'summary' => [
-                'employees_count'              => $payroll['total_empleados'],
-                'recovery_total'               => (float)($gm['recuperacion_total'] ?? 0),
-                'recovery_bruta'               => (float)($branchCalcGlobal['recuperacion_bruta'] ?? 0),
-                'recovery_seguro_excluido'     => (float)($branchCalcGlobal['seguro_excluido_bruto'] ?? 0),
-                'recovery_savehearts_bruto'    => (float)($branchCalcGlobal['seguro_savehearts_bruto'] ?? 0),
-                'recovery_comadres_bruto'      => (float)($branchCalcGlobal['seguro_comadres_bruto'] ?? 0),
-                'recovery_crece_bruto'         => (float)($branchCalcGlobal['seguro_crece_bruto'] ?? 0),
-                'recovery_crece_reconocido'    => (float)($branchCalcGlobal['seguro_crece_reconocido'] ?? 0),
-                'recovery_crece_no_reconocido' => max(0.0, (float)($branchCalcGlobal['seguro_crece_bruto'] ?? 0) - (float)($branchCalcGlobal['seguro_crece_reconocido'] ?? 0)),
-                'placement_total'              => (float)($gm['colocacion_total'] ?? 0),
-                'portfolio_total'              => (float)($gm['valor_cartera_total'] ?? 0),
-                'overdue_portfolio'            => (float)($gm['cartera_vencida_total'] ?? 0),
-                'mora_index'                   => (float)($gm['mora_porcentaje'] ?? 0),
-                'expenses_total'               => (float)($gm['gasto_total'] ?? 0),
-                'expenses_erp'                 => (float)($gm['gasto_erp'] ?? 0),
-                'expenses_lendus'              => (float)($gm['gasto_lendus'] ?? 0),
-                'seguros_lendus_puente'        => (float)($gm['seguros_lendus_puente'] ?? 0),
-                'excedentes_total'             => (float)($gm['excedentes_total'] ?? 0),
-                'fondeo_total'                 => (float)($gm['fondeo_total'] ?? 0),
-                'payroll_total'                => $payroll['pagos'] + $payroll['bonos'],
-                'net_payroll'                  => $payroll['neto'],
+                'employees_count' => $payroll['total_empleados'],
+                'recovery_total' => (float) ($gm['recuperacion_total'] ?? 0),
+                'recovery_bruta' => (float) ($branchCalcGlobal['recuperacion_bruta'] ?? 0),
+                'recovery_seguro_excluido' => (float) ($branchCalcGlobal['seguro_excluido_bruto'] ?? 0),
+                'recovery_savehearts_bruto' => (float) ($branchCalcGlobal['seguro_savehearts_bruto'] ?? 0),
+                'recovery_comadres_bruto' => (float) ($branchCalcGlobal['seguro_comadres_bruto'] ?? 0),
+                'recovery_crece_bruto' => (float) ($branchCalcGlobal['seguro_crece_bruto'] ?? 0),
+                'recovery_crece_reconocido' => (float) ($branchCalcGlobal['seguro_crece_reconocido'] ?? 0),
+                'recovery_crece_no_reconocido' => max(0.0, (float) ($branchCalcGlobal['seguro_crece_bruto'] ?? 0) - (float) ($branchCalcGlobal['seguro_crece_reconocido'] ?? 0)),
+                'placement_total' => (float) ($gm['colocacion_total'] ?? 0),
+                'portfolio_total' => (float) ($gm['valor_cartera_total'] ?? 0),
+                'overdue_portfolio' => (float) ($gm['cartera_vencida_total'] ?? 0),
+                'mora_index' => (float) ($gm['mora_porcentaje'] ?? 0),
+                'expenses_total' => (float) ($gm['gasto_total'] ?? 0),
+                'expenses_erp' => (float) ($gm['gasto_erp'] ?? 0),
+                'expenses_lendus' => (float) ($gm['gasto_lendus'] ?? 0),
+                'seguros_lendus_puente' => (float) ($gm['seguros_lendus_puente'] ?? 0),
+                'excedentes_total' => (float) ($gm['excedentes_total'] ?? 0),
+                'fondeo_total' => (float) ($gm['fondeo_total'] ?? 0),
+                'payroll_total' => $payroll['pagos'] + $payroll['bonos'],
+                'net_payroll' => $payroll['neto'],
                 // Percepciones/Deducciones/Neto pagado a trabajadores — informativo,
                 // distinto de "Nómina y Capital Humano" (concepto de gasto de la empresa).
-                'noi_percepciones'             => $noiPercepDeducc['percepciones'],
-                'noi_deducciones'              => $noiPercepDeducc['deducciones'],
-                'noi_neto_pagado'              => $noiPercepDeducc['neto_pagado'],
-                'opex_total'                   => $opexParaEbitda,
+                'noi_percepciones' => $noiPercepDeducc['percepciones'],
+                'noi_deducciones' => $noiPercepDeducc['deducciones'],
+                'noi_neto_pagado' => $noiPercepDeducc['neto_pagado'],
+                'opex_total' => $opexParaEbitda,
                 // "Nómina y Capital Humano" — nombre completo del KPI (gasto de la empresa,
                 // NUNCA llamarlo solo "Nómina").
-                'nomina_capital_humano_total'  => $nominaParaEbitda,
-                'nomina_ebitda_total'          => $nominaParaEbitda,
-                'total_gastos_ebitda'          => $totalGastosEbitda,
-                'ebitda_global'                => $ebitdaGlobal,
-                'venta_global'                 => $ventaGlobal,
-                'margen_ebitda'                => $margenEbitda,
-                'ebitda_categoria'             => $this->ebitdaCategory($ebitdaGlobal),
+                'nomina_capital_humano_total' => $nominaParaEbitda,
+                'nomina_ebitda_total' => $nominaParaEbitda,
+                'total_gastos_ebitda' => $totalGastosEbitda,
+                'ebitda_global' => $ebitdaGlobal,
+                'venta_global' => $ventaGlobal,
+                'margen_ebitda' => $margenEbitda,
+                'ebitda_categoria' => $this->ebitdaCategory($ebitdaGlobal),
                 // Nombres canónicos del criterio final (2026-07) — mismos valores que arriba,
                 // expuestos con el nombre que UI/Excel/PDF deben mostrar literalmente:
                 // "Ingreso base EBITDA" / "Gastos Totales" / "EBITDA" / "Margen EBITDA".
-                'ingreso_ebitda_base'          => $ingresoEbitdaBase,
-                'gastos_totales'               => $totalGastosEbitda,
-                'ebitda_final'                 => $ebitdaGlobal,
-                'unificacion_excluida'         => (float)($branchCalcGlobal['unificacion_excluida'] ?? 0),
-                'condonacion_excluida'         => (float)($branchCalcGlobal['condonacion_excluida'] ?? 0),
+                'ingreso_ebitda_base' => $ingresoEbitdaBase,
+                'gastos_totales' => $totalGastosEbitda,
+                'ebitda_final' => $ebitdaGlobal,
+                'unificacion_excluida' => (float) ($branchCalcGlobal['unificacion_excluida'] ?? 0),
+                'condonacion_excluida' => (float) ($branchCalcGlobal['condonacion_excluida'] ?? 0),
             ],
             'sections' => [
-                'payroll'                    => $payroll,
-                'products'                   => $this->buildProducts($period),
-                'branches'                   => $this->buildBranches($period, $summary),
-                'employees'                  => $this->buildEmployees($period),
-                'promoters'                  => $this->buildPromoters($period),
+                'payroll' => $payroll,
+                'products' => $this->buildProducts($period),
+                'branches' => $this->buildBranches($period, $summary),
+                'employees' => $this->buildEmployees($period),
+                'promoters' => $this->buildPromoters($period),
                 // Campos internos (_norm_key/_placements_by_product, ver applyEmployeeScope())
                 // se quitan de la copia expuesta — $empGestores (con ellos) sigue disponible
                 // más abajo para applyScope(), que se ejecuta con la variable original, no con
                 // este array ya construido.
-                'employees_gestores'         => array_map(fn (array $r) => Arr::except($r, self::EMPLOYEE_GESTOR_INTERNAL_FIELDS), $empGestores),
-                'portfolio_buckets'          => $this->buildPortfolioBuckets($period),
-                'expenses_detail'            => $this->buildExpensesDetail($period),
-                'incidents'                  => $this->buildIncidents($summary, $period, $mergedIncidents),
-                'payroll_by_branch_concept'  => $payrollByBranchResult['data'],
-                'expenses_matrix'            => $this->buildExpensesMatrix($period),
-                'interbranch_loans'          => $interbranchLoans,
-                'recovery_detail'            => $this->buildRecoveryDetail($period),
-                'recovery_by_product'        => $recoveryByProduct = $this->buildRecoveryByProduct($period),
+                'employees_gestores' => array_map(fn (array $r) => Arr::except($r, self::EMPLOYEE_GESTOR_INTERNAL_FIELDS), $empGestores),
+                'portfolio_buckets' => $this->buildPortfolioBuckets($period),
+                'expenses_detail' => $this->buildExpensesDetail($period),
+                'incidents' => $this->buildIncidents($summary, $period, $mergedIncidents),
+                'payroll_by_branch_concept' => $payrollByBranchResult['data'],
+                'expenses_matrix' => $this->buildExpensesMatrix($period),
+                'interbranch_loans' => $interbranchLoans,
+                'recovery_detail' => $this->buildRecoveryDetail($period),
+                'recovery_by_product' => $recoveryByProduct = $this->buildRecoveryByProduct($period),
                 'portfolio_by_branch_product' => $this->buildPortfolioByBranchProduct($period),
-                'mora_by_branch'             => $this->buildMoraByBranch($period),
-                'mora_by_product'            => $this->buildMoraByProduct($period),
-                'mora_by_gestor'             => $this->buildMoraByGestor($period),
-                'mora_by_branch_product'     => $this->buildMoraByBranchProduct($period),
-                'corporate_funding'          => $this->buildCorporateFunding($period),
-                'fondeo_detalle'             => $this->buildFondeoDetalle(),
-                'placement_by_branch_product'=> $this->buildPlacementByBranchProduct($period),
-                'rotation'                   => $this->buildRotationData($period),
-                'rotation_detail'            => $this->buildRotationDetail($period),
-                'imss_meta'                  => $this->buildImssMeta($period),
-                'imss'                       => $this->buildImssDetail($period),
-                'active_loans'               => $this->buildActiveLoans($period),
-                'efectividad_cobranza'       => $this->buildEfectividadCobranza($period),
+                'mora_by_branch' => $this->buildMoraByBranch($period),
+                'mora_by_product' => $this->buildMoraByProduct($period),
+                'mora_by_gestor' => $this->buildMoraByGestor($period),
+                'mora_by_branch_product' => $this->buildMoraByBranchProduct($period),
+                'corporate_funding' => $this->buildCorporateFunding($period),
+                'fondeo_detalle' => $this->buildFondeoDetalle(),
+                'placement_by_branch_product' => $this->buildPlacementByBranchProduct($period),
+                'rotation' => $this->buildRotationData($period),
+                'rotation_detail' => $this->buildRotationDetail($period),
+                'imss_meta' => $this->buildImssMeta($period),
+                'imss' => $this->buildImssDetail($period),
+                'active_loans' => $this->buildActiveLoans($period),
+                'efectividad_cobranza' => $this->buildEfectividadCobranza($period),
             ],
             'charts' => [
-                'recovery_by_branch'      => $this->chartByBranch($period, 'recuperacion'),
-                'placement_by_product'    => $this->chartPlacementByProduct($period),
-                'mora_by_bucket'          => $this->chartMoraByBucket($period),
+                'recovery_by_branch' => $this->chartByBranch($period, 'recuperacion'),
+                'placement_by_product' => $this->chartPlacementByProduct($period),
+                'mora_by_bucket' => $this->chartMoraByBucket($period),
                 'top_promoters_placement' => $this->chartTopPromoters($period),
-                'portfolio_by_branch'     => $this->chartByBranch($period, 'cartera'),
+                'portfolio_by_branch' => $this->chartByBranch($period, 'cartera'),
             ],
         ];
 
@@ -344,8 +392,8 @@ class RadiographySnapshotBuilder
         // subsecuentes vía projectScope() (ver docblock del método) — build() sigue siendo
         // 100% igual que antes para cualquier llamador existente, esto solo añade memoria.
         $this->lastEmpGestores = $empGestores;
-        $this->lastGm          = $gm;
-        $this->lastPeriodId    = $period->id;
+        $this->lastGm = $gm;
+        $this->lastPeriodId = $period->id;
 
         $scope = $config['scope'] ?? 'general';
         if ($scope === 'branch' || $scope === 'employee') {
@@ -368,6 +416,11 @@ class RadiographySnapshotBuilder
      * bloque summary (visible en Web/Excel general/PDF general). Nunca se
      * persiste — si $config no trae manual_adjustment, el snapshot es
      * exactamente el oficial de BD.
+     *
+     * @param  array  $snapshot  Snapshot general ya construido.
+     * @param  array  $config  Configuración (puede traer manual_adjustment).
+     * @param  array  $empGestores  Filas canónicas de colaboradores del periodo.
+     * @return array Snapshot con el summary ajustado (o intacto si no hay ajuste).
      */
     private function applyGeneralManualAdjustment(array $snapshot, array $config, array $empGestores): array
     {
@@ -380,12 +433,12 @@ class RadiographySnapshotBuilder
         $s = $snapshot['summary'];
         $ingresoBase = (float) ($s['ingreso_ebitda_base'] ?? 0);
         $s['expenses_total'] = round((float) ($s['expenses_total'] ?? 0) + $amount, 2);
-        $s['opex_total']     = round((float) ($s['opex_total'] ?? 0) + $amount, 2);
+        $s['opex_total'] = round((float) ($s['opex_total'] ?? 0) + $amount, 2);
         $s['gastos_totales'] = round((float) ($s['gastos_totales'] ?? 0) + $amount, 2);
         $newEbitda = round((float) ($s['ebitda_final'] ?? 0) - $amount, 2);
-        $s['ebitda_final']     = $newEbitda;
-        $s['ebitda_global']    = $newEbitda;
-        $s['margen_ebitda']    = $ingresoBase > 0 ? round($newEbitda / $ingresoBase * 100, 2) : 0.0;
+        $s['ebitda_final'] = $newEbitda;
+        $s['ebitda_global'] = $newEbitda;
+        $s['margen_ebitda'] = $ingresoBase > 0 ? round($newEbitda / $ingresoBase * 100, 2) : 0.0;
         $s['ebitda_categoria'] = $this->ebitdaCategory($newEbitda);
         $s['manual_adjustment_applied'] = [
             'amount' => $amount,
@@ -420,25 +473,41 @@ class RadiographySnapshotBuilder
     // de sucursal/colaborador se marcan explícitamente 'not_attributable' => true.
     // ════════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Despacha la proyección de alcance: 'branch' → applyBranchScope(); 'employee' →
+     * applyEmployeeScope(). Si falta el id correspondiente marca el alcance como no
+     * disponible (identity_resolution = branch_id_missing / employee_id_missing).
+     *
+     * @param  array  $snapshot  Snapshot general.
+     * @param  array  $config  Configuración con scope y branch_id/employee_id.
+     * @param  Period  $period  Periodo del reporte.
+     * @param  array  $empGestores  Filas canónicas de colaboradores.
+     * @param  array  $gm  Métricas globales del resumen persistido.
+     * @return array Snapshot proyectado al alcance.
+     */
     private function applyScope(array $snapshot, array $config, Period $period, array $empGestores, array $gm): array
     {
         $scope = $config['scope'];
 
         if ($scope === 'branch') {
             $branchId = (int) ($config['branch_id'] ?? 0);
-            if (!$branchId) {
+            if (! $branchId) {
                 $snapshot['scope'] = ['type' => 'branch', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => false, 'identity_resolution' => 'branch_id_missing'];
+
                 return $snapshot;
             }
+
             return $this->applyBranchScope($snapshot, $branchId, $period, $config, $empGestores);
         }
 
         if ($scope === 'employee') {
             $employeeId = (int) ($config['employee_id'] ?? 0);
-            if (!$employeeId) {
+            if (! $employeeId) {
                 $snapshot['scope'] = ['type' => 'employee', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => false, 'identity_resolution' => 'employee_id_missing'];
+
                 return $snapshot;
             }
+
             return $this->applyEmployeeScope($snapshot, $employeeId, $empGestores, $period, $config);
         }
 
@@ -456,6 +525,11 @@ class RadiographySnapshotBuilder
      * 1 build() por periodo + N proyecciones baratas, en vez de 1 build() por cada
      * sucursal/colaborador del roster.
      *
+     * @param  array  $generalSnapshot  Snapshot general del mismo periodo.
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración de alcance.
+     * @return array Snapshot proyectado.
+     *
      * @throws \LogicException si build() no se llamó para este mismo periodo en esta instancia.
      */
     public function projectScope(array $generalSnapshot, Period $period, array $config): array
@@ -463,7 +537,7 @@ class RadiographySnapshotBuilder
         if ($this->lastPeriodId !== $period->id) {
             throw new \LogicException(
                 'RadiographySnapshotBuilder::projectScope() requiere haber llamado build() '
-                . "para el periodo {$period->id} (scope=general) en esta misma instancia antes de proyectar."
+                ."para el periodo {$period->id} (scope=general) en esta misma instancia antes de proyectar."
             );
         }
 
@@ -473,6 +547,7 @@ class RadiographySnapshotBuilder
         }
 
         $generalSnapshot['scope'] = ['type' => 'general', 'branch_id' => null, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => true];
+
         return $this->applyGeneralManualAdjustment($generalSnapshot, $config, $this->lastEmpGestores);
     }
 
@@ -484,6 +559,8 @@ class RadiographySnapshotBuilder
      * projectScopeFromState()), incluso desde otra request/proceso. No cambia
      * ningún cálculo: es exactamente build($period, $summary, []).
      *
+     * @param  Period  $period  Periodo.
+     * @param  PeriodSummary  $summary  Resumen persistido.
      * @return array{snapshot: array, empGestores: array, gm: array}
      */
     public function buildGeneralState(Period $period, PeriodSummary $summary): array
@@ -498,13 +575,18 @@ class RadiographySnapshotBuilder
      * MISMO camino que projectScope() (applyScope()/applyGeneralManualAdjustment()),
      * restaurando antes los ids de datos del periodo (lo único de instancia que esas
      * proyecciones leen además de empGestores/gm).
+     *
+     * @param  array  $state  Estado devuelto por buildGeneralState().
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración de alcance.
+     * @return array Snapshot proyectado.
      */
     public function projectScopeFromState(array $state, Period $period, array $config): array
     {
         $this->warmDataIds($period);
         $this->lastEmpGestores = $state['empGestores'];
-        $this->lastGm          = $state['gm'];
-        $this->lastPeriodId    = $period->id;
+        $this->lastGm = $state['gm'];
+        $this->lastPeriodId = $period->id;
 
         return $this->projectScope($state['snapshot'], $period, $config);
     }
@@ -551,7 +633,8 @@ class RadiographySnapshotBuilder
      * duplicado del mismo colaborador entre fuentes. Nunca decide "cuál es cuál": solo
      * lo hace visible (log + retorno) para revisión, en vez de fusionarlo en silencio.
      *
-     * @param array<string, int[]> $employeeIdsByNorm
+     * @param  array<string, int[]>  $employeeIdsByNorm
+     * @param  Period  $period  Periodo.
      * @return array<int, array{normalized_name:string, employee_ids:int[], branch_ids:array<int,?int>, period_id:int}>
      */
     private function detectEmployeeIdentityConflicts(array $employeeIdsByNorm, Period $period): array
@@ -586,16 +669,16 @@ class RadiographySnapshotBuilder
             if (count($distinctOperativeBranches) > 1) {
                 $conflicts[] = [
                     'normalized_name' => $norm,
-                    'employee_ids'    => $ids,
-                    'branch_ids'      => $branchIds,
-                    'period_id'       => $period->id,
+                    'employee_ids' => $ids,
+                    'branch_ids' => $branchIds,
+                    'period_id' => $period->id,
                 ];
 
                 Log::warning('RadiographySnapshotBuilder::detectEmployeeIdentityConflicts — IDENTITY_CONFLICT: mismo nombre normalizado con sucursales operativas distintas y contradictorias en el mismo periodo. NO se fusionó automáticamente.', [
                     'normalized_name' => $norm,
-                    'employee_ids'    => $ids,
-                    'branch_ids'      => $branchIds,
-                    'period_id'       => $period->id,
+                    'employee_ids' => $ids,
+                    'branch_ids' => $branchIds,
+                    'period_id' => $period->id,
                 ]);
             }
         }
@@ -633,15 +716,16 @@ class RadiographySnapshotBuilder
      * Requiere que $this->dataIds ya esté resuelto (build() o
      * findEmployeeGestorRowByEmployeeId() ya lo hacen antes de llegar aquí).
      *
-     * @param  int[]  $employeeIds        Normalmente [$employeeId] — fact_expenses.employee_id
-     *                                    ya es un id canónico único por persona (a diferencia
-     *                                    de fact_noi_movements, que puede traer más de un
-     *                                    employee_id para la misma persona real).
-     * @param  ?int   $primaryEmployeeId  Identidad canónica del colaborador que se está viendo
-     *                                    (no participa en el cálculo — se conserva por
-     *                                    compatibilidad de llamadas existentes).
-     * @param  float  $manualAmount       Ajuste manual EFÍMERO de esta request/reporte — nunca BD.
-     * @param  string $manualNotes        Notas del ajuste manual — solo se conservan si amount > 0.
+     * @param  int[]  $employeeIds  Normalmente [$employeeId] — fact_expenses.employee_id
+     *                              ya es un id canónico único por persona (a diferencia
+     *                              de fact_noi_movements, que puede traer más de un
+     *                              employee_id para la misma persona real).
+     * @param  ?int  $primaryEmployeeId  Identidad canónica del colaborador que se está viendo
+     *                                   (no participa en el cálculo — se conserva por
+     *                                   compatibilidad de llamadas existentes).
+     * @param  float  $manualAmount  Ajuste manual EFÍMERO de esta request/reporte — nunca BD.
+     * @param  string  $manualNotes  Notas del ajuste manual — solo se conservan si amount > 0.
+     * @return array Detalle de OPEX del colaborador (automático + manual efímero).
      */
     public function buildEmployeeExpenseDetail(
         array $employeeIds,
@@ -672,11 +756,11 @@ class RadiographySnapshotBuilder
         // (automatic_opex_pure_total / automatic_nomina_empleado_total) para
         // quien quiera ver la separación, pero "automatic_total" (lo que se
         // muestra como OPEX AUTOMÁTICO en Web/Excel/PDF) es la suma de ambos.
-        $opexItems           = collect();
+        $opexItems = collect();
         $nominaEmpleadoItems = collect();
         foreach ($rows as $r) {
-            $classification = $this->opexClassifier->classify($r->category, $r->concept, \App\Services\OpexClassificationService::SOURCE_LENDUS);
-            if (!$classification['eligible_for_attribution']) {
+            $classification = $this->opexClassifier->classify($r->category, $r->concept, OpexClassificationService::SOURCE_LENDUS);
+            if (! $classification['eligible_for_attribution']) {
                 // Cubierto por NOI/IMSS, Fondeo, Excedentes, Pólizas — nunca cuenta
                 // aquí, ni siquiera si por error tuviera employee_id de otro flujo.
                 continue;
@@ -689,22 +773,22 @@ class RadiographySnapshotBuilder
             }
         }
 
-        $opexPureTotal       = round((float) $opexItems->sum('amount'), 2);
+        $opexPureTotal = round((float) $opexItems->sum('amount'), 2);
         $nominaEmpleadoTotal = round((float) $nominaEmpleadoItems->sum('amount'), 2);
-        $automaticTotal      = round($opexPureTotal + $nominaEmpleadoTotal, 2);
+        $automaticTotal = round($opexPureTotal + $nominaEmpleadoTotal, 2);
 
         $manualAmount = round(max(0.0, $manualAmount), 2);
-        $manualNotes  = $manualAmount > 0 ? trim($manualNotes) : '';
+        $manualNotes = $manualAmount > 0 ? trim($manualNotes) : '';
 
         return [
-            'automatic_total'                 => $automaticTotal,
-            'automatic_items'                 => $opexItems->concat($nominaEmpleadoItems)->values()->all(),
-            'automatic_opex_pure_total'       => $opexPureTotal,
+            'automatic_total' => $automaticTotal,
+            'automatic_items' => $opexItems->concat($nominaEmpleadoItems)->values()->all(),
+            'automatic_opex_pure_total' => $opexPureTotal,
             'automatic_nomina_empleado_total' => $nominaEmpleadoTotal,
-            'nomina_empleado_items'           => $nominaEmpleadoItems->values()->all(),
-            'manual_total'                    => $manualAmount,
-            'manual_notes'                    => $manualNotes,
-            'total'                           => round($automaticTotal + $manualAmount, 2),
+            'nomina_empleado_items' => $nominaEmpleadoItems->values()->all(),
+            'manual_total' => $manualAmount,
+            'manual_notes' => $manualNotes,
+            'total' => round($automaticTotal + $manualAmount, 2),
         ];
     }
 
@@ -720,43 +804,52 @@ class RadiographySnapshotBuilder
      *   EBITDA = ingreso_base − (OPEX total + neto NOI).
      *   Margen EBITDA % = EBITDA / ingreso_base × 100 (0 si no hay ingreso_base).
      *
-     * @param  array $employeeRow    Fila de buildEmployeesGestores() (pagos/bonos/descuentos/
-     *                                neto/ingreso_ebitda_base/cartera/vencida).
-     * @param  array $expenseDetail  buildEmployeeExpenseDetail() ya resuelto (o [] para 0).
+     * @param  array  $employeeRow  Fila de buildEmployeesGestores() (pagos/bonos/descuentos/
+     *                              neto/ingreso_ebitda_base/cartera/vencida).
+     * @param  array  $expenseDetail  buildEmployeeExpenseDetail() ya resuelto (o [] para 0).
+     * @return array EBITDA, margen y OPEX total del colaborador.
      */
     public function computeEmployeeFinancialMetrics(array $employeeRow, array $expenseDetail = []): array
     {
-        $pagos       = (float) ($employeeRow['pagos'] ?? 0);
-        $bonos       = (float) ($employeeRow['bonos'] ?? 0);
-        $descuentos  = (float) ($employeeRow['descuentos'] ?? 0);
-        $opexTotal   = $expenseDetail['total'] ?? (float) ($employeeRow['gastos'] ?? 0);
-        $neto        = (float) ($employeeRow['neto'] ?? ($pagos + $bonos - $descuentos));
+        $pagos = (float) ($employeeRow['pagos'] ?? 0);
+        $bonos = (float) ($employeeRow['bonos'] ?? 0);
+        $descuentos = (float) ($employeeRow['descuentos'] ?? 0);
+        $opexTotal = $expenseDetail['total'] ?? (float) ($employeeRow['gastos'] ?? 0);
+        $neto = (float) ($employeeRow['neto'] ?? ($pagos + $bonos - $descuentos));
         $ingresoBase = (float) ($employeeRow['ingreso_ebitda_base'] ?? 0);
-        $cartera     = (float) ($employeeRow['cartera'] ?? 0);
-        $vencida     = (float) ($employeeRow['vencida'] ?? 0);
-        $ebitda      = $ingresoBase - ($opexTotal + $neto);
-        $margen      = $ingresoBase > 0 ? round($ebitda / $ingresoBase * 100, 2) : 0.0;
-        $moraIndex   = $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0;
+        $cartera = (float) ($employeeRow['cartera'] ?? 0);
+        $vencida = (float) ($employeeRow['vencida'] ?? 0);
+        $ebitda = $ingresoBase - ($opexTotal + $neto);
+        $margen = $ingresoBase > 0 ? round($ebitda / $ingresoBase * 100, 2) : 0.0;
+        $moraIndex = $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0;
 
         return [
-            'pagos'            => $pagos,
-            'bonos'            => $bonos,
-            'descuentos'       => $descuentos,
-            'opex_total'       => $opexTotal,
-            'neto'             => $neto,
-            'ingreso_base'     => $ingresoBase,
-            'cartera'          => $cartera,
-            'vencida'          => $vencida,
-            'mora_index'       => $moraIndex,
-            'ebitda'           => $ebitda,
-            'margen_ebitda'    => $margen,
+            'pagos' => $pagos,
+            'bonos' => $bonos,
+            'descuentos' => $descuentos,
+            'opex_total' => $opexTotal,
+            'neto' => $neto,
+            'ingreso_base' => $ingresoBase,
+            'cartera' => $cartera,
+            'vencida' => $vencida,
+            'mora_index' => $moraIndex,
+            'ebitda' => $ebitda,
+            'margen_ebitda' => $margen,
             'ebitda_categoria' => $this->ebitdaCategory($ebitda),
         ];
     }
 
+    /**
+     * Fila canónica de un colaborador (la fila fusionada cuyo _employee_ids contiene
+     * el id). Calienta antes dataIds/closingDataIds del periodo.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  int  $employeeId  Colaborador buscado.
+     * @return array|null Fila del colaborador o null si no tiene actividad en el periodo.
+     */
     public function findEmployeeGestorRowByEmployeeId(Period $period, int $employeeId): ?array
     {
-        $this->dataIds        = $this->resolveDataIds($period);
+        $this->dataIds = $this->resolveDataIds($period);
         $this->closingDataIds = $this->resolveClosingDataIds($period);
 
         foreach ($this->buildEmployeesGestores($period)['rows'] as $row) {
@@ -776,35 +869,57 @@ class RadiographySnapshotBuilder
      * buildEmployeesGestores(), sin N+1: ya trae recuperación/colocación/cartera/
      * vencida/nómina de TODOS los colaboradores en un solo pase).
      *
+     * @param  Period  $period  Periodo.
      * @return array<int, array<string,mixed>>
      */
     public function buildAllEmployeeGestorRows(Period $period): array
     {
-        $this->dataIds        = $this->resolveDataIds($period);
+        $this->dataIds = $this->resolveDataIds($period);
         $this->closingDataIds = $this->resolveClosingDataIds($period);
 
         return $this->buildEmployeesGestores($period)['rows'];
     }
 
+    /**
+     * Clave de comparación de nombres: mayúsculas y sin espacios en los extremos.
+     *
+     * @param  mixed  $value  Nombre.
+     * @return string Nombre normalizado para comparar.
+     */
     private function eqName(mixed $value): string
     {
         return strtoupper(trim((string) $value));
     }
 
-    /** Filtra un array de filas a las que coincidan (comparación insensible a mayúsculas) en cualquiera de los campos dados. */
+    /**
+     * Filtra un array de filas a las que coincidan (comparación insensible a mayúsculas) en cualquiera de los campos dados.
+     *
+     * @param  array  $rows  Filas a filtrar.
+     * @param  array  $fields  Campos donde buscar.
+     * @param  string  $needle  Valor buscado.
+     * @return array Filas que coinciden.
+     */
     private function filterRowsByField(array $rows, array $fields, string $needle): array
     {
         $needle = $this->eqName($needle);
+
         return array_values(array_filter($rows, function ($row) use ($fields, $needle) {
             foreach ($fields as $field) {
                 if (isset($row[$field]) && $this->eqName($row[$field]) === $needle) {
                     return true;
                 }
             }
+
             return false;
         }));
     }
 
+    /**
+     * Marcador estándar de sección "no atribuible" para snapshots con alcance.
+     *
+     * @param  string  $reason  Motivo visible.
+     * @return array{not_attributable:bool,reason:string} Marcador.
+     */
     private function notAttributable(string $reason = 'No se puede atribuir de forma inequívoca a este alcance.'): array
     {
         return ['not_attributable' => true, 'reason' => $reason];
@@ -816,6 +931,10 @@ class RadiographySnapshotBuilder
      * con alcance las lee (Preview, Dashboard, API/OKR usan summary/rotation/efectividad;
      * Excel/PDF de sucursal/gestor parten del snapshot GENERAL), así que se marcan
      * no atribuibles en vez de viajar completas en el JSON de un usuario restringido.
+     *
+     * @param  array  $s  Secciones del snapshot con alcance.
+     * @param  string  $scopeLabel  Etiqueta del alcance (para el motivo).
+     * @return array Secciones con las de nivel empresa marcadas no atribuibles.
      */
     private function scrubCompanyWideSections(array $s, string $scopeLabel): array
     {
@@ -836,6 +955,12 @@ class RadiographySnapshotBuilder
      * para que Web lo pinte igual; 'recuperacion' = null porque no existe un desglose de
      * recuperación por producto por sucursal reconciliado en este snapshot (nunca $0 falso).
      * Guardia: SUM(colocacion) debe igualar la colocación de la sucursal ($0.01).
+     *
+     * @param  array  $placementRows  Colocación por sucursal y producto.
+     * @param  mixed  $portfolioRows  Cartera por sucursal y producto.
+     * @param  array  $branchRow  Fila de la sucursal (branchCalcBranches).
+     * @param  int  $branchId  Sucursal.
+     * @return array Productos de la sucursal.
      */
     private function buildBranchScopedProducts(array $placementRows, mixed $portfolioRows, array $branchRow, int $branchId): array
     {
@@ -844,7 +969,7 @@ class RadiographySnapshotBuilder
             $p = (string) ($r['product'] ?? 'Sin producto');
             $byProduct[$p] ??= ['operaciones' => 0, 'colocacion' => 0.0];
             $byProduct[$p]['operaciones'] += (int) ($r['creditos'] ?? 0);
-            $byProduct[$p]['colocacion']  += (float) ($r['monto'] ?? 0);
+            $byProduct[$p]['colocacion'] += (float) ($r['monto'] ?? 0);
         }
 
         $carteraByProduct = [];
@@ -852,13 +977,13 @@ class RadiographySnapshotBuilder
             foreach ($portfolioRows as $r) {
                 $p = (string) ($r['product'] ?? 'Sin producto');
                 $carteraByProduct[$p] ??= ['cartera' => 0.0, 'contratos' => 0];
-                $carteraByProduct[$p]['cartera']   += (float) ($r['cartera'] ?? 0);
+                $carteraByProduct[$p]['cartera'] += (float) ($r['cartera'] ?? 0);
                 $carteraByProduct[$p]['contratos'] += (int) ($r['contratos'] ?? 0);
             }
         }
 
         $colocacionRow = round((float) ($branchRow['colocacion'] ?? 0), 2);
-        $productSum    = round(array_sum(array_column($byProduct, 'colocacion')), 2);
+        $productSum = round(array_sum(array_column($byProduct, 'colocacion')), 2);
 
         if (abs($productSum - $colocacionRow) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::applyBranchScope — colocación por producto no reconcilia contra el total de la sucursal.', [
@@ -869,17 +994,17 @@ class RadiographySnapshotBuilder
         }
 
         $total = $productSum > 0 ? $productSum : 1;
-        $rows  = [];
+        $rows = [];
         foreach ($byProduct as $producto => $d) {
             $rows[] = [
-                'producto'     => $producto,
-                'tipo'         => 'operativo',
-                'operaciones'  => $d['operaciones'],
-                'colocacion'   => round($d['colocacion'], 2),
+                'producto' => $producto,
+                'tipo' => 'operativo',
+                'operaciones' => $d['operaciones'],
+                'colocacion' => round($d['colocacion'], 2),
                 'recuperacion' => null,
-                'cartera'      => isset($carteraByProduct[$producto]) ? round($carteraByProduct[$producto]['cartera'], 2) : null,
-                'contratos'    => isset($carteraByProduct[$producto]) ? $carteraByProduct[$producto]['contratos'] : null,
-                'pct'          => round($d['colocacion'] / $total * 100, 1),
+                'cartera' => isset($carteraByProduct[$producto]) ? round($carteraByProduct[$producto]['cartera'], 2) : null,
+                'contratos' => isset($carteraByProduct[$producto]) ? $carteraByProduct[$producto]['contratos'] : null,
+                'pct' => round($d['colocacion'] / $total * 100, 1),
             ];
         }
         usort($rows, fn ($a, $b) => $b['colocacion'] <=> $a['colocacion']);
@@ -895,22 +1020,28 @@ class RadiographySnapshotBuilder
      * buscan ahí por nombre → mismo valor). bajas_pendientes = ausencias sin baja
      * confirmada de esta sucursal (rotation_detail ya filtrado; informativo, no entra al
      * índice). Sin fila para la sucursal → not_attributable (nunca el total global).
+     *
+     * @param  mixed  $rotation  Sección de rotación general.
+     * @param  mixed  $rotationDetail  Detalle de rotación general.
+     * @param  string  $branchName  Sucursal.
+     * @param  Period  $period  Periodo.
+     * @return array Rotación de la sucursal.
      */
     private function scopeRotationToBranch(mixed $rotation, mixed $rotationDetail, string $branchName, Period $period): array
     {
-        if (!is_array($rotation) || !empty($rotation['not_attributable'])) {
+        if (! is_array($rotation) || ! empty($rotation['not_attributable'])) {
             return is_array($rotation) ? $rotation : $this->notAttributable('Sin datos de rotación para esta sucursal en el periodo.');
         }
 
-        $eq  = $this->eqName($branchName);
+        $eq = $this->eqName($branchName);
         $row = collect($rotation['por_sucursal'] ?? [])->first(fn ($r) => $this->eqName($r['sucursal'] ?? '') === $eq);
 
-        if (!$row) {
+        if (! $row) {
             return $this->notAttributable("Sin registros de rotación (plantilla NOI) para {$branchName} en este periodo — no se muestra el total de la empresa.");
         }
 
         $plantilla = round((float) ($row['promedio_personal'] ?? 0), 2);
-        $anterior  = round((float) ($row['plantilla_anterior'] ?? 0), 2);
+        $anterior = round((float) ($row['plantilla_anterior'] ?? 0), 2);
         $pendientes = is_array($rotationDetail) && is_array($rotationDetail['bajas_pendientes'] ?? null)
             ? count($rotationDetail['bajas_pendientes'])
             : null;
@@ -918,7 +1049,7 @@ class RadiographySnapshotBuilder
         // Detalle mensual (solo periodos automáticos, igual que el general): mismas filas de
         // fact_rotacion, acotadas a esta sucursal.
         $detalleMensual = [];
-        if (!empty($rotation['detalle_mensual']) && $period->isAutoGenerated()) {
+        if (! empty($rotation['detalle_mensual']) && $period->isAutoGenerated()) {
             $rows = DB::table('fact_rotacion')
                 ->whereIn('period_id', $this->dataIds)
                 ->where('source', 'derived_noi')
@@ -926,35 +1057,35 @@ class RadiographySnapshotBuilder
                 ->get(['period_id', 'sucursal_nombre', 'mes', 'altas', 'bajas', 'promedio_personal'])
                 ->filter(fn ($r) => $this->eqName($r->sucursal_nombre) === $eq);
             foreach ($rows->groupBy('period_id')->sortKeys() as $group) {
-                $altasMes     = (int) $group->sum('altas');
-                $bajasMes     = (int) $group->sum('bajas');
+                $altasMes = (int) $group->sum('altas');
+                $bajasMes = (int) $group->sum('bajas');
                 $plantillaMes = (float) $group->sum('promedio_personal');
                 $detalleMensual[] = [
-                    'mes'       => $group->first()->mes,
-                    'altas'     => $altasMes,
-                    'bajas'     => $bajasMes,
+                    'mes' => $group->first()->mes,
+                    'altas' => $altasMes,
+                    'bajas' => $bajasMes,
                     'plantilla' => $plantillaMes,
-                    'indice'    => $plantillaMes > 0 ? round($bajasMes / $plantillaMes * 100, 2) : 0.0,
+                    'indice' => $plantillaMes > 0 ? round($bajasMes / $plantillaMes * 100, 2) : 0.0,
                 ];
             }
         }
 
         return [
-            'fuente'            => $rotation['fuente'] ?? null,
-            'mes'               => $row['mes'] ?? ($rotation['mes'] ?? ''),
-            'altas'             => (int) ($row['altas'] ?? 0),
-            'bajas'             => (int) ($row['bajas'] ?? 0),
+            'fuente' => $rotation['fuente'] ?? null,
+            'mes' => $row['mes'] ?? ($rotation['mes'] ?? ''),
+            'altas' => (int) ($row['altas'] ?? 0),
+            'bajas' => (int) ($row['bajas'] ?? 0),
             'bajas_confirmadas' => (int) ($row['bajas'] ?? 0),
-            'bajas_pendientes'  => $pendientes,
-            'promedio'          => $plantilla,
-            'indice'            => (float) ($row['indice_rotacion'] ?? 0),
-            'current_count'     => $plantilla,
-            'prev_count'        => $anterior,
-            'prev_mes'          => $rotation['prev_mes'] ?? null,
-            'variacion_neta'    => round((float) ($row['variacion_plantilla'] ?? ($plantilla - $anterior)), 2),
-            'por_sucursal'      => [$row],
-            'detalle_mensual'   => $detalleMensual,
-            'scope'             => ['type' => 'branch', 'sucursal' => $row['sucursal'] ?? $branchName],
+            'bajas_pendientes' => $pendientes,
+            'promedio' => $plantilla,
+            'indice' => (float) ($row['indice_rotacion'] ?? 0),
+            'current_count' => $plantilla,
+            'prev_count' => $anterior,
+            'prev_mes' => $rotation['prev_mes'] ?? null,
+            'variacion_neta' => round((float) ($row['variacion_plantilla'] ?? ($plantilla - $anterior)), 2),
+            'por_sucursal' => [$row],
+            'detalle_mensual' => $detalleMensual,
+            'scope' => ['type' => 'branch', 'sucursal' => $row['sucursal'] ?? $branchName],
         ];
     }
 
@@ -963,13 +1094,16 @@ class RadiographySnapshotBuilder
      * deja pasar el summary/secciones generales — eso sería exactamente el "fallback
      * silencioso a total general" que la spec prohíbe. `scope.available=false` es la señal
      * que el frontend usa para mostrar un estado vacío en vez del dashboard.
+     *
+     * @param  array  $snapshot  Snapshot general.
+     * @return array Snapshot vacío para el alcance.
      */
     private function emptyScopedSnapshot(array $snapshot): array
     {
         $snapshot['scope']['available'] = false;
         $snapshot['summary'] = array_map(fn () => null, $snapshot['summary']);
-        $snapshot['branch_radiography']['global']     = $this->notAttributable('Sin datos para este alcance en el periodo.');
-        $snapshot['branch_radiography']['branches']   = [];
+        $snapshot['branch_radiography']['global'] = $this->notAttributable('Sin datos para este alcance en el periodo.');
+        $snapshot['branch_radiography']['branches'] = [];
         $snapshot['branch_radiography']['unassigned'] = $this->notAttributable();
         foreach (array_keys($snapshot['sections']) as $key) {
             $snapshot['sections'][$key] = is_array($snapshot['sections'][$key]) && array_is_list($snapshot['sections'][$key])
@@ -981,16 +1115,32 @@ class RadiographySnapshotBuilder
         return $snapshot;
     }
 
+    /**
+     * Proyecta el snapshot general a UNA sucursal: summary desde su fila de
+     * branchCalcBranches, colocación por producto, componentes de recuperación, tramos
+     * de mora, efectividad de cobranza, colaboradores y rotación de la sucursal; las
+     * secciones de nivel empresa se marcan no atribuibles (evita fugas de datos de
+     * otras sucursales a usuarios restringidos) y se aplica el ajuste manual efímero
+     * de sucursal. Sin movimientos devuelve un snapshot vacío, nunca el general.
+     *
+     * @param  array  $snapshot  Snapshot general.
+     * @param  int  $branchId  Sucursal del alcance.
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración (ajuste manual).
+     * @param  array  $empGestores  Filas canónicas de colaboradores.
+     * @return array Snapshot con alcance de sucursal.
+     */
     private function applyBranchScope(array $snapshot, int $branchId, Period $period, array $config = [], array $empGestores = []): array
     {
         $branch = Branch::find($branchId);
-        if (!$branch) {
+        if (! $branch) {
             $snapshot['scope'] = ['type' => 'branch', 'branch_id' => $branchId, 'branch_name' => null, 'employee_id' => null, 'employee_name' => null, 'available' => false];
+
             return $snapshot;
         }
 
         $name = $branch->name;
-        $eq   = $this->eqName($name);
+        $eq = $this->eqName($name);
 
         $row = collect($snapshot['branch_radiography']['branches'] ?? [])
             ->first(fn ($b) => $this->eqName($b['sucursal'] ?? '') === $eq);
@@ -1000,7 +1150,7 @@ class RadiographySnapshotBuilder
             'employee_id' => null, 'employee_name' => null, 'available' => (bool) $row,
         ];
 
-        if (!$row) {
+        if (! $row) {
             // Sucursal operativa válida pero sin ningún movimiento este periodo — NUNCA dejar
             // pasar el summary/secciones generales tal cual (eso sería el fallback silencioso
             // prohibido). Se limpia explícitamente para que el frontend muestre "sin datos".
@@ -1010,18 +1160,18 @@ class RadiographySnapshotBuilder
         $percepDeducc = $this->branchCalculator->computeNoiPercepcionesDeduccionesForBranch($this->dataIds, $period->id, $branchId);
 
         $snapshot['summary'] = $this->summaryFromRow($row, $percepDeducc, null);
-        $snapshot['branch_radiography']['global']   = $row;
+        $snapshot['branch_radiography']['global'] = $row;
         $snapshot['branch_radiography']['branches'] = [$row];
         $snapshot['branch_radiography']['unassigned'] = $this->notAttributable('Los montos "sin sucursal" son, por definición, ajenos a cualquier sucursal individual.');
 
         $s = $snapshot['sections'];
-        $s['employees_gestores']         = $this->filterRowsByField($s['employees_gestores'] ?? [], ['branch'], $name);
-        $s['mora_by_gestor']             = $this->filterRowsByField($s['mora_by_gestor'] ?? [], ['sucursal'], $name);
-        $s['active_loans']               = $this->filterRowsByField($s['active_loans'] ?? [], ['sucursal'], $name);
-        $s['portfolio_by_branch_product']= $this->filterRowsByField($s['portfolio_by_branch_product'] ?? [], ['branch'], $name);
-        $s['placement_by_branch_product']= $this->filterRowsByField($s['placement_by_branch_product'] ?? [], ['branch'], $name);
-        $s['mora_by_branch_product']     = $this->filterRowsByField($s['mora_by_branch_product'] ?? [], ['branch'], $name);
-        $s['mora_by_branch']             = $this->filterRowsByField($s['mora_by_branch'] ?? [], ['sucursal', 'branch'], $name);
+        $s['employees_gestores'] = $this->filterRowsByField($s['employees_gestores'] ?? [], ['branch'], $name);
+        $s['mora_by_gestor'] = $this->filterRowsByField($s['mora_by_gestor'] ?? [], ['sucursal'], $name);
+        $s['active_loans'] = $this->filterRowsByField($s['active_loans'] ?? [], ['sucursal'], $name);
+        $s['portfolio_by_branch_product'] = $this->filterRowsByField($s['portfolio_by_branch_product'] ?? [], ['branch'], $name);
+        $s['placement_by_branch_product'] = $this->filterRowsByField($s['placement_by_branch_product'] ?? [], ['branch'], $name);
+        $s['mora_by_branch_product'] = $this->filterRowsByField($s['mora_by_branch_product'] ?? [], ['branch'], $name);
+        $s['mora_by_branch'] = $this->filterRowsByField($s['mora_by_branch'] ?? [], ['sucursal', 'branch'], $name);
 
         // Colocación por producto (fix 15-oct-2026): antes 'products' quedaba SIN TOCAR bajo
         // alcance sucursal — la tabla "Colocación por producto" del Preview mostraba el
@@ -1042,16 +1192,16 @@ class RadiographySnapshotBuilder
         // Componentes de Recuperación — YA vienen en $row (accumulateRecuperacion() los
         // calcula por sucursal); no es un cálculo nuevo, solo se expone lo que ya existe.
         $s['recovery_components'] = [
-            'capital_recuperado'      => round((float) ($row['capital_recuperado'] ?? 0), 2),
-            'interes_recuperado'      => round((float) ($row['interes_recuperado'] ?? 0), 2),
-            'impuesto_recuperado'     => round((float) ($row['impuesto_recuperado'] ?? 0), 2),
-            'charges'                 => round((float) ($row['charges'] ?? 0), 2),
-            'cargos_adicionales'      => round((float) ($row['cargos_adicionales'] ?? 0), 2),
-            'excedente_recuperado'    => round((float) ($row['excedente_recuperado'] ?? 0), 2),
-            'comision_apertura'       => round((float) ($row['comision_apertura'] ?? 0), 2),
-            'cargos_inicio'           => round((float) ($row['cargos_inicio'] ?? 0), 2),
+            'capital_recuperado' => round((float) ($row['capital_recuperado'] ?? 0), 2),
+            'interes_recuperado' => round((float) ($row['interes_recuperado'] ?? 0), 2),
+            'impuesto_recuperado' => round((float) ($row['impuesto_recuperado'] ?? 0), 2),
+            'charges' => round((float) ($row['charges'] ?? 0), 2),
+            'cargos_adicionales' => round((float) ($row['cargos_adicionales'] ?? 0), 2),
+            'excedente_recuperado' => round((float) ($row['excedente_recuperado'] ?? 0), 2),
+            'comision_apertura' => round((float) ($row['comision_apertura'] ?? 0), 2),
+            'cargos_inicio' => round((float) ($row['cargos_inicio'] ?? 0), 2),
             'seguro_crece_reconocido' => round((float) ($row['seguro_crece_reconocido'] ?? 0), 2),
-            'otros_recuperacion'      => round((float) ($row['otros_recuperacion'] ?? 0), 2),
+            'otros_recuperacion' => round((float) ($row['otros_recuperacion'] ?? 0), 2),
         ];
 
         // portfolio_buckets — antes quedaba SIN TOCAR bajo alcance sucursal (fuga: mostraba la
@@ -1066,24 +1216,24 @@ class RadiographySnapshotBuilder
         $payrollData = $s['payroll_by_branch_concept']['data'] ?? [];
         $matchedPayrollKey = collect(array_keys($payrollData))->first(fn ($k) => $this->eqName($k) === $eq);
         $s['payroll_by_branch_concept'] = [
-            'data'      => $matchedPayrollKey ? [$matchedPayrollKey => $payrollData[$matchedPayrollKey]] : [],
+            'data' => $matchedPayrollKey ? [$matchedPayrollKey => $payrollData[$matchedPayrollKey]] : [],
             'incidents' => [],
         ];
 
         $expByBranchRow = collect($s['expenses_detail']['byBranch'] ?? [])->first(fn ($r) => $this->eqName($r['sucursal'] ?? '') === $eq);
         $s['expenses_detail'] = [
-            'total'      => (float) ($expByBranchRow['total'] ?? 0),
-            'byBranch'   => $expByBranchRow ? [$expByBranchRow] : [],
+            'total' => (float) ($expByBranchRow['total'] ?? 0),
+            'byBranch' => $expByBranchRow ? [$expByBranchRow] : [],
             'byCategory' => null,
-            'byConcept'  => null,
+            'byConcept' => null,
             'byEmployee' => null,
-            'bySource'   => null,
+            'bySource' => null,
             'detail_not_attributable' => 'El desglose por categoría/concepto/fuente solo está disponible a nivel general en este snapshot.',
         ];
 
         if (isset($s['imss']['colaboradores'])) {
             $s['imss'] = [
-                'porSucursal'   => collect($s['imss']['porSucursal'] ?? [])->filter(fn ($r) => $this->eqName($r['sucursal'] ?? '') === $eq)->values()->all(),
+                'porSucursal' => collect($s['imss']['porSucursal'] ?? [])->filter(fn ($r) => $this->eqName($r['sucursal'] ?? '') === $eq)->values()->all(),
                 'colaboradores' => $this->filterRowsByField($s['imss']['colaboradores'], ['sucursal'], $name),
             ];
         }
@@ -1120,7 +1270,7 @@ class RadiographySnapshotBuilder
         $s['recovery_by_product'] = $this->notAttributable('El desglose de recuperación por producto en este snapshot está agregado a nivel empresa completa — no filtrable por sucursal todavía.');
 
         $snapshot['sections'] = $s;
-        $snapshot['charts']   = $this->scopeChartsByLabel($snapshot['charts'], $name);
+        $snapshot['charts'] = $this->scopeChartsByLabel($snapshot['charts'], $name);
 
         // Ajuste manual EFÍMERO de SUCURSAL (cierre 17-sep-2026, ronda 2 — A5 Caso 2):
         // mode=branch_each_employee suma amount_per_employee × colaboradores
@@ -1134,12 +1284,12 @@ class RadiographySnapshotBuilder
             $s2 = $snapshot['summary'];
             $ingresoBase = (float) ($s2['ingreso_ebitda_base'] ?? 0);
             $s2['expenses_total'] = round((float) ($s2['expenses_total'] ?? 0) + $branchAdjustmentAmount, 2);
-            $s2['opex_total']     = round((float) ($s2['opex_total'] ?? 0) + $branchAdjustmentAmount, 2);
+            $s2['opex_total'] = round((float) ($s2['opex_total'] ?? 0) + $branchAdjustmentAmount, 2);
             $s2['gastos_totales'] = round((float) ($s2['gastos_totales'] ?? 0) + $branchAdjustmentAmount, 2);
             $newEbitda = round((float) ($s2['ebitda_final'] ?? 0) - $branchAdjustmentAmount, 2);
-            $s2['ebitda_final']     = $newEbitda;
-            $s2['ebitda_global']    = $newEbitda;
-            $s2['margen_ebitda']    = $ingresoBase > 0 ? round($newEbitda / $ingresoBase * 100, 2) : 0.0;
+            $s2['ebitda_final'] = $newEbitda;
+            $s2['ebitda_global'] = $newEbitda;
+            $s2['margen_ebitda'] = $ingresoBase > 0 ? round($newEbitda / $ingresoBase * 100, 2) : 0.0;
             $s2['ebitda_categoria'] = $this->ebitdaCategory($newEbitda);
             $s2['manual_adjustment_applied'] = [
                 'amount' => $branchAdjustmentAmount,
@@ -1167,11 +1317,27 @@ class RadiographySnapshotBuilder
         return $snapshot;
     }
 
+    /**
+     * Proyecta el snapshot general a UN colaborador: ubica su fila canónica por
+     * employee_id (no por texto), arma su summary (recuperación, colocación,
+     * cartera, mora, nómina, OPEX automático + ajuste manual, EBITDA), su detalle de
+     * gastos y nómina, estado operativo, efectividad y gráficas filtradas; las
+     * secciones de empresa se marcan no atribuibles. Si no se puede resolver la
+     * identidad, el alcance queda no disponible con el motivo.
+     *
+     * @param  array  $snapshot  Snapshot general.
+     * @param  int  $employeeId  Colaborador del alcance.
+     * @param  array  $empGestores  Filas canónicas de colaboradores.
+     * @param  Period  $period  Periodo.
+     * @param  array  $config  Configuración (ajuste manual).
+     * @return array Snapshot con alcance de colaborador.
+     */
     private function applyEmployeeScope(array $snapshot, int $employeeId, array $empGestores, Period $period, array $config = []): array
     {
         $employee = Employee::find($employeeId);
-        if (!$employee) {
+        if (! $employee) {
             $snapshot['scope'] = ['type' => 'employee', 'branch_id' => null, 'branch_name' => null, 'employee_id' => $employeeId, 'employee_name' => null, 'available' => false, 'identity_resolution' => 'employee_not_found'];
+
             return $snapshot;
         }
 
@@ -1186,21 +1352,33 @@ class RadiographySnapshotBuilder
         $row = null;
         $identityResolution = 'not_found';
         foreach ($empGestores as $e) {
-            if (in_array($employeeId, $e['_employee_ids'] ?? [], true)) { $row = $e; $identityResolution = 'employee_id'; break; }
+            if (in_array($employeeId, $e['_employee_ids'] ?? [], true)) {
+                $row = $e;
+                $identityResolution = 'employee_id';
+                break;
+            }
         }
 
         // Fallback por nombre — SOLO si la vinculación por employee_id no encontró nada.
         // Nunca silencioso: su uso es en sí una señal de identidad incompleta para este
         // periodo (ver `php artisan reports:audit-scopes`, código ERROR_IDENTITY).
-        if (!$row) {
+        if (! $row) {
             $target = $this->canonicalizer->normalize($employee->full_name ?? '');
             foreach ($empGestores as $e) {
-                if ($this->canonicalizer->normalize($e['name'] ?? '') === $target) { $row = $e; $identityResolution = 'name_fallback_exact'; break; }
+                if ($this->canonicalizer->normalize($e['name'] ?? '') === $target) {
+                    $row = $e;
+                    $identityResolution = 'name_fallback_exact';
+                    break;
+                }
             }
-            if (!$row) {
+            if (! $row) {
                 foreach ($empGestores as $e) {
                     $norm = $this->canonicalizer->normalize($e['name'] ?? '');
-                    if ($norm && (str_contains($norm, $target) || str_contains($target, $norm))) { $row = $e; $identityResolution = 'name_fallback_substring'; break; }
+                    if ($norm && (str_contains($norm, $target) || str_contains($target, $norm))) {
+                        $row = $e;
+                        $identityResolution = 'name_fallback_substring';
+                        break;
+                    }
                 }
             }
             if ($row) {
@@ -1218,7 +1396,7 @@ class RadiographySnapshotBuilder
             'identity_resolution' => $identityResolution,
         ];
 
-        if (!$row) {
+        if (! $row) {
             return $this->emptyScopedSnapshot($snapshot);
         }
 
@@ -1227,7 +1405,7 @@ class RadiographySnapshotBuilder
         // resolvieron a un employee_id distinto al que originó la búsqueda (mismo colaborador,
         // fila duplicada histórica no fusionada), no se pierde su NOI. Ver
         // computeNoiPercepcionesDeduccionesForEmployees()/buildEmployeePayrollDetail().
-        $employeeIdsForNoi = !empty($row['_employee_ids']) ? $row['_employee_ids'] : [$employeeId];
+        $employeeIdsForNoi = ! empty($row['_employee_ids']) ? $row['_employee_ids'] : [$employeeId];
         $percepDeducc = $this->branchCalculator->computeNoiPercepcionesDeduccionesForEmployees($this->dataIds, $employeeIdsForNoi);
 
         // OPEX del gestor = automático (fact_expenses) + ajuste manual EFÍMERO de
@@ -1238,16 +1416,16 @@ class RadiographySnapshotBuilder
         // es el ÚNICO que decide si aplica — mode='employee' y employee_id EXACTO
         // (nunca se filtra "de paso" a otro colaborador que comparta grupo NOI).
         $manualAmount = $this->temporaryAdjustment->totalForScope($empGestores, $config['manual_adjustment'] ?? null, 'employee', null, $employeeId);
-        $manualNotes  = $manualAmount > 0 ? (string) ($this->temporaryAdjustment->normalize($config['manual_adjustment'] ?? null)['notes'] ?? '') : '';
-        $expenseDetail  = $this->buildEmployeeExpenseDetail($employeeIdsForNoi, $employeeId, $manualAmount, $manualNotes);
+        $manualNotes = $manualAmount > 0 ? (string) ($this->temporaryAdjustment->normalize($config['manual_adjustment'] ?? null)['notes'] ?? '') : '';
+        $expenseDetail = $this->buildEmployeeExpenseDetail($employeeIdsForNoi, $employeeId, $manualAmount, $manualNotes);
 
         $snapshot['summary'] = $this->summaryFromRow($row, $percepDeducc, $row, $expenseDetail);
-        $snapshot['branch_radiography']['global']     = $this->notAttributable('El colaborador no representa una sucursal completa — ver sections.employees_gestores.');
-        $snapshot['branch_radiography']['branches']   = [];
+        $snapshot['branch_radiography']['global'] = $this->notAttributable('El colaborador no representa una sucursal completa — ver sections.employees_gestores.');
+        $snapshot['branch_radiography']['branches'] = [];
         $snapshot['branch_radiography']['unassigned'] = $this->notAttributable();
 
         $s = $snapshot['sections'];
-        $s['mora_by_gestor']     = $this->filterRowsByField($s['mora_by_gestor'] ?? [], ['gestor'], $row['name']);
+        $s['mora_by_gestor'] = $this->filterRowsByField($s['mora_by_gestor'] ?? [], ['gestor'], $row['name']);
 
         // Colocación por producto — MISMA agregación (por promoter_name/promoter_code) que
         // produjo 'colocacion' en $row (ver buildEmployeesGestores()::$placementsByProduct),
@@ -1256,10 +1434,10 @@ class RadiographySnapshotBuilder
         // producto con amount NULL agrupado aparte), NO se muestra un desglose que
         // contradiga el KPI — se marca no disponible y se registra en logs.
         $productRows = $row['_placements_by_product'] ?? [];
-        $productSum  = round(array_sum(array_column($productRows, 'colocacion')), 2);
+        $productSum = round(array_sum(array_column($productRows, 'colocacion')), 2);
         $colocacionRow = round((float) ($row['colocacion'] ?? 0), 2);
 
-        if (!empty($productRows) && abs($productSum - $colocacionRow) > 0.01) {
+        if (! empty($productRows) && abs($productSum - $colocacionRow) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — colocación por producto no reconcilia contra el total del colaborador.', [
                 'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                 'product_sum' => $productSum, 'colocacion_total' => $colocacionRow,
@@ -1299,9 +1477,9 @@ class RadiographySnapshotBuilder
         // nunca se sobrescribe esa sección con este shape más simple (solo recuperacion total
         // por producto); esa sección general se marca 'not_attributable' más abajo para este
         // colaborador, evitando la fuga de mostrar el desglose de TODA la empresa.
-        $rbp    = $row['_recovery_by_product'] ?? [];
+        $rbp = $row['_recovery_by_product'] ?? [];
         $rbpSum = round(array_sum(array_column($rbp, 'recuperacion')), 2);
-        if (!empty($rbp) && abs($rbpSum - $recuperacionRow) > 0.01) {
+        if (! empty($rbp) && abs($rbpSum - $recuperacionRow) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — recuperación por producto no reconcilia.', [
                 'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                 'product_sum' => $rbpSum, 'recuperacion_total' => $recuperacionRow,
@@ -1315,33 +1493,36 @@ class RadiographySnapshotBuilder
         // produjo 'cartera'/'vencida' arriba (ver buildEmployeesGestores()::$moraBucketsByNorm).
         // Guardia: SUM(buckets != al_corriente) == vencida ($0.01).
         $moraBuckets = $row['_mora_buckets'] ?? [];
-        $vencidaSum  = 0.0;
+        $vencidaSum = 0.0;
         foreach ($moraBuckets as $bucketKey => $b) {
-            if ($bucketKey !== 'al_corriente') $vencidaSum += (float) ($b['monto'] ?? 0);
+            if ($bucketKey !== 'al_corriente') {
+                $vencidaSum += (float) ($b['monto'] ?? 0);
+            }
         }
-        $vencidaSum  = round($vencidaSum, 2);
-        $vencidaRow  = round((float) ($row['vencida'] ?? 0), 2);
+        $vencidaSum = round($vencidaSum, 2);
+        $vencidaRow = round((float) ($row['vencida'] ?? 0), 2);
 
-        if (!empty($moraBuckets) && abs($vencidaSum - $vencidaRow) > 0.01) {
+        if (! empty($moraBuckets) && abs($vencidaSum - $vencidaRow) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::applyEmployeeScope — buckets de mora no reconcilian.', [
                 'employee_id' => $employeeId, // sin nombre en el log (Fase 10: datos personales innecesarios)
                 'buckets_sum' => $vencidaSum, 'vencida_total' => $vencidaRow,
             ]);
-            $s['mora_buckets']      = $this->notAttributable("Desglose por bucket no disponible: no reconcilia contra vencida total (\${$vencidaSum} vs \${$vencidaRow}). Ver logs.");
+            $s['mora_buckets'] = $this->notAttributable("Desglose por bucket no disponible: no reconcilia contra vencida total (\${$vencidaSum} vs \${$vencidaRow}). Ver logs.");
             $s['portfolio_buckets'] = $this->notAttributable('Ver mora_buckets — no reconcilia, no se expone un desglose que contradiga el KPI.');
         } else {
             $defs = $this->moraBucketDefs();
             $orderedBuckets = array_map(function (array $def) use ($moraBuckets) {
                 $b = $moraBuckets[$def['key']] ?? [];
+
                 return [
-                    'key'                              => $def['key'],
-                    'label'                            => $def['label'],
-                    'contratos'                        => (int) ($b['contratos'] ?? 0),
-                    'monto'                            => round((float) ($b['monto'] ?? 0), 2),
-                    'capital_due'                      => round((float) ($b['capital_due'] ?? 0), 2),
-                    'interes_atrasado'                 => round((float) ($b['interes_atrasado'] ?? 0), 2),
-                    'impuesto_atrasado'                => round((float) ($b['impuesto_atrasado'] ?? 0), 2),
-                    'saldo_interes_moratorio'          => round((float) ($b['saldo_interes_moratorio'] ?? 0), 2),
+                    'key' => $def['key'],
+                    'label' => $def['label'],
+                    'contratos' => (int) ($b['contratos'] ?? 0),
+                    'monto' => round((float) ($b['monto'] ?? 0), 2),
+                    'capital_due' => round((float) ($b['capital_due'] ?? 0), 2),
+                    'interes_atrasado' => round((float) ($b['interes_atrasado'] ?? 0), 2),
+                    'impuesto_atrasado' => round((float) ($b['impuesto_atrasado'] ?? 0), 2),
+                    'saldo_interes_moratorio' => round((float) ($b['saldo_interes_moratorio'] ?? 0), 2),
                     'saldo_impuesto_interes_moratorio' => round((float) ($b['saldo_impuesto_interes_moratorio'] ?? 0), 2),
                 ];
             }, $defs);
@@ -1353,10 +1534,10 @@ class RadiographySnapshotBuilder
             // individual: mostraba la distribución de TODA la cartera de la empresa (fuga de
             // datos generales bajo un scope individual).
             $s['portfolio_buckets'] = array_values(array_filter(array_map(fn (array $b) => $b['contratos'] > 0 ? [
-                'label'     => $b['label'],
+                'label' => $b['label'],
                 'contratos' => $b['contratos'],
-                'balance'   => $b['monto'],
-                'vencida'   => $b['key'] === 'al_corriente' ? 0.0 : $b['monto'],
+                'balance' => $b['monto'],
+                'vencida' => $b['key'] === 'al_corriente' ? 0.0 : $b['monto'],
             ] : null, $orderedBuckets)));
         }
 
@@ -1364,11 +1545,11 @@ class RadiographySnapshotBuilder
         // SUMAN, nunca una reemplaza a la otra — ver buildEmployeeExpenseDetail(). 'total' es
         // el mismo valor que summary.expenses_total/opex_total (misma llamada, un solo cálculo).
         $s['expenses_detail'] = [
-            'total'            => $expenseDetail['total'],
-            'automatic_total'  => $expenseDetail['automatic_total'],
-            'automatic_items'  => $expenseDetail['automatic_items'],
-            'manual_total'     => $expenseDetail['manual_total'],
-            'manual_notes'     => $expenseDetail['manual_notes'],
+            'total' => $expenseDetail['total'],
+            'automatic_total' => $expenseDetail['automatic_total'],
+            'automatic_items' => $expenseDetail['automatic_items'],
+            'manual_total' => $expenseDetail['manual_total'],
+            'manual_notes' => $expenseDetail['manual_notes'],
             'byCategory' => null, 'byConcept' => null, 'byBranch' => null, 'bySource' => null,
             'detail_not_attributable' => 'El desglose por categoría/concepto/sucursal/fuente solo está disponible a nivel general en este snapshot.',
         ];
@@ -1443,7 +1624,7 @@ class RadiographySnapshotBuilder
         $s = $this->scrubCompanyWideSections($s, 'colaborador');
 
         $snapshot['sections'] = $s;
-        $snapshot['charts']   = $this->scopeChartsByLabel($snapshot['charts'], $row['name']);
+        $snapshot['charts'] = $this->scopeChartsByLabel($snapshot['charts'], $row['name']);
 
         return $snapshot;
     }
@@ -1452,15 +1633,22 @@ class RadiographySnapshotBuilder
      * Reduce cada gráfica {label,value,pct}[] a la entrada cuyo label coincide con el
      * alcance activo (recalculando pct=100). Gráficas sin esa dimensión (ej. por producto)
      * quedan sin tocar — siguen siendo información general válida, no del colaborador/sucursal.
+     *
+     * @param  array  $charts  Gráficas del snapshot.
+     * @param  string  $needle  Etiqueta del alcance.
+     * @return array Gráficas reducidas al alcance.
      */
     private function scopeChartsByLabel(array $charts, string $needle): array
     {
         $eq = $this->eqName($needle);
         foreach ($charts as $key => $rows) {
-            if (!is_array($rows) || empty($rows) || !isset($rows[0]['label'])) continue;
+            if (! is_array($rows) || empty($rows) || ! isset($rows[0]['label'])) {
+                continue;
+            }
             $match = collect($rows)->first(fn ($r) => $this->eqName($r['label'] ?? '') === $eq);
             $charts[$key] = $match ? [array_merge($match, ['pct' => 100.0])] : [];
         }
+
         return $charts;
     }
 
@@ -1477,6 +1665,12 @@ class RadiographySnapshotBuilder
      * solo aplica cuando $employeeRow !== null; si no se pasa, cae a $employeeRow['gastos']
      * solo (compatibilidad, sin manual) — nunca debería pasar en el flujo real desde
      * applyEmployeeScope(), que siempre lo calcula y lo pasa.
+     *
+     * @param  array  $row  Fila de sucursal o de colaborador.
+     * @param  array  $percepDeducc  Percepciones/deducciones/neto del alcance.
+     * @param  array|null  $employeeRow  Fila del colaborador (null para sucursal).
+     * @param  array|null  $expenseDetail  Detalle de OPEX del colaborador.
+     * @return array Bloque summary del alcance.
      */
     private function summaryFromRow(array $row, array $percepDeducc, ?array $employeeRow, ?array $expenseDetail = null): array
     {
@@ -1492,99 +1686,99 @@ class RadiographySnapshotBuilder
             // 11): computeEmployeeFinancialMetrics(), la MISMA función que usa
             // EmployeesHistoricoExportService — nunca dos fórmulas separadas.
             $metrics = $this->computeEmployeeFinancialMetrics($employeeRow, $expenseDetail ?? []);
-            $gastos      = $metrics['opex_total'];
-            $neto        = $metrics['neto'];
+            $gastos = $metrics['opex_total'];
+            $neto = $metrics['neto'];
             $ingresoBase = $metrics['ingreso_base'];
-            $cartera     = $metrics['cartera'];
-            $vencida     = $metrics['vencida'];
-            $ebitda      = $metrics['ebitda'];
-            $pagos       = $metrics['pagos'];
-            $bonos       = $metrics['bonos'];
+            $cartera = $metrics['cartera'];
+            $vencida = $metrics['vencida'];
+            $ebitda = $metrics['ebitda'];
+            $pagos = $metrics['pagos'];
+            $bonos = $metrics['bonos'];
 
             return [
-                'employees_count'              => 1,
-                'recovery_total'                => (float) ($employeeRow['recuperacion'] ?? 0),
-                'placement_total'               => (float) ($employeeRow['colocacion'] ?? 0),
-                'portfolio_total'               => $cartera,
-                'overdue_portfolio'             => $vencida,
-                'mora_index'                    => $metrics['mora_index'],
-                'expenses_total'                => $gastos,
-                'expenses_automatic_total'      => $expenseDetail['automatic_total'] ?? $gastos,
-                'expenses_manual_total'         => $expenseDetail['manual_total'] ?? 0.0,
-                'expenses_manual_notes'         => $expenseDetail['manual_notes'] ?? '',
-                'payroll_total'                 => $pagos + $bonos,
-                'net_payroll'                   => $neto,
-                'noi_percepciones'              => $percepDeducc['percepciones'],
-                'noi_deducciones'               => $percepDeducc['deducciones'],
-                'noi_neto_pagado'               => $percepDeducc['neto_pagado'],
-                'opex_total'                    => $gastos,
-                'nomina_capital_humano_total'   => $neto,
-                'nomina_ebitda_total'           => $neto,
-                'total_gastos_ebitda'           => $gastos + $neto,
-                'ebitda_global'                 => $ebitda,
-                'venta_global'                  => $ingresoBase,
-                'margen_ebitda'                 => $metrics['margen_ebitda'],
-                'ebitda_categoria'               => $metrics['ebitda_categoria'],
-                'ingreso_ebitda_base'           => $ingresoBase,
-                'gastos_totales'                => $gastos + $neto,
-                'ebitda_final'                  => $ebitda,
+                'employees_count' => 1,
+                'recovery_total' => (float) ($employeeRow['recuperacion'] ?? 0),
+                'placement_total' => (float) ($employeeRow['colocacion'] ?? 0),
+                'portfolio_total' => $cartera,
+                'overdue_portfolio' => $vencida,
+                'mora_index' => $metrics['mora_index'],
+                'expenses_total' => $gastos,
+                'expenses_automatic_total' => $expenseDetail['automatic_total'] ?? $gastos,
+                'expenses_manual_total' => $expenseDetail['manual_total'] ?? 0.0,
+                'expenses_manual_notes' => $expenseDetail['manual_notes'] ?? '',
+                'payroll_total' => $pagos + $bonos,
+                'net_payroll' => $neto,
+                'noi_percepciones' => $percepDeducc['percepciones'],
+                'noi_deducciones' => $percepDeducc['deducciones'],
+                'noi_neto_pagado' => $percepDeducc['neto_pagado'],
+                'opex_total' => $gastos,
+                'nomina_capital_humano_total' => $neto,
+                'nomina_ebitda_total' => $neto,
+                'total_gastos_ebitda' => $gastos + $neto,
+                'ebitda_global' => $ebitda,
+                'venta_global' => $ingresoBase,
+                'margen_ebitda' => $metrics['margen_ebitda'],
+                'ebitda_categoria' => $metrics['ebitda_categoria'],
+                'ingreso_ebitda_base' => $ingresoBase,
+                'gastos_totales' => $gastos + $neto,
+                'ebitda_final' => $ebitda,
                 // No atribuible a un solo colaborador con la granularidad disponible:
-                'unificacion_excluida'          => null,
-                'condonacion_excluida'          => null,
-                'excedentes_total'              => null,
-                'fondeo_total'                  => null,
-                'seguros_lendus_puente'         => null,
+                'unificacion_excluida' => null,
+                'condonacion_excluida' => null,
+                'excedentes_total' => null,
+                'fondeo_total' => null,
+                'seguros_lendus_puente' => null,
             ];
         }
 
         // Alcance sucursal: $row viene de branchCalcBranches, mismo shape que branchCalcGlobal.
-        $nomina      = BranchRadiographyCalculator::nominaTotalFor($row);
-        $gastosTot   = BranchRadiographyCalculator::gastosTotalesFor($row);
+        $nomina = BranchRadiographyCalculator::nominaTotalFor($row);
+        $gastosTot = BranchRadiographyCalculator::gastosTotalesFor($row);
         $ingresoBase = BranchRadiographyCalculator::ingresoEbitdaBaseFor($row);
-        $ebitda      = BranchRadiographyCalculator::ebitdaFinalFor($row);
-        $margen      = BranchRadiographyCalculator::margenEbitdaFor($row);
-        $moraTotal   = (float) ($row['mora_0_30'] ?? 0) + (float) ($row['mora_31_60'] ?? 0) + (float) ($row['mora_61_90'] ?? 0)
+        $ebitda = BranchRadiographyCalculator::ebitdaFinalFor($row);
+        $margen = BranchRadiographyCalculator::margenEbitdaFor($row);
+        $moraTotal = (float) ($row['mora_0_30'] ?? 0) + (float) ($row['mora_31_60'] ?? 0) + (float) ($row['mora_61_90'] ?? 0)
             + (float) ($row['mora_91_120'] ?? 0) + (float) ($row['mora_120_plus'] ?? 0);
-        $cartera     = (float) ($row['valor_cartera'] ?? 0);
+        $cartera = (float) ($row['valor_cartera'] ?? 0);
 
         return [
-            'employees_count'              => null,
-            'recovery_total'               => (float) ($row['recuperacion_total'] ?? 0),
-            'recovery_bruta'               => (float) ($row['recuperacion_bruta'] ?? 0),
-            'recovery_seguro_excluido'     => (float) ($row['seguro_excluido_bruto'] ?? 0),
-            'recovery_savehearts_bruto'    => (float) ($row['seguro_savehearts_bruto'] ?? 0),
-            'recovery_comadres_bruto'      => (float) ($row['seguro_comadres_bruto'] ?? 0),
-            'recovery_crece_bruto'         => (float) ($row['seguro_crece_bruto'] ?? 0),
-            'recovery_crece_reconocido'    => (float) ($row['seguro_crece_reconocido'] ?? 0),
+            'employees_count' => null,
+            'recovery_total' => (float) ($row['recuperacion_total'] ?? 0),
+            'recovery_bruta' => (float) ($row['recuperacion_bruta'] ?? 0),
+            'recovery_seguro_excluido' => (float) ($row['seguro_excluido_bruto'] ?? 0),
+            'recovery_savehearts_bruto' => (float) ($row['seguro_savehearts_bruto'] ?? 0),
+            'recovery_comadres_bruto' => (float) ($row['seguro_comadres_bruto'] ?? 0),
+            'recovery_crece_bruto' => (float) ($row['seguro_crece_bruto'] ?? 0),
+            'recovery_crece_reconocido' => (float) ($row['seguro_crece_reconocido'] ?? 0),
             'recovery_crece_no_reconocido' => max(0.0, (float) ($row['seguro_crece_bruto'] ?? 0) - (float) ($row['seguro_crece_reconocido'] ?? 0)),
-            'placement_total'              => (float) ($row['colocacion'] ?? 0),
-            'portfolio_total'              => $cartera,
-            'overdue_portfolio'            => $moraTotal,
-            'mora_index'                   => $cartera > 0 ? round($moraTotal / $cartera * 100, 2) : 0.0,
-            'expenses_total'               => (float) ($row['gastos_operativos'] ?? 0),
-            'expenses_erp'                 => (float) ($row['gastos_erp_total'] ?? 0),
-            'expenses_lendus'              => (float) ($row['gastos_lendus_total'] ?? 0),
-            'seguros_lendus_puente'        => (float) ($row['seguros_lendus_puente'] ?? 0),
-            'excedentes_total'             => (float) ($row['excedentes'] ?? 0),
-            'fondeo_total'                 => (float) ($row['prestamos_fondea'] ?? 0),
-            'payroll_total'                => $nomina,
-            'net_payroll'                  => $nomina,
-            'noi_percepciones'             => $percepDeducc['percepciones'],
-            'noi_deducciones'              => $percepDeducc['deducciones'],
-            'noi_neto_pagado'              => $percepDeducc['neto_pagado'],
-            'opex_total'                   => (float) ($row['gastos_operativos'] ?? 0),
-            'nomina_capital_humano_total'  => $nomina,
-            'nomina_ebitda_total'          => $nomina,
-            'total_gastos_ebitda'          => $gastosTot,
-            'ebitda_global'                => $ebitda,
-            'venta_global'                 => $ingresoBase,
-            'margen_ebitda'                => $margen,
-            'ebitda_categoria'             => $this->ebitdaCategory($ebitda),
-            'ingreso_ebitda_base'          => $ingresoBase,
-            'gastos_totales'               => $gastosTot,
-            'ebitda_final'                 => $ebitda,
-            'unificacion_excluida'         => (float) ($row['unificacion_excluida'] ?? 0),
-            'condonacion_excluida'         => (float) ($row['condonacion_excluida'] ?? 0),
+            'placement_total' => (float) ($row['colocacion'] ?? 0),
+            'portfolio_total' => $cartera,
+            'overdue_portfolio' => $moraTotal,
+            'mora_index' => $cartera > 0 ? round($moraTotal / $cartera * 100, 2) : 0.0,
+            'expenses_total' => (float) ($row['gastos_operativos'] ?? 0),
+            'expenses_erp' => (float) ($row['gastos_erp_total'] ?? 0),
+            'expenses_lendus' => (float) ($row['gastos_lendus_total'] ?? 0),
+            'seguros_lendus_puente' => (float) ($row['seguros_lendus_puente'] ?? 0),
+            'excedentes_total' => (float) ($row['excedentes'] ?? 0),
+            'fondeo_total' => (float) ($row['prestamos_fondea'] ?? 0),
+            'payroll_total' => $nomina,
+            'net_payroll' => $nomina,
+            'noi_percepciones' => $percepDeducc['percepciones'],
+            'noi_deducciones' => $percepDeducc['deducciones'],
+            'noi_neto_pagado' => $percepDeducc['neto_pagado'],
+            'opex_total' => (float) ($row['gastos_operativos'] ?? 0),
+            'nomina_capital_humano_total' => $nomina,
+            'nomina_ebitda_total' => $nomina,
+            'total_gastos_ebitda' => $gastosTot,
+            'ebitda_global' => $ebitda,
+            'venta_global' => $ingresoBase,
+            'margen_ebitda' => $margen,
+            'ebitda_categoria' => $this->ebitdaCategory($ebitda),
+            'ingreso_ebitda_base' => $ingresoBase,
+            'gastos_totales' => $gastosTot,
+            'ebitda_final' => $ebitda,
+            'unificacion_excluida' => (float) ($row['unificacion_excluida'] ?? 0),
+            'condonacion_excluida' => (float) ($row['condonacion_excluida'] ?? 0),
         ];
     }
 
@@ -1594,22 +1788,26 @@ class RadiographySnapshotBuilder
      * ejecuta en cada generación de reporte (todos los periodos, no solo Junio) para
      * que un futuro archivo con formato distinto NUNCA produzca un reporte descuadrado
      * en silencio — si algo no cuadra, se detiene la generación aquí mismo.
+     *
+     * @param  array  $global  Resumen GLOBAL.
+     * @param  array  $branches  Resúmenes por sucursal.
+     * @param  array  $recoveryByProduct  Recuperación por producto.
      */
     private function assertRecoveryReconciles(array $global, array $branches, array $recoveryByProduct): void
     {
         $globalTotal = round((float) ($global['recuperacion_total'] ?? 0), 2);
 
         $componentSum = round(
-            (float) ($global['capital_recuperado']      ?? 0)
-            + (float) ($global['interes_recuperado']     ?? 0)
-            + (float) ($global['impuesto_recuperado']    ?? 0)
-            + (float) ($global['charges']                ?? 0)
-            + (float) ($global['cargos_adicionales']     ?? 0)
-            + (float) ($global['excedente_recuperado']   ?? 0)
-            + (float) ($global['cargos_inicio']          ?? 0)
-            + (float) ($global['comision_apertura']      ?? 0)
+            (float) ($global['capital_recuperado'] ?? 0)
+            + (float) ($global['interes_recuperado'] ?? 0)
+            + (float) ($global['impuesto_recuperado'] ?? 0)
+            + (float) ($global['charges'] ?? 0)
+            + (float) ($global['cargos_adicionales'] ?? 0)
+            + (float) ($global['excedente_recuperado'] ?? 0)
+            + (float) ($global['cargos_inicio'] ?? 0)
+            + (float) ($global['comision_apertura'] ?? 0)
             + (float) ($global['seguro_crece_reconocido'] ?? 0)
-            + (float) ($global['otros_recuperacion']     ?? 0),
+            + (float) ($global['otros_recuperacion'] ?? 0),
             2
         );
 
@@ -1622,13 +1820,13 @@ class RadiographySnapshotBuilder
 
         $tolerance = 0.01;
         $diffComponents = round($globalTotal - $componentSum, 2);
-        $diffBranches   = round($globalTotal - $branchSum, 2);
-        $diffProducts   = round($globalTotal - $productSum, 2);
+        $diffBranches = round($globalTotal - $branchSum, 2);
+        $diffProducts = round($globalTotal - $productSum, 2);
 
         if (abs($diffComponents) > $tolerance || abs($diffBranches) > $tolerance || abs($diffProducts) > $tolerance) {
             throw new \RuntimeException(sprintf(
                 'Recuperación descuadrada: global=%.2f, componentes=%.2f (diff %.2f), sucursales=%.2f (diff %.2f), productos=%.2f (diff %.2f). '
-                . 'No se generó el reporte — revisar accumulateRecuperacion()/buildRecoveryByProduct() antes de reintentar.',
+                .'No se generó el reporte — revisar accumulateRecuperacion()/buildRecoveryByProduct() antes de reintentar.',
                 $globalTotal, $componentSum, $diffComponents, $branchSum, $diffBranches, $productSum, $diffProducts
             ));
         }
@@ -1636,6 +1834,13 @@ class RadiographySnapshotBuilder
 
     // ── PERIOD IDS RESOLVER ───────────────────────────────────────────────────
 
+    /**
+     * Versión pública de resolveDataIds() para otros servicios (Job de generación,
+     * export de colaboradores).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,int> Ids de periodos de datos.
+     */
     public function resolveDataIdsPublic(Period $period): array
     {
         return $this->resolveDataIds($period);
@@ -1648,21 +1853,31 @@ class RadiographySnapshotBuilder
      * pasó por build()/findEmployeeGestorRowByEmployeeId() (que ya calienta este mismo
      * estado como efecto secundario, ver esa implementación). Sin esto, esos métodos
      * filtran contra un array vacío y devuelven ceros silenciosos — no un error visible.
+     *
+     * @param  Period  $period  Periodo.
      */
     public function warmDataIds(Period $period): void
     {
-        $this->dataIds        = $this->resolveDataIds($period);
+        $this->dataIds = $this->resolveDataIds($period);
         $this->closingDataIds = $this->resolveClosingDataIds($period);
     }
 
+    /**
+     * Periodos de datos de flujo: las semanas base del periodo más el propio periodo
+     * (para cubrir cargas guardadas directamente en el mensual).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,int> Ids de periodos.
+     */
     private function resolveDataIds(Period $period): array
     {
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
         if (empty($weeklyIds)) {
             return [$period->id];
         }
-        // Include the period itself so uploads stored directly on monthly periods are covered
+
+        // Incluye el propio periodo para cubrir cargas guardadas directamente en el mensual
         return array_values(array_unique(array_merge($weeklyIds, [$period->id])));
     }
 
@@ -1670,10 +1885,13 @@ class RadiographySnapshotBuilder
      * Metadata legible del alcance real de un periodo automático (bimestral/trimestral/
      * semestral/anual): qué meses lo componen y qué rango de semanas/fechas cubre. Null
      * para un periodo mensual — ahí "el periodo" ya es autoexplicativo.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array|null Metadatos de composición o null si es mensual.
      */
     private function buildPeriodCompositeMeta(Period $period): ?array
     {
-        if (!$period->isAutoGenerated() || empty($period->component_period_ids)) {
+        if (! $period->isAutoGenerated() || empty($period->component_period_ids)) {
             return null;
         }
 
@@ -1691,12 +1909,12 @@ class RadiographySnapshotBuilder
 
         return [
             'component_labels' => $componentMonths->pluck('label')->values()->all(),
-            'component_range'  => $componentMonths->pluck('label')->implode(' + '),
-            'week_start'       => $weeks->first()?->label,
-            'week_end'         => $weeks->last()?->label,
-            'week_range'       => $weeks->isNotEmpty() ? ($weeks->first()->label . ' a ' . $weeks->last()->label) : null,
-            'date_start'       => optional($period->start_date)->format('d/m/Y'),
-            'date_end'         => optional($period->end_date)->format('d/m/Y'),
+            'component_range' => $componentMonths->pluck('label')->implode(' + '),
+            'week_start' => $weeks->first()?->label,
+            'week_end' => $weeks->last()?->label,
+            'week_range' => $weeks->isNotEmpty() ? ($weeks->first()->label.' a '.$weeks->last()->label) : null,
+            'date_start' => optional($period->start_date)->format('d/m/Y'),
+            'date_end' => optional($period->end_date)->format('d/m/Y'),
         ];
     }
 
@@ -1705,14 +1923,17 @@ class RadiographySnapshotBuilder
      * no un flujo). Para un periodo mensual normal es idéntico a resolveDataIds(). Para un
      * periodo automático (bimestral/trimestral/semestral/anual) es SOLO el último mes
      * componente — ver Period::resolveLastMonthlyComponent().
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,int> Ids de periodos de cierre.
      */
     private function resolveClosingDataIds(Period $period): array
     {
-        if (!$period->isAutoGenerated()) {
+        if (! $period->isAutoGenerated()) {
             return $this->resolveDataIds($period);
         }
 
-        $allPeriods  = Period::all();
+        $allPeriods = Period::all();
         $lastMonthly = $period->resolveLastMonthlyComponent($allPeriods);
 
         return $lastMonthly ? $this->resolveDataIds($lastMonthly) : $this->resolveDataIds($period);
@@ -1720,29 +1941,37 @@ class RadiographySnapshotBuilder
 
     // ── PAYROLL ─────────────────────────────────────────────────────────────
 
+    /**
+     * Totales de nómina del periodo (empleados, pagos, bonos, descuentos, gastos,
+     * neto) desde fact_period_employee_summary del periodo mensual; si no hay datos,
+     * los agrega desde fact_noi_movements, fact_expenses y employee_branch_assignments.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Totales de nómina.
+     */
     private function buildPayroll(Period $period): array
     {
-        // fact_period_employee_summary is always written for the exact monthly period id
+        // fact_period_employee_summary siempre se escribe con el id exacto del periodo mensual
         $mes = DB::table('fact_period_employee_summary')
             ->where('period_id', $period->id)
             ->selectRaw('COUNT(*) as cnt, SUM(total_payments) as pagos, SUM(total_bonuses) as bonos, SUM(total_discounts) as descuentos, SUM(total_expenses) as gastos, SUM(net_amount) as neto')
             ->first();
 
-        $mesCount = (int)($mes?->cnt ?? 0);
+        $mesCount = (int) ($mes?->cnt ?? 0);
 
-        if ($mesCount > 0 && ((float)($mes?->pagos ?? 0) + (float)($mes?->bonos ?? 0)) > 0) {
+        if ($mesCount > 0 && ((float) ($mes?->pagos ?? 0) + (float) ($mes?->bonos ?? 0)) > 0) {
             return [
                 'total_empleados' => $mesCount,
-                'pagos'           => round((float)($mes->pagos ?? 0), 2),
-                'bonos'           => round((float)($mes->bonos ?? 0), 2),
-                'descuentos'      => round((float)($mes->descuentos ?? 0), 2),
-                'gastos'          => round((float)($mes->gastos ?? 0), 2),
-                'neto'            => round((float)($mes->neto ?? 0), 2),
-                'source'          => 'consolidation',
+                'pagos' => round((float) ($mes->pagos ?? 0), 2),
+                'bonos' => round((float) ($mes->bonos ?? 0), 2),
+                'descuentos' => round((float) ($mes->descuentos ?? 0), 2),
+                'gastos' => round((float) ($mes->gastos ?? 0), 2),
+                'neto' => round((float) ($mes->neto ?? 0), 2),
+                'source' => 'consolidation',
             ];
         }
 
-        // Fallback: aggregate from fact_noi_movements using all relevant period IDs
+        // Respaldo: agrega desde fact_noi_movements con todos los periodos relevantes
         $empCount = (int) DB::table('fact_noi_movements')
             ->whereIn('period_id', $this->dataIds)
             ->whereNotNull('employee_id')
@@ -1793,17 +2022,24 @@ class RadiographySnapshotBuilder
 
         return [
             'total_empleados' => $empCount,
-            'pagos'           => round($pagos, 2),
-            'bonos'           => round($bonos, 2),
-            'descuentos'      => round($descuentos, 2),
-            'gastos'          => round($gastos, 2),
-            'neto'            => round($neto, 2),
-            'source'          => 'noi_direct',
+            'pagos' => round($pagos, 2),
+            'bonos' => round($bonos, 2),
+            'descuentos' => round($descuentos, 2),
+            'gastos' => round($gastos, 2),
+            'neto' => round($neto, 2),
+            'source' => 'noi_direct',
         ];
     }
 
-    // ── EMPLOYEES (from MonthlyEmployeeSummary + NOI fallback) ──────────────
+    // ── EMPLEADOS (desde MonthlyEmployeeSummary + respaldo NOI) ──────────────
 
+    /**
+     * Lista de colaboradores con pagos, bonos, descuentos y sucursal desde el resumen
+     * mensual por empleado (MonthlyEmployeeSummary), ordenada por pagos.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas de colaboradores.
+     */
     private function buildEmployees(Period $period): array
     {
         $rows = MonthlyEmployeeSummary::query()
@@ -1814,14 +2050,14 @@ class RadiographySnapshotBuilder
 
         if ($rows->isNotEmpty()) {
             return $rows->map(fn ($r) => [
-                'name'       => $r->employee?->full_name ?? 'Sin empleado',
-                'branch'     => $r->branch?->name ?? '—',
-                'pagos'      => (float)$r->total_payments,
-                'bonos'      => (float)$r->total_bonuses,
-                'descuentos' => (float)$r->total_discounts,
-                'gastos'     => (float)$r->total_expenses,
-                'neto'       => (float)$r->net_amount,
-                'included'   => (bool)$r->included_in_report,
+                'name' => $r->employee?->full_name ?? 'Sin empleado',
+                'branch' => $r->branch?->name ?? '—',
+                'pagos' => (float) $r->total_payments,
+                'bonos' => (float) $r->total_bonuses,
+                'descuentos' => (float) $r->total_discounts,
+                'gastos' => (float) $r->total_expenses,
+                'neto' => (float) $r->net_amount,
+                'included' => (bool) $r->included_in_report,
             ])->values()->all();
         }
 
@@ -1829,7 +2065,7 @@ class RadiographySnapshotBuilder
             ->join('employees as e', 'n.employee_id', '=', 'e.id')
             ->leftJoin('employee_branch_assignments as eba', function ($j) use ($period) {
                 $j->on('eba.employee_id', '=', 'n.employee_id')
-                  ->where('eba.period_id', '=', $period->id);
+                    ->where('eba.period_id', '=', $period->id);
             })
             ->leftJoin('branches as b', 'eba.branch_id', '=', 'b.id')
             ->whereIn('n.period_id', $this->dataIds)
@@ -1846,10 +2082,10 @@ class RadiographySnapshotBuilder
             ->orderByDesc('pagos')
             ->get();
 
-        $needsBranch = $rows->filter(fn ($r) => !$r->branch)->pluck('normalized_name')->values()->all();
+        $needsBranch = $rows->filter(fn ($r) => ! $r->branch)->pluck('normalized_name')->values()->all();
 
         $activityBranches = [];
-        if (!empty($needsBranch)) {
+        if (! empty($needsBranch)) {
             $placements = DB::table('fact_placements as p')
                 ->join('branches as b', 'p.branch_id', '=', 'b.id')
                 ->whereIn('p.period_id', $this->dataIds)
@@ -1879,14 +2115,14 @@ class RadiographySnapshotBuilder
                 ?? null;
 
             return [
-                'name'       => $r->name,
-                'branch'     => $branch ?? 'Sin asignar',
-                'pagos'      => (float)$r->pagos,
-                'bonos'      => 0.0,
+                'name' => $r->name,
+                'branch' => $branch ?? 'Sin asignar',
+                'pagos' => (float) $r->pagos,
+                'bonos' => 0.0,
                 'descuentos' => 0.0,
-                'gastos'     => 0.0,
-                'neto'       => (float)$r->neto,
-                'included'   => true,
+                'gastos' => 0.0,
+                'neto' => (float) $r->neto,
+                'included' => true,
             ];
         })->values()->all();
     }
@@ -1901,19 +2137,28 @@ class RadiographySnapshotBuilder
         '_employee_ids',
     ];
 
-    private const PRODUCT_SPECIAL_PATTERN    = 'A LA MEDIDA|DIARIO|CREDITO CONSUMO';
+    private const PRODUCT_SPECIAL_PATTERN = 'A LA MEDIDA|DIARIO|CREDITO CONSUMO';
+
     private const PRODUCT_RESTRUCTURE_PATTERN = 'REESTRUCTURA|UNIFICACION|MIGRACION|INSOLUTOS';
+
     // Excludes multi-option grouped product names like "S12 / S16" or "I20 / I30"
     private const PRODUCT_GROUP_PATTERN = '[Ss][0-9]+\\s*/\\s*[Ss][0-9]+|[Ii][0-9]+\\s*/\\s*[Ii][0-9]+';
 
+    /**
+     * Colocación, recuperación y cartera por producto (excluye productos especiales,
+     * reestructuras, seguros, recursos propios y códigos agrupados tipo "s12/s16").
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas por producto.
+     */
     private function buildProducts(Period $period): array
     {
-        $excludeAll = self::PRODUCT_SPECIAL_PATTERN . '|' . self::PRODUCT_RESTRUCTURE_PATTERN . '|SEGURO|RECURSOS PROPIOS';
+        $excludeAll = self::PRODUCT_SPECIAL_PATTERN.'|'.self::PRODUCT_RESTRUCTURE_PATTERN.'|SEGURO|RECURSOS PROPIOS';
 
         $placements = DB::table('fact_placements')
             ->whereIn('period_id', $this->dataIds)
-            ->whereRaw("(product_name NOT REGEXP ? OR product_name IS NULL)", [$excludeAll])
-            ->whereRaw("(product_name NOT REGEXP ? OR product_name IS NULL)", [self::PRODUCT_GROUP_PATTERN])
+            ->whereRaw('(product_name NOT REGEXP ? OR product_name IS NULL)', [$excludeAll])
+            ->whereRaw('(product_name NOT REGEXP ? OR product_name IS NULL)', [self::PRODUCT_GROUP_PATTERN])
             ->selectRaw('COALESCE(NULLIF(product_name, ""), "Sin producto") as producto, COUNT(*) as operaciones, SUM(amount) as colocacion')
             ->groupBy('product_name')
             ->orderByDesc('colocacion')
@@ -1924,27 +2169,27 @@ class RadiographySnapshotBuilder
             ->whereIn('period_id', $this->dataIds)
             ->whereNotNull('product_name')
             ->where('product_name', '<>', '')
-            ->whereRaw("product_name NOT REGEXP ?", [$excludeAll])
-            ->whereRaw("product_name NOT REGEXP ?", [self::PRODUCT_GROUP_PATTERN])
+            ->whereRaw('product_name NOT REGEXP ?', [$excludeAll])
+            ->whereRaw('product_name NOT REGEXP ?', [self::PRODUCT_GROUP_PATTERN])
             ->selectRaw('product_name as producto, SUM(total_amount) as recuperacion')
             ->groupBy('product_name')
             ->get()
             ->keyBy('producto');
 
         $realBranchNamesForProducts = $this->resolveRealBranchNormalizedNames();
-        $vencidaExpr = "SUM(CASE WHEN days_past_due > 0 THEN
+        $vencidaExpr = 'SUM(CASE WHEN days_past_due > 0 THEN
             COALESCE(capital_due, 0) + COALESCE(interes_atrasado, 0) + COALESCE(impuesto_atrasado, 0)
             + COALESCE(saldo_interes_moratorio, 0) + COALESCE(saldo_impuesto_interes_moratorio, 0)
-        ELSE 0 END) as vencida";
+        ELSE 0 END) as vencida';
 
         $portfolioMain = DB::table('fact_portfolios as po')
             ->join('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $this->closingDataIds)
             ->whereNotNull('po.product_name')
             ->where('po.product_name', '<>', '')
-            ->whereRaw("po.product_name NOT REGEXP ?", [$excludeAll])
-            ->whereRaw("po.product_name NOT REGEXP ?", [self::PRODUCT_GROUP_PATTERN])
-            ->when(!empty($realBranchNamesForProducts), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNamesForProducts))
+            ->whereRaw('po.product_name NOT REGEXP ?', [$excludeAll])
+            ->whereRaw('po.product_name NOT REGEXP ?', [self::PRODUCT_GROUP_PATTERN])
+            ->when(! empty($realBranchNamesForProducts), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNamesForProducts))
             ->selectRaw("po.product_name as producto, COUNT(*) as contratos, SUM(po.balance) as cartera, {$vencidaExpr}")
             ->groupBy('po.product_name')
             ->get()
@@ -1955,8 +2200,8 @@ class RadiographySnapshotBuilder
             ->whereIn('po.period_id', $this->closingDataIds)
             ->whereNotNull('po.product_name')
             ->where('po.product_name', '<>', '')
-            ->whereRaw("po.product_name REGEXP ? AND po.product_name NOT REGEXP ?", [self::PRODUCT_SPECIAL_PATTERN, self::PRODUCT_RESTRUCTURE_PATTERN])
-            ->when(!empty($realBranchNamesForProducts), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNamesForProducts))
+            ->whereRaw('po.product_name REGEXP ? AND po.product_name NOT REGEXP ?', [self::PRODUCT_SPECIAL_PATTERN, self::PRODUCT_RESTRUCTURE_PATTERN])
+            ->when(! empty($realBranchNamesForProducts), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNamesForProducts))
             ->selectRaw("po.product_name as producto, COUNT(*) as contratos, SUM(po.balance) as cartera, {$vencidaExpr}")
             ->groupBy('po.product_name')
             ->orderByDesc('cartera')
@@ -1967,8 +2212,8 @@ class RadiographySnapshotBuilder
             ->whereIn('po.period_id', $this->closingDataIds)
             ->whereNotNull('po.product_name')
             ->where('po.product_name', '<>', '')
-            ->whereRaw("po.product_name REGEXP ?", [self::PRODUCT_RESTRUCTURE_PATTERN])
-            ->when(!empty($realBranchNamesForProducts), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNamesForProducts))
+            ->whereRaw('po.product_name REGEXP ?', [self::PRODUCT_RESTRUCTURE_PATTERN])
+            ->when(! empty($realBranchNamesForProducts), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNamesForProducts))
             ->selectRaw("po.product_name as producto, COUNT(*) as contratos, SUM(po.balance) as cartera, {$vencidaExpr}")
             ->groupBy('po.product_name')
             ->orderByDesc('cartera')
@@ -1983,27 +2228,28 @@ class RadiographySnapshotBuilder
         $totalColocacion = $placements->sum('colocacion') ?: 1;
 
         $buildRow = function (string $producto, string $tipo) use ($placements, $recoveries, $portfolioMain, $portfolioOtros, $portfolioReestructuras, $totalColocacion) {
-            $p  = $placements->get($producto);
-            $r  = $recoveries->get($producto);
+            $p = $placements->get($producto);
+            $r = $recoveries->get($producto);
             $pp = match ($tipo) {
                 'otro_cartera' => $portfolioOtros->firstWhere('producto', $producto),
                 'reestructura' => $portfolioReestructuras->firstWhere('producto', $producto),
-                default        => $portfolioMain->get($producto),
+                default => $portfolioMain->get($producto),
             };
-            $col = (float)($p?->colocacion ?? 0);
+            $col = (float) ($p?->colocacion ?? 0);
+
             return [
-                'producto'     => $producto,
-                'tipo'         => $tipo,
-                'operaciones'  => (int)($p?->operaciones ?? 0),
-                'colocacion'   => $col,
-                'recuperacion' => (float)($r?->recuperacion ?? 0),
-                'cartera'      => (float)($pp?->cartera ?? 0),
-                'contratos'    => (int)($pp?->contratos ?? 0),
-                'pct'          => round($col / $totalColocacion * 100, 1),
+                'producto' => $producto,
+                'tipo' => $tipo,
+                'operaciones' => (int) ($p?->operaciones ?? 0),
+                'colocacion' => $col,
+                'recuperacion' => (float) ($r?->recuperacion ?? 0),
+                'cartera' => (float) ($pp?->cartera ?? 0),
+                'contratos' => (int) ($pp?->contratos ?? 0),
+                'pct' => round($col / $totalColocacion * 100, 1),
             ];
         };
 
-        // Only show products with at least one positive monetary metric
+        // Solo se muestran productos con al menos una métrica monetaria positiva
         $operativos = $allProducts->map(fn (string $p) => $buildRow($p, 'operativo'))
             ->filter(fn ($p) => $p['colocacion'] > 0 || $p['recuperacion'] > 0 || $p['cartera'] > 0)
             ->sortByDesc('colocacion')
@@ -2026,52 +2272,60 @@ class RadiographySnapshotBuilder
 
     // ── BRANCHES ─────────────────────────────────────────────────────────────
 
+    /**
+     * Lista de sucursales del resumen persistido (PeriodBranchSummary) con cartera,
+     * vencida y recuperación por sucursal real; omite rutas/oficinas que no son sucursales reales.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  PeriodSummary  $summary  Resumen persistido.
+     * @return array<int,array> Filas por sucursal.
+     */
     private function buildBranches(Period $period, PeriodSummary $summary): array
     {
-        $realBranchNames  = $this->resolveRealBranchNormalizedNames();
+        $realBranchNames = $this->resolveRealBranchNormalizedNames();
         $recoveryByBranch = $this->getRecoveryByRealBranch();
 
-        $fromSummary = $summary->branchSummaries->map(function (PeriodBranchSummary $bs) use ($period, $realBranchNames, $recoveryByBranch) {
-            $branch  = $this->resolveBranch($bs->branch_id);
-            $m       = $bs->metrics ?? [];
-            $cartera = (float)($m['valor_cartera'] ?? 0);
-            $vencida = (float)($m['cartera_vencida'] ?? 0);
+        $fromSummary = $summary->branchSummaries->map(function (PeriodBranchSummary $bs) use ($realBranchNames, $recoveryByBranch) {
+            $branch = $this->resolveBranch($bs->branch_id);
+            $m = $bs->metrics ?? [];
+            $cartera = (float) ($m['valor_cartera'] ?? 0);
+            $vencida = (float) ($m['cartera_vencida'] ?? 0);
 
-            // Skip branches that are routes/offices, not real sucursales
-            if (!empty($realBranchNames) && $branch && !in_array($this->normalizeText($branch->name), $realBranchNames, true)) {
+            // Omite registros que son rutas/oficinas, no sucursales reales
+            if (! empty($realBranchNames) && $branch && ! in_array($this->normalizeText($branch->name), $realBranchNames, true)) {
                 return null;
             }
 
             if ($vencida === 0.0 && $cartera > 0 && $bs->branch_id) {
-                $vencida = (float) \App\Models\Portfolio::query()
+                $vencida = (float) Portfolio::query()
                     ->whereIn('period_id', $this->dataIds)
                     ->where('branch_id', $bs->branch_id)
                     ->where('days_past_due', '>', 0)
                     ->sum('past_due_balance');
             }
-            $mora   = $cartera > 0 ? round($vencida / $cartera * 100, 2) : (float)($m['mora_porcentaje'] ?? 0);
+            $mora = $cartera > 0 ? round($vencida / $cartera * 100, 2) : (float) ($m['mora_porcentaje'] ?? 0);
             $nombre = $branch?->name ?? "Sucursal #{$bs->branch_id}";
-            // Real recovery: map all route-level recoveries to this real branch
+            // Recuperación real: suma a esta sucursal real todas las recuperaciones de sus rutas
             $recuperacion = $recoveryByBranch[$this->normalizeText($nombre)]
-                ?? (float)($m['recuperacion_total'] ?? 0);
+                ?? (float) ($m['recuperacion_total'] ?? 0);
 
             return [
-                'branch_id'    => $bs->branch_id,
-                'nombre'       => $nombre,
+                'branch_id' => $bs->branch_id,
+                'nombre' => $nombre,
                 'recuperacion' => $recuperacion,
-                'colocacion'   => (float)($m['colocacion_total'] ?? 0),
-                'cartera'      => $cartera,
-                'vencida'      => $vencida,
-                'mora'         => $mora,
-                'gastos'       => (float)($m['gasto_total'] ?? 0),
+                'colocacion' => (float) ($m['colocacion_total'] ?? 0),
+                'cartera' => $cartera,
+                'vencida' => $vencida,
+                'mora' => $mora,
+                'gastos' => (float) ($m['gasto_total'] ?? 0),
             ];
         })->filter()->sortByDesc('cartera')->values()->all();
 
-        if (!empty($fromSummary)) {
+        if (! empty($fromSummary)) {
             return $fromSummary;
         }
 
-        // Fallback: build from raw tables, filtered to real branches only
+        // Respaldo: arma desde las tablas crudas, filtrado solo a sucursales reales
         $branchIds = collect()
             ->merge(Placement::query()->whereIn('period_id', $this->dataIds)->pluck('branch_id'))
             ->merge(Portfolio::query()->whereIn('period_id', $this->dataIds)->pluck('branch_id'))
@@ -2079,38 +2333,39 @@ class RadiographySnapshotBuilder
             ->filter()->unique()->values();
 
         return $branchIds->map(function ($bId) use ($realBranchNames, $recoveryByBranch) {
-            $branch  = $this->resolveBranch($bId);
+            $branch = $this->resolveBranch($bId);
 
-            // Skip routes/offices
-            if (!empty($realBranchNames) && $branch && !in_array($this->normalizeText($branch->name), $realBranchNames, true)) {
+            // Omite rutas/oficinas
+            if (! empty($realBranchNames) && $branch && ! in_array($this->normalizeText($branch->name), $realBranchNames, true)) {
                 return null;
             }
 
-            $nombre  = $branch?->name ?? "Sucursal #{$bId}";
+            $nombre = $branch?->name ?? "Sucursal #{$bId}";
             $cartera = (float) Portfolio::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->sum('balance');
             $vencidaPdb = (float) Portfolio::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->where('days_past_due', '>', 0)->sum('past_due_balance');
             $vencida = $vencidaPdb > 0 ? $vencidaPdb : (float) Portfolio::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->where('days_past_due', '>', 0)->sum('balance');
-            // Use mapped recovery; fall back to direct branch query only if not found in map
+            // Usa la recuperación mapeada; solo si no está en el mapa consulta directo por sucursal
             $recuperacion = $recoveryByBranch[$this->normalizeText($nombre)]
                 ?? (float) Recovery::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->sum('total_amount');
 
             return [
-                'branch_id'    => $bId,
-                'nombre'       => $nombre,
+                'branch_id' => $bId,
+                'nombre' => $nombre,
                 'recuperacion' => $recuperacion,
-                'colocacion'   => (float) Placement::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->sum('amount'),
-                'cartera'      => $cartera,
-                'vencida'      => $vencida,
-                'mora'         => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
-                'gastos'       => (float) Expense::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->sum('amount'),
+                'colocacion' => (float) Placement::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->sum('amount'),
+                'cartera' => $cartera,
+                'vencida' => $vencida,
+                'mora' => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
+                'gastos' => (float) Expense::query()->whereIn('period_id', $this->dataIds)->where('branch_id', $bId)->sum('amount'),
             ];
         })->filter()->sortByDesc('cartera')->values()->all();
     }
 
     /**
-     * Aggregates fact_recoveries by real branch, mapping route/office branch names
-     * to their parent real sucursal via BranchResolverService::resolveRealBranchFromRoute().
-     * Returns [normalizedRealBranchName => totalRecovery].
+     * Agrega fact_recoveries por sucursal real, convirtiendo rutas/oficinas a su
+     * sucursal padre con BranchResolverService::resolveRealBranchFromRoute().
+     *
+     * @return array<string,float> [nombre normalizado de sucursal real => recuperación total].
      */
     private function getRecoveryByRealBranch(): array
     {
@@ -2125,9 +2380,9 @@ class RadiographySnapshotBuilder
 
         $byRealBranch = [];
         foreach ($rows as $r) {
-            // Skip routes that can't be mapped to a real branch — never expose route names
+            // Omite rutas que no se pueden mapear a sucursal real — nunca se exponen nombres de ruta
             $real = $resolver->resolveRealBranchFromRoute($r->branch_name);
-            if (!$real) {
+            if (! $real) {
                 continue;
             }
             $key = $this->normalizeText($real);
@@ -2139,6 +2394,13 @@ class RadiographySnapshotBuilder
 
     // ── PROMOTERS ──────────────────────────────────────────────────────────
 
+    /**
+     * Gestores/promotores con colocación (operaciones y monto) y su sucursal, a partir
+     * de fact_placements, con su ruta, cartera y porcentaje de mora.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas por gestor.
+     */
     private function buildPromoters(Period $period): array
     {
         $placementRows = DB::table('fact_placements as p')
@@ -2195,28 +2457,28 @@ class RadiographySnapshotBuilder
             $p = $placementRows->get($key);
             $po = $portfolioRows->get($key);
 
-            $nombre   = $p?->gestor ?? $po?->gestor ?? $key;
-            $codigo   = ($p?->codigo ?: null) ?? ($po?->codigo ?: null);
+            $nombre = $p?->gestor ?? $po?->gestor ?? $key;
+            $codigo = ($p?->codigo ?: null) ?? ($po?->codigo ?: null);
             $sucursal = $p?->sucursal ?? $po?->sucursal ?? '—';
-            $ruta     = $po?->ruta ?? null;
+            $ruta = $po?->ruta ?? null;
 
-            $cartera = (float)($po?->cartera ?? 0);
-            $vencida = (float)($po?->vencida ?? 0);
+            $cartera = (float) ($po?->cartera ?? 0);
+            $vencida = (float) ($po?->vencida ?? 0);
 
             return [
-                'gestor'      => $nombre,
-                'codigo'      => $codigo,
-                'sucursal'    => $sucursal,
-                'ruta'        => $ruta,
-                'operaciones' => (int)($p?->operaciones ?? 0),
-                'colocacion'  => (float)($p?->colocacion ?? 0),
-                'cartera'     => $cartera,
-                'mora'        => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
+                'gestor' => $nombre,
+                'codigo' => $codigo,
+                'sucursal' => $sucursal,
+                'ruta' => $ruta,
+                'operaciones' => (int) ($p?->operaciones ?? 0),
+                'colocacion' => (float) ($p?->colocacion ?? 0),
+                'cartera' => $cartera,
+                'mora' => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
             ];
         })
-        ->sortByDesc('colocacion')
-        ->values()
-        ->all();
+            ->sortByDesc('colocacion')
+            ->values()
+            ->all();
     }
 
     // ── PORTFOLIO BUCKETS ────────────────────────────────────────────────────
@@ -2228,6 +2490,9 @@ class RadiographySnapshotBuilder
      * $row: fila de branchCalcGlobal (general) o de branchCalcBranches (una sola sucursal,
      * ver applyBranchScope()) — mismo shape, mismos campos mora_X_Y/mora_X_Y_cnt, así que
      * el mismo cálculo sirve para ambos alcances sin reescribirlo.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Tramos de mora con cartera vencida y conteos.
      */
     private function buildPortfolioBuckets(Period $period, ?array $row = null): array
     {
@@ -2245,23 +2510,23 @@ class RadiographySnapshotBuilder
         ];
 
         $carteraTotal = (float) ($g['valor_cartera'] ?? 0);
-        $moraTotal    = 0.0;
+        $moraTotal = 0.0;
         $cntMoraTotal = 0;
-        $results      = [];
+        $results = [];
 
         foreach ($defs as $d) {
             $balance = (float) ($g[$d['key']] ?? 0);
-            $cnt     = (int) ($g["{$d['key']}_cnt"] ?? 0);
-            $moraTotal    += $balance;
+            $cnt = (int) ($g["{$d['key']}_cnt"] ?? 0);
+            $moraTotal += $balance;
             $cntMoraTotal += $cnt;
             if ($cnt === 0) {
                 continue;
             }
             $results[] = [
-                'label'     => $d['label'],
+                'label' => $d['label'],
                 'contratos' => $cnt,
-                'balance'   => $balance,
-                'vencida'   => $balance, // el contrato completo (Saldo actual) se bucketiza según días vencido
+                'balance' => $balance,
+                'vencida' => $balance, // el contrato completo (Saldo actual) se bucketiza según días vencido
             ];
         }
 
@@ -2269,10 +2534,10 @@ class RadiographySnapshotBuilder
         $balAlCorriente = $carteraTotal - $moraTotal;
         if ($cntAlCorriente > 0) {
             array_unshift($results, [
-                'label'     => 'Al corriente',
+                'label' => 'Al corriente',
                 'contratos' => $cntAlCorriente,
-                'balance'   => $balAlCorriente,
-                'vencida'   => 0.0,
+                'balance' => $balAlCorriente,
+                'vencida' => 0.0,
             ]);
         }
 
@@ -2281,6 +2546,13 @@ class RadiographySnapshotBuilder
 
     // ── EXPENSES DETAIL ──────────────────────────────────────────────────────
 
+    /**
+     * Detalle de gastos del periodo: total y agrupaciones por categoría, concepto,
+     * sucursal, empleado y fuente, usando paid_amount o, si es cero, amount.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Detalle de gastos.
+     */
     private function buildExpensesDetail(Period $period): array
     {
         $amtExpr = 'COALESCE(NULLIF(e.paid_amount, 0), e.amount)';
@@ -2296,7 +2568,7 @@ class RadiographySnapshotBuilder
             ->groupBy('e.category')
             ->orderByDesc('total')
             ->get()
-            ->map(fn ($r) => ['categoria' => $r->categoria, 'count' => (int)$r->cnt, 'total' => (float)$r->total])
+            ->map(fn ($r) => ['categoria' => $r->categoria, 'count' => (int) $r->cnt, 'total' => (float) $r->total])
             ->values()->all();
 
         $byConcept = DB::table('fact_expenses as e')
@@ -2306,7 +2578,7 @@ class RadiographySnapshotBuilder
             ->orderByDesc('total')
             ->limit(50)
             ->get()
-            ->map(fn ($r) => ['concepto' => $r->concepto, 'count' => (int)$r->cnt, 'total' => (float)$r->total])
+            ->map(fn ($r) => ['concepto' => $r->concepto, 'count' => (int) $r->cnt, 'total' => (float) $r->total])
             ->values()->all();
 
         $byBranch = DB::table('fact_expenses as e')
@@ -2316,7 +2588,7 @@ class RadiographySnapshotBuilder
             ->groupBy('e.branch_id', 'b.name')
             ->orderByDesc('total')
             ->get()
-            ->map(fn ($r) => ['sucursal' => $r->sucursal, 'count' => (int)$r->cnt, 'total' => (float)$r->total])
+            ->map(fn ($r) => ['sucursal' => $r->sucursal, 'count' => (int) $r->cnt, 'total' => (float) $r->total])
             ->values()->all();
 
         $byEmployee = DB::table('fact_expenses as e')
@@ -2328,7 +2600,7 @@ class RadiographySnapshotBuilder
             ->orderByDesc('total')
             ->limit(50)
             ->get()
-            ->map(fn ($r) => ['empleado' => $r->empleado, 'total' => (float)$r->total])
+            ->map(fn ($r) => ['empleado' => $r->empleado, 'total' => (float) $r->total])
             ->values()->all();
 
         $bySource = DB::table('fact_expenses as e')
@@ -2339,7 +2611,7 @@ class RadiographySnapshotBuilder
             ->groupBy('e.report_upload_id', 'ds.id', 'ds.code')
             ->orderByDesc('total')
             ->get()
-            ->map(fn ($r) => ['fuente' => $r->fuente, 'count' => (int)$r->cnt, 'total' => (float)$r->total])
+            ->map(fn ($r) => ['fuente' => $r->fuente, 'count' => (int) $r->cnt, 'total' => (float) $r->total])
             ->values()->all();
 
         return compact('total', 'byCategory', 'byConcept', 'byBranch', 'byEmployee', 'bySource');
@@ -2347,6 +2619,18 @@ class RadiographySnapshotBuilder
 
     // ── EMPLOYEES + GESTORES ─────────────────────────────────────────────────
 
+    /**
+     * Construye las filas CANÓNICAS por colaborador/gestor del periodo: fusiona
+     * variantes de escritura del mismo nombre (EmployeeNameCanonicalizer + mapa de
+     * fusión) y separa homónimos con rechazo explícito; reúne por persona nómina NOI,
+     * colocación, recuperación, cartera, vencida, productos y gastos, y guarda los
+     * employee_id fusionados en _employee_ids. Registra conflictos de identidad y el
+     * mapa de fusión para auditoría (lastIdentityConflicts/lastGestorMergeMap).
+     * Es la base de applyEmployeeScope(), del Excel de colaboradores y de la API.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array{rows: array<int,array>, merged_incidents: array} Filas canónicas e incidencias de fusión.
+     */
     private function buildEmployeesGestores(Period $period): array
     {
         $rawNameByNorm = []; // UPPERCASE display name per normalized lowercase key
@@ -2371,9 +2655,13 @@ class RadiographySnapshotBuilder
         $homonymKeyById = $this->homonymSplitKeys();
         $linkEmployeeId = function (?string $rawName, $id) use (&$employeeIdsByNorm, $homonymKeyById) {
             $id = (int) $id;
-            if ($id <= 0) return;
+            if ($id <= 0) {
+                return;
+            }
             $norm = $this->canonicalizer->normalize($rawName ?? '');
-            if ($norm === '') return;
+            if ($norm === '') {
+                return;
+            }
             $employeeIdsByNorm[$homonymKeyById[$id] ?? $norm][] = $id;
         };
 
@@ -2389,27 +2677,29 @@ class RadiographySnapshotBuilder
         if ($mesHasPayments) {
             foreach ($mesRows as $mes) {
                 $norm = $this->canonicalizer->normalize($mes->employee?->full_name ?? '');
-                if (!$norm) continue;
+                if (! $norm) {
+                    continue;
+                }
                 $norm = $homonymKeyById[(int) $mes->employee_id] ?? $norm;
                 $rawNameByNorm[$norm] = $mes->employee?->full_name ?? '';
                 $linkEmployeeId($mes->employee?->full_name, $mes->employee_id);
                 if (isset($payroll[$norm])) {
                     // Same employee in both fiscal + non-fiscal: accumulate, don't overwrite
-                    $payroll[$norm]['pagos']      += (float)$mes->total_payments;
-                    $payroll[$norm]['bonos']      += (float)$mes->total_bonuses;
-                    $payroll[$norm]['descuentos'] += (float)$mes->total_discounts;
-                    $payroll[$norm]['gastos']     += (float)$mes->total_expenses;
-                    $payroll[$norm]['neto']       += (float)$mes->net_amount;
+                    $payroll[$norm]['pagos'] += (float) $mes->total_payments;
+                    $payroll[$norm]['bonos'] += (float) $mes->total_bonuses;
+                    $payroll[$norm]['descuentos'] += (float) $mes->total_discounts;
+                    $payroll[$norm]['gastos'] += (float) $mes->total_expenses;
+                    $payroll[$norm]['neto'] += (float) $mes->net_amount;
                 } else {
                     $payroll[$norm] = [
-                        'name'       => $mes->employee?->full_name ?? 'Sin empleado',
-                        'code'       => null,
+                        'name' => $mes->employee?->full_name ?? 'Sin empleado',
+                        'code' => null,
                         'branch_src' => $mes->branch?->name ?? null,
-                        'pagos'      => (float)$mes->total_payments,
-                        'bonos'      => (float)$mes->total_bonuses,
-                        'descuentos' => (float)$mes->total_discounts,
-                        'gastos'     => (float)$mes->total_expenses,
-                        'neto'       => (float)$mes->net_amount,
+                        'pagos' => (float) $mes->total_payments,
+                        'bonos' => (float) $mes->total_bonuses,
+                        'descuentos' => (float) $mes->total_discounts,
+                        'gastos' => (float) $mes->total_expenses,
+                        'neto' => (float) $mes->net_amount,
                     ];
                 }
             }
@@ -2418,7 +2708,7 @@ class RadiographySnapshotBuilder
                 ->join('employees as e', 'n.employee_id', '=', 'e.id')
                 ->leftJoin('employee_branch_assignments as eba', function ($j) use ($period) {
                     $j->on('eba.employee_id', '=', 'n.employee_id')
-                      ->where('eba.period_id', '=', $period->id);
+                        ->where('eba.period_id', '=', $period->id);
                 })
                 ->leftJoin('branches as b', 'eba.branch_id', '=', 'b.id')
                 ->whereIn('n.period_id', $this->dataIds)
@@ -2439,25 +2729,27 @@ class RadiographySnapshotBuilder
 
             foreach ($noiRows as $row) {
                 $norm = $this->canonicalizer->normalize($row->name ?? '');
-                if (!$norm) continue;
+                if (! $norm) {
+                    continue;
+                }
                 $norm = $homonymKeyById[(int) ($row->employee_id ?? 0)] ?? $norm;
                 $rawNameByNorm[$norm] ??= $row->name ?? '';
-                $neto = (float)$row->pagos + (float)$row->bonos - (float)$row->descuentos;
+                $neto = (float) $row->pagos + (float) $row->bonos - (float) $row->descuentos;
                 if (isset($payroll[$norm])) {
-                    $payroll[$norm]['pagos']      += (float)$row->pagos;
-                    $payroll[$norm]['bonos']      += (float)$row->bonos;
-                    $payroll[$norm]['descuentos'] += (float)$row->descuentos;
-                    $payroll[$norm]['neto']       += $neto;
+                    $payroll[$norm]['pagos'] += (float) $row->pagos;
+                    $payroll[$norm]['bonos'] += (float) $row->bonos;
+                    $payroll[$norm]['descuentos'] += (float) $row->descuentos;
+                    $payroll[$norm]['neto'] += $neto;
                 } else {
                     $payroll[$norm] = [
-                        'name'       => $row->name,
-                        'code'       => null,
+                        'name' => $row->name,
+                        'code' => null,
                         'branch_src' => $row->branch ?? null,
-                        'pagos'      => (float)$row->pagos,
-                        'bonos'      => (float)$row->bonos,
-                        'descuentos' => (float)$row->descuentos,
-                        'gastos'     => 0.0,
-                        'neto'       => $neto,
+                        'pagos' => (float) $row->pagos,
+                        'bonos' => (float) $row->bonos,
+                        'descuentos' => (float) $row->descuentos,
+                        'gastos' => 0.0,
+                        'neto' => $neto,
                     ];
                 }
             }
@@ -2499,25 +2791,27 @@ class RadiographySnapshotBuilder
             ->get()
             ->each(function ($row) use (&$gestorPlacements, &$placementsByProduct, &$rawNameByNorm) {
                 $norm = $this->canonicalizer->normalize($row->gestor ?? '');
-                if (!$norm) return;
+                if (! $norm) {
+                    return;
+                }
                 $rawNameByNorm[$norm] ??= mb_strtoupper(trim($row->gestor ?? ''));
-                if (!isset($gestorPlacements[$norm])) {
+                if (! isset($gestorPlacements[$norm])) {
                     $gestorPlacements[$norm] = [
-                        'gestor'      => $row->gestor,
-                        'codigo'      => $row->codigo,
-                        'sucursal'    => $row->sucursal,
-                        'operaciones' => (int)$row->operaciones,
-                        'colocacion'  => (float)$row->colocacion,
+                        'gestor' => $row->gestor,
+                        'codigo' => $row->codigo,
+                        'sucursal' => $row->sucursal,
+                        'operaciones' => (int) $row->operaciones,
+                        'colocacion' => (float) $row->colocacion,
                     ];
                 } else {
-                    $gestorPlacements[$norm]['operaciones'] += (int)$row->operaciones;
-                    $gestorPlacements[$norm]['colocacion']  += (float)$row->colocacion;
+                    $gestorPlacements[$norm]['operaciones'] += (int) $row->operaciones;
+                    $gestorPlacements[$norm]['colocacion'] += (float) $row->colocacion;
                     $gestorPlacements[$norm]['sucursal'] ??= $row->sucursal;
                 }
 
                 $placementsByProduct[$norm][$row->producto] ??= ['producto' => $row->producto, 'operaciones' => 0, 'colocacion' => 0.0];
                 $placementsByProduct[$norm][$row->producto]['operaciones'] += (int) $row->operaciones;
-                $placementsByProduct[$norm][$row->producto]['colocacion']  += (float) $row->colocacion;
+                $placementsByProduct[$norm][$row->producto]['colocacion'] += (float) $row->colocacion;
             });
 
         $portfolioByNorm = [];
@@ -2525,7 +2819,7 @@ class RadiographySnapshotBuilder
             ->leftJoin('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $this->closingDataIds)
             ->where(fn ($q) => $q->whereNotNull('po.promoter_name')->orWhereNotNull('po.promoter_code'))
-            ->selectRaw("
+            ->selectRaw('
                 COALESCE(po.promoter_name, po.promoter_code) as raw_name,
                 b.name as sucursal, po.route_name as ruta,
                 SUM(po.balance) as cartera,
@@ -2533,21 +2827,23 @@ class RadiographySnapshotBuilder
                     COALESCE(po.capital_due, 0) + COALESCE(po.interes_atrasado, 0) + COALESCE(po.impuesto_atrasado, 0)
                     + COALESCE(po.saldo_interes_moratorio, 0) + COALESCE(po.saldo_impuesto_interes_moratorio, 0)
                 ELSE 0 END) as vencida
-            ")
+            ')
             ->groupBy('po.promoter_name', 'po.promoter_code', 'b.name', 'po.route_name')
             ->get();
 
         foreach ($poRows as $po) {
             $norm = $this->canonicalizer->normalize($po->raw_name ?? '');
-            if (!$norm) continue;
+            if (! $norm) {
+                continue;
+            }
             $rawNameByNorm[$norm] ??= mb_strtoupper(trim($po->raw_name ?? ''));
-            if (!isset($portfolioByNorm[$norm])) {
+            if (! isset($portfolioByNorm[$norm])) {
                 $portfolioByNorm[$norm] = ['cartera' => 0.0, 'vencida' => 0.0, 'sucursal' => null, 'ruta' => null];
             }
-            $portfolioByNorm[$norm]['cartera'] += (float)$po->cartera;
-            $portfolioByNorm[$norm]['vencida'] += (float)$po->vencida;
+            $portfolioByNorm[$norm]['cartera'] += (float) $po->cartera;
+            $portfolioByNorm[$norm]['vencida'] += (float) $po->vencida;
             $portfolioByNorm[$norm]['sucursal'] ??= $po->sucursal;
-            $portfolioByNorm[$norm]['ruta']     ??= $po->ruta;
+            $portfolioByNorm[$norm]['ruta'] ??= $po->ruta;
         }
 
         // Mora por bucket (5 columnas SEPARADAS, no combinadas) por promotor canónico — misma
@@ -2555,7 +2851,7 @@ class RadiographySnapshotBuilder
         // pero integrada en ESTE pipeline de fuzzy-merge para que nunca pueda divergir de
         // 'cartera'/'vencida' calculados arriba en $portfolioByNorm. SUM(buckets != al_corriente)
         // == vencida por construcción (misma partición de filas, ver applyEmployeeScope()).
-        $moraBucketDefs    = $this->moraBucketDefs();
+        $moraBucketDefs = $this->moraBucketDefs();
         $moraBucketsByNorm = [];
         DB::table('fact_portfolios as po')
             ->whereIn('po.period_id', $this->closingDataIds)
@@ -2575,15 +2871,22 @@ class RadiographySnapshotBuilder
             ->get()
             ->each(function ($row) use (&$moraBucketsByNorm, &$rawNameByNorm, $moraBucketDefs) {
                 $norm = $this->canonicalizer->normalize($row->raw_name ?? '');
-                if (!$norm) return;
+                if (! $norm) {
+                    return;
+                }
                 $rawNameByNorm[$norm] ??= mb_strtoupper(trim($row->raw_name ?? ''));
 
                 $dpd = (int) $row->days_past_due;
                 $bucketKey = null;
                 foreach ($moraBucketDefs as $def) {
-                    if ($dpd >= $def['min'] && $dpd <= $def['max']) { $bucketKey = $def['key']; break; }
+                    if ($dpd >= $def['min'] && $dpd <= $def['max']) {
+                        $bucketKey = $def['key'];
+                        break;
+                    }
                 }
-                if (!$bucketKey) return;
+                if (! $bucketKey) {
+                    return;
+                }
 
                 $moraBucketsByNorm[$norm][$bucketKey] ??= [
                     'contratos' => 0, 'monto' => 0.0, 'capital_due' => 0.0, 'interes_atrasado' => 0.0,
@@ -2594,11 +2897,11 @@ class RadiographySnapshotBuilder
                 if ($bucketKey === 'al_corriente') {
                     $b['monto'] += (float) $row->balance;
                 } else {
-                    $b['capital_due']                       += (float) $row->capital_due;
-                    $b['interes_atrasado']                   += (float) $row->interes_atrasado;
-                    $b['impuesto_atrasado']                  += (float) $row->impuesto_atrasado;
-                    $b['saldo_interes_moratorio']             += (float) $row->saldo_interes_moratorio;
-                    $b['saldo_impuesto_interes_moratorio']    += (float) $row->saldo_impuesto_interes_moratorio;
+                    $b['capital_due'] += (float) $row->capital_due;
+                    $b['interes_atrasado'] += (float) $row->interes_atrasado;
+                    $b['impuesto_atrasado'] += (float) $row->impuesto_atrasado;
+                    $b['saldo_interes_moratorio'] += (float) $row->saldo_interes_moratorio;
+                    $b['saldo_impuesto_interes_moratorio'] += (float) $row->saldo_impuesto_interes_moratorio;
                     $b['monto'] += (float) $row->capital_due + (float) $row->interes_atrasado + (float) $row->impuesto_atrasado
                         + (float) $row->saldo_interes_moratorio + (float) $row->saldo_impuesto_interes_moratorio;
                 }
@@ -2612,8 +2915,8 @@ class RadiographySnapshotBuilder
         // este total — se corrige aquí, en la fuente, no inventando un total distinto para el
         // desglose.
         $recoveryByNorm = [];
-        ['recovery' => $exclRecoveryNorm] = \App\Services\Radiography\BranchRadiographyCalculator::recoveryExclusionSql();
-        ['components' => $exclComponents] = \App\Services\Radiography\BranchRadiographyCalculator::recoveryExclusionSql();
+        ['recovery' => $exclRecoveryNorm] = BranchRadiographyCalculator::recoveryExclusionSql();
+        ['components' => $exclComponents] = BranchRadiographyCalculator::recoveryExclusionSql();
         // Fase 7.4 (rendimiento, 15-oct-2026) — las TRES agregaciones por promotor de
         // abajo (recuperación total, ingreso base EBITDA y componentes) tenían el MISMO
         // WHERE y el MISMO GROUP BY: eran tres barridos completos de fact_recoveries
@@ -2646,7 +2949,7 @@ class RadiographySnapshotBuilder
                 $norm = $this->canonicalizer->normalize($r->promoter_name);
                 if ($norm) {
                     $rawNameByNorm[$norm] ??= mb_strtoupper(trim($r->promoter_name));
-                    $recoveryByNorm[$norm] = ($recoveryByNorm[$norm] ?? 0.0) + (float)$r->recuperacion;
+                    $recoveryByNorm[$norm] = ($recoveryByNorm[$norm] ?? 0.0) + (float) $r->recuperacion;
                 }
             });
 
@@ -2659,17 +2962,19 @@ class RadiographySnapshotBuilder
         $promoterRecoveryRows
             ->each(function ($r) use (&$ingresoBaseByNorm, &$rawNameByNorm) {
                 $norm = $this->canonicalizer->normalize($r->promoter_name);
-                if (!$norm) return;
+                if (! $norm) {
+                    return;
+                }
                 $rawNameByNorm[$norm] ??= mb_strtoupper(trim($r->promoter_name));
                 // Solo las 7 columnas que esta consulta traía antes (ingresoEbitdaBaseFor() no lee otras).
                 $ingresoBaseByNorm[$norm] = ($ingresoBaseByNorm[$norm] ?? 0.0)
-                    + \App\Services\Radiography\BranchRadiographyCalculator::ingresoEbitdaBaseFor([
-                        'interes_recuperado'      => $r->interes_recuperado,
-                        'impuesto_recuperado'     => $r->impuesto_recuperado,
-                        'charges'                 => $r->charges,
-                        'cargos_adicionales'      => $r->cargos_adicionales,
-                        'excedente_recuperado'    => $r->excedente_recuperado,
-                        'comision_apertura'       => $r->comision_apertura,
+                    + BranchRadiographyCalculator::ingresoEbitdaBaseFor([
+                        'interes_recuperado' => $r->interes_recuperado,
+                        'impuesto_recuperado' => $r->impuesto_recuperado,
+                        'charges' => $r->charges,
+                        'cargos_adicionales' => $r->cargos_adicionales,
+                        'excedente_recuperado' => $r->excedente_recuperado,
+                        'comision_apertura' => $r->comision_apertura,
                         'seguro_crece_reconocido' => $r->seguro_crece_reconocido,
                     ]);
             });
@@ -2684,21 +2989,23 @@ class RadiographySnapshotBuilder
         $promoterRecoveryRows
             ->each(function ($r) use (&$recoveryComponentsByNorm, &$rawNameByNorm) {
                 $norm = $this->canonicalizer->normalize($r->promoter_name);
-                if (!$norm) return;
+                if (! $norm) {
+                    return;
+                }
                 $rawNameByNorm[$norm] ??= mb_strtoupper(trim($r->promoter_name));
                 $recoveryComponentsByNorm[$norm] ??= [
                     'capital_recuperado' => 0.0, 'interes_recuperado' => 0.0, 'impuesto_recuperado' => 0.0,
                     'charges' => 0.0, 'cargos_adicionales' => 0.0, 'excedente_recuperado' => 0.0,
                     'comision_apertura' => 0.0, 'cargos_inicio' => 0.0, 'seguro_crece_reconocido' => 0.0,
                 ];
-                $recoveryComponentsByNorm[$norm]['capital_recuperado']      += (float) $r->capital_recuperado;
-                $recoveryComponentsByNorm[$norm]['interes_recuperado']      += (float) $r->interes_recuperado;
-                $recoveryComponentsByNorm[$norm]['impuesto_recuperado']     += (float) $r->impuesto_recuperado;
-                $recoveryComponentsByNorm[$norm]['charges']                 += (float) $r->charges;
-                $recoveryComponentsByNorm[$norm]['cargos_adicionales']      += (float) $r->cargos_adicionales;
-                $recoveryComponentsByNorm[$norm]['excedente_recuperado']    += (float) $r->excedente_recuperado;
-                $recoveryComponentsByNorm[$norm]['comision_apertura']       += (float) $r->comision_apertura;
-                $recoveryComponentsByNorm[$norm]['cargos_inicio']           += (float) $r->cargos_inicio;
+                $recoveryComponentsByNorm[$norm]['capital_recuperado'] += (float) $r->capital_recuperado;
+                $recoveryComponentsByNorm[$norm]['interes_recuperado'] += (float) $r->interes_recuperado;
+                $recoveryComponentsByNorm[$norm]['impuesto_recuperado'] += (float) $r->impuesto_recuperado;
+                $recoveryComponentsByNorm[$norm]['charges'] += (float) $r->charges;
+                $recoveryComponentsByNorm[$norm]['cargos_adicionales'] += (float) $r->cargos_adicionales;
+                $recoveryComponentsByNorm[$norm]['excedente_recuperado'] += (float) $r->excedente_recuperado;
+                $recoveryComponentsByNorm[$norm]['comision_apertura'] += (float) $r->comision_apertura;
+                $recoveryComponentsByNorm[$norm]['cargos_inicio'] += (float) $r->cargos_inicio;
                 $recoveryComponentsByNorm[$norm]['seguro_crece_reconocido'] += (float) $r->seguro_crece_reconocido;
             });
 
@@ -2717,7 +3024,9 @@ class RadiographySnapshotBuilder
             ->get()
             ->each(function ($r) use (&$recoveryByProductNorm, &$rawNameByNorm) {
                 $norm = $this->canonicalizer->normalize($r->promoter_name);
-                if (!$norm) return;
+                if (! $norm) {
+                    return;
+                }
                 $rawNameByNorm[$norm] ??= mb_strtoupper(trim($r->promoter_name));
                 $recoveryByProductNorm[$norm][$r->producto] ??= ['producto' => $r->producto, 'recuperacion' => 0.0];
                 $recoveryByProductNorm[$norm][$r->producto]['recuperacion'] += (float) $r->recuperacion;
@@ -2736,7 +3045,7 @@ class RadiographySnapshotBuilder
                 if ($norm) {
                     $norm = $homonymKeyById[(int) $ex->employee_id] ?? $norm;
                     $rawNameByNorm[$norm] ??= mb_strtoupper(trim($ex->full_name ?? ''));
-                    $expensesByNorm[$norm] = ($expensesByNorm[$norm] ?? 0.0) + (float)$ex->gastos;
+                    $expensesByNorm[$norm] = ($expensesByNorm[$norm] ?? 0.0) + (float) $ex->gastos;
                     $linkEmployeeId($ex->full_name, $ex->employee_id);
                 }
             });
@@ -2769,30 +3078,32 @@ class RadiographySnapshotBuilder
         // Las llaves de homónimos separados ("nombre#id") nunca entran a la fusión por
         // variante de escritura: son personas distintas por decisión explícita.
         $isSplitKey = fn (string $k) => str_contains($k, '#');
-        $mergeMap        = $this->canonicalizer->buildCanonicalMap(
-            array_values(array_filter($allUniqueKeys, fn ($k) => !$isSplitKey($k))),
-            array_values(array_filter(array_keys($payroll), fn ($k) => !$isSplitKey($k))),
+        $mergeMap = $this->canonicalizer->buildCanonicalMap(
+            array_values(array_filter($allUniqueKeys, fn ($k) => ! $isSplitKey($k))),
+            array_values(array_filter(array_keys($payroll), fn ($k) => ! $isSplitKey($k))),
         );
         $this->lastGestorMergeMap = $mergeMap;
         $mergedIncidents = [];
         foreach (array_unique(array_map(fn ($k) => strstr($k, '#', true), array_filter($allUniqueKeys, $isSplitKey))) as $baseName) {
             $mergedIncidents[] = [
-                'type'     => 'homonimo_separado',
+                'type' => 'homonimo_separado',
                 'severity' => 'warning',
-                'message'  => 'Homónimos separados: "' . mb_strtoupper($baseName) . '" corresponde a más de una persona (rechazo de fusión registrado). Nómina y gastos se muestran por persona; colocación, cartera y recuperación vienen solo por nombre de gestor y se quedan en la primera persona hasta conciliarlas.',
+                'message' => 'Homónimos separados: "'.mb_strtoupper($baseName).'" corresponde a más de una persona (rechazo de fusión registrado). Nómina y gastos se muestran por persona; colocación, cartera y recuperación vienen solo por nombre de gestor y se quedan en la primera persona hasta conciliarlas.',
             ];
         }
 
         foreach ($mergeMap as $key => $canonical) {
-            if ($key === $canonical) continue;
+            if ($key === $canonical) {
+                continue;
+            }
 
             $mergedIncidents[] = [
-                'type'     => 'nombre_fusionado',
+                'type' => 'nombre_fusionado',
                 'severity' => 'info',
-                'message'  => 'Colaborador fusionado por variante de escritura: "' . mb_strtoupper($key) . '" → "' . mb_strtoupper($canonical) . '".',
+                'message' => 'Colaborador fusionado por variante de escritura: "'.mb_strtoupper($key).'" → "'.mb_strtoupper($canonical).'".',
             ];
 
-            if (isset($payroll[$key]) && !isset($payroll[$canonical])) {
+            if (isset($payroll[$key]) && ! isset($payroll[$canonical])) {
                 $payroll[$canonical] = $payroll[$key];
             }
             unset($payroll[$key]);
@@ -2800,8 +3111,8 @@ class RadiographySnapshotBuilder
             if (isset($gestorPlacements[$key])) {
                 if (isset($gestorPlacements[$canonical])) {
                     $gestorPlacements[$canonical]['operaciones'] += $gestorPlacements[$key]['operaciones'];
-                    $gestorPlacements[$canonical]['colocacion']  += $gestorPlacements[$key]['colocacion'];
-                    $gestorPlacements[$canonical]['sucursal']    ??= $gestorPlacements[$key]['sucursal'];
+                    $gestorPlacements[$canonical]['colocacion'] += $gestorPlacements[$key]['colocacion'];
+                    $gestorPlacements[$canonical]['sucursal'] ??= $gestorPlacements[$key]['sucursal'];
                 } else {
                     $gestorPlacements[$canonical] = $gestorPlacements[$key];
                 }
@@ -2812,7 +3123,7 @@ class RadiographySnapshotBuilder
                 foreach ($placementsByProduct[$key] as $producto => $data) {
                     if (isset($placementsByProduct[$canonical][$producto])) {
                         $placementsByProduct[$canonical][$producto]['operaciones'] += $data['operaciones'];
-                        $placementsByProduct[$canonical][$producto]['colocacion']  += $data['colocacion'];
+                        $placementsByProduct[$canonical][$producto]['colocacion'] += $data['colocacion'];
                     } else {
                         $placementsByProduct[$canonical][$producto] = $data;
                     }
@@ -2823,7 +3134,7 @@ class RadiographySnapshotBuilder
             if (isset($portfolioByNorm[$key])) {
                 if (isset($portfolioByNorm[$canonical])) {
                     $portfolioByNorm[$canonical]['cartera'] += $portfolioByNorm[$key]['cartera'];
-                    $portfolioByNorm[$canonical]['vencida']  += $portfolioByNorm[$key]['vencida'];
+                    $portfolioByNorm[$canonical]['vencida'] += $portfolioByNorm[$key]['vencida'];
                     $portfolioByNorm[$canonical]['sucursal'] ??= $portfolioByNorm[$key]['sucursal'];
                 } else {
                     $portfolioByNorm[$canonical] = $portfolioByNorm[$key];
@@ -2920,20 +3231,20 @@ class RadiographySnapshotBuilder
             $rawNameByNorm, $placementsByProduct, $moraBucketsByNorm, $recoveryComponentsByNorm, $recoveryByProductNorm,
             $employeeIdsByNorm,
         ) {
-            $emp    = $payroll[$key] ?? null;
-            $ges    = $gestorPlacements[$key] ?? null;
-            $po     = $portfolioByNorm[$key] ?? null;
-            $rec    = $recoveryByNorm[$key] ?? 0.0;
+            $emp = $payroll[$key] ?? null;
+            $ges = $gestorPlacements[$key] ?? null;
+            $po = $portfolioByNorm[$key] ?? null;
+            $rec = $recoveryByNorm[$key] ?? 0.0;
             $gasEmp = $expensesByNorm[$key] ?? ($emp['gastos'] ?? 0.0);
             $ingresoBase = $ingresoBaseByNorm[$key] ?? 0.0;
 
-            $name   = $emp['name'] ?? $ges['gestor'] ?? $rawNameByNorm[$key] ?? mb_strtoupper($key);
-            $code   = ($emp['code'] ?? null) ?: ($ges['codigo'] ?? null) ?: null;
+            $name = $emp['name'] ?? $ges['gestor'] ?? $rawNameByNorm[$key] ?? mb_strtoupper($key);
+            $code = ($emp['code'] ?? null) ?: ($ges['codigo'] ?? null) ?: null;
             $branch = ($emp['branch_src'] ?? null) ?? ($ges['sucursal'] ?? null) ?? ($po['sucursal'] ?? null);
-            $route  = $po['ruta'] ?? null;
+            $route = $po['ruta'] ?? null;
 
-            $cartera = (float)($po['cartera'] ?? 0);
-            $vencida = (float)($po['vencida'] ?? 0);
+            $cartera = (float) ($po['cartera'] ?? 0);
+            $vencida = (float) ($po['vencida'] ?? 0);
 
             // Residual "otros_recuperacion" — MISMA fórmula que accumulateRecuperacion(): lo que
             // no explica ningún componente nombrado. Se calcula aquí (no en la query) porque
@@ -2952,21 +3263,21 @@ class RadiographySnapshotBuilder
             }
 
             return [
-                'name'         => $name,
-                'code'         => $code,
-                'branch'       => $branch ?? 'Sin sucursal',
-                'route'        => $route,
-                'pagos'        => $emp['pagos'] ?? 0.0,
-                'bonos'        => $emp['bonos'] ?? 0.0,
-                'descuentos'   => $emp['descuentos'] ?? 0.0,
-                'neto'         => $emp['neto'] ?? 0.0,
-                'gastos'       => round($gasEmp, 2),
-                'colocacion'   => (float)($ges['colocacion'] ?? 0),
-                'operaciones'  => (int)($ges['operaciones'] ?? 0),
+                'name' => $name,
+                'code' => $code,
+                'branch' => $branch ?? 'Sin sucursal',
+                'route' => $route,
+                'pagos' => $emp['pagos'] ?? 0.0,
+                'bonos' => $emp['bonos'] ?? 0.0,
+                'descuentos' => $emp['descuentos'] ?? 0.0,
+                'neto' => $emp['neto'] ?? 0.0,
+                'gastos' => round($gasEmp, 2),
+                'colocacion' => (float) ($ges['colocacion'] ?? 0),
+                'operaciones' => (int) ($ges['operaciones'] ?? 0),
                 'recuperacion' => round($rec, 2),
-                'cartera'      => $cartera,
-                'vencida'      => $vencida,
-                'mora'         => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0,
+                'cartera' => $cartera,
+                'vencida' => $vencida,
+                'mora' => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0.0,
                 'ingreso_ebitda_base' => round($ingresoBase, 2),
                 // Campos internos (no se muestran en tablas UI) — permiten a applyEmployeeScope()
                 // reconstruir desgloses del colaborador reconciliados EXACTO contra los totales
@@ -2974,12 +3285,12 @@ class RadiographySnapshotBuilder
                 // construcción más arriba en este mismo método).
                 '_norm_key' => $key,
                 '_placements_by_product' => array_values($placementsByProduct[$key] ?? []),
-                '_recovery_components'   => $recoveryComponents,
-                '_recovery_by_product'   => array_values($recoveryByProductNorm[$key] ?? []),
-                '_mora_buckets'          => $moraBucketsByNorm[$key] ?? [],
+                '_recovery_components' => $recoveryComponents,
+                '_recovery_by_product' => array_values($recoveryByProductNorm[$key] ?? []),
+                '_mora_buckets' => $moraBucketsByNorm[$key] ?? [],
                 // employee_id(s) fusionados en esta fila — ver $employeeIdsByNorm arriba.
                 // applyEmployeeScope() la usa para ubicar esta fila SIN comparar texto.
-                '_employee_ids'          => array_values(array_unique($employeeIdsByNorm[$key] ?? [])),
+                '_employee_ids' => array_values(array_unique($employeeIdsByNorm[$key] ?? [])),
             ];
         })->sortByDesc(fn ($r) => $r['colocacion'] + $r['pagos'])->values()->all();
 
@@ -2996,8 +3307,8 @@ class RadiographySnapshotBuilder
      */
     private function homonymSplitKeys(): array
     {
-        if (!\Illuminate\Support\Facades\Schema::hasTable('employee_match_rejections')
-            || !DB::table('employee_match_rejections')->exists()) {
+        if (! Schema::hasTable('employee_match_rejections')
+            || ! DB::table('employee_match_rejections')->exists()) {
             return [];
         }
 
@@ -3018,14 +3329,14 @@ class RadiographySnapshotBuilder
         }
 
         $map = [];
-        $resolver = app(\App\Services\CanonicalEmployeeResolver::class);
+        $resolver = app(CanonicalEmployeeResolver::class);
         foreach ($byName as $norm => $rows) {
             // Agrupar por el nombre del canonicalizador (mismo criterio que este builder).
             $groups = $resolver->canonicalize(collect($rows)->map(fn ($e) => (object) ['id' => $e->id, 'full_name' => $e->full_name, 'normalized_name' => $norm]))
                 ->sortBy(fn ($g) => min($g->employee_ids))->values();
             foreach ($groups->slice(1) as $g) {
                 foreach ($g->employee_ids as $id) {
-                    $map[(int) $id] = $norm . '#' . min($g->employee_ids);
+                    $map[(int) $id] = $norm.'#'.min($g->employee_ids);
                 }
             }
         }
@@ -3035,24 +3346,33 @@ class RadiographySnapshotBuilder
 
     // ── INCIDENTS ────────────────────────────────────────────────────────────
 
+    /**
+     * Incidencias del periodo: primero las persistidas en el resumen y luego las
+     * detectadas en vivo (solo si su tipo no estaba ya), más las extra recibidas.
+     *
+     * @param  PeriodSummary  $summary  Resumen persistido (carga sus incidencias).
+     * @param  Period  $period  Periodo.
+     * @param  array  $extraIncidents  Incidencias calculadas durante build().
+     * @return array<int,array> Incidencias.
+     */
     private function buildIncidents(PeriodSummary $summary, Period $period, array $extraIncidents = []): array
     {
-        if (!$summary->relationLoaded('incidents')) {
+        if (! $summary->relationLoaded('incidents')) {
             $summary->load('incidents');
         }
 
         $stored = $summary->incidents->map(fn ($i) => [
-            'type'     => $i->type,
+            'type' => $i->type,
             'severity' => $i->severity,
-            'message'  => $i->message,
+            'message' => $i->message,
         ])->values()->all();
 
         $live = $this->detectLiveIncidents($period);
 
-        // Merge: stored incidents first, then live ones not already present by type
+        // Combina: primero las incidencias guardadas, luego las en vivo cuyo tipo no esté ya
         $storedTypes = array_column($stored, 'type');
         foreach ($live as $inc) {
-            if (!in_array($inc['type'], $storedTypes, true)) {
+            if (! in_array($inc['type'], $storedTypes, true)) {
                 $stored[] = $inc;
             }
         }
@@ -3065,6 +3385,14 @@ class RadiographySnapshotBuilder
         return $stored;
     }
 
+    /**
+     * Detecta incidencias en vivo: empleados NOI sin sucursal, gestores de colocación
+     * sin empleado NOI, cartera sin producto y cartera vencida recalculada (resumen
+     * desactualizado).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Incidencias detectadas.
+     */
     private function detectLiveIncidents(Period $period): array
     {
         $items = [];
@@ -3074,7 +3402,7 @@ class RadiographySnapshotBuilder
             ->join('employees as e', 'n.employee_id', '=', 'e.id')
             ->leftJoin('employee_branch_assignments as eba', function ($j) use ($period) {
                 $j->on('eba.employee_id', '=', 'n.employee_id')
-                  ->whereIn('eba.period_id', array_merge([$period->id], $this->dataIds));
+                    ->whereIn('eba.period_id', array_merge([$period->id], $this->dataIds));
             })
             ->whereIn('n.period_id', $this->dataIds)
             ->whereNotNull('n.employee_id')
@@ -3084,29 +3412,29 @@ class RadiographySnapshotBuilder
 
         if ($sinSucursal > 0) {
             $items[] = [
-                'type'     => 'empleados_sin_sucursal',
+                'type' => 'empleados_sin_sucursal',
                 'severity' => 'warning',
-                'message'  => "{$sinSucursal} empleado(s) del archivo NOI no tienen sucursal asignada. Asígnalos en el módulo Empleados para que aparezcan correctamente en el reporte.",
+                'message' => "{$sinSucursal} empleado(s) del archivo NOI no tienen sucursal asignada. Asígnalos en el módulo Empleados para que aparezcan correctamente en el reporte.",
             ];
         }
 
-        // Promoter names in placements that do not match any employee in employees table
+        // Promotores de colocación que no coinciden con ningún empleado de la tabla employees
         $gestoresSinMatch = DB::table('fact_placements as p')
             ->whereIn('p.period_id', $this->dataIds)
             ->whereNotNull('p.normalized_promoter_name')
             ->where('p.normalized_promoter_name', '<>', '')
             ->whereNotExists(function ($q) {
                 $q->from('employees as e')
-                  ->whereColumn('e.normalized_name', 'p.normalized_promoter_name');
+                    ->whereColumn('e.normalized_name', 'p.normalized_promoter_name');
             })
             ->distinct('p.normalized_promoter_name')
             ->count('p.normalized_promoter_name');
 
         if ($gestoresSinMatch > 0) {
             $items[] = [
-                'type'     => 'gestores_sin_match_noi',
+                'type' => 'gestores_sin_match_noi',
                 'severity' => 'warning',
-                'message'  => "{$gestoresSinMatch} gestor(es) de ministraciones no coinciden con ningún empleado del archivo NOI. Revisa la normalización de nombres.",
+                'message' => "{$gestoresSinMatch} gestor(es) de ministraciones no coinciden con ningún empleado del archivo NOI. Revisa la normalización de nombres.",
             ];
         }
 
@@ -3118,9 +3446,9 @@ class RadiographySnapshotBuilder
 
         if ($sinProducto > 0) {
             $items[] = [
-                'type'     => 'cartera_sin_producto',
+                'type' => 'cartera_sin_producto',
                 'severity' => 'warning',
-                'message'  => "{$sinProducto} contrato(s) de cartera no tienen producto identificado.",
+                'message' => "{$sinProducto} contrato(s) de cartera no tienen producto identificado.",
             ];
         }
 
@@ -3136,9 +3464,9 @@ class RadiographySnapshotBuilder
 
         if ($bucketSum > 0 && $globalVencida === 0.0) {
             $items[] = [
-                'type'     => 'cartera_vencida_recalculada',
+                'type' => 'cartera_vencida_recalculada',
                 'severity' => 'info',
-                'message'  => 'La cartera vencida fue calculada usando días vencidos porque la columna de saldo vencido estaba vacía.',
+                'message' => 'La cartera vencida fue calculada usando días vencidos porque la columna de saldo vencido estaba vacía.',
             ];
         }
 
@@ -3147,9 +3475,16 @@ class RadiographySnapshotBuilder
 
     // ── CHART DATA ───────────────────────────────────────────────────────────
 
+    /**
+     * Datos de gráfica por sucursal real (sin corporativo) para la métrica indicada.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  string  $metric  'recuperacion' o 'cartera'.
+     * @return array<int,array{label:string,value:float,pct:float}> Puntos de la gráfica.
+     */
     private function chartByBranch(Period $period, string $metric): array
     {
-        // Only show real branches (not routes/offices); CORPORATIVO excluded from cartera/recuperacion
+        // Solo sucursales reales (no rutas/oficinas); CORPORATIVO excluido de cartera/recuperación
         $realNames = array_values(array_filter(
             $this->resolveRealBranchNormalizedNames(),
             fn ($n) => $n !== 'corporativo'
@@ -3159,7 +3494,7 @@ class RadiographySnapshotBuilder
             $rows = DB::table('fact_recoveries as r')
                 ->join('branches as b', 'r.branch_id', '=', 'b.id')
                 ->whereIn('r.period_id', $this->dataIds)
-                ->when(!empty($realNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realNames))
+                ->when(! empty($realNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realNames))
                 ->selectRaw('b.name as label, SUM(r.total_amount) as value')
                 ->groupBy('b.id', 'b.name')
                 ->orderByDesc('value')
@@ -3169,7 +3504,7 @@ class RadiographySnapshotBuilder
             $rows = DB::table('fact_portfolios as p')
                 ->join('branches as b', 'p.branch_id', '=', 'b.id')
                 ->whereIn('p.period_id', $this->closingDataIds)
-                ->when(!empty($realNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realNames))
+                ->when(! empty($realNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realNames))
                 ->selectRaw('b.name as label, SUM(p.balance) as value')
                 ->groupBy('b.id', 'b.name')
                 ->orderByDesc('value')
@@ -3178,19 +3513,26 @@ class RadiographySnapshotBuilder
         }
 
         $max = $rows->max('value') ?: 1;
+
         return $rows->map(fn ($r) => [
             'label' => $r->label,
-            'value' => (float)$r->value,
-            'pct'   => min(100, round((float)$r->value / $max * 100, 1)),
+            'value' => (float) $r->value,
+            'pct' => min(100, round((float) $r->value / $max * 100, 1)),
         ])->values()->all();
     }
 
+    /**
+     * Top 10 productos por colocación (sin códigos agrupados, reestructuras ni recursos propios).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array{label:string,value:float,pct:float}> Puntos de la gráfica.
+     */
     private function chartPlacementByProduct(Period $period): array
     {
         $rows = DB::table('fact_placements')
             ->whereIn('period_id', $this->dataIds)
-            ->whereRaw("(product_name NOT REGEXP ? OR product_name IS NULL)", [self::PRODUCT_GROUP_PATTERN])
-            ->whereRaw("(product_name NOT REGEXP ? OR product_name IS NULL)", [self::PRODUCT_RESTRUCTURE_PATTERN . '|RECURSOS PROPIOS'])
+            ->whereRaw('(product_name NOT REGEXP ? OR product_name IS NULL)', [self::PRODUCT_GROUP_PATTERN])
+            ->whereRaw('(product_name NOT REGEXP ? OR product_name IS NULL)', [self::PRODUCT_RESTRUCTURE_PATTERN.'|RECURSOS PROPIOS'])
             ->selectRaw('COALESCE(NULLIF(product_name, ""), "Sin producto") as label, SUM(amount) as value')
             ->groupBy('product_name')
             ->orderByDesc('value')
@@ -3198,24 +3540,38 @@ class RadiographySnapshotBuilder
             ->get();
 
         $max = $rows->max('value') ?: 1;
+
         return $rows->map(fn ($r) => [
             'label' => $r->label,
-            'value' => (float)$r->value,
-            'pct'   => min(100, round((float)$r->value / $max * 100, 1)),
+            'value' => (float) $r->value,
+            'pct' => min(100, round((float) $r->value / $max * 100, 1)),
         ])->values()->all();
     }
 
+    /**
+     * Cartera vencida por tramo de mora (porcentaje relativo al tramo mayor).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array{label:string,value:float,pct:float}> Puntos de la gráfica.
+     */
     private function chartMoraByBucket(Period $period): array
     {
         $buckets = $this->buildPortfolioBuckets($period);
         $max = collect($buckets)->max('vencida') ?: 1;
+
         return array_map(fn ($b) => [
             'label' => $b['label'],
             'value' => $b['vencida'],
-            'pct'   => min(100, round($b['vencida'] / $max * 100, 1)),
+            'pct' => min(100, round($b['vencida'] / $max * 100, 1)),
         ], $buckets);
     }
 
+    /**
+     * Top 10 gestores por colocación.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array{label:string,value:float,pct:float}> Puntos de la gráfica.
+     */
     private function chartTopPromoters(Period $period): array
     {
         $rows = DB::table('fact_placements')
@@ -3228,26 +3584,31 @@ class RadiographySnapshotBuilder
             ->get();
 
         $max = $rows->max('value') ?: 1;
+
         return $rows->map(fn ($r) => [
             'label' => $r->label,
-            'value' => (float)$r->value,
-            'pct'   => min(100, round((float)$r->value / $max * 100, 1)),
+            'value' => (float) $r->value,
+            'pct' => min(100, round((float) $r->value / $max * 100, 1)),
         ])->values()->all();
     }
 
-    // ── NEW SECTIONS FOR EXCEL TABS ─────────────────────────────────────────
+    // ── SECCIONES PARA LAS PESTAÑAS DEL EXCEL ─────────────────────────────────────────
 
     /**
-     * NOI movements grouped as: branch → concept → total amount.
-     * Used for the NOMINAS Excel tab.
+     * Movimientos NOI agrupados por sucursal → concepto → monto total, con la sucursal
+     * resuelta por asignación del periodo o por actividad del colaborador.
+     * Se usa en la pestaña NÓMINAS del Excel.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array{data: array, incidents: array} Datos agrupados e incidencias de resolución.
      */
     private function buildPayrollByBranchConceptResolved(Period $period): array
     {
         $resolver = app(BranchResolverService::class);
 
-        // ── 1. EBA map: employee_id → real branch (using all dataIds, not just monthly) ──
-        //    LEFT JOIN so employees with orphaned/empty branch_id are still found.
-        //    For each employee, prefer an EBA that resolves to a real branch.
+        // ── 1. Mapa EBA: employee_id → sucursal real (con todos los dataIds, no solo el mensual) ──
+        //    LEFT JOIN para encontrar también empleados con branch_id huérfano/vacío.
+        //    Para cada empleado se prefiere una asignación (EBA) que resuelva a sucursal real.
         $ebaMap = [];
         DB::table('employee_branch_assignments as eba')
             ->leftJoin('branches as b', 'eba.branch_id', '=', 'b.id')
@@ -3256,19 +3617,21 @@ class RadiographySnapshotBuilder
             ->get()
             ->each(function ($r) use (&$ebaMap, $resolver) {
                 $empId = $r->employee_id;
-                if (!$r->branch) return; // orphaned/empty branch_id → skip, fall to activity lookup
-                $real     = $resolver->resolveRealBranchFromRoute($r->branch);
+                if (! $r->branch) {
+                    return;
+                } // branch_id huérfano/vacío → se omite y se usa la búsqueda por actividad
+                $real = $resolver->resolveRealBranchFromRoute($r->branch);
                 $resolved = $real ?? $r->branch;
-                // Keep if not set yet, or upgrade from non-real to real branch
-                if (!isset($ebaMap[$empId]) || (!$resolver->isRealReportBranch($ebaMap[$empId]) && $real)) {
+                // Se conserva si aún no hay valor, o se sustituye una sucursal no real por una real
+                if (! isset($ebaMap[$empId]) || (! $resolver->isRealReportBranch($ebaMap[$empId]) && $real)) {
                     $ebaMap[$empId] = $resolved;
                 }
             });
 
-        // ── 2. Activity lookup: normalized name → real branch from placements/portfolios/recoveries ──
+        // ── 2. Búsqueda por actividad: nombre normalizado → sucursal real desde colocación/cartera/recuperación ──
         $activityMap = $this->buildPayrollActivityLookup($resolver);
 
-        // ── 3. NOI rows pre-aggregated by (employee, concept) ────────────────
+        // ── 3. Filas NOI preagregadas por (empleado, concepto) ────────────────
         $noiRows = DB::table('fact_noi_movements as n')
             ->join('employees as e', 'n.employee_id', '=', 'e.id')
             ->whereIn('n.period_id', $this->dataIds)
@@ -3282,14 +3645,14 @@ class RadiographySnapshotBuilder
             ->groupBy('n.employee_id', 'e.full_name', 'n.concept', 'n.concept_type')
             ->get();
 
-        // ── 4. Canonical map for alias resolution ────────────────────────────
+        // ── 4. Mapa canónico para resolver alias ────────────────────────────
         $employeeNorms = $noiRows->pluck('full_name')->unique()
             ->map(fn ($n) => $this->canonicalizer->normalize($n))->values()->all();
-        $allNorms     = array_values(array_unique(array_merge($employeeNorms, array_keys($activityMap))));
+        $allNorms = array_values(array_unique(array_merge($employeeNorms, array_keys($activityMap))));
         $canonicalMap = $this->canonicalizer->buildCanonicalMap($allNorms, $employeeNorms);
 
-        // ── 5. Resolve branch per row ─────────────────────────────────────────
-        $data     = [];
+        // ── 5. Resuelve la sucursal de cada fila ─────────────────────────────────────────
+        $data = [];
         $sinTotal = 0.0;
         $sinCount = [];
 
@@ -3298,12 +3661,12 @@ class RadiographySnapshotBuilder
             $branch = $ebaMap[$row->employee_id] ?? null;
 
             // Priority B/C/D: activity lookup by norm, canonical, or any alias
-            if (!$branch) {
-                $norm      = $this->canonicalizer->normalize($row->full_name ?? '');
+            if (! $branch) {
+                $norm = $this->canonicalizer->normalize($row->full_name ?? '');
                 $canonical = $canonicalMap[$norm] ?? $norm;
-                $branch    = $activityMap[$norm] ?? $activityMap[$canonical] ?? null;
+                $branch = $activityMap[$norm] ?? $activityMap[$canonical] ?? null;
 
-                if (!$branch) {
+                if (! $branch) {
                     foreach ($canonicalMap as $alias => $can) {
                         if ($can === $canonical && isset($activityMap[$alias])) {
                             $branch = $activityMap[$alias];
@@ -3312,42 +3675,49 @@ class RadiographySnapshotBuilder
                     }
                 }
 
-                // Resolve route → real branch; discard if not resolvable
+                // Convierte ruta → sucursal real; se descarta si no se puede resolver
                 if ($branch) {
                     $branch = $resolver->resolveRealBranchFromRoute($branch);
                 }
             }
 
-            $branchKey  = $branch ?? 'Sin asignar';
+            $branchKey = $branch ?? 'Sin asignar';
             $conceptKey = $row->concept ?? 'Sin concepto';
-            $amount     = (float) $row->total;
+            $amount = (float) $row->total;
 
             $data[$branchKey][$conceptKey] = ($data[$branchKey][$conceptKey] ?? 0.0) + $amount;
 
             if ($branchKey === 'Sin asignar') {
-                $sinTotal                         += $amount;
-                $sinCount[$row->employee_id]       = true;
+                $sinTotal += $amount;
+                $sinCount[$row->employee_id] = true;
             }
         }
 
         ksort($data);
 
-        // ── 6. Incident for truly unresolvable employees (UI only) ───────────
-        $incidents  = [];
+        // ── 6. Incidencia para empleados realmente irresolubles (solo UI) ───────────
+        $incidents = [];
         $unresolved = count($sinCount);
         if ($unresolved > 0) {
             $incidents[] = [
-                'type'     => 'nomina_sin_sucursal',
+                'type' => 'nomina_sin_sucursal',
                 'severity' => 'warning',
-                'message'  => "Hay {$unresolved} colaborador(es) de NOI pendientes de asignar a sucursal. "
-                            . 'Monto sin asignar: $' . number_format($sinTotal, 2) . '. '
-                            . 'Revísalos en el módulo Empleados / Gestores.',
+                'message' => "Hay {$unresolved} colaborador(es) de NOI pendientes de asignar a sucursal. "
+                            .'Monto sin asignar: $'.number_format($sinTotal, 2).'. '
+                            .'Revísalos en el módulo Empleados / Gestores.',
             ];
         }
 
         return ['data' => $data, 'incidents' => $incidents];
     }
 
+    /**
+     * Mapa nombre normalizado de colaborador → sucursal real según su actividad en
+     * colocación/cartera/recuperación (respaldo para ubicar nómina sin asignación).
+     *
+     * @param  BranchResolverService  $resolver  Resolver de sucursales.
+     * @return array<string,string> Nombre normalizado => sucursal real.
+     */
     private function buildPayrollActivityLookup(BranchResolverService $resolver): array
     {
         $lookup = [];
@@ -3362,7 +3732,7 @@ class RadiographySnapshotBuilder
             ->each(function ($row) use (&$lookup, $resolver) {
                 $norm = $this->canonicalizer->normalize($row->promoter_name);
                 $real = $resolver->resolveRealBranchFromRoute($row->branch);
-                if ($real && !isset($lookup[$norm])) {
+                if ($real && ! isset($lookup[$norm])) {
                     $lookup[$norm] = $real;
                 }
             });
@@ -3377,7 +3747,7 @@ class RadiographySnapshotBuilder
             ->each(function ($row) use (&$lookup, $resolver) {
                 $norm = $this->canonicalizer->normalize($row->promoter_name);
                 $real = $resolver->resolveRealBranchFromRoute($row->branch);
-                if ($real && !isset($lookup[$norm])) {
+                if ($real && ! isset($lookup[$norm])) {
                     $lookup[$norm] = $real;
                 }
             });
@@ -3392,7 +3762,7 @@ class RadiographySnapshotBuilder
             ->each(function ($row) use (&$lookup, $resolver) {
                 $norm = $this->canonicalizer->normalize($row->promoter_name);
                 $real = $resolver->resolveRealBranchFromRoute($row->branch);
-                if ($real && !isset($lookup[$norm])) {
+                if ($real && ! isset($lookup[$norm])) {
                     $lookup[$norm] = $real;
                 }
             });
@@ -3401,8 +3771,11 @@ class RadiographySnapshotBuilder
     }
 
     /**
-     * Expense categories × real branches matrix.
-     * Used for the GASTOS Excel tab.
+     * Matriz de categorías de gasto × sucursales reales.
+     * Se usa en la pestaña GASTOS del Excel.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Matriz de gastos.
      */
     private function buildExpensesMatrix(Period $period): array
     {
@@ -3420,59 +3793,62 @@ class RadiographySnapshotBuilder
             ->get();
 
         $categories = [];
-        $branches   = [];
-        $matrix     = [];
+        $branches = [];
+        $matrix = [];
 
         foreach ($rows as $row) {
             $branch = $row->branch;
-            // Normalize to real branches only; lump unrecognized into 'Otras'
+            // Normaliza solo a sucursales reales; lo no reconocido se agrupa en 'Otras'
             $normalizedBranch = $this->normalizeText($branch);
-            if (!empty($realBranchNames) && !in_array($normalizedBranch, $realBranchNames, true)) {
+            if (! empty($realBranchNames) && ! in_array($normalizedBranch, $realBranchNames, true)) {
                 $branch = 'Otras';
             }
 
             $categories[$row->category] = true;
-            $branches[$branch]          = true;
+            $branches[$branch] = true;
             $matrix[$row->category][$branch] = ($matrix[$row->category][$branch] ?? 0.0) + (float) $row->total;
         }
 
         $categoryList = array_keys($categories);
-        $branchList   = array_keys($branches);
+        $branchList = array_keys($branches);
         sort($categoryList);
         sort($branchList);
 
         $totalsByCategory = [];
-        $totalsByBranch   = [];
+        $totalsByBranch = [];
 
         foreach ($categoryList as $cat) {
             $totalsByCategory[$cat] = 0.0;
             foreach ($branchList as $br) {
                 $v = $matrix[$cat][$br] ?? 0.0;
                 $totalsByCategory[$cat] += $v;
-                $totalsByBranch[$br]     = ($totalsByBranch[$br] ?? 0.0) + $v;
+                $totalsByBranch[$br] = ($totalsByBranch[$br] ?? 0.0) + $v;
             }
         }
 
         return [
-            'categories'         => $categoryList,
-            'branches'           => $branchList,
-            'matrix'             => $matrix,
+            'categories' => $categoryList,
+            'branches' => $branchList,
+            'matrix' => $matrix,
             'totals_by_category' => $totalsByCategory,
-            'totals_by_branch'   => $totalsByBranch,
-            'grand_total'        => array_sum($totalsByCategory),
+            'totals_by_branch' => $totalsByBranch,
+            'grand_total' => array_sum($totalsByCategory),
         ];
     }
 
     /**
-     * Interbranch loan expenses — cross-references PDF Lendus with Excel complementario.
-     * PDF is the primary source; Excel supplies the destination branch via raw_payload.branch_to_detected.
-     * Used for the P. INTERSUC. Excel tab.
+     * Préstamos entre sucursales — cruza el PDF de Lendus con el Excel complementario.
+     * El PDF es la fuente principal; el Excel aporta la sucursal destino vía
+     * raw_payload.branch_to_detected. Se usa en la pestaña P. INTERSUC. del Excel.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Préstamos, totales e incidencias.
      */
     private function buildInterbranchLoans(Period $period): array
     {
         $resolver = app(BranchResolverService::class);
 
-        // ── A: PDF Lendus intersucursal records (individual rows) ────────────
+        // ── A: Registros intersucursales del PDF de Lendus (filas individuales) ────────────
         $pdfRows = DB::table('fact_expenses as e')
             ->leftJoin('branches as b', 'e.branch_id', '=', 'b.id')
             ->leftJoin('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
@@ -3480,14 +3856,14 @@ class RadiographySnapshotBuilder
             ->whereIn('e.period_id', $this->dataIds)
             ->where(function ($q) {
                 $q->whereRaw("UPPER(COALESCE(e.category,'')) LIKE '%FONDEO%'")
-                  ->orWhereRaw("UPPER(COALESCE(e.category,'')) LIKE '%INTERSUCURSAL%'")
-                  ->orWhere('e.category', 'Envío de utilidad a corporativo')
-                  ->orWhereRaw("UPPER(COALESCE(e.concept,'')) LIKE '%PRESTAMO INTERSUC%'")
-                  ->orWhereRaw("UPPER(COALESCE(e.concept,'')) LIKE '%FONDEO%'");
+                    ->orWhereRaw("UPPER(COALESCE(e.category,'')) LIKE '%INTERSUCURSAL%'")
+                    ->orWhere('e.category', 'Envío de utilidad a corporativo')
+                    ->orWhereRaw("UPPER(COALESCE(e.concept,'')) LIKE '%PRESTAMO INTERSUC%'")
+                    ->orWhereRaw("UPPER(COALESCE(e.concept,'')) LIKE '%FONDEO%'");
             })
             ->where(function ($q) {
                 $q->whereNull('ds.code')
-                  ->orWhereIn('ds.code', ['gastos_lendus', 'gastos']);
+                    ->orWhereIn('ds.code', ['gastos_lendus', 'gastos']);
             })
             ->selectRaw("
                 e.id,
@@ -3502,10 +3878,10 @@ class RadiographySnapshotBuilder
             ->orderByDesc('amount')
             ->get();
 
-        // ── B: Excel complementario — only intersucursal rows ────────────────
-        // The Excel covers potentially different months than the PDF.
-        // We filter to only category='Préstamos Intersucursales' to reduce false matches,
-        // then prefer rows with branch_to_detected when crossing by amount.
+        // ── B: Excel complementario — solo filas intersucursales ────────────────
+        // El Excel puede cubrir meses distintos a los del PDF.
+        // Se filtra solo category='Préstamos Intersucursales' para reducir cruces falsos,
+        // y se prefieren las filas con branch_to_detected al cruzar por monto.
         $excelRows = DB::table('fact_expenses as e')
             ->leftJoin('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
             ->leftJoin('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
@@ -3526,15 +3902,16 @@ class RadiographySnapshotBuilder
             ->map(function ($row) {
                 $row->decoded_payload = is_string($row->raw_payload)
                     ? (json_decode($row->raw_payload, true) ?? [])
-                    : (array)($row->raw_payload ?? []);
+                    : (array) ($row->raw_payload ?? []);
+
                 return $row;
             })
             ->all();
 
-        // Index Excel intersucursal records by rounded amount.
-        // No date restriction — PDF and Excel may cover different months.
-        // Rows with branch_to_detected are prepended so they are preferred in matching.
-        $excelIndex  = [];
+        // Indexa los registros intersucursales del Excel por monto redondeado.
+        // Sin restricción de fecha — el PDF y el Excel pueden cubrir meses distintos.
+        // Las filas con branch_to_detected se ponen al inicio para preferirlas en el cruce.
+        $excelIndex = [];
         $usedExcelIds = [];
         foreach ($excelRows as $ex) {
             $key = (int) round((float) $ex->amount);
@@ -3546,85 +3923,93 @@ class RadiographySnapshotBuilder
             }
         }
 
-        $detail    = [];
+        $detail = [];
         $unmatched = [];
         $incidents = [];
 
         foreach ($pdfRows as $pdfRow) {
             $pdfAmount = (float) $pdfRow->amount;
-            $pdfDate   = $pdfRow->expense_date
-                ? \Carbon\Carbon::parse($pdfRow->expense_date)
+            $pdfDate = $pdfRow->expense_date
+                ? Carbon::parse($pdfRow->expense_date)
                 : null;
-            $category  = (string) ($pdfRow->category ?? '');
-            // Source of truth for fondeo vs excedente: the PDF category itself, not
-            // destination-text guessing. 'Envío de utilidad a corporativo' is ALWAYS
-            // excedente — it has no operative destination branch.
+            $category = (string) ($pdfRow->category ?? '');
+            // La fuente de verdad para fondeo vs excedente es la categoría del PDF, no
+            // la adivinanza por texto del destino. 'Envío de utilidad a corporativo' SIEMPRE es
+            // excedente — no tiene sucursal destino operativa.
             $isExcedenteCat = $category === 'Envío de utilidad a corporativo';
 
             // Resolve from_branch — never expose routes
             $fromBranch = $resolver->resolveRealBranchFromRoute($pdfRow->branch) ?? 'No identificada';
 
-            // ── Match PDF row against Excel intersucursal records ─────────
-            // Match by amount ±1 peso only — no date restriction because
-            // PDF and Excel may legitimately cover different months.
-            // Excel index is pre-sorted: rows with branch_to_detected come first.
+            // ── Cruza la fila del PDF contra los registros intersucursales del Excel ─────────
+            // Cruce solo por monto ±1 peso — sin restricción de fecha porque
+            // el PDF y el Excel pueden cubrir legítimamente meses distintos.
+            // El índice del Excel ya viene ordenado: primero las filas con branch_to_detected.
             $matchedExcel = null;
-            $amtKey       = (int) round($pdfAmount);
+            $amtKey = (int) round($pdfAmount);
             foreach ([$amtKey, $amtKey - 1, $amtKey + 1] as $key) {
-                if (!isset($excelIndex[$key])) continue;
+                if (! isset($excelIndex[$key])) {
+                    continue;
+                }
                 foreach ($excelIndex[$key] as $ex) {
-                    if (in_array($ex->id, $usedExcelIds, true)) continue;
+                    if (in_array($ex->id, $usedExcelIds, true)) {
+                        continue;
+                    }
                     $matchedExcel = $ex;
                     break 2;
                 }
             }
 
-            $toBranch      = $isExcedenteCat ? 'CORPORATIVO' : 'No identificada';
-            $observation   = $pdfRow->observations ?? '';
+            $toBranch = $isExcedenteCat ? 'CORPORATIVO' : 'No identificada';
+            $observation = $pdfRow->observations ?? '';
             $justification = '';
-            $source        = 'pdf';
+            $source = 'pdf';
 
             if ($matchedExcel) {
                 $usedExcelIds[] = $matchedExcel->id;
-                $payload        = $matchedExcel->decoded_payload;
+                $payload = $matchedExcel->decoded_payload;
 
-                if (!$isExcedenteCat) {
-                    // 1. Use branch_to_detected set by the Excel importer
+                if (! $isExcedenteCat) {
+                    // 1. Usa branch_to_detected asignado por el importador del Excel
                     $toBranchRaw = $payload['branch_to_detected'] ?? null;
                     if ($toBranchRaw) {
                         $toBranch = $resolver->resolveRealBranchFromRoute($toBranchRaw) ?? $toBranchRaw;
                     }
 
-                    // 2. Fallback: pattern-detect from Excel text
+                    // 2. Respaldo: detección por patrones en el texto del Excel
                     if ($toBranch === 'No identificada') {
-                        $exText  = implode(' ', array_filter([$matchedExcel->concept, $matchedExcel->observations]));
+                        $exText = implode(' ', array_filter([$matchedExcel->concept, $matchedExcel->observations]));
                         $detected = $this->detectBranchFromText($exText, $resolver);
-                        if ($detected) $toBranch = $detected;
+                        if ($detected) {
+                            $toBranch = $detected;
+                        }
                     }
                 }
 
-                $observation   = $matchedExcel->observations ?? $observation;
+                $observation = $matchedExcel->observations ?? $observation;
                 $justification = $payload['justification'] ?? '';
-                $source        = 'pdf+excel';
-            } elseif (!$isExcedenteCat) {
+                $source = 'pdf+excel';
+            } elseif (! $isExcedenteCat) {
                 // No Excel match — try PDF concept/observation text
-                $pdfText  = implode(' ', array_filter([$pdfRow->concept, $pdfRow->observations]));
+                $pdfText = implode(' ', array_filter([$pdfRow->concept, $pdfRow->observations]));
                 $detected = $this->detectBranchFromText($pdfText, $resolver);
-                if ($detected) $toBranch = $detected;
+                if ($detected) {
+                    $toBranch = $detected;
+                }
             }
 
-            if (!$isExcedenteCat && $toBranch === 'No identificada') {
+            if (! $isExcedenteCat && $toBranch === 'No identificada') {
                 $unmatched[] = [
-                    'date'        => $pdfDate ? $pdfDate->format('d/m/Y') : '—',
+                    'date' => $pdfDate ? $pdfDate->format('d/m/Y') : '—',
                     'from_branch' => $fromBranch,
-                    'amount'      => $pdfAmount,
-                    'concept'     => $pdfRow->concept,
-                    'source'      => $source,
+                    'amount' => $pdfAmount,
+                    'concept' => $pdfRow->concept,
+                    'source' => $source,
                 ];
                 $incidents[] = [
-                    'type'     => 'prestamo_intersucursal_sin_destino',
+                    'type' => 'prestamo_intersucursal_sin_destino',
                     'severity' => 'warning',
-                    'message'  => sprintf(
+                    'message' => sprintf(
                         'Préstamo intersucursal sin sucursal destino identificada: %s — $%s el %s.',
                         $fromBranch,
                         number_format($pdfAmount, 2),
@@ -3634,15 +4019,15 @@ class RadiographySnapshotBuilder
             }
 
             $detail[] = [
-                'date'          => $pdfDate ? $pdfDate->format('d/m/Y') : '—',
-                'from_branch'   => $fromBranch,
-                'to_branch'     => $toBranch,
-                'amount'        => $pdfAmount,
-                'concept'       => $pdfRow->concept,
-                'category'      => $category,
-                'observation'   => $observation,
+                'date' => $pdfDate ? $pdfDate->format('d/m/Y') : '—',
+                'from_branch' => $fromBranch,
+                'to_branch' => $toBranch,
+                'amount' => $pdfAmount,
+                'concept' => $pdfRow->concept,
+                'category' => $category,
+                'observation' => $observation,
                 'justification' => $justification,
-                'source'        => $source,
+                'source' => $source,
             ];
         }
 
@@ -3651,42 +4036,42 @@ class RadiographySnapshotBuilder
         // solo se usa arriba para enriquecer el destino de filas del PDF. Sumar filas de
         // Excel no pareadas duplicaba/abultaba "Pasivos (recibe)" frente a "Activos (fondea)".
 
-        // ── D: Classify each row as fondeo operativo or excedente ───────────────
+        // ── D: Clasifica cada fila como fondeo operativo o excedente ───────────────
         // Fuente de verdad: la categoría del registro PDF (Préstamos Intersucursales
         // vs Envío de utilidad a corporativo). El texto de destino solo enriquece el
         // detalle visual — nunca decide si una fila es fondeo o excedente.
         // Regla: fondeos operativos deben cumplir fondea_total == recibe_total (neto=$0).
-        $fondeaOperMap   = [];
-        $recibeOperMap   = [];
-        $excedenteByMap  = [];
+        $fondeaOperMap = [];
+        $recibeOperMap = [];
+        $excedenteByMap = [];
 
-        $detailFondeos   = [];
+        $detailFondeos = [];
         $detailExcedentes = [];
 
         foreach ($detail as $row) {
             $isExcedente = ($row['category'] ?? '') === 'Envío de utilidad a corporativo';
             if ($isExcedente) {
                 $excedenteByMap[$row['from_branch']] = ($excedenteByMap[$row['from_branch']] ?? 0.0) + $row['amount'];
-                $row['type']      = 'excedente';
+                $row['type'] = 'excedente';
                 $detailExcedentes[] = $row;
             } else {
-                // Edge case: category is fondeo but destination text resolved to
-                // 'CORPORATIVO' (text false-positive) — keep the row as fondeo operativo
-                // (so totals match the category split) but never label a destino as
-                // CORPORATIVO inside the operative section.
+                // Caso límite: la categoría es fondeo pero el texto destino resolvió a
+                // 'CORPORATIVO' (falso positivo del texto) — la fila se conserva como fondeo operativo
+                // (para que los totales cuadren con la división por categoría) pero nunca se etiqueta un destino como
+                // CORPORATIVO dentro de la sección operativa.
                 if ($row['to_branch'] === 'CORPORATIVO') {
                     $row['to_branch'] = 'No identificada';
                 }
                 $fondeaOperMap[$row['from_branch']] = ($fondeaOperMap[$row['from_branch']] ?? 0.0) + $row['amount'];
-                $recibeOperMap[$row['to_branch']]  = ($recibeOperMap[$row['to_branch']]   ?? 0.0) + $row['amount'];
-                $row['type']      = 'fondeo';
-                $detailFondeos[]  = $row;
+                $recibeOperMap[$row['to_branch']] = ($recibeOperMap[$row['to_branch']] ?? 0.0) + $row['amount'];
+                $row['type'] = 'fondeo';
+                $detailFondeos[] = $row;
             }
         }
 
         $totalFondeoOper = array_sum($fondeaOperMap);
         $totalExcedentes = array_sum($excedenteByMap);
-        $total           = $totalFondeoOper + $totalExcedentes;
+        $total = $totalFondeoOper + $totalExcedentes;
 
         $fondeaOperRows = collect($fondeaOperMap)
             ->map(fn ($v, $k) => ['branch' => $k, 'total' => $v])
@@ -3703,51 +4088,69 @@ class RadiographySnapshotBuilder
         return [
             // Operative fondeos section (fondea = recibe, neto = $0)
             'operative_fondeos' => [
-                'fondea'        => $fondeaOperRows,
-                'recibe'        => $recibeOperRows,
-                'fondea_total'  => $totalFondeoOper,
-                'recibe_total'  => $totalFondeoOper, // = fondea (neto=0 by design)
-                'detail'        => $detailFondeos,
+                'fondea' => $fondeaOperRows,
+                'recibe' => $recibeOperRows,
+                'fondea_total' => $totalFondeoOper,
+                'recibe_total' => $totalFondeoOper, // = fondea (neto=0 by design)
+                'detail' => $detailFondeos,
             ],
             // Excedentes / envío a CORPORATIVO section
             'excedentes' => [
-                'by_branch'     => $excedenteRows,
-                'total'         => $totalExcedentes,
-                'detail'        => $detailExcedentes,
+                'by_branch' => $excedenteRows,
+                'total' => $totalExcedentes,
+                'detail' => $detailExcedentes,
             ],
             // Backward-compat aliases — SIEMPRE operativo puro (nunca mezclan excedentes).
-            'total'     => $totalFondeoOper,
-            'fondea'    => $fondeaOperRows,
-            'recibe'    => $recibeOperRows,
+            'total' => $totalFondeoOper,
+            'fondea' => $fondeaOperRows,
+            'recibe' => $recibeOperRows,
             'by_branch' => $fondeaOperRows,
-            'detail'    => array_merge($detailFondeos, $detailExcedentes),
+            'detail' => array_merge($detailFondeos, $detailExcedentes),
             'unmatched' => $unmatched,
             'incidents' => $incidents,
         ];
     }
 
     /**
-     * Extract a real branch name from free text using pattern matching.
-     * Looks for patterns like "FONDEO A ORIZABA", "PRÉSTAMO PARA TULA", etc.
+     * Extrae el nombre de una sucursal real de un texto libre con patrones como
+     * "FONDEO A ORIZABA", "PRÉSTAMO PARA TULA", etc. (divide por "|" y prueba cada segmento).
+     *
+     * @param  string  $text  Texto del gasto.
+     * @param  BranchResolverService  $resolver  Resolver de sucursales.
+     * @return string|null Sucursal real o null.
      */
     private function detectBranchFromText(string $text, BranchResolverService $resolver): ?string
     {
-        if (empty(trim($text))) return null;
+        if (empty(trim($text))) {
+            return null;
+        }
 
-        // Split on pipe (|) and try each segment independently so "FONDEO | A CUERNAVACA"
-        // resolves "A CUERNAVACA" correctly.
+        // Divide por "|" y prueba cada segmento por separado para que "FONDEO | A CUERNAVACA"
+        // resuelva "A CUERNAVACA" correctamente.
         $segments = array_map('trim', explode('|', $text));
         foreach ($segments as $segment) {
             $result = $this->detectBranchFromSegment($segment, $resolver);
-            if ($result) return $result;
+            if ($result) {
+                return $result;
+            }
         }
 
         return null;
     }
 
+    /**
+     * Aplica los patrones de fondeo/préstamo/intersucursal/depósito a un segmento y
+     * convierte el candidato a sucursal real; como respaldo prueba el segmento completo.
+     *
+     * @param  string  $text  Segmento de texto.
+     * @param  BranchResolverService  $resolver  Resolver de sucursales.
+     * @return string|null Sucursal real o null.
+     */
     private function detectBranchFromSegment(string $text, BranchResolverService $resolver): ?string
     {
-        if (empty(trim($text))) return null;
+        if (empty(trim($text))) {
+            return null;
+        }
 
         $upper = mb_strtoupper(trim($text));
 
@@ -3768,27 +4171,37 @@ class RadiographySnapshotBuilder
 
         foreach ($patterns as $pattern) {
             if (preg_match_all($pattern, $upper, $matches)) {
-                // Take the LAST match group — handles "FONDEO FONDEO IXTLAHUACA" double-prefix
-                $lastIdx   = count($matches[1]) - 1;
+                // Toma el ÚLTIMO grupo coincidente — cubre el doble prefijo "FONDEO FONDEO IXTLAHUACA"
+                $lastIdx = count($matches[1]) - 1;
                 $candidate = $this->stripBranchNoise(trim($matches[1][$lastIdx]));
                 if (mb_strlen($candidate) >= 3) {
                     $resolved = $resolver->resolveRealBranchFromRoute($candidate);
-                    if ($resolved) return $resolved;
+                    if ($resolved) {
+                        return $resolved;
+                    }
                 }
             }
         }
 
-        // Fallback: strip all noise from entire segment and try direct resolution.
+        // Respaldo: quita todo el ruido del segmento y prueba la resolución directa.
         // Covers "SAN JUAN DEL RIO", "SUCURSAL CORDOBA", "A SUC TENANGO", etc.
         $stripped = $this->stripBranchNoise($upper);
         if (mb_strlen($stripped) >= 3) {
             $resolved = $resolver->resolveRealBranchFromRoute($stripped);
-            if ($resolved) return $resolved;
+            if ($resolved) {
+                return $resolved;
+            }
         }
 
         return null;
     }
 
+    /**
+     * Quita repetidamente palabras de ruido al inicio (FONDEO, DEPÓSITO, A, PARA, DE, SUC, SUCURSAL).
+     *
+     * @param  string  $candidate  Texto candidato.
+     * @return string Texto en mayúsculas sin ruido inicial.
+     */
     private function stripBranchNoise(string $candidate): string
     {
         static $noiseLeading = ['FONDEO', 'FONDEA', 'DEPOSITO', 'DEPÓSITO', 'A', 'PARA', 'DE', 'SUC', 'SUCURSAL'];
@@ -3797,29 +4210,32 @@ class RadiographySnapshotBuilder
         while ($changed) {
             $changed = false;
             foreach ($noiseLeading as $noise) {
-                if (str_starts_with($c, $noise . ' ')) {
-                    $c       = trim(mb_substr($c, mb_strlen($noise)));
+                if (str_starts_with($c, $noise.' ')) {
+                    $c = trim(mb_substr($c, mb_strlen($noise)));
                     $changed = true;
                     break;
                 }
             }
         }
+
         return $c;
     }
 
     /**
-     * Recovery totals by real branch and by gestor.
-     * Routes/offices are folded into their parent real sucursal.
-     * Used for the RECUP. Excel tab.
+     * Recuperación por sucursal real y por gestor; las rutas/oficinas se pliegan en su
+     * sucursal padre. Se usa en la pestaña RECUP. del Excel.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Detalle de recuperación.
      */
     private function buildRecoveryDetail(Period $period): array
     {
         $resolver = app(BranchResolverService::class);
 
-        // Apply same exclusion logic as BranchRadiographyCalculator::accumulateRecuperacion()
-        // so total matches the global recuperacion KPI ($18,324,971.76).
-        // Excluded rows (savehearts + CONDONACION + COBERTURA/SEGURO/UNIFICACION patterns)
-        // are surfaced as separate informational columns for display in the Ingresos tab.
+        // Aplica la misma lógica de exclusión que BranchRadiographyCalculator::accumulateRecuperacion()
+        // para que el total cuadre con el KPI global de recuperación ($18,324,971.76).
+        // Las filas excluidas (savehearts + patrones CONDONACION/COBERTURA/SEGURO/UNIFICACION)
+        // se exponen como columnas informativas aparte en la pestaña Ingresos.
         $rawRows = DB::table('fact_recoveries as r')
             ->join('branches as b', 'r.branch_id', '=', 'b.id')
             ->whereIn('r.period_id', $this->dataIds)
@@ -3904,37 +4320,37 @@ class RadiographySnapshotBuilder
 
         $grouped = [];
         foreach ($rawRows as $r) {
-            // Never fall back to the raw route name — skip unmapped routes silently
+            // Nunca se usa el nombre crudo de la ruta — las rutas sin mapeo se omiten en silencio
             $real = $resolver->resolveRealBranchFromRoute($r->branch);
-            if (!$real) {
+            if (! $real) {
                 continue;
             }
-            if (!isset($grouped[$real])) {
+            if (! isset($grouped[$real])) {
                 $grouped[$real] = [
-                    'branch'               => $real,
-                    'capital'              => 0.0,
-                    'interest'             => 0.0,
-                    'tax'                  => 0.0,
-                    'charges'              => 0.0,
-                    'moratorios'           => 0.0,
-                    'total'                => 0.0,
-                    'bruto'                => 0.0,
-                    'seguros_excluidos'    => 0.0,
+                    'branch' => $real,
+                    'capital' => 0.0,
+                    'interest' => 0.0,
+                    'tax' => 0.0,
+                    'charges' => 0.0,
+                    'moratorios' => 0.0,
+                    'total' => 0.0,
+                    'bruto' => 0.0,
+                    'seguros_excluidos' => 0.0,
                     'condonacion_excluida' => 0.0,
                     'unificacion_excluida' => 0.0,
-                    'operaciones'          => 0,
+                    'operaciones' => 0,
                 ];
             }
-            $grouped[$real]['capital']              += (float)($r->capital              ?? 0);
-            $grouped[$real]['interest']             += (float)($r->interest             ?? 0);
-            $grouped[$real]['tax']                  += (float)($r->tax                  ?? 0);
-            $grouped[$real]['charges']              += (float)($r->charges              ?? 0);
-            $grouped[$real]['total']                += (float)($r->total                ?? 0);
-            $grouped[$real]['bruto']                += (float)($r->bruto                ?? 0);
-            $grouped[$real]['seguros_excluidos']    += (float)($r->seguros_excluidos    ?? 0);
-            $grouped[$real]['condonacion_excluida'] += (float)($r->condonacion_excluida ?? 0);
-            $grouped[$real]['unificacion_excluida'] += (float)($r->unificacion_excluida ?? 0);
-            $grouped[$real]['operaciones']          += (int)($r->operaciones            ?? 0);
+            $grouped[$real]['capital'] += (float) ($r->capital ?? 0);
+            $grouped[$real]['interest'] += (float) ($r->interest ?? 0);
+            $grouped[$real]['tax'] += (float) ($r->tax ?? 0);
+            $grouped[$real]['charges'] += (float) ($r->charges ?? 0);
+            $grouped[$real]['total'] += (float) ($r->total ?? 0);
+            $grouped[$real]['bruto'] += (float) ($r->bruto ?? 0);
+            $grouped[$real]['seguros_excluidos'] += (float) ($r->seguros_excluidos ?? 0);
+            $grouped[$real]['condonacion_excluida'] += (float) ($r->condonacion_excluida ?? 0);
+            $grouped[$real]['unificacion_excluida'] += (float) ($r->unificacion_excluida ?? 0);
+            $grouped[$real]['operaciones'] += (int) ($r->operaciones ?? 0);
         }
 
         usort($grouped, fn ($a, $b) => $b['total'] <=> $a['total']);
@@ -3955,9 +4371,9 @@ class RadiographySnapshotBuilder
             ->limit(100)
             ->get()
             ->map(fn ($r) => [
-                'gestor'      => $r->gestor,
-                'branch'      => $r->branch,
-                'total'       => (float) $r->total,
+                'gestor' => $r->gestor,
+                'branch' => $r->branch,
+                'total' => (float) $r->total,
                 'operaciones' => (int) $r->operaciones,
             ])
             ->values()->all();
@@ -3966,8 +4382,11 @@ class RadiographySnapshotBuilder
     }
 
     /**
-     * Portfolio cartera and vencida broken down by real branch and product.
-     * Used for the VAL. CART Excel tab.
+     * Cartera y cartera vencida desglosadas por sucursal real y producto.
+     * Se usa en la pestaña VAL. CART del Excel.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas sucursal × producto.
      */
     private function buildPortfolioByBranchProduct(Period $period): array
     {
@@ -3978,7 +4397,7 @@ class RadiographySnapshotBuilder
         $rows = DB::table('fact_portfolios as po')
             ->join('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $this->closingDataIds)
-            ->when(!empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
+            ->when(! empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
             ->selectRaw("
                 b.name as branch,
                 COALESCE(NULLIF(po.product_name,''), 'Sin producto') as product,
@@ -4003,26 +4422,28 @@ class RadiographySnapshotBuilder
             ->get();
 
         return $rows->map(fn ($r) => [
-            'branch'                        => $r->branch,
-            'product'                       => $r->product,
-            'contratos'                     => (int) $r->contratos,
-            'cartera'                       => (float) $r->cartera,
-            'vencida'                       => (float) $r->vencida,
-            'capital_atrasado'              => (float) $r->capital_atrasado,
-            'interes_atrasado'              => (float) $r->interes_atrasado,
-            'impuesto_atrasado'             => (float) $r->impuesto_atrasado,
-            'saldo_interes_moratorio'       => (float) $r->saldo_interes_moratorio,
+            'branch' => $r->branch,
+            'product' => $r->product,
+            'contratos' => (int) $r->contratos,
+            'cartera' => (float) $r->cartera,
+            'vencida' => (float) $r->vencida,
+            'capital_atrasado' => (float) $r->capital_atrasado,
+            'interes_atrasado' => (float) $r->interes_atrasado,
+            'impuesto_atrasado' => (float) $r->impuesto_atrasado,
+            'saldo_interes_moratorio' => (float) $r->saldo_interes_moratorio,
             'saldo_impuesto_interes_moratorio' => (float) $r->saldo_impuesto_interes_moratorio,
-            'mora'                          => (float) $r->cartera > 0 ? round((float) $r->vencida / (float) $r->cartera * 100, 2) : 0.0,
+            'mora' => (float) $r->cartera > 0 ? round((float) $r->vencida / (float) $r->cartera * 100, 2) : 0.0,
         ])->values()->all();
     }
 
     /**
-     * One row per active loan/contract (fact_portfolios), for the PRESTAMOS
-     * ACTIVOS Excel sheet. Only real fact_portfolios columns are used — there
-     * is no fecha_otorgamiento/fecha_vencimiento anywhere in the schema, so
-     * those are intentionally not included. Bucketing reuses moraBucketDefs()
-     * so it is identical to every other mora bucket in the workbook.
+     * Una fila por préstamo/contrato activo (fact_portfolios) para la hoja PRÉSTAMOS
+     * ACTIVOS del Excel. Solo se usan columnas reales de fact_portfolios — no existe
+     * fecha de otorgamiento/vencimiento en el esquema, así que no se incluyen. Los
+     * tramos reutilizan moraBucketDefs() para ser idénticos al resto del libro.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Préstamos activos.
      */
     private function buildActiveLoans(Period $period): array
     {
@@ -4032,7 +4453,7 @@ class RadiographySnapshotBuilder
         $rows = DB::table('fact_portfolios as po')
             ->join('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $this->closingDataIds)
-            ->when(!empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
+            ->when(! empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
             ->selectRaw("
                 b.name as branch,
                 po.client_name,
@@ -4053,7 +4474,7 @@ class RadiographySnapshotBuilder
             ->get();
 
         return $rows->map(function ($r) use ($defs) {
-            $dpd    = (int) $r->days_past_due;
+            $dpd = (int) $r->days_past_due;
             $bucket = 'Al corriente';
             foreach ($defs as $d) {
                 if ($dpd >= $d['min'] && $dpd <= $d['max']) {
@@ -4061,55 +4482,64 @@ class RadiographySnapshotBuilder
                     break;
                 }
             }
+
             return [
-                'sucursal'        => $r->branch,
-                'cliente'         => $r->client_name,
-                'contrato'        => $r->contract,
-                'producto'        => $r->product_name,
-                'gestor'          => $r->gestor,
-                'ruta'            => $r->route_name,
-                'periodicidad'    => $r->periodicity,
-                'dias_vencidos'   => $dpd,
-                'bucket_mora'     => $bucket,
-                'saldo_activo'    => (float) $r->balance,
-                'capital_activo'  => (float) ($r->capital_activo ?? 0),
-                'vencido'         => (float) ($r->past_due_balance ?? 0),
+                'sucursal' => $r->branch,
+                'cliente' => $r->client_name,
+                'contrato' => $r->contract,
+                'producto' => $r->product_name,
+                'gestor' => $r->gestor,
+                'ruta' => $r->route_name,
+                'periodicidad' => $r->periodicity,
+                'dias_vencidos' => $dpd,
+                'bucket_mora' => $bucket,
+                'saldo_activo' => (float) $r->balance,
+                'capital_activo' => (float) ($r->capital_activo ?? 0),
+                'vencido' => (float) ($r->past_due_balance ?? 0),
                 'capital_vencido' => (float) ($r->capital_due ?? 0),
-                'estado'          => $dpd === 0 ? 'Al corriente' : 'En mora',
+                'estado' => $dpd === 0 ? 'Al corriente' : 'En mora',
             ];
         })->values()->all();
     }
 
     /**
-     * Portfolio mora buckets broken down per real branch.
-     * Used for the MORA Excel tab.
+     * Tramos de mora de la cartera desglosados por sucursal real.
+     * Se usa en la pestaña MORA del Excel.
      */
     // Fuente ÚNICA: deriva de BranchRadiographyCalculator (mismas 13 sucursales,
     // mismo balance/Saldo actual, mismos buckets que cartera total y mora total).
+    /**
+     * Mora por sucursal desde branchCalcBranches (cartera total, vencida y % de mora);
+     * omite sucursales sin cartera ni vencida.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas por sucursal.
+     */
     private function buildMoraByBranch(Period $period): array
     {
         $result = [];
         foreach ($this->branchCalcBranches as $branch) {
             // cartera_vencida = SUM(5 columnas vencidas) donde days_past_due>0 (fórmula definitiva)
             $vencida = (float) ($branch['cartera_vencida'] ?? 0);
-            $cartera = (float) ($branch['valor_cartera']   ?? 0);
+            $cartera = (float) ($branch['valor_cartera'] ?? 0);
             if ($cartera == 0.0 && $vencida == 0.0) {
                 continue;
             }
             $result[] = [
-                'branch'         => $branch['sucursal'],
-                'cartera_total'  => $cartera,
-                'vencida_total'  => $vencida,
-                'al_corriente'   => $cartera - $vencida,
-                'mora_1_30'      => (float) ($branch['mora_0_30']    ?? 0),
-                'mora_31_60'     => (float) ($branch['mora_31_60']   ?? 0),
-                'mora_61_90'     => (float) ($branch['mora_61_90']   ?? 0),
-                'mora_91_120'    => (float) ($branch['mora_91_120']  ?? 0),
-                'mora_120_plus'  => (float) ($branch['mora_120_plus'] ?? 0),
+                'branch' => $branch['sucursal'],
+                'cartera_total' => $cartera,
+                'vencida_total' => $vencida,
+                'al_corriente' => $cartera - $vencida,
+                'mora_1_30' => (float) ($branch['mora_0_30'] ?? 0),
+                'mora_31_60' => (float) ($branch['mora_31_60'] ?? 0),
+                'mora_61_90' => (float) ($branch['mora_61_90'] ?? 0),
+                'mora_91_120' => (float) ($branch['mora_91_120'] ?? 0),
+                'mora_120_plus' => (float) ($branch['mora_120_plus'] ?? 0),
             ];
         }
 
         usort($result, fn ($a, $b) => $b['cartera_total'] <=> $a['cartera_total']);
+
         return $result;
     }
 
@@ -4119,46 +4549,53 @@ class RadiographySnapshotBuilder
      * Fuente autorizada: gastos_lendus_excel (tiene destino en branch_to_detected u observations).
      * El PDF (gastos_lendus) solo se usa para construir el mapa empleado→sucursal_origen,
      * ya que el PDF registra la sucursal de cargo (branch_id) pero no el destino.
+     *
+     * @return array Detalle de fondeos entre sucursales.
      */
     private function buildFondeoDetalle(): array
     {
         // Alias map: texto normalizado (sin acentos) → nombre oficial de sucursal
         static $branchAliases = [
-            'ATLACOMULCO'       => 'ATLACOMULCO',
-            'ATLIXCO'           => 'ATLIXCO',
-            'CORDOBA'           => 'CÓRDOBA',
-            'CUERNAVACA'        => 'CUERNAVACA',
-            'HUAMANTLA'         => 'HUAMANTLA',
-            'IXTLAHUACA'        => 'IXTLAHUACA',
-            'MIACATLAN'         => 'MIACATLÁN',
-            'ORIZABA'           => 'ORIZABA',
-            'SAN JUAN DEL RIO'  => 'SAN JUAN DEL RÍO',
-            'SAN JUAN RIO'      => 'SAN JUAN DEL RÍO',
-            'SAN JUAN'          => 'SAN JUAN DEL RÍO',
-            'SAN LUIS POTOSI'   => 'SAN LUIS POTOSÍ',
-            'SAN LUIS'          => 'SAN LUIS POTOSÍ',
+            'ATLACOMULCO' => 'ATLACOMULCO',
+            'ATLIXCO' => 'ATLIXCO',
+            'CORDOBA' => 'CÓRDOBA',
+            'CUERNAVACA' => 'CUERNAVACA',
+            'HUAMANTLA' => 'HUAMANTLA',
+            'IXTLAHUACA' => 'IXTLAHUACA',
+            'MIACATLAN' => 'MIACATLÁN',
+            'ORIZABA' => 'ORIZABA',
+            'SAN JUAN DEL RIO' => 'SAN JUAN DEL RÍO',
+            'SAN JUAN RIO' => 'SAN JUAN DEL RÍO',
+            'SAN JUAN' => 'SAN JUAN DEL RÍO',
+            'SAN LUIS POTOSI' => 'SAN LUIS POTOSÍ',
+            'SAN LUIS' => 'SAN LUIS POTOSÍ',
             'TENANGO DEL VALLE' => 'TENANGO DEL VALLE',
-            'TENANGO'           => 'TENANGO DEL VALLE',
-            'TLAXCALA'          => 'TLAXCALA',
-            'TULA'              => 'TULA',
+            'TENANGO' => 'TENANGO DEL VALLE',
+            'TLAXCALA' => 'TLAXCALA',
+            'TULA' => 'TULA',
         ];
 
         $normalize = static function (string $v): string {
-            return strtr(mb_strtoupper(trim($v)), ['Á'=>'A','É'=>'E','Í'=>'I','Ó'=>'O','Ú'=>'U','Ü'=>'U','Ñ'=>'N']);
+            return strtr(mb_strtoupper(trim($v)), ['Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U', 'Ü' => 'U', 'Ñ' => 'N']);
         };
 
         $resolveAlias = static function (string $text) use ($branchAliases, $normalize): string {
             $norm = $normalize($text);
-            if (isset($branchAliases[$norm])) return $branchAliases[$norm];
-            // Partial scan: useful for "FONDEO A CUERNAVACA | ..." texts
-            foreach ($branchAliases as $keyword => $official) {
-                if (str_contains($norm, $keyword)) return $official;
+            if (isset($branchAliases[$norm])) {
+                return $branchAliases[$norm];
             }
+            // Búsqueda parcial: útil para textos "FONDEO A CUERNAVACA | ..."
+            foreach ($branchAliases as $keyword => $official) {
+                if (str_contains($norm, $keyword)) {
+                    return $official;
+                }
+            }
+
             return $text;
         };
 
-        // Step 1: Build employee-name → origin-branch map from PDF records.
-        // PDF records have branch_id (origin) but no destination; observations = employee name.
+        // Paso 1: mapa nombre de empleado → sucursal origen desde los registros del PDF.
+        // Los registros del PDF traen branch_id (origen) pero no destino; observations = nombre del empleado.
         $pdfRows = DB::table('fact_expenses as e')
             ->join('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
             ->join('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
@@ -4173,12 +4610,14 @@ class RadiographySnapshotBuilder
         // Map normalized employee → origin branch
         $empToBranch = [];
         foreach ($pdfRows as $pdf) {
-            if (!$pdf->branch_name || !$pdf->observations) continue;
+            if (! $pdf->branch_name || ! $pdf->observations) {
+                continue;
+            }
             $empToBranch[$normalize($pdf->observations)] = $pdf->branch_name;
         }
 
-        // Step 2: Load Excel fondeos — these have the destination.
-        // Exclude EXCEDENTES (to CORPORATIVO) — those are tracked separately in buildCorporateFunding.
+        // Paso 2: carga los fondeos del Excel — estos sí traen el destino.
+        // Excluye EXCEDENTES (a CORPORATIVO) — se rastrean aparte en buildCorporateFunding.
         $xlRows = DB::table('fact_expenses as e')
             ->join('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
             ->join('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
@@ -4192,35 +4631,35 @@ class RadiographySnapshotBuilder
             ->get();
 
         $detail = [];
-        $total  = 0.0;
+        $total = 0.0;
 
         foreach ($xlRows as $row) {
             $monto = (float) ($row->paid_amount ?: $row->amount);
             $total += $monto;
 
-            $rp          = json_decode($row->raw_payload ?? '{}', true);
+            $rp = json_decode($row->raw_payload ?? '{}', true);
             $solicitante = trim((string) ($rp['solicitante'] ?? ''));
-            $branchDet   = trim((string) ($rp['branch_to_detected'] ?? ''));
+            $branchDet = trim((string) ($rp['branch_to_detected'] ?? ''));
 
             // Resolve DESTINATION
             if ($branchDet !== '' && strtoupper($branchDet) !== 'CORPORATIVO') {
                 $destino = $resolveAlias($branchDet);
             } else {
-                // Parse from observations text (e.g. "FONDEO A CUERNAVACA | FONDEO A CUERNAVACA")
+                // Interpreta el texto de observaciones (p. ej. "FONDEO A CUERNAVACA | FONDEO A CUERNAVACA")
                 $destino = $resolveAlias((string) ($row->observations ?? ''));
                 if ($destino === $normalize((string) ($row->observations ?? ''))) {
-                    $destino = '—'; // could not resolve
+                    $destino = '—'; // no se pudo resolver
                 }
             }
 
-            // Resolve ORIGIN from solicitante → employee→branch map
+            // Resuelve el ORIGEN por solicitante → mapa empleado→sucursal
             $origen = '—';
             if ($solicitante !== '') {
                 $normSol = $normalize($solicitante);
                 if (isset($empToBranch[$normSol])) {
                     $origen = $empToBranch[$normSol];
                 } else {
-                    // Starts-with match handles cases where PDF truncates the employee name
+                    // La coincidencia por prefijo cubre los casos en que el PDF trunca el nombre del empleado
                     foreach ($empToBranch as $empKey => $branchName) {
                         if (str_starts_with($normSol, $empKey) || str_starts_with($empKey, $normSol)) {
                             $origen = $branchName;
@@ -4235,19 +4674,25 @@ class RadiographySnapshotBuilder
             }
 
             $detail[] = [
-                'sucursal_origen'  => $origen,
+                'sucursal_origen' => $origen,
                 'sucursal_destino' => $destino,
-                'responsable'      => $solicitante,
-                'monto'            => $monto,
-                'observacion'      => (string) ($row->observations ?? ''),
-                'fecha'            => $row->expense_date,
-                'fuente'           => 'gastos_lendus_excel',
+                'responsable' => $solicitante,
+                'monto' => $monto,
+                'observacion' => (string) ($row->observations ?? ''),
+                'fecha' => $row->expense_date,
+                'fuente' => 'gastos_lendus_excel',
             ];
         }
 
         return ['total' => $total, 'detalle' => $detail];
     }
 
+    /**
+     * Envíos de excedente a corporativo por sucursal real y fecha (gastos cuyo concepto contiene "excedente").
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Envíos por sucursal y fecha.
+     */
     private function buildCorporateFunding(Period $period): array
     {
         $realBranchNames = $this->resolveRealBranchNormalizedNames();
@@ -4257,33 +4702,33 @@ class RadiographySnapshotBuilder
             ->whereIn('e.period_id', $this->dataIds)
             ->whereRaw("LOWER(COALESCE(e.concept,'')) LIKE '%excedente%'")
             ->whereNotNull('e.expense_date')
-            ->when(!empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw("LOWER(COALESCE(b.name,''))"), $realBranchNames))
-            ->selectRaw("b.name as branch, e.expense_date, SUM(e.amount) as total")
+            ->when(! empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw("LOWER(COALESCE(b.name,''))"), $realBranchNames))
+            ->selectRaw('b.name as branch, e.expense_date, SUM(e.amount) as total')
             ->groupBy('b.name', 'e.expense_date')
             ->get();
 
-        $month       = (int)($period->month ?? (int)date('n'));
-        $year        = (int)($period->year  ?? (int)date('Y'));
-        $daysInMonth = (int)date('t', mktime(0, 0, 0, $month, 1, $year));
-        $dayNames    = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];
+        $month = (int) ($period->month ?? (int) date('n'));
+        $year = (int) ($period->year ?? (int) date('Y'));
+        $daysInMonth = (int) date('t', mktime(0, 0, 0, $month, 1, $year));
+        $dayNames = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];
 
         $amountByDay = [];
-        $byBranch    = [];
+        $byBranch = [];
         foreach ($rows as $row) {
-            $day = (int)date('j', strtotime($row->expense_date));
-            $amountByDay[$day] = ($amountByDay[$day] ?? 0.0) + (float)$row->total;
+            $day = (int) date('j', strtotime($row->expense_date));
+            $amountByDay[$day] = ($amountByDay[$day] ?? 0.0) + (float) $row->total;
             if ($row->branch) {
-                $byBranch[$row->branch] = ($byBranch[$row->branch] ?? 0.0) + (float)$row->total;
+                $byBranch[$row->branch] = ($byBranch[$row->branch] ?? 0.0) + (float) $row->total;
             }
         }
 
         $byDay = [];
         for ($d = 1; $d <= $daysInMonth; $d++) {
-            $ts      = mktime(0, 0, 0, $month, $d, $year);
+            $ts = mktime(0, 0, 0, $month, $d, $year);
             $byDay[] = [
-                'day'     => $d,
-                'weekday' => $dayNames[(int)date('w', $ts)],
-                'total'   => $amountByDay[$d] ?? 0.0,
+                'day' => $d,
+                'weekday' => $dayNames[(int) date('w', $ts)],
+                'total' => $amountByDay[$d] ?? 0.0,
             ];
         }
 
@@ -4294,8 +4739,8 @@ class RadiographySnapshotBuilder
         usort($byBranchResult, fn ($a, $b) => $b['total'] <=> $a['total']);
 
         return [
-            'total'     => array_sum($amountByDay),
-            'by_day'    => $byDay,
+            'total' => array_sum($amountByDay),
+            'by_day' => $byDay,
             'by_branch' => $byBranchResult,
         ];
     }
@@ -4303,17 +4748,28 @@ class RadiographySnapshotBuilder
     /**
      * Recuperación por producto — delega en BranchRadiographyCalculator, que es dueño
      * de la única fuente de verdad de reglas de Recuperación (recoveryExclusionSql()).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Recuperación por producto.
      */
     private function buildRecoveryByProduct(Period $period): array
     {
         return $this->branchCalculator->buildRecoveryByProduct($this->dataIds);
     }
 
+    /**
+     * Colocación por sucursal real y producto usando el MISMO mapa operativo y reglas
+     * que BranchRadiographyCalculator::accumulateColocacion(), para que el total
+     * cuadre con el KPI (las rutas se resuelven a su sucursal).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas sucursal × producto.
+     */
     private function buildPlacementByBranchProduct(Period $period): array
     {
-        // Use the same operative branch map as BranchRadiographyCalculator so that
-        // routes (CUITLAHUAC → TEPIC, etc.) are resolved and the total matches the KPI.
-        $maps        = $this->branchCalculator->buildBranchMap();
+        // Usa el mismo mapa de sucursales operativas que BranchRadiographyCalculator para que
+        // las rutas (CUITLAHUAC → TEPIC, etc.) se resuelvan y el total cuadre con el KPI.
+        $maps = $this->branchCalculator->buildBranchMap();
         $operativeMap = $maps['operative'];  // branch_id => real_sucursal_name
 
         if (empty($operativeMap)) {
@@ -4340,10 +4796,10 @@ class RadiographySnapshotBuilder
             ->get();
 
         return $rows->map(fn ($r) => [
-            'branch'   => $operativeMap[(int)$r->branch_id] ?? 'Sin sucursal',
-            'product'  => $r->product,
-            'creditos' => (int)$r->creditos,
-            'monto'    => (float)$r->monto,
+            'branch' => $operativeMap[(int) $r->branch_id] ?? 'Sin sucursal',
+            'product' => $r->product,
+            'creditos' => (int) $r->creditos,
+            'monto' => (float) $r->monto,
             'apertura' => 0.0,
         ])->values()->all();
     }
@@ -4355,6 +4811,13 @@ class RadiographySnapshotBuilder
     // normal + fiscal). El archivo manual de rotación ya NO existe como fuente del
     // sistema — no hay fallback a source='file' en ningún caso; un periodo sin
     // derivado simplemente reporta "sin_datos" (nunca se resucita el archivo manual).
+    /**
+     * Rotación del periodo derivada de NOI (fact_rotacion, source = derived_noi):
+     * plantilla, altas, bajas e índice global y por sucursal.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Sección de rotación.
+     */
     private function buildRotationData(Period $period): array
     {
         $rows = DB::table('fact_rotacion as fr')
@@ -4381,12 +4844,12 @@ class RadiographySnapshotBuilder
         // AuditRotacionCierreCommand::sectionA()/sectionB(): resuelve el mes de cierre
         // real (para periodos automáticos, el último mes componente) y suma
         // promedio_personal de fact_rotacion (source=derived_noi) de su mes anterior.
-        $allPeriods    = \App\Models\Period::all();
+        $allPeriods = Period::all();
         $closingPeriod = $period->isAutoGenerated() ? $period->resolveLastMonthlyComponent($allPeriods) : $period;
-        $prevMonthly   = $closingPeriod?->previousMonthly($allPeriods);
+        $prevMonthly = $closingPeriod?->previousMonthly($allPeriods);
 
-        $prevCount        = 0.0;
-        $prevPorSucursal  = collect();
+        $prevCount = 0.0;
+        $prevPorSucursal = collect();
         if ($prevMonthly) {
             $prevGlobal = DB::table('fact_rotacion')
                 ->where('period_id', $prevMonthly->id)
@@ -4404,16 +4867,16 @@ class RadiographySnapshotBuilder
 
         if ($rows->isEmpty()) {
             return [
-                'fuente'          => 'sin_datos',
-                'mes'             => '',
-                'altas'           => 0,
-                'bajas'           => 0,
-                'promedio'        => 0,
-                'indice'          => 0.0,
-                'current_count'   => 0,
-                'prev_count'      => round($prevCount, 2),
-                'prev_mes'        => $prevMonthly?->label,
-                'por_sucursal'    => [],
+                'fuente' => 'sin_datos',
+                'mes' => '',
+                'altas' => 0,
+                'bajas' => 0,
+                'promedio' => 0,
+                'indice' => 0.0,
+                'current_count' => 0,
+                'prev_count' => round($prevCount, 2),
+                'prev_mes' => $prevMonthly?->label,
+                'por_sucursal' => [],
                 'detalle_mensual' => [],
             ];
         }
@@ -4421,17 +4884,17 @@ class RadiographySnapshotBuilder
         // Altas/Bajas: FLUJO — se suman entre todos los meses componentes (rows ya cubre
         // todo $this->dataIds, es decir todos los meses en un periodo automático).
         // Plantilla: CIERRE — solo el último mes componente (closingRows), nunca sumada.
-        $closingIds  = $this->closingDataIds;
+        $closingIds = $this->closingDataIds;
         $closingRows = $rows->filter(fn ($r) => in_array((int) $r->period_id, $closingIds, true));
         if ($closingRows->isEmpty()) {
             $closingRows = $rows;
         }
 
-        $totalBajas    = (int) $rows->sum('bajas');
-        $totalAltas    = (int) $rows->sum('altas');
+        $totalBajas = (int) $rows->sum('bajas');
+        $totalAltas = (int) $rows->sum('altas');
         $totalPromedio = (float) $closingRows->sum('promedio_personal');
-        $mesUsado      = $closingRows->pluck('mes')->filter()->unique()->first() ?? ($rows->pluck('mes')->filter()->unique()->first() ?? '');
-        $indiceGlobal  = $totalPromedio > 0 ? round($totalBajas / $totalPromedio * 100, 2) : 0.0;
+        $mesUsado = $closingRows->pluck('mes')->filter()->unique()->first() ?? ($rows->pluck('mes')->filter()->unique()->first() ?? '');
+        $indiceGlobal = $totalPromedio > 0 ? round($totalBajas / $totalPromedio * 100, 2) : 0.0;
 
         // Altas/bajas acumuladas por sucursal (todos los meses)
         $altasBajasPorSucursal = [];
@@ -4444,18 +4907,18 @@ class RadiographySnapshotBuilder
 
         $porSucursal = [];
         foreach ($closingRows as $r) {
-            $ab        = $altasBajasPorSucursal[$r->sucursal_nombre] ?? ['altas' => (int) $r->altas, 'bajas' => (int) $r->bajas];
+            $ab = $altasBajasPorSucursal[$r->sucursal_nombre] ?? ['altas' => (int) $r->altas, 'bajas' => (int) $r->bajas];
             $plantilla = (float) $r->promedio_personal;
             $plantillaAnterior = (float) ($prevPorSucursal->get($r->sucursal_nombre)->promedio_personal ?? 0);
             $porSucursal[] = [
-                'sucursal'           => $r->sucursal_nombre,
-                'altas'              => $ab['altas'],
-                'bajas'              => $ab['bajas'],
-                'promedio_personal'  => $plantilla,
+                'sucursal' => $r->sucursal_nombre,
+                'altas' => $ab['altas'],
+                'bajas' => $ab['bajas'],
+                'promedio_personal' => $plantilla,
                 'plantilla_anterior' => $plantillaAnterior,
-                'variacion_plantilla'=> round($plantilla - $plantillaAnterior, 2),
-                'indice_rotacion'    => $plantilla > 0 ? round($ab['bajas'] / $plantilla * 100, 2) : 0.0,
-                'mes'                => $r->mes,
+                'variacion_plantilla' => round($plantilla - $plantillaAnterior, 2),
+                'indice_rotacion' => $plantilla > 0 ? round($ab['bajas'] / $plantilla * 100, 2) : 0.0,
+                'mes' => $r->mes,
             ];
         }
 
@@ -4464,31 +4927,31 @@ class RadiographySnapshotBuilder
         $detalleMensual = [];
         if ($period->isAutoGenerated()) {
             foreach ($rows->groupBy('period_id')->sortKeys() as $group) {
-                $altasMes     = (int) $group->sum('altas');
-                $bajasMes     = (int) $group->sum('bajas');
+                $altasMes = (int) $group->sum('altas');
+                $bajasMes = (int) $group->sum('bajas');
                 $plantillaMes = (float) $group->sum('promedio_personal');
                 $detalleMensual[] = [
-                    'mes'       => $group->first()->mes,
-                    'altas'     => $altasMes,
-                    'bajas'     => $bajasMes,
+                    'mes' => $group->first()->mes,
+                    'altas' => $altasMes,
+                    'bajas' => $bajasMes,
                     'plantilla' => $plantillaMes,
-                    'indice'    => $plantillaMes > 0 ? round($bajasMes / $plantillaMes * 100, 2) : 0.0,
+                    'indice' => $plantillaMes > 0 ? round($bajasMes / $plantillaMes * 100, 2) : 0.0,
                 ];
             }
         }
 
         return [
-            'fuente'          => 'derived_noi',
-            'mes'             => $mesUsado,
-            'altas'           => $totalAltas,
-            'bajas'           => $totalBajas,
-            'promedio'        => round($totalPromedio, 2),
-            'indice'          => $indiceGlobal,
-            'current_count'   => round($totalPromedio, 2),
-            'prev_count'      => round($prevCount, 2),
-            'prev_mes'        => $prevMonthly?->label,
-            'variacion_neta'  => round($totalPromedio - $prevCount, 2),
-            'por_sucursal'    => $porSucursal,
+            'fuente' => 'derived_noi',
+            'mes' => $mesUsado,
+            'altas' => $totalAltas,
+            'bajas' => $totalBajas,
+            'promedio' => round($totalPromedio, 2),
+            'indice' => $indiceGlobal,
+            'current_count' => round($totalPromedio, 2),
+            'prev_count' => round($prevCount, 2),
+            'prev_mes' => $prevMonthly?->label,
+            'variacion_neta' => round($totalPromedio - $prevCount, 2),
+            'por_sucursal' => $porSucursal,
             'detalle_mensual' => $detalleMensual,
         ];
     }
@@ -4497,6 +4960,9 @@ class RadiographySnapshotBuilder
      * Fuente ÚNICA (cierre 2026-07-23): derivado de NOI fiscal (fact_imss). El archivo
      * manual legado ya no se consulta aquí en ningún caso. Expuesto para que Excel/PDF/UI
      * muestren la fuente real sin duplicar la consulta en cada consumidor.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Metadatos de la fuente IMSS.
      */
     private function buildImssMeta(Period $period): array
     {
@@ -4511,6 +4977,14 @@ class RadiographySnapshotBuilder
     // pestaña Excel ROTACIÓN y para reportes:audit-rotacion-derivada --detail.
     // Fuente ÚNICA: period_employee_rosters (roster NOI normal + fiscal), nunca
     // Lendus ni archivo manual.
+    /**
+     * Detalle de rotación por persona desde period_employee_rosters: activos, bajas
+     * confirmadas con evidencia y ausencias pendientes de confirmar, con su sucursal,
+     * fuente y estado de conciliación.
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Detalle de rotación.
+     */
     private function buildRotationDetail(Period $period): array
     {
         $activeRows = DB::table('period_employee_rosters as per')
@@ -4528,7 +5002,7 @@ class RadiographySnapshotBuilder
             ->where('per.movement_type', 'baja')
             // Cierre 2026-10: una fila antigua 'baja' SIN categoría (roster anterior a la
             // conciliación) no es una baja confirmada: va a pendientes, no aquí.
-            ->where('per.reconciliation_status', \App\Services\Roster\RosterMovementStatus::BAJA_CONFIRMADA)
+            ->where('per.reconciliation_status', RosterMovementStatus::BAJA_CONFIRMADA)
             ->orderBy('per.branch_name')
             ->orderBy('per.nombre_original')
             ->get(['per.branch_id', 'per.branch_name', 'per.nombre_original', 'per.source', 'per.reconciliation_note', 'e.employee_code']);
@@ -4543,50 +5017,50 @@ class RadiographySnapshotBuilder
             ->where(fn ($q) => $q->where('per.movement_type', 'ausencia')
                 ->orWhere(fn ($qq) => $qq->where('per.movement_type', 'baja')
                     ->where(fn ($s) => $s->whereNull('per.reconciliation_status')
-                        ->orWhere('per.reconciliation_status', '!=', \App\Services\Roster\RosterMovementStatus::BAJA_CONFIRMADA))))
+                        ->orWhere('per.reconciliation_status', '!=', RosterMovementStatus::BAJA_CONFIRMADA))))
             ->orderBy('per.branch_name')
             ->orderBy('per.nombre_original')
             ->get(['per.branch_name', 'per.nombre_original', 'per.reconciliation_status', 'per.reconciliation_note', 'e.employee_code']);
 
         $sourceLabel = fn (string $s) => match ($s) {
-            'ambos'              => 'NOI Nómina + NOI Nómina Fiscal',
-            'noi_nomina_fiscal'  => 'NOI Nómina Fiscal',
-            default              => 'NOI Nómina',
+            'ambos' => 'NOI Nómina + NOI Nómina Fiscal',
+            'noi_nomina_fiscal' => 'NOI Nómina Fiscal',
+            default => 'NOI Nómina',
         };
 
         $altas = $activeRows->where('movement_type', 'alta')->map(fn ($r) => [
             'sucursal' => $r->branch_name ?: 'SIN SUCURSAL',
-            'clave'    => $r->employee_code ?: '—',
-            'nombre'   => $r->nombre_original,
-            'motivo'   => 'Aparece en el periodo actual y no en el periodo anterior',
+            'clave' => $r->employee_code ?: '—',
+            'nombre' => $r->nombre_original,
+            'motivo' => 'Aparece en el periodo actual y no en el periodo anterior',
         ])->values()->all();
 
         $bajas = $bajaRows->map(fn ($r) => [
             'sucursal' => $r->branch_name ?: 'SIN SUCURSAL',
-            'clave'    => $r->employee_code ?: '—',
-            'nombre'   => $r->nombre_original,
-            'motivo'   => $r->reconciliation_note ?: 'Aparecía en el periodo anterior y no aparece en el periodo actual',
+            'clave' => $r->employee_code ?: '—',
+            'nombre' => $r->nombre_original,
+            'motivo' => $r->reconciliation_note ?: 'Aparecía en el periodo anterior y no aparece en el periodo actual',
         ])->values()->all();
 
         $bajasPendientes = $pendingRows->map(fn ($r) => [
             'sucursal' => $r->branch_name ?: 'SIN SUCURSAL',
-            'clave'    => $r->employee_code ?: '—',
-            'nombre'   => $r->nombre_original,
-            'estatus'  => \App\Services\Roster\RosterMovementStatus::label(\App\Services\Roster\RosterMovementStatus::resolve($r->reconciliation_status, 'ausencia', false)),
-            'motivo'   => $r->reconciliation_note ?: 'Ausente de la nómina del periodo, sin baja confirmada',
+            'clave' => $r->employee_code ?: '—',
+            'nombre' => $r->nombre_original,
+            'estatus' => RosterMovementStatus::label(RosterMovementStatus::resolve($r->reconciliation_status, 'ausencia', false)),
+            'motivo' => $r->reconciliation_note ?: 'Ausente de la nómina del periodo, sin baja confirmada',
         ])->values()->all();
 
         $activos = $activeRows->map(fn ($r) => [
-            'sucursal'      => $r->branch_name ?: 'SIN SUCURSAL',
-            'clave'         => $r->employee_code ?: '—',
-            'nombre'        => $r->nombre_original,
-            'fuente'        => $sourceLabel($r->source),
+            'sucursal' => $r->branch_name ?: 'SIN SUCURSAL',
+            'clave' => $r->employee_code ?: '—',
+            'nombre' => $r->nombre_original,
+            'fuente' => $sourceLabel($r->source),
             'movement_type' => $r->movement_type,
-            'estatus'       => $r->reconciliation_status,
+            'estatus' => $r->reconciliation_status,
         ])->values()->all();
 
         $sinSucursal = $activeRows->whereNull('branch_id')->map(fn ($r) => [
-            'clave'  => $r->employee_code ?: '—',
+            'clave' => $r->employee_code ?: '—',
             'nombre' => $r->nombre_original,
             'fuente' => $sourceLabel($r->source),
             'motivo' => 'Sin sucursal resuelta en employee_branch_assignments (ni periodo actual ni histórico)',
@@ -4596,13 +5070,13 @@ class RadiographySnapshotBuilder
         // siguen activos (movement_type='activo') más los que causaron baja. Evita una
         // consulta aparte — el periodo anterior ya no tiene por qué seguir en BD igual.
         $notInPrev = ['retorno_tras_ausencia', 'registro_duplicado', 'plantilla_inicial'];
-        $mesAnteriorLista = array_values(array_filter($activos, fn ($r) => $r['movement_type'] === 'activo' && !in_array($r['estatus'] ?? null, $notInPrev, true)));
+        $mesAnteriorLista = array_values(array_filter($activos, fn ($r) => $r['movement_type'] === 'activo' && ! in_array($r['estatus'] ?? null, $notInPrev, true)));
         foreach (array_merge($bajas, $bajasPendientes) as $b) {
             $mesAnteriorLista[] = [
                 'sucursal' => $b['sucursal'],
-                'clave'    => $b['clave'],
-                'nombre'   => $b['nombre'],
-                'fuente'   => '—',
+                'clave' => $b['clave'],
+                'nombre' => $b['nombre'],
+                'fuente' => '—',
             ];
         }
         usort($mesAnteriorLista, fn ($a, $b) => strcmp($a['nombre'], $b['nombre']));
@@ -4610,14 +5084,14 @@ class RadiographySnapshotBuilder
         $prevPeriod = $period->previousMonthly(Period::all());
 
         return [
-            'altas'            => $altas,
-            'bajas'            => $bajas,
+            'altas' => $altas,
+            'bajas' => $bajas,
             'bajas_pendientes' => $bajasPendientes,
-            'activos'          => $activos,
-            'sin_sucursal'     => $sinSucursal,
-            'mes_actual'       => strtoupper($period->label),
-            'mes_anterior'     => $prevPeriod ? strtoupper($prevPeriod->label) : null,
-            'empleados_mes_actual'   => $activos,
+            'activos' => $activos,
+            'sin_sucursal' => $sinSucursal,
+            'mes_actual' => strtoupper($period->label),
+            'mes_anterior' => $prevPeriod ? strtoupper($prevPeriod->label) : null,
+            'empleados_mes_actual' => $activos,
             'empleados_mes_anterior' => $mesAnteriorLista,
         ];
     }
@@ -4648,10 +5122,16 @@ class RadiographySnapshotBuilder
      * NUEVA del builder — nunca $this, para no pisar $this->dataIds del periodo
      * que se está construyendo (ver advertencia de estado en
      * findEmployeeGestorRowByEmployeeId()).
+     *
+     * @param  Period  $period  Periodo.
+     * @param  int  $employeeId  Colaborador.
+     * @param  array  $row  Fila canónica del colaborador.
+     * @param  array  $expenseDetail  Detalle de OPEX.
+     * @return array Estatus operativo (activo/baja) y motivo.
      */
     private function buildOperationalStatus(Period $period, int $employeeId, array $row, array $expenseDetail): array
     {
-        $hasIncome  = round((float) ($row['recuperacion'] ?? 0), 2) > 0 || round((float) ($row['colocacion'] ?? 0), 2) > 0;
+        $hasIncome = round((float) ($row['recuperacion'] ?? 0), 2) > 0 || round((float) ($row['colocacion'] ?? 0), 2) > 0;
         $hasExpense = round((float) ($expenseDetail['automatic_total'] ?? 0), 2) > 0;
         $isActiveNow = $hasIncome || $hasExpense;
 
@@ -4662,7 +5142,7 @@ class RadiographySnapshotBuilder
             $prevBuilder = app(self::class);
             $prevRow = $prevBuilder->findEmployeeGestorRowByEmployeeId($prevPeriod, $employeeId);
             if ($prevRow) {
-                $prevExpenseIds = !empty($prevRow['_employee_ids']) ? $prevRow['_employee_ids'] : [$employeeId];
+                $prevExpenseIds = ! empty($prevRow['_employee_ids']) ? $prevRow['_employee_ids'] : [$employeeId];
                 // Estatus operativo del periodo ANTERIOR — nunca lleva ajuste manual
                 // (ese es efímero de ESTA request/reporte, no aplica a un periodo distinto).
                 $prevExpenseDetail = $prevBuilder->buildEmployeeExpenseDetail($prevExpenseIds, $employeeId);
@@ -4677,20 +5157,20 @@ class RadiographySnapshotBuilder
         $transition = 'sin_periodo_anterior';
         if ($wasActivePrev !== null) {
             $transition = match (true) {
-                $isActiveNow && $wasActivePrev   => 'activo_continua',
-                $isActiveNow && !$wasActivePrev  => 'alta_operativa',
-                !$isActiveNow && $wasActivePrev  => 'baja_operativa',
-                default                          => 'inactivo_continua',
+                $isActiveNow && $wasActivePrev => 'activo_continua',
+                $isActiveNow && ! $wasActivePrev => 'alta_operativa',
+                ! $isActiveNow && $wasActivePrev => 'baja_operativa',
+                default => 'inactivo_continua',
             };
         }
 
         return [
-            'is_active'                   => $isActiveNow,
-            'has_income'                  => $hasIncome,
-            'has_operational_expense'     => $hasExpense,
-            'was_active_previous_period'  => $wasActivePrev,
-            'transition'                  => $transition,
-            'note'                        => 'Estatus operativo (ingreso real o gasto atribuible este periodo) — independiente del estatus de nómina NOI (Rotación/IMSS arriba), que no cambia.',
+            'is_active' => $isActiveNow,
+            'has_income' => $hasIncome,
+            'has_operational_expense' => $hasExpense,
+            'was_active_previous_period' => $wasActivePrev,
+            'transition' => $transition,
+            'note' => 'Estatus operativo (ingreso real o gasto atribuible este periodo) — independiente del estatus de nómina NOI (Rotación/IMSS arriba), que no cambia.',
         ];
     }
 
@@ -4700,9 +5180,17 @@ class RadiographySnapshotBuilder
     // resumen por sucursal, lista de colaboradores incluidos/excluidos y totales
     // globales. Usado por la hoja Excel "IMSS" (RadiographyWorkbookBuilder) y
     // disponible para UI/PDF si se requiere mostrar el detalle completo.
+    /**
+     * Detalle de IMSS derivado: colaboradores activos que aparecen en la nómina fiscal,
+     * por sucursal, multiplicados por la cuota mensual fija
+     * (ImssFromNoiFiscalService::MONTHLY_FEE).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array Detalle de IMSS por sucursal y colaborador.
+     */
     private function buildImssDetail(Period $period): array
     {
-        $fee = \App\Services\ImssFromNoiFiscalService::MONTHLY_FEE;
+        $fee = ImssFromNoiFiscalService::MONTHLY_FEE;
 
         $rows = DB::table('period_employee_rosters as per')
             ->leftJoin('employees as e', 'per.employee_id', '=', 'e.id')
@@ -4713,43 +5201,43 @@ class RadiographySnapshotBuilder
             ->orderBy('per.nombre_original')
             ->get(['per.branch_id', 'per.branch_name', 'per.is_branch_operativa', 'per.nombre_original', 'e.employee_code']);
 
-        $porSucursal   = [];
+        $porSucursal = [];
         $colaboradores = [];
         $totalIncluidos = 0;
         $totalExcluidos = 0;
-        $montoIncluido  = 0.0;
-        $montoExcluido  = 0.0;
+        $montoIncluido = 0.0;
+        $montoExcluido = 0.0;
 
         foreach ($rows as $r) {
             $branchName = $r->branch_name ?: 'SIN SUCURSAL';
-            $incluido   = (bool) $r->branch_id && (bool) $r->is_branch_operativa;
-            $motivo     = $incluido
+            $incluido = (bool) $r->branch_id && (bool) $r->is_branch_operativa;
+            $motivo = $incluido
                 ? 'Sucursal operativa — incluida en el reporte'
-                : (!$r->branch_id
+                : (! $r->branch_id
                     ? 'Empleado sin sucursal resuelta (ver period_employee_rosters)'
                     : 'No operativa (Corporativo/Tulancingo/otra unidad fuera de las 13 sucursales oficiales)');
             $importe = $incluido ? $fee : 0.0;
 
             $key = (int) ($r->branch_id ?? 0);
             $porSucursal[$key] ??= [
-                'sucursal'      => $branchName,
+                'sucursal' => $branchName,
                 'colaboradores' => 0,
-                'cuota'         => $fee,
-                'imss'          => 0.0,
-                'incluido'      => $incluido,
-                'motivo'        => $motivo,
+                'cuota' => $fee,
+                'imss' => 0.0,
+                'incluido' => $incluido,
+                'motivo' => $motivo,
             ];
             $porSucursal[$key]['colaboradores']++;
             $porSucursal[$key]['imss'] += $importe;
 
             $colaboradores[] = [
                 'sucursal' => $branchName,
-                'clave'    => $r->employee_code ?: '—',
-                'nombre'   => $r->nombre_original,
-                'fuente'   => 'NOI Nómina Fiscal',
+                'clave' => $r->employee_code ?: '—',
+                'nombre' => $r->nombre_original,
+                'fuente' => 'NOI Nómina Fiscal',
                 'incluido' => $incluido,
-                'motivo'   => $motivo,
-                'importe'  => $importe,
+                'motivo' => $motivo,
+                'importe' => $importe,
             ];
 
             if ($incluido) {
@@ -4762,15 +5250,15 @@ class RadiographySnapshotBuilder
         }
 
         return [
-            'fuente'                => 'derived_noi_fiscal',
+            'fuente' => 'derived_noi_fiscal',
             'cuota_por_colaborador' => $fee,
-            'por_sucursal'          => array_values($porSucursal),
-            'colaboradores'         => $colaboradores,
-            'resumen'               => [
-                'total_incluidos'         => $totalIncluidos,
-                'monto_incluido'          => $montoIncluido,
-                'total_excluidos'         => $totalExcluidos,
-                'monto_excluido'          => $montoExcluido,
+            'por_sucursal' => array_values($porSucursal),
+            'colaboradores' => $colaboradores,
+            'resumen' => [
+                'total_incluidos' => $totalIncluidos,
+                'monto_incluido' => $montoIncluido,
+                'total_excluidos' => $totalExcluidos,
+                'monto_excluido' => $montoExcluido,
                 'total_detectados_fiscal' => $totalIncluidos + $totalExcluidos,
             ],
         ];
@@ -4778,14 +5266,21 @@ class RadiographySnapshotBuilder
 
     // ── HELPERS ──────────────────────────────────────────────────────────────
 
+    /**
+     * Nombres normalizados de las sucursales operativas financieras
+     * (BranchResolverService::operativeFinancialBranches()). Se cachea en una variable
+     * estática, compartida por todas las instancias del proceso.
+     *
+     * @return array<int,string> Nombres en minúsculas sin acentos.
+     */
     private function resolveRealBranchNormalizedNames(): array
     {
         static $names = null;
         if ($names === null) {
             try {
                 $resolver = app(BranchResolverService::class);
-                // Only the 13 operative financial branches — excludes AGUASCALIENTES,
-                // CHIHUAHUA, DURANGO, CORPORATIVO from cartera/mora/colocación/recuperación.
+                // Solo las 13 sucursales financieras operativas — excluye AGUASCALIENTES,
+                // CHIHUAHUA, DURANGO y CORPORATIVO de cartera/mora/colocación/recuperación.
                 $names = array_map(
                     fn ($n) => $this->normalizeText($n),
                     $resolver->operativeFinancialBranches()
@@ -4795,12 +5290,20 @@ class RadiographySnapshotBuilder
                 $names = [];
             }
         }
+
         return $names;
     }
 
+    /**
+     * Minúsculas y sin acentos/ñ.
+     *
+     * @param  string  $value  Texto original.
+     * @return string Texto normalizado.
+     */
     private function normalizeText(string $value): string
     {
         $value = trim(mb_strtolower($value));
+
         return str_replace(
             ['á', 'é', 'í', 'ó', 'ú', 'ü', 'ñ'],
             ['a', 'e', 'i', 'o', 'u', 'u', 'n'],
@@ -4808,29 +5311,49 @@ class RadiographySnapshotBuilder
         );
     }
 
+    /**
+     * Busca una sucursal por id con caché en memoria de la instancia.
+     *
+     * @param  int|null  $id  Id de la sucursal.
+     * @return Branch|null Sucursal o null.
+     */
     private function resolveBranch(?int $id): ?Branch
     {
-        if (!$id) return null;
-        if (!array_key_exists($id, $this->branchCache)) {
+        if (! $id) {
+            return null;
+        }
+        if (! array_key_exists($id, $this->branchCache)) {
             $this->branchCache[$id] = Branch::query()->find($id);
         }
+
         return $this->branchCache[$id];
     }
 
     // ── MORA DETALLADA ───────────────────────────────────────────────────────
 
+    /**
+     * Definición única de tramos de mora: al corriente, 1-30, 31-60, 61-90, 91-120 y 120+ días.
+     *
+     * @return array<int,array{key:string,label:string,min:int,max:int}> Tramos.
+     */
     private function moraBucketDefs(): array
     {
         return [
-            ['key' => 'al_corriente', 'label' => 'Al corriente',  'min' => 0,   'max' => 0     ],
-            ['key' => 'mora_1_30',    'label' => 'Mora 1-30',     'min' => 1,   'max' => 30    ],
-            ['key' => 'mora_31_60',   'label' => 'Mora 31-60',    'min' => 31,  'max' => 60    ],
-            ['key' => 'mora_61_90',   'label' => 'Mora 61-90',    'min' => 61,  'max' => 90    ],
-            ['key' => 'mora_91_120',  'label' => 'Mora 91-120',   'min' => 91,  'max' => 120   ],
-            ['key' => 'mora_120_plus','label' => 'Mora 120+',     'min' => 121, 'max' => 99999 ],
+            ['key' => 'al_corriente', 'label' => 'Al corriente',  'min' => 0,   'max' => 0],
+            ['key' => 'mora_1_30',    'label' => 'Mora 1-30',     'min' => 1,   'max' => 30],
+            ['key' => 'mora_31_60',   'label' => 'Mora 31-60',    'min' => 31,  'max' => 60],
+            ['key' => 'mora_61_90',   'label' => 'Mora 61-90',    'min' => 61,  'max' => 90],
+            ['key' => 'mora_91_120',  'label' => 'Mora 91-120',   'min' => 91,  'max' => 120],
+            ['key' => 'mora_120_plus', 'label' => 'Mora 120+',     'min' => 121, 'max' => 99999],
         ];
     }
 
+    /**
+     * Cartera y vencida por producto y tramo de mora (foto de cierre, solo sucursales operativas).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas por producto.
+     */
     private function buildMoraByProduct(Period $period): array
     {
         $realBranchNames = $this->resolveRealBranchNormalizedNames();
@@ -4840,7 +5363,7 @@ class RadiographySnapshotBuilder
             ->leftJoin('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $this->closingDataIds)
             ->whereNotNull('po.product_name')
-            ->when(!empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
+            ->when(! empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
             ->selectRaw('
                 po.product_name as product,
                 po.days_past_due,
@@ -4856,18 +5379,18 @@ class RadiographySnapshotBuilder
 
         $byProduct = [];
         foreach ($rows as $row) {
-            $product    = $row->product;
-            $dpd        = (int) $row->days_past_due;
-            $bal        = (float) $row->balance;
-            $vencida5   = (float) $row->vencida_5col;
-            $cnt        = (int) $row->contratos;
+            $product = $row->product;
+            $dpd = (int) $row->days_past_due;
+            $bal = (float) $row->balance;
+            $vencida5 = (float) $row->vencida_5col;
+            $cnt = (int) $row->contratos;
 
             foreach ($defs as $def) {
                 if ($dpd >= $def['min'] && $dpd <= $def['max']) {
                     $amount = $def['key'] === 'al_corriente' ? $bal : $vencida5;
-                    $byProduct[$product]['contratos']        = ($byProduct[$product]['contratos']        ?? 0) + $cnt;
-                    $byProduct[$product][$def['key']]        = ($byProduct[$product][$def['key']]        ?? 0.0) + $amount;
-                    $byProduct[$product]['balance_total']    = ($byProduct[$product]['balance_total']    ?? 0.0) + $bal;
+                    $byProduct[$product]['contratos'] = ($byProduct[$product]['contratos'] ?? 0) + $cnt;
+                    $byProduct[$product][$def['key']] = ($byProduct[$product][$def['key']] ?? 0.0) + $amount;
+                    $byProduct[$product]['balance_total'] = ($byProduct[$product]['balance_total'] ?? 0.0) + $bal;
                     break;
                 }
             }
@@ -4875,14 +5398,14 @@ class RadiographySnapshotBuilder
 
         $result = [];
         foreach ($byProduct as $product => $data) {
-            $vencida = array_sum(array_filter($data, fn ($v, $k) => !in_array($k, ['al_corriente', 'contratos', 'balance_total'], true), ARRAY_FILTER_USE_BOTH));
+            $vencida = array_sum(array_filter($data, fn ($v, $k) => ! in_array($k, ['al_corriente', 'contratos', 'balance_total'], true), ARRAY_FILTER_USE_BOTH));
             $cartera = (float) ($data['balance_total'] ?? 0);
             $row = [
-                'product'   => $product,
+                'product' => $product,
                 'contratos' => (int) ($data['contratos'] ?? 0),
-                'cartera'   => $cartera,
-                'vencida'   => $vencida,
-                'mora_pct'  => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
+                'cartera' => $cartera,
+                'vencida' => $vencida,
+                'mora_pct' => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
             ];
             foreach ($defs as $def) {
                 $row[$def['key']] = $data[$def['key']] ?? 0.0;
@@ -4891,9 +5414,16 @@ class RadiographySnapshotBuilder
         }
 
         usort($result, fn ($a, $b) => $b['cartera'] <=> $a['cartera']);
+
         return $result;
     }
 
+    /**
+     * Cartera y vencida por gestor y tramo de mora (foto de cierre, solo sucursales operativas).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas por gestor.
+     */
     private function buildMoraByGestor(Period $period): array
     {
         $realBranchNames = $this->resolveRealBranchNormalizedNames();
@@ -4903,7 +5433,7 @@ class RadiographySnapshotBuilder
             ->leftJoin('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $this->closingDataIds)
             ->where(fn ($q) => $q->whereNotNull('po.promoter_name')->orWhereNotNull('po.promoter_code'))
-            ->when(!empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
+            ->when(! empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
             ->selectRaw('
                 COALESCE(po.promoter_name, po.promoter_code, \'Sin nombre\') as gestor,
                 b.name as sucursal,
@@ -4920,21 +5450,21 @@ class RadiographySnapshotBuilder
 
         $byGestor = [];
         foreach ($rows as $row) {
-            $key      = $row->gestor . '|||' . ($row->sucursal ?? '');
-            $dpd      = (int) $row->days_past_due;
-            $bal      = (float) $row->balance;
+            $key = $row->gestor.'|||'.($row->sucursal ?? '');
+            $dpd = (int) $row->days_past_due;
+            $bal = (float) $row->balance;
             $vencida5 = (float) $row->vencida_5col;
-            $cnt      = (int) $row->contratos;
+            $cnt = (int) $row->contratos;
 
-            if (!isset($byGestor[$key])) {
+            if (! isset($byGestor[$key])) {
                 $byGestor[$key] = ['gestor' => $row->gestor, 'sucursal' => $row->sucursal, 'contratos' => 0, 'balance_total' => 0.0];
             }
 
             foreach ($defs as $def) {
                 if ($dpd >= $def['min'] && $dpd <= $def['max']) {
                     $amount = $def['key'] === 'al_corriente' ? $bal : $vencida5;
-                    $byGestor[$key][$def['key']]     = ($byGestor[$key][$def['key']]     ?? 0.0) + $amount;
-                    $byGestor[$key]['contratos']     += $cnt;
+                    $byGestor[$key][$def['key']] = ($byGestor[$key][$def['key']] ?? 0.0) + $amount;
+                    $byGestor[$key]['contratos'] += $cnt;
                     $byGestor[$key]['balance_total'] += $bal;
                     break;
                 }
@@ -4943,15 +5473,15 @@ class RadiographySnapshotBuilder
 
         $result = [];
         foreach ($byGestor as $data) {
-            $vencida = array_sum(array_filter($data, fn ($v, $k) => !in_array($k, ['al_corriente', 'contratos', 'balance_total', 'gestor', 'sucursal'], true), ARRAY_FILTER_USE_BOTH));
+            $vencida = array_sum(array_filter($data, fn ($v, $k) => ! in_array($k, ['al_corriente', 'contratos', 'balance_total', 'gestor', 'sucursal'], true), ARRAY_FILTER_USE_BOTH));
             $cartera = (float) ($data['balance_total'] ?? 0);
             $row = [
-                'gestor'    => $data['gestor'],
-                'sucursal'  => $data['sucursal'],
+                'gestor' => $data['gestor'],
+                'sucursal' => $data['sucursal'],
                 'contratos' => (int) ($data['contratos'] ?? 0),
-                'cartera'   => $cartera,
-                'vencida'   => $vencida,
-                'mora_pct'  => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
+                'cartera' => $cartera,
+                'vencida' => $vencida,
+                'mora_pct' => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
             ];
             foreach ($defs as $def) {
                 $row[$def['key']] = $data[$def['key']] ?? 0.0;
@@ -4960,9 +5490,16 @@ class RadiographySnapshotBuilder
         }
 
         usort($result, fn ($a, $b) => strcmp($a['sucursal'] ?? '', $b['sucursal'] ?? '') ?: $b['cartera'] <=> $a['cartera']);
+
         return $result;
     }
 
+    /**
+     * Cartera y vencida por sucursal × producto y tramo de mora (foto de cierre).
+     *
+     * @param  Period  $period  Periodo.
+     * @return array<int,array> Filas sucursal × producto.
+     */
     private function buildMoraByBranchProduct(Period $period): array
     {
         $realBranchNames = $this->resolveRealBranchNormalizedNames();
@@ -4972,7 +5509,7 @@ class RadiographySnapshotBuilder
             ->join('branches as b', 'po.branch_id', '=', 'b.id')
             ->whereIn('po.period_id', $this->closingDataIds)
             ->whereNotNull('po.product_name')
-            ->when(!empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
+            ->when(! empty($realBranchNames), fn ($q) => $q->whereIn(DB::raw('LOWER(b.name)'), $realBranchNames))
             ->selectRaw('
                 b.name as branch,
                 po.product_name as product,
@@ -4986,21 +5523,21 @@ class RadiographySnapshotBuilder
 
         $byBranchProduct = [];
         foreach ($rows as $row) {
-            $key = $row->branch . '|||' . $row->product;
+            $key = $row->branch.'|||'.$row->product;
             $dpd = (int) $row->days_past_due;
             $bal = (float) $row->balance;
             $pdb = (float) $row->past_due_balance;
             $cnt = (int) $row->contratos;
 
-            if (!isset($byBranchProduct[$key])) {
+            if (! isset($byBranchProduct[$key])) {
                 $byBranchProduct[$key] = ['branch' => $row->branch, 'product' => $row->product, 'contratos' => 0, 'balance_total' => 0.0];
             }
 
             foreach ($defs as $def) {
                 if ($dpd >= $def['min'] && $dpd <= $def['max']) {
                     $amount = $def['key'] === 'al_corriente' ? $bal : ($pdb > 0 ? $pdb : $bal);
-                    $byBranchProduct[$key][$def['key']]     = ($byBranchProduct[$key][$def['key']]     ?? 0.0) + $amount;
-                    $byBranchProduct[$key]['contratos']     += $cnt;
+                    $byBranchProduct[$key][$def['key']] = ($byBranchProduct[$key][$def['key']] ?? 0.0) + $amount;
+                    $byBranchProduct[$key]['contratos'] += $cnt;
                     $byBranchProduct[$key]['balance_total'] += $bal;
                     break;
                 }
@@ -5009,15 +5546,15 @@ class RadiographySnapshotBuilder
 
         $result = [];
         foreach ($byBranchProduct as $data) {
-            $vencida = array_sum(array_filter($data, fn ($v, $k) => !in_array($k, ['al_corriente', 'contratos', 'balance_total', 'branch', 'product'], true), ARRAY_FILTER_USE_BOTH));
+            $vencida = array_sum(array_filter($data, fn ($v, $k) => ! in_array($k, ['al_corriente', 'contratos', 'balance_total', 'branch', 'product'], true), ARRAY_FILTER_USE_BOTH));
             $cartera = (float) ($data['balance_total'] ?? 0);
             $row = [
-                'branch'    => $data['branch'],
-                'product'   => $data['product'],
+                'branch' => $data['branch'],
+                'product' => $data['product'],
                 'contratos' => (int) ($data['contratos'] ?? 0),
-                'cartera'   => $cartera,
-                'vencida'   => $vencida,
-                'mora_pct'  => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
+                'cartera' => $cartera,
+                'vencida' => $vencida,
+                'mora_pct' => $cartera > 0 ? round($vencida / $cartera * 100, 2) : 0,
             ];
             foreach ($defs as $def) {
                 $row[$def['key']] = $data[$def['key']] ?? 0.0;
@@ -5026,12 +5563,19 @@ class RadiographySnapshotBuilder
         }
 
         usort($result, fn ($a, $b) => strcmp($a['branch'], $b['branch']) ?: $b['cartera'] <=> $a['cartera']);
+
         return $result;
     }
 
     // Alias delgado — delega en RadiographyStyleHelper::ebitdaCategory() para que
     // exista una única fuente de umbrales (Excel GLOBAL, hoja CATEGORÍA EBITDA, PDF
     // y este resumen JAMÁS se desalineen).
+    /**
+     * Categoría de desempeño EBITDA (delegada en RadiographyStyleHelper::ebitdaCategory()).
+     *
+     * @param  float  $ebitda  EBITDA.
+     * @return string DIAMANTE, MASTER, SENIOR, JUNIOR o MANTENIDO.
+     */
     private function ebitdaCategory(float $ebitda): string
     {
         return RadiographyStyleHelper::ebitdaCategory($ebitda);
@@ -5058,15 +5602,19 @@ class RadiographySnapshotBuilder
      * categorizar, no se pidió desglose ahí). Es una partición exhaustiva de las mismas filas
      * que computeNoiPercepcionesDeduccionesForEmployee() ya suma, así SUM(categorías) ==
      * $percepDeducc['percepciones']/['deducciones'] por construcción, no por coincidencia.
+     *
+     * @param  array  $employeeIds  Ids de la persona.
+     * @param  array  $percepDeducc  Percepciones/deducciones/neto.
+     * @return array Nómina clasificada del colaborador.
      */
     public function buildEmployeePayrollDetail(array $employeeIds, array $percepDeducc): array
     {
         $categoryLabels = [
-            'nomina_total'       => 'Sueldo',
-            'comisiones'         => 'Comisiones',
-            'vacaciones'         => 'Vacaciones',
-            'prima_vacacional'   => 'Prima vacacional',
-            'bonos'              => 'Bonos',
+            'nomina_total' => 'Sueldo',
+            'comisiones' => 'Comisiones',
+            'vacaciones' => 'Vacaciones',
+            'prima_vacacional' => 'Prima vacacional',
+            'bonos' => 'Bonos',
             'bonos_aceleradores' => 'Bonos aceleradores',
             'otros_percepciones' => 'Otras percepciones',
         ];
@@ -5080,7 +5628,7 @@ class RadiographySnapshotBuilder
             ->groupBy('concept')
             ->get()
             ->each(function ($r) use (&$categoryTotals) {
-                $bucket = \App\Services\Radiography\BranchRadiographyCalculator::classifyPercepcionConcept((string) ($r->concept ?? ''));
+                $bucket = BranchRadiographyCalculator::classifyPercepcionConcept((string) ($r->concept ?? ''));
                 $categoryTotals[$bucket] = ($categoryTotals[$bucket] ?? 0.0) + (float) $r->total;
             });
 
@@ -5100,22 +5648,22 @@ class RadiographySnapshotBuilder
             ->values()->all();
 
         $percepcionesTotal = round(array_sum($categoryTotals), 2);
-        $deduccionesTotal  = round((float) array_sum(array_column($deducciones, 'monto')), 2);
+        $deduccionesTotal = round((float) array_sum(array_column($deducciones, 'monto')), 2);
 
         if (abs($percepcionesTotal - round((float) $percepDeducc['percepciones'], 2)) > 0.01
             || abs($deduccionesTotal - round((float) $percepDeducc['deducciones'], 2)) > 0.01) {
             Log::warning('RadiographySnapshotBuilder::buildEmployeePayrollDetail — categorías NOI no reconcilian.', [
                 'employee_ids' => $employeeIds,
                 'percepciones_categorias' => $percepcionesTotal, 'percepciones_noi' => $percepDeducc['percepciones'],
-                'deducciones_categorias'  => $deduccionesTotal,  'deducciones_noi'  => $percepDeducc['deducciones'],
+                'deducciones_categorias' => $deduccionesTotal,  'deducciones_noi' => $percepDeducc['deducciones'],
             ]);
         }
 
         return [
-            'percepciones'        => $percepciones,
-            'deducciones'         => $deducciones,
-            'percepciones_total'  => $percepcionesTotal,
-            'deducciones_total'   => $deduccionesTotal,
+            'percepciones' => $percepciones,
+            'deducciones' => $deducciones,
+            'percepciones_total' => $percepcionesTotal,
+            'deducciones_total' => $deduccionesTotal,
         ];
     }
 
@@ -5125,6 +5673,11 @@ class RadiographySnapshotBuilder
      * aplica aquí). $branchId: acota a una sucursal. Sin ninguno → alcance general
      * (comportamiento previo, sin cambio). Nunca redefine la clasificación vigente/atrasado/
      * vencido ni las exclusiones — solo agrega un filtro de fila adicional.
+     *
+     * @param  Period  $period  Periodo.
+     * @param  string|null  $promoterName  Colaborador para acotar (opcional).
+     * @param  int|null  $branchId  Sucursal para acotar (opcional).
+     * @return array Efectividad de cobranza.
      */
     public function buildEfectividadCobranza(Period $period, ?string $promoterName = null, ?int $branchId = null): array
     {
@@ -5147,15 +5700,15 @@ class RadiographySnapshotBuilder
             ->whereIn('r.period_id', $dataIds)
             ->where(function ($q) {
                 $q->where('r.is_savehearts', '!=', 1)
-                  ->where('r.transaction', '!=', 'CONDONACION')
-                  ->where(function ($q2) {
-                      $q2->whereRaw("NOT (r.is_savehearts = 0 AND (
+                    ->where('r.transaction', '!=', 'CONDONACION')
+                    ->where(function ($q2) {
+                        $q2->whereRaw("NOT (r.is_savehearts = 0 AND (
                           UPPER(COALESCE(r.concept,'')) LIKE '%COBERTURA%'
                           OR UPPER(COALESCE(r.operation,'')) LIKE '%COBERTURA%'
                           OR UPPER(COALESCE(r.concept,'')) LIKE '%SEGURO%'
                           OR UPPER(COALESCE(r.operation,'')) LIKE '%SEGURO%'
                       ))");
-                  });
+                    });
             })
             ->when($promoterName, fn ($q) => $q->whereRaw('UPPER(TRIM(r.promoter_name)) = ?', [mb_strtoupper(trim($promoterName))]))
             ->when($branchId, fn ($q) => $q->where('r.branch_id', $branchId))
@@ -5174,9 +5727,9 @@ class RadiographySnapshotBuilder
 
         $empty = fn () => ['capital' => 0.0, 'interes' => 0.0, 'impuesto' => 0.0, 'moratorios' => 0.0, 'total' => 0.0, 'contratos' => 0];
         $buckets = [
-            'vigente'  => $empty(),
+            'vigente' => $empty(),
             'atrasado' => $empty(),
-            'vencido'  => $empty(),
+            'vencido' => $empty(),
         ];
 
         $contractsSeen = ['vigente' => [], 'atrasado' => [], 'vencido' => []];
@@ -5192,17 +5745,17 @@ class RadiographySnapshotBuilder
             // Estos registros quedan en auditoría audit-efectividad-cobranza.
             $status = match (true) {
                 $dpd === null => 'vigente',
-                $dpd === 0    => 'vigente',
-                $dpd <= 90    => 'atrasado',
-                default       => 'vencido',
+                $dpd === 0 => 'vigente',
+                $dpd <= 90 => 'atrasado',
+                default => 'vencido',
             };
 
-            $buckets[$status]['capital']    += (float) $row->capital;
-            $buckets[$status]['interes']    += (float) $row->interes;
-            $buckets[$status]['impuesto']   += (float) $row->impuesto;
+            $buckets[$status]['capital'] += (float) $row->capital;
+            $buckets[$status]['interes'] += (float) $row->interes;
+            $buckets[$status]['impuesto'] += (float) $row->impuesto;
             $buckets[$status]['moratorios'] += (float) $row->moratorios;
-            $buckets[$status]['total']      += (float) $row->total;
-            if (!isset($contractsSeen[$status][$contract])) {
+            $buckets[$status]['total'] += (float) $row->total;
+            if (! isset($contractsSeen[$status][$contract])) {
                 $contractsSeen[$status][$contract] = true;
                 $buckets[$status]['contratos']++;
             }
@@ -5210,12 +5763,12 @@ class RadiographySnapshotBuilder
 
         $total = $empty();
         foreach ($buckets as $b) {
-            $total['capital']    += $b['capital'];
-            $total['interes']    += $b['interes'];
-            $total['impuesto']   += $b['impuesto'];
+            $total['capital'] += $b['capital'];
+            $total['interes'] += $b['interes'];
+            $total['impuesto'] += $b['impuesto'];
             $total['moratorios'] += $b['moratorios'];
-            $total['total']      += $b['total'];
-            $total['contratos']  += $b['contratos'];
+            $total['total'] += $b['total'];
+            $total['contratos'] += $b['contratos'];
         }
 
         // ── % real de efectividad (a petición explícita, 2026-08-26) ────────────
@@ -5228,9 +5781,9 @@ class RadiographySnapshotBuilder
         // anterior con datos — un 0% ahí sería engañoso, no "efectividad nula".
         $recuperadoDeMora = $buckets['atrasado']['total'] + $buckets['vencido']['total'];
 
-        $allPeriods    = Period::all();
+        $allPeriods = Period::all();
         $closingPeriod = $period->isAutoGenerated() ? $period->resolveLastMonthlyComponent($allPeriods) : $period;
-        $prevMonthly   = $closingPeriod?->previousMonthly($allPeriods);
+        $prevMonthly = $closingPeriod?->previousMonthly($allPeriods);
 
         $carteraMoraPrevia = null;
         if ($prevMonthly) {
@@ -5251,10 +5804,10 @@ class RadiographySnapshotBuilder
         }
 
         $efectividad = [
-            'recuperado_de_mora'          => round($recuperadoDeMora, 2),
+            'recuperado_de_mora' => round($recuperadoDeMora, 2),
             'cartera_mora_periodo_anterior' => $carteraMoraPrevia !== null ? round($carteraMoraPrevia, 2) : null,
-            'periodo_anterior_label'      => $prevMonthly?->label,
-            'efectividad_pct'             => ($carteraMoraPrevia !== null && $carteraMoraPrevia > 0)
+            'periodo_anterior_label' => $prevMonthly?->label,
+            'efectividad_pct' => ($carteraMoraPrevia !== null && $carteraMoraPrevia > 0)
                 ? round($recuperadoDeMora / $carteraMoraPrevia * 100, 2)
                 : null,
         ];

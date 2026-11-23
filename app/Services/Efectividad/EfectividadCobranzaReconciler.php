@@ -15,12 +15,17 @@ namespace App\Services\Efectividad;
  */
 class EfectividadCobranzaReconciler
 {
+    /** Importes que se concilian (por cobrar y cobrado de cada tipo). */
     private const FIELDS = ['sano_pc', 'sano_cob', 'atraso_pc', 'atraso_cob', 'vencido_pc', 'vencido_cob'];
 
+    /** Diferencia máxima aceptada en pesos. */
     private const TOLERANCE = 0.01;
 
     /**
-     * @param  array<int,array<string,mixed>>  $rows
+     * Verifica Σ promotores = TOTAL OFICINA y Σ oficinas = GRAN TOTAL para cada importe.
+     * Función pura; devuelve las diferencias encontradas y un resumen en español.
+     *
+     * @param  array<int,array<string,mixed>>  $rows  filas del calculador aprobado
      * @return array{ok:bool, offices:int, promoters:int, differences:array<int,array<string,mixed>>, summary:string}
      */
     public function check(array $rows): array

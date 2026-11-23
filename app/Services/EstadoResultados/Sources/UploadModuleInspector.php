@@ -19,6 +19,9 @@ use Illuminate\Support\Facades\Schema;
  * archivo borra los renglones del anterior hasta volver a «Cargar registros».
  *
  * Mismo universo que Radiografía: period_id ∈ dataIds (mes + semanas base).
+ *
+ * Lo usan EstadoResultadosDatasetBuilder (para SourceChecklist) y el comando
+ * DiagnoseEstadoResultadosSourcesCommand.
  */
 class UploadModuleInspector
 {
@@ -46,11 +49,14 @@ class UploadModuleInspector
 
     public const STATE_PROBLEMAS = 'con_problemas';
 
-    /** @var array<int, array<string, array>> */
+    /** @var array<int, array<string, array>> memo por instancia (periodo + universo) */
     private array $memo = [];
 
     /**
-     * @param  list<int>  $dataIds
+     * Diagnostica cada fuente de SOURCES (ERP y NOI) para el periodo. Sólo lectura de BD.
+     *
+     * @param  Period  $period  periodo del ER
+     * @param  list<int>  $dataIds  universo de period_id (PeriodDataIds)
      * @return array<string, array<string, mixed>> clave → diagnóstico
      */
     public function inspect(Period $period, array $dataIds): array
@@ -67,6 +73,19 @@ class UploadModuleInspector
         return $this->memo[$memoKey] = $out;
     }
 
+    /**
+     * Diagnóstico de una fuente: archivos subidos en el universo, renglones cargados en la tabla de
+     * hechos (mismo conteo que usa el ER), última corrida de «Cargar registros» y archivos de otros
+     * meses que cubren semanas del periodo. Veredicto: lista (hay renglones y nada nuevo pendiente),
+     * falta (fuente no configurada / sin archivo / archivo eliminado) o con_problemas (carga en
+     * proceso, fallida, archivo sin cargar o sin registros en el periodo).
+     *
+     * @param  Period  $period  periodo
+     * @param  list<int>  $dataIds  universo de period_id
+     * @param  string  $key  clave de la fuente ('erp' | 'nomina')
+     * @param  array  $def  definición de SOURCES
+     * @return array<string, mixed> datos base + state, reason, message, fix
+     */
     private function inspectSource(Period $period, array $dataIds, string $key, array $def): array
     {
         $label = (string) $period->label;
@@ -167,7 +186,16 @@ class UploadModuleInspector
         };
     }
 
-    /** Archivos de la fuente subidos en OTRO mes cuyas semanas cubiertas tocan este periodo. */
+    /**
+     * Archivos de la fuente subidos en OTRO mes cuyas semanas cubiertas tocan este periodo.
+     *
+     * Revisa como máximo los 50 más recientes no sustituidos con covered_period_ids.
+     *
+     * @param  Period  $period  periodo
+     * @param  int  $sourceId  id en data_sources
+     * @param  list<int>  $dataIds  universo de period_id
+     * @return list<array{upload_id:int, period_id:int, period_label:string, name:string, status:string}>
+     */
     private function elsewhere(Period $period, int $sourceId, array $dataIds): array
     {
         if ($dataIds === []) {
@@ -190,11 +218,21 @@ class UploadModuleInspector
         return $out;
     }
 
+    /**
+     * Veredicto de una fuente.
+     *
+     * @param  string  $state  lista | falta | con_problemas
+     * @param  string  $reason  código del motivo
+     * @param  string  $message  situación en español
+     * @param  string|null  $fix  qué hacer
+     * @return array{state:string, reason:string, message:string, fix:?string}
+     */
     private function verdict(string $state, string $reason, string $message, ?string $fix): array
     {
         return ['state' => $state, 'reason' => $reason, 'message' => $message, 'fix' => $fix];
     }
 
+    /** Etiquetas en español del estado de report_uploads. */
     public const STATUS_LABELS = [
         'pending' => 'Subido, sin cargar registros',
         'processing' => 'Cargando registros',
@@ -203,6 +241,13 @@ class UploadModuleInspector
         'replaced' => 'Sustituido',
     ];
 
+    /**
+     * Formatea una marca de tiempo a «d/m/Y H:i» en hora de Ciudad de México; si no se puede
+     * interpretar devuelve el valor original como texto.
+     *
+     * @param  mixed  $ts  fecha/hora
+     * @return string|null null si viene vacía
+     */
     private static function fmt(mixed $ts): ?string
     {
         if (! $ts) {

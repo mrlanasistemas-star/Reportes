@@ -55,6 +55,13 @@ final class AmortizationColumnMap
     /** Encabezados de la plantilla descargable. */
     public const TEMPLATE_HEADERS = ['No. de pago', 'Fecha de pago', 'Pago total', 'Capital', 'Interés', 'IVA de interés', 'Saldo insoluto'];
 
+    /**
+     * Normaliza un encabezado para compararlo con los sinónimos: mayúsculas sin acentos, sólo
+     * letras/dígitos/#/% y espacios simples.
+     *
+     * @param  mixed  $label  valor de la celda de encabezado
+     * @return string '' si no es texto
+     */
     public static function normalize(mixed $label): string
     {
         if ($label === null || is_array($label)) {

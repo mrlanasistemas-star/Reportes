@@ -9,6 +9,7 @@ use App\Services\Okr\OkrSnapshotService;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Módulo OKR — check-in semanal (sección 29 del pedido original).
@@ -42,6 +43,24 @@ class CheckInController extends Controller
 {
     use AuthorizesRequests;
 
+    /**
+     * Registra el check-in semanal del usuario actual sobre un OKR.
+     *
+     * Reglas: el OKR no debe ser de solo lectura, debe estar en su semana 1 o
+     * posterior y el usuario no debe tener ya check-in en esa semana. Dentro de
+     * una transacción: crea el check-in (okr_check_ins), aplica los
+     * `manual_results` a sus KR (current_value + autor/fecha de captura) y los
+     * reevalúa, reevalúa los KR automáticos restantes vía OkrSnapshotService,
+     * guarda `actual_value_snapshot` con los valores finales y, si vienen
+     * descripción + responsable + fecha, crea la acción correctiva.
+     *
+     * @param  StoreCheckInRequest  $request  Datos validados y autorizados (habilidad `checkin`).
+     * @param  OkrObjective  $objective  OKR del check-in.
+     * @param  OkrSnapshotService  $snapshotService  Recalcula KR y snapshots semanales.
+     * @return RedirectResponse Regresa con éxito o con error `check_in`.
+     *
+     * @throws HttpException 422 si el OKR está cerrado/cancelado.
+     */
     public function store(StoreCheckInRequest $request, OkrObjective $objective, OkrSnapshotService $snapshotService): RedirectResponse
     {
         abort_if($objective->isReadOnly(), 422, 'Este OKR está cerrado/cancelado — no admite nuevos check-ins.');
@@ -59,12 +78,12 @@ class CheckInController extends Controller
             // 1. Check-in con snapshot PROVISIONAL — se completa hasta el final,
             // una vez aplicados los resultados manuales (ver docblock).
             $checkIn = $objective->checkIns()->create([
-                'week_number'            => $weekNumber,
-                'check_in_date'          => now()->toDateString(),
-                'user_id'                => auth()->id(),
-                'main_blocker'           => $request->input('main_blocker'),
-                'corrective_action'      => $request->input('corrective_action'),
-                'actual_value_snapshot'  => null,
+                'week_number' => $weekNumber,
+                'check_in_date' => now()->toDateString(),
+                'user_id' => auth()->id(),
+                'main_blocker' => $request->input('main_blocker'),
+                'corrective_action' => $request->input('corrective_action'),
+                'actual_value_snapshot' => null,
             ]);
 
             // 2. Aplica resultados manuales (ya validados: pertenecen al
@@ -74,9 +93,9 @@ class CheckInController extends Controller
             foreach ($request->input('manual_results', []) as $row) {
                 $kr = $objective->keyResults()->findOrFail($row['key_result_id']);
                 $kr->update([
-                    'current_value'         => $row['value'],
-                    'last_manual_input_by'  => auth()->id(),
-                    'last_manual_input_at'  => now(),
+                    'current_value' => $row['value'],
+                    'last_manual_input_by' => auth()->id(),
+                    'last_manual_input_at' => now(),
                 ]);
                 // Recalcula trayectoria/desviación/proyección con el valor recién
                 // capturado y guarda el snapshot de la semana, marcado como
@@ -97,7 +116,7 @@ class CheckInController extends Controller
             // usa el snapshot semanal EXACTO recién cargado, nunca un valor
             // mensual/semanal viejo cacheado.
             foreach ($objective->keyResults()->with('kpi')->get() as $kr) {
-                if ($kr->kpi->isAutomatic() && !in_array($kr->id, $manualKeyResultIds, true)) {
+                if ($kr->kpi->isAutomatic() && ! in_array($kr->id, $manualKeyResultIds, true)) {
                     $snapshotService->evaluateKeyResult($kr->fresh());
                 }
             }
@@ -113,10 +132,10 @@ class CheckInController extends Controller
             // 5. Acción correctiva.
             if ($request->filled('corrective_action') && $request->filled('action_responsible_user_id') && $request->filled('action_due_date')) {
                 $objective->correctiveActions()->create([
-                    'okr_check_in_id'     => $checkIn->id,
-                    'description'         => $request->input('corrective_action'),
+                    'okr_check_in_id' => $checkIn->id,
+                    'description' => $request->input('corrective_action'),
                     'responsible_user_id' => $request->input('action_responsible_user_id'),
-                    'due_date'            => $request->input('action_due_date'),
+                    'due_date' => $request->input('action_due_date'),
                 ]);
             }
         });

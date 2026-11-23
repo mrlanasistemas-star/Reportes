@@ -7,6 +7,18 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-seguros` — auditoría de seguros y coberturas: A) en ingresos
+ * (`fact_recoveries` con is_savehearts = 1), clasificados en CRECE (30% reconocido / 70%
+ * canalizado), Comadres/Crédito Grupal y Savehearts; B) en gastos Lendus (categoría Pólizas
+ * de gastos_lendus). Imprime resumen y, con `--detail`, cada movimiento.
+ *
+ * Escribe en BD: NO (solo CSV con `--export`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-seguros 21
+ *   php artisan reportes:audit-seguros 21 --detail --export
+ */
 class AuditSegurosCommand extends Command
 {
     protected $signature = 'reportes:audit-seguros
@@ -16,17 +28,24 @@ class AuditSegurosCommand extends Command
 
     protected $description = 'Auditoría seguros y coberturas: Savehearts, Crédito Grupal/Comadres, CRECE 30%/70%';
 
+    /**
+     * Carga los seguros de ingresos y de gastos Lendus, los clasifica, acumula totales e imprime
+     * el resumen, el detalle y el CSV según opciones.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
@@ -66,47 +85,47 @@ class AuditSegurosCommand extends Command
             ->get();
 
         $totSavehearts = 0.0;
-        $totComadres   = 0.0;
+        $totComadres = 0.0;
         $totCreceBruto = 0.0;
-        $totCreceRec   = 0.0;
-        $detailRecov   = [];
+        $totCreceRec = 0.0;
+        $detailRecov = [];
 
         foreach ($recovRows as $row) {
             $monto = (float) $row->total_amount;
-            $tipo  = (string) $row->tipo_seguro;
+            $tipo = (string) $row->tipo_seguro;
             $crece = (float) ($row->savehearts_crece_share ?? 0.0);
 
             switch ($tipo) {
                 case 'CRECE':
                     $totCreceBruto += $monto;
-                    $totCreceRec   += $crece;
-                    $tratamiento   = sprintf('30%% reconocido=$%.2f | 70%% puente=$%.2f', $crece, $monto - $crece);
-                    $reconocido    = $crece;
-                    $noreconocido  = round($monto - $crece, 2);
+                    $totCreceRec += $crece;
+                    $tratamiento = sprintf('30%% reconocido=$%.2f | 70%% puente=$%.2f', $crece, $monto - $crece);
+                    $reconocido = $crece;
+                    $noreconocido = round($monto - $crece, 2);
                     break;
                 case 'COMADRES/GRUPAL':
-                    $totComadres   += $monto;
-                    $tratamiento   = 'Monto puente — NO suma a ingresos ni gastos';
-                    $reconocido    = 0.0;
-                    $noreconocido  = $monto;
+                    $totComadres += $monto;
+                    $tratamiento = 'Monto puente — NO suma a ingresos ni gastos';
+                    $reconocido = 0.0;
+                    $noreconocido = $monto;
                     break;
                 default:
                     $totSavehearts += $monto;
-                    $tratamiento   = 'Monto puente — NO suma a ingresos ni gastos';
-                    $reconocido    = 0.0;
-                    $noreconocido  = $monto;
+                    $tratamiento = 'Monto puente — NO suma a ingresos ni gastos';
+                    $reconocido = 0.0;
+                    $noreconocido = $monto;
             }
 
             $detailRecov[] = [
-                'fuente'       => 'fact_recoveries',
-                'id'           => $row->id,
-                'sucursal'     => (string) ($row->sucursal ?? '(sin suc)'),
-                'concepto'     => (string) ($row->concept ?? ''),
-                'operacion'    => (string) ($row->operation ?? ''),
-                'tipo'         => $tipo,
-                'monto'        => $monto,
-                'tratamiento'  => $tratamiento,
-                'reconocido'   => $reconocido,
+                'fuente' => 'fact_recoveries',
+                'id' => $row->id,
+                'sucursal' => (string) ($row->sucursal ?? '(sin suc)'),
+                'concepto' => (string) ($row->concept ?? ''),
+                'operacion' => (string) ($row->operation ?? ''),
+                'tipo' => $tipo,
+                'monto' => $monto,
+                'tratamiento' => $tratamiento,
+                'reconocido' => $reconocido,
                 'noreconocido' => $noreconocido,
             ];
         }
@@ -114,7 +133,7 @@ class AuditSegurosCommand extends Command
         // ── B. Seguros en GASTOS Lendus (fact_expenses pólizas) ──────────
         $lendusId = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
         $gastoSeguros = 0.0;
-        $detailGasto  = [];
+        $detailGasto = [];
 
         if ($lendusId) {
             $gastoRows = DB::table('fact_expenses as e')
@@ -138,41 +157,41 @@ class AuditSegurosCommand extends Command
                 $monto = (float) ($row->paid_amount ?: $row->amount);
                 $gastoSeguros += $monto;
                 $detailGasto[] = [
-                    'fuente'      => 'gastos_lendus',
-                    'id'          => $row->id,
-                    'sucursal'    => (string) ($row->sucursal ?? '(sin suc)'),
-                    'concepto'    => (string) ($row->concept ?? ''),
-                    'operacion'   => (string) ($row->observations ?? ''),
-                    'tipo'        => 'PÓLIZA LENDUS (PUENTE)',
-                    'monto'       => $monto,
+                    'fuente' => 'gastos_lendus',
+                    'id' => $row->id,
+                    'sucursal' => (string) ($row->sucursal ?? '(sin suc)'),
+                    'concepto' => (string) ($row->concept ?? ''),
+                    'operacion' => (string) ($row->observations ?? ''),
+                    'tipo' => 'PÓLIZA LENDUS (PUENTE)',
+                    'monto' => $monto,
                     'tratamiento' => 'Monto puente — NO suma a gastos operativos ni a EBITDA',
-                    'reconocido'  => 0.0,
-                    'noreconocido'=> $monto,
+                    'reconocido' => 0.0,
+                    'noreconocido' => $monto,
                 ];
             }
         }
 
         // ── Resumen ──────────────────────────────────────────────────────────
-        $totalPuente       = $totSavehearts + $totComadres + $gastoSeguros;
-        $totCreceNoRec     = round($totCreceBruto - $totCreceRec, 2);
+        $totalPuente = $totSavehearts + $totComadres + $gastoSeguros;
+        $totCreceNoRec = round($totCreceBruto - $totCreceRec, 2);
         $totalSegurosTotal = $totalPuente + $totCreceBruto;
 
         $this->line('');
         $this->info('════ RESUMEN SEGUROS / COBERTURAS ════');
         $this->line('');
-        $this->line(str_pad('Cobertura Savehearts (ingresos):',           46) . '$' . number_format($totSavehearts, 2));
-        $this->line(str_pad('Cobertura Crédito Grupal / Comadres (ing):', 46) . '$' . number_format($totComadres, 2));
-        $this->line(str_pad('Pólizas Lendus / gastos (puente):',          46) . '$' . number_format($gastoSeguros, 2));
+        $this->line(str_pad('Cobertura Savehearts (ingresos):', 46).'$'.number_format($totSavehearts, 2));
+        $this->line(str_pad('Cobertura Crédito Grupal / Comadres (ing):', 46).'$'.number_format($totComadres, 2));
+        $this->line(str_pad('Pólizas Lendus / gastos (puente):', 46).'$'.number_format($gastoSeguros, 2));
         $this->line(str_repeat('─', 62));
-        $this->line(str_pad('Subtotal puente (no reconocido):',            46) . '$' . number_format($totalPuente, 2));
+        $this->line(str_pad('Subtotal puente (no reconocido):', 46).'$'.number_format($totalPuente, 2));
         $this->line('');
-        $this->line(str_pad('Seguro CRECE bruto:',                         46) . '$' . number_format($totCreceBruto, 2));
-        $this->info(str_pad('Seguro CRECE reconocido (30%):',              46) . '$' . number_format($totCreceRec, 2));
-        $this->line(str_pad('Seguro CRECE no reconocido / puente (70%):', 46) . '$' . number_format($totCreceNoRec, 2));
+        $this->line(str_pad('Seguro CRECE bruto:', 46).'$'.number_format($totCreceBruto, 2));
+        $this->info(str_pad('Seguro CRECE reconocido (30%):', 46).'$'.number_format($totCreceRec, 2));
+        $this->line(str_pad('Seguro CRECE no reconocido / puente (70%):', 46).'$'.number_format($totCreceNoRec, 2));
         $this->line(str_repeat('─', 62));
-        $this->info(str_pad('TOTAL SEGUROS / COBERTURAS (bruto):',         46) . '$' . number_format($totalSegurosTotal, 2));
-        $this->info(str_pad('Monto reconocido como ingreso (CRECE 30%):',  46) . '$' . number_format($totCreceRec, 2));
-        $this->line(str_pad('Monto puente / no reconocido:',               46) . '$' . number_format($totalSegurosTotal - $totCreceRec, 2));
+        $this->info(str_pad('TOTAL SEGUROS / COBERTURAS (bruto):', 46).'$'.number_format($totalSegurosTotal, 2));
+        $this->info(str_pad('Monto reconocido como ingreso (CRECE 30%):', 46).'$'.number_format($totCreceRec, 2));
+        $this->line(str_pad('Monto puente / no reconocido:', 46).'$'.number_format($totalSegurosTotal - $totCreceRec, 2));
 
         // ── Detalle ──────────────────────────────────────────────────────────
         if ($this->option('detail')) {
@@ -180,22 +199,22 @@ class AuditSegurosCommand extends Command
             $this->line('');
             $this->info('════ DETALLE FILA A FILA ════');
             $this->line(
-                str_pad('Fuente', 18) .
-                str_pad('Sucursal', 20) .
-                str_pad('Tipo', 22) .
-                str_pad('Monto bruto', 16) .
-                str_pad('Reconocido', 14) .
-                str_pad('Puente', 14) .
+                str_pad('Fuente', 18).
+                str_pad('Sucursal', 20).
+                str_pad('Tipo', 22).
+                str_pad('Monto bruto', 16).
+                str_pad('Reconocido', 14).
+                str_pad('Puente', 14).
                 'Tratamiento'
             );
             $this->line(str_repeat('─', 140));
             foreach ($allDetail as $r) {
-                $line = str_pad(mb_substr($r['fuente'], 0, 16), 18) .
-                        str_pad(mb_substr($r['sucursal'], 0, 18), 20) .
-                        str_pad(mb_substr($r['tipo'], 0, 20), 22) .
-                        str_pad('$' . number_format($r['monto'], 2), 16) .
-                        str_pad('$' . number_format($r['reconocido'], 2), 14) .
-                        str_pad('$' . number_format($r['noreconocido'], 2), 14) .
+                $line = str_pad(mb_substr($r['fuente'], 0, 16), 18).
+                        str_pad(mb_substr($r['sucursal'], 0, 18), 20).
+                        str_pad(mb_substr($r['tipo'], 0, 20), 22).
+                        str_pad('$'.number_format($r['monto'], 2), 16).
+                        str_pad('$'.number_format($r['reconocido'], 2), 14).
+                        str_pad('$'.number_format($r['noreconocido'], 2), 14).
                         mb_substr($r['tratamiento'], 0, 50);
                 if ($r['reconocido'] > 0) {
                     $this->info($line);
@@ -213,28 +232,34 @@ class AuditSegurosCommand extends Command
         return 0;
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV con un renglón por movimiento de seguro.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $rows  Filas de detalle (ingresos y gastos).
+     */
     private function exportCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $file = "seguros_periodo_{$periodId}_" . now()->format('Ymd_His') . '.csv';
+        $dir = 'auditorias';
+        $file = "seguros_periodo_{$periodId}_".now()->format('Ymd_His').'.csv';
         $path = "{$dir}/{$file}";
 
-        $lines   = [];
+        $lines = [];
         $headers = ['Fuente', 'ID', 'Sucursal', 'Concepto', 'Operación', 'Tipo Seguro', 'Monto Bruto', 'Reconocido Ingreso', 'No Reconocido Puente', 'Tratamiento'];
         $lines[] = implode(',', $headers);
 
         foreach ($rows as $r) {
             $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $r['fuente']) . '"',
+                '"'.str_replace('"', '""', $r['fuente']).'"',
                 $r['id'],
-                '"' . str_replace('"', '""', $r['sucursal']) . '"',
-                '"' . str_replace('"', '""', $r['concepto']) . '"',
-                '"' . str_replace('"', '""', $r['operacion']) . '"',
-                '"' . str_replace('"', '""', $r['tipo']) . '"',
+                '"'.str_replace('"', '""', $r['sucursal']).'"',
+                '"'.str_replace('"', '""', $r['concepto']).'"',
+                '"'.str_replace('"', '""', $r['operacion']).'"',
+                '"'.str_replace('"', '""', $r['tipo']).'"',
                 number_format($r['monto'], 2, '.', ''),
                 number_format($r['reconocido'], 2, '.', ''),
                 number_format($r['noreconocido'], 2, '.', ''),
-                '"' . str_replace('"', '""', $r['tratamiento']) . '"',
+                '"'.str_replace('"', '""', $r['tratamiento']).'"',
             ]);
         }
 

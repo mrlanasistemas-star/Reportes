@@ -20,12 +20,28 @@ use Illuminate\Support\Facades\DB;
  */
 class RotacionDerivedFromNoiService
 {
+    /**
+     * @param  PeriodEmployeeRosterService  $rosterService  Reconstruye el roster canónico del periodo (period_employee_rosters).
+     */
     public function __construct(
         private readonly PeriodEmployeeRosterService $rosterService,
     ) {}
 
     /**
-     * @return array{altas:int,bajas:int,plantilla:int,indice:float,branches:int,roster:array}
+     * Calcula altas, bajas confirmadas, plantilla e índice de rotación del periodo por
+     * sucursal operativa y los guarda en `fact_rotacion` con source = 'derived_noi'.
+     *
+     * Pasos y efectos:
+     * 1. Reconstruye el roster del periodo (PeriodEmployeeRosterService::buildForPeriod, escribe en BD).
+     * 2. Agrupa por sucursal: plantilla = activos del periodo; altas = activos con movimiento 'alta';
+     *    bajas = movimiento 'baja'; 'ausencia' solo suma a bajas_pendientes.
+     * 3. Borra e inserta SOLO las filas derived_noi del periodo (las de archivo manual
+     *    source='file' nunca se tocan).
+     * 4. Compara los totales contra el archivo manual legacy, si existe.
+     *
+     * @param  Period  $period  Periodo a derivar.
+     * @return array{altas:int,bajas:int,bajas_pendientes:int,plantilla:int,indice:float,branches:int,roster:array,legacy_exists:bool,matches_legacy:?bool,legacy:?array}
+     *                                                                                                                                                                    Totales globales; matches_legacy = null cuando no hay archivo legacy contra qué comparar.
      */
     public function deriveForPeriod(Period $period): array
     {
@@ -62,9 +78,9 @@ class RotacionDerivedFromNoiService
         // BranchRadiographyCalculator/RadiographySnapshotBuilder, que las prefieren).
         DB::table('fact_rotacion')->where('period_id', $period->id)->where('source', 'derived_noi')->delete();
 
-        $now       = now();
-        $mesLabel  = strtoupper($period->label);
-        $insert    = [];
+        $now = now();
+        $mesLabel = strtoupper($period->label);
+        $insert = [];
         $totalAltas = 0;
         $totalBajas = 0;
         $totalPlantilla = 0;
@@ -72,28 +88,28 @@ class RotacionDerivedFromNoiService
         foreach ($byBranch as $branchId => $d) {
             $indice = $d['plantilla'] > 0 ? round($d['bajas'] / $d['plantilla'] * 100, 2) : 0.0;
             $insert[] = [
-                'period_id'         => $period->id,
-                'report_upload_id'  => null,
-                'sucursal_nombre'   => $d['branch_name'],
-                'branch_id'         => $branchId,
-                'mes'               => $mesLabel,
-                'bajas'             => $d['bajas'],
-                'altas'             => $d['altas'],
+                'period_id' => $period->id,
+                'report_upload_id' => null,
+                'sucursal_nombre' => $d['branch_name'],
+                'branch_id' => $branchId,
+                'mes' => $mesLabel,
+                'bajas' => $d['bajas'],
+                'altas' => $d['altas'],
                 'promedio_personal' => $d['plantilla'],
-                'plantilla_maxima'  => null,
-                'indice_rotacion'   => $indice,
-                'hoja_fuente'       => null,
-                'raw_payload'       => null,
-                'source'            => 'derived_noi',
-                'created_at'        => $now,
-                'updated_at'        => $now,
+                'plantilla_maxima' => null,
+                'indice_rotacion' => $indice,
+                'hoja_fuente' => null,
+                'raw_payload' => null,
+                'source' => 'derived_noi',
+                'created_at' => $now,
+                'updated_at' => $now,
             ];
-            $totalAltas     += $d['altas'];
-            $totalBajas     += $d['bajas'];
+            $totalAltas += $d['altas'];
+            $totalBajas += $d['bajas'];
             $totalPlantilla += $d['plantilla'];
         }
 
-        if (!empty($insert)) {
+        if (! empty($insert)) {
             DB::table('fact_rotacion')->insert($insert);
         }
 
@@ -111,16 +127,16 @@ class RotacionDerivedFromNoiService
             : null; // null = no hay legacy contra qué comparar (periodo nuevo)
 
         return [
-            'altas'          => $totalAltas,
-            'bajas'          => $totalBajas,
+            'altas' => $totalAltas,
+            'bajas' => $totalBajas,
             'bajas_pendientes' => $bajasPendientes,
-            'plantilla'      => $totalPlantilla,
-            'indice'         => $indiceGlobal,
-            'branches'       => count($insert),
-            'roster'         => $rosterStats,
-            'legacy_exists'  => $legacyExists,
+            'plantilla' => $totalPlantilla,
+            'indice' => $indiceGlobal,
+            'branches' => count($insert),
+            'roster' => $rosterStats,
+            'legacy_exists' => $legacyExists,
             'matches_legacy' => $matchesLegacy,
-            'legacy'         => $legacyExists ? [
+            'legacy' => $legacyExists ? [
                 'altas' => (int) $legacy->altas, 'bajas' => (int) $legacy->bajas, 'plantilla' => (int) $legacy->plantilla,
             ] : null,
         ];

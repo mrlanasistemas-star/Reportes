@@ -15,6 +15,11 @@ use Illuminate\Validation\Validator;
  */
 class StoreEvidenceRequest extends FormRequest
 {
+    /**
+     * Requiere la habilidad `uploadEvidence` sobre el Objective de la ruta.
+     *
+     * @return bool false si no hay Objective en la ruta o no hay permiso.
+     */
     public function authorize(): bool
     {
         $objective = $this->route('objective');
@@ -22,28 +27,41 @@ class StoreEvidenceRequest extends FormRequest
         return $objective ? ($this->user()?->can('uploadEvidence', $objective) ?? false) : false;
     }
 
+    /**
+     * Reglas: archivo obligatorio (≤10 MB; xlsx, xls, pdf, jpg, jpeg, png, csv,
+     * docx), KR opcional, semana opcional entre 1 y la duración del Objective
+     * (104 si no hay Objective) y comentario opcional.
+     *
+     * @return array<string, array<int, mixed>>
+     */
     public function rules(): array
     {
         $objective = $this->route('objective');
 
         return [
-            'file'              => ['required', 'file', 'max:10240', 'mimes:xlsx,xls,pdf,jpg,jpeg,png,csv,docx'],
+            'file' => ['required', 'file', 'max:10240', 'mimes:xlsx,xls,pdf,jpg,jpeg,png,csv,docx'],
             'okr_key_result_id' => ['nullable', 'integer', 'exists:okr_key_results,id'],
-            'week_number'       => ['nullable', 'integer', 'min:1', 'max:' . ($objective?->duration_weeks ?? 104)],
-            'comment'           => ['nullable', 'string', 'max:1000'],
+            'week_number' => ['nullable', 'integer', 'min:1', 'max:'.($objective?->duration_weeks ?? 104)],
+            'comment' => ['nullable', 'string', 'max:1000'],
         ];
     }
 
+    /**
+     * Validación posterior: si se envió `okr_key_result_id`, verifica que el KR
+     * pertenezca al Objective de la ruta (evita evidencias cruzadas).
+     *
+     * @param  Validator  $validator  Validador al que se agregan los errores.
+     */
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {
             $objective = $this->route('objective');
-            if (!$objective || !$this->filled('okr_key_result_id')) {
+            if (! $objective || ! $this->filled('okr_key_result_id')) {
                 return;
             }
 
             $belongs = $objective->keyResults()->where('id', $this->integer('okr_key_result_id'))->exists();
-            if (!$belongs) {
+            if (! $belongs) {
                 $validator->errors()->add('okr_key_result_id', 'Ese Key Result no pertenece a este Objective.');
             }
         });

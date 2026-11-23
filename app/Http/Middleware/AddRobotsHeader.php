@@ -17,6 +17,16 @@ use Symfony\Component\HttpFoundation\Response;
  */
 class AddRobotsHeader
 {
+    /**
+     * Deja pasar la petición y, ya con la respuesta generada, le agrega la
+     * cabecera X-Robots-Tag calculada por Seo::robotsHeaderFor() salvo que la
+     * respuesta ya traiga una propia (se respeta la que puso el controlador).
+     * Si Seo devuelve null (robots.txt, sitemap.xml) no se agrega nada.
+     *
+     * @param  Request  $request  Petición entrante (web, API o descarga).
+     * @param  Closure  $next  Siguiente capa del pipeline.
+     * @return Response La misma respuesta, posiblemente con la cabecera agregada.
+     */
     public function handle(Request $request, Closure $next): Response
     {
         $response = $next($request);

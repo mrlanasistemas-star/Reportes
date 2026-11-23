@@ -24,6 +24,7 @@ final class V12ConciliadorNeto
 
     private const M = V12Vba::MARGEN;
 
+    /** @param  V12Corrida  $c  estado compartido de la corrida (se modifica) */
     public function __construct(private readonly V12Corrida $c) {}
 
     /**

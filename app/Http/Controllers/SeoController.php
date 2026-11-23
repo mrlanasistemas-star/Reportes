@@ -28,11 +28,21 @@ class SeoController extends Controller
         '/favicon.ico', '/favicon-32.png', '/apple-touch-icon.png', '/manifest.webmanifest',
     ];
 
+    /**
+     * Genera robots.txt dinámico.
+     *
+     * Permite (Allow) solo las páginas públicas registradas en Seo::publicPages()
+     * (p. ej. el login) y los recursos estáticos de PUBLIC_ASSETS; bloquea
+     * explícitamente PRIVATE_PATHS y cierra con "Disallow: /" para todo lo demás.
+     * Añade la URL absoluta del sitemap.
+     *
+     * @return Response Texto plano UTF-8.
+     */
     public function robots(): Response
     {
         $allow = collect(Seo::publicPages())
             ->keys()
-            ->map(fn (string $name) => '/' . ltrim((string) parse_url(route($name), PHP_URL_PATH), '/'))
+            ->map(fn (string $name) => '/'.ltrim((string) parse_url(route($name), PHP_URL_PATH), '/'))
             ->merge(self::PUBLIC_ASSETS)
             ->map(fn (string $path) => "Allow: {$path}");
 
@@ -41,13 +51,21 @@ class SeoController extends Controller
             ->push('Disallow: /');
 
         $body = "# Reportes Mr Lana — solo el inicio de sesión es público.\n"
-            . "User-agent: *\n"
-            . $allow->merge($disallow)->implode("\n")
-            . "\n\nSitemap: " . Seo::absolute('sitemap.xml') . "\n";
+            ."User-agent: *\n"
+            .$allow->merge($disallow)->implode("\n")
+            ."\n\nSitemap: ".Seo::absolute('sitemap.xml')."\n";
 
         return response($body, 200)->header('Content-Type', 'text/plain; charset=UTF-8');
     }
 
+    /**
+     * Genera sitemap.xml con las páginas públicas de Seo::publicPages().
+     *
+     * `lastmod` sale de la fecha de modificación del archivo de vista declarado
+     * en la página (o la hora actual si no existe); `priority` por defecto 0.5.
+     *
+     * @return Response XML UTF-8.
+     */
     public function sitemap(): Response
     {
         $urls = collect(Seo::publicPages())->map(function (array $page, string $name) {
@@ -56,17 +74,17 @@ class SeoController extends Controller
             $path = (string) parse_url(route($name), PHP_URL_PATH);
 
             return "  <url>\n"
-                . '    <loc>' . e(Seo::absolute($path)) . "</loc>\n"
-                . '    <lastmod>' . gmdate('Y-m-d', $lastmod) . "</lastmod>\n"
-                . "    <changefreq>monthly</changefreq>\n"
-                . '    <priority>' . e($page['priority'] ?? '0.5') . "</priority>\n"
-                . '  </url>';
+                .'    <loc>'.e(Seo::absolute($path))."</loc>\n"
+                .'    <lastmod>'.gmdate('Y-m-d', $lastmod)."</lastmod>\n"
+                ."    <changefreq>monthly</changefreq>\n"
+                .'    <priority>'.e($page['priority'] ?? '0.5')."</priority>\n"
+                .'  </url>';
         });
 
-        $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
-            . '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n"
-            . $urls->implode("\n")
-            . "\n</urlset>\n";
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>'."\n"
+            .'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'."\n"
+            .$urls->implode("\n")
+            ."\n</urlset>\n";
 
         return response($xml, 200)->header('Content-Type', 'application/xml; charset=UTF-8');
     }

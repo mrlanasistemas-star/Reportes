@@ -6,18 +6,35 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-upload-status` — estado de los uploads del periodo y de su última
+ * corrida de proceso (process runs), conteo de filas en las tablas de hechos y lista de
+ * pendientes.
+ *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-upload-status 21
+ */
 class DebugUploadStatusCommand extends Command
 {
-    protected $signature   = 'reportes:debug-upload-status {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-upload-status {period_id : ID del periodo}';
+
     protected $description = 'Muestra estado de uploads y process runs del periodo.';
 
+    /**
+     * Imprime uploads, process runs, conteos de hechos y pendientes.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -73,28 +90,28 @@ class DebugUploadStatusCommand extends Command
                 $r->upload_id,
                 $r->code,
                 $r->status,
-                $r->rows_read    ?? '?',
+                $r->rows_read ?? '?',
                 $r->rows_inserted ?? '?',
-                $r->rows_skipped  ?? '?',
+                $r->rows_skipped ?? '?',
                 $r->rows_with_errors ?? '?',
             ])->all()
         );
 
         // ── Fact tables ───────────────────────────────────────────────────────
         $this->line('');
-        $this->info('── Fact tables (period_id = ' . $periodId . ') ──');
+        $this->info('── Fact tables (period_id = '.$periodId.') ──');
 
         $allPeriods = Period::all();
-        $weekly     = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge($weekly, [$period->id])));
-        $this->line('  Data IDs resueltos: [' . implode(', ', $dataIds) . ']');
+        $weekly = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge($weekly, [$period->id])));
+        $this->line('  Data IDs resueltos: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         $tables = [
-            'fact_portfolios'   => 'Saldos por Cliente',
-            'fact_placements'   => 'Ministraciones',
-            'fact_recoveries'   => 'Ingresos Cobranza',
-            'fact_expenses'     => 'Gastos',
+            'fact_portfolios' => 'Saldos por Cliente',
+            'fact_placements' => 'Ministraciones',
+            'fact_recoveries' => 'Ingresos Cobranza',
+            'fact_expenses' => 'Gastos',
             'fact_noi_movements' => 'NOI Nómina',
         ];
 

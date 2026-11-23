@@ -42,7 +42,16 @@ use Illuminate\Support\Facades\Schema;
  * El dataset lleva un hash (sha256) de sus cifras: Web = Excel = PDF se puede
  * comprobar comparando el hash impreso en los tres.
  *
- * Fórmulas:
+ * Fórmulas VIGENTES (modelo de un solo EBITDA, MODEL['version'] = 2026-11-06.ebitda-unico; ver buildScope()):
+ *   INGRESOS OPERATIVOS = Σ INCOME_FIELDS de la fila de Radiografía
+ *   OPEX TOTAL          = OPEX suc. + Nómina suc. + OPEX corporativo + Nómina corporativa + DG (los tres
+ *                         últimos sólo en el consolidado)
+ *   EBITDA              = INGRESOS − OPEX TOTAL
+ *   EBIT                = EBITDA − (Depreciación + Amortización)
+ *   EBT                 = EBIT + Resultado financiero neto (ingresos financieros − gastos financieros)
+ *   UTILIDAD NETA       = EBT − ISR (ISR «sin información» ⇒ ISR y utilidad null = pendiente)
+ *
+ * Fórmulas del modelo ANTERIOR (3 EBITDA), que hoy sólo se calculan como `controls`/compatibilidad:
  *   INGRESOS            = Σ componentes de ingreso real (BranchRadiographyCalculator::ingresoEbitdaBaseFor)
  *   EBITDA SUCURSALES   = INGRESOS − OPEX sucursales − Nómina y Capital Humano sucursales
  *   EBITDA CORPORATIVO  = EBITDA SUCURSALES − OPEX corporativo − Nómina corporativa
@@ -54,9 +63,14 @@ use Illuminate\Support\Facades\Schema;
  * Partición de importes (cada peso de cada fuente queda en EXACTAMENTE un destino):
  *   bruto = conciliado (lo reconoce el ERP/Radiografía) + reconocido (línea del ER)
  *         + excluido con justificación + pendiente + fuera del periodo
+ *
+ * Lo consumen EstadoResultadosReportResolver (web/Excel/PDF), EstadoResultadosApprovalService
+ * (snapshots al aprobar) y las comparativas. Sólo lee BD (no escribe), salvo lo que hagan los
+ * servicios que invoca (p. ej. caché de la base de Radiografía).
  */
 class EstadoResultadosDatasetBuilder
 {
+    /** Clave del alcance consolidado. */
     public const CONSOLIDADO = 'CONSOLIDADO';
 
     /**
@@ -70,6 +84,7 @@ class EstadoResultadosDatasetBuilder
         'sign' => 'resultado_financiero_neto: gastos negativos, ingresos positivos; EBT = EBIT + resultado financiero neto',
     ];
 
+    /** Campos de la fila de Radiografía que forman los ingresos operativos (criterio gerencial). */
     private const INCOME_FIELDS = [
         'interes_recuperado' => 'Intereses cobrados',
         'impuesto_recuperado' => 'IVA / impuesto cobrado (criterio gerencial)',
@@ -109,6 +124,16 @@ class EstadoResultadosDatasetBuilder
     /** NOI de corporativo vigente (fuente propia del ER): carga y colaboradores. */
     private array $corpData = ['upload' => null, 'employees' => []];
 
+    /**
+     * @param  RadiographyBaseProvider  $base  base de Radiografía (nivel sucursales)
+     * @param  ErpExpenseRepository  $erp  gastos ERP del universo
+     * @param  ErpOutsideClassifier  $erpClassifier  clasificación de ERP fuera de Radiografía
+     * @param  ClassificationService  $classifications  clasificaciones manuales vigentes
+     * @param  AdjustmentService  $adjustments  ajustes contables tipificados
+     * @param  NoiPayrollRepository  $noi  NOI de sucursales (evidencia)
+     * @param  CorporatePayrollRepository  $corpPayroll  NOI de corporativo (fuente propia del ER)
+     * @param  UploadModuleInspector  $inspector  diagnóstico de fuentes de Carga de archivos
+     */
     public function __construct(
         private readonly RadiographyBaseProvider $base,
         private readonly ErpExpenseRepository $erp,
@@ -120,12 +145,26 @@ class EstadoResultadosDatasetBuilder
         private readonly UploadModuleInspector $inspector,
     ) {}
 
-    /** Alcances disponibles: consolidado + sucursales operativas de Radiografía. */
+    /**
+     * Alcances disponibles: consolidado + sucursales operativas de Radiografía.
+     *
+     * @param  Period  $period  periodo
+     * @return list<array{key:string,label:string}>
+     */
     public function scopes(Period $period): array
     {
         return $this->scopesFromBase($this->base->for($period));
     }
 
+    /**
+     * Dataset canónico de UN alcance (consolidado o sucursal).
+     *
+     * @param  Period  $period  periodo
+     * @param  string  $scope  CONSOLIDADO o nombre de sucursal de Radiografía
+     * @return array dataset (meta, results, controls, statement, checks, validation, movements…)
+     *
+     * @throws \InvalidArgumentException si el alcance no existe en el periodo
+     */
     public function build(Period $period, string $scope = self::CONSOLIDADO): array
     {
         $ctx = $this->prepare($period);
@@ -142,6 +181,7 @@ class EstadoResultadosDatasetBuilder
      * de datos y la parte independiente del alcance se calcula una sola vez. El callback
      * recibe cada dataset y puede soltarlo (no se acumulan en memoria).
      *
+     * @param  Period  $period  periodo
      * @param  list<string>|null  $scopeKeys  null = todos los alcances del periodo
      * @param  callable(string, array, array): void  $each  ($scopeKey, $dataset, $scope)
      * @return list<array{key:string,label:string}> alcances construidos, en orden
@@ -175,6 +215,12 @@ class EstadoResultadosDatasetBuilder
         return $this->base->session($fn);
     }
 
+    /**
+     * Lista de alcances a partir de la base: consolidado primero y luego cada sucursal.
+     *
+     * @param  array  $base  base de Radiografía (RadiographyBaseProvider::for)
+     * @return list<array{key:string,label:string}>
+     */
     private function scopesFromBase(array $base): array
     {
         $out = [['key' => self::CONSOLIDADO, 'label' => 'Consolidado MR LANA']];
@@ -188,7 +234,8 @@ class EstadoResultadosDatasetBuilder
     /**
      * Lectura de insumos + cálculos que NO dependen del alcance (una vez por foto de datos).
      *
-     * @return array<string,mixed>
+     * @param  Period  $period  periodo
+     * @return array<string,mixed> contexto: base, items, public_items, conciliation, sources_shared, file_control…
      */
     private function prepare(Period $period): array
     {
@@ -203,6 +250,21 @@ class EstadoResultadosDatasetBuilder
         return $ctx;
     }
 
+    /**
+     * Arma el dataset de un alcance a partir del contexto ya preparado.
+     *
+     * Pasos: fija el estado por construcción desde $ctx; ingresos (Radiografía); OPEX y nómina de
+     * sucursales (Radiografía + complementarios de bancos); OPEX corporativo, nómina corporativa y
+     * DG (sólo consolidado); EBITDA único; D&A y EBIT; resultado financiero neto y EBT; ISR y
+     * utilidad (pendiente si ISR no tiene información); controles del modelo anterior; statement,
+     * conciliación contra Radiografía, checks y validación; hash sha256 de las cifras.
+     *
+     * @param  array  $ctx  contexto de prepare()
+     * @param  string  $scope  alcance
+     * @return array dataset canónico
+     *
+     * @throws \InvalidArgumentException si el alcance no existe
+     */
     private function buildScope(array $ctx, string $scope): array
     {
         $period = $ctx['period'];
@@ -408,6 +470,14 @@ class EstadoResultadosDatasetBuilder
     // ───────────────────────────────────────────────────────────────────
 
     /**
+     * Construye la lista interna de items del periodo: movimientos bancarios repartidos al periodo
+     * (de cargas activas, incluidas las subidas en otro periodo), filas ERP fuera de Radiografía
+     * (con su pago bancario vinculado y cruce con NOI) y, si hay carga, el NOI de corporativo.
+     * Aplica clasificaciones manuales vigentes, reembolsos vinculados (reducen la línea del gasto),
+     * impacto, partición del importe, dimensiones y estado de control de cada item.
+     *
+     * @param  Period  $period  periodo
+     * @param  list<int>  $dataIds  universo de period_id de Radiografía
      * @return array{items: list<array<string,mixed>>, noi: array, current_erp_signature: string,
      *               active_upload_totals: list<string>, active_uploads: list<array>, linked_applied: string}
      */
@@ -743,7 +813,11 @@ class EstadoResultadosDatasetBuilder
      *  3. Resto de nómina corporativa desde banco/ERP (sin nombre): se conserva, pero se lista como
      *     diferencia que bloquea la aprobación hasta confirmarla manualmente (no es el mismo pago).
      *
-     * @param  list<array<string,mixed>>  $items
+     * @param  list<array<string,mixed>>  $items  items del periodo (se modifican por referencia)
+     * @param  array  $corp  NOI de corporativo (CorporatePayrollRepository::forPeriod)
+     * @param  array  $noiData  NOI de sucursales del universo
+     * @param  array  $overrides  clasificaciones manuales vigentes por huella
+     * @param  Period  $period  periodo
      */
     private function appendCorporatePayroll(array &$items, array $corp, array $noiData, array $overrides, Period $period): void
     {
@@ -838,6 +912,14 @@ class EstadoResultadosDatasetBuilder
         }
     }
 
+    /**
+     * Vínculo de conciliación en formato público. Con $inverse=true se presenta desde el lado
+     * ERP (el destino es el movimiento bancario).
+     *
+     * @param  object  $l  fila de estado_resultados_reconciliation_links (o equivalente legado)
+     * @param  bool  $inverse  invertir origen/destino
+     * @return array<string, mixed>
+     */
     private function publicLink(object $l, bool $inverse): array
     {
         $evidence = is_array($l->evidence ?? null) ? $l->evidence : (json_decode((string) ($l->evidence ?? ''), true) ?: []);
@@ -872,6 +954,14 @@ class EstadoResultadosDatasetBuilder
         return $item['treatment'] === T::INGRESO_NO_OPERATIVO ? $abono->minus($cargo) : $cargo->minus($abono);
     }
 
+    /**
+     * Cómo afecta el item al estado: suma a la línea de su tratamiento sólo si el tratamiento tiene
+     * línea, está dentro del periodo y queda importe no conciliado; si todo está conciliado con
+     * ERP no suma (se reconoce una sola vez, desde el ERP).
+     *
+     * @param  array  $item  item interno
+     * @return array{included:bool, line:?string, amount:string, text:string}
+     */
     private function impact(array $item): array
     {
         $t = $item['treatment'];
@@ -921,6 +1011,13 @@ class EstadoResultadosDatasetBuilder
         return ['gross' => Money::str2($gross)] + array_map(fn ($v) => Money::str2($v), $parts) + ['classifiable' => Money::str2($classifiable)];
     }
 
+    /**
+     * ¿El item pertenece al alcance? Consolidado: todos. Sucursal: sólo OPEX/nómina de sucursal
+     * cuya sucursal coincide (sin distinguir mayúsculas).
+     *
+     * @param  array  $item  item interno
+     * @param  string  $scope  alcance
+     */
     private function inScope(array $item, string $scope): bool
     {
         if ($scope === self::CONSOLIDADO) {
@@ -931,6 +1028,12 @@ class EstadoResultadosDatasetBuilder
             && mb_strtoupper((string) $item['branch_name']) === mb_strtoupper($scope);
     }
 
+    /**
+     * Σ importe con signo (signedAmount) de los items dentro del periodo con esos tratamientos.
+     *
+     * @param  array  $items  items
+     * @param  list<string>  $treatments  tratamientos a sumar
+     */
     private function sumTreatment(array $items, array $treatments): BigDecimal
     {
         $total = BigDecimal::zero();
@@ -943,12 +1046,26 @@ class EstadoResultadosDatasetBuilder
         return $total;
     }
 
+    /**
+     * Número de items dentro del periodo con esos tratamientos (para mostrar líneas en $0).
+     *
+     * @param  array  $items  items
+     * @param  list<string>  $treatments  tratamientos
+     */
     private function countTreatment(array $items, array $treatments): int
     {
         return count(array_filter($items, fn ($i) => $i['in_period'] && in_array($i['treatment'], $treatments, true)));
     }
 
-    /** @return array<string, array{0:string,1:BigDecimal,2:string}> */
+    /**
+     * Agrupa los items con esos tratamientos en líneas por origen: ERP por categoría, NOI de
+     * corporativo, bancos por concepto del catálogo, o «pagos complementarios». Ordenado de mayor
+     * a menor importe.
+     *
+     * @param  array  $items  items
+     * @param  list<string>  $treatments  tratamientos
+     * @return array<string, array{0:string,1:BigDecimal,2:string}> clave ⇒ [etiqueta, importe, fuente]
+     */
     private function groupBySourceCategory(array $items, array $treatments): array
     {
         $groups = [];
@@ -986,11 +1103,31 @@ class EstadoResultadosDatasetBuilder
     // Estructura del estado
     // ───────────────────────────────────────────────────────────────────
 
+    /**
+     * Línea interna del estado (importe aún en BigDecimal; statement() lo formatea).
+     *
+     * @param  string  $key  clave estable de la línea
+     * @param  string  $label  etiqueta
+     * @param  BigDecimal  $amount  importe
+     * @param  string  $source  fuente mostrada
+     * @param  string|null  $hint  ayuda/explicación
+     * @param  string|null  $state  estado del ajuste (si aplica)
+     * @return array<string, mixed>
+     */
     private function line(string $key, string $label, BigDecimal $amount, string $source, ?string $hint = null, ?string $state = null): array
     {
         return ['key' => $key, 'label' => $label, 'amount_raw' => $amount, 'source' => $source, 'hint' => $hint, 'state' => $state];
     }
 
+    /**
+     * Línea de un ajuste contable: importe sólo si está «capturado» (sin información y confirmado
+     * cero valen 0); la ayuda explica el estado, el origen (tabla de amortización) y la diferencia
+     * contra la tabla cuando hay captura manual.
+     *
+     * @param  array  $adj  ajuste de AdjustmentService::forPeriod
+     * @param  string  $prefix  prefijo para la etiqueta
+     * @return array<string, mixed>
+     */
     private function adjLine(array $adj, string $prefix = ''): array
     {
         $amount = $adj['state'] === AdjustmentService::CAPTURADO ? Money::of($adj['amount']) : BigDecimal::zero();
@@ -1010,6 +1147,11 @@ class EstadoResultadosDatasetBuilder
         return $this->line('adj_'.$adj['key'], $prefix.$adj['label'], $amount, $fromTable ? 'Tabla de amortización' : 'Ajuste contable', $hint, $adj['state']);
     }
 
+    /**
+     * Σ amount_raw de un conjunto de líneas.
+     *
+     * @param  array  $lines  líneas de line()/adjLine()
+     */
     private function sumLines(array $lines): BigDecimal
     {
         $t = BigDecimal::zero();
@@ -1020,6 +1162,14 @@ class EstadoResultadosDatasetBuilder
         return $t;
     }
 
+    /**
+     * Completitud de los subtotales por debajo del EBITDA: EBIT depende de D&A; EBT además de
+     * intereses/gastos/ingresos financieros; utilidad neta además del ISR. Lista los ajustes
+     * «sin información» de cada uno.
+     *
+     * @param  array  $adj  ajustes del periodo/alcance
+     * @return array{ebit:array, ebt:array, utilidad_neta:array} cada uno {complete:bool, missing:list<string>}
+     */
     private function completeness(array $adj): array
     {
         $missing = fn (array $keys) => array_values(array_map(fn ($k) => $adj[$k]['label'], array_filter($keys, fn ($k) => $adj[$k]['state'] === AdjustmentService::SIN_INFORMACION)));
@@ -1112,7 +1262,12 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    /** Márgenes sobre ingresos operativos (null si los ingresos son 0 o el resultado está pendiente). */
+    /**
+     * Márgenes sobre ingresos operativos (null si los ingresos son 0 o el resultado está pendiente).
+     *
+     * @param  array  $r  resultados (BigDecimal o null)
+     * @return array{ebitda:?string, ebit:?string, ebt:?string, neto:?string}
+     */
     private function margins(array $r): array
     {
         $base = $r['ingresos_operativos'];
@@ -1121,6 +1276,16 @@ class EstadoResultadosDatasetBuilder
         return ['ebitda' => $m($r['ebitda']), 'ebit' => $m($r['ebit']), 'ebt' => $m($r['ebt']), 'neto' => $m($r['utilidad_neta'])];
     }
 
+    /**
+     * Pasos de la gráfica de cascada (ingresos → OPEX por categoría → EBITDA → D&A → EBIT →
+     * resultado financiero → EBT → ISR → utilidad). Gastos en negativo; Corporativo/DG sólo en el
+     * consolidado; un paso sin dato queda pending (importe null).
+     *
+     * @param  array  $r  resultados del modelo
+     * @param  array  $c  controles (desglose de OPEX)
+     * @param  bool  $consolidated  alcance consolidado
+     * @return list<array<string, mixed>>
+     */
     private function waterfall(array $r, array $c, bool $consolidated): array
     {
         $neg = fn (?BigDecimal $v) => $v?->negated();
@@ -1149,6 +1314,24 @@ class EstadoResultadosDatasetBuilder
     // Conciliación con Radiografía, conciliación bancaria, validaciones
     // ───────────────────────────────────────────────────────────────────
 
+    /**
+     * Conciliación del EBITDA de sucursales del ER contra el EBITDA canónico de Radiografía.
+     * La base (sin complementarios) debe cuadrar a $0.00; la diferencia total se explica por los
+     * complementarios clasificados manualmente; cualquier resto se reporta como NO explicado.
+     * En el consolidado informa la nómina de colaboradores sin sucursal operativa.
+     *
+     * @param  array  $row  fila de Radiografía del alcance (global o sucursal)
+     * @param  array  $base  base completa (para «unassigned»)
+     * @param  bool  $consolidated  alcance consolidado
+     * @param  BigDecimal  $ingresos  ingresos operativos del ER
+     * @param  BigDecimal  $opexRadio  OPEX de sucursales tomado de Radiografía
+     * @param  BigDecimal  $nominaRadio  nómina de sucursales tomada de Radiografía
+     * @param  BigDecimal  $opexComp  OPEX complementario de bancos
+     * @param  BigDecimal  $nominaComp  nómina complementaria de bancos
+     * @param  BigDecimal  $ebitdaSuc  EBITDA de sucursales del ER (control)
+     * @param  BigDecimal  $radiografiaEbitda  EBITDA final de Radiografía
+     * @return array<string, mixed>
+     */
     private function radiographyReconciliation(array $row, array $base, bool $consolidated, BigDecimal $ingresos, BigDecimal $opexRadio, BigDecimal $nominaRadio, BigDecimal $opexComp, BigDecimal $nominaComp, BigDecimal $ebitdaSuc, BigDecimal $radiografiaEbitda): array
     {
         $erBase = $ingresos->minus($opexRadio)->minus($nominaRadio);
@@ -1193,6 +1376,15 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
+    /**
+     * Resumen de la conciliación bancaria del periodo (independiente del alcance): conteos e
+     * importes de leídos, en periodo, conciliados con ERP, nuevos sin ERP, traspasos, excluidos,
+     * pendientes, incluidos (banco y ERP), reversos y reembolsos; desglose por tratamiento, por
+     * estado de conciliación y por tipo de emparejamiento.
+     *
+     * @param  array  $items  items internos
+     * @return array<string, mixed>
+     */
     private function conciliationSummary(array $items): array
     {
         $bank = array_values(array_filter($items, fn ($i) => $i['source'] === 'banco'));
@@ -1273,6 +1465,28 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
+    /**
+     * Validaciones matemáticas del dataset (cada una: esperado, actual, diferencia y ok a $0.00):
+     * ingresos = Σ componentes = Radiografía; OPEX/nómina de sucursales = Radiografía; control de
+     * EBITDA de sucursales; fórmulas OPEX/EBITDA/EBIT/EBT/utilidad; total de cada sección y
+     * categoría = Σ líneas; complementarios incorporados, partición de importes, huella única,
+     * exclusividad de categorías, conciliados sin doble gasto, etc. Nunca compensa diferencias.
+     *
+     * @param  array  $row  fila de Radiografía del alcance
+     * @param  array  $income  líneas de ingresos
+     * @param  array  $statement  bloques del estado ya formateados
+     * @param  array  $r  resultados (BigDecimal)
+     * @param  array  $c  controles (BigDecimal)
+     * @param  array  $items  todos los items
+     * @param  array  $scoped  items del alcance
+     * @param  BigDecimal  $ingresos  ingresos operativos
+     * @param  BigDecimal  $opexRadio  OPEX de Radiografía
+     * @param  BigDecimal  $nominaRadio  nómina de Radiografía
+     * @param  BigDecimal  $radiografiaEbitda  EBITDA final de Radiografía
+     * @param  bool  $consolidated  alcance consolidado
+     * @param  array  $categoryTotals  importe que cada categoría exclusiva recibe desde movimientos
+     * @return list<array{key:string, label:string, expected:string, actual:string, difference:string, ok:bool, explain:?string}>
+     */
     private function checks(array $row, array $income, array $statement, array $r, array $c, array $items, array $scoped, BigDecimal $ingresos, BigDecimal $opexRadio, BigDecimal $nominaRadio, BigDecimal $radiografiaEbitda, bool $consolidated, array $categoryTotals = []): array
     {
         $checks = [];
@@ -1375,6 +1589,14 @@ class EstadoResultadosDatasetBuilder
      * Calidad financiera del periodo: totales por destino, particiones, diferencias por
      * importe/fecha/folio, diferencia contra Radiografía, integridad de fuentes y
      * eliminaciones internas. Las diferencias se MUESTRAN; nunca se compensan.
+     *
+     * @param  Period  $period  periodo
+     * @param  array  $items  todos los items
+     * @param  array  $scoped  items del alcance
+     * @param  array  $checks  resultado de checks()
+     * @param  array  $radiography  resultado de radiographyReconciliation()
+     * @param  bool  $consolidated  alcance consolidado
+     * @return array<string, mixed> bloque validation del dataset (status, integrity, unresolved, failed_checks, file_control…)
      */
     private function validation(Period $period, array $items, array $scoped, array $checks, array $radiography, bool $consolidated): array
     {
@@ -1557,6 +1779,16 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
+    /**
+     * Lo que queda FUERA del resultado (CAPEX, capital de deuda, traspasos, personales,
+     * recuperables, balance, puente, cubierto por Radiografía, conciliado ERP, duplicados, fuera
+     * de periodo y pendientes) agrupado por tratamiento en orden fijo, más los flujos manuales de
+     * CAPEX y capital de deuda capturados en Ajustes.
+     *
+     * @param  array  $items  items
+     * @param  array  $adj  ajustes del alcance
+     * @return array{groups:list<array>, manual_flows:list<array>}
+     */
     private function outside(array $items, array $adj): array
     {
         $groups = [];
@@ -1588,6 +1820,19 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
+    /**
+     * Indicadores informativos del alcance: márgenes y pesos de nómina/OPEX sobre ingresos,
+     * cartera y mora (consolidado: cartera global sin filtro; sucursal: su fila), y rotación de
+     * personal (fact_rotacion derivado de NOI). No afectan el resultado.
+     *
+     * @param  array  $row  fila de Radiografía del alcance
+     * @param  array  $base  base completa
+     * @param  array  $r  resultados
+     * @param  array  $c  controles
+     * @param  bool  $consolidated  alcance consolidado
+     * @param  string  $scope  alcance
+     * @return array<string, mixed>
+     */
     private function indicators(array $row, array $base, array $r, array $c, bool $consolidated, string $scope): array
     {
         $ing = $r['ingresos_operativos'];
@@ -1629,7 +1874,14 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    /** Consultas de fuentes que NO dependen del alcance (una vez por foto de datos). */
+    /**
+     * Consultas de fuentes que NO dependen del alcance (una vez por foto de datos).
+     *
+     * @param  Period  $period  periodo
+     * @param  array  $base  base de Radiografía
+     * @param  string  $currentSig  firma ERP vigente (para detectar procesamiento desactualizado)
+     * @return array<string, mixed> conteos ERP/NOI/IMSS, consolidado de Radiografía, última corrida, cargas…
+     */
     private function sourcesShared(Period $period, array $base, string $currentSig): array
     {
         $dataIds = $base['data_ids'];
@@ -1671,6 +1923,16 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
+    /**
+     * Bloque sources del dataset: estado de Radiografía, ERP, NOI, cada cuenta bancaria (archivo 1
+     * obligatorio y 2 opcional, con ciclo de vida y avisos), procesamiento (última corrida, ERP
+     * desactualizado, sin procesar), NOI de corporativo y la checklist de SourceChecklist.
+     *
+     * @param  array  $shared  resultado de sourcesShared()
+     * @param  array  $items  items
+     * @param  array  $adj  ajustes del alcance
+     * @return array<string, mixed>
+     */
     private function sources(array $shared, array $items, array $adj): array
     {
         ['erp_count' => $erpCount, 'noi_count' => $noiCount, 'imss_count' => $imssCount, 'summary' => $summary,
@@ -1825,6 +2087,14 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
+    /**
+     * Item interno → movimiento público del dataset: agrega etiquetas de conciliación y
+     * tratamiento, presenta las dimensiones (incluida la de reconocimiento) y retira los campos
+     * internos (dimensions_raw, recognizing_hint, recognition, import_status).
+     *
+     * @param  array  $i  item interno
+     * @return array<string, mixed>
+     */
     private function publicItem(array $i): array
     {
         $i['reconciliation_label'] = R::LABELS[$i['reconciliation_status']] ?? match ($i['reconciliation_status']) {

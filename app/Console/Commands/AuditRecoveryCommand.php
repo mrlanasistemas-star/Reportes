@@ -6,30 +6,48 @@ use App\Models\Period;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-recovery` — auditoría general de recuperación/cobranza
+ * (`fact_recoveries`) de un periodo: totales por componente, filas Savehearts y participación
+ * CRECE 30%, desglose por producto, por sucursal (top 20) y por operación (top 15, marcando
+ * candidatos a Savehearts), diagnóstico de CRECE y filas sin producto.
+ *
+ * Escribe en BD: NO — solo lectura. Usa REGEXP (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:audit-recovery 14
+ */
 class AuditRecoveryCommand extends Command
 {
-    protected $signature   = 'reportes:audit-recovery {period_id}';
+    protected $signature = 'reportes:audit-recovery {period_id}';
+
     protected $description = 'Auditoría completa de recuperación/cobranza para un periodo';
 
+    /**
+     * Resuelve los periodos de datos e imprime cada sección del diagnóstico de recuperación.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
 
-        $this->info("════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA RECUPERACIÓN — {$period->label} (ID {$period->id})");
-        $this->info("  DataIds: [" . implode(', ', $dataIds) . "]");
-        $this->info("════════════════════════════════════════════════════════════");
+        $this->info('  DataIds: ['.implode(', ', $dataIds).']');
+        $this->info('════════════════════════════════════════════════════════════');
 
         // ── Totales generales ────────────────────────────────────────────────
         $tot = DB::table('fact_recoveries')
@@ -43,14 +61,14 @@ class AuditRecoveryCommand extends Command
 
         $this->line('');
         $this->info('── TOTALES GENERALES ──');
-        $this->line("  Filas totales: " . number_format($tot->total_rows));
-        $this->line("  Capital:       $" . number_format((float)$tot->capital, 2));
-        $this->line("  Interés:       $" . number_format((float)$tot->interes, 2));
-        $this->line("  Impuesto:      $" . number_format((float)$tot->impuesto, 2));
-        $this->line("  Cargos:        $" . number_format((float)$tot->cargos, 2));
-        $this->line("  Total:         $" . number_format((float)$tot->total, 2));
-        $this->line("  Savehearts:    " . number_format($tot->sh_rows) . " filas");
-        $this->line("  CRECE 30%:     $" . number_format((float)$tot->sh_crece30, 2));
+        $this->line('  Filas totales: '.number_format($tot->total_rows));
+        $this->line('  Capital:       $'.number_format((float) $tot->capital, 2));
+        $this->line('  Interés:       $'.number_format((float) $tot->interes, 2));
+        $this->line('  Impuesto:      $'.number_format((float) $tot->impuesto, 2));
+        $this->line('  Cargos:        $'.number_format((float) $tot->cargos, 2));
+        $this->line('  Total:         $'.number_format((float) $tot->total, 2));
+        $this->line('  Savehearts:    '.number_format($tot->sh_rows).' filas');
+        $this->line('  CRECE 30%:     $'.number_format((float) $tot->sh_crece30, 2));
 
         // ── Por producto ─────────────────────────────────────────────────────
         $this->line('');
@@ -66,18 +84,18 @@ class AuditRecoveryCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $this->line(str_pad('Producto', 38) . str_pad('Filas', 8) .
-                    str_pad('Capital', 18) . 'Total');
+        $this->line(str_pad('Producto', 38).str_pad('Filas', 8).
+                    str_pad('Capital', 18).'Total');
         $this->line(str_repeat('-', 80));
         foreach ($byProd as $p) {
             $label = mb_substr($p->product_name ?? 'NULL', 0, 36);
             $isCrece = str_contains(strtoupper($p->product_name ?? ''), 'CRECE');
             $marker = $isCrece ? ' [CRECE]' : '';
             $this->line(
-                str_pad($label . $marker, 38) .
-                str_pad(number_format($p->cnt), 8) .
-                str_pad('$' . number_format((float)$p->capital, 0), 18) .
-                '$' . number_format((float)$p->total, 0)
+                str_pad($label.$marker, 38).
+                str_pad(number_format($p->cnt), 8).
+                str_pad('$'.number_format((float) $p->capital, 0), 18).
+                '$'.number_format((float) $p->total, 0)
             );
         }
 
@@ -97,7 +115,7 @@ class AuditRecoveryCommand extends Command
             ->get();
 
         foreach ($byBranch as $b) {
-            $this->line("  " . str_pad($b->sucursal, 30) . " {$b->cnt} filas, $" . number_format((float)$b->total, 2));
+            $this->line('  '.str_pad($b->sucursal, 30)." {$b->cnt} filas, $".number_format((float) $b->total, 2));
         }
 
         // ── Por operación/concepto ───────────────────────────────────────────
@@ -117,8 +135,8 @@ class AuditRecoveryCommand extends Command
         foreach ($byOp as $o) {
             $isSh = in_array(strtolower(trim($o->operation ?? '')), ['seguro', 'seguros', 'poliza', 'polizas']);
             $marker = $isSh ? ' [SAVEHEARTS candidato]' : '';
-            $this->line("  " . str_pad(mb_substr($o->operation ?? 'NULL', 0, 35), 37) .
-                        "{$o->cnt} filas, $" . number_format((float)$o->total, 0) . $marker);
+            $this->line('  '.str_pad(mb_substr($o->operation ?? 'NULL', 0, 35), 37).
+                        "{$o->cnt} filas, $".number_format((float) $o->total, 0).$marker);
         }
 
         // ── Diagnóstico CRECE ────────────────────────────────────────────────
@@ -133,7 +151,7 @@ class AuditRecoveryCommand extends Command
         if ($creceTotal > 0) {
             $this->info("  ✓ CRECE en fact_recoveries: {$creceTotal} filas — incluido como recuperación operativa CRECE.");
         } else {
-            $this->line("  CRECE no encontrado en fact_recoveries para este periodo.");
+            $this->line('  CRECE no encontrado en fact_recoveries para este periodo.');
         }
 
         // ── Filas sin producto ────────────────────────────────────────────────

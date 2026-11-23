@@ -9,6 +9,26 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Comando `reportes:audit-cartera` — auditoría de cartera de un periodo usando la MISMA
+ * fuente que Dashboard/Excel/PDF (BranchRadiographyCalculator).
+ *
+ * Valor cartera = SUM(balance) sin Aguascalientes; cartera vencida = suma de las 5 columnas
+ * (capital atrasado + interés atrasado + impuesto atrasado + saldo interés moratorio + saldo
+ * impuesto de interés moratorio) donde days_past_due > 0, sin Aguascalientes. Compara contra
+ * las referencias fijas REF_CARTERA / REF_MORA (Abril 2026).
+ *
+ * Opciones:
+ *   --by-branch  desglose por sucursal oficial (cartera, vencida, buckets de mora, % mora).
+ *   --detail     detalle contrato a contrato (máx. 100 en pantalla) con incluido/motivo.
+ *   --export     CSV de resumen por sucursal y de detalle en storage/app/auditorias/.
+ *
+ * Escribe en BD: NO. Solo escribe archivos CSV con `--export`.
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-cartera 5
+ *   php artisan reportes:audit-cartera 5 --by-branch --detail --export
+ */
 class AuditCarteraCommand extends Command
 {
     protected $signature = 'reportes:audit-cartera
@@ -20,24 +40,33 @@ class AuditCarteraCommand extends Command
     protected $description = 'Auditoría Cartera — valor cartera (saldo actual) + cartera vencida (5 cols) — misma fuente que Dashboard/Excel/PDF';
 
     private const REF_CARTERA = 39_205_971.67;
-    private const REF_MORA    = 13_707_000.00;
 
+    private const REF_MORA = 13_707_000.00;
+
+    /**
+     * Resuelve los periodos de datos, obtiene los totales globales y por sucursal del calculador,
+     * imprime la comparación contra referencia y, según las opciones, el desglose por sucursal,
+     * el detalle por contrato y la exportación CSV.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         /** @var BranchRadiographyCalculator $calc */
-        $calc     = app(BranchRadiographyCalculator::class);
+        $calc = app(BranchRadiographyCalculator::class);
         $resolver = app(BranchResolverService::class);
 
         $this->line('');
@@ -50,9 +79,9 @@ class AuditCarteraCommand extends Command
         $this->info('════════════════════════════════════════════════════════════════════════════');
 
         // ── Global KPIs ──────────────────────────────────────────────────────
-        $global5   = $calc->computeCarteraGlobalSinFiltro($dataIds);
-        $result    = $calc->buildBranches($period, $dataIds, []);
-        $global    = $calc->sumGlobal($result['branches'], $result['unassigned']);
+        $global5 = $calc->computeCarteraGlobalSinFiltro($dataIds);
+        $result = $calc->buildBranches($period, $dataIds, []);
+        $global = $calc->sumGlobal($result['branches'], $result['unassigned']);
 
         $carteraOficial = (float) $global5['valor_cartera'];
         $vencidaOficial = (float) $global5['cartera_vencida'];
@@ -64,13 +93,13 @@ class AuditCarteraCommand extends Command
         $diffM = $vencidaOficial - self::REF_MORA;
         $statusC = abs($diffC) < 1 ? '✓ EXACTO' : (abs($diffC) < 50_000 ? '≈ CERCANO' : '✗ DIFERENCIA');
         $statusM = abs($diffM) < 1 ? '✓ EXACTO' : (abs($diffM) < 200_000 ? '≈ CERCANO' : '✗ DIFERENCIA');
-        $this->line("  Valor cartera:          \$" . number_format($carteraOficial, 2));
-        $this->line("  Referencia:             \$" . number_format(self::REF_CARTERA, 2));
-        $this->line("  Diferencia:             " . ($diffC >= 0 ? '+' : '') . "\$" . number_format($diffC, 2) . "  {$statusC}");
+        $this->line('  Valor cartera:          $'.number_format($carteraOficial, 2));
+        $this->line('  Referencia:             $'.number_format(self::REF_CARTERA, 2));
+        $this->line('  Diferencia:             '.($diffC >= 0 ? '+' : '').'$'.number_format($diffC, 2)."  {$statusC}");
         $this->line('');
-        $this->line("  Cartera vencida (5col): \$" . number_format($vencidaOficial, 2));
-        $this->line("  Referencia mora:       ~\$" . number_format(self::REF_MORA, 2));
-        $this->line("  Diferencia:             " . ($diffM >= 0 ? '+' : '') . "\$" . number_format($diffM, 2) . "  {$statusM}");
+        $this->line('  Cartera vencida (5col): $'.number_format($vencidaOficial, 2));
+        $this->line('  Referencia mora:       ~$'.number_format(self::REF_MORA, 2));
+        $this->line('  Diferencia:             '.($diffM >= 0 ? '+' : '').'$'.number_format($diffM, 2)."  {$statusM}");
         $this->line("  % Mora/Cartera:         {$pctMora}%");
 
         // ── By Branch ────────────────────────────────────────────────────────
@@ -78,14 +107,14 @@ class AuditCarteraCommand extends Command
             $this->line('');
             $this->info('════ POR SUCURSAL OFICIAL ════');
             $hdr = str_pad('Sucursal', 26)
-                . str_pad('Val. Cartera', 18)
-                . str_pad('Cartera Venc.', 17)
-                . str_pad('Mora 1-30', 14)
-                . str_pad('Mora 31-60', 14)
-                . str_pad('Mora 61-90', 14)
-                . str_pad('Mora 91-120', 14)
-                . str_pad('Mora 120+', 14)
-                . '% Mora';
+                .str_pad('Val. Cartera', 18)
+                .str_pad('Cartera Venc.', 17)
+                .str_pad('Mora 1-30', 14)
+                .str_pad('Mora 31-60', 14)
+                .str_pad('Mora 61-90', 14)
+                .str_pad('Mora 91-120', 14)
+                .str_pad('Mora 120+', 14)
+                .'% Mora';
             $this->line($hdr);
             $this->line(str_repeat('─', 140));
 
@@ -101,14 +130,14 @@ class AuditCarteraCommand extends Command
 
                 $this->line(
                     str_pad(mb_substr($b['sucursal'], 0, 24), 26)
-                    . str_pad('$' . number_format($cartera, 2), 18)
-                    . str_pad('$' . number_format($vencida, 2), 17)
-                    . str_pad('$' . number_format((float) $b['mora_0_30'], 2), 14)
-                    . str_pad('$' . number_format((float) $b['mora_31_60'], 2), 14)
-                    . str_pad('$' . number_format((float) $b['mora_61_90'], 2), 14)
-                    . str_pad('$' . number_format((float) $b['mora_91_120'], 2), 14)
-                    . str_pad('$' . number_format((float) $b['mora_120_plus'], 2), 14)
-                    . $pct . '%'
+                    .str_pad('$'.number_format($cartera, 2), 18)
+                    .str_pad('$'.number_format($vencida, 2), 17)
+                    .str_pad('$'.number_format((float) $b['mora_0_30'], 2), 14)
+                    .str_pad('$'.number_format((float) $b['mora_31_60'], 2), 14)
+                    .str_pad('$'.number_format((float) $b['mora_61_90'], 2), 14)
+                    .str_pad('$'.number_format((float) $b['mora_91_120'], 2), 14)
+                    .str_pad('$'.number_format((float) $b['mora_120_plus'], 2), 14)
+                    .$pct.'%'
                 );
             }
 
@@ -116,10 +145,10 @@ class AuditCarteraCommand extends Command
             $totPct = $totCar > 0 ? round($totVen / $totCar * 100, 2) : 0;
             $this->info(
                 str_pad('TOTAL SUCURSALES', 26)
-                . str_pad('$' . number_format($totCar, 2), 18)
-                . str_pad('$' . number_format($totVen, 2), 17)
-                . str_repeat(' ', 56)
-                . $totPct . '%'
+                .str_pad('$'.number_format($totCar, 2), 18)
+                .str_pad('$'.number_format($totVen, 2), 17)
+                .str_repeat(' ', 56)
+                .$totPct.'%'
             );
         }
 
@@ -130,45 +159,45 @@ class AuditCarteraCommand extends Command
 
             if ($this->option('detail')) {
                 $included = array_filter($detailRows, fn ($r) => $r['incluido']);
-                $excluded = array_filter($detailRows, fn ($r) => !$r['incluido']);
+                $excluded = array_filter($detailRows, fn ($r) => ! $r['incluido']);
                 $this->line('');
                 $this->info('════ DETALLE CONTRATO A CONTRATO ════');
-                $this->line("  Total contratos: " . count($detailRows)
-                    . "  Incluidos en mora: " . count($included)
-                    . "  Excluidos: " . count($excluded));
+                $this->line('  Total contratos: '.count($detailRows)
+                    .'  Incluidos en mora: '.count($included)
+                    .'  Excluidos: '.count($excluded));
                 $this->line('');
                 $this->line(
                     str_pad('Sucursal', 22)
-                    . str_pad('Saldo actual', 15)
-                    . str_pad('Cap atras.', 13)
-                    . str_pad('Int atras.', 13)
-                    . str_pad('Imp atras.', 13)
-                    . str_pad('SI morat.', 13)
-                    . str_pad('SII morat.', 13)
-                    . str_pad('Vencida', 15)
-                    . str_pad('DPD', 7)
-                    . str_pad('Incluido', 10)
-                    . 'Motivo'
+                    .str_pad('Saldo actual', 15)
+                    .str_pad('Cap atras.', 13)
+                    .str_pad('Int atras.', 13)
+                    .str_pad('Imp atras.', 13)
+                    .str_pad('SI morat.', 13)
+                    .str_pad('SII morat.', 13)
+                    .str_pad('Vencida', 15)
+                    .str_pad('DPD', 7)
+                    .str_pad('Incluido', 10)
+                    .'Motivo'
                 );
                 $this->line(str_repeat('─', 155));
 
                 $shown = 0;
                 foreach ($detailRows as $row) {
                     if ($shown >= 100) {
-                        $this->line('  ... (' . (count($detailRows) - 100) . ' contratos más — usa --export para ver todos)');
+                        $this->line('  ... ('.(count($detailRows) - 100).' contratos más — usa --export para ver todos)');
                         break;
                     }
                     $line = str_pad(mb_substr((string) $row['sucursal'], 0, 20), 22)
-                        . str_pad('$' . number_format($row['balance'], 2), 15)
-                        . str_pad('$' . number_format($row['capital_due'], 2), 13)
-                        . str_pad('$' . number_format($row['interes_atrasado'], 2), 13)
-                        . str_pad('$' . number_format($row['impuesto_atrasado'], 2), 13)
-                        . str_pad('$' . number_format($row['saldo_interes_moratorio'], 2), 13)
-                        . str_pad('$' . number_format($row['saldo_impuesto_interes_moratorio'], 2), 13)
-                        . str_pad('$' . number_format($row['vencida'], 2), 15)
-                        . str_pad((string) $row['days_past_due'], 7)
-                        . str_pad($row['incluido'] ? 'Sí' : 'No', 10)
-                        . ($row['motivo'] ?? '');
+                        .str_pad('$'.number_format($row['balance'], 2), 15)
+                        .str_pad('$'.number_format($row['capital_due'], 2), 13)
+                        .str_pad('$'.number_format($row['interes_atrasado'], 2), 13)
+                        .str_pad('$'.number_format($row['impuesto_atrasado'], 2), 13)
+                        .str_pad('$'.number_format($row['saldo_interes_moratorio'], 2), 13)
+                        .str_pad('$'.number_format($row['saldo_impuesto_interes_moratorio'], 2), 13)
+                        .str_pad('$'.number_format($row['vencida'], 2), 15)
+                        .str_pad((string) $row['days_past_due'], 7)
+                        .str_pad($row['incluido'] ? 'Sí' : 'No', 10)
+                        .($row['motivo'] ?? '');
                     $row['incluido'] ? $this->line($line) : $this->warn($line);
                     $shown++;
                 }
@@ -182,6 +211,15 @@ class AuditCarteraCommand extends Command
         return 0;
     }
 
+    /**
+     * Carga todos los contratos de `fact_portfolios` de los periodos indicados y calcula por cada
+     * uno la cartera vencida (5 columnas), si se incluye en mora (no AGS y DPD > 0) y el motivo
+     * de exclusión. La sucursal se resuelve de ruta a sucursal real.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos (semanas base + periodo).
+     * @param  BranchResolverService  $resolver  Resolvedor de ruta → sucursal real.
+     * @return array<int,array<string,mixed>> Filas de detalle por contrato.
+     */
     private function loadDetailRows(array $dataIds, BranchResolverService $resolver): array
     {
         // Build AGS branch_id set
@@ -202,7 +240,7 @@ class AuditCarteraCommand extends Command
 
         $rows = DB::table('fact_portfolios as p')
             ->whereIn('p.period_id', $dataIds)
-            ->selectRaw("
+            ->selectRaw('
                 p.id,
                 p.branch_id,
                 p.balance,
@@ -212,7 +250,7 @@ class AuditCarteraCommand extends Command
                 COALESCE(p.impuesto_atrasado, 0)                  AS impuesto_atrasado,
                 COALESCE(p.saldo_interes_moratorio, 0)            AS saldo_interes_moratorio,
                 COALESCE(p.saldo_impuesto_interes_moratorio, 0)   AS saldo_impuesto_interes_moratorio
-            ")
+            ')
             ->orderBy('p.branch_id')
             ->orderByDesc('p.days_past_due')
             ->get();
@@ -220,40 +258,48 @@ class AuditCarteraCommand extends Command
         $result = [];
         foreach ($rows as $row) {
             $branchId = (int) $row->branch_id;
-            $isAgs    = in_array($branchId, $agsIds, true);
-            $dpd      = (int) $row->days_past_due;
-            $vencida  = (float) $row->capital_due
+            $isAgs = in_array($branchId, $agsIds, true);
+            $dpd = (int) $row->days_past_due;
+            $vencida = (float) $row->capital_due
                 + (float) $row->interes_atrasado
                 + (float) $row->impuesto_atrasado
                 + (float) $row->saldo_interes_moratorio
                 + (float) $row->saldo_impuesto_interes_moratorio;
 
-            $incluido = !$isAgs && $dpd > 0;
-            $motivo   = $isAgs ? 'AGS excluida' : ($dpd === 0 ? 'days_past_due = 0' : '');
+            $incluido = ! $isAgs && $dpd > 0;
+            $motivo = $isAgs ? 'AGS excluida' : ($dpd === 0 ? 'days_past_due = 0' : '');
 
             $result[] = [
-                'id'                                  => $row->id,
-                'sucursal'                            => $branchMap[$branchId] ?? 'SIN SUCURSAL',
-                'balance'                             => (float) $row->balance,
-                'capital_due'                         => (float) $row->capital_due,
-                'interes_atrasado'                    => (float) $row->interes_atrasado,
-                'impuesto_atrasado'                   => (float) $row->impuesto_atrasado,
-                'saldo_interes_moratorio'             => (float) $row->saldo_interes_moratorio,
-                'saldo_impuesto_interes_moratorio'    => (float) $row->saldo_impuesto_interes_moratorio,
-                'vencida'                             => $vencida,
-                'days_past_due'                       => $dpd,
-                'incluido'                            => $incluido,
-                'motivo'                              => $motivo,
+                'id' => $row->id,
+                'sucursal' => $branchMap[$branchId] ?? 'SIN SUCURSAL',
+                'balance' => (float) $row->balance,
+                'capital_due' => (float) $row->capital_due,
+                'interes_atrasado' => (float) $row->interes_atrasado,
+                'impuesto_atrasado' => (float) $row->impuesto_atrasado,
+                'saldo_interes_moratorio' => (float) $row->saldo_interes_moratorio,
+                'saldo_impuesto_interes_moratorio' => (float) $row->saldo_impuesto_interes_moratorio,
+                'vencida' => $vencida,
+                'days_past_due' => $dpd,
+                'incluido' => $incluido,
+                'motivo' => $motivo,
             ];
         }
 
         return $result;
     }
 
+    /**
+     * Escribe en el disco local el CSV de resumen por sucursal y, si hay filas de detalle, el
+     * CSV de detalle por contrato, ambos con marca de tiempo en storage/app/auditorias/.
+     *
+     * @param  int  $periodId  ID del periodo auditado (va en el nombre del archivo).
+     * @param  array  $branches  Filas por sucursal devueltas por el calculador.
+     * @param  array  $detailRows  Filas de detalle de loadDetailRows() (puede ir vacío).
+     */
     private function exportCsv(int $periodId, array $branches, array $detailRows): void
     {
         $dir = 'auditorias';
-        $ts  = now()->format('Ymd_His');
+        $ts = now()->format('Ymd_His');
 
         // Branch summary CSV
         $summaryFile = "cartera_resumen_periodo_{$periodId}_{$ts}.csv";
@@ -267,7 +313,7 @@ class AuditCarteraCommand extends Command
             $totCar += $cartera;
             $totVen += $vencida;
             $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $b['sucursal']) . '"',
+                '"'.str_replace('"', '""', $b['sucursal']).'"',
                 number_format($cartera, 2, '.', ''),
                 number_format($vencida, 2, '.', ''),
                 number_format((float) $b['mora_0_30'], 2, '.', ''),
@@ -297,7 +343,7 @@ class AuditCarteraCommand extends Command
         ])];
         foreach ($detailRows as $r) {
             $dlines[] = implode(',', [
-                '"' . str_replace('"', '""', (string) $r['sucursal']) . '"',
+                '"'.str_replace('"', '""', (string) $r['sucursal']).'"',
                 number_format($r['balance'], 2, '.', ''),
                 number_format($r['capital_due'], 2, '.', ''),
                 number_format($r['interes_atrasado'], 2, '.', ''),
@@ -307,7 +353,7 @@ class AuditCarteraCommand extends Command
                 number_format($r['vencida'], 2, '.', ''),
                 $r['days_past_due'],
                 $r['incluido'] ? 'Sí' : 'No',
-                '"' . str_replace('"', '""', (string) $r['motivo']) . '"',
+                '"'.str_replace('"', '""', (string) $r['motivo']).'"',
             ]);
         }
         Storage::disk('local')->put("{$dir}/{$detailFile}", implode("\n", $dlines));

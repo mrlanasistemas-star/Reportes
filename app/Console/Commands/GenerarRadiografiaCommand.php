@@ -10,24 +10,54 @@ use App\Services\ImssFromNoiFiscalService;
 use App\Services\PeriodConsolidationService;
 use App\Services\PeriodDerivedDataCleaner;
 use App\Services\PeriodRadiographyService;
-use App\Services\Radiography\RadiographySnapshotBuilder;
 use App\Services\RadiografiaExportService;
+use App\Services\Radiography\RadiographySnapshotBuilder;
 use App\Services\RotacionDerivedFromNoiService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:generar-radiografia` — genera la Radiografía de un periodo de forma
+ * SÍNCRONA (sin cola), con los mismos pasos que GenerateRadiographyJob: 1) limpia reportes
+ * generados previos, 2) genera el PeriodSummary, 3) auto-asigna sucursales a empleados (solo si
+ * falta alguna asignación o con `--force-automatch`), 3b) resuelve Financiamiento de
+ * Motos/Cascos (falla si queda algo sin asignar), 4) consolida empleados, 4b) deriva Rotación e
+ * IMSS desde NOI, 5) exporta Excel, 6) exporta PDF (no crítico) y 7) registra las exportaciones
+ * para habilitar las descargas en el preview.
+ *
+ * Cuándo usarlo: para regenerar un periodo desde consola o cuando la cola no está disponible.
+ * Escribe en BD: SÍ (period_summaries, employee_branch_assignments, fact_expenses de motos,
+ * consolidación, fact_rotacion, fact_imss, period_radiography_exports) y archivos Excel/PDF.
+ * Puede tardar varios minutos; sube memory_limit a 2 GB.
+ *
+ * Ejemplos:
+ *   php artisan reportes:generar-radiografia 21
+ *   php artisan reportes:generar-radiografia 21 --force-automatch
+ */
 class GenerarRadiografiaCommand extends Command
 {
-    protected $signature   = 'reportes:generar-radiografia
+    protected $signature = 'reportes:generar-radiografia
                                 {period_id : ID del periodo mensual}
                                 {--force-automatch : Forzar auto-asignación aunque ya existan asignaciones}';
+
     protected $description = 'Genera la radiografía de un periodo de forma sincrónica (sin queue): summary, asignación, consolidación, Excel y PDF.';
 
+    /**
+     * @param  PeriodRadiographyService  $radiographyService  Genera el PeriodSummary.
+     * @param  RadiografiaExportService  $exportService  Exporta Excel y PDF.
+     * @param  PeriodConsolidationService  $consolidationService  Consolida empleados del periodo.
+     * @param  PeriodDerivedDataCleaner  $cleaner  Limpia reportes generados previos.
+     * @param  EmployeeBranchAutoMatchService  $branchAutoMatch  Asignación automática empleado → sucursal.
+     * @param  FinanciamientoMotosAssignmentService  $motosAssignment  Asigna gastos de motos/cascos.
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Resuelve los periodos de datos.
+     * @param  RotacionDerivedFromNoiService  $rotacionDerivedService  Deriva la rotación desde NOI.
+     * @param  ImssFromNoiFiscalService  $imssDerivedService  Deriva el IMSS desde NOI Fiscal.
+     */
     public function __construct(
-        private readonly PeriodRadiographyService      $radiographyService,
-        private readonly RadiografiaExportService      $exportService,
-        private readonly PeriodConsolidationService    $consolidationService,
-        private readonly PeriodDerivedDataCleaner      $cleaner,
+        private readonly PeriodRadiographyService $radiographyService,
+        private readonly RadiografiaExportService $exportService,
+        private readonly PeriodConsolidationService $consolidationService,
+        private readonly PeriodDerivedDataCleaner $cleaner,
         private readonly EmployeeBranchAutoMatchService $branchAutoMatch,
         private readonly FinanciamientoMotosAssignmentService $motosAssignment,
         private readonly RadiographySnapshotBuilder $snapshotBuilder,
@@ -37,13 +67,19 @@ class GenerarRadiografiaCommand extends Command
         parent::__construct();
     }
 
+    /**
+     * Ejecuta los pasos 1–7 de la generación e imprime el avance de cada uno.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -74,7 +110,7 @@ class GenerarRadiografiaCommand extends Command
         $dataIds = $this->snapshotBuilder->resolveDataIdsPublic($period);
         $motosResults = $this->motosAssignment->assignForPeriodOrFail($period, $dataIds);
         $motosResueltos = count(array_filter($motosResults, fn (array $r) => $r['estado'] !== 'ya_asignado'));
-        $this->line("  <fg=green>✓ {$motosResueltos} registro(s) nuevos resueltos (" . count($motosResults) . ' en total, 0 sin asignar).</>');
+        $this->line("  <fg=green>✓ {$motosResueltos} registro(s) nuevos resueltos (".count($motosResults).' en total, 0 sin asignar).</>');
 
         $this->line('  4. Consolidando empleados...');
         $this->consolidationService->consolidate($period);
@@ -82,7 +118,7 @@ class GenerarRadiografiaCommand extends Command
 
         $this->line('  4b. Derivando Rotación e IMSS desde NOI (normal + fiscal)...');
         $rotationDerived = $this->rotacionDerivedService->deriveForPeriod($period);
-        $imssDerived     = $this->imssDerivedService->deriveForPeriod($period);
+        $imssDerived = $this->imssDerivedService->deriveForPeriod($period);
         $this->line(sprintf(
             '  <fg=green>✓ Rotación: %d altas / %d bajas / %d plantilla (%.2f%%). IMSS: %d colaboradores ($%s).</>',
             $rotationDerived['altas'],
@@ -102,7 +138,7 @@ class GenerarRadiografiaCommand extends Command
             $pdfPath = $this->exportService->exportPdf($period);
             $this->line("  <fg=green>✓ PDF: {$pdfPath}</>");
         } catch (\Throwable $e) {
-            $this->warn("  ⚠ PDF falló (no crítico): " . mb_strimwidth($e->getMessage(), 0, 120));
+            $this->warn('  ⚠ PDF falló (no crítico): '.mb_strimwidth($e->getMessage(), 0, 120));
             $pdfPath = null;
         }
 
@@ -113,39 +149,40 @@ class GenerarRadiografiaCommand extends Command
         $this->line('  7. Registrando exportaciones...');
         PeriodRadiographyExport::query()->create([
             'period_summary_id' => $summary->id,
-            'export_path'       => $path,
-            'file_type'         => 'excel',
-            'template_version'  => config('app.version'),
-            'metadata'          => ['period_id' => $period->id, 'period_label' => $period->label],
-            'exported_at'       => now(),
+            'export_path' => $path,
+            'file_type' => 'excel',
+            'template_version' => config('app.version'),
+            'metadata' => ['period_id' => $period->id, 'period_label' => $period->label],
+            'exported_at' => now(),
         ]);
         if ($pdfPath !== null) {
             PeriodRadiographyExport::query()->create([
                 'period_summary_id' => $summary->id,
-                'export_path'       => $pdfPath,
-                'file_type'         => 'pdf',
-                'template_version'  => config('app.version'),
-                'metadata'          => ['period_id' => $period->id, 'period_label' => $period->label],
-                'exported_at'       => now(),
+                'export_path' => $pdfPath,
+                'file_type' => 'pdf',
+                'template_version' => config('app.version'),
+                'metadata' => ['period_id' => $period->id, 'period_label' => $period->label],
+                'exported_at' => now(),
             ]);
         }
         $this->line('  <fg=green>✓ Exportaciones registradas — botones de descarga habilitados en el preview.</>');
 
         $this->line('');
-        $this->info("══════ RADIOGRAFÍA GENERADA ══════");
-        $this->line('  Ahora valida con: php artisan reportes:debug-radiografia ' . $periodId);
+        $this->info('══════ RADIOGRAFÍA GENERADA ══════');
+        $this->line('  Ahora valida con: php artisan reportes:debug-radiografia '.$periodId);
         $this->line('');
 
         return self::SUCCESS;
     }
 
     /**
-     * Returns true only when the automatch is actually needed:
-     * - --force-automatch flag is set, OR
-     * - There are employees in the period's NOI data that do NOT yet have a branch assignment.
+     * Indica si hace falta correr el automatch: true con `--force-automatch` o cuando hay empleados
+     * en el NOI del periodo sin fila de asignación para ese periodo. Evita correr cientos de
+     * consultas pesadas cuando todos ya están asignados (antes la generación se quedaba detenida
+     * más de 20 minutos).
      *
-     * This avoids running 168 × 61K-row queries when all employees are already assigned,
-     * which was causing generation to stall for 20+ minutes.
+     * @param  int  $periodId  ID del periodo (filtra NOI y asignaciones por este ID exacto).
+     * @return bool true si debe ejecutarse la asignación automática.
      */
     private function shouldRunAutomatch(int $periodId): bool
     {

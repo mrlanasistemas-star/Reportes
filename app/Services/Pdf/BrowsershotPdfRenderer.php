@@ -21,6 +21,16 @@ use Throwable;
  */
 class BrowsershotPdfRenderer
 {
+    /**
+     * Renderiza una vista Blade a HTML y la imprime a PDF en disco.
+     *
+     * @param  string  $view  Nombre de la vista Blade.
+     * @param  array<string, mixed>  $data  Datos de la vista.
+     * @param  string  $outputPath  Ruta absoluta del PDF a escribir.
+     * @param  array<string, mixed>  $options  Mismas opciones que renderHtmlToFile().
+     *
+     * @throws PdfRenderException
+     */
     public function renderViewToFile(string $view, array $data, string $outputPath, array $options = []): void
     {
         $html = view($view, $data)->render();
@@ -28,6 +38,16 @@ class BrowsershotPdfRenderer
     }
 
     /**
+     * Imprime HTML a PDF con Chrome headless (Browsershot) y lo guarda en disco.
+     *
+     * Valida binarios antes de lanzar el proceso, crea el directorio destino,
+     * aplica formato/márgenes/orientación (márgenes 0 y sin pie en full_bleed),
+     * espera la señal window.__PDF_READY__ (salvo wait_for_ready=false) y pone
+     * un pie con nombre de la app y "Página X de Y". Cualquier fallo se traduce
+     * a PdfRenderException con código rastreable y queda en el log.
+     *
+     * @param  string  $html  Documento HTML completo.
+     * @param  string  $outputPath  Ruta absoluta del PDF a escribir.
      * @param array{
      *     format?: string,
      *     margins?: array{top: float, right: float, bottom: float, left: float},
@@ -39,6 +59,8 @@ class BrowsershotPdfRenderer
      *     landscape?: bool,
      *     outline?: bool,
      * } $options
+     *
+     * @throws PdfRenderException Si faltan binarios, hay timeout o el archivo resultante está vacío.
      */
     public function renderHtmlToFile(string $html, string $outputPath, array $options = []): void
     {
@@ -108,7 +130,13 @@ class BrowsershotPdfRenderer
      * PNG de alta resolución (mismo HTML/CSS que el PDF). `width` en px CSS; el alto
      * es el de la página completa; `scale` = deviceScaleFactor (2 = nitidez retina).
      *
+     * Siempre espera la señal window.__PDF_READY__.
+     *
+     * @param  string  $html  Documento HTML completo.
+     * @param  string  $outputPath  Ruta absoluta del PNG a escribir.
      * @param  array{width?: int, scale?: int, ready_timeout?: int}  $options
+     *
+     * @throws PdfRenderException Si faltan binarios, hay timeout o la imagen está vacía.
      */
     public function renderHtmlToImage(string $html, string $outputPath, array $options = []): void
     {
@@ -135,6 +163,12 @@ class BrowsershotPdfRenderer
         }
     }
 
+    /**
+     * Aplica al Browsershot las rutas de Node, npm y Chrome y la opción
+     * no-sandbox configuradas en config/pdf.php (solo las que estén definidas).
+     *
+     * @param  Browsershot  $shot  Instancia a configurar (se modifica en sitio).
+     */
     private function configureBinaries(Browsershot $shot): void
     {
         $nodeBinary = config('pdf.browsershot.node_binary');
@@ -163,6 +197,10 @@ class BrowsershotPdfRenderer
      * Process (mismo tipo de excepción para node roto y chrome roto, sin distinción
      * fiable en el mensaje). is_file() sobre la ruta configurada es determinista y no
      * depende de idioma/versión — mismo chequeo que usa `reports:pdf-health`.
+     *
+     * Si una ruta no está configurada no se valida (Browsershot usa la del PATH).
+     *
+     * @throws PdfRenderException NODE_NOT_FOUND o CHROME_NOT_FOUND.
      */
     private function assertBinariesConfigured(): void
     {
@@ -181,6 +219,13 @@ class BrowsershotPdfRenderer
         }
     }
 
+    /**
+     * Plantilla HTML del pie de página que inyecta Chrome.
+     *
+     * @param  string  $left  Texto izquierdo (se escapa).
+     * @param  string|null  $right  HTML derecho (NO se escapa); por defecto "Página X de Y" con las clases de Chrome.
+     * @return string HTML del pie.
+     */
     private function footerTemplate(string $left, ?string $right): string
     {
         $right ??= 'Página <span class="pageNumber"></span> de <span class="totalPages"></span>';
@@ -199,6 +244,14 @@ class BrowsershotPdfRenderer
      * proceso hijo (verificado empíricamente ejecutando esta clase contra un
      * chrome_path inexistente) — por eso este método acepta cualquier Throwable,
      * nunca un tipo concreto de excepción.
+     *
+     * Registra el error en el log y clasifica por frases de Puppeteer/Node:
+     * timeout (chartTimeout si se esperaba la señal de listo), Chrome no
+     * encontrado, Node no encontrado o fallo genérico.
+     *
+     * @param  Throwable  $exception  Excepción original del proceso.
+     * @param  bool  $wasWaitingForReady  Si se esperaba window.__PDF_READY__.
+     * @return PdfRenderException Excepción traducida (no se lanza aquí).
      */
     private function translate(Throwable $exception, bool $wasWaitingForReady): PdfRenderException
     {

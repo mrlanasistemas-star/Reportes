@@ -7,35 +7,58 @@ use App\Services\BranchResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-colocacion` — colocación por sucursal operativa: totales brutos,
+ * colocación neta excluyendo productos REESTRUCTURA/UNIFICACIÓN/RECURSOS PROPIOS (regla por
+ * nombre de producto), comparación contra el target fijo $14,538,964 (Abril 2026, anterior al
+ * KPI bruto vigente por origen de crédito), revisión de San Juan del Río (cerrada, $0 esperado)
+ * y colocación excluida del global por estar en sucursales no operativas.
+ *
+ * Escribe en BD: NO — solo lectura. Usa REGEXP (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-colocacion 14
+ */
 class DebugColocacionCommand extends Command
 {
-    protected $signature   = 'reportes:debug-colocacion {period_id : ID del periodo}';
+    protected $signature = 'reportes:debug-colocacion {period_id : ID del periodo}';
+
     protected $description = 'Colocación por sucursal: resumen global, exclusiones, SJR.';
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas y sucursales operativas.
+     */
     public function __construct(private readonly BranchResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Construye el mapa operativo, agrega la colocación por sucursal real e imprime las cinco
+     * secciones del diagnóstico.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge($weeklyIds, [$period->id])));
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge($weeklyIds, [$period->id])));
 
         $this->line('');
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG COLOCACIÓN — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
         $this->line('');
 
         // Build operative map
@@ -76,11 +99,11 @@ class DebugColocacionCommand extends Command
         }
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($bySuc[$suc])) {
+            if (! $suc || ! isset($bySuc[$suc])) {
                 continue;
             }
-            $bySuc[$suc]['bruto']    += (float) $row->total_bruto;
-            $bySuc[$suc]['neta']     += (float) $row->colocacion_neta;
+            $bySuc[$suc]['bruto'] += (float) $row->total_bruto;
+            $bySuc[$suc]['neta'] += (float) $row->colocacion_neta;
             $bySuc[$suc]['excluido'] += (float) $row->excluido;
             $bySuc[$suc]['creditos'] += (int) $row->creditos_bruto;
         }
@@ -90,22 +113,22 @@ class DebugColocacionCommand extends Command
         $globalBruto = 0.0;
         $globalExcl = 0.0;
         foreach ($bySuc as $suc => $d) {
-            $globalNeta  += $d['neta'];
+            $globalNeta += $d['neta'];
             $globalBruto += $d['bruto'];
-            $globalExcl  += $d['excluido'];
+            $globalExcl += $d['excluido'];
             $nota = '';
             if (strtoupper($suc) === 'SAN JUAN DEL RÍO') {
                 $nota = $d['neta'] == 0 ? 'OK: sucursal cerrada, $0' : '⚠ VERIFICAR';
             }
             $tableRows[] = [
                 $suc,
-                '$' . number_format($d['bruto'], 2),
-                '$' . number_format($d['neta'], 2),
-                $d['excluido'] > 0 ? '$' . number_format($d['excluido'], 2) : '—',
+                '$'.number_format($d['bruto'], 2),
+                '$'.number_format($d['neta'], 2),
+                $d['excluido'] > 0 ? '$'.number_format($d['excluido'], 2) : '—',
                 $nota,
             ];
         }
-        $tableRows[] = ['GLOBAL (SUMA)', '$' . number_format($globalBruto, 2), '$' . number_format($globalNeta, 2), '$' . number_format($globalExcl, 2), ''];
+        $tableRows[] = ['GLOBAL (SUMA)', '$'.number_format($globalBruto, 2), '$'.number_format($globalNeta, 2), '$'.number_format($globalExcl, 2), ''];
 
         $this->table(
             ['Sucursal', 'Total bruto', 'Colocación neta', 'Reestructuras excl.', 'Nota'],
@@ -114,8 +137,8 @@ class DebugColocacionCommand extends Command
 
         // ── 3. Comparación vs target ──────────────────────────────────────────
         $target = 14_538_964.00;
-        $diff   = $globalNeta - $target;
-        $pct    = $target > 0 ? abs($diff / $target) * 100 : 0;
+        $diff = $globalNeta - $target;
+        $pct = $target > 0 ? abs($diff / $target) * 100 : 0;
 
         $this->line('');
         $this->info('── 3. Comparación vs target ──');
@@ -151,7 +174,7 @@ class DebugColocacionCommand extends Command
             ->whereNotIn('p.branch_id', $operativeIds)
             ->where(function ($q) {
                 $q->whereNull('p.product_name')
-                  ->orWhereRaw("p.product_name NOT REGEXP ?", ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS']);
+                    ->orWhereRaw('p.product_name NOT REGEXP ?', ['REESTRUCTURA|UNIFICACION|UNIFICACIONES|RECURSOS PROPIOS']);
             })
             ->selectRaw('b.name as branch, COUNT(*) as creditos, SUM(p.amount) as total')
             ->groupBy('p.branch_id', 'b.name')

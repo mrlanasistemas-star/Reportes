@@ -12,7 +12,7 @@ return new class extends Migration
      * projected_*, health_status) son SNAPSHOT/CACHE de la última evaluación
      * (OkrSnapshotService) — la fuente real sigue viviendo en Reportería
      * (RadiografiaExportService::buildSnapshot()), nunca al revés (ver
-     * docs/OKR.md sección "OKR es consumidor").
+     * docs/MANUAL-DESARROLLADOR.md sección "OKR es consumidor").
      *
      * baseline_value/target_value quedan CONGELADOS tras activar el Objective
      * (baseline_locked_at) — cualquier cambio posterior pasa por

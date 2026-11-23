@@ -22,13 +22,24 @@ use Illuminate\Support\Str;
  */
 class EfectividadWorkspace
 {
+    /** Vida máxima de un espacio desde su creación (minutos). */
     public const TTL_MINUTOS = 60;
 
+    /**
+     * Directorio raíz de los espacios temporales.
+     */
     public static function raiz(): string
     {
         return storage_path('app/private/efectividad-tmp');
     }
 
+    /**
+     * Crea un espacio nuevo (directorio 0700 con token aleatorio de 40 caracteres) y su meta
+     * cifrada ligada al usuario.
+     *
+     * @param  int  $userId  usuario dueño
+     * @return string token del espacio
+     */
     public function crear(int $userId): string
     {
         $token = Str::random(40);
@@ -39,7 +50,16 @@ class EfectividadWorkspace
         return $token;
     }
 
-    /** @throws EfectividadArchivoException si no existe, expiró o pertenece a otro usuario */
+    /**
+     * Meta del espacio validando token, dueño y vigencia (TTL desde la creación; si venció, el
+     * espacio se elimina).
+     *
+     * @param  string  $token  token del espacio
+     * @param  int  $userId  usuario que lo solicita
+     * @return array meta (user_id, creado, archivos…)
+     *
+     * @throws EfectividadArchivoException si no existe, expiró o pertenece a otro usuario
+     */
     public function meta(string $token, int $userId): array
     {
         if (! preg_match('/^[A-Za-z0-9]{40}$/', $token) || ! is_file($this->ruta($token, 'meta'))) {
@@ -57,11 +77,24 @@ class EfectividadWorkspace
         return $meta;
     }
 
+    /**
+     * Reescribe la meta del espacio.
+     *
+     * @param  string  $token  token
+     * @param  array  $meta  meta completa
+     */
     public function guardarMeta(string $token, array $meta): void
     {
         $this->escribir($token, 'meta', $meta);
     }
 
+    /**
+     * Guarda una parte del espacio como JSON cifrado (Crypt/APP_KEY), archivo 0600.
+     *
+     * @param  string  $token  token
+     * @param  string  $nombre  nombre de la parte (se sanea)
+     * @param  array  $datos  contenido
+     */
     public function escribir(string $token, string $nombre, array $datos): void
     {
         $ruta = $this->ruta($token, $nombre);
@@ -69,6 +102,13 @@ class EfectividadWorkspace
         @chmod($ruta, 0600);
     }
 
+    /**
+     * Lee y descifra una parte del espacio.
+     *
+     * @param  string  $token  token
+     * @param  string  $nombre  nombre de la parte
+     * @return array|null null si no existe
+     */
     public function leer(string $token, string $nombre): ?array
     {
         $ruta = $this->ruta($token, $nombre);
@@ -79,11 +119,22 @@ class EfectividadWorkspace
         return json_decode(Crypt::decryptString(file_get_contents($ruta)), true, 512, JSON_THROW_ON_ERROR);
     }
 
+    /**
+     * Borra una parte del espacio (si existe).
+     *
+     * @param  string  $token  token
+     * @param  string  $nombre  nombre de la parte
+     */
     public function borrarParte(string $token, string $nombre): void
     {
         @unlink($this->ruta($token, $nombre));
     }
 
+    /**
+     * Elimina el espacio completo (sólo si el token tiene formato válido).
+     *
+     * @param  string  $token  token
+     */
     public function eliminar(string $token): void
     {
         if (preg_match('/^[A-Za-z0-9]{40}$/', $token)) {
@@ -123,11 +174,22 @@ class EfectividadWorkspace
         return $n;
     }
 
+    /**
+     * Directorio del espacio.
+     *
+     * @param  string  $token  token
+     */
     private function dir(string $token): string
     {
         return self::raiz().DIRECTORY_SEPARATOR.$token;
     }
 
+    /**
+     * Ruta del archivo cifrado de una parte (nombre saneado a [a-z0-9_-], extensión .bin).
+     *
+     * @param  string  $token  token
+     * @param  string  $nombre  nombre de la parte
+     */
     private function ruta(string $token, string $nombre): string
     {
         return $this->dir($token).DIRECTORY_SEPARATOR.preg_replace('/[^a-z0-9_-]/i', '', $nombre).'.bin';

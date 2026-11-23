@@ -7,18 +7,36 @@ use App\Models\PeriodDatabaseUpdateRun;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-load-progress` — muestra el estado actual y la metadata del último
+ * run de "Actualizar BD" (`period_database_update_runs`) de un periodo: estatus, etapa, avance,
+ * tiempos y errores.
+ *
+ * Cuándo usarlo: cuando la carga de BD parece atorada.
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-load-progress 21
+ */
 class DebugLoadProgressCommand extends Command
 {
-    protected $signature   = 'reportes:debug-load-progress {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-load-progress {period_id : ID del periodo mensual}';
+
     protected $description = 'Muestra el estado actual y metadata del último run de carga de BD para un periodo.';
 
+    /**
+     * Busca el último run de carga del periodo e imprime su estado y metadata.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -32,22 +50,23 @@ class DebugLoadProgressCommand extends Command
         $this->info("  DEBUG LOAD PROGRESS — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
 
-        if (!$run) {
+        if (! $run) {
             $this->warn('  No se encontró ningún run de carga para este periodo.');
             $this->line('');
+
             return self::SUCCESS;
         }
 
         $statusColor = match ($run->status) {
-            'success'   => 'green',
-            'failed'    => 'red',
-            'running'   => 'yellow',
-            'queued'    => 'cyan',
+            'success' => 'green',
+            'failed' => 'red',
+            'running' => 'yellow',
+            'queued' => 'cyan',
             'cancelled' => 'gray',
-            default     => 'white',
+            default => 'white',
         };
 
-        $status  = $run->status;
+        $status = $run->status;
         $running = in_array($status, ['queued', 'running'], true);
 
         $elapsedSeconds = null;
@@ -60,7 +79,7 @@ class DebugLoadProgressCommand extends Command
             $elapsedSeconds = max(0, (int) $run->started_at->diffInSeconds($run->finished_at));
         }
         $elapsedStr = $elapsedSeconds !== null
-            ? (($elapsedSeconds >= 60) ? floor($elapsedSeconds / 60) . ' min ' . ($elapsedSeconds % 60) . ' seg' : $elapsedSeconds . ' seg')
+            ? (($elapsedSeconds >= 60) ? floor($elapsedSeconds / 60).' min '.($elapsedSeconds % 60).' seg' : $elapsedSeconds.' seg')
             : '—';
 
         $this->line('');
@@ -84,7 +103,7 @@ class DebugLoadProgressCommand extends Command
         if (in_array($run->status, ['queued', 'running'], true)) {
             $jobExists = DB::table('jobs')
                 ->where('payload', 'LIKE', '%UpdatePeriodDatabaseJob%')
-                ->where('payload', 'LIKE', '%runId%i:' . $run->id . ';%')
+                ->where('payload', 'LIKE', '%runId%i:'.$run->id.';%')
                 ->first(['id', 'queue', 'attempts', 'available_at', 'reserved_at']);
 
             $this->line('');
@@ -95,7 +114,7 @@ class DebugLoadProgressCommand extends Command
                 $this->line(sprintf('  Attempts     : %d', $jobExists->attempts));
                 $this->line(sprintf('  Available at : %s', date('Y-m-d H:i:s', $jobExists->available_at)));
                 $this->line(sprintf('  Reserved at  : %s', $jobExists->reserved_at ? date('Y-m-d H:i:s', $jobExists->reserved_at) : '— (no ha sido tomado por worker)'));
-                if (!$jobExists->reserved_at) {
+                if (! $jobExists->reserved_at) {
                     $this->warn('  DIAGNÓSTICO: Job en cola pero no reservado. Worker inactivo.');
                     $this->line('  Solución: php artisan queue:work --tries=1 --timeout=0 -vvv');
                 }
@@ -110,7 +129,7 @@ class DebugLoadProgressCommand extends Command
         // Check failed_jobs
         $failedJob = DB::table('failed_jobs')
             ->where('payload', 'LIKE', '%UpdatePeriodDatabaseJob%')
-            ->where('payload', 'LIKE', '%runId%i:' . $run->id . ';%')
+            ->where('payload', 'LIKE', '%runId%i:'.$run->id.';%')
             ->first(['uuid', 'failed_at', 'exception']);
         if ($failedJob) {
             $this->line('');
@@ -122,37 +141,37 @@ class DebugLoadProgressCommand extends Command
 
         if ($run->error_message) {
             $this->line('');
-            $this->error('  ERROR: ' . $run->error_message);
+            $this->error('  ERROR: '.$run->error_message);
         }
 
         $meta = $run->metadata ?? [];
 
         $this->line('');
         $this->info('── Progreso ──────────────────────────────────────────────────────────');
-        $pct  = $meta['progress_percent'] ?? null;
-        $step = $meta['current_step']     ?? null;
+        $pct = $meta['progress_percent'] ?? null;
+        $step = $meta['current_step'] ?? null;
         $this->line(sprintf('  Porcentaje    : %s%%', $pct !== null ? (int) $pct : '—'));
         $this->line(sprintf('  Paso actual   : %s', $step ?? '—'));
         $this->line(sprintf('  Fuente actual : %s', $meta['current_source'] ?? '—'));
-        $this->line(sprintf('  Archivo actual: %s', $meta['current_file']   ?? '—'));
+        $this->line(sprintf('  Archivo actual: %s', $meta['current_file'] ?? '—'));
 
         $processedRows = $meta['processed_rows'] ?? null;
-        $totalRows     = $meta['total_rows']     ?? null;
+        $totalRows = $meta['total_rows'] ?? null;
         if ($processedRows !== null || $totalRows !== null) {
             $this->line(sprintf(
                 '  Filas         : %s / %s',
                 $processedRows !== null ? number_format((int) $processedRows) : '—',
-                $totalRows     !== null ? number_format((int) $totalRows)     : '—',
+                $totalRows !== null ? number_format((int) $totalRows) : '—',
             ));
         }
 
-        if (!empty($meta['stats'])) {
+        if (! empty($meta['stats'])) {
             $stats = $meta['stats'];
             $this->line('');
             $this->info('── Estadísticas finales ──────────────────────────────────────────────');
-            $this->line(sprintf('  Personas detectadas  : %s', number_format((int) ($stats['persons_detected']  ?? 0))));
-            $this->line(sprintf('  Registros cargados   : %s', number_format((int) ($stats['records_loaded']    ?? 0))));
-            $this->line(sprintf('  Registros excluidos  : %s', number_format((int) ($stats['records_excluded']  ?? 0))));
+            $this->line(sprintf('  Personas detectadas  : %s', number_format((int) ($stats['persons_detected'] ?? 0))));
+            $this->line(sprintf('  Registros cargados   : %s', number_format((int) ($stats['records_loaded'] ?? 0))));
+            $this->line(sprintf('  Registros excluidos  : %s', number_format((int) ($stats['records_excluded'] ?? 0))));
             $this->line(sprintf('  Sucursales incluidas : %s', (int) ($stats['branches_included'] ?? 0)));
             $this->line(sprintf('  Sucursales excluidas : %s', (int) ($stats['branches_excluded'] ?? 0)));
 
@@ -164,7 +183,7 @@ class DebugLoadProgressCommand extends Command
             }
 
             $critical = (int) ($stats['critical_incidents'] ?? 0);
-            $warnings = (int) ($stats['warnings']           ?? 0);
+            $warnings = (int) ($stats['warnings'] ?? 0);
             $critColor = $critical > 0 ? 'red' : 'green';
             $warnColor = $warnings > 0 ? 'yellow' : 'green';
             $this->line(sprintf('  Incidencias críticas : <fg=%s>%d</>', $critColor, $critical));
@@ -175,7 +194,7 @@ class DebugLoadProgressCommand extends Command
         $knownKeys = ['progress_percent', 'current_step', 'current_source', 'current_file',
             'processed_rows', 'total_rows', 'stats'];
         $extra = array_diff_key($meta, array_flip($knownKeys));
-        if (!empty($extra)) {
+        if (! empty($extra)) {
             $this->line('');
             $this->info('── Metadata adicional ────────────────────────────────────────────────');
             foreach ($extra as $key => $value) {
@@ -199,6 +218,7 @@ class DebugLoadProgressCommand extends Command
         }
 
         $this->line('');
+
         return self::SUCCESS;
     }
 }

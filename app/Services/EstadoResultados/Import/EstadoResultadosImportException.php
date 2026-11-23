@@ -11,24 +11,36 @@ namespace App\Services\EstadoResultados\Import;
  */
 class EstadoResultadosImportException extends \RuntimeException
 {
+    /** Intento de carga (estado_resultados_import_attempts) donde quedó registrado el rechazo. */
     private ?int $attemptId = null;
 
     /**
-     * @param  list<string>  $details
-     * @param  list<array{row:?int, column:?string, message:string}>  $errors
+     * @param  string  $message  mensaje principal en español
+     * @param  list<string>  $details  mensajes de detalle (qué hacer / qué falta)
+     * @param  list<array{row:?int, column:?string, message:string}>  $errors  errores por fila/columna
+     * @param  int  $status  código HTTP (422 por defecto; 409 si hay otra carga en curso)
      */
     public function __construct(string $message, private readonly array $details = [], private readonly array $errors = [], private readonly int $status = 422)
     {
         parent::__construct($message);
     }
 
-    /** @return list<string> */
+    /**
+     * Mensajes de detalle planos (compatibilidad).
+     *
+     * @return list<string>
+     */
     public function details(): array
     {
         return $this->details;
     }
 
-    /** @return list<array{row:?int, column:?string, message:string}> */
+    /**
+     * Errores estructurados; si no se pasaron, se derivan de los detalles (o del mensaje)
+     * extrayendo el número de fila de los textos «Fila N: …».
+     *
+     * @return list<array{row:?int, column:?string, message:string}>
+     */
     public function errors(): array
     {
         if ($this->errors !== []) {
@@ -45,16 +57,27 @@ class EstadoResultadosImportException extends \RuntimeException
         }, $list));
     }
 
+    /**
+     * Código HTTP de la respuesta.
+     */
     public function status(): int
     {
         return $this->status;
     }
 
+    /**
+     * Id del intento de carga asociado (null si aún no se registró).
+     */
     public function attemptId(): ?int
     {
         return $this->attemptId;
     }
 
+    /**
+     * Asocia el intento de carga a la excepción (encadenable).
+     *
+     * @param  int  $id  id del intento
+     */
     public function withAttempt(int $id): static
     {
         $this->attemptId = $id;

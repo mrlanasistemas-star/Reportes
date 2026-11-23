@@ -16,6 +16,7 @@ namespace App\Services\Efectividad\V12;
  */
 final class V12Amortizaciones
 {
+    /** @param  V12Corrida  $c  estado compartido de la corrida (se modifica) */
     public function __construct(private readonly V12Corrida $c) {}
 
     /** MR_GenerarAmortizacionesDesdeSaldos. */

@@ -7,31 +7,52 @@ use App\Services\BranchResolverService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:debug-recuperacion-raw` — recuperación fila a fila: bruto en BD → filtro
+ * Región Norte → filtro Corporativo → Pass1 (branch_id operativo) + Pass2 (fallback por prefijo
+ * de acreditado) → comparación contra el target fijo de Abril 2026, con detalle de las rutas
+ * que Pass2 atribuye a cada sucursal y análisis del gap.
+ *
+ * Escribe en BD: NO — solo lectura. Usa JSON_EXTRACT (requiere MySQL).
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-recuperacion-raw 14
+ */
 class DebugRecuperacionRawCommand extends Command
 {
-    protected $signature   = 'reportes:debug-recuperacion-raw {period_id : ID del periodo mensual}';
+    protected $signature = 'reportes:debug-recuperacion-raw {period_id : ID del periodo mensual}';
+
     protected $description = 'Recuperación fila a fila: bruto en BD → filtro Norte → filtro Corporativo → Pass1+Pass2 → vs target.';
 
     private const TARGET = 18_323_749.55;
 
+    /**
+     * @param  BranchResolverService  $resolver  Resolvedor de rutas, prefijos y sucursales operativas.
+     */
     public function __construct(private readonly BranchResolverService $resolver)
     {
         parent::__construct();
     }
 
+    /**
+     * Imprime las secciones 1–5: bruto, clasificación de PAGO, funnel, detalle Pass2 y gap.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('period_id');
-        $period   = Period::find($periodId);
+        $period = Period::find($periodId);
 
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
@@ -40,8 +61,8 @@ class DebugRecuperacionRawCommand extends Command
         $this->info('══════════════════════════════════════════════════════════════════════');
         $this->info("  DEBUG RECUPERACIÓN RAW — {$period->label} (ID #{$periodId})");
         $this->info('══════════════════════════════════════════════════════════════════════');
-        $this->line('  Data IDs: [' . implode(', ', $dataIds) . ']');
-        $this->line('  Target recuperación Abril 2026: $' . number_format(self::TARGET, 2));
+        $this->line('  Data IDs: ['.implode(', ', $dataIds).']');
+        $this->line('  Target recuperación Abril 2026: $'.number_format(self::TARGET, 2));
         $this->line('');
 
         // ── 1. Bruto total en BD ───────────────────────────────────────────────
@@ -57,7 +78,7 @@ class DebugRecuperacionRawCommand extends Command
 
         $pagoBruto = 0.0;
         foreach ($bruto as $r) {
-            $this->line(sprintf('  %-20s : %6d filas  $%s', $r->tx ?: '(null)', $r->filas, number_format((float)$r->total, 2)));
+            $this->line(sprintf('  %-20s : %6d filas  $%s', $r->tx ?: '(null)', $r->filas, number_format((float) $r->total, 2)));
             if (strtoupper(trim($r->tx ?? '')) === 'PAGO') {
                 $pagoBruto = (float) $r->total;
             }
@@ -75,11 +96,11 @@ class DebugRecuperacionRawCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $operativeMap   = [];
+        $operativeMap = [];
         $corporativoIds = [];
         foreach (DB::table('branches')->get() as $b) {
             $real = $this->resolver->resolveRealBranchFromRoute($b->name);
-            if (!$real) {
+            if (! $real) {
                 continue;
             }
             if ($this->resolver->isSheetBranch($real)) {
@@ -108,10 +129,10 @@ class DebugRecuperacionRawCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $pass2Total     = 0.0;
-        $pass2Excluded  = 0.0;
+        $pass2Total = 0.0;
+        $pass2Excluded = 0.0;
         foreach ($fallback as $fb) {
-            $prefix3  = strtoupper(trim((string) $fb->prefix3));
+            $prefix3 = strtoupper(trim((string) $fb->prefix3));
             $resolved = $this->resolver->resolveBranchNameFromCode($prefix3);
             if ($resolved && $this->resolver->isSheetBranch($resolved)) {
                 $pass2Total += (float) $fb->total;
@@ -120,15 +141,15 @@ class DebugRecuperacionRawCommand extends Command
             }
         }
 
-        $totOperativo   = 0.0;
-        $totNorte       = 0.0;
+        $totOperativo = 0.0;
+        $totNorte = 0.0;
         $totCorporativo = 0.0;
 
-        $norteNames = ['chihuahua','durango','aguascalientes'];
+        $norteNames = ['chihuahua', 'durango', 'aguascalientes'];
 
         foreach ($byBranch as $row) {
-            $bid   = (int) $row->id;
-            $real  = $this->resolver->resolveRealBranchFromRoute($row->name);
+            $bid = (int) $row->id;
+            $real = $this->resolver->resolveRealBranchFromRoute($row->name);
             $upper = strtoupper(trim($real ?? ''));
 
             if (in_array($bid, $operativeIds, true)) {
@@ -147,18 +168,18 @@ class DebugRecuperacionRawCommand extends Command
                 $tag = '<fg=yellow>Pass2/excluido — ver §4 para detalle</>';
             }
 
-            $this->line(sprintf("  %-38s %s  filas=%d  \$%s",
+            $this->line(sprintf('  %-38s %s  filas=%d  $%s',
                 mb_substr($row->name, 0, 38),
                 $tag,
                 $row->filas,
-                number_format((float)$row->total, 2)));
+                number_format((float) $row->total, 2)));
         }
         $this->line('');
 
         // ── 3. Funnel: bruto → filtros → operativo ────────────────────────────
         $this->info('── 3. Funnel PAGO ──');
         $pass1Total = $totOperativo;
-        $calcTotal  = $pass1Total + $pass2Total;
+        $calcTotal = $pass1Total + $pass2Total;
         $this->line(sprintf('  PAGO bruto total              : $%s', number_format($pagoBruto, 2)));
         $this->line(sprintf('  - Norte (exclud.)             : -$%s', number_format($totNorte, 2)));
         $this->line(sprintf('  - Corporativo (exclud.)       : -$%s', number_format($totCorporativo, 2)));
@@ -169,8 +190,8 @@ class DebugRecuperacionRawCommand extends Command
         $this->line(sprintf('  ──────────────────────────────────────────────────────────'));
         $this->line(sprintf('  CALC TOTAL (Pass1+Pass2)       :  $%s', number_format($calcTotal, 2)));
         $this->line(sprintf('  Target                        :  $%s', number_format(self::TARGET, 2)));
-        $diff  = $calcTotal - self::TARGET;
-        $pct   = abs($diff / self::TARGET) * 100;
+        $diff = $calcTotal - self::TARGET;
+        $pct = abs($diff / self::TARGET) * 100;
         $color = $pct < 1 ? 'green' : ($pct < 5 ? 'yellow' : 'red');
         $this->line(sprintf("  Diferencia                    :  <fg={$color}>%+.2f (%.2f%%)</>", $diff, $pct));
         $this->line('');
@@ -182,19 +203,19 @@ class DebugRecuperacionRawCommand extends Command
             $this->line('  (ninguna fila en Pass2)');
         } else {
             foreach ($fallback as $row) {
-                $prefix3  = strtoupper(trim((string) $row->prefix3));
+                $prefix3 = strtoupper(trim((string) $row->prefix3));
                 $resolved = $this->resolver->resolveBranchNameFromCode($prefix3);
-                $isSheet  = $resolved ? $this->resolver->isSheetBranch($resolved) : false;
-                $color    = $isSheet ? 'green' : 'red';
+                $isSheet = $resolved ? $this->resolver->isSheetBranch($resolved) : false;
+                $color = $isSheet ? 'green' : 'red';
                 $sucursal = $resolved ?? '???';
-                $action   = $isSheet ? 'INCLUIDO' : 'EXCLUIDO';
+                $action = $isSheet ? 'INCLUIDO' : 'EXCLUIDO';
                 $this->line(sprintf("  %-35s  prefix=%s → %-22s  [<fg={$color}>%s</>]  filas=%d  \$%s",
                     mb_substr($row->branch_name, 0, 35),
                     str_pad($prefix3, 4),
                     $sucursal,
                     $action,
                     $row->filas,
-                    number_format((float)$row->total, 2)));
+                    number_format((float) $row->total, 2)));
             }
         }
         $this->line('');
@@ -216,8 +237,8 @@ class DebugRecuperacionRawCommand extends Command
                 ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '$.transaction')) = 'PAGO'")
                 ->selectRaw('COUNT(*) as filas, SUM(total_amount) as total')
                 ->first();
-            if ((int)($nullBranch->filas ?? 0) > 0) {
-                $this->warn(sprintf('  ⚠ PAGO con branch_id NULL: %d filas, $%s', $nullBranch->filas, number_format((float)$nullBranch->total, 2)));
+            if ((int) ($nullBranch->filas ?? 0) > 0) {
+                $this->warn(sprintf('  ⚠ PAGO con branch_id NULL: %d filas, $%s', $nullBranch->filas, number_format((float) $nullBranch->total, 2)));
             } else {
                 $this->line('  ✓ Sin PAGO con branch_id NULL.');
             }
@@ -246,11 +267,11 @@ class DebugRecuperacionRawCommand extends Command
             ->selectRaw('SUM(capital) as capital, SUM(interest) as interest, SUM(tax) as tax, SUM(GREATEST(total_amount - capital - interest - tax, 0)) as charges, SUM(total_amount) as total')
             ->first();
 
-        $this->line(sprintf('  Capital    : $%s  (target: $12,883,858.49)', number_format((float)($pass1Detail->capital ?? 0), 2)));
-        $this->line(sprintf('  Interés    : $%s  (target: $4,545,211.24)', number_format((float)($pass1Detail->interest ?? 0), 2)));
-        $this->line(sprintf('  Impuesto   : $%s  (target: $727,231.40)', number_format((float)($pass1Detail->tax ?? 0), 2)));
-        $this->line(sprintf('  Charges    : $%s  (target: $167,448.42)', number_format((float)($pass1Detail->charges ?? 0), 2)));
-        $this->line(sprintf('  Total PAGO : $%s', number_format((float)($pass1Detail->total ?? 0), 2)));
+        $this->line(sprintf('  Capital    : $%s  (target: $12,883,858.49)', number_format((float) ($pass1Detail->capital ?? 0), 2)));
+        $this->line(sprintf('  Interés    : $%s  (target: $4,545,211.24)', number_format((float) ($pass1Detail->interest ?? 0), 2)));
+        $this->line(sprintf('  Impuesto   : $%s  (target: $727,231.40)', number_format((float) ($pass1Detail->tax ?? 0), 2)));
+        $this->line(sprintf('  Charges    : $%s  (target: $167,448.42)', number_format((float) ($pass1Detail->charges ?? 0), 2)));
+        $this->line(sprintf('  Total PAGO : $%s', number_format((float) ($pass1Detail->total ?? 0), 2)));
         $this->line('');
 
         $this->info('══════════════════════════════════════════════════════════════════════');

@@ -11,13 +11,26 @@ use Illuminate\Http\Request;
 
 /**
  * Directorio de PERSONAS (employees agrupados) y SUCURSALES con sus rutas — ADITIVO
- * (2026-11-17). /employees y /branches no cambian. Ver docs/api-reporteria.md §16.
+ * (2026-11-17). /employees y /branches no cambian. Ver docs/MANUAL-DESARROLLADOR.md §16.
  */
 class PeopleDirectoryController extends Controller
 {
+    /**
+     * @param  PeopleDirectoryService  $directory  Arma el directorio de personas y sucursales con sus rutas.
+     */
     public function __construct(private readonly PeopleDirectoryService $directory) {}
 
-    /** GET /api/v1/people — employees.read. */
+    /**
+     * GET /api/v1/people — requiere ability employees.read.
+     *
+     * Lista de personas (registros employees agrupados por nombre normalizado,
+     * fusión de variantes y rechazos de homónimos), paginada en memoria y
+     * filtrada al alcance de sucursales del consumidor.
+     *
+     * @param  Request  $request  `per_page` (100 por defecto, máx. 500), `page`, e `include_placeholders`
+     *                            (true por defecto; false deja solo elementos con kind = person).
+     * @return JsonResponse {data: [persona...], meta: paginación + criterio de agrupación}.
+     */
     public function people(Request $request): JsonResponse
     {
         /** @var ApiConsumer $consumer */
@@ -47,7 +60,16 @@ class PeopleDirectoryController extends Controller
         ]);
     }
 
-    /** GET /api/v1/sucursales — branches.read. */
+    /**
+     * GET /api/v1/sucursales — requiere ability branches.read.
+     *
+     * Sucursales con sus rutas (según BranchRouteCatalog). Si el consumidor no
+     * es global, cada sucursal conserva solo las rutas permitidas y se omiten
+     * las que se quedan sin rutas; sin acceso a sucursales → lista vacía.
+     *
+     * @param  Request  $request  Petición del consumidor de API autenticado.
+     * @return JsonResponse {data: [sucursal...], meta: {total, route_mapping}}.
+     */
     public function sucursales(Request $request): JsonResponse
     {
         /** @var ApiConsumer $consumer */
@@ -69,7 +91,10 @@ class PeopleDirectoryController extends Controller
     /**
      * Consumidor restringido: solo personas con alguna ruta permitida, y solo esas rutas.
      *
-     * @param  list<array<string, mixed>>  $people
+     * Consumidor global → sin cambios; sin acceso a sucursales → lista vacía.
+     *
+     * @param  ApiConsumer  $consumer  Consumidor de API autenticado.
+     * @param  list<array<string, mixed>>  $people  Personas del directorio (cada una con `routes`).
      * @return list<array<string, mixed>>
      */
     private function scope(ApiConsumer $consumer, array $people): array

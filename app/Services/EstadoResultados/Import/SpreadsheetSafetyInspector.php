@@ -24,11 +24,18 @@ namespace App\Services\EstadoResultados\Import;
  */
 class SpreadsheetSafetyInspector
 {
+    /** Severidad de aviso que no bloquea la aprobación. */
     public const SEVERITY_INFO = 'informativa';
 
+    /** Severidad de aviso que bloquea la aprobación. */
     public const SEVERITY_BLOCKING = 'bloqueante';
 
     /**
+     * Inspecciona el archivo según su contenedor (ZIP para .xlsx/.xlsm o .xls que en realidad es
+     * ZIP; OLE para .xls clásico). No modifica nada.
+     *
+     * @param  string  $absolutePath  ruta del archivo
+     * @param  string  $extension  extensión declarada
      * @return array{has_macros:bool, external_links:bool, entries:int, uncompressed_bytes:int, warnings:list<array{code:string,severity:string,message:string}>}
      *
      * @throws EstadoResultadosImportException
@@ -43,6 +50,16 @@ class SpreadsheetSafetyInspector
         return $this->inspectZip($absolutePath, $ext);
     }
 
+    /**
+     * Revisión de un contenedor ZIP con los límites de config estado_resultados.import.zip
+     * (entradas, MB descomprimidos total y por entrada, razón de compresión).
+     *
+     * @param  string  $path  ruta del archivo
+     * @param  string  $ext  extensión en minúsculas
+     * @return array<string, mixed> mismo formato que inspect()
+     *
+     * @throws EstadoResultadosImportException archivo dañado, bomba ZIP o macros en .xlsx
+     */
     private function inspectZip(string $path, string $ext): array
     {
         $cfg = (array) config('estado_resultados.import.zip', []);
@@ -145,6 +162,13 @@ class SpreadsheetSafetyInspector
         }
     }
 
+    /**
+     * Revisión de un .xls OLE: sólo detecta el flujo _VBA_PROJECT (aviso de macros). Lee el
+     * archivo completo en memoria.
+     *
+     * @param  string  $path  ruta del archivo
+     * @return array<string, mixed> mismo formato que inspect()
+     */
     private function inspectOle(string $path): array
     {
         $raw = (string) file_get_contents($path);
@@ -159,7 +183,13 @@ class SpreadsheetSafetyInspector
         ];
     }
 
-    /** Bytes reales descomprimidos de una parte, leyendo como máximo $limit (null = no se pudo leer). */
+    /**
+     * Bytes reales descomprimidos de una parte, leyendo como máximo $limit (null = no se pudo leer).
+     *
+     * @param  \ZipArchive  $zip  contenedor abierto
+     * @param  string  $name  parte
+     * @param  int  $limit  bytes máximos a leer
+     */
     private function streamSize(\ZipArchive $zip, string $name, int $limit): ?int
     {
         $stream = $zip->getStream($name);
@@ -185,11 +215,21 @@ class SpreadsheetSafetyInspector
         return $read;
     }
 
+    /**
+     * ¿El archivo empieza con la firma ZIP (PK\x03\x04)?
+     *
+     * @param  string  $path  ruta del archivo
+     */
     private function isZip(string $path): bool
     {
         return str_starts_with((string) file_get_contents($path, false, null, 0, 4), "PK\x03\x04");
     }
 
+    /**
+     * Bytes a texto «N.N MB» (sin ceros finales).
+     *
+     * @param  int  $bytes  bytes
+     */
     private function mb(int $bytes): string
     {
         return rtrim(rtrim(number_format($bytes / 1048576, 1), '0'), '.').' MB';

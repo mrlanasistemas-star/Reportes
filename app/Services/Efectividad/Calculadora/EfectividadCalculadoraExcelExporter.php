@@ -23,6 +23,7 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
  */
 class EfectividadCalculadoraExcelExporter
 {
+    /** Formatos numéricos y tipografía de la plantilla. */
     private const MONEDA = '$#,##0.00;-$#,##0.00';
 
     private const PCT = '0.00%';
@@ -46,15 +47,26 @@ class EfectividadCalculadoraExcelExporter
 
     private const BLANCO = 'FFFFFF';
 
+    /** Columnas B–M de la tabla (en orden). */
     private const CAMPOS = ['sano_pc', 'sano_cob', 'sano_pct', 'atraso_pc', 'atraso_cob', 'atraso_pct', 'vencido_pc', 'vencido_cob', 'vencido_pct', 'cobranza_total', 'pct_total', 'mora'];
 
+    /** Etiqueta de cada modalidad. */
     private const MODOS = ['DIARIO' => 'Diario', 'ACUMULADO' => 'Acumulado', 'SEMANAL' => 'Semanal', 'MENSUAL' => 'Mensual'];
 
+    /** Primera fila de datos de la tabla. */
     private const PRIMERA_FILA_DATOS = 10;
 
+    /** @param  EfectividadV4ExcelExporter  $macro  exportador de la hoja de auditoría/incidencias */
     public function __construct(private readonly EfectividadV4ExcelExporter $macro) {}
 
-    /** @return string ruta del XLSX generado */
+    /**
+     * Genera el XLSX del resultado (hoja principal con encabezado, KPI, tabla y cierre, más la
+     * hoja de incidencias) y lo guarda.
+     *
+     * @param  array  $r  resultado de EfectividadCalculadoraService
+     * @param  string  $outputPath  ruta de salida
+     * @return string ruta del XLSX generado
+     */
     public function export(array $r, string $outputPath): string
     {
         $book = new Spreadsheet;
@@ -100,6 +112,12 @@ class EfectividadCalculadoraExcelExporter
         return $outputPath;
     }
 
+    /**
+     * Filas 1–5: logo, título del corte, modalidad, alcance y fecha de generación.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array  $r  resultado
+     */
     private function encabezado(Worksheet $ws, array $r): void
     {
         foreach ([1 => 16, 2 => 26, 3 => 16, 4 => 16, 5 => 8] as $fila => $alto) {
@@ -153,6 +171,12 @@ class EfectividadCalculadoraExcelExporter
         $logo->setWorksheet($ws);
     }
 
+    /**
+     * Tarjetas KPI del gran total (Sano por cobrar, cobranza total, efectividad y mora).
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array  $r  resultado
+     */
     private function kpis(Worksheet $ws, array $r): void
     {
         $gt = collect($r['filas'])->firstWhere('tipo', 'gran_total') ?? [];
@@ -184,6 +208,11 @@ class EfectividadCalculadoraExcelExporter
         $ws->getRowDimension(7)->setRowHeight(22);
     }
 
+    /**
+     * Encabezado de la tabla (filas 8–9): bloques Sano / Atraso / Vencido / Total / Mora.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
     private function encabezadoTabla(Worksheet $ws): void
     {
         $ws->mergeCells('A8:A9');
@@ -204,7 +233,14 @@ class EfectividadCalculadoraExcelExporter
         $ws->getRowDimension(9)->setRowHeight(18);
     }
 
-    /** @return int última fila escrita */
+    /**
+     * Escribe las filas del resultado (bandas de sucursal/ruta, promotores, subtotales y gran
+     * total); sin filas escribe «Sin movimientos para el periodo».
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array  $filas  filas del resultado
+     * @return int última fila escrita
+     */
     private function filas(Worksheet $ws, array $filas): int
     {
         $fila = self::PRIMERA_FILA_DATOS;
@@ -243,6 +279,13 @@ class EfectividadCalculadoraExcelExporter
         return $fila - 1;
     }
 
+    /**
+     * Una fila de importes/porcentajes con su estilo según el tipo y el semáforo en % total.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  int  $fila  fila destino
+     * @param  array  $f  fila del resultado
+     */
     private function filaDatos(Worksheet $ws, int $fila, array $f): void
     {
         $tipo = $f['tipo'];
@@ -294,6 +337,13 @@ class EfectividadCalculadoraExcelExporter
         }
     }
 
+    /**
+     * Bloques finales: notas metodológicas, control (incidencias, motor, fuentes) y avisos.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  array  $r  resultado
+     * @param  int  $fila  primera fila libre
+     */
     private function cierre(Worksheet $ws, array $r, int $fila): void
     {
         $fila = $this->bloque($ws, $fila, 'Notas metodológicas', array_map(fn ($n) => '• '.$n, $r['notas'] ?? []));
@@ -314,7 +364,16 @@ class EfectividadCalculadoraExcelExporter
         $ws->getStyle("A{$fila}")->getFont()->setSize(7)->getColor()->setRGB('94A3B8');
     }
 
-    /** @return int primera fila libre después del bloque */
+    /**
+     * Bloque de texto con título y líneas (combinadas A–M).
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  int  $fila  fila inicial
+     * @param  string  $titulo  título
+     * @param  array  $lineas  líneas de texto
+     * @param  bool  $aviso  estilo de aviso
+     * @return int primera fila libre después del bloque
+     */
     private function bloque(Worksheet $ws, int $fila, string $titulo, array $lineas, bool $aviso = false): int
     {
         $inicio = $fila;
@@ -341,6 +400,11 @@ class EfectividadCalculadoraExcelExporter
         return $fila + 1;
     }
 
+    /**
+     * Estilo de la hoja de auditoría (pestaña gris, encabezado oscuro, sin cuadrícula).
+     *
+     * @param  Worksheet  $ws  hoja de auditoría
+     */
     private function estiloAuditoria(Worksheet $ws): void
     {
         $ws->getTabColor()->setRGB('94A3B8');
@@ -353,6 +417,15 @@ class EfectividadCalculadoraExcelExporter
         $ws->setShowGridlines(false);
     }
 
+    /**
+     * Banda de agrupación (sucursal/ruta) combinada A–M.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  int  $fila  fila
+     * @param  string  $texto  texto
+     * @param  string  $bg  color de fondo RGB
+     * @param  string  $fg  color de texto RGB
+     */
     private function banda(Worksheet $ws, int $fila, string $texto, string $bg, string $fg): void
     {
         $ws->mergeCells("A{$fila}:M{$fila}");
@@ -364,6 +437,15 @@ class EfectividadCalculadoraExcelExporter
         $ws->getRowDimension($fila)->setRowHeight(18);
     }
 
+    /**
+     * Estilo de celda de encabezado.
+     *
+     * @param  Worksheet  $ws  hoja
+     * @param  string  $rango  rango
+     * @param  string  $bg  fondo RGB
+     * @param  string  $fg  texto RGB
+     * @param  string  $h  alineación horizontal
+     */
     private function estiloEncabezado(Worksheet $ws, string $rango, string $bg, string $fg, string $h): void
     {
         $s = $ws->getStyle($rango);
@@ -372,7 +454,13 @@ class EfectividadCalculadoraExcelExporter
         $s->getAlignment()->setHorizontal($h)->setVertical(Alignment::VERTICAL_CENTER);
     }
 
-    /** @param list<array{0:string,1:bool,2?:string}> $partes texto, negrita y color opcional */
+    /**
+     * Texto enriquecido con tramos (negrita/color por tramo).
+     *
+     * @param  list<array{0:string,1:bool,2?:string}>  $partes  texto, negrita y color opcional
+     * @param  int  $tamano  tamaño de fuente
+     * @param  string  $color  color por defecto RGB
+     */
     private function rico(array $partes, int $tamano, string $color): RichText
     {
         $rico = new RichText;
@@ -385,6 +473,12 @@ class EfectividadCalculadoraExcelExporter
         return $rico;
     }
 
+    /**
+     * Color del semáforo de efectividad: ≥ 95 % verde, ≥ 90 % ámbar, menor rojo; null sin base.
+     *
+     * @param  array  $f  fila
+     * @return string|null color RGB
+     */
     private function semaforo(array $f): ?string
     {
         if ((float) ($f['sano_pc'] ?? 0) <= 0 || ($f['pct_total'] ?? null) === null) {
@@ -395,6 +489,11 @@ class EfectividadCalculadoraExcelExporter
         return $p >= 0.95 ? self::OK : ($p >= 0.90 ? self::WARN : self::BAD);
     }
 
+    /**
+     * Texto del alcance filtrado («Sucursal: … · Ruta: …») o «Todas las sucursales».
+     *
+     * @param  array  $r  resultado
+     */
     private function alcance(array $r): string
     {
         $f = $r['filtro'] ?? [];
@@ -407,6 +506,11 @@ class EfectividadCalculadoraExcelExporter
         ])->filter()->map(fn ($v, $k) => "$k: $v")->implode(' · ') ?: 'Todas las sucursales';
     }
 
+    /**
+     * Y-m-d → d/m/Y.
+     *
+     * @param  string  $ymd  fecha
+     */
     private function dmy(string $ymd): string
     {
         return date('d/m/Y', strtotime($ymd));

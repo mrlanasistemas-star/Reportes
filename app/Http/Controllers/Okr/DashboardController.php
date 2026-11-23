@@ -4,18 +4,20 @@ namespace App\Http\Controllers\Okr;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Okr\Concerns\ResolvesOperativeBranches;
-use App\Models\Branch;
 use App\Models\OkrKpi;
 use App\Models\OkrObjective;
 use App\Models\Period;
 use App\Models\User;
+use App\Services\Access\DataScopeService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use App\Services\Okr\OkrObjectiveVisibilityService;
 use App\Services\Okr\OkrProgressCalculator;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -34,8 +36,24 @@ use Inertia\Response;
  */
 class DashboardController extends Controller
 {
-    use ResolvesOperativeBranches, AuthorizesRequests;
+    use AuthorizesRequests, ResolvesOperativeBranches;
 
+    /**
+     * Página Inertia `Okr/Dashboard`: tabla de OKR abiertos (o del estado
+     * filtrado), cards ejecutivas (activos, en riesgo, no cumplidos,
+     * cumplimiento promedio, sucursales/colaboradores con OKR y sus totales),
+     * donut de cumplimiento, riesgo y proyección, catálogos de filtros y los
+     * datos del asistente "Asignar OKR".
+     *
+     * Todo sale del mismo conjunto ya limitado por el scope de visibilidad y
+     * por los filtros de applyDashboardFilters(). Solo lectura.
+     *
+     * @param  Request  $request  Filtros (`branch_id`, `employee_id`, `status`, `search`, `period_id`, `start_date`, `end_date`, `kpi_id`, `responsible_user_id`).
+     * @param  OkrObjectiveVisibilityService  $visibility  Scope central de visibilidad OKR.
+     * @return Response Página del dashboard OKR.
+     *
+     * @throws AuthorizationException Si no tiene `okr.view`.
+     */
     public function index(Request $request, OkrObjectiveVisibilityService $visibility): Response
     {
         $this->authorize('okr.view');
@@ -69,13 +87,13 @@ class DashboardController extends Controller
 
         $activeOnly = $openObjectives->where('lifecycle_status', OkrObjective::STATUS_ACTIVE)->values();
 
-        $activeCount      = $activeOnly->count();
+        $activeCount = $activeOnly->count();
         // Riesgo/cumplimiento promedio: SOLO activos — un draft (sin tracking
         // todavía) o un cancelled (con un health_status potencialmente
         // congelado de cuando SÍ estaba activo) nunca deben inflar estas cifras.
-        $riskCount        = $activeOnly->whereIn('health_status', [OkrObjective::HEALTH_RISK, OkrObjective::HEALTH_OFF_TRACK])->count();
-        $notMetCount      = $filtered->where('final_status', OkrObjective::FINAL_NOT_COMPLETED)->count();
-        $avgCompliance    = $activeOnly->isNotEmpty()
+        $riskCount = $activeOnly->whereIn('health_status', [OkrObjective::HEALTH_RISK, OkrObjective::HEALTH_OFF_TRACK])->count();
+        $notMetCount = $filtered->where('final_status', OkrObjective::FINAL_NOT_COMPLETED)->count();
+        $avgCompliance = $activeOnly->isNotEmpty()
             ? round($activeOnly->avg(fn ($o) => $this->objectiveCompliance($o)), 2)
             : 0.0;
         // C5 del cierre (17-sep-2026, ronda 2) — igual que riesgo/cumplimiento: SOLO
@@ -83,7 +101,7 @@ class DashboardController extends Controller
         // operativo en esa sucursal/colaborador (recomendación explícita del
         // usuario). Antes usaban $openObjectives (draft+active), inflando estas
         // cards con OKR que ni siquiera empezaron a trackearse.
-        $branchesWithOkr  = $activeOnly->pluck('branch_id')->filter()->unique()->count();
+        $branchesWithOkr = $activeOnly->pluck('branch_id')->filter()->unique()->count();
         $employeesWithOkr = $activeOnly->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)->pluck('employee_id')->filter()->unique()->count();
 
         // Punto 14 de la auditoría 09-sep-2026 — distingue "sistema vacío" de
@@ -97,14 +115,14 @@ class DashboardController extends Controller
             'objectives' => $openObjectives->map(fn ($o) => $this->toCard($o))->values(),
             'has_any_objectives' => $hasAnyObjectives,
             'cards' => [
-                'active'            => $activeCount,
-                'risk'              => $riskCount,
-                'not_met'           => $notMetCount,
-                'avg_compliance'    => $avgCompliance,
+                'active' => $activeCount,
+                'risk' => $riskCount,
+                'not_met' => $notMetCount,
+                'avg_compliance' => $avgCompliance,
                 'branches_with_okr' => $branchesWithOkr,
-                'employees_with_okr'=> $employeesWithOkr,
+                'employees_with_okr' => $employeesWithOkr,
                 // Fase 6.4 — alcance restringido: denominadores de SUS sucursales, nunca de toda la empresa.
-                'total_branches'    => app(\App\Services\Access\DataScopeService::class)->isGeneral($request->user()) ? count($this->operativeBranchNames()) : $this->assignableBranches()->count(),
+                'total_branches' => app(DataScopeService::class)->isGeneral($request->user()) ? count($this->operativeBranchNames()) : $this->assignableBranches()->count(),
                 // D12 del cierre (17-sep-2026): con sucursal filtrada, el
                 // denominador debe ser el total de ESA sucursal, nunca el global
                 // (bug real: mostraba "X / 78" para Córdoba en vez de "X / TOTAL
@@ -112,7 +130,7 @@ class DashboardController extends Controller
                 // canónica que employeesForBranch() (D1/D2) — nunca
                 // Employee::count() a secas, que cuenta IDs históricos duplicados
                 // como personas distintas.
-                'total_employees'   => $this->totalEmployeesInScope($request),
+                'total_employees' => $this->totalEmployeesInScope($request),
             ],
             // "Cumplimiento general" (docs/imagenesOKR/1.png y 2.png) — donut
             // por semáforo de los OKR activos del alcance filtrado.
@@ -121,19 +139,19 @@ class DashboardController extends Controller
             // severidad de semáforo, con proyección de cierre ponderada.
             'risk_projection' => $this->riskProjection($activeOnly),
             'filters' => [
-                'branches'      => $this->filterBranches(),
-                'statuses'      => [OkrObjective::STATUS_DRAFT, OkrObjective::STATUS_ACTIVE, OkrObjective::STATUS_CLOSED, OkrObjective::STATUS_CANCELLED],
-                'kpis'          => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(['id', 'name']),
-                'responsibles'  => User::query()->orderBy('name')->get(['id', 'name']),
-                'periods'       => Period::query()->where('type', 'monthly')->orderByDesc('id')->limit(24)->get()->map(fn ($p) => ['id' => $p->id, 'label' => $p->label]),
+                'branches' => $this->filterBranches(),
+                'statuses' => [OkrObjective::STATUS_DRAFT, OkrObjective::STATUS_ACTIVE, OkrObjective::STATUS_CLOSED, OkrObjective::STATUS_CANCELLED],
+                'kpis' => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(['id', 'name']),
+                'responsibles' => User::query()->orderBy('name')->get(['id', 'name']),
+                'periods' => Period::query()->where('type', 'monthly')->orderByDesc('id')->limit(24)->get()->map(fn ($p) => ['id' => $p->id, 'label' => $p->label]),
                 // Colaborador ya NO se precarga completo — se busca bajo
                 // demanda vía GET /okr/employees-lookup.
             ],
             'query' => $request->only(['branch_id', 'employee_id', 'status', 'search', 'period_id', 'start_date', 'end_date', 'kpi_id', 'responsible_user_id']),
             // "Asignar OKR" (docs/imagenesOKR/3-8.png) — Dialog embebido aquí,
             // ya NO una página aparte (ver auditoría 10-sep-2026, sección 6).
-            'wizardBranches'    => $this->assignableBranches(),
-            'wizardKpis'        => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(),
+            'wizardBranches' => $this->assignableBranches(),
+            'wizardKpis' => OkrKpi::query()->where('is_active', true)->orderBy('name')->get(),
             'wizardCurrentUser' => ['id' => auth()->id(), 'full_name' => auth()->user()->name],
             // Normalizado a {id, full_name} — bug corregido punto 12 de la
             // auditoría (antes viajaba {id, name} y colisionaba con
@@ -144,13 +162,17 @@ class DashboardController extends Controller
             // siquiera puede entrar al módulo OKR (ver EnsureOkrAccessEnabled). El
             // backend (StoreObjectiveRequest::validateResponsibleIsEnabled()) ya lo
             // rechaza con 422; esto evita además que aparezca como opción elegible.
-            'wizardUsers'       => User::query()
+            'wizardUsers' => User::query()
                 ->where(fn ($q) => $q->where('role', 'admin')->orWhereNotNull('access_enabled_at'))
                 ->orderBy('name')->get(['id', 'name'])
                 ->map(fn ($u) => ['id' => $u->id, 'full_name' => $u->name])->values(),
         ]);
     }
 
+    /**
+     * Consulta base de Objectives no eliminados con sucursal, colaborador,
+     * responsable y KR+KPI precargados (evita N+1). Incluye cerrados.
+     */
     private function baseQuery(): Builder
     {
         // NO excluye 'closed' aquí — eso se resuelve después (ver $openObjectives
@@ -165,6 +187,13 @@ class DashboardController extends Controller
      * Único punto que traduce filtros de request → condiciones de query.
      * Reutilizado por index() para tabla Y cards — nunca dos builders
      * distintos que puedan divergir.
+     *
+     * El filtro de sucursal también incluye OKR individuales cuyo padre es de
+     * esa sucursal; el de periodo exige traslape de fechas con el periodo.
+     *
+     * @param  Builder  $query  Consulta ya limitada por visibilidad.
+     * @param  Request  $request  Filtros de la petición.
+     * @return Builder La misma consulta con las condiciones aplicadas.
      */
     private function applyDashboardFilters(Builder $query, Request $request): Builder
     {
@@ -221,6 +250,12 @@ class DashboardController extends Controller
         return $query;
     }
 
+    /**
+     * Interpreta una fecha del filtro; devuelve null si no es válida (el
+     * filtro se ignora en vez de fallar).
+     *
+     * @param  string  $value  Fecha en texto.
+     */
     private function parseDate(string $value): ?Carbon
     {
         try {
@@ -230,6 +265,13 @@ class DashboardController extends Controller
         }
     }
 
+    /**
+     * Cumplimiento actual del Objective: Σ avance real × peso de sus KR,
+     * con la fórmula canónica de OkrProgressCalculator.
+     *
+     * @param  OkrObjective  $objective  Objective con `keyResults` cargados.
+     * @return float Porcentaje de cumplimiento.
+     */
     private function objectiveCompliance(OkrObjective $objective): float
     {
         $calc = app(OkrProgressCalculator::class);
@@ -238,7 +280,13 @@ class DashboardController extends Controller
         return $calc->objectiveCompliance($krs);
     }
 
-    /** Reutiliza la MISMA fórmula canónica (Σ cumplimiento×peso) pero con el valor PROYECTADO de cada KR. */
+    /**
+     * Reutiliza la MISMA fórmula canónica (Σ cumplimiento×peso) pero con el
+     * valor PROYECTADO de cada KR.
+     *
+     * @param  OkrObjective  $objective  Objective con `keyResults` cargados.
+     * @return float|null null si ningún KR tiene proyección.
+     */
     private function objectiveProjectedCompliance(OkrObjective $objective): ?float
     {
         $krs = $objective->keyResults->map(fn ($kr) => ['raw_progress' => $kr->projected_compliance_percentage, 'weight' => (float) $kr->weight])->all();
@@ -254,33 +302,42 @@ class DashboardController extends Controller
      * corresponden 1:1 al semáforo YA existente (OkrHealthService), nunca una
      * clasificación nueva: ahead→Cumplidos, on_track→En trayectoria,
      * risk→En riesgo, off_track→No cumplidos.
+     *
+     * @param  Collection<int, OkrObjective>  $activeObjectives  OKR activos del alcance filtrado.
+     * @return array<string, int|float> Totales y porcentajes (redondeados a entero) por bucket.
      */
     private function complianceBreakdown($activeObjectives): array
     {
         $total = $activeObjectives->count();
         $counts = [
-            'completed'  => $activeObjectives->where('health_status', OkrObjective::HEALTH_AHEAD)->count(),
-            'on_track'   => $activeObjectives->where('health_status', OkrObjective::HEALTH_ON_TRACK)->count(),
-            'at_risk'    => $activeObjectives->where('health_status', OkrObjective::HEALTH_RISK)->count(),
-            'off_track'  => $activeObjectives->where('health_status', OkrObjective::HEALTH_OFF_TRACK)->count(),
+            'completed' => $activeObjectives->where('health_status', OkrObjective::HEALTH_AHEAD)->count(),
+            'on_track' => $activeObjectives->where('health_status', OkrObjective::HEALTH_ON_TRACK)->count(),
+            'at_risk' => $activeObjectives->where('health_status', OkrObjective::HEALTH_RISK)->count(),
+            'off_track' => $activeObjectives->where('health_status', OkrObjective::HEALTH_OFF_TRACK)->count(),
         ];
 
         $pct = fn (int $n) => $total > 0 ? round(($n / $total) * 100, 0) : 0;
 
         return [
             'total' => $total,
-            'completed_pct'  => $pct($counts['completed']),
-            'on_track_pct'   => $pct($counts['on_track']),
-            'at_risk_pct'    => $pct($counts['at_risk']),
-            'off_track_pct'  => $pct($counts['off_track']),
-            'completed'  => $counts['completed'],
-            'on_track'   => $counts['on_track'],
-            'at_risk'    => $counts['at_risk'],
-            'off_track'  => $counts['off_track'],
+            'completed_pct' => $pct($counts['completed']),
+            'on_track_pct' => $pct($counts['on_track']),
+            'at_risk_pct' => $pct($counts['at_risk']),
+            'off_track_pct' => $pct($counts['off_track']),
+            'completed' => $counts['completed'],
+            'on_track' => $counts['on_track'],
+            'at_risk' => $counts['at_risk'],
+            'off_track' => $counts['off_track'],
         ];
     }
 
-    /** "Riesgo y proyección" (docs/imagenesOKR/1.png y 2.png) — severidad primero. */
+    /**
+     * "Riesgo y proyección" (docs/imagenesOKR/1.png y 2.png) — severidad primero
+     * (fuera de trayectoria, riesgo, en trayectoria, adelantado); máximo 8.
+     *
+     * @param  Collection<int, OkrObjective>  $activeObjectives  OKR activos del alcance filtrado.
+     * @return array<int, array{id:int, label:string, health_status:?string, projected_compliance:?float}>
+     */
     private function riskProjection($activeObjectives): array
     {
         $healthOrder = [OkrObjective::HEALTH_OFF_TRACK => 0, OkrObjective::HEALTH_RISK => 1, OkrObjective::HEALTH_ON_TRACK => 2, OkrObjective::HEALTH_AHEAD => 3];
@@ -299,34 +356,45 @@ class DashboardController extends Controller
             ->all();
     }
 
+    /**
+     * Fila de la tabla del dashboard para un Objective: datos generales, semana
+     * actual, cumplimiento, descripciones de KR y KPI relacionados (únicos).
+     *
+     * @param  OkrObjective  $o  Objective con relaciones precargadas.
+     * @return array<string, mixed>
+     */
     private function toCard(OkrObjective $o): array
     {
         return [
-            'id'               => $o->id,
-            'title'            => $o->title,
-            'scope_type'       => $o->scope_type,
-            'branch'           => $o->branch?->name,
-            'employee'         => $o->employee?->full_name,
-            'responsible'      => $o->responsibleUser?->name,
+            'id' => $o->id,
+            'title' => $o->title,
+            'scope_type' => $o->scope_type,
+            'branch' => $o->branch?->name,
+            'employee' => $o->employee?->full_name,
+            'responsible' => $o->responsibleUser?->name,
             'lifecycle_status' => $o->lifecycle_status,
-            'health_status'    => $o->health_status,
-            'start_date'       => $o->start_date?->toDateString(),
-            'end_date'         => $o->end_date?->toDateString(),
-            'duration_weeks'   => $o->duration_weeks,
-            'current_week'     => $o->currentWeekNumber(),
-            'compliance'       => $this->objectiveCompliance($o),
-            'key_results_count'=> $o->keyResults->count(),
+            'health_status' => $o->health_status,
+            'start_date' => $o->start_date?->toDateString(),
+            'end_date' => $o->end_date?->toDateString(),
+            'duration_weeks' => $o->duration_weeks,
+            'current_week' => $o->currentWeekNumber(),
+            'compliance' => $this->objectiveCompliance($o),
+            'key_results_count' => $o->keyResults->count(),
             // "Objetivos y Key Results" (docs/imagenesOKR/1.png y 2.png) —
             // columnas Key Results / KPIs relacionados, listadas explícitas.
             'key_results' => $o->keyResults->map(fn ($kr) => $kr->description)->all(),
             'kpis' => $o->keyResults->map(fn ($kr) => $kr->kpi->name)->unique()->values()->all(),
         ];
     }
+
     /**
      * Fase 6.4 — total de colaboradores del alcance: con sucursal elegida, el de
      * esa sucursal (EnsureBranchScope ya rechazó una ajena); sin sucursal, el de
      * toda la empresa SOLO para alcance general — un restringido recibe la suma
      * de sus sucursales.
+     *
+     * @param  Request  $request  Filtro `branch_id` y usuario autenticado.
+     * @return int Número de colaboradores (identidad canónica, vía OkrEmployeeBranchResolver).
      */
     private function totalEmployeesInScope(Request $request): int
     {
@@ -335,7 +403,7 @@ class DashboardController extends Controller
             return $resolver->countForBranch($branchId);
         }
 
-        $allowed = app(\App\Services\Access\DataScopeService::class)->allowedBranchIds($request->user());
+        $allowed = app(DataScopeService::class)->allowedBranchIds($request->user());
         if ($allowed === null) {
             return $resolver->countAllActive();
         }

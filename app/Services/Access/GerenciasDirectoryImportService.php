@@ -22,19 +22,30 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
  * Importante: NO se usan los contadores de la hoja (24/23, erróneos). Se leen
  * las filas reales del directorio. Las bandas de sección "▎ SUCURSAL …" y la
  * sección "NOTAS Y OBSERVACIONES" se ignoran.
+ *
+ * Esta clase solo lee BD (branches, employees, users) y el archivo; no escribe.
  */
 class GerenciasDirectoryImportService
 {
+    /** Rol que se sugiere para toda persona del directorio. */
     public const ROLE = User::ROLE_GERENCIAL;
 
     public const STATUS_CREATE = 'create';        // cuenta nueva, lista para crear
+
     public const STATUS_EXISTS = 'exists';         // ya existe (por correo) — no se toca
+
     public const STATUS_REVIEW = 'needs_review';   // crear, pero revisar algo (correo dudoso, sin NOI)
+
     public const STATUS_ERROR = 'error';           // no se puede crear (sucursal/correo inválido)
 
     /**
      * Lee y valida el archivo. Devuelve la vista previa completa.
      *
+     * Carga sucursales, colaboradores (canonicalizados con CanonicalEmployeeResolver
+     * para no duplicar personas), colaboradores ya vinculados a una cuenta y los
+     * correos existentes; luego evalúa cada fila con evaluate(). No crea nada.
+     *
+     * @param  string  $absolutePath  Ruta absoluta del Excel subido.
      * @return array{rows: array<int, array<string, mixed>>, summary: array<string, int>, sheet_found: bool}
      */
     public function preview(string $absolutePath): array
@@ -75,7 +86,20 @@ class GerenciasDirectoryImportService
     /**
      * Evalúa una fila cruda del directorio contra sucursales y cuentas.
      *
-     * @param  array{noi:?string, name:string, branch:string, position:string, email:string}  $person
+     * Reglas: valida sucursal y correo (formato y repetición dentro del archivo),
+     * detecta cuenta existente por correo, marca falta de NOI, sugiere vínculo
+     * laboral por nombre canónico (solo si ese colaborador no está ya vinculado)
+     * y marca correos que no parecen corresponder al nombre. Estatus final por
+     * prioridad: existente > error > revisar > crear.
+     *
+     * @param  array{noi:?string, name:string, branch:string, position:string, email:string}  $person  Fila leída del Excel.
+     * @param  Collection  $branchByNorm  Sucursales indexadas por nombre normalizado.
+     * @param  Collection  $empByNorm  Colaboradores canónicos indexados por nombre normalizado.
+     * @param  Collection  $rowsById  Registros de employees por id (no se usa en la evaluación actual).
+     * @param  Collection  $linkedEmployeeIds  employee_id ya vinculados a alguna cuenta (como llaves).
+     * @param  Collection  $existingEmails  correo en minúsculas => id de usuario existente.
+     * @param  array<string, bool>  $seenEmails  Correos ya vistos en el archivo (se actualiza por referencia).
+     * @return array<string, mixed> Fila de vista previa (noi, name, branch_name, branch_id, position, email, role, employee_id, status, existing_user_id, observations).
      */
     private function evaluate(array $person, Collection $branchByNorm, Collection $empByNorm, Collection $rowsById, $linkedEmployeeIds, $existingEmails, array &$seenEmails): array
     {
@@ -160,6 +184,13 @@ class GerenciasDirectoryImportService
      * Lee las filas de persona de la hoja "Directorio". Devuelve null si no se
      * encuentra la hoja/encabezado.
      *
+     * Busca la hoja "Directorio" (si no, usa la primera), localiza la fila de
+     * encabezado "NOMBRE DEL COLABORADOR" y recorre hacia abajo leyendo columnas
+     * A=NOI, B=nombre, C=sucursal, D=puesto, E=correo. Se detiene en "NOTAS Y
+     * OBSERVACIONES", salta bandas "▎" y filas sin sucursal o puesto. Sube el
+     * memory_limit a 512M y libera el libro al final.
+     *
+     * @param  string  $absolutePath  Ruta absoluta del Excel.
      * @return array<int, array{noi:?string, name:string, branch:string, position:string, email:string}>|null
      */
     public function readDirectoryRows(string $absolutePath): ?array
@@ -200,6 +231,7 @@ class GerenciasDirectoryImportService
         foreach ($matrix as $key => $cols) {
             if ($key === $headerKey) {
                 $started = true;
+
                 continue;
             }
             if (! $started) {
@@ -240,7 +272,12 @@ class GerenciasDirectoryImportService
         return $people;
     }
 
-    /** Normaliza texto para comparar: mayúsculas, sin acentos, espacios colapsados. */
+    /**
+     * Normaliza texto para comparar: mayúsculas, sin acentos, espacios colapsados.
+     *
+     * @param  string  $value  Texto original.
+     * @return string Texto normalizado (Ñ se convierte en N).
+     */
     public function norm(string $value): string
     {
         $value = mb_strtoupper(trim($value));
@@ -257,6 +294,10 @@ class GerenciasDirectoryImportService
      * ningún apellido/nombre del colaborador? Solo para MARCAR revisión, nunca
      * para bloquear. Cubre los casos de la nota del directorio (p. ej.
      * ANGELICA AZUCENA GONZALEZ → angelica.granados@).
+     *
+     * @param  string  $name  Nombre del colaborador en el directorio.
+     * @param  string  $email  Correo institucional capturado.
+     * @return bool true si algún fragmento (≥4 letras) del correo no coincide con ningún nombre/apellido.
      */
     private function emailLooksMismatched(string $name, string $email): bool
     {

@@ -29,20 +29,29 @@ namespace App\Services;
  */
 class OpexClassificationService
 {
-    public const TYPE_OPEX                 = 'opex';
-    public const TYPE_NOMINA_EMPLEADO      = 'nomina_empleado';
+    public const TYPE_OPEX = 'opex';
+
+    public const TYPE_NOMINA_EMPLEADO = 'nomina_empleado';
+
     public const TYPE_NOMINA_COVERED_BY_NOI = 'nomina_covered_by_noi';
-    public const TYPE_EXCEDENTE            = 'excedente';
-    public const TYPE_FONDEO               = 'fondeo';
-    public const TYPE_POLIZAS              = 'polizas';
-    public const TYPE_OTHER_EXCLUDED       = 'other_excluded';
+
+    public const TYPE_EXCEDENTE = 'excedente';
+
+    public const TYPE_FONDEO = 'fondeo';
+
+    public const TYPE_POLIZAS = 'polizas';
+
+    public const TYPE_OTHER_EXCLUDED = 'other_excluded';
 
     public const SOURCE_LENDUS = 'lendus';
-    public const SOURCE_ERP    = 'erp';
+
+    public const SOURCE_ERP = 'erp';
 
     private const EXCEDENTES_CAT = 'Envío de utilidad a corporativo';
-    private const FONDEO_CAT     = 'Préstamos Intersucursales';
-    private const NOMINA_CAT     = 'Nómina y Capital Humano';
+
+    private const FONDEO_CAT = 'Préstamos Intersucursales';
+
+    private const NOMINA_CAT = 'Nómina y Capital Humano';
 
     /**
      * Conceptos dentro de 'Nómina y Capital Humano' (Lendus) que NUNCA cuentan
@@ -87,11 +96,27 @@ class OpexClassificationService
     private const GENERIC_NOMINA_LABELS = ['PAGO', 'COMPRA DE', 'ENGANCHE DE', 'ANTICIPO DE'];
 
     /**
+     * Clasifica un gasto (fila de fact_expenses) según su categoría, concepto y fuente.
+     *
+     * Reglas, en orden:
+     * - ERP: todo es OPEX atribuible, salvo la categoría exacta "Pólizas".
+     * - Lendus: etiquetas genéricas del PDF bajo "Gastos Operativos" (PAGO, COMPRA DE,
+     *   ENGANCHE DE, ANTICIPO DE) → nómina de empleado, no OPEX (ANTICIPO DE no atribuible);
+     *   Excedentes → excedente; Fondeo/Intersucursal → fondeo; Pólizas → pólizas;
+     *   "Nómina y Capital Humano": Finiquito/Médicos y Motos/Cascos → nómina de empleado
+     *   atribuible; el resto → cubierto por NOI; otra categoría con "NÓMINA" → cubierto
+     *   por NOI; todo lo demás → OPEX atribuible.
+     * Función pura: no toca BD.
+     *
+     * @param  string|null  $category  Categoría del gasto tal como viene de la fuente.
+     * @param  string|null  $concept  Concepto del gasto (se compara en mayúsculas y con espacios colapsados).
+     * @param  string  $sourceType  Fuente: self::SOURCE_LENDUS (default) o self::SOURCE_ERP.
      * @return array{is_opex:bool, type:string, eligible_for_attribution:bool, exclusion_reason:?string}
+     *                                                                                                   type es una de las constantes TYPE_*; exclusion_reason explica por qué no es OPEX.
      */
     public function classify(?string $category, ?string $concept, string $sourceType = self::SOURCE_LENDUS): array
     {
-        $catUpper     = mb_strtoupper(trim((string) $category));
+        $catUpper = mb_strtoupper(trim((string) $category));
         $conceptUpper = preg_replace('/\s+/u', ' ', mb_strtoupper(trim((string) $concept))) ?? mb_strtoupper(trim((string) $concept));
 
         if ($sourceType === self::SOURCE_ERP) {
@@ -100,6 +125,7 @@ class OpexClassificationService
             if (in_array((string) $category, self::SEGUROS_LENDUS_CATS, true)) {
                 return $this->result(false, self::TYPE_POLIZAS, false, 'Pólizas/seguros (ERP) — excluidas de OPEX.');
             }
+
             return $this->result(true, self::TYPE_OPEX, true, null);
         }
 
@@ -108,6 +134,7 @@ class OpexClassificationService
 
         if ($catUpper === 'GASTOS OPERATIVOS' && in_array($conceptUpper, self::GENERIC_NOMINA_LABELS, true)) {
             $eligible = $conceptUpper !== 'ANTICIPO DE'; // anticipo no se atribuye a nadie, no es gasto de empresa
+
             return $this->result(false, self::TYPE_NOMINA_EMPLEADO, $eligible, 'Etiqueta genérica PDF de Motos/Cascos/Enganche/Anticipo — no es OPEX.');
         }
 
@@ -134,6 +161,7 @@ class OpexClassificationService
             if (in_array($conceptUpper, self::LENDUS_NOMINA_SKIP_CONCEPTS, true)) {
                 return $this->result(false, self::TYPE_NOMINA_COVERED_BY_NOI, false, 'Ya cubierto por NOI/IMSS — atribuirlo duplicaría el gasto.');
             }
+
             // Concepto de Nómina no listado explícitamente — mismo criterio conservador
             // que accumulateGastos(): cualquier cosa bajo esta categoría que no sea
             // Finiquito/Médico se trata como ya cubierta por NOI, nunca como OPEX.
@@ -147,13 +175,22 @@ class OpexClassificationService
         return $this->result(true, self::TYPE_OPEX, true, null);
     }
 
+    /**
+     * Arma el arreglo de resultado estándar de classify().
+     *
+     * @param  bool  $isOpex  Si el gasto suma a OPEX.
+     * @param  string  $type  Tipo de clasificación (constante TYPE_*).
+     * @param  bool  $eligible  Si puede atribuirse a un colaborador.
+     * @param  string|null  $reason  Motivo de exclusión de OPEX (null si es OPEX).
+     * @return array{is_opex:bool, type:string, eligible_for_attribution:bool, exclusion_reason:?string}
+     */
     private function result(bool $isOpex, string $type, bool $eligible, ?string $reason): array
     {
         return [
-            'is_opex'                  => $isOpex,
-            'type'                     => $type,
+            'is_opex' => $isOpex,
+            'type' => $type,
             'eligible_for_attribution' => $eligible,
-            'exclusion_reason'         => $reason,
+            'exclusion_reason' => $reason,
         ];
     }
 }

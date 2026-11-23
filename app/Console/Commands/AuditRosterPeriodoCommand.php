@@ -7,22 +7,32 @@ use App\Services\PeriodEmployeeRosterService;
 use App\Services\Roster\RosterMovementEvidenceCollector;
 use App\Services\Roster\RosterMovementStatus as S;
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Auditoría del roster de empleados por periodo.
+ * Comando `reportes:audit-roster-periodo` — auditoría del roster de empleados por periodo
+ * (NOI normal + fiscal): altas, bajas confirmadas, pendientes de conciliación y origen de las
+ * cifras (cargas NOI, empleados por archivo, fusiones por nombre y evidencia del directorio
+ * laboral).
  *
- * 18-oct-2026 — `--dry-run` calcula la clasificación nueva de movimientos
- * (alta/baja confirmada, posible baja, no localizado, contradicción, …) EN
- * MEMORIA, sin escribir nada, y muestra de dónde salen las cifras: cargas NOI
- * del periodo, empleados por archivo, fusiones por nombre y estatus del
- * directorio laboral de cada ausencia. Seguro para correr en producción.
+ * 18-oct-2026 — `--dry-run` calcula la clasificación nueva de movimientos (alta/baja
+ * confirmada, posible baja, no localizado, contradicción, …) EN MEMORIA, sin escribir nada,
+ * y muestra de dónde salen las cifras. Seguro para correr en producción.
  *
- * Cierre 2026-10 — `--diff` muestra, ANTES de reconstruir, qué filas cambiarían
- * de categoría (y por qué) sin tocar nada; las decisiones de conciliación
- * autorizadas viven en period_employee_movement_reviews y nunca se
- * sobrescriben. Siempre se imprime de qué directorio laboral sale la evidencia
- * (corte efectivo, periodo de carga) y cuáles se descartan por ser posteriores.
+ * Cierre 2026-10 — `--diff` muestra, ANTES de reconstruir, qué filas cambiarían de categoría
+ * (y por qué) sin tocar nada; las decisiones de conciliación autorizadas viven en
+ * period_employee_movement_reviews y nunca se sobrescriben. Siempre se imprime de qué
+ * directorio laboral sale la evidencia (corte efectivo, periodo de carga) y cuáles se
+ * descartan por ser posteriores.
+ *
+ * Escribe en BD: solo con `--rebuild` (reconstruye `period_employee_rosters`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-roster-periodo 21
+ *   php artisan reportes:audit-roster-periodo 21 --dry-run --detail
+ *   php artisan reportes:audit-roster-periodo 21 --diff
+ *   php artisan reportes:audit-roster-periodo 21 --rebuild
  */
 class AuditRosterPeriodoCommand extends Command
 {
@@ -35,6 +45,14 @@ class AuditRosterPeriodoCommand extends Command
 
     protected $description = 'Auditoría del roster de empleados (NOI normal + fiscal): altas, bajas confirmadas, pendientes de conciliación, origen de las cifras.';
 
+    /**
+     * Imprime el origen NOI y la evidencia del directorio; según la opción muestra el diff, la
+     * clasificación en memoria o (tras reconstruir con `--rebuild`) el roster persistido y la
+     * plantilla del periodo anterior.
+     *
+     * @param  PeriodEmployeeRosterService  $rosterService  Servicio que calcula/reconstruye el roster.
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(PeriodEmployeeRosterService $rosterService): int
     {
         $period = Period::find($this->argument('period_id'));
@@ -141,6 +159,14 @@ class AuditRosterPeriodoCommand extends Command
         }
     }
 
+    /**
+     * Imprime las métricas del roster (plantilla, fuente NOI, sucursal, altas, bajas confirmadas,
+     * ausencias, pendientes, directorio usado e identidad), el conteo por categoría y, con
+     * `--detail`, las personas con ausencia, alta o pendiente.
+     *
+     * @param  Collection  $rows  Filas del roster (persistidas o en memoria, como objetos).
+     * @param  array|null  $stats  Estadísticas del cálculo en memoria (null para el roster persistido).
+     */
     private function printClassification($rows, ?array $stats): void
     {
         $active = $rows->where('is_active_for_period', true);

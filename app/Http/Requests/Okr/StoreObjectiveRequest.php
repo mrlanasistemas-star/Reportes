@@ -2,11 +2,15 @@
 
 namespace App\Http\Requests\Okr;
 
-use App\Models\OkrKpi;
+use App\Models\Branch;
 use App\Models\OkrObjective;
 use App\Models\User;
+use App\Services\Catalog\BranchRouteCatalog;
+use App\Services\Okr\OkrBaselineGuard;
+use App\Services\Okr\OkrCalendarService;
 use App\Services\Okr\OkrEmployeeBranchResolver;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Carbon;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
 
@@ -25,58 +29,81 @@ use Illuminate\Validation\Validator;
  */
 class StoreObjectiveRequest extends FormRequest
 {
+    /**
+     * Solo usuarios con el gate `okr.create` pueden crear asignaciones OKR.
+     */
     public function authorize(): bool
     {
         return $this->user()?->can('okr.create') ?? false;
     }
 
+    /**
+     * Reglas de la asignación OKR: alcance (sucursal o colaborador), sucursal
+     * obligatoria, colaborador si el alcance es individual, padre opcional,
+     * título (10–500), responsable, fecha de inicio, duración (1–104 semanas),
+     * Key Results (KPI activo, descripción, línea base, meta, peso) y, para
+     * alcance sucursal, los OKR individuales de la misma asignación con sus
+     * propios KR. Con `save_incomplete=1` los KR individuales pueden faltar
+     * (borrador a propósito).
+     *
+     * @return array<string, array<int, mixed>>
+     */
     public function rules(): array
     {
         return [
-            'scope_type'           => ['required', Rule::in([OkrObjective::SCOPE_BRANCH, OkrObjective::SCOPE_EMPLOYEE])],
-            'branch_id'            => ['required', 'integer', 'exists:branches,id'],
-            'employee_id'          => ['required_if:scope_type,employee', 'nullable', 'integer', 'exists:employees,id'],
-            'parent_id'            => ['nullable', 'integer', 'exists:okr_objectives,id'],
+            'scope_type' => ['required', Rule::in([OkrObjective::SCOPE_BRANCH, OkrObjective::SCOPE_EMPLOYEE])],
+            'branch_id' => ['required', 'integer', 'exists:branches,id'],
+            'employee_id' => ['required_if:scope_type,employee', 'nullable', 'integer', 'exists:employees,id'],
+            'parent_id' => ['nullable', 'integer', 'exists:okr_objectives,id'],
             // D10 del cierre (17-sep-2026): la UI (OkrAssignDialog.vue) permite hasta
             // 500 caracteres (maxlength="500") — el backend validaba max:191 y la
             // columna real era varchar(255) (bug real, ver migración
             // 2026_09_17_000001_widen_title_on_okr_objectives_table). 500 es ahora
             // la fuente de verdad en los tres lugares (UI/validación/columna).
-            'title'                => ['required', 'string', 'min:10', 'max:500'],
-            'responsible_user_id'  => ['nullable', 'integer', 'exists:users,id'],
-            'start_date'           => ['required', 'date'],
-            'duration_weeks'       => ['required', 'integer', 'min:1', 'max:104'],
-            'key_results'                        => ['required', 'array', 'min:1'],
-            'key_results.*.kpi_id'               => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
-            'key_results.*.description'          => ['required', 'string', 'max:191'],
-            'key_results.*.baseline_value'       => ['nullable', 'numeric'],
-            'key_results.*.target_value'         => ['required', 'numeric'],
-            'key_results.*.weight'               => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'title' => ['required', 'string', 'min:10', 'max:500'],
+            'responsible_user_id' => ['nullable', 'integer', 'exists:users,id'],
+            'start_date' => ['required', 'date'],
+            'duration_weeks' => ['required', 'integer', 'min:1', 'max:104'],
+            'key_results' => ['required', 'array', 'min:1'],
+            'key_results.*.kpi_id' => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
+            'key_results.*.description' => ['required', 'string', 'max:191'],
+            'key_results.*.baseline_value' => ['nullable', 'numeric'],
+            'key_results.*.target_value' => ['required', 'numeric'],
+            'key_results.*.weight' => ['required', 'numeric', 'min:0.01', 'max:100'],
             // OKR individuales dentro de la MISMA asignación de sucursal (fix
             // 10-sep-2026, sección 8/9 de la auditoría — la referencia exige
             // sucursal + N individuales en una sola asignación, no un
             // employee_id suelto). Solo aplica cuando scope_type=branch.
-            'individual_objectives'               => ['nullable', 'array'],
+            'individual_objectives' => ['nullable', 'array'],
             'individual_objectives.*.employee_id' => ['required_with:individual_objectives', 'integer', 'exists:employees,id'],
-            'individual_objectives.*.title'       => ['required_with:individual_objectives', 'string', 'min:10', 'max:500'],
+            'individual_objectives.*.title' => ['required_with:individual_objectives', 'string', 'min:10', 'max:500'],
             // Corrección 14-oct-2026 (defecto 1): cada OKR individual nace con
             // SUS PROPIOS Key Results capturados en el asistente (KPI, línea
             // base individual, meta individual, peso) — antes nacía vacío y el
             // gestor quedaba sin meta. Nunca se copian los de la sucursal.
             // save_incomplete (15-oct-2026): el usuario decide A PROPÓSITO guardar el borrador
             // sin terminar las metas de algún gestor — la UI y la activación marcan qué falta.
-            'individual_objectives.*.key_results'                         => $this->boolean('save_incomplete') ? ['nullable', 'array'] : ['required_with:individual_objectives', 'array', 'min:1'],
-            'save_incomplete'                                             => ['nullable', 'boolean'],
-            'individual_objectives.*.key_results.*.kpi_id'                => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
-            'individual_objectives.*.key_results.*.description'           => ['required', 'string', 'max:191'],
-            'individual_objectives.*.key_results.*.baseline_value'        => ['nullable', 'numeric'],
+            'individual_objectives.*.key_results' => $this->boolean('save_incomplete') ? ['nullable', 'array'] : ['required_with:individual_objectives', 'array', 'min:1'],
+            'save_incomplete' => ['nullable', 'boolean'],
+            'individual_objectives.*.key_results.*.kpi_id' => ['required', 'integer', Rule::exists('okr_kpis', 'id')->where('is_active', true)],
+            'individual_objectives.*.key_results.*.description' => ['required', 'string', 'max:191'],
+            'individual_objectives.*.key_results.*.baseline_value' => ['nullable', 'numeric'],
             'individual_objectives.*.key_results.*.baseline_manual_reason' => ['nullable', 'string', 'max:500'],
-            'individual_objectives.*.key_results.*.target_value'          => ['required', 'numeric'],
-            'individual_objectives.*.key_results.*.weight'                => ['required', 'numeric', 'min:0.01', 'max:100'],
+            'individual_objectives.*.key_results.*.target_value' => ['required', 'numeric'],
+            'individual_objectives.*.key_results.*.weight' => ['required', 'numeric', 'min:0.01', 'max:100'],
             'key_results.*.baseline_manual_reason' => ['nullable', 'string', 'max:500'],
         ];
     }
 
+    /**
+     * Registra las validaciones de negocio que se ejecutan después de las
+     * reglas básicas: sucursal operativa, pertenencia del colaborador,
+     * coherencia del padre, líneas base de KPI automáticos, OKR individuales,
+     * ponderación individual = 100% y responsable con acceso habilitado.
+     * Varias consultan BD (branches, employees, okr_objectives, users).
+     *
+     * @param  Validator  $validator  Validador al que se agregan los errores.
+     */
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {
@@ -94,11 +121,13 @@ class StoreObjectiveRequest extends FormRequest
      * 16-oct-2026 — una asignación NUEVA solo puede hacerse sobre una de las
      * once sucursales operativas del catálogo oficial (nunca una ruta, MATRIZ,
      * REGIÓN Q*, AGUASCALIENTES ni TENANGO). Los OKR históricos no cambian.
+     *
+     * @param  Validator  $validator  Recibe el error en `branch_id`.
      */
     private function validateOperativeBranch(Validator $validator): void
     {
-        $branchName = \App\Models\Branch::query()->whereKey($this->integer('branch_id'))->value('name');
-        if ($branchName !== null && !\App\Services\Catalog\BranchRouteCatalog::isOkrOperative($branchName)) {
+        $branchName = Branch::query()->whereKey($this->integer('branch_id'))->value('name');
+        if ($branchName !== null && ! BranchRouteCatalog::isOkrOperative($branchName)) {
             $validator->errors()->add('branch_id', "{$branchName} no es una de las sucursales operativas para OKR.");
         }
     }
@@ -108,16 +137,18 @@ class StoreObjectiveRequest extends FormRequest
      * `access_enabled_at`) no puede ni siquiera entrar al módulo OKR (ver
      * EnsureOkrAccessEnabled) — no tiene sentido asignarle un OKR de antemano.
      * Backend REAL, nunca solo el filtro del selector en el wizard.
+     *
+     * @param  Validator  $validator  Recibe el error en `responsible_user_id`.
      */
     private function validateResponsibleIsEnabled(Validator $validator): void
     {
         $responsibleId = $this->input('responsible_user_id');
-        if (!$responsibleId) {
+        if (! $responsibleId) {
             return; // opcional — ObjectiveController::store() cae a auth()->id() si no viene
         }
 
         $responsible = User::query()->find($responsibleId);
-        if (!$responsible) {
+        if (! $responsible) {
             return; // ya reportado por la regla 'exists' de arriba
         }
 
@@ -131,7 +162,11 @@ class StoreObjectiveRequest extends FormRequest
      * auditoría 10-sep-2026): cada colaborador debe pertenecer a la MISMA
      * sucursal que se está asignando (misma fuente que Reportería, nunca
      * confiar en lo que ya venía filtrado en el frontend), y no puede
-     * repetirse dentro de la asignación.
+     * repetirse dentro de la asignación. También rechaza colaboradores en baja
+     * y los que ya tienen un OKR individual vigente que se traslapa en fechas.
+     * Solo aplica con scope_type=branch.
+     *
+     * @param  Validator  $validator  Recibe errores en `individual_objectives.{i}.employee_id`.
      */
     private function validateIndividualObjectives(Validator $validator): void
     {
@@ -146,7 +181,7 @@ class StoreObjectiveRequest extends FormRequest
 
         foreach ($rows as $i => $row) {
             $employeeId = $row['employee_id'] ?? null;
-            if (!$employeeId) {
+            if (! $employeeId) {
                 continue; // ya reportado por 'required_with' de arriba
             }
 
@@ -161,16 +196,16 @@ class StoreObjectiveRequest extends FormRequest
             // seleccionable para un NUEVO OKR — backend real, nunca solo el
             // filtro del buscador del wizard (que ya oculta inactivos, pero
             // esto cubre una petición directa sin pasar por la UI).
-            if (!$resolver->employeeIsActive($employeeId)) {
+            if (! $resolver->employeeIsActive($employeeId)) {
                 $validator->errors()->add("individual_objectives.{$i}.employee_id", 'Ese colaborador está dado de baja — no se puede asignar un nuevo OKR.');
 
                 continue;
             }
 
-            if ($branchId && !$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
+            if ($branchId && ! $resolver->employeeBelongsToBranch($employeeId, $branchId)) {
                 $conflict = $resolver->branchConflictFor($employeeId);
                 $validator->errors()->add("individual_objectives.{$i}.employee_id", $conflict !== null
-                    ? $conflict['message'] . ' ' . $conflict['detail'] . '. Concilia su sucursal antes de asignarle un OKR.'
+                    ? $conflict['message'].' '.$conflict['detail'].'. Concilia su sucursal antes de asignarle un OKR.'
                     : 'Ese colaborador no pertenece a la sucursal seleccionada.');
 
                 continue;
@@ -186,11 +221,16 @@ class StoreObjectiveRequest extends FormRequest
      * Prevención de asignaciones duplicadas (14-oct-2026): mismo colaborador
      * (cualquier id de su identidad canónica) con un OKR individual vigente
      * (borrador/activo) cuyo rango de fechas se traslapa con el nuevo.
+     * La fecha fin se calcula con OkrCalendarService a partir de `start_date`
+     * y `duration_weeks` de la petición.
+     *
+     * @param  int  $employeeId  Colaborador a revisar (se expande a sus ids canónicos).
+     * @return bool true si ya existe un OKR individual traslapado.
      */
     private function hasOverlappingIndividualObjective(int $employeeId): bool
     {
-        $start = \Illuminate\Support\Carbon::parse((string) $this->input('start_date'));
-        $end = app(\App\Services\Okr\OkrCalendarService::class)->endDate($start, max(1, $this->integer('duration_weeks')));
+        $start = Carbon::parse((string) $this->input('start_date'));
+        $end = app(OkrCalendarService::class)->endDate($start, max(1, $this->integer('duration_weeks')));
 
         return OkrObjective::query()
             ->where('scope_type', OkrObjective::SCOPE_EMPLOYEE)
@@ -201,14 +241,21 @@ class StoreObjectiveRequest extends FormRequest
             ->exists();
     }
 
+    /**
+     * Para un OKR individual directo (scope_type=employee): el colaborador debe
+     * estar activo, pertenecer a la sucursal indicada (si hay conflicto de
+     * fuentes se pide conciliar) y no tener otro OKR individual traslapado.
+     *
+     * @param  Validator  $validator  Recibe errores en `employee_id`.
+     */
     private function validateEmployeeBelongsToBranch(Validator $validator): void
     {
         if ($this->input('scope_type') !== OkrObjective::SCOPE_EMPLOYEE) {
             return;
         }
         $employeeId = $this->integer('employee_id');
-        $branchId   = $this->integer('branch_id');
-        if (!$employeeId || !$branchId) {
+        $branchId = $this->integer('branch_id');
+        if (! $employeeId || ! $branchId) {
             return; // ya reportado por las reglas 'required' de arriba
         }
 
@@ -216,16 +263,16 @@ class StoreObjectiveRequest extends FormRequest
 
         // Parte 1.1 del cierre (04-oct-2026): mismo candado que arriba, para
         // un Objective individual directo (sin pasar por "OKR individuales").
-        if (!$resolver->employeeIsActive($employeeId)) {
+        if (! $resolver->employeeIsActive($employeeId)) {
             $validator->errors()->add('employee_id', 'Ese colaborador está dado de baja — no se puede asignar un nuevo OKR.');
 
             return;
         }
 
-        if (!$resolver->employeeBelongsToBranch($employeeId, $branchId)) {
+        if (! $resolver->employeeBelongsToBranch($employeeId, $branchId)) {
             $conflict = $resolver->branchConflictFor($employeeId);
             $validator->errors()->add('employee_id', $conflict !== null
-                ? $conflict['message'] . ' ' . $conflict['detail'] . '. Concilia su sucursal antes de asignarle un OKR.'
+                ? $conflict['message'].' '.$conflict['detail'].'. Concilia su sucursal antes de asignarle un OKR.'
                 : 'El colaborador seleccionado no pertenece a la sucursal indicada.');
 
             return;
@@ -240,12 +287,15 @@ class StoreObjectiveRequest extends FormRequest
      * CORRECCIÓN 09-sep-2026 (punto 12 de la auditoría): un Objective de
      * colaborador que dice "contribuir" a un Objective de sucursal, cuyo
      * parent es de OTRA sucursal, es una contradicción de datos (ej. gestor
-     * de Tlaxcala → parent de Córdoba) — 422, nunca se guarda.
+     * de Tlaxcala → parent de Córdoba) — 422, nunca se guarda. Además el padre
+     * debe existir (no eliminado), ser de alcance sucursal y no estar cancelado.
+     *
+     * @param  Validator  $validator  Recibe errores en `parent_id`.
      */
     private function validateParent(Validator $validator): void
     {
         $parentId = $this->input('parent_id');
-        if (!$parentId) {
+        if (! $parentId) {
             return;
         }
 
@@ -253,7 +303,7 @@ class StoreObjectiveRequest extends FormRequest
         // eliminado no "existe" para este propósito aunque la fila siga en la
         // tabla (a diferencia de la regla `exists` de arriba, que sí la vería).
         $parent = OkrObjective::query()->find($parentId);
-        if (!$parent) {
+        if (! $parent) {
             $validator->errors()->add('parent_id', 'El Objective de sucursal seleccionado ya no está disponible.');
 
             return;
@@ -281,6 +331,10 @@ class StoreObjectiveRequest extends FormRequest
      * CORRECCIÓN 09-sep-2026 (punto 3 de la auditoría): un KPI automático
      * nunca acepta una baseline manual en la creación — solo Reportería la
      * fija al activar (ver ObjectiveController::activate()/baselinePreview()).
+     * Recorre los KR del Objective principal y, con alcance sucursal, los KR de
+     * cada OKR individual (con el colaborador de esa fila).
+     *
+     * @param  Validator  $validator  Recibe errores por fila de KR.
      */
     private function validateAutomaticBaselines(Validator $validator): void
     {
@@ -309,15 +363,30 @@ class StoreObjectiveRequest extends FormRequest
      * (b) Reportería REALMENTE no tiene dato verificable para ESE alcance
      * (gestor o sucursal) en el periodo de inicio. Si el dato existe, se rechaza:
      * nunca se sustituye en silencio una línea base real por una capturada.
+     * La decisión la toma OkrBaselineGuard::check().
+     *
+     * @param  Validator  $validator  Recibe el error en `{$prefix}.{campo}`.
+     * @param  string  $prefix  Ruta del KR en la petición (p. ej. `key_results.0`).
+     * @param  array  $kr  Datos del KR enviado.
+     * @param  string  $scopeType  Alcance con el que se evalúa (branch/employee).
+     * @param  int|null  $branchId  Sucursal de la asignación.
+     * @param  int|null  $employeeId  Colaborador (solo alcance individual).
      */
     private function validateBaselineRow(Validator $validator, string $prefix, array $kr, string $scopeType, ?int $branchId, ?int $employeeId): void
     {
-        $error = app(\App\Services\Okr\OkrBaselineGuard::class)->check($kr, $scopeType, $branchId, $employeeId, (string) $this->input('start_date'));
+        $error = app(OkrBaselineGuard::class)->check($kr, $scopeType, $branchId, $employeeId, (string) $this->input('start_date'));
         if ($error !== null) {
             $validator->errors()->add("{$prefix}.{$error['field']}", $error['message']);
         }
     }
-    /** Ponderación de CADA OKR individual = 100% (nunca sumando gestores entre sí). */
+
+    /**
+     * Ponderación de CADA OKR individual = 100% (nunca sumando gestores entre
+     * sí), con tolerancia de 0.01. Solo aplica con scope_type=branch; las filas
+     * sin KR se omiten.
+     *
+     * @param  Validator  $validator  Recibe errores en `individual_objectives.{j}.key_results`.
+     */
     private function validateIndividualWeights(Validator $validator): void
     {
         if ($this->input('scope_type') !== OkrObjective::SCOPE_BRANCH) {
@@ -326,7 +395,7 @@ class StoreObjectiveRequest extends FormRequest
 
         foreach ($this->input('individual_objectives', []) as $j => $row) {
             $krs = $row['key_results'] ?? [];
-            if (!is_array($krs) || $krs === []) {
+            if (! is_array($krs) || $krs === []) {
                 continue; // ya reportado por required_with/min:1
             }
             $total = round(array_sum(array_map(fn ($kr) => (float) ($kr['weight'] ?? 0), $krs)), 2);

@@ -7,17 +7,33 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Audits EBITDA calculation.
- * EBITDA = Ingresos Totales - Otorgamientos - Gastos Totales
- * Gastos Totales = Gastos Operativos + Nómina NOI (percepciones − descuentos empleado)
- * Envío a corporativo/sobrante se muestra DESPUÉS del EBITDA como distribución.
+ * Comando `reportes:audit-ebitda` — auditoría del cálculo de EBITDA con el modelo de caja
+ * histórico: EBITDA = Ingresos Totales − Otorgamientos − Gastos Totales, donde
+ * Gastos Totales = Gastos Operativos (fact_expenses sin Nómina, Envío a corporativo ni
+ * Préstamos Intersucursales) + Nómina NOI (percepciones − descuentos de empleado D094, D010,
+ * D113, D123, D004, D111). El envío a corporativo/sobrante se muestra DESPUÉS del EBITDA
+ * como distribución.
+ *
+ * Opciones:
+ *   --detail             desglose por categoría de gasto y verificación de FONDEO duplicado.
+ *   --compare-reference  comparativo contra los valores fijos de referencia de Abril 2026 y
+ *                        escenarios alternativos (solo PAGO, monto53, gastos sin duplicar).
+ *
+ * Nota: el modelo vigente del Estado de Resultados es Ingresos − OPEX = EBITDA (ver
+ * EstadoResultados); este comando conserva el modelo anterior como diagnóstico.
+ * Escribe en BD: NO — solo lectura. Usa REGEXP/JSON_EXTRACT (requiere MySQL).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-ebitda 5
+ *   php artisan reportes:audit-ebitda 5 --detail --compare-reference
  */
 class AuditEbitdaCommand extends Command
 {
-    protected $signature   = 'reportes:audit-ebitda
+    protected $signature = 'reportes:audit-ebitda
                                 {period_id}
                                 {--detail : show per-line registros, archivo, tabla, columna, razón}
                                 {--compare-reference : compare current totals vs user reference values}';
+
     protected $description = 'Auditoría EBITDA: Ingresos − Otorgamientos − Gastos Totales (no resta nómina doble, excluye descuentos NOI)';
 
     private const EXCLUDED_FROM_GASTOS = [
@@ -29,25 +45,33 @@ class AuditEbitdaCommand extends Command
     // NOI D-codes that are employee deductions, NOT additional company cost
     private const NOI_DEDUCTION_CONCEPTS = ['D094', 'D010', 'D113', 'D123', 'D004', 'D111'];
 
+    /**
+     * Resuelve los periodos de datos y calcula las secciones A–F (ingresos, otorgamientos,
+     * gastos operativos, nómina NOI, EBITDA, envío a corporativo y diferencia), más el detalle y
+     * el comparativo según las opciones.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
         $detail = (bool) $this->option('detail');
 
-        $this->info("════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA EBITDA — {$period->label} (ID {$period->id})");
-        $this->info("════════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════════');
         $this->line('');
         $this->info('  Fórmula: EBITDA = Ingresos Totales − Otorgamientos − Gastos Totales');
         $this->info('  Gastos Totales = Gastos Operativos + Nómina (percepciones − descuentos NOI)');
@@ -70,23 +94,23 @@ class AuditEbitdaCommand extends Command
             ')
             ->first();
 
-        $totalIngresos = (float)$rec->total;
-        $polizas30     = (float)$rec->polizas_crece_30;
+        $totalIngresos = (float) $rec->total;
+        $polizas30 = (float) $rec->polizas_crece_30;
 
-        $this->line(str_pad('Concepto', 40) . str_pad('Fuente/Tabla', 22) . str_pad('Columna', 22) . 'Monto');
+        $this->line(str_pad('Concepto', 40).str_pad('Fuente/Tabla', 22).str_pad('Columna', 22).'Monto');
         $this->line(str_repeat('-', 100));
         foreach ([
-            ['Capital cobrado',    'fact_recoveries', 'capital',       (float)$rec->capital],
-            ['Interés cobrado',    'fact_recoveries', 'interest',      (float)$rec->interes],
-            ['Impuesto cobrado',   'fact_recoveries', 'tax',           (float)$rec->impuesto],
-            ['Cargos/muletas',     'fact_recoveries', 'charges',       (float)$rec->cargos],
-            ['Pólizas CRECE 30%',  'fact_recoveries', 'sh_crece_share',$polizas30],
+            ['Capital cobrado',    'fact_recoveries', 'capital',       (float) $rec->capital],
+            ['Interés cobrado',    'fact_recoveries', 'interest',      (float) $rec->interes],
+            ['Impuesto cobrado',   'fact_recoveries', 'tax',           (float) $rec->impuesto],
+            ['Cargos/muletas',     'fact_recoveries', 'charges',       (float) $rec->cargos],
+            ['Pólizas CRECE 30%',  'fact_recoveries', 'sh_crece_share', $polizas30],
         ] as [$label, $table, $col, $amt]) {
-            $this->line(str_pad($label, 40) . str_pad($table, 22) . str_pad($col, 22) . '$' . number_format($amt, 2));
+            $this->line(str_pad($label, 40).str_pad($table, 22).str_pad($col, 22).'$'.number_format($amt, 2));
         }
         $this->line(str_repeat('-', 100));
-        $this->line(str_pad('TOTAL INGRESOS', 86) . '$' . number_format($totalIngresos, 2));
-        $this->line("  Filas en fact_recoveries: " . number_format($rec->filas));
+        $this->line(str_pad('TOTAL INGRESOS', 86).'$'.number_format($totalIngresos, 2));
+        $this->line('  Filas en fact_recoveries: '.number_format($rec->filas));
         $this->line('');
 
         // ── B. OTORGAMIENTOS (colocación / ministraciones) ────────────────────
@@ -97,14 +121,14 @@ class AuditEbitdaCommand extends Command
             ->selectRaw('COUNT(*) as filas, SUM(amount) as total')
             ->first();
 
-        $totalOtorgamientos = (float)$plac->total;
+        $totalOtorgamientos = (float) $plac->total;
 
-        $this->line(str_pad('Concepto', 40) . str_pad('Fuente/Tabla', 22) . str_pad('Columna', 22) . 'Monto');
+        $this->line(str_pad('Concepto', 40).str_pad('Fuente/Tabla', 22).str_pad('Columna', 22).'Monto');
         $this->line(str_repeat('-', 100));
-        $this->line(str_pad('Ministraciones / Otorgamientos', 40) . str_pad('fact_placements', 22) . str_pad('amount', 22) . '$' . number_format($totalOtorgamientos, 2));
+        $this->line(str_pad('Ministraciones / Otorgamientos', 40).str_pad('fact_placements', 22).str_pad('amount', 22).'$'.number_format($totalOtorgamientos, 2));
         $this->line(str_repeat('-', 100));
-        $this->line(str_pad('TOTAL OTORGAMIENTOS', 86) . '$' . number_format($totalOtorgamientos, 2));
-        $this->line("  Filas en fact_placements: " . number_format($plac->filas));
+        $this->line(str_pad('TOTAL OTORGAMIENTOS', 86).'$'.number_format($totalOtorgamientos, 2));
+        $this->line('  Filas en fact_placements: '.number_format($plac->filas));
         $this->info('  Otorgamientos = dinero que volvió a prestarse. Se resta de ingresos para calcular utilidad real.');
         $this->line('');
 
@@ -121,16 +145,16 @@ class AuditEbitdaCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $totalGastosOp  = 0.0;
-        $totalExcluido  = 0.0;
+        $totalGastosOp = 0.0;
+        $totalExcluido = 0.0;
         $envioCorpTotal = 0.0;
 
-        $this->line(str_pad('Categoría', 40) . str_pad('Filas', 8) . str_pad('Total', 20) . 'En Gastos Totales');
+        $this->line(str_pad('Categoría', 40).str_pad('Filas', 8).str_pad('Total', 20).'En Gastos Totales');
         $this->line(str_repeat('-', 85));
         foreach ($gastosByCat as $g) {
-            $cat      = $g->category ?? 'Sin categoría';
+            $cat = $g->category ?? 'Sin categoría';
             $excluded = in_array($cat, self::EXCLUDED_FROM_GASTOS, true);
-            $amt      = (float)$g->total;
+            $amt = (float) $g->total;
             if ($excluded) {
                 $totalExcluido += $amt;
                 if ($cat === 'Envío de utilidad a corporativo') {
@@ -141,11 +165,11 @@ class AuditEbitdaCommand extends Command
                 $totalGastosOp += $amt;
                 $status = 'SÍ';
             }
-            $this->line(str_pad(mb_substr($cat, 0, 38), 40) . str_pad($g->cnt, 8) .
-                        str_pad('$' . number_format($amt, 0), 20) . $status);
+            $this->line(str_pad(mb_substr($cat, 0, 38), 40).str_pad($g->cnt, 8).
+                        str_pad('$'.number_format($amt, 0), 20).$status);
         }
         $this->line(str_repeat('-', 85));
-        $this->line(str_pad('TOTAL GASTOS OPERATIVOS', 68) . '$' . number_format($totalGastosOp, 2));
+        $this->line(str_pad('TOTAL GASTOS OPERATIVOS', 68).'$'.number_format($totalGastosOp, 2));
         $this->line('');
 
         // C2. Nómina (NOI: percepciones − descuentos empleado)
@@ -158,23 +182,23 @@ class AuditEbitdaCommand extends Command
             ->groupBy('concept_type', 'concept')
             ->get();
 
-        $totalPercep    = 0.0;
-        $totalDesctos   = 0.0;
-        $percepRows     = [];
-        $desctoRows     = [];
+        $totalPercep = 0.0;
+        $totalDesctos = 0.0;
+        $percepRows = [];
+        $desctoRows = [];
 
         foreach ($noi as $n) {
-            $tipo = strtolower((string)($n->concept_type ?? ''));
+            $tipo = strtolower((string) ($n->concept_type ?? ''));
             $isDeduccion = str_contains($tipo, 'deduccion') || str_contains($tipo, 'descuento');
             // Only count NOI D-codes as employee deductions
             $isNOIDeduccion = $isDeduccion &&
-                collect(self::NOI_DEDUCTION_CONCEPTS)->contains(fn ($c) => str_starts_with((string)$n->concept, $c));
+                collect(self::NOI_DEDUCTION_CONCEPTS)->contains(fn ($c) => str_starts_with((string) $n->concept, $c));
 
-            $amt = (float)$n->total;
+            $amt = (float) $n->total;
             if ($isNOIDeduccion) {
                 $totalDesctos += $amt;
                 $desctoRows[] = $n;
-            } elseif (!$isDeduccion) {
+            } elseif (! $isDeduccion) {
                 $totalPercep += $amt;
                 $percepRows[] = $n;
             }
@@ -182,47 +206,47 @@ class AuditEbitdaCommand extends Command
 
         $totalNominaNeta = $totalPercep - $totalDesctos;
 
-        $this->line(str_pad('Tipo', 20) . str_pad('Filas', 8) . str_pad('Total', 22) . 'Rol');
+        $this->line(str_pad('Tipo', 20).str_pad('Filas', 8).str_pad('Total', 22).'Rol');
         $this->line(str_repeat('-', 72));
         $this->line(str_pad('-- PERCEPCIONES (gasto de la empresa) --', 72, '-'));
         foreach ($percepRows as $n) {
-            $this->line(str_pad(mb_substr((string)$n->concept_type, 0, 18), 20) .
-                        str_pad($n->cnt, 8) .
-                        str_pad('$' . number_format((float)$n->total, 2), 22) . 'Percepción — costo empresa');
+            $this->line(str_pad(mb_substr((string) $n->concept_type, 0, 18), 20).
+                        str_pad($n->cnt, 8).
+                        str_pad('$'.number_format((float) $n->total, 2), 22).'Percepción — costo empresa');
         }
-        $this->line(str_pad('TOTAL PERCEPCIONES', 28) . str_pad('', 28) . '$' . number_format($totalPercep, 2));
+        $this->line(str_pad('TOTAL PERCEPCIONES', 28).str_pad('', 28).'$'.number_format($totalPercep, 2));
         $this->line('');
         $this->line(str_pad('-- DESCUENTOS NOI (al empleado, NO costo empresa adicional) --', 72, '-'));
         foreach ($desctoRows as $n) {
-            $this->line(str_pad(mb_substr((string)$n->concept, 0, 18), 20) .
-                        str_pad($n->cnt, 8) .
-                        str_pad('$' . number_format((float)$n->total, 2), 22) . 'Descuento al empleado — no infla gasto');
+            $this->line(str_pad(mb_substr((string) $n->concept, 0, 18), 20).
+                        str_pad($n->cnt, 8).
+                        str_pad('$'.number_format((float) $n->total, 2), 22).'Descuento al empleado — no infla gasto');
         }
-        $this->line(str_pad('TOTAL DESCUENTOS NOI', 28) . str_pad('', 28) . '−$' . number_format($totalDesctos, 2));
+        $this->line(str_pad('TOTAL DESCUENTOS NOI', 28).str_pad('', 28).'−$'.number_format($totalDesctos, 2));
         $this->line(str_repeat('-', 72));
-        $this->line(str_pad('NÓMINA NETA (Percep − Desctos)', 28) . str_pad('', 28) . '$' . number_format($totalNominaNeta, 2));
+        $this->line(str_pad('NÓMINA NETA (Percep − Desctos)', 28).str_pad('', 28).'$'.number_format($totalNominaNeta, 2));
         $this->line('');
 
         // C3. Total Gastos
         $totalGastosTotal = $totalGastosOp + $totalNominaNeta;
-        $this->line(str_pad('C1. Gastos operativos:',  45) . '$' . number_format($totalGastosOp, 2));
-        $this->line(str_pad('C2. Nómina neta NOI:',    45) . '$' . number_format($totalNominaNeta, 2));
+        $this->line(str_pad('C1. Gastos operativos:', 45).'$'.number_format($totalGastosOp, 2));
+        $this->line(str_pad('C2. Nómina neta NOI:', 45).'$'.number_format($totalNominaNeta, 2));
         $this->line(str_repeat('─', 70));
-        $this->line(str_pad('TOTAL GASTOS TOTALES:',   45) . '$' . number_format($totalGastosTotal, 2));
+        $this->line(str_pad('TOTAL GASTOS TOTALES:', 45).'$'.number_format($totalGastosTotal, 2));
         $this->line('');
 
         // ── D. EBITDA ─────────────────────────────────────────────────────────
         $this->info('════ D. EBITDA = Ingresos Totales − Otorgamientos − Gastos Totales ════');
         $ebitda = $totalIngresos - $totalOtorgamientos - $totalGastosTotal;
 
-        $this->line(str_pad('Ingresos totales:',              45) . ' $' . number_format($totalIngresos, 2));
-        $this->line(str_pad('Menos: Otorgamientos:',          45) . '−$' . number_format($totalOtorgamientos, 2));
-        $this->line(str_pad('Menos: Gastos totales:',         45) . '−$' . number_format($totalGastosTotal, 2));
-        $this->line(str_pad('  Gastos operativos:',           45) . '  $' . number_format($totalGastosOp, 2));
-        $this->line(str_pad('  Nómina neta NOI:',             45) . '  $' . number_format($totalNominaNeta, 2));
+        $this->line(str_pad('Ingresos totales:', 45).' $'.number_format($totalIngresos, 2));
+        $this->line(str_pad('Menos: Otorgamientos:', 45).'−$'.number_format($totalOtorgamientos, 2));
+        $this->line(str_pad('Menos: Gastos totales:', 45).'−$'.number_format($totalGastosTotal, 2));
+        $this->line(str_pad('  Gastos operativos:', 45).'  $'.number_format($totalGastosOp, 2));
+        $this->line(str_pad('  Nómina neta NOI:', 45).'  $'.number_format($totalNominaNeta, 2));
         $this->line(str_repeat('═', 70));
         $color = $ebitda >= 0 ? 'green' : 'red';
-        $this->line(str_pad('EBITDA / UTILIDAD:', 45) . " <fg={$color};options=bold> $" . number_format($ebitda, 2) . '</> ');
+        $this->line(str_pad('EBITDA / UTILIDAD:', 45)." <fg={$color};options=bold> $".number_format($ebitda, 2).'</> ');
         $this->line('');
 
         // ── E. ENVÍO A CORPORATIVO / SOBRANTE (DESPUÉS DEL EBITDA) ───────────
@@ -239,15 +263,15 @@ class AuditEbitdaCommand extends Command
         if ($envioRows->isEmpty()) {
             $this->line('  (Sin registros de envío a corporativo en este periodo)');
         } else {
-            $this->line(str_pad('Concepto', 40) . str_pad('Regs', 8) . 'Monto');
+            $this->line(str_pad('Concepto', 40).str_pad('Regs', 8).'Monto');
             $this->line(str_repeat('-', 70));
             foreach ($envioRows as $er) {
-                $this->line(str_pad(mb_substr((string)$er->concept, 0, 38), 40) .
-                            str_pad($er->cnt, 8) . '$' . number_format((float)$er->total, 2));
+                $this->line(str_pad(mb_substr((string) $er->concept, 0, 38), 40).
+                            str_pad($er->cnt, 8).'$'.number_format((float) $er->total, 2));
             }
             $this->line(str_repeat('-', 70));
         }
-        $this->line(str_pad('TOTAL ENVÍO A CORPORATIVO:', 68) . '$' . number_format($envioCorpTotal, 2));
+        $this->line(str_pad('TOTAL ENVÍO A CORPORATIVO:', 68).'$'.number_format($envioCorpTotal, 2));
         $this->info('  Aclaración: Envío a corporativo NO reduce el EBITDA. Es distribución de utilidad ya generada.');
         $this->line('');
 
@@ -255,11 +279,11 @@ class AuditEbitdaCommand extends Command
         $this->info('════ F. DIFERENCIA = EBITDA − Envío a corporativo / sobrante ════');
         $diferencia = $ebitda - $envioCorpTotal;
 
-        $this->line(str_pad('EBITDA:',                        45) . ' $' . number_format($ebitda, 2));
-        $this->line(str_pad('Menos: Envío a corporativo:',    45) . '−$' . number_format($envioCorpTotal, 2));
+        $this->line(str_pad('EBITDA:', 45).' $'.number_format($ebitda, 2));
+        $this->line(str_pad('Menos: Envío a corporativo:', 45).'−$'.number_format($envioCorpTotal, 2));
         $this->line(str_repeat('─', 70));
         $difColor = $diferencia >= 0 ? 'green' : 'red';
-        $this->line(str_pad('DIFERENCIA:', 45) . " <fg={$difColor};options=bold> $" . number_format($diferencia, 2) . '</> ');
+        $this->line(str_pad('DIFERENCIA:', 45)." <fg={$difColor};options=bold> $".number_format($diferencia, 2).'</> ');
         $this->line('');
 
         if ($detail) {
@@ -275,18 +299,18 @@ class AuditEbitdaCommand extends Command
                 ->orderByDesc('total')
                 ->get();
 
-            $this->line(str_pad('Categoría', 36) . str_pad('Regs', 7) . str_pad('Total', 18) .
-                        str_pad('Sin Suc', 18) . 'En Gastos Totales');
+            $this->line(str_pad('Categoría', 36).str_pad('Regs', 7).str_pad('Total', 18).
+                        str_pad('Sin Suc', 18).'En Gastos Totales');
             $this->line(str_repeat('─', 90));
 
             foreach ($cats as $c) {
-                $cat      = $c->category ?? 'Sin categoría';
+                $cat = $c->category ?? 'Sin categoría';
                 $excluded = in_array($cat, self::EXCLUDED_FROM_GASTOS, true);
                 $this->line(
-                    str_pad(mb_substr($cat, 0, 34), 36) .
-                    str_pad(number_format($c->cnt), 7) .
-                    str_pad('$' . number_format((float)$c->total, 0), 18) .
-                    str_pad('$' . number_format((float)$c->sin_suc, 0), 18) .
+                    str_pad(mb_substr($cat, 0, 34), 36).
+                    str_pad(number_format($c->cnt), 7).
+                    str_pad('$'.number_format((float) $c->total, 0), 18).
+                    str_pad('$'.number_format((float) $c->sin_suc, 0), 18).
                     ($excluded ? 'NO — excluido' : 'SÍ')
                 );
             }
@@ -302,12 +326,12 @@ class AuditEbitdaCommand extends Command
                 ->orderByDesc('total')
                 ->get();
             foreach ($fondeoDetail as $fd) {
-                $this->line("  Concepto '{$fd->concept}': {$fd->cnt} regs, $" . number_format((float)$fd->total, 2));
+                $this->line("  Concepto '{$fd->concept}': {$fd->cnt} regs, $".number_format((float) $fd->total, 2));
             }
             if ($fondeoDetail->count() > 1) {
-                $amounts = $fondeoDetail->pluck('total')->map(fn ($v) => round((float)$v, 2))->toArray();
+                $amounts = $fondeoDetail->pluck('total')->map(fn ($v) => round((float) $v, 2))->toArray();
                 if (min($amounts) > 0 && count(array_unique($amounts)) === 1) {
-                    $this->warn("  ⚠ MISMO MONTO en todos los conceptos FONDEO → posible duplicado.");
+                    $this->warn('  ⚠ MISMO MONTO en todos los conceptos FONDEO → posible duplicado.');
                 }
             }
         }
@@ -319,6 +343,15 @@ class AuditEbitdaCommand extends Command
         return 0;
     }
 
+    /**
+     * Recalcula los totales del sistema y variantes alternativas (ingresos solo PAGO,
+     * otorgamientos por monto53 sin reestructuras, gastos sin la fuente duplicada) y los compara
+     * contra la referencia fija de Abril 2026, imprimiendo un resumen de causas y un EBITDA
+     * "corregido" aproximado.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  string  $label  Etiqueta del periodo (informativa).
+     */
     private function compareReference(array $dataIds, string $label): void
     {
         $this->line('');
@@ -345,9 +378,9 @@ class AuditEbitdaCommand extends Command
             ->whereIn('period_id', $dataIds)->where('concept_type', 'deduccion')
             ->whereRaw("concept REGEXP '^D(094|010|113|123|004|111)'")->sum('amount');
 
-        $sysNomNeta    = $sysNomPercep - $sysNomDesctos;
+        $sysNomNeta = $sysNomPercep - $sysNomDesctos;
         $sysGastosTotal = $sysGastosOp + $sysNomNeta;
-        $sysEbitda      = $sysIngresos - $sysOtorg - $sysGastosTotal;
+        $sysEbitda = $sysIngresos - $sysOtorg - $sysGastosTotal;
 
         $sysEnvio = (float) DB::table('fact_expenses')
             ->whereIn('period_id', $dataIds)
@@ -367,7 +400,7 @@ class AuditEbitdaCommand extends Command
         $otorgMonto53 = (float) DB::selectOne("
             SELECT SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(raw_payload), '$.amount_monto53')) AS DECIMAL(14,2))) as tot
             FROM fact_placements
-            WHERE period_id IN (" . implode(',', $dataIds) . ")
+            WHERE period_id IN (".implode(',', $dataIds).")
             AND (product_name IS NULL OR product_name NOT REGEXP 'REESTRUCTURA|UNIFICACION|RECURSOS PROPIOS')
         ")->tot ?? 0;
 
@@ -388,8 +421,8 @@ class AuditEbitdaCommand extends Command
             ->whereNotIn('fe.category', self::EXCLUDED_FROM_GASTOS)
             ->selectRaw('SUM(COALESCE(NULLIF(fe.paid_amount,0),fe.amount)) as t')->value('t');
 
-        $gastosOpSinDup   = $gastosLendus + $gastosErp;
-        $gastosAltTotal   = $gastosOpSinDup + $sysNomNeta;
+        $gastosOpSinDup = $gastosLendus + $gastosErp;
+        $gastosAltTotal = $gastosOpSinDup + $sysNomNeta;
 
         $envioLendusOnly = (float) DB::table('fact_expenses as fe')
             ->join('report_uploads as ru', 'fe.report_upload_id', '=', 'ru.id')
@@ -401,38 +434,41 @@ class AuditEbitdaCommand extends Command
 
         // ── Referencias ───────────────────────────────────────────────────────
         $refIngresos = 18_332_149.55;
-        $refOtorg    = 14_538_964.00;
-        $refGastos   = 2_223_315.50;
-        $refEnvio    = 3_076_800.00;
-        $refEbitda   = $refIngresos - $refOtorg - $refGastos;
-        $refDif      = $refEbitda - $refEnvio;
+        $refOtorg = 14_538_964.00;
+        $refGastos = 2_223_315.50;
+        $refEnvio = 3_076_800.00;
+        $refEbitda = $refIngresos - $refOtorg - $refGastos;
+        $refDif = $refEbitda - $refEnvio;
 
-        $w1 = 46; $w2 = 17; $w3 = 17; $w4 = 17;
-        $hdr = str_pad('Concepto', $w1) . str_pad('Sistema Actual', $w2) . str_pad('Referencia', $w3) . str_pad('Diferencia', $w4) . 'Posible causa';
+        $w1 = 46;
+        $w2 = 17;
+        $w3 = 17;
+        $w4 = 17;
+        $hdr = str_pad('Concepto', $w1).str_pad('Sistema Actual', $w2).str_pad('Referencia', $w3).str_pad('Diferencia', $w4).'Posible causa';
 
         $this->line('');
         $this->line($hdr);
         $this->line(str_repeat('─', 130));
 
-        $fmt = fn($v) => '$' . number_format($v, 2);
-        $fmtD = fn($v) => ($v >= 0 ? '+' : '') . '$' . number_format($v, 2);
+        $fmt = fn ($v) => '$'.number_format($v, 2);
+        $fmtD = fn ($v) => ($v >= 0 ? '+' : '').'$'.number_format($v, 2);
 
         $rows = [
             ['Ingresos Totales',             $sysIngresos,   $refIngresos,
-             'DESCUENTO/CONDONACION incluidos (+$' . number_format($sysIngresos - $ingPago, 0) . ')'],
+                'DESCUENTO/CONDONACION incluidos (+$'.number_format($sysIngresos - $ingPago, 0).')'],
             ['  Solo PAGO (alt)',             $ingPago,       $refIngresos, '← filtro transaction=PAGO'],
             ['Otorgamientos',                $sysOtorg,      $refOtorg,
-             'Usa desemb54; monto53 sin restr=$' . number_format($otorgMonto53, 0)],
+                'Usa desemb54; monto53 sin restr=$'.number_format($otorgMonto53, 0)],
             ['  monto53 sin restr (alt)',     $otorgMonto53,  $refOtorg, '← columna alternativa raw_payload'],
-            ['Gastos Totales',               $sysGastosTotal,$refGastos, ''],
-            ['  Gastos Op (actual, duplicado)',$sysGastosOp, $refGastos - $sysNomNeta,
-             'gastos_lendus + gastos_lendus_excel = doble'],
-            ['  Gastos Op SIN dup (alt)',     $gastosOpSinDup,$refGastos - $sysNomNeta,
-             '← solo gastos_lendus + ERP'],
+            ['Gastos Totales',               $sysGastosTotal, $refGastos, ''],
+            ['  Gastos Op (actual, duplicado)', $sysGastosOp, $refGastos - $sysNomNeta,
+                'gastos_lendus + gastos_lendus_excel = doble'],
+            ['  Gastos Op SIN dup (alt)',     $gastosOpSinDup, $refGastos - $sysNomNeta,
+                '← solo gastos_lendus + ERP'],
             ['  Nómina neta',                $sysNomNeta,    $refGastos - ($refGastos - $sysNomNeta), ''],
             ['EBITDA calculado',             $sysEbitda,     $refEbitda, ''],
             ['Envío a corporativo',          $sysEnvio,      $refEnvio,
-             'EXCEDENTES duplicado (ambas fuentes); uno=$' . number_format($envioLendusOnly, 0)],
+                'EXCEDENTES duplicado (ambas fuentes); uno=$'.number_format($envioLendusOnly, 0)],
             ['  Envío solo gastos_lendus (alt)', $envioLendusOnly, $refEnvio, '← una fuente'],
             ['Diferencia (EBITDA − Envío)',  $sysDif,        $refDif, ''],
         ];
@@ -440,10 +476,10 @@ class AuditEbitdaCommand extends Command
         foreach ($rows as [$lbl, $sys, $ref, $causa]) {
             $diff = $sys - $ref;
             $this->line(
-                str_pad($lbl, $w1) .
-                str_pad($fmt($sys), $w2) .
-                str_pad($fmt($ref), $w3) .
-                str_pad($fmtD($diff), $w4) .
+                str_pad($lbl, $w1).
+                str_pad($fmt($sys), $w2).
+                str_pad($fmt($ref), $w3).
+                str_pad($fmtD($diff), $w4).
                 $causa
             );
         }
@@ -451,33 +487,33 @@ class AuditEbitdaCommand extends Command
         $this->line('');
         $this->info('════ RESUMEN DE CAUSAS ════');
         $this->line('');
-        $this->warn('  1. OTORGAMIENTOS (+$' . number_format($sysOtorg - $refOtorg, 0, '.', ',') . '):');
-        $this->line('     Sistema usa amount/desembolso ($' . number_format($sysOtorg, 0) . ').');
-        $this->line('     Referencia usa monto53/autorizado ($' . number_format($otorgMonto53, 0) . ').');
+        $this->warn('  1. OTORGAMIENTOS (+$'.number_format($sysOtorg - $refOtorg, 0, '.', ',').'):');
+        $this->line('     Sistema usa amount/desembolso ($'.number_format($sysOtorg, 0).').');
+        $this->line('     Referencia usa monto53/autorizado ($'.number_format($otorgMonto53, 0).').');
         $this->line('     Diferencia: refinanciamientos donde desemb < monto autorizado.');
         $this->line('');
-        $this->warn('  2. GASTOS DUPLICADOS (+$' . number_format($sysGastosOp - $gastosOpSinDup, 0, '.', ',') . ' inflado):');
+        $this->warn('  2. GASTOS DUPLICADOS (+$'.number_format($sysGastosOp - $gastosOpSinDup, 0, '.', ',').' inflado):');
         $this->line('     gastos_lendus (PDF) y gastos_lendus_excel (Excel) son el MISMO archivo.');
         $this->line('     Se importan AMBOS → todos los gastos aparecen dos veces.');
         $this->line('     Corrección: usar solo una fuente.');
-        $this->line('     Gastos op sin duplicado: $' . number_format($gastosOpSinDup, 2));
+        $this->line('     Gastos op sin duplicado: $'.number_format($gastosOpSinDup, 2));
         $this->line('');
-        $this->warn('  3. ENVÍO CORPORATIVO DUPLICADO (+$' . number_format($sysEnvio - $envioLendusOnly, 0, '.', ',') . ' inflado):');
-        $this->line('     EXCEDENTES de gastos_lendus ($' . number_format($envioLendusOnly, 2) . ')');
-        $this->line('     + gastos_lendus_excel ($' . number_format($sysEnvio - $envioLendusOnly, 2) . ') = doble.');
+        $this->warn('  3. ENVÍO CORPORATIVO DUPLICADO (+$'.number_format($sysEnvio - $envioLendusOnly, 0, '.', ',').' inflado):');
+        $this->line('     EXCEDENTES de gastos_lendus ($'.number_format($envioLendusOnly, 2).')');
+        $this->line('     + gastos_lendus_excel ($'.number_format($sysEnvio - $envioLendusOnly, 2).') = doble.');
         $this->line('     Corrección: misma que punto 2 (eliminar fuente duplicada).');
         $this->line('');
-        $this->warn('  4. INGRESOS ($' . number_format($sysIngresos - $refIngresos, 0, '.', ',') . ' de más):');
-        $this->line('     Sistema suma PAGO + DESCUENTO + CONDONACION = $' . number_format($sysIngresos, 2) . '.');
-        $this->line('     PAGO (cobros reales): $' . number_format($ingPago, 2) . '.');
+        $this->warn('  4. INGRESOS ($'.number_format($sysIngresos - $refIngresos, 0, '.', ',').' de más):');
+        $this->line('     Sistema suma PAGO + DESCUENTO + CONDONACION = $'.number_format($sysIngresos, 2).'.');
+        $this->line('     PAGO (cobros reales): $'.number_format($ingPago, 2).'.');
         $this->line('     Confirmar: ¿DESCUENTO (refinanciamiento) debe contarse como ingreso?');
         $this->line('');
         $this->info('  Si se corrigen puntos 1, 2 y 3 (sin cambio a ingresos PAGO+DESCUENTO):');
         $ebitdaAlt = $sysIngresos - $otorgMonto53 - $gastosAltTotal;
-        $this->line('  EBITDA corregido (aprox): $' . number_format($ebitdaAlt, 2));
+        $this->line('  EBITDA corregido (aprox): $'.number_format($ebitdaAlt, 2));
         $this->info('  Si además se corrige punto 4 (solo PAGO en ingresos):');
         $ebitdaAlt2 = $ingPago - $otorgMonto53 - $gastosAltTotal;
-        $this->line('  EBITDA corregido (aprox): $' . number_format($ebitdaAlt2, 2));
-        $this->line('  Referencia EBITDA:        $' . number_format($refEbitda, 2));
+        $this->line('  EBITDA corregido (aprox): $'.number_format($ebitdaAlt2, 2));
+        $this->line('  Referencia EBITDA:        $'.number_format($refEbitda, 2));
     }
 }

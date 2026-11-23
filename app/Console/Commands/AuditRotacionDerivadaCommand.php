@@ -7,6 +7,22 @@ use App\Services\RotacionDerivedFromNoiService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Comando `reportes:audit-rotacion-derivada` — compara la rotación derivada de NOI
+ * (`fact_rotacion` source = derived_noi, FUENTE OFICIAL) contra el archivo legacy
+ * (source = file, solo referencia histórica). Mientras exista derivado para el periodo, el
+ * reporte usa el derivado. Índice = bajas / plantilla actual × 100.
+ *
+ * Opciones:
+ *   --rebuild  re-deriva la rotación antes de auditar (ESCRIBE en `fact_rotacion`).
+ *   --detail   lista altas/bajas por sucursal desde period_employee_rosters.
+ *
+ * Escribe en BD: solo con `--rebuild` (RotacionDerivedFromNoiService::deriveForPeriod).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-rotacion-derivada 21
+ *   php artisan reportes:audit-rotacion-derivada 21 --rebuild --detail
+ */
 class AuditRotacionDerivadaCommand extends Command
 {
     protected $signature = 'reportes:audit-rotacion-derivada
@@ -16,11 +32,19 @@ class AuditRotacionDerivadaCommand extends Command
 
     protected $description = 'Auditoría Rotación: compara derivado de NOI (source=derived_noi, fuente oficial) contra archivo legacy (source=file, solo referencia histórica). El derivado manda mientras exista para el periodo.';
 
+    /**
+     * Opcionalmente re-deriva, compara legacy vs derivado por sucursal y muestra el resultado que
+     * ve el reporte.
+     *
+     * @param  RotacionDerivedFromNoiService  $service  Servicio que deriva la rotación desde NOI.
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(RotacionDerivedFromNoiService $service): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -32,7 +56,7 @@ class AuditRotacionDerivadaCommand extends Command
 
         if ($this->option('rebuild')) {
             $res = $service->deriveForPeriod($period);
-            $this->line('  Derivado recalculado: ' . json_encode($res));
+            $this->line('  Derivado recalculado: '.json_encode($res));
         }
 
         $legacyRows = DB::table('fact_rotacion')->where('period_id', $period->id)->where('source', 'file')->orderBy('sucursal_nombre')->get()->keyBy('sucursal_nombre');
@@ -40,6 +64,7 @@ class AuditRotacionDerivadaCommand extends Command
 
         if ($legacyRows->isEmpty() && $derivedRows->isEmpty()) {
             $this->warn('  Sin datos en fact_rotacion para este periodo (ni legacy ni derivado). Ejecuta con --rebuild.');
+
             return self::SUCCESS;
         }
 
@@ -77,7 +102,7 @@ class AuditRotacionDerivadaCommand extends Command
         $indiceGlobal = $activo['plant'] > 0 ? round($activo['bajas'] / $activo['plant'] * 100, 2) : 0.0;
 
         $this->line('');
-        $this->info('════ RESULTADO QUE VE EL REPORTE (' . ($usaDerivado ? 'DERIVADO NOI — oficial' : 'LEGACY — fallback histórico') . ') ════');
+        $this->info('════ RESULTADO QUE VE EL REPORTE ('.($usaDerivado ? 'DERIVADO NOI — oficial' : 'LEGACY — fallback histórico').') ════');
         $this->line("  Altas: {$activo['altas']}  |  Bajas: {$activo['bajas']}  |  Plantilla: {$activo['plant']}  |  Índice: {$indiceGlobal}%");
 
         if ($usaDerivado && $legacyRows->isNotEmpty()) {
@@ -89,9 +114,9 @@ class AuditRotacionDerivadaCommand extends Command
             $this->line($matches ? '    Estado: COINCIDE ✓' : '    Estado: NO coincide — el legacy estaba mal o usaba otra fuente (--detail para lista de empleados)');
         }
 
-        if (!$usaDerivado) {
+        if (! $usaDerivado) {
             $this->line('');
-            $this->warn('  No hay derivado NOI para este periodo (fact_rotacion sin source=derived_noi) — se está usando el archivo LEGACY como fallback histórico. Ejecuta reportes:rebuild-derived-noi ' . $period->id . ' para derivar desde NOI.');
+            $this->warn('  No hay derivado NOI para este periodo (fact_rotacion sin source=derived_noi) — se está usando el archivo LEGACY como fallback histórico. Ejecuta reportes:rebuild-derived-noi '.$period->id.' para derivar desde NOI.');
         }
 
         if ($this->option('detail')) {
@@ -104,12 +129,18 @@ class AuditRotacionDerivadaCommand extends Command
             foreach ($branchRows->groupBy('branch_name') as $branchName => $group) {
                 $altasG = $group->where('is_active_for_period', true)->where('movement_type', 'alta');
                 $bajasG = $group->where('is_active_for_period', false)->where('movement_type', 'baja');
-                if ($altasG->isEmpty() && $bajasG->isEmpty()) continue;
+                if ($altasG->isEmpty() && $bajasG->isEmpty()) {
+                    continue;
+                }
 
                 $this->line('');
                 $this->info("  {$branchName} (roster derivado de NOI)");
-                foreach ($altasG as $a) $this->line("    + ALTA: {$a->nombre_normalizado}");
-                foreach ($bajasG as $b) $this->line("    − BAJA: {$b->nombre_normalizado}");
+                foreach ($altasG as $a) {
+                    $this->line("    + ALTA: {$a->nombre_normalizado}");
+                }
+                foreach ($bajasG as $b) {
+                    $this->line("    − BAJA: {$b->nombre_normalizado}");
+                }
             }
         }
 

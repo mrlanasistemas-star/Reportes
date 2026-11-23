@@ -19,11 +19,31 @@ use Illuminate\Http\Request;
  *   &meses=6                         (evolución: 1..13)
  *   &desde={periodId}&hasta={periodId} (evolución por rango, máximo 24 meses)
  *   &graficas=1                      (0 = sin bloque charts)
+ *
+ * Lo consume la pestaña de comparativas de la pantalla del Estado de Resultados. Todo el
+ * cálculo (y la caché de periodos) vive en ComparisonService; aquí sólo se valida la entrada
+ * y se traducen excepciones a códigos HTTP.
  */
 class EstadoResultadosComparativoController extends Controller
 {
+    /**
+     * @param  ComparisonService  $service  Motor de comparativas del Estado de Resultados.
+     */
     public function __construct(private readonly ComparisonService $service) {}
 
+    /**
+     * Devuelve las comparativas del periodo en JSON.
+     *
+     * Eleva memory_limit a 1 GB y el tiempo máximo a 600 s porque una comparativa puede
+     * calcular varios periodos completos. Valida que los modos existan y que contra/desde/hasta/
+     * meses sean numéricos (422 si no); `desde` y `hasta` deben venir juntos. Agrega el encabezado
+     * `Server-Timing` con cuántos periodos salieron de caché/snapshot y cuántos se calcularon.
+     *
+     * @param  Request  $request  Query: modos|modo, alcance, contra, meses, desde, hasta, graficas.
+     * @param  Period  $period  Periodo base de la comparación.
+     * @return JsonResponse 200 con el contrato `er-comparativas/1`; 403 si el usuario no tiene acceso
+     *                      al alcance; 422 por parámetros inválidos o reglas de gobierno.
+     */
     public function show(Request $request, Period $period): JsonResponse
     {
         @ini_set('memory_limit', '1024M');

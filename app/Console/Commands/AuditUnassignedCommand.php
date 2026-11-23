@@ -10,9 +10,17 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * Audit all SIN ASIGNAR records across every section:
- * nómina, OPEX, ingresos, colocación, cartera, fondeos.
- * Outputs reason + dato faltante + acción sugerida for each.
+ * Comando `reportes:audit-unassigned` — audita todos los registros SIN ASIGNAR (sin sucursal)
+ * en cada sección: nómina (empleados NOI sin asignación del periodo), OPEX (gastos ERP/Lendus
+ * sin branch_id), colocación (placements sin sucursal operativa), cartera (contratos en
+ * sucursales no operativas) y fondeos (préstamos intersucursales sin destino legible). Para
+ * cada registro muestra el motivo, el dato faltante y la acción sugerida.
+ *
+ * Escribe en BD: NO (solo CSV con `--export`).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-unassigned 21
+ *   php artisan reportes:audit-unassigned 21 --detail --export
  */
 class AuditUnassignedCommand extends Command
 {
@@ -23,17 +31,24 @@ class AuditUnassignedCommand extends Command
 
     protected $description = 'Auditoría SIN ASIGNAR — muestra todos los registros sin sucursal y por qué';
 
+    /**
+     * Junta los registros sin asignar de las cinco secciones, imprime el resumen por fuente, el
+     * total y, opcionalmente, el detalle y el CSV.
+     *
+     * @return int 0 al terminar; 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds, [$period->id]
         )));
 
@@ -62,36 +77,36 @@ class AuditUnassignedCommand extends Command
         foreach ($byFuente as $fuente => $cnt) {
             $montoFuente = array_sum(array_column(array_filter($rows, fn ($r) => $r['fuente'] === $fuente), 'monto'));
             $totalMonto += $montoFuente;
-            $this->line(sprintf("  %-38s %4d registros   \$%s", $fuente, $cnt, number_format($montoFuente, 2)));
+            $this->line(sprintf('  %-38s %4d registros   $%s', $fuente, $cnt, number_format($montoFuente, 2)));
         }
         $this->line('');
-        $this->info(sprintf("  TOTAL SIN ASIGNAR: %d registros   \$%s", count($rows), number_format($totalMonto, 2)));
+        $this->info(sprintf('  TOTAL SIN ASIGNAR: %d registros   $%s', count($rows), number_format($totalMonto, 2)));
 
-        if ($this->option('detail') && !empty($rows)) {
+        if ($this->option('detail') && ! empty($rows)) {
             $this->line('');
             $this->info('── DETALLE REGISTRO A REGISTRO ──');
             $this->line(
                 str_pad('Fuente', 22)
-                . str_pad('ID', 8)
-                . str_pad('Folio/Nombre', 28)
-                . str_pad('Sucursal original', 20)
-                . str_pad('Monto', 16)
-                . str_pad('Motivo', 30)
-                . 'Dato faltante'
+                .str_pad('ID', 8)
+                .str_pad('Folio/Nombre', 28)
+                .str_pad('Sucursal original', 20)
+                .str_pad('Monto', 16)
+                .str_pad('Motivo', 30)
+                .'Dato faltante'
             );
             $this->line(str_repeat('─', 145));
             foreach ($rows as $r) {
                 $this->line(
                     str_pad(mb_substr($r['fuente'], 0, 20), 22)
-                    . str_pad($r['record_id'], 8)
-                    . str_pad(mb_substr($r['folio_nombre'], 0, 26), 28)
-                    . str_pad(mb_substr($r['sucursal_original'] ?? '-', 0, 18), 20)
-                    . str_pad('$' . number_format($r['monto'], 2), 16)
-                    . str_pad(mb_substr($r['motivo'], 0, 28), 30)
-                    . $r['dato_faltante']
+                    .str_pad($r['record_id'], 8)
+                    .str_pad(mb_substr($r['folio_nombre'], 0, 26), 28)
+                    .str_pad(mb_substr($r['sucursal_original'] ?? '-', 0, 18), 20)
+                    .str_pad('$'.number_format($r['monto'], 2), 16)
+                    .str_pad(mb_substr($r['motivo'], 0, 28), 30)
+                    .$r['dato_faltante']
                 );
-                if (!empty($r['accion_sugerida'])) {
-                    $this->line('    → ' . $r['accion_sugerida']);
+                if (! empty($r['accion_sugerida'])) {
+                    $this->line('    → '.$r['accion_sugerida']);
                 }
             }
         }
@@ -104,13 +119,20 @@ class AuditUnassignedCommand extends Command
     }
 
     // ── NÓMINA: empleados sin branch_assignment ──────────────────────────────
+    /**
+     * Empleados con movimientos NOI en el periodo que no tienen asignación de sucursal.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @param  Period  $period  Periodo (las asignaciones se buscan por su ID).
+     * @return array<int,array<string,mixed>> Registros sin asignar (fuente, monto, motivo, dato faltante, acción).
+     */
     private function auditNomina(array $dataIds, Period $period): array
     {
         $rows = DB::table('fact_noi_movements as n')
             ->leftJoin('employees as e', 'n.employee_id', '=', 'e.id')
             ->leftJoin('employee_branch_assignments as eba', function ($j) use ($period) {
                 $j->on('eba.employee_id', '=', 'n.employee_id')
-                  ->where('eba.period_id', '=', $period->id);
+                    ->where('eba.period_id', '=', $period->id);
             })
             ->whereIn('n.period_id', $dataIds)
             ->whereNull('eba.branch_id')
@@ -127,29 +149,36 @@ class AuditUnassignedCommand extends Command
         $result = [];
         foreach ($rows as $r) {
             $result[] = [
-                'fuente'            => 'NOI / Nómina',
-                'tabla'             => 'fact_noi_movements',
-                'record_id'         => $r->record_id,
-                'folio_nombre'      => $r->nombre,
+                'fuente' => 'NOI / Nómina',
+                'tabla' => 'fact_noi_movements',
+                'record_id' => $r->record_id,
+                'folio_nombre' => $r->nombre,
                 'sucursal_original' => null,
-                'concepto'          => $r->concepto,
-                'monto'             => (float) $r->monto,
-                'motivo'            => 'Sin asignación de sucursal',
-                'dato_faltante'     => 'employee_branch_assignments.branch_id',
-                'accion_sugerida'   => 'Asignar sucursal al empleado en el período ' . $period->id,
+                'concepto' => $r->concepto,
+                'monto' => (float) $r->monto,
+                'motivo' => 'Sin asignación de sucursal',
+                'dato_faltante' => 'employee_branch_assignments.branch_id',
+                'accion_sugerida' => 'Asignar sucursal al empleado en el período '.$period->id,
             ];
         }
 
         $this->printSection('NÓMINA sin sucursal asignada', count($result), array_sum(array_column($result, 'monto')));
+
         return $result;
     }
 
     // ── OPEX: gastos ERP/Lendus sin branch_id ───────────────────────────────
+    /**
+     * Gastos ERP/Lendus sin branch_id.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<int,array<string,mixed>> Registros sin asignar.
+     */
     private function auditOpex(array $dataIds): array
     {
         $resolver = app(BranchResolverService::class);
-        $calc     = app(BranchRadiographyCalculator::class);
-        $maps     = $calc->buildBranchMap();
+        $calc = app(BranchRadiographyCalculator::class);
+        $maps = $calc->buildBranchMap();
         $operativeIds = array_keys($maps['operative']);
 
         $rows = DB::table('fact_expenses as e')
@@ -159,7 +188,7 @@ class AuditUnassignedCommand extends Command
             ->whereIn('e.period_id', $dataIds)
             ->where(function ($q) use ($operativeIds) {
                 $q->whereNull('e.branch_id')
-                  ->orWhereNotIn('e.branch_id', $operativeIds);
+                    ->orWhereNotIn('e.branch_id', $operativeIds);
             })
             ->whereIn('ds.code', ['gastos_erp', 'gastos_lendus'])
             ->selectRaw("
@@ -179,28 +208,35 @@ class AuditUnassignedCommand extends Command
                 ? 'branch_id NULL'
                 : 'Alias no reconocido como sucursal operativa';
             $result[] = [
-                'fuente'            => 'OPEX / ' . strtoupper($r->fuente_src),
-                'tabla'             => 'fact_expenses',
-                'record_id'         => $r->record_id,
-                'folio_nombre'      => $r->concepto,
+                'fuente' => 'OPEX / '.strtoupper($r->fuente_src),
+                'tabla' => 'fact_expenses',
+                'record_id' => $r->record_id,
+                'folio_nombre' => $r->concepto,
                 'sucursal_original' => $r->sucursal_original,
-                'concepto'          => $r->concepto,
-                'monto'             => (float) $r->monto,
-                'motivo'            => $motivo,
-                'dato_faltante'     => 'branch_id o alias en catálogo',
-                'accion_sugerida'   => 'Revisar sucursal en fuente original y actualizar alias',
+                'concepto' => $r->concepto,
+                'monto' => (float) $r->monto,
+                'motivo' => $motivo,
+                'dato_faltante' => 'branch_id o alias en catálogo',
+                'accion_sugerida' => 'Revisar sucursal en fuente original y actualizar alias',
             ];
         }
 
         $this->printSection('OPEX sin sucursal operativa', count($result), array_sum(array_column($result, 'monto')));
+
         return $result;
     }
 
     // ── COLOCACIÓN: placements sin branch_id operativo ───────────────────────
+    /**
+     * Colocaciones cuya sucursal no es operativa o no existe.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<int,array<string,mixed>> Registros sin asignar.
+     */
     private function auditColocacion(array $dataIds): array
     {
-        $calc         = app(BranchRadiographyCalculator::class);
-        $maps         = $calc->buildBranchMap();
+        $calc = app(BranchRadiographyCalculator::class);
+        $maps = $calc->buildBranchMap();
         $operativeIds = array_keys($maps['operative']);
 
         $rows = DB::table('fact_placements as p')
@@ -208,7 +244,7 @@ class AuditUnassignedCommand extends Command
             ->whereIn('p.period_id', $dataIds)
             ->where(function ($q) use ($operativeIds) {
                 $q->whereNull('p.branch_id')
-                  ->orWhereNotIn('p.branch_id', $operativeIds);
+                    ->orWhereNotIn('p.branch_id', $operativeIds);
             })
             ->selectRaw("
                 p.id as record_id,
@@ -223,33 +259,40 @@ class AuditUnassignedCommand extends Command
         $result = [];
         foreach ($rows as $r) {
             $result[] = [
-                'fuente'            => 'Colocación',
-                'tabla'             => 'fact_placements',
-                'record_id'         => $r->record_id,
-                'folio_nombre'      => $r->cliente,
+                'fuente' => 'Colocación',
+                'tabla' => 'fact_placements',
+                'record_id' => $r->record_id,
+                'folio_nombre' => $r->cliente,
                 'sucursal_original' => $r->sucursal_original,
-                'concepto'          => $r->concepto,
-                'monto'             => (float) $r->monto,
-                'motivo'            => 'Sucursal no operativa o branch_id nulo',
-                'dato_faltante'     => 'branch_id operativo',
-                'accion_sugerida'   => 'Revisar placement ID ' . $r->record_id . ' y asignar sucursal',
+                'concepto' => $r->concepto,
+                'monto' => (float) $r->monto,
+                'motivo' => 'Sucursal no operativa o branch_id nulo',
+                'dato_faltante' => 'branch_id operativo',
+                'accion_sugerida' => 'Revisar placement ID '.$r->record_id.' y asignar sucursal',
             ];
         }
 
         $this->printSection('Colocación sin sucursal operativa', count($result), array_sum(array_column($result, 'monto')));
+
         return $result;
     }
 
     // ── CARTERA: contratos en branch_id fuera de operativas ──────────────────
+    /**
+     * Contratos de cartera ubicados en sucursales fuera de las operativas.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<int,array<string,mixed>> Registros sin asignar.
+     */
     private function auditCartera(array $dataIds): array
     {
-        $calc         = app(BranchRadiographyCalculator::class);
-        $maps         = $calc->buildBranchMap();
+        $calc = app(BranchRadiographyCalculator::class);
+        $maps = $calc->buildBranchMap();
         $operativeIds = array_keys($maps['operative']);
 
         // AGS branch IDs — show separately
         $agsRows = DB::table('branches')->get();
-        $agsIds  = [];
+        $agsIds = [];
         $resolver = app(BranchResolverService::class);
         foreach ($agsRows as $b) {
             $real = $resolver->resolveRealBranchFromRoute($b->name);
@@ -277,24 +320,31 @@ class AuditUnassignedCommand extends Command
         $result = [];
         foreach ($rows as $r) {
             $result[] = [
-                'fuente'            => 'Cartera (Saldos)',
-                'tabla'             => 'fact_portfolios',
-                'record_id'         => $r->record_id,
-                'folio_nombre'      => $r->folio,
+                'fuente' => 'Cartera (Saldos)',
+                'tabla' => 'fact_portfolios',
+                'record_id' => $r->record_id,
+                'folio_nombre' => $r->folio,
                 'sucursal_original' => $r->sucursal_original,
-                'concepto'          => $r->concepto,
-                'monto'             => (float) $r->monto,
-                'motivo'            => 'Contrato en sucursal fuera de operativas (excl. AGS)',
-                'dato_faltante'     => 'branch_id operativo',
-                'accion_sugerida'   => 'Verificar contrato ' . $r->folio . ' si pertenece a alguna sucursal operativa',
+                'concepto' => $r->concepto,
+                'monto' => (float) $r->monto,
+                'motivo' => 'Contrato en sucursal fuera de operativas (excl. AGS)',
+                'dato_faltante' => 'branch_id operativo',
+                'accion_sugerida' => 'Verificar contrato '.$r->folio.' si pertenece a alguna sucursal operativa',
             ];
         }
 
         $this->printSection('Cartera fuera de sucursales operativas (excl. AGS)', count($result), array_sum(array_column($result, 'monto')));
+
         return $result;
     }
 
     // ── FONDEOS: préstamos intersucursales sin destino legible ───────────────
+    /**
+     * Préstamos intersucursales cuyo destino no puede leerse.
+     *
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     * @return array<int,array<string,mixed>> Registros sin asignar.
+     */
     private function auditFondeos(array $dataIds): array
     {
         $rows = DB::table('fact_expenses as e')
@@ -317,51 +367,65 @@ class AuditUnassignedCommand extends Command
         $result = [];
         foreach ($rows as $r) {
             $result[] = [
-                'fuente'            => 'Fondeo / Intersucursal',
-                'tabla'             => 'fact_expenses',
-                'record_id'         => $r->record_id,
-                'folio_nombre'      => $r->concepto,
+                'fuente' => 'Fondeo / Intersucursal',
+                'tabla' => 'fact_expenses',
+                'record_id' => $r->record_id,
+                'folio_nombre' => $r->concepto,
                 'sucursal_original' => $r->sucursal_origen,
-                'concepto'          => $r->concepto,
-                'monto'             => (float) $r->monto,
-                'motivo'            => 'Observación/destino vacío',
-                'dato_faltante'     => 'observations (destino del fondeo)',
-                'accion_sugerida'   => 'Completar Observación con sucursal destino en el PDF Lendus',
+                'concepto' => $r->concepto,
+                'monto' => (float) $r->monto,
+                'motivo' => 'Observación/destino vacío',
+                'dato_faltante' => 'observations (destino del fondeo)',
+                'accion_sugerida' => 'Completar Observación con sucursal destino en el PDF Lendus',
             ];
         }
 
         $this->printSection('Fondeos sin destino (observación vacía)', count($result), array_sum(array_column($result, 'monto')));
+
         return $result;
     }
 
+    /**
+     * Imprime una línea de resumen de sección con ✓ (sin pendientes) o ⚠.
+     *
+     * @param  string  $label  Nombre de la sección.
+     * @param  int  $count  Registros sin asignar.
+     * @param  float  $monto  Monto sin asignar.
+     */
     private function printSection(string $label, int $count, float $monto): void
     {
         $this->line('');
         $status = $count === 0 ? '✓' : '⚠';
-        $this->line("  {$status}  {$label}: {$count} registros   \$" . number_format($monto, 2));
+        $this->line("  {$status}  {$label}: {$count} registros   \$".number_format($monto, 2));
     }
 
+    /**
+     * Escribe en storage/app/auditorias/ el CSV de todos los registros sin asignar.
+     *
+     * @param  int  $periodId  ID del periodo.
+     * @param  array  $rows  Registros sin asignar.
+     */
     private function exportCsv(int $periodId, array $rows): void
     {
-        $dir  = 'auditorias';
-        $ts   = now()->format('Ymd_His');
+        $dir = 'auditorias';
+        $ts = now()->format('Ymd_His');
         $file = "unassigned_periodo_{$periodId}_{$ts}.csv";
 
         $headers = ['Fuente', 'Tabla', 'ID', 'Folio/Nombre', 'Sucursal original', 'Concepto', 'Monto', 'Motivo', 'Dato faltante', 'Acción sugerida'];
-        $lines   = [implode(',', $headers)];
+        $lines = [implode(',', $headers)];
 
         foreach ($rows as $r) {
             $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $r['fuente']) . '"',
-                '"' . str_replace('"', '""', $r['tabla']) . '"',
+                '"'.str_replace('"', '""', $r['fuente']).'"',
+                '"'.str_replace('"', '""', $r['tabla']).'"',
                 $r['record_id'],
-                '"' . str_replace('"', '""', $r['folio_nombre']) . '"',
-                '"' . str_replace('"', '""', $r['sucursal_original'] ?? '') . '"',
-                '"' . str_replace('"', '""', $r['concepto']) . '"',
+                '"'.str_replace('"', '""', $r['folio_nombre']).'"',
+                '"'.str_replace('"', '""', $r['sucursal_original'] ?? '').'"',
+                '"'.str_replace('"', '""', $r['concepto']).'"',
                 number_format($r['monto'], 2, '.', ''),
-                '"' . str_replace('"', '""', $r['motivo']) . '"',
-                '"' . str_replace('"', '""', $r['dato_faltante']) . '"',
-                '"' . str_replace('"', '""', $r['accion_sugerida']) . '"',
+                '"'.str_replace('"', '""', $r['motivo']).'"',
+                '"'.str_replace('"', '""', $r['dato_faltante']).'"',
+                '"'.str_replace('"', '""', $r['accion_sugerida']).'"',
             ]);
         }
 
