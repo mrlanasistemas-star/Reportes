@@ -28,8 +28,20 @@ await server.listen()
 const url = server.resolvedUrls.local[0]
 
 // Chrome del sistema si puppeteer no descargó el suyo (CHROME_PATH lo fuerza).
+// Prioridad: CHROME_PATH → Chrome que descargó puppeteer (misma versión que espera su
+// protocolo) → Chrome del sistema. Usar primero el del sistema rompía en CI cuando su
+// versión quedaba desfasada respecto a la de puppeteer.
 const systemChrome = ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome'].find((p) => existsSync(p))
-const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'], executablePath: process.env.CHROME_PATH ?? systemChrome })
+const bundledChrome = (() => {
+    try {
+        const p = puppeteer.executablePath()
+
+        return p && existsSync(p) ? p : undefined
+    } catch {
+        return undefined
+    }
+})()
+const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'], executablePath: process.env.CHROME_PATH ?? bundledChrome ?? systemChrome })
 const page = await browser.newPage()
 await page.setViewport({ width: 1400, height: 2200 })
 const pageErrors = []

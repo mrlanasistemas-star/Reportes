@@ -144,5 +144,8 @@ jobs:
       - name: Instalar dependencias
         run: npm ci
 
+      - name: Instalar Chrome de puppeteer (misma versión que su protocolo)
+        run: npx puppeteer browsers install chrome
+
       - name: Prueba real de edición OKR
         run: npm run test:browser:okr
