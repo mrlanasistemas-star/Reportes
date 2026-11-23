@@ -11,6 +11,7 @@
     "require": {
         "php": "^8.3",
         "inertiajs/inertia-laravel": "^3.0",
+        "laravel-notification-channels/webpush": "^13.0",
         "laravel/fortify": "^1.34",
         "laravel/framework": "^13.0",
         "laravel/sanctum": "^4.3",
@@ -58,11 +59,11 @@
         ],
         "worker": [
             "Composer\\Config::disableProcessTimeout",
-            "php -d memory_limit=1024M -d max_execution_time=0 artisan queue:work database --queue=default --tries=1 --timeout=1800 --memory=1024 --sleep=3 -vvv"
+            "php -d memory_limit=1024M -d max_execution_time=0 artisan queue:work database --queue=default --tries=1 --timeout=3600 --memory=1024 --sleep=3 -vvv"
         ],
         "dev:full": [
             "Composer\\Config::disableProcessTimeout",
-            "npx concurrently -c \"#93c5fd,#c4b5fd,#fdba74\" \"php artisan serve\" \"php -d memory_limit=1024M -d max_execution_time=0 artisan queue:work database --queue=default --tries=1 --timeout=1800 --memory=1024 --sleep=3 -vvv\" \"npm run dev\" --names='server,queue,vite'"
+            "npx concurrently -c \"#93c5fd,#c4b5fd,#fdba74\" \"php artisan serve\" \"php -d memory_limit=1024M -d max_execution_time=0 artisan queue:work database --queue=default --tries=1 --timeout=3600 --memory=1024 --sleep=3 -vvv\" \"npm run dev\" --names='server,queue,vite'"
         ],
         "lint": [
             "pint --parallel"
@@ -113,6 +114,9 @@
         "allow-plugins": {
             "pestphp/pest-plugin": true,
             "php-http/discovery": true
+        },
+        "platform": {
+            "php": "8.3.0"
         }
     },
     "minimum-stability": "stable"

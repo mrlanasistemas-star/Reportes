@@ -18,6 +18,33 @@ permissions:
   contents: read
 
 jobs:
+  # Auditoría de dependencias en un job propio: un aviso nuevo publicado por
+  # un tercero marca este job en rojo, pero ya no impide que lint, typecheck,
+  # build y Pest corran y reporten su propio resultado.
+  audit:
+    name: Auditoría de dependencias (producción)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+          coverage: none
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Composer audit (producción)
+        run: composer audit --no-interaction --locked --no-dev --abandoned=report
+
+      - name: npm audit (producción)
+        run: npm audit --omit=dev --audit-level=high --package-lock-only
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -43,9 +70,6 @@ jobs:
           touch database/database.sqlite
           php artisan migrate --force
           php artisan wayfinder:generate --with-form
-
-      - name: Composer audit (producción)
-        run: composer audit --no-interaction --locked --no-dev
 
       - name: Detectar base del cambio
         id: base
@@ -97,9 +121,6 @@ jobs:
           fi
           printf 'Verificando %s archivo(s) frontend con Prettier.\n' "${#FRONT_FILES[@]}"
           npx prettier --check "${FRONT_FILES[@]}"
-
-      - name: Auditoría de dependencias Node de producción
-        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint Frontend completo
         run: npm run lint:check

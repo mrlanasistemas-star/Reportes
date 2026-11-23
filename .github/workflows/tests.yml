@@ -43,9 +43,6 @@ jobs:
       - name: Install Dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
-      - name: Composer audit (producción)
-        run: composer audit --no-interaction --locked --no-dev
-
       - name: Copy Environment File
         run: cp .env.example .env
 
@@ -53,7 +50,9 @@ jobs:
         run: php artisan key:generate
 
       - name: Generar rutas y acciones Wayfinder
-        run: touch database/database.sqlite
+        shell: bash
+        run: |
+          touch database/database.sqlite
           php artisan migrate --force
           php artisan wayfinder:generate --with-form
 
