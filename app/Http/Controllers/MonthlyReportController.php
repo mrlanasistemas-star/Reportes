@@ -806,7 +806,9 @@ class MonthlyReportController extends Controller
         // Periodo B inválido (de otro tipo, igual a A o inexistente, p. ej. un enlace a un
         // comparativo heredado «mes vs bimestre»): se usa el periodo anterior del MISMO tipo
         // que A con radiografía, en lugar de dejar la pantalla vacía.
-        $typeOf = fn (?int $id) => $id ? ($allPeriods->firstWhere('id', $id)['type'] ?? null) : null;
+        // El tipo se lee de la BD (no de la lista visible del usuario): un periodo ajeno NO
+        // debe tomarse como «inválido» y reemplazarse, porque eso saltaría el 403 de abajo.
+        $typeOf = fn (?int $id) => $id ? Period::query()->whereKey($id)->value('type') : null;
         if ($periodAId && ($periodBId === $periodAId || $typeOf($periodBId) !== $typeOf($periodAId))) {
             $sameType = $allPeriods->where('type', $typeOf($periodAId))->where('has_snapshot', true)->values();
             $idx = $sameType->search(fn ($p) => (int) $p['id'] === $periodAId);
