@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Okr\AlertController;
+use App\Http\Controllers\Okr\BranchReconciliationController;
 use App\Http\Controllers\Okr\CheckInController;
 use App\Http\Controllers\Okr\CommitmentLetterController;
 use App\Http\Controllers\Okr\DashboardController;
@@ -33,7 +34,7 @@ Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEna
     // se conserva — sigue protegiendo POST /okr y los endpoints de apoyo.
     Route::get('/employees-lookup', [ObjectiveController::class, 'employeesLookup'])->name('employees.lookup');
     // Prioridad 5 (15-oct-2026): conciliación autorizada de sucursal en conflicto (solo okr.admin).
-    Route::post('/branch-reconciliations', [\App\Http\Controllers\Okr\BranchReconciliationController::class, 'store'])->name('branch-reconciliations.store');
+    Route::post('/branch-reconciliations', [BranchReconciliationController::class, 'store'])->name('branch-reconciliations.store');
     Route::get('/objectives-lookup', [ObjectiveController::class, 'objectivesLookup'])->name('objectives.lookup');
     Route::get('/baseline-preview', [ObjectiveController::class, 'baselinePreview'])->middleware('permission:okr,crear')->name('baseline-preview');
     Route::post('/', [ObjectiveController::class, 'store'])->middleware('permission:okr,crear')->name('store');
@@ -86,8 +87,10 @@ Route::prefix('okr')->name('okr.')->middleware(['module:okr', EnsureOkrAccessEna
 
     Route::post('/{objective}/key-results', [KeyResultController::class, 'store'])->middleware('permission:okr,configurar_kr')->name('key-results.store');
     Route::post('/{objective}/key-results/complete', [KeyResultController::class, 'complete'])->middleware('permission:okr,configurar_kr')->name('key-results.complete');
-    Route::put('/{objective}/key-results/{keyResult}', [KeyResultController::class, 'update'])->middleware('permission:okr,configurar_kr')->name('key-results.update');
-    Route::delete('/{objective}/key-results/{keyResult}', [KeyResultController::class, 'destroy'])->middleware('permission:okr,configurar_kr')->name('key-results.destroy');
+    // scopeBindings: el KR debe pertenecer al OKR de la URL (si no, 404). Evita editar/borrar
+    // el KR de otro objetivo cambiando el id en la ruta.
+    Route::put('/{objective}/key-results/{keyResult}', [KeyResultController::class, 'update'])->middleware('permission:okr,configurar_kr')->name('key-results.update')->scopeBindings();
+    Route::delete('/{objective}/key-results/{keyResult}', [KeyResultController::class, 'destroy'])->middleware('permission:okr,configurar_kr')->name('key-results.destroy')->scopeBindings();
 
     Route::post('/{objective}/check-ins', [CheckInController::class, 'store'])->middleware('permission:okr,registrar_seguimiento')->name('check-ins.store');
     Route::post('/{objective}/evidences', [EvidenceController::class, 'store'])->middleware('permission:okr,cargar_evidencia')->name('evidences.store');
