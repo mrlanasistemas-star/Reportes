@@ -1,10 +1,16 @@
 <script setup lang="ts">
+/**
+ * Configuración > Apariencia. Permite elegir tema claro, oscuro o del sistema
+ * mediante AppearanceTabs (la preferencia se guarda con useAppearance).
+ * Se envuelve en AppLayout + settings/Layout desde app.ts.
+ */
 import { Head } from '@inertiajs/vue3';
 import { Palette } from 'lucide-vue-next';
 import AppearanceTabs from '@/components/AppearanceTabs.vue';
 import SettingsCard from '@/components/settings/SettingsCard.vue';
 import { edit } from '@/routes/appearance';
 
+/** Migas de pan que recibe el layout. */
 defineOptions({
     layout: {
         breadcrumbs: [

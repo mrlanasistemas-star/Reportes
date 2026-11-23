@@ -1,6 +1,17 @@
 <script setup lang="ts">
+/**
+ * Configuración > Seguridad (Settings/SecurityController@edit).
+ * - Cambiar contraseña: <Form> a SecurityController.update.
+ * - Verificación en dos pasos: activar (two-factor.enable), configurar con
+ *   TwoFactorSetupModal, ver códigos de recuperación y desactivar (two-factor.disable).
+ */
 import { Form, Head } from '@inertiajs/vue3';
-import { CheckCircle2, KeyRound, ShieldCheck, Smartphone } from 'lucide-vue-next';
+import {
+    CheckCircle2,
+    KeyRound,
+    ShieldCheck,
+    Smartphone,
+} from 'lucide-vue-next';
 import { onUnmounted, ref } from 'vue';
 import SecurityController from '@/actions/App/Http/Controllers/Settings/SecurityController';
 import InputError from '@/components/InputError.vue';
@@ -14,6 +25,12 @@ import { useTwoFactorAuth } from '@/composables/useTwoFactorAuth';
 import { edit } from '@/routes/security';
 import { disable, enable } from '@/routes/two-factor';
 
+/**
+ * Props desde SecurityController:
+ * - canManageTwoFactor: si la función 2FA está habilitada para este usuario.
+ * - requiresConfirmation: si Fortify exige confirmar el código al activar.
+ * - twoFactorEnabled: si el usuario ya tiene 2FA activa.
+ */
 type Props = {
     canManageTwoFactor?: boolean;
     requiresConfirmation?: boolean;
@@ -26,6 +43,7 @@ withDefaults(defineProps<Props>(), {
     twoFactorEnabled: false,
 });
 
+/** Migas de pan que recibe el layout. */
 defineOptions({
     layout: {
         breadcrumbs: [
@@ -37,9 +55,12 @@ defineOptions({
     },
 });
 
+/** Estado compartido de configuración 2FA (QR, llave, códigos). */
 const { hasSetupData, clearTwoFactorAuthData } = useTwoFactorAuth();
+/** Controla la visibilidad del modal de configuración 2FA. */
 const showSetupModal = ref<boolean>(false);
 
+/** Al salir de la página se borran QR/llave/códigos de memoria por seguridad. */
 onUnmounted(() => clearTwoFactorAuthData());
 </script>
 
@@ -48,11 +69,16 @@ onUnmounted(() => clearTwoFactorAuthData());
 
     <h2 class="sr-only">Configuración de seguridad</h2>
 
+    <!-- Tarjeta: cambiar contraseña -->
     <Form
         v-bind="SecurityController.update.form()"
         :options="{ preserveScroll: true }"
         reset-on-success
-        :reset-on-error="['password', 'password_confirmation', 'current_password']"
+        :reset-on-error="[
+            'password',
+            'password_confirmation',
+            'current_password',
+        ]"
         v-slot="{ errors, processing, recentlySuccessful }"
     >
         <SettingsCard
@@ -61,7 +87,9 @@ onUnmounted(() => clearTwoFactorAuthData());
             description="Usa una contraseña larga y que no uses en otros sitios. Al guardarla seguirás con la sesión abierta."
         >
             <div class="grid gap-5 md:grid-cols-2">
-                <div class="grid content-start gap-2 md:col-span-2 md:max-w-[calc(50%-0.625rem)]">
+                <div
+                    class="grid content-start gap-2 md:col-span-2 md:max-w-[calc(50%-0.625rem)]"
+                >
                     <Label for="current_password">Contraseña actual</Label>
                     <PasswordInput
                         id="current_password"
@@ -88,7 +116,9 @@ onUnmounted(() => clearTwoFactorAuthData());
                 </div>
 
                 <div class="grid content-start gap-2">
-                    <Label for="password_confirmation">Confirmar nueva contraseña</Label>
+                    <Label for="password_confirmation"
+                        >Confirmar nueva contraseña</Label
+                    >
                     <PasswordInput
                         id="password_confirmation"
                         name="password_confirmation"
@@ -108,18 +138,27 @@ onUnmounted(() => clearTwoFactorAuthData());
                     leave-active-class="transition ease-in-out duration-300"
                     leave-to-class="opacity-0"
                 >
-                    <p v-show="recentlySuccessful" role="status" class="flex items-center gap-1.5 text-sm font-medium text-success">
+                    <p
+                        v-show="recentlySuccessful"
+                        role="status"
+                        class="flex items-center gap-1.5 text-sm font-medium text-success"
+                    >
                         <CheckCircle2 class="size-4" aria-hidden="true" />
                         Contraseña actualizada.
                     </p>
                 </Transition>
-                <Button type="submit" :disabled="processing" data-test="update-password-button">
+                <Button
+                    type="submit"
+                    :disabled="processing"
+                    data-test="update-password-button"
+                >
                     {{ processing ? 'Guardando…' : 'Guardar contraseña' }}
                 </Button>
             </template>
         </SettingsCard>
     </Form>
 
+    <!-- Tarjeta: verificación en dos pasos -->
     <SettingsCard
         v-if="canManageTwoFactor"
         :icon="Smartphone"
@@ -127,7 +166,12 @@ onUnmounted(() => clearTwoFactorAuthData());
         description="Además de tu contraseña, al iniciar sesión se te pedirá un código de 6 dígitos de una app de autenticación (Google Authenticator, Microsoft Authenticator, etc.)."
     >
         <template #badge>
-            <span :class="['app-pill', twoFactorEnabled ? 'app-pill-success' : 'app-pill-muted']">
+            <span
+                :class="[
+                    'app-pill',
+                    twoFactorEnabled ? 'app-pill-success' : 'app-pill-muted',
+                ]"
+            >
                 {{ twoFactorEnabled ? 'Activada' : 'Desactivada' }}
             </span>
         </template>
@@ -135,7 +179,10 @@ onUnmounted(() => clearTwoFactorAuthData());
         <template v-if="!twoFactorEnabled">
             <div class="app-banner app-banner-info">
                 <ShieldCheck aria-hidden="true" />
-                <p>Recomendado para administradores: si alguien obtiene tu contraseña, no podrá entrar sin el código de tu teléfono.</p>
+                <p>
+                    Recomendado para administradores: si alguien obtiene tu
+                    contraseña, no podrá entrar sin el código de tu teléfono.
+                </p>
             </div>
 
             <div class="mt-4">
@@ -144,10 +191,19 @@ onUnmounted(() => clearTwoFactorAuthData());
                     Continuar configuración
                 </Button>
 
-                <Form v-else v-bind="enable.form()" @success="showSetupModal = true" #default="{ processing }">
+                <Form
+                    v-else
+                    v-bind="enable.form()"
+                    @success="showSetupModal = true"
+                    #default="{ processing }"
+                >
                     <Button type="submit" :disabled="processing">
                         <ShieldCheck class="size-4" />
-                        {{ processing ? 'Preparando…' : 'Activar verificación en dos pasos' }}
+                        {{
+                            processing
+                                ? 'Preparando…'
+                                : 'Activar verificación en dos pasos'
+                        }}
                     </Button>
                 </Form>
             </div>
@@ -156,20 +212,33 @@ onUnmounted(() => clearTwoFactorAuthData());
         <template v-else>
             <div class="app-banner app-banner-success">
                 <CheckCircle2 aria-hidden="true" />
-                <p>Tu cuenta pide un código de tu app de autenticación cada vez que inicias sesión.</p>
+                <p>
+                    Tu cuenta pide un código de tu app de autenticación cada vez
+                    que inicias sesión.
+                </p>
             </div>
 
             <div class="mt-5">
                 <TwoFactorRecoveryCodes />
             </div>
 
-            <div class="app-danger-zone mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div
+                class="app-danger-zone mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+            >
                 <div>
-                    <p class="text-sm font-semibold text-foreground">Desactivar verificación en dos pasos</p>
-                    <p class="app-help">Tu cuenta volverá a protegerse solo con la contraseña.</p>
+                    <p class="text-sm font-semibold text-foreground">
+                        Desactivar verificación en dos pasos
+                    </p>
+                    <p class="app-help">
+                        Tu cuenta volverá a protegerse solo con la contraseña.
+                    </p>
                 </div>
                 <Form v-bind="disable.form()" #default="{ processing }">
-                    <Button variant="destructive" type="submit" :disabled="processing">
+                    <Button
+                        variant="destructive"
+                        type="submit"
+                        :disabled="processing"
+                    >
                         {{ processing ? 'Desactivando…' : 'Desactivar' }}
                     </Button>
                 </Form>

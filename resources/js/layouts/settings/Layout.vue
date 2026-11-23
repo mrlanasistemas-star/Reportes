@@ -1,10 +1,16 @@
 <script setup lang="ts">
+/**
+ * Layout de las páginas de Configuración (settings/*). app.ts lo anida dentro
+ * de AppLayout. Muestra encabezado, menú de secciones (lateral en escritorio,
+ * pestañas horizontales en móvil) y el contenido de la sección en el slot.
+ */
 import { Link } from '@inertiajs/vue3';
-import { Palette, ShieldCheck, UserRound } from 'lucide-vue-next';
+import { BellRing, Palette, ShieldCheck, UserRound } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import { useCurrentUrl } from '@/composables/useCurrentUrl';
 import { toUrl } from '@/lib/utils';
 import { edit as editAppearance } from '@/routes/appearance';
+import { edit as editNotifications } from '@/routes/notification-settings';
 import { edit as editProfile } from '@/routes/profile';
 import { edit as editSecurity } from '@/routes/security';
 
@@ -12,34 +18,78 @@ import type { NavItem } from '@/types';
 // Fase 8.12 (15-oct-2026): presentación propia — encabezado de página, menú
 // lateral con icono + descripción (pestañas horizontales en móvil) y el
 // contenido directo, sin tres tarjetas anidadas una dentro de otra.
+/** Elemento del menú de configuración: NavItem + descripción y componente de icono. */
 type SettingsNavItem = NavItem & { description: string; iconCmp: Component };
 
+/** Secciones de configuración con sus rutas Wayfinder (perfil, seguridad, apariencia, notificaciones). */
 const sidebarNavItems: SettingsNavItem[] = [
-    { title: 'Perfil', description: 'Nombre y correo', href: editProfile(), iconCmp: UserRound },
-    { title: 'Seguridad', description: 'Contraseña y verificación en dos pasos', href: editSecurity(), iconCmp: ShieldCheck },
-    { title: 'Apariencia', description: 'Tema claro u oscuro', href: editAppearance(), iconCmp: Palette },
+    {
+        title: 'Perfil',
+        description: 'Nombre y correo',
+        href: editProfile(),
+        iconCmp: UserRound,
+    },
+    {
+        title: 'Seguridad',
+        description: 'Contraseña y verificación en dos pasos',
+        href: editSecurity(),
+        iconCmp: ShieldCheck,
+    },
+    {
+        title: 'Apariencia',
+        description: 'Tema claro u oscuro',
+        href: editAppearance(),
+        iconCmp: Palette,
+    },
+    {
+        title: 'Notificaciones',
+        description: 'Avisos en el teléfono y por correo',
+        href: editNotifications(),
+        iconCmp: BellRing,
+    },
 ];
 
+/** Marca como activa la sección cuya URL coincide (o es padre) de la actual. */
 const { isCurrentOrParentUrl } = useCurrentUrl();
 </script>
 
 <template>
-    <div class="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+    <div
+        class="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8"
+    >
+        <!-- Encabezado de la página de configuración -->
         <header class="mb-6 lg:mb-8">
             <p class="app-kicker">Tu cuenta</p>
             <h1 class="app-title mt-1">Configuración</h1>
             <p class="app-subtitle mt-1 max-w-3xl">
-                Administra tu información, la seguridad de tu acceso y cómo se ve el sistema. Estos cambios solo afectan a tu usuario.
+                Administra tu información, la seguridad de tu acceso y cómo se
+                ve el sistema. Estos cambios solo afectan a tu usuario.
             </p>
         </header>
 
-        <div class="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[280px_minmax(0,1fr)] lg:items-start lg:gap-10">
-            <nav aria-label="Secciones de configuración" class="min-w-0 lg:sticky lg:top-6">
-                <ul class="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:flex-col lg:gap-1 lg:overflow-visible lg:px-0 lg:pb-0">
-                    <li v-for="item in sidebarNavItems" :key="toUrl(item.href)" class="shrink-0">
+        <div
+            class="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[280px_minmax(0,1fr)] lg:items-start lg:gap-10"
+        >
+            <!-- Menú de secciones -->
+            <nav
+                aria-label="Secciones de configuración"
+                class="min-w-0 lg:sticky lg:top-6"
+            >
+                <ul
+                    class="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:flex-col lg:gap-1 lg:overflow-visible lg:px-0 lg:pb-0"
+                >
+                    <li
+                        v-for="item in sidebarNavItems"
+                        :key="toUrl(item.href)"
+                        class="shrink-0"
+                    >
                         <Link
                             :href="item.href"
-                            :aria-current="isCurrentOrParentUrl(item.href) ? 'page' : undefined"
+                            :aria-current="
+                                isCurrentOrParentUrl(item.href)
+                                    ? 'page'
+                                    : undefined
+                            "
                             :class="[
                                 'group flex items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition-colors',
                                 isCurrentOrParentUrl(item.href)
@@ -50,14 +100,26 @@ const { isCurrentOrParentUrl } = useCurrentUrl();
                             <span
                                 :class="[
                                     'flex size-8 shrink-0 items-center justify-center rounded-lg border',
-                                    isCurrentOrParentUrl(item.href) ? 'border-primary/20 bg-card text-primary' : 'bg-card',
+                                    isCurrentOrParentUrl(item.href)
+                                        ? 'border-primary/20 bg-card text-primary'
+                                        : 'bg-card',
                                 ]"
                             >
-                                <component :is="item.iconCmp" class="size-4" aria-hidden="true" />
+                                <component
+                                    :is="item.iconCmp"
+                                    class="size-4"
+                                    aria-hidden="true"
+                                />
                             </span>
                             <span class="min-w-0">
-                                <span class="block font-semibold whitespace-nowrap">{{ item.title }}</span>
-                                <span class="hidden text-xs text-muted-foreground lg:block">{{ item.description }}</span>
+                                <span
+                                    class="block font-semibold whitespace-nowrap"
+                                    >{{ item.title }}</span
+                                >
+                                <span
+                                    class="hidden text-xs text-muted-foreground lg:block"
+                                    >{{ item.description }}</span
+                                >
                             </span>
                         </Link>
                     </li>

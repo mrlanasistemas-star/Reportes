@@ -1,4 +1,17 @@
 <script setup lang="ts">
+/**
+ * SettingsCard — tarjeta de sección de las páginas de Configuración.
+ *
+ * Se usa en settings/Profile, Security, Appearance y Notifications.
+ *
+ * Props:
+ * - title: título de la sección.
+ * - description: texto secundario (opcional).
+ * - icon: icono del encabezado (opcional).
+ * - tone: 'default' o 'danger' (borde e icono en rojo para zonas de riesgo).
+ *
+ * Slots: default (contenido), badge (a la derecha del título), footer (acción principal).
+ */
 import type { Component } from 'vue';
 
 // Fase 8.12: tarjeta de sección de Configuración — encabezado con icono,
@@ -26,14 +39,21 @@ withDefaults(
                 v-if="icon"
                 :class="[
                     'flex size-9 shrink-0 items-center justify-center rounded-lg border',
-                    tone === 'danger' ? 'border-danger-border bg-danger-soft text-danger' : 'bg-accent text-primary',
+                    tone === 'danger'
+                        ? 'border-danger-border bg-danger-soft text-danger'
+                        : 'bg-accent text-primary',
                 ]"
             >
                 <component :is="icon" class="size-4" aria-hidden="true" />
             </span>
             <div class="min-w-0 flex-1">
                 <h2 class="app-section-title">{{ title }}</h2>
-                <p v-if="description" class="mt-0.5 text-sm text-muted-foreground">{{ description }}</p>
+                <p
+                    v-if="description"
+                    class="mt-0.5 text-sm text-muted-foreground"
+                >
+                    {{ description }}
+                </p>
             </div>
             <slot name="badge" />
         </header>
@@ -42,7 +62,10 @@ withDefaults(
             <slot />
         </div>
 
-        <footer v-if="$slots.footer" class="flex flex-wrap items-center justify-end gap-3 border-t bg-muted/40 px-5 py-3 sm:px-6">
+        <footer
+            v-if="$slots.footer"
+            class="flex flex-wrap items-center justify-end gap-3 border-t bg-muted/40 px-5 py-3 sm:px-6"
+        >
             <slot name="footer" />
         </footer>
     </section>

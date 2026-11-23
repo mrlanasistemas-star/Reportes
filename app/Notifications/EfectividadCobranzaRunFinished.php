@@ -15,13 +15,31 @@ use Illuminate\Notifications\Notification;
  */
 class EfectividadCobranzaRunFinished extends Notification
 {
+    /**
+     * @param  EfectividadCobranzaRun  $run  Ejecución de Efectividad que terminó (éxito, bloqueo, cancelación o error).
+     */
     public function __construct(public readonly EfectividadCobranzaRun $run) {}
 
+    /**
+     * Canales de entrega: solo `database` (campana).
+     *
+     * @param  object  $notifiable  Usuario que recibe la notificación.
+     * @return array<int,string> Lista de canales.
+     */
     public function via(object $notifiable): array
     {
         return ['database'];
     }
 
+    /**
+     * Datos que se guardan en `notifications.data`: tipo (success/blocked/cancelled/failed)
+     * según el estatus de la ejecución, título en español, periodo, sucursal
+     * ('General' si no hay) y URL relativa al detalle de la ejecución.
+     * Efecto secundario: carga las relaciones period y branch si faltan.
+     *
+     * @param  object  $notifiable  Usuario que recibe la notificación.
+     * @return array<string,mixed> Carga útil de la notificación.
+     */
     public function toArray(object $notifiable): array
     {
         $run = $this->run->loadMissing(['period', 'branch']);

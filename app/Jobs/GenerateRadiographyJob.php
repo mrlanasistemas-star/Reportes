@@ -10,25 +10,53 @@ use App\Models\PeriodRadiographyExport;
 use App\Models\PeriodRadiographyRun;
 use App\Models\PeriodSummary;
 use App\Models\User;
+use App\Models\UserNotificationPreference;
 use App\Services\AttributionRequirementService;
 use App\Services\EmployeeBranchAutoMatchService;
 use App\Services\ExpenseObservationAttributionService;
+use App\Services\ExpenseReview\ExpenseReviewService;
 use App\Services\FinanciamientoMotosAssignmentService;
 use App\Services\GastosExcelBranchResolverService;
+use App\Services\Notifications\ReporteriaNotificationService;
+use App\Services\Pdf\PdfRenderException;
 use App\Services\PeriodConsolidationService;
 use App\Services\PeriodDerivedDataCleaner;
 use App\Services\PeriodRadiographyService;
-use App\Services\Radiography\RadiographySnapshotBuilder;
 use App\Services\RadiografiaExportService;
+use App\Services\Radiography\RadiographySnapshotBuilder;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 
+/**
+ * Job en cola que genera la Radiografía financiera de un periodo (Excel + PDF).
+ *
+ * Lo despachan MonthlyReportController, ReportUploadController, DashboardController
+ * y el comando GenerarRadiografiaCommand. Se ejecuta por identidad de reporte
+ * (periodo + tipo simple/comparativo + alcance general/sucursal/gestor), de modo
+ * que un reporte simple y uno comparativo del mismo periodo coexisten.
+ *
+ * Flujo (el avance se guarda en period_radiography_runs.metadata):
+ *  1. Calcula el resumen del periodo (PeriodRadiographyService::generate).
+ *  2. Auto-asigna sucursal a empleados que aún no la tienen.
+ *  3. Resuelve sucursal de gastos Excel de Lendus y Financiamiento de Motos (no bloqueante),
+ *     atribuye OPEX a colaboradores por Observación/Justificación (no bloqueante) y
+ *     aplica la revisión manual de gastos.
+ *  4. Consolida el resumen por empleado (fact_period_employee_summary).
+ *  5-6. Exporta Excel y PDF.
+ *  7. Registra las exportaciones, marca success y SOLO ENTONCES borra la versión
+ *     anterior de la misma identidad (un intento fallido nunca destruye el último éxito).
+ * Después precalienta la caché del dashboard, notifica y registra tiempos por etapa.
+ *
+ * Cancelación: todas las transiciones de estado son compare-and-set; si el usuario
+ * cancela, el run queda `cancelled` sin correo de error.
+ */
 class GenerateRadiographyJob implements ShouldQueue
 {
     use Dispatchable;
@@ -37,29 +65,60 @@ class GenerateRadiographyJob implements ShouldQueue
     use SerializesModels;
 
     public int $timeout = 1800;
+
     public int $tries = 3;
+
     public int $maxExceptions = 1;
 
+    /**
+     * @param  int  $periodId  Periodo a generar.
+     * @param  int|null  $userId  Usuario que lo solicitó (correo y notificación).
+     * @param  int|null  $runId  Run ya creado por el controlador; si es null se crea uno nuevo.
+     * @param  array  $config  Configuración del reporte: report_type, scope, compare_period_id, branch_id, employee_id, etc.
+     */
     public function __construct(
         public int $periodId,
         public ?int $userId = null,
         public ?int $runId = null,
         public array $config = [],
-    ) {
-    }
+    ) {}
 
     /**
      * Evita ejecución duplicada del mismo periodo si el driver de cola libera el
      * job antes de que termine (retry_after mal configurado, worker duplicado,
      * etc.) — sin este guard, dos ejecuciones concurrentes pueden pisarse los
      * archivos/registros generados y dejar un status="failed" falso aunque la
-     * otra ejecución sí haya terminado bien.
+     * otra ejecución sí haya terminado bien. El candado expira a los 30 min.
+     *
+     * @return array<int,object> Middleware WithoutOverlapping por periodo.
      */
     public function middleware(): array
     {
-        return [(new WithoutOverlapping('generate-radiography-period-' . $this->periodId))->expireAfter(1800)];
+        return [(new WithoutOverlapping('generate-radiography-period-'.$this->periodId))->expireAfter(1800)];
     }
 
+    /**
+     * Ejecuta el flujo completo descrito en la clase.
+     * Efectos: escribe period_summaries, employee_branch_assignments, asignaciones de
+     * gastos, fact_period_employee_summary, period_radiography_runs/exports e
+     * incidencias; genera archivos Excel/PDF; borra la versión anterior de la
+     * identidad; despacha WarmDashboardTrendCacheJob; envía notificación y correo.
+     *
+     * Lanza ModelNotFoundException (findOrFail) si el periodo no existe.
+     *
+     * @param  PeriodRadiographyService  $radiographyService  Calcula el resumen del periodo.
+     * @param  RadiografiaExportService  $exportService  Genera Excel y PDF.
+     * @param  PeriodConsolidationService  $consolidationService  Consolida el resumen por empleado.
+     * @param  PeriodDerivedDataCleaner  $cleaner  Borra reportes previos de la misma identidad.
+     * @param  EmployeeBranchAutoMatchService  $branchAutoMatch  Auto-asignación empleado → sucursal.
+     * @param  FinanciamientoMotosAssignmentService  $motosAssignment  Vincula Financiamiento de Motos con empleado/sucursal.
+     * @param  GastosExcelBranchResolverService  $gastosExcelResolver  Empareja gastos Excel de Lendus contra el PDF.
+     * @param  RadiographySnapshotBuilder  $snapshotBuilder  Se usa para resolver los periodos de datos (semanas base).
+     * @param  ExpenseObservationAttributionService  $expenseAttribution  Atribuye OPEX a colaboradores.
+     * @param  AttributionRequirementService  $attributionRequirement  Decide si la atribución es obligatoria.
+     *
+     * @throws \Throwable Relanza fallos reales de generación (tras marcar el run como failed y avisar).
+     */
     public function handle(
         PeriodRadiographyService $radiographyService,
         RadiografiaExportService $exportService,
@@ -93,36 +152,36 @@ class GenerateRadiographyJob implements ShouldQueue
         // y se persiste en el run/exports para que limpieza, listado y descarga
         // resuelvan siempre por identidad, nunca solo por period_id.
         $reportType = $this->config['report_type'] ?? 'simple';
-        $scope      = $this->config['scope'] ?? 'general';
-        $identity   = [
-            'period_id'            => $period->id,
-            'report_type'          => $reportType,
-            'scope'                => $scope,
-            'comparison_period_id' => !empty($this->config['compare_period_id']) ? (int) $this->config['compare_period_id'] : null,
-            'branch_id'            => !empty($this->config['branch_id']) ? (int) $this->config['branch_id'] : null,
-            'employee_id'          => !empty($this->config['employee_id']) ? (int) $this->config['employee_id'] : null,
+        $scope = $this->config['scope'] ?? 'general';
+        $identity = [
+            'period_id' => $period->id,
+            'report_type' => $reportType,
+            'scope' => $scope,
+            'comparison_period_id' => ! empty($this->config['compare_period_id']) ? (int) $this->config['compare_period_id'] : null,
+            'branch_id' => ! empty($this->config['branch_id']) ? (int) $this->config['branch_id'] : null,
+            'employee_id' => ! empty($this->config['employee_id']) ? (int) $this->config['employee_id'] : null,
         ];
         $isComparativeOrScoped = $reportType !== 'simple' || $scope !== 'general';
 
-        if (!$run) {
+        if (! $run) {
             $run = PeriodRadiographyRun::query()->create(array_merge($identity, [
-                'status'     => 'queued',
-                'queued_at'  => now(),
+                'status' => 'queued',
+                'queued_at' => now(),
                 'created_by' => $this->userId,
-                'log'        => 'Radiografía en cola.',
-                'metadata'   => $this->config ? ['config' => $this->config] : null,
+                'log' => 'Radiografía en cola.',
+                'metadata' => $this->config ? ['config' => $this->config] : null,
             ]));
         }
 
-        // Mark as running and record start time — also (re)persist identity in case
-        // this run was created earlier (by the controller) without these columns.
+        // Marca como running y registra la hora de inicio — también (re)persiste la identidad por si
+        // este run se creó antes (en el controlador) sin estas columnas.
         // Fase 10 — transición ATÓMICA a running (compare-and-set): un run que el
         // usuario canceló mientras estaba en cola NUNCA se "resucita" (antes este
         // update lo pasaba a running y terminaba como success). Reintentos de un run
         // fallido siguen funcionando igual que antes.
         $claimed = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', '!=', 'cancelled')->update(array_merge($identity, [
-            'status'      => 'running',
-            'started_at'  => $run->started_at ?: now(),
+            'status' => 'running',
+            'started_at' => $run->started_at ?: now(),
             'finished_at' => null,
         ]));
         if ($claimed === 0) {
@@ -134,7 +193,7 @@ class GenerateRadiographyJob implements ShouldQueue
         $this->updateProgress($run, 3, 'Iniciando generación', 'Preparando configuración del reporte.');
 
         try {
-            // ── 1. Generate summary (metrics from Expense/Recovery/Placement/Portfolio) ──
+            // ── 1. Genera el resumen (métricas de Gastos/Recuperación/Colocación/Cartera) ──
             // NO se borra la versión anterior de ESTA MISMA identidad aquí (antes sí se
             // hacía, al principio, antes de intentar nada). PROBLEMA 2/4/5 (auditoría
             // 27-ago-2026): borrar de entrada dejaba el reporte SIN NINGÚN success si esta
@@ -151,8 +210,8 @@ class GenerateRadiographyJob implements ShouldQueue
             $this->updateProgress($run, 48, 'Métricas calculadas', 'Resumen del periodo registrado. Iniciando revisión de asignaciones.');
             $run->update(['period_summary_id' => $summary->id]);
 
-            // ── 3. Verify and refine branch assignments (reads fact tables, does NOT re-import) ──
-            // Skip if every relevant employee already has an EBA — avoids 168×61K-row scan.
+            // ── 3. Verifica y refina asignaciones de sucursal (lee tablas fact, NO re-importa) ──
+            // Se omite si todo empleado relevante ya tiene asignación (EBA) — evita un escaneo de 168×61K filas.
             $this->updateProgress($run, 55, 'Revisando asignaciones de sucursales', 'Verificando y refinando asignaciones automáticas de empleados por cobranza, colocación y cartera.');
             if ($this->shouldRunAutomatch($period->id)) {
                 $branchAutoMatch->handle($period->id, function (int $percent, string $step, string $log) use ($run) {
@@ -162,7 +221,7 @@ class GenerateRadiographyJob implements ShouldQueue
                 $this->updateProgress($run, 66, 'Asignaciones verificadas', 'Todos los empleados ya tienen sucursal — omitiendo auto-asignación.');
             }
 
-            // ── 3b. Resolve gastos Excel de Lendus / Financiamiento de Motos-Cascos →
+            // ── 3b. Resuelve gastos Excel de Lendus / Financiamiento de Motos-Cascos →
             // employee_id/branch_id ──────────────────────────────────────────────────
             // Retoma 21-sep-2026, Parte A: ANTES estos dos pasos lanzaban RuntimeException
             // y detenían TODA la generación (incluso un comparativo GENERAL) si un solo
@@ -183,8 +242,8 @@ class GenerateRadiographyJob implements ShouldQueue
             $this->resolveMotosNonBlocking($motosAssignment, $attributionRequirement, $period, $summary, $dataIds, $reportType, $scope, $run);
 
             // ── 3c. Atribuir OPEX a colaboradores vía Observación/Justificación ────────
-            // NO bloqueante — a diferencia de los pasos anteriores (gastosExcelResolver/
-            // motosAssignment, que SÍ detienen la generación si algo queda sin resolver),
+            // NO bloqueante — igual que los pasos anteriores (gastosExcelResolver/
+            // motosAssignment, que desde el 21-sep-2026 tampoco detienen la generación),
             // aquí "no atribuible"/"ambiguo"/"conflicto" son estados finales VÁLIDOS y
             // esperados (el gasto sigue siendo OPEX general/sucursal igual que antes, solo
             // no se pudo vincular a un colaborador específico) — nunca deben detener la
@@ -196,13 +255,19 @@ class GenerateRadiographyJob implements ShouldQueue
             } catch (\Throwable $attributionException) {
                 Log::warning('GenerateRadiographyJob: no se pudo atribuir OPEX a colaboradores vía Observación/Justificación (el reporte sigue generándose con los gastos sin esa atribución adicional).', [
                     'period_id' => $period->id,
-                    'run_id'    => $run->id,
+                    'run_id' => $run->id,
                     'exception' => get_class($attributionException),
-                    'message'   => $attributionException->getMessage(),
+                    'message' => $attributionException->getMessage(),
                 ]);
             }
 
-            // ── 4. Consolidate employee summaries (populates fact_period_employee_summary) ──
+            // ── 3d. Revisión manual de gastos (opcional) — las decisiones del usuario ganan
+            // sobre la atribución automática de 3b/3c. Sin decisiones: no escribe nada.
+            foreach (array_unique(array_map('intval', $dataIds)) as $reviewPeriodId) {
+                app(ExpenseReviewService::class)->applyForPeriodSafely($reviewPeriodId);
+            }
+
+            // ── 4. Consolida resúmenes por empleado (llena fact_period_employee_summary) ──
             $this->updateProgress($run, 68, 'Consolidando resumen de empleados', 'Calculando totales de nómina, percepciones y deducciones por persona y sucursal.');
             $consolidationService->consolidate($period);
 
@@ -210,7 +275,7 @@ class GenerateRadiographyJob implements ShouldQueue
             // observabilidad — datos ya listos para exportar).
             $tSnapshotReady = microtime(true);
 
-            // ── 5. Export Excel (from scratch, no template) ──
+            // ── 5. Exporta Excel (desde cero, sin plantilla) ──
             // Comparativo/por sucursal/por gestor usan el builder con config (que SÍ
             // arma un archivo distinto), nunca el simple — este era el bug raíz por
             // el que un comparativo terminaba descargando el reporte simple.
@@ -221,7 +286,7 @@ class GenerateRadiographyJob implements ShouldQueue
                 : $exportService->export($period, $this->config);
             $tExcelEnd = microtime(true);
 
-            // ── 6. Export PDF (via Blade + Browsershot/Puppeteer/Chrome) ──
+            // ── 6. Exporta PDF (Blade + Browsershot/Puppeteer/Chrome) ──
             $this->updateProgress($run, 90, 'Generando PDF', 'Renderizando el reporte en formato PDF.');
             $tPdfStart = microtime(true);
             $pdfPath = $isComparativeOrScoped
@@ -237,34 +302,34 @@ class GenerateRadiographyJob implements ShouldQueue
             // fallido y notifica por correo — este es el único caso que debe
             // producir un correo de error.
             Log::error('GenerateRadiographyJob falló.', [
-                'period_id'  => $period->id,
-                'run_id'     => $run->id,
-                'exception'  => get_class($exception),
-                'message'    => $exception->getMessage(),
-                'file'       => $exception->getFile(),
-                'line'       => $exception->getLine(),
-                'trace'      => $exception->getTraceAsString(),
+                'period_id' => $period->id,
+                'run_id' => $run->id,
+                'exception' => get_class($exception),
+                'message' => $exception->getMessage(),
+                'file' => $exception->getFile(),
+                'line' => $exception->getLine(),
+                'trace' => $exception->getTraceAsString(),
             ]);
 
             $publicError = $this->publicErrorMessage($exception);
-            $errorCode   = $this->publicErrorCode($exception);
+            $errorCode = $this->publicErrorCode($exception);
 
             // PROBLEMA 7: metadata equivalente a error_code/error_message — el mensaje
             // genérico ya no es lo único disponible para la UI; error_code permite
             // mostrar/clasificar el fallo sin adivinar a partir de texto libre.
             $errMeta = array_merge(is_array($run->metadata) ? $run->metadata : [], [
                 'current_step' => 'Error',
-                'error_code'   => $errorCode,
+                'error_code' => $errorCode,
             ]);
 
             // Fase 10 — compare-and-set: si el usuario canceló mientras tanto, el run
             // se queda cancelado (sin correo de error ni reintento).
             $markedFailed = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', 'running')->update([
-                'status'        => 'failed',
-                'finished_at'   => now(),
-                'log'           => $publicError,
+                'status' => 'failed',
+                'finished_at' => now(),
+                'log' => $publicError,
                 'error_message' => $publicError,
-                'metadata'      => json_encode($errMeta),
+                'metadata' => json_encode($errMeta),
             ]);
             if ($markedFailed === 0) {
                 Log::info('GenerateRadiographyJob: el run fue cancelado; se omite la marca de error.', ['run_id' => $run->id]);
@@ -299,43 +364,43 @@ class GenerateRadiographyJob implements ShouldQueue
             if ($summary) {
                 PeriodRadiographyExport::query()->create([
                     'period_summary_id' => $summary->id,
-                    'run_id'            => $run->id,
-                    'export_path'       => $path,
-                    'file_type'         => 'excel',
-                    'template_version'  => config('app.version'),
-                    'metadata'          => ['period_id' => $period->id, 'period_label' => $period->label, 'config' => $this->config],
-                    'exported_at'       => now(),
-                    'exported_by'       => $this->userId,
+                    'run_id' => $run->id,
+                    'export_path' => $path,
+                    'file_type' => 'excel',
+                    'template_version' => config('app.version'),
+                    'metadata' => ['period_id' => $period->id, 'period_label' => $period->label, 'config' => $this->config],
+                    'exported_at' => now(),
+                    'exported_by' => $this->userId,
                 ]);
 
                 PeriodRadiographyExport::query()->create([
                     'period_summary_id' => $summary->id,
-                    'run_id'            => $run->id,
-                    'export_path'       => $pdfPath,
-                    'file_type'         => 'pdf',
-                    'template_version'  => config('app.version'),
-                    'metadata'          => ['period_id' => $period->id, 'period_label' => $period->label, 'config' => $this->config],
-                    'exported_at'       => now(),
-                    'exported_by'       => $this->userId,
+                    'run_id' => $run->id,
+                    'export_path' => $pdfPath,
+                    'file_type' => 'pdf',
+                    'template_version' => config('app.version'),
+                    'metadata' => ['period_id' => $period->id, 'period_label' => $period->label, 'config' => $this->config],
+                    'exported_at' => now(),
+                    'exported_by' => $this->userId,
                 ]);
             }
 
             $finalMeta = array_merge(is_array($run->metadata) ? $run->metadata : [], [
                 'progress_percent' => 100,
-                'current_step'     => 'Completado',
+                'current_step' => 'Completado',
             ]);
 
             // Fase 10 — compare-and-set: success SOLO si el run sigue en running en el
             // mismo UPDATE. Si el usuario canceló durante el Excel/PDF, se queda
             // cancelado y NO se borra la versión exitosa anterior de esta identidad.
             $markedSuccess = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', 'running')->update([
-                'status'            => 'success',
+                'status' => 'success',
                 'period_summary_id' => $summary?->id,
-                'finished_at'       => now(),
-                'log'               => 'Radiografía generada. Excel y PDF listos para descargar.',
-                'metadata'          => json_encode($finalMeta),
+                'finished_at' => now(),
+                'log' => 'Radiografía generada. Excel y PDF listos para descargar.',
+                'metadata' => json_encode($finalMeta),
                 'output_excel_path' => $path,
-                'output_pdf_path'   => $pdfPath,
+                'output_pdf_path' => $pdfPath,
             ]);
             if ($markedSuccess === 0) {
                 throw new RadiographyGenerationCancelled('Cancelada al terminar.');
@@ -352,19 +417,19 @@ class GenerateRadiographyJob implements ShouldQueue
         } catch (\Throwable $bookkeepingException) {
             Log::error('GenerateRadiographyJob: el Excel/PDF se generaron correctamente pero falló el registro posterior (esto NO debe disparar un correo de error).', [
                 'period_id' => $period->id,
-                'run_id'    => $run->id,
+                'run_id' => $run->id,
                 'exception' => get_class($bookkeepingException),
-                'message'   => $bookkeepingException->getMessage(),
+                'message' => $bookkeepingException->getMessage(),
             ]);
 
             // Los archivos son reales — el run se marca success igual, aunque el
             // registro de exportaciones haya fallado parcialmente.
             $markedSuccess = PeriodRadiographyRun::query()->whereKey($run->id)->where('status', 'running')->update([
-                'status'            => 'success',
-                'finished_at'       => now(),
-                'log'               => 'Radiografía generada. Excel y PDF listos para descargar.',
+                'status' => 'success',
+                'finished_at' => now(),
+                'log' => 'Radiografía generada. Excel y PDF listos para descargar.',
                 'output_excel_path' => $path,
-                'output_pdf_path'   => $pdfPath,
+                'output_pdf_path' => $pdfPath,
             ]);
             if ($markedSuccess === 0) {
                 PeriodRadiographyExport::query()->where('run_id', $run->id)->delete();
@@ -393,10 +458,10 @@ class GenerateRadiographyJob implements ShouldQueue
 
         $this->logPerformance($run, $identity, [
             'snapshot' => $tSnapshotReady - $tStart,
-            'excel'    => $tExcelEnd - $tExcelStart,
-            'pdf'      => $tPdfEnd - $tPdfStart,
-            'mail'     => $tMailEnd - $tMailStart,
-            'total'    => $tMailEnd - $tStart,
+            'excel' => $tExcelEnd - $tExcelStart,
+            'pdf' => $tPdfEnd - $tPdfStart,
+            'mail' => $tMailEnd - $tMailStart,
+            'total' => $tMailEnd - $tStart,
         ]);
     }
 
@@ -406,19 +471,23 @@ class GenerateRadiographyJob implements ShouldQueue
      * (una línea fácil de grep: "Radiography generation performance") como en
      * run.metadata['timings'], para poder comparar entre corridas sin adivinar cuál
      * etapa es el cuello de botella. No participa en ningún cálculo del reporte.
+     *
+     * @param  PeriodRadiographyRun  $run  Run terminado.
+     * @param  array  $identity  Identidad del reporte (periodo, tipo, alcance...).
+     * @param  array  $seconds  Segundos por etapa: snapshot, excel, pdf, mail, total.
      */
     private function logPerformance(PeriodRadiographyRun $run, array $identity, array $seconds): void
     {
         $rounded = array_map(fn ($s) => round($s, 1), $seconds);
 
         Log::info('Radiography generation performance', array_merge($identity, [
-            'run_id'         => $run->id,
-            'snapshot_sec'   => $rounded['snapshot'],
-            'excel_sec'      => $rounded['excel'],
-            'pdf_sec'        => $rounded['pdf'],
-            'mail_sec'       => $rounded['mail'],
-            'total_sec'      => $rounded['total'],
-            'summary'        => sprintf(
+            'run_id' => $run->id,
+            'snapshot_sec' => $rounded['snapshot'],
+            'excel_sec' => $rounded['excel'],
+            'pdf_sec' => $rounded['pdf'],
+            'mail_sec' => $rounded['mail'],
+            'total_sec' => $rounded['total'],
+            'summary' => sprintf(
                 'snapshot: %.1f sec | excel: %.1f sec | pdf: %.1f sec | mail: %.1f sec | total: %.1f sec',
                 $rounded['snapshot'], $rounded['excel'], $rounded['pdf'], $rounded['mail'], $rounded['total']
             ),
@@ -432,8 +501,17 @@ class GenerateRadiographyJob implements ShouldQueue
     }
 
     /**
-     * Update run progress in DB and keep in-memory model in sync.
-     * Merges with existing metadata so prior fields (e.g. config) are preserved.
+     * Actualiza el avance del run en BD y mantiene sincronizado el modelo en memoria.
+     * Combina con la metadata existente para conservar campos previos (p. ej. config).
+     * Es además el punto de cancelación cooperativa: solo escribe si el run sigue en
+     * `running`.
+     *
+     * @param  PeriodRadiographyRun  $run  Run en curso.
+     * @param  int  $percent  Porcentaje de avance (0-100).
+     * @param  string  $step  Nombre corto de la etapa actual.
+     * @param  string  $log  Mensaje descriptivo para la pantalla de progreso.
+     *
+     * @throws RadiographyGenerationCancelled Si el usuario canceló la generación.
      */
     private function updateProgress(PeriodRadiographyRun $run, int $percent, string $step, string $log): void
     {
@@ -452,21 +530,34 @@ class GenerateRadiographyJob implements ShouldQueue
         if ($updated === 0 && PeriodRadiographyRun::query()->whereKey($run->id)->value('status') === 'cancelled') {
             throw new RadiographyGenerationCancelled('Generación cancelada por el usuario.');
         }
-        // keep the in-memory attribute in sync for the next merge
+        // mantiene sincronizado el atributo en memoria para la siguiente combinación
         $run->setAttribute('log', $log);
         $run->setAttribute('metadata', $newMeta);
         $run->syncOriginalAttributes(['log', 'metadata']);
     }
 
+    /**
+     * Envía la notificación de campana/push y, si el usuario tiene correo y su
+     * preferencia de "reporte" lo permite, el correo de éxito (ReportGeneratedMail)
+     * o de error (ReportGenerationFailedMail). El enlace apunta al reporte realmente
+     * generado (vista del run para comparativos/por alcance; vista previa para el
+     * simple general). Nunca lanza: errores de correo solo se registran.
+     *
+     * @param  string  $subject  Asunto descriptivo (se usa solo como referencia).
+     * @param  string  $message  Mensaje para el correo de error.
+     * @param  Period  $period  Periodo generado.
+     * @param  bool  $success  true si la generación fue exitosa.
+     * @param  PeriodRadiographyRun|null  $run  Run del reporte; si es null se busca.
+     */
     private function notifyUser(string $subject, string $message, Period $period, bool $success, ?PeriodRadiographyRun $run = null): void
     {
-        if (!$this->userId) {
+        if (! $this->userId) {
             return;
         }
 
         $user = User::query()->find($this->userId);
 
-        if (!$user || !$user->email) {
+        if (! $user) {
             return;
         }
 
@@ -480,11 +571,19 @@ class GenerateRadiographyJob implements ShouldQueue
             // del reporte simple del periodo (mismo criterio que
             // ReportUploadController::generationProgress()).
             $isSimpleGeneral = ($run?->report_type ?: 'simple') === 'simple' && ($run?->scope ?: 'general') === 'general';
-            $downloadUrl = ($run && !$isSimpleGeneral)
+            $downloadUrl = ($run && ! $isSimpleGeneral)
                 ? route('reportes-mensuales.run-ver', $run->id)
                 : route('reportes-mensuales.preview', $period->id);
 
-            if (!$success) {
+            // 23-nov-2026 — campana + Web Push (en cola; el servicio nunca lanza excepción).
+            $notifications = app(ReporteriaNotificationService::class);
+            $notifications->radiographyFinished($this->userId, $period, $run, $success, $success ? $downloadUrl : null);
+
+            if (! $user->email || ! $notifications->wantsMail($user, UserNotificationPreference::TYPE_REPORTE)) {
+                return;
+            }
+
+            if (! $success) {
                 Mail::to($user->email)->send(
                     new ReportGenerationFailedMail($period, $user, $run, $message)
                 );
@@ -495,9 +594,9 @@ class GenerateRadiographyJob implements ShouldQueue
             }
         } catch (\Throwable $exception) {
             Log::warning('No se pudo enviar correo de Radiografía.', [
-                'user_id'   => $this->userId,
+                'user_id' => $this->userId,
                 'period_id' => $period->id,
-                'error'     => $exception->getMessage(),
+                'error' => $exception->getMessage(),
             ]);
         }
     }
@@ -508,6 +607,11 @@ class GenerateRadiographyJob implements ShouldQueue
      * comentario en el bloque try principal — PROBLEMA 2/4/5). Un fallo aquí es solo
      * housekeeping (deja un archivo viejo huérfano en disco) — nunca debe convertir
      * una generación ya exitosa en un run failed ni disparar un correo de error.
+     *
+     * @param  PeriodDerivedDataCleaner  $cleaner  Servicio de limpieza.
+     * @param  Period  $period  Periodo del reporte.
+     * @param  array  $identity  Identidad del reporte.
+     * @param  int  $currentRunId  Run recién generado (se excluye de la limpieza).
      */
     private function cleanupPreviousIdentityVersion(PeriodDerivedDataCleaner $cleaner, Period $period, array $identity, int $currentRunId): void
     {
@@ -516,10 +620,10 @@ class GenerateRadiographyJob implements ShouldQueue
         } catch (\Throwable $cleanupException) {
             Log::warning('GenerateRadiographyJob: no se pudo limpiar la versión anterior de esta identidad (el reporte nuevo generado sigue siendo válido).', [
                 'period_id' => $period->id,
-                'run_id'    => $currentRunId,
-                'identity'  => $identity,
+                'run_id' => $currentRunId,
+                'identity' => $identity,
                 'exception' => get_class($cleanupException),
-                'message'   => $cleanupException->getMessage(),
+                'message' => $cleanupException->getMessage(),
             ]);
         }
     }
@@ -527,10 +631,14 @@ class GenerateRadiographyJob implements ShouldQueue
     /**
      * PROBLEMA 7: código corto y estable para que la UI clasifique el fallo sin
      * adivinar a partir de texto libre (el stack trace completo solo va al log).
+     * Se deduce de la clase de la excepción o de fragmentos conocidos del mensaje.
+     *
+     * @param  \Throwable  $exception  Error de generación.
+     * @return string Código GENERATION_* o el código propio de PdfRenderException.
      */
     private function publicErrorCode(\Throwable $exception): string
     {
-        if ($exception instanceof \App\Services\Pdf\PdfRenderException) {
+        if ($exception instanceof PdfRenderException) {
             return $exception->code();
         }
 
@@ -566,9 +674,17 @@ class GenerateRadiographyJob implements ShouldQueue
         return 'GENERATION_UNKNOWN_FAILED';
     }
 
+    /**
+     * Traduce el error técnico a un mensaje en español apto para el usuario: Excel,
+     * consulta SQL, o un genérico. Los mensajes de negocio deliberados (faltan
+     * fuentes, fuente no procesada, gastos/motos sin resolver) se muestran tal cual.
+     *
+     * @param  \Throwable  $exception  Error de generación.
+     * @return string Mensaje visible en pantalla y correo.
+     */
     private function publicErrorMessage(\Throwable $exception): string
     {
-        if ($exception instanceof \App\Services\Pdf\PdfRenderException) {
+        if ($exception instanceof PdfRenderException) {
             return $exception->getMessage();
         }
 
@@ -618,9 +734,17 @@ class GenerateRadiographyJob implements ShouldQueue
         return 'No se pudo generar la Radiografía. Revisa las fuentes cargadas, incidencias y configuración del reporte.';
     }
 
+    /**
+     * Indica si hace falta correr la auto-asignación de sucursales: true si algún
+     * empleado con movimientos NOI en el periodo aún no tiene asignación
+     * (evita un escaneo costoso cuando todos ya están asignados).
+     *
+     * @param  int  $periodId  Periodo a revisar.
+     * @return bool true si hay empleados sin asignación.
+     */
     private function shouldRunAutomatch(int $periodId): bool
     {
-        $periodEmployeeIds = \Illuminate\Support\Facades\DB::table('fact_noi_movements')
+        $periodEmployeeIds = DB::table('fact_noi_movements')
             ->where('period_id', $periodId)
             ->whereNotNull('employee_id')
             ->distinct()
@@ -630,7 +754,7 @@ class GenerateRadiographyJob implements ShouldQueue
             return false;
         }
 
-        $assigned = \Illuminate\Support\Facades\DB::table('employee_branch_assignments')
+        $assigned = DB::table('employee_branch_assignments')
             ->where('period_id', $periodId)
             ->whereIn('employee_id', $periodEmployeeIds)
             ->count();
@@ -645,6 +769,17 @@ class GenerateRadiographyJob implements ShouldQueue
      * AttributionRequirementService (hoy: nunca bloquea, ver esa clase) — nunca "continue"
      * silencioso: se deja constancia en PeriodIncident + metadata del run + log, y el monto
      * sigue contando en OPEX/Nómina (viene del PDF, no de este Excel).
+     *
+     * @param  GastosExcelBranchResolverService  $gastosExcelResolver  Resolver de sucursal de gastos Excel.
+     * @param  AttributionRequirementService  $attributionRequirement  Regla de si la atribución es obligatoria.
+     * @param  Period  $period  Periodo del reporte.
+     * @param  PeriodSummary  $summary  Resumen del periodo (para registrar la incidencia).
+     * @param  array  $dataIds  Periodos de datos (semanas base) a revisar.
+     * @param  string  $reportType  Tipo de reporte (simple/comparativo).
+     * @param  string  $scope  Alcance (general/sucursal/gestor).
+     * @param  PeriodRadiographyRun  $run  Run en curso.
+     *
+     * @throws \RuntimeException Solo si la atribución fuera obligatoria para este tipo/alcance (hoy nunca).
      */
     private function resolveGastosExcelNonBlocking(
         GastosExcelBranchResolverService $gastosExcelResolver,
@@ -681,17 +816,17 @@ class GenerateRadiographyJob implements ShouldQueue
             ))->implode("\n");
 
             throw new \RuntimeException(
-                "No se pudo emparejar contra el PDF de Lendus " . count($unresolved) .
-                " registro(s) del Excel de gastos del periodo {$period->label} — generación detenida:\n" . $detail
+                'No se pudo emparejar contra el PDF de Lendus '.count($unresolved).
+                " registro(s) del Excel de gastos del periodo {$period->label} — generación detenida:\n".$detail
             );
         }
 
         $count = count($unresolved);
         $total = round((float) array_sum(array_column($unresolved, 'amount')), 2);
-        $message = "{$count} gasto(s) del Excel de Lendus por \$" . number_format($total, 2) . ' no se pudieron emparejar '
-            . 'automáticamente contra el PDF (monto + fecha). Su monto ya cuenta en OPEX/Nómina y Capital Humano '
-            . '(fuente autorizada: PDF de Lendus, resuelto al 100%) — solo queda pendiente el desglose informativo '
-            . 'por sucursal/gestor derivado del Excel para estos registros.';
+        $message = "{$count} gasto(s) del Excel de Lendus por \$".number_format($total, 2).' no se pudieron emparejar '
+            .'automáticamente contra el PDF (monto + fecha). Su monto ya cuenta en OPEX/Nómina y Capital Humano '
+            .'(fuente autorizada: PDF de Lendus, resuelto al 100%) — solo queda pendiente el desglose informativo '
+            .'por sucursal/gestor derivado del Excel para estos registros.';
 
         Log::warning('GenerateRadiographyJob: gastos Excel sin par en el PDF de Lendus (informativo, no bloqueante).', [
             'period_id' => $period->id, 'run_id' => $run->id, 'count' => $count, 'total' => $total,
@@ -709,6 +844,17 @@ class GenerateRadiographyJob implements ShouldQueue
      * Financiamiento de Motos/Cascos ya cuenta en "Nómina y Capital Humano" vía el PDF de
      * Lendus (ver accumulateNomina() en BranchRadiographyCalculator); esta resolución solo
      * enriquece el desglose informativo por empleado/sucursal del Excel.
+     *
+     * @param  FinanciamientoMotosAssignmentService  $motosAssignment  Servicio de vinculación de motos.
+     * @param  AttributionRequirementService  $attributionRequirement  Regla de si la atribución es obligatoria.
+     * @param  Period  $period  Periodo del reporte.
+     * @param  PeriodSummary  $summary  Resumen del periodo (para la incidencia).
+     * @param  array  $dataIds  Periodos de datos a revisar.
+     * @param  string  $reportType  Tipo de reporte.
+     * @param  string  $scope  Alcance del reporte.
+     * @param  PeriodRadiographyRun  $run  Run en curso.
+     *
+     * @throws \RuntimeException Solo si la atribución fuera obligatoria (hoy nunca).
      */
     private function resolveMotosNonBlocking(
         FinanciamientoMotosAssignmentService $motosAssignment,
@@ -743,17 +889,17 @@ class GenerateRadiographyJob implements ShouldQueue
             ))->implode("\n");
 
             throw new \RuntimeException(
-                "No se pudo determinar empleado/sucursal para " . count($unresolved) .
-                " registro(s) de Financiamiento de Motos/Cascos del periodo {$period->label} — generación detenida:\n" . $detail
+                'No se pudo determinar empleado/sucursal para '.count($unresolved).
+                " registro(s) de Financiamiento de Motos/Cascos del periodo {$period->label} — generación detenida:\n".$detail
             );
         }
 
         $count = count($unresolved);
         $total = round((float) array_sum(array_column($unresolved, 'amount')), 2);
-        $message = "{$count} registro(s) de Financiamiento de Motos/Cascos por \$" . number_format($total, 2) . ' no se '
-            . 'pudieron vincular a un colaborador/sucursal por nombre. Su monto ya cuenta en Nómina y Capital Humano '
-            . '(fuente autorizada: PDF de Lendus, resuelto al 100%) — solo queda pendiente el desglose informativo '
-            . 'por colaborador/sucursal para estos registros.';
+        $message = "{$count} registro(s) de Financiamiento de Motos/Cascos por \$".number_format($total, 2).' no se '
+            .'pudieron vincular a un colaborador/sucursal por nombre. Su monto ya cuenta en Nómina y Capital Humano '
+            .'(fuente autorizada: PDF de Lendus, resuelto al 100%) — solo queda pendiente el desglose informativo '
+            .'por colaborador/sucursal para estos registros.';
 
         Log::warning('GenerateRadiographyJob: Financiamiento de Motos/Cascos sin identidad resuelta (informativo, no bloqueante).', [
             'period_id' => $period->id, 'run_id' => $run->id, 'count' => $count, 'total' => $total,
@@ -771,16 +917,22 @@ class GenerateRadiographyJob implements ShouldQueue
      * aquí jamás debe interrumpir la generación. Se deja constancia en dos lugares
      * independientes (PeriodIncident + metadata del run) para que sea visible desde
      * Incidencias y desde el detalle del run aunque uno de los dos falle.
+     *
+     * @param  PeriodSummary  $summary  Resumen del periodo.
+     * @param  PeriodRadiographyRun  $run  Run en curso.
+     * @param  string  $type  Tipo de incidencia (p. ej. gastos_excel_sin_par_pdf).
+     * @param  string  $message  Mensaje explicativo en español.
+     * @param  array  $context  Datos de soporte (conteo, total, ids de fact_expenses).
      */
     private function recordAttributionIncident(PeriodSummary $summary, PeriodRadiographyRun $run, string $type, string $message, array $context): void
     {
         try {
             PeriodIncident::query()->create([
                 'period_summary_id' => $summary->id,
-                'type'              => $type,
-                'severity'          => 'warning',
-                'message'           => $message,
-                'context'           => $context,
+                'type' => $type,
+                'severity' => 'warning',
+                'message' => $message,
+                'context' => $context,
             ]);
         } catch (\Throwable $incidentException) {
             Log::error('GenerateRadiographyJob: no se pudo registrar la incidencia de atribución (el reporte sigue siendo válido).', [

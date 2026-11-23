@@ -1,8 +1,13 @@
 <script setup lang="ts">
+/**
+ * Configuración > Perfil (ProfileController@edit).
+ * Permite cambiar el nombre del usuario autenticado.
+ * Guarda con PATCH a la URL de la ruta Wayfinder profile.edit y confirma con SweetAlert.
+ */
 import { Head, useForm, usePage } from '@inertiajs/vue3';
 import { Mail, UserRound } from 'lucide-vue-next';
-import Swal from 'sweetalert2';
 import { computed } from 'vue';
+import { appSwal as Swal } from '@/components/feedback/ConfirmDialog';
 import InputError from '@/components/InputError.vue';
 import SettingsCard from '@/components/settings/SettingsCard.vue';
 import { Button } from '@/components/ui/button';
@@ -10,6 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { edit } from '@/routes/profile';
 
+/** Migas de pan que recibe el layout. */
 defineOptions({
     layout: {
         breadcrumbs: [
@@ -22,12 +28,18 @@ defineOptions({
 });
 
 const page = usePage();
+/** Usuario autenticado compartido por Inertia (page.props.auth.user). */
 const user = computed(() => page.props.auth.user);
 
+/** Formulario Inertia con el nombre editable. */
 const form = useForm({
     name: user.value.name ?? '',
 });
 
+/**
+ * Envía el nombre con PATCH; muestra SweetAlert de éxito o el primer error
+ * de validación devuelto por el servidor.
+ */
 const submit = () => {
     form.patch(edit().url, {
         preserveScroll: true,
@@ -62,7 +74,11 @@ const submit = () => {
     <h2 class="sr-only">Configuración de perfil</h2>
 
     <form @submit.prevent="submit">
-        <SettingsCard :icon="UserRound" title="Información de perfil" description="Así aparece tu nombre en el menú del sistema.">
+        <SettingsCard
+            :icon="UserRound"
+            title="Información de perfil"
+            description="Así aparece tu nombre en el menú del sistema."
+        >
             <div class="grid gap-5 md:grid-cols-2">
                 <div class="grid content-start gap-2">
                     <Label for="name">Nombre completo</Label>
@@ -81,7 +97,10 @@ const submit = () => {
                 <div class="grid content-start gap-2">
                     <Label for="email">Correo electrónico</Label>
                     <div class="relative">
-                        <Mail class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                        <Mail
+                            class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                            aria-hidden="true"
+                        />
                         <Input
                             id="email"
                             type="email"
@@ -93,13 +112,18 @@ const submit = () => {
                         />
                     </div>
                     <p id="email-help" class="app-help">
-                        Es tu usuario de acceso; solo un administrador puede cambiarlo.
+                        Es tu usuario de acceso; solo un administrador puede
+                        cambiarlo.
                     </p>
                 </div>
             </div>
 
             <template #footer>
-                <Button type="submit" :disabled="form.processing || !form.isDirty" data-test="update-profile-button">
+                <Button
+                    type="submit"
+                    :disabled="form.processing || !form.isDirty"
+                    data-test="update-profile-button"
+                >
                     {{ form.processing ? 'Guardando…' : 'Guardar cambios' }}
                 </Button>
             </template>
