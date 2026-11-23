@@ -1282,6 +1282,19 @@ class ReportUploadController extends Controller
         ];
         ['latest' => $latestRun, 'latest_success' => $latestSuccessRun] = PeriodRadiographyRun::resolveForIdentity($identityForGate);
 
+        // Comparativos coherentes (23-nov-2026): solo entre periodos del MISMO tipo (mes con
+        // mes, bimestre con bimestre…). El alcance (general/sucursal/gestor) es uno solo para
+        // ambos lados, así que tampoco se puede comparar una sucursal contra un gestor.
+        if (! empty($config['compare_period_id'])) {
+            $comparePeriod = Period::query()->find((int) $config['compare_period_id']);
+            if (! $comparePeriod || $comparePeriod->id === $period->id) {
+                return back()->with('error', 'Selecciona un periodo distinto para comparar.');
+            }
+            if ($comparePeriod->type !== $period->type) {
+                return back()->with('error', "No se puede comparar {$period->shortLabel()} con {$comparePeriod->shortLabel()}: solo se comparan periodos del mismo tipo (mes con mes, bimestre con bimestre…).");
+            }
+        }
+
         // Regeneración rápida (23-nov-2026): solo para reflejar clasificaciones de la
         // revisión de gastos sobre un reporte YA generado (mismos registros, solo cambian
         // asignaciones). El job omite la revisión de asignaciones y las atribuciones

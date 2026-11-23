@@ -18,6 +18,7 @@
  * reportes-mensuales.run-ver, run-excel y run-pdf.
  */
 import { Head } from '@inertiajs/vue3';
+import { Link } from '@inertiajs/vue3';
 import {
     CalendarRange,
     Eye,
@@ -30,9 +31,10 @@ import {
     UserRound,
     ShieldCheck,
 } from 'lucide-vue-next';
-import { computed, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 
 import AppPageHeader from '@/components/app/AppPageHeader.vue';
+import SearchableSelect from '@/components/forms/SearchableSelect.vue';
 import { useFormatters } from '@/composables/useFormatters';
 import AppLayout from '@/layouts/AppLayout.vue';
 
@@ -199,6 +201,92 @@ const filteredReports = computed(() => {
     });
 });
 
+/**
+ * Tarjeta del listado: un reporte suelto o un GRUPO de reportes por gestor (23-nov-2026).
+ * Los reportes «Por gestor» del mismo periodo, comparación, tipo y estado se juntan en una
+ * sola tarjeta con un selector de gestor: el detalle por persona se consulta adentro, sin
+ * llenar la lista con una tarjeta por cada gestor.
+ */
+type CardItem =
+    | { kind: 'single'; key: string; report: GeneratedReport }
+    | { kind: 'group'; key: string; reports: GeneratedReport[] };
+
+const displayItems = computed<CardItem[]>(() => {
+    const items: CardItem[] = [];
+    const groups = new Map<string, GeneratedReport[]>();
+
+    for (const r of filteredReports.value) {
+        if (r.scope?.toLowerCase() !== 'employee') {
+            items.push({ kind: 'single', key: `r-${r.id}`, report: r });
+            continue;
+        }
+
+        const key = `g-${r.period_id}-${r.comparison_period ?? ''}-${r.type}-${r.status}`;
+
+        if (!groups.has(key)) {
+            groups.set(key, []);
+            items.push({ kind: 'group', key, reports: groups.get(key)! });
+        }
+
+        groups.get(key)!.push(r);
+    }
+
+    // Un grupo de un solo gestor se muestra como tarjeta normal.
+    return items.map((it) =>
+        it.kind === 'group' && it.reports.length === 1
+            ? {
+                  kind: 'single',
+                  key: `r-${it.reports[0].id}`,
+                  report: it.reports[0],
+              }
+            : it,
+    );
+});
+
+/** Gestor elegido en cada grupo (clave del grupo → id del reporte). */
+const selectedInGroup = reactive<Record<string, string>>({});
+
+/** Reporte que muestra la tarjeta: el suelto o el gestor elegido del grupo (el primero por defecto). */
+function cardReport(item: CardItem): GeneratedReport {
+    if (item.kind === 'single') {
+        return item.report;
+    }
+
+    const chosen = item.reports.find(
+        (r) => String(r.id) === selectedInGroup[item.key],
+    );
+
+    return chosen ?? item.reports[0];
+}
+
+/** Opciones del selector de gestor de un grupo, en orden alfabético. */
+function groupOptions(item: CardItem) {
+    if (item.kind !== 'group') {
+        return [];
+    }
+
+    return [...item.reports]
+        .sort((a, b) =>
+            (a.scope_detail ?? '').localeCompare(b.scope_detail ?? '', 'es'),
+        )
+        .map((r) => ({ value: String(r.id), label: r.scope_detail ?? '—' }));
+}
+
+/** Título de la tarjeta: en un grupo, el nombre del reporte sin el gestor más cuántos son. */
+function cardTitle(item: CardItem): string {
+    const r = cardReport(item);
+
+    if (item.kind === 'single') {
+        return r.name;
+    }
+
+    const base = r.scope_detail
+        ? r.name.replace(` — ${r.scope_detail}`, '')
+        : r.name;
+
+    return `${base} — Por gestor (${item.reports.length} gestores)`;
+}
+
 // Rango de fechas legible por tarjeta — "de qué mes/semanas es" (pedido explícito:
 // más info, nunca solo el nombre del periodo). Nunca inventa nada — solo formatea
 // lo que ya viene del backend (periods.start_date/end_date reales).
@@ -340,150 +428,175 @@ function dateRange(
             v-if="filteredReports.length"
             class="app-stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
         >
-            <article
-                v-for="report in filteredReports"
-                :key="report.id"
-                class="app-hover-lift flex flex-col rounded-2xl border bg-card p-5 shadow-soft-xs"
-            >
-                <div class="flex items-start justify-between gap-2">
-                    <span
-                        class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold"
-                        :class="statusBadge(report.status)"
-                    >
-                        <span
-                            class="size-1.5 rounded-full"
-                            :class="statusDot(report.status)"
-                            aria-hidden="true"
-                        />
-                        {{ statusLabel(report.status) }}
-                    </span>
-                    <span
-                        v-if="report.period_type"
-                        class="app-pill app-pill-muted uppercase"
-                    >
-                        {{ periodTypeLabel(report.period_type) }}
-                    </span>
-                </div>
-
-                <h3
-                    class="mt-3 text-sm leading-snug font-semibold text-foreground"
-                    :title="report.name"
+            <template v-for="item in displayItems" :key="item.key">
+                <article
+                    v-for="report in [cardReport(item)]"
+                    :key="`${item.key}-${report.id}`"
+                    class="app-hover-lift flex flex-col rounded-2xl border bg-card p-5 shadow-soft-xs"
                 >
-                    {{ report.name }}
-                </h3>
-
-                <div class="mt-2.5 space-y-1.5 text-xs text-muted-foreground">
-                    <p class="flex items-center gap-1.5">
-                        <CalendarRange
-                            class="size-3.5 shrink-0 text-muted-foreground"
-                            aria-hidden="true"
-                        />
-                        <span class="font-semibold text-foreground">{{
-                            report.period
-                        }}</span>
+                    <div class="flex items-start justify-between gap-2">
                         <span
-                            v-if="
-                                dateRange(
-                                    report.period_start,
-                                    report.period_end,
-                                )
-                            "
-                            class="text-muted-foreground"
-                            >·
-                            {{
-                                dateRange(
-                                    report.period_start,
-                                    report.period_end,
-                                )
-                            }}</span
+                            class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold"
+                            :class="statusBadge(report.status)"
                         >
-                    </p>
-                    <p
-                        v-if="report.comparison_period"
-                        class="flex items-center gap-1.5"
-                    >
-                        <GitCompareArrows
-                            class="size-3.5 shrink-0 text-muted-foreground"
-                            aria-hidden="true"
-                        />
-                        vs
-                        <span class="font-semibold text-foreground">{{
-                            report.comparison_period
-                        }}</span>
-                        <span
-                            v-if="
-                                dateRange(
-                                    report.comparison_period_start,
-                                    report.comparison_period_end,
-                                )
-                            "
-                            class="text-muted-foreground"
-                            >·
-                            {{
-                                dateRange(
-                                    report.comparison_period_start,
-                                    report.comparison_period_end,
-                                )
-                            }}</span
-                        >
-                    </p>
-                    <p class="flex items-center gap-1.5">
-                        <component
-                            :is="scopeIcon(report.scope)"
-                            class="size-3.5 shrink-0 text-muted-foreground"
-                            aria-hidden="true"
-                        />
-                        {{ report.type }} · {{ scopeLabel(report.scope) }}
-                        <template v-if="report.scope_detail"
-                            >— {{ report.scope_detail }}</template
-                        >
-                    </p>
-                    <p class="text-muted-foreground">
-                        Generado {{ report.generated_at ?? '—' }}
-                    </p>
-                </div>
-
-                <!-- Fase 8.9: acciones con texto (antes solo iconos sin etiqueta). -->
-                <div
-                    class="mt-auto flex flex-wrap items-center gap-2 border-t pt-4"
-                >
-                    <a
-                        :href="report.preview_url"
-                        class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90"
-                        :aria-label="`Ver ${report.name}`"
-                    >
-                        <Eye class="size-4" aria-hidden="true" /> Ver
-                    </a>
-                    <template v-if="canDownload(report.status)">
-                        <a
-                            :href="report.excel_url"
-                            class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted"
-                            :aria-label="`Descargar Excel de ${report.name}`"
-                        >
-                            <FileSpreadsheet
-                                class="size-4 text-success"
+                            <span
+                                class="size-1.5 rounded-full"
+                                :class="statusDot(report.status)"
                                 aria-hidden="true"
                             />
-                            Excel
-                        </a>
-                        <a
-                            :href="report.pdf_url"
-                            class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted"
-                            :aria-label="`Descargar PDF de ${report.name}`"
+                            {{ statusLabel(report.status) }}
+                        </span>
+                        <span
+                            v-if="report.period_type"
+                            class="app-pill app-pill-muted uppercase"
                         >
-                            <FileText
-                                class="size-4 text-danger"
+                            {{ periodTypeLabel(report.period_type) }}
+                        </span>
+                    </div>
+
+                    <h3
+                        class="mt-3 text-sm leading-snug font-semibold text-foreground"
+                        :title="cardTitle(item)"
+                    >
+                        {{ cardTitle(item) }}
+                    </h3>
+
+                    <div
+                        class="mt-2.5 space-y-1.5 text-xs text-muted-foreground"
+                    >
+                        <p class="flex items-center gap-1.5">
+                            <CalendarRange
+                                class="size-3.5 shrink-0 text-muted-foreground"
                                 aria-hidden="true"
                             />
-                            PDF
-                        </a>
-                    </template>
-                    <span v-else class="text-xs text-muted-foreground"
-                        >Descargas no disponibles:
-                        {{ statusLabel(report.status).toLowerCase() }}.</span
+                            <span class="font-semibold text-foreground">{{
+                                report.period
+                            }}</span>
+                            <span
+                                v-if="
+                                    dateRange(
+                                        report.period_start,
+                                        report.period_end,
+                                    )
+                                "
+                                class="text-muted-foreground"
+                                >·
+                                {{
+                                    dateRange(
+                                        report.period_start,
+                                        report.period_end,
+                                    )
+                                }}</span
+                            >
+                        </p>
+                        <p
+                            v-if="report.comparison_period"
+                            class="flex items-center gap-1.5"
+                        >
+                            <GitCompareArrows
+                                class="size-3.5 shrink-0 text-muted-foreground"
+                                aria-hidden="true"
+                            />
+                            vs
+                            <span class="font-semibold text-foreground">{{
+                                report.comparison_period
+                            }}</span>
+                            <span
+                                v-if="
+                                    dateRange(
+                                        report.comparison_period_start,
+                                        report.comparison_period_end,
+                                    )
+                                "
+                                class="text-muted-foreground"
+                                >·
+                                {{
+                                    dateRange(
+                                        report.comparison_period_start,
+                                        report.comparison_period_end,
+                                    )
+                                }}</span
+                            >
+                        </p>
+                        <p class="flex items-center gap-1.5">
+                            <component
+                                :is="scopeIcon(report.scope)"
+                                class="size-3.5 shrink-0 text-muted-foreground"
+                                aria-hidden="true"
+                            />
+                            {{ report.type }} · {{ scopeLabel(report.scope) }}
+                            <template v-if="report.scope_detail"
+                                >— {{ report.scope_detail }}</template
+                            >
+                        </p>
+                        <p class="text-muted-foreground">
+                            Generado {{ report.generated_at ?? '—' }}
+                        </p>
+                    </div>
+
+                    <!-- Grupo por gestor: elige el gestor; Ver/Excel/PDF usan su reporte. -->
+                    <div v-if="item.kind === 'group'" class="mt-3">
+                        <SearchableSelect
+                            :id="`gestor-${item.key}`"
+                            label="Gestor"
+                            :model-value="String(report.id)"
+                            :options="groupOptions(item)"
+                            label-key="label"
+                            value-key="value"
+                            placeholder="Elige un gestor"
+                            search-placeholder="Buscar gestor…"
+                            @update:model-value="
+                                (v: unknown) =>
+                                    (selectedInGroup[item.key] = String(v))
+                            "
+                        />
+                    </div>
+
+                    <!-- Fase 8.9: acciones con texto (antes solo iconos sin etiqueta). -->
+                    <div
+                        class="mt-auto flex flex-wrap items-center gap-2 border-t pt-4"
                     >
-                </div>
-            </article>
+                        <!-- Link de Inertia: muestra la pantalla de carga mientras se arma la vista. -->
+                        <Link
+                            :href="report.preview_url"
+                            class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90"
+                            :aria-label="`Ver ${report.name}`"
+                        >
+                            <Eye class="size-4" aria-hidden="true" /> Ver
+                        </Link>
+                        <template v-if="canDownload(report.status)">
+                            <a
+                                :href="report.excel_url"
+                                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+                                :aria-label="`Descargar Excel de ${report.name}`"
+                            >
+                                <FileSpreadsheet
+                                    class="size-4 text-success"
+                                    aria-hidden="true"
+                                />
+                                Excel
+                            </a>
+                            <a
+                                :href="report.pdf_url"
+                                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted"
+                                :aria-label="`Descargar PDF de ${report.name}`"
+                            >
+                                <FileText
+                                    class="size-4 text-danger"
+                                    aria-hidden="true"
+                                />
+                                PDF
+                            </a>
+                        </template>
+                        <span v-else class="text-xs text-muted-foreground"
+                            >Descargas no disponibles:
+                            {{
+                                statusLabel(report.status).toLowerCase()
+                            }}.</span
+                        >
+                    </div>
+                </article>
+            </template>
         </section>
 
         <!-- Estados vacíos: sin reportes visibles / sin coincidencias con los filtros -->

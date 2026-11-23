@@ -74,3 +74,21 @@ it('skips branch auto-match and automatic attributions in quick mode, and never 
     expect($job->config)->not->toHaveKey('regeneracion_rapida')
         ->and($run->fresh()->status)->toBe('failed');
 });
+
+it('rejects a comparative between periods of different types (e.g. a month vs a bimester)', function () {
+    $user = User::factory()->create(['role' => 'admin']);
+    $month = qrPeriod();
+    $bimester = Period::query()->create([
+        'name' => 'Bimestre 2 - 2026', 'code' => 'BI-QR-02', 'type' => 'bimonthly', 'year' => 2026, 'month' => 3, 'sequence' => 2,
+        'start_date' => '2026-03-02', 'end_date' => '2026-04-26', 'is_closed' => false, 'component_period_ids' => [],
+    ]);
+
+    $this->actingAs($user)
+        ->post("/historico-general/{$month->id}/generar-radiografia", [
+            'config' => ['report_type' => 'month_vs_month', 'scope' => 'general', 'compare_period_id' => $bimester->id],
+        ])
+        ->assertRedirect()
+        ->assertSessionHas('error', fn ($m) => str_contains($m, 'mismo tipo'));
+
+    expect(PeriodRadiographyRun::query()->where('period_id', $month->id)->count())->toBe(0);
+});
