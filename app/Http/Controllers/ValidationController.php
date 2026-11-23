@@ -55,7 +55,7 @@ class ValidationController extends Controller
         $noiWithoutAssignment = NoiMovement::query()
             ->with([
                 'employee:id,full_name',
-                'period:id,name,code,type,year,month,sequence,start_date,end_date',
+                'period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
             ])
             ->whereNotNull('employee_id')
             ->get()
@@ -87,7 +87,7 @@ class ValidationController extends Controller
         $pendingAssignments = EmployeeBranchAssignment::query()
             ->with([
                 'employee:id,full_name',
-                'period:id,name,code,type,year,month,sequence,start_date,end_date',
+                'period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
             ])
             ->where(function ($query) {
                 $query->whereNull('branch_id')
@@ -119,7 +119,7 @@ class ValidationController extends Controller
         | 3) Gastos sin empleado resuelto
         */
         $expensesWithoutEmployee = Expense::query()
-            ->with('period:id,name,code,type,year,month,sequence,start_date,end_date')
+            ->with('period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date')
             ->whereNull('employee_id')
             ->latest()
             ->get();
@@ -144,7 +144,7 @@ class ValidationController extends Controller
         $expensesWithoutBranch = Expense::query()
             ->with([
                 'employee:id,full_name',
-                'period:id,name,code,type,year,month,sequence,start_date,end_date',
+                'period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
             ])
             ->whereNull('branch_id')
             ->latest()
@@ -169,7 +169,7 @@ class ValidationController extends Controller
         */
         $failedUploads = ReportUpload::query()
             ->with([
-                'period:id,name,code,type,year,month,sequence,start_date,end_date',
+                'period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
                 'dataSource:id,name',
             ])
             ->where('status', 'failed')
@@ -198,7 +198,7 @@ class ValidationController extends Controller
         $excludedSummaries = MonthlyEmployeeSummary::query()
             ->with([
                 'employee:id,full_name',
-                'period:id,name,code,type,year,month,sequence,start_date,end_date',
+                'period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
             ])
             ->where('included_in_report', false)
             ->latest()

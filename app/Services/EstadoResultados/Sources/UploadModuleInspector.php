@@ -205,7 +205,7 @@ class UploadModuleInspector
         $rows = DB::table('report_uploads as ru')->join('periods as p', 'p.id', '=', 'ru.period_id')
             ->where('ru.data_source_id', $sourceId)->whereNotIn('ru.period_id', $dataIds)->where('ru.status', '!=', 'replaced')
             ->whereNotNull('ru.covered_period_ids')->orderByDesc('ru.id')->limit(50)
-            ->get(['ru.id', 'ru.period_id', 'ru.original_name', 'ru.status', 'ru.covered_period_ids', 'p.name', 'p.year', 'p.month']);
+            ->get(['ru.id', 'ru.period_id', 'ru.original_name', 'ru.status', 'ru.covered_period_ids', DB::raw("COALESCE(NULLIF(p.custom_name, ''), p.name) as name"), 'p.year', 'p.month']);
         $out = [];
         foreach ($rows as $r) {
             $covered = json_decode((string) $r->covered_period_ids, true) ?: [];

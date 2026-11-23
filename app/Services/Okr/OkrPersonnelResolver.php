@@ -44,7 +44,7 @@ class OkrPersonnelResolver
         $row = DB::table('lendus_employee_directory as d')
             ->join('report_uploads as u', 'u.id', '=', 'd.report_upload_id')
             ->leftJoin('periods as p', 'p.id', '=', 'u.period_id')
-            ->select('d.report_upload_id', 'u.period_id', 'p.name as period_label', 'p.end_date as period_end')
+            ->select('d.report_upload_id', 'u.period_id', DB::raw("COALESCE(NULLIF(p.custom_name, ''), p.name) as period_label"), 'p.end_date as period_end')
             ->orderByDesc('p.end_date')
             ->orderByDesc('d.report_upload_id')
             ->first();

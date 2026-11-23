@@ -133,7 +133,7 @@ class EmployeeBranchAssignmentController extends Controller
                 ->with([
                     'employee:id,full_name,normalized_name,position',
                     'branch:id,name',
-                    'period:id,name,code,type,year,month,sequence,start_date,end_date',
+                    'period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
                 ])
                 ->where('period_id', $selectedPeriod->id)
                 ->when($scopeBranchIds !== null, fn ($q) => $q->whereIn('branch_id', $scopeBranchIds))

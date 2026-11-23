@@ -535,8 +535,8 @@ class OkrEmployeeBranchResolver
                 ->join('periods as p', 'p.id', '=', 'f.period_id')
                 ->whereIn('f.promoter_code', $allCodes)
                 ->whereNotNull('f.route_name')
-                ->select('f.promoter_code', 'f.route_name', 'f.branch_id', 'p.end_date', 'p.name as period_name', DB::raw('count(*) as n'))
-                ->groupBy('f.promoter_code', 'f.route_name', 'f.branch_id', 'p.end_date', 'p.name')
+                ->select('f.promoter_code', 'f.route_name', 'f.branch_id', 'p.end_date', DB::raw("COALESCE(NULLIF(p.custom_name, ''), p.name) as period_name"), DB::raw('count(*) as n'))
+                ->groupBy('f.promoter_code', 'f.route_name', 'f.branch_id', 'p.end_date', 'p.name', 'p.custom_name')
                 ->get()
                 ->each(function ($r) use (&$routesByCode) {
                     $routesByCode[mb_strtoupper(trim((string) $r->promoter_code))][] = $r;
@@ -569,14 +569,14 @@ class OkrEmployeeBranchResolver
             ->whereIn('r.employee_id', $allIds)
             ->where('r.is_active_for_period', true)
             ->orderByDesc('p.end_date')
-            ->get(['r.employee_id', 'r.branch_id', 'r.branch_name', 'p.end_date', 'p.name as period_name']);
+            ->get(['r.employee_id', 'r.branch_id', 'r.branch_name', 'p.end_date', DB::raw("COALESCE(NULLIF(p.custom_name, ''), p.name) as period_name")]);
 
         // 3. Asignación de Reportería — la más reciente POR FECHA, nunca por mayor id.
         $assignments = DB::table('employee_branch_assignments as a')
             ->join('periods as p', 'p.id', '=', 'a.period_id')
             ->whereIn('a.employee_id', $allIds)
             ->orderByDesc('p.end_date')
-            ->get(['a.employee_id', 'a.branch_id', 'p.end_date', 'p.name as period_name']);
+            ->get(['a.employee_id', 'a.branch_id', 'p.end_date', DB::raw("COALESCE(NULLIF(p.custom_name, ''), p.name) as period_name")]);
 
         // 4. Directorio Lendus vigente (fila ACTIVO; sucursal inferida por prefijo).
         $directory = $this->personnelResolver->currentDirectory();
@@ -881,7 +881,7 @@ class OkrEmployeeBranchResolver
         $norms = $employees->pluck('normalized_name')->filter()->unique()->values()->all();
         $codesByNorm = $this->personnelResolver->directoryCodesByName($norms);
         $latestPortfolio = DB::table('fact_portfolios as f')->join('periods as p', 'p.id', '=', 'f.period_id')
-            ->orderByDesc('p.end_date')->first(['f.period_id', 'p.name']);
+            ->orderByDesc('p.end_date')->first(['f.period_id', DB::raw("COALESCE(NULLIF(p.custom_name, ''), p.name) as name")]);
         $producing = $latestPortfolio === null ? [] : array_flip(DB::table('fact_portfolios')
             ->where('period_id', $latestPortfolio->period_id)->whereNotNull('promoter_code')->distinct()
             ->pluck('promoter_code')->map(fn ($c) => mb_strtoupper(trim((string) $c)))->all());

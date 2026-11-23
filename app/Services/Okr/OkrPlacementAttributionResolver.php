@@ -256,7 +256,7 @@ class OkrPlacementAttributionResolver
             $this->directoryUploads = DB::table('lendus_employee_directory as d')
                 ->join('report_uploads as u', 'u.id', '=', 'd.report_upload_id')
                 ->leftJoin('periods as p', 'p.id', '=', 'u.period_id')
-                ->select('d.report_upload_id', 'p.name', 'p.start_date', 'p.end_date')
+                ->select('d.report_upload_id', DB::raw("COALESCE(NULLIF(p.custom_name, ''), p.name) as name"), 'p.start_date', 'p.end_date')
                 ->distinct()
                 ->get()
                 ->map(fn ($r) => ['upload_id' => (int) $r->report_upload_id, 'label' => $r->name, 'start' => $r->start_date ? substr((string) $r->start_date, 0, 10) : null, 'end' => $r->end_date ? substr((string) $r->end_date, 0, 10) : null])

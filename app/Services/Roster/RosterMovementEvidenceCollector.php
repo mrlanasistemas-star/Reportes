@@ -78,8 +78,8 @@ class RosterMovementEvidenceCollector
         $rows = DB::table('lendus_employee_directory as d')
             ->join('report_uploads as u', 'u.id', '=', 'd.report_upload_id')
             ->leftJoin('periods as p', 'p.id', '=', 'u.period_id')
-            ->groupBy('d.report_upload_id', 'u.original_name', 'u.period_id', 'p.name', 'p.start_date', 'p.end_date', 'u.uploaded_at', 'u.created_at')
-            ->selectRaw('d.report_upload_id, u.original_name, u.period_id, p.name as period_name, p.start_date, p.end_date, u.uploaded_at, u.created_at, MAX(d.fecha_inicio) as max_hire, COUNT(*) as n')
+            ->groupBy('d.report_upload_id', 'u.original_name', 'u.period_id', 'p.name', 'p.custom_name', 'p.start_date', 'p.end_date', 'u.uploaded_at', 'u.created_at')
+            ->selectRaw("d.report_upload_id, u.original_name, u.period_id, COALESCE(NULLIF(p.custom_name, ''), p.name) as period_name, p.start_date, p.end_date, u.uploaded_at, u.created_at, MAX(d.fecha_inicio) as max_hire, COUNT(*) as n")
             ->get();
 
         $out = [];

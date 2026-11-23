@@ -103,8 +103,8 @@ class MonthlyReportController extends Controller
         $visibilityMode = $visibility->mode($request->user());
         $runs = PeriodRadiographyRun::query()
             ->with([
-                'period:id,name,code,type,year,month,sequence,start_date,end_date',
-                'comparisonPeriod:id,name,code,type,year,month,sequence,start_date,end_date',
+                'period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
+                'comparisonPeriod:id,name,custom_name,code,type,year,month,sequence,start_date,end_date',
                 'branch:id,name',
                 'employee:id,full_name',
             ])
@@ -127,6 +127,12 @@ class MonthlyReportController extends Controller
         if ($restricted) {
             $runs = $runs->filter(fn (PeriodRadiographyRun $run) => $this->runWithinScope($request->user(), $run))->values();
         }
+
+        // Comparativos inválidos heredados (23-nov-2026): antes se podía generar «mes vs
+        // bimestre». Hoy el servidor lo rechaza; los que ya existían no se listan (siguen
+        // en la BD, solo no se muestran porque sus cifras no son comparables).
+        $runs = $runs->reject(fn (PeriodRadiographyRun $run) => $run->comparisonPeriod && $run->period
+            && $run->comparisonPeriod->type !== $run->period->type)->values();
 
         $summaryIds = $runs->pluck('period_summary_id')->filter()->unique();
         $summaries = PeriodSummary::query()->whereIn('id', $summaryIds)->get()->keyBy('id');
@@ -196,7 +202,7 @@ class MonthlyReportController extends Controller
             ->pluck('period_id')->all();
 
         $legacySummaries = PeriodSummary::query()
-            ->with(['period:id,name,code,type,year,month,sequence,start_date,end_date'])
+            ->with(['period:id,name,custom_name,code,type,year,month,sequence,start_date,end_date'])
             ->where('status', 'generated')
             ->whereNotIn('period_id', $periodIdsWithSimpleGeneralRun)
             ->when($restricted, fn ($q) => $q->whereRaw('1 = 0'))
@@ -795,6 +801,18 @@ class MonthlyReportController extends Controller
             $monthlyWithSnapshot = $allPeriods->where('type', 'monthly')->where('has_snapshot', true)->values();
             $periodAId ??= (int) ($monthlyWithSnapshot[0]['id'] ?? 0) ?: null;
             $periodBId ??= (int) ($monthlyWithSnapshot[1]['id'] ?? 0) ?: null;
+        }
+
+        // Periodo B inválido (de otro tipo, igual a A o inexistente, p. ej. un enlace a un
+        // comparativo heredado «mes vs bimestre»): se usa el periodo anterior del MISMO tipo
+        // que A con radiografía, en lugar de dejar la pantalla vacía.
+        $typeOf = fn (?int $id) => $id ? ($allPeriods->firstWhere('id', $id)['type'] ?? null) : null;
+        if ($periodAId && ($periodBId === $periodAId || $typeOf($periodBId) !== $typeOf($periodAId))) {
+            $sameType = $allPeriods->where('type', $typeOf($periodAId))->where('has_snapshot', true)->values();
+            $idx = $sameType->search(fn ($p) => (int) $p['id'] === $periodAId);
+            $next = $idx === false ? null : $sameType->get($idx + 1);
+            $prev = $idx === false ? null : ($idx > 0 ? $sameType->get($idx - 1) : null);
+            $periodBId = (int) (($next ?? $prev)['id'] ?? 0) ?: null;
         }
 
         $operativeBranches = Branch::query()
