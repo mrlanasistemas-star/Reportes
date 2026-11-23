@@ -1,3 +1,12 @@
+/**
+ * Módulo: gobierno (versiones y aprobación) del Estado de Resultados.
+ *
+ * Controla qué versión del reporte se consulta, el historial de versiones
+ * (GET `/versiones`), la aprobación que congela las cifras (POST `/aprobar`,
+ * en cola vía runErTask) y la apertura de una nueva versión tras aprobar
+ * (POST `/nueva-version`). Calcula además el motivo de solo lectura
+ * (`lockReason`) que bloquea todas las escrituras de la pantalla.
+ */
 import { computed, ref, watch } from 'vue';
 import type { Ref } from 'vue';
 import {
@@ -12,18 +21,29 @@ import type {
     VersionHistory,
     VersionSummary,
 } from '@/components/estado-resultados/types';
-import { busy, closeSwal, showError, swal } from './erSwal';
+import { busy, closeSwal, showError, swal, updateBusy } from './erSwal';
+import { runErTask } from './erTask';
 
+/** Contexto que la pantalla del ER inyecta al gobierno del reporte. */
 interface Ctx {
+    /** Arma la URL de una ruta del periodo mostrado. */
     url: (path: string) => string;
+    /** Dataset del periodo mostrado. */
     dataset: Ref<Dataset | null>;
+    /** Versión consultada (null = vigente); escribirla dispara la recarga del dataset. */
     viewVersion: Ref<number | null>;
+    /** Periodo mostrado (al cambiar se descarta el historial). */
     periodId: Ref<number>;
+    /** Recarga el dataset desde el servidor. */
     loadDataset: () => Promise<void>;
+    /** Permisos del usuario. */
     can: Permissions;
 }
 
-/** Títulos en lenguaje llano para cada tipo de bloqueo del backend. */
+/**
+ * Títulos en lenguaje llano para cada tipo de bloqueo del backend, con la
+ * acción sugerida y la pestaña a la que lleva.
+ */
 export const BLOCKER_GROUPS: Record<
     string,
     { title: string; action: string; tab: string; filter?: string }
@@ -60,6 +80,10 @@ export const BLOCKER_GROUPS: Record<
     },
 };
 
+/**
+ * Lista HTML (escapada) de bloqueos del reporte, anteponiendo el alcance en negritas si lo trae.
+ * @returns HTML de la lista o cadena vacía.
+ */
 const blockerList = (blockers: ReportBlocker[]) =>
     blockers.length
         ? `<ul style="text-align:left;margin:10px auto 0;font-size:13px;max-height:260px;overflow:auto;max-width:480px">${blockers
@@ -70,7 +94,12 @@ const blockerList = (blockers: ReportBlocker[]) =>
               .join('')}</ul>`
         : '';
 
-/** Resumen de lo que se aprueba: versión, huella, fuentes con observaciones y diferencias abiertas. */
+/**
+ * Resumen de lo que se aprueba: versión, huella, fuentes con observaciones y diferencias abiertas.
+ * Se muestra en el diálogo de confirmación de la aprobación.
+ * @param d Dataset que se va a aprobar.
+ * @returns HTML del resumen.
+ */
 function approvalSummary(d: Dataset): string {
     const r = d.meta.report;
     const accounts = d.sources.cuentas;
@@ -100,13 +129,19 @@ function approvalSummary(d: Dataset): string {
  * Gobierno del reporte: versión que se consulta, historial, aprobación y apertura
  * de una nueva versión. Toda la retroalimentación pasa por SweetAlert2 y nunca se
  * anuncia una aprobación que el servidor no confirmó.
+ * @param ctx Dataset, versión consultada y helpers del periodo.
+ * @returns Estado reactivo (historial, banderas, reporte, bloqueo) y acciones.
  */
 export function useErGovernance(ctx: Ctx) {
+    /** Historial de versiones del periodo (se carga bajo demanda). */
     const history = ref<VersionHistory | null>(null);
     const historyLoading = ref(false);
+    /** Aprobación en curso. */
     const approving = ref(false);
+    /** Apertura de nueva versión en curso. */
     const reopening = ref(false);
 
+    /** Metadatos del reporte (versión, estado, bloqueos) del dataset mostrado. */
     const report = computed(() => ctx.dataset.value?.meta.report ?? null);
     /** Se consulta una versión distinta de la vigente (aprobada vieja o sustituida). */
     const viewingHistoric = computed(
@@ -115,7 +150,10 @@ export function useErGovernance(ctx: Ctx) {
             !!report.value &&
             !report.value.current,
     );
-    /** Motivo de solo lectura (null = se puede editar). */
+    /**
+     * Motivo de solo lectura (null = se puede editar): versión histórica
+     * (snapshot no vigente) o versión aprobada (congelada).
+     */
     const lockReason = computed<string | null>(() => {
         const r = report.value;
 
@@ -134,6 +172,7 @@ export function useErGovernance(ctx: Ctx) {
         return null;
     });
 
+    /** Lee el historial de versiones del periodo (GET `/versiones`). */
     async function loadHistory(): Promise<void> {
         historyLoading.value = true;
 
@@ -149,14 +188,25 @@ export function useErGovernance(ctx: Ctx) {
         }
     }
 
+    /** El historial es por periodo: al cambiar de periodo se descarta. */
     watch(ctx.periodId, () => {
         history.value = null;
     });
 
+    /**
+     * Cambia la versión consultada (null = vigente); el dataset se recarga solo.
+     * @param v Número de versión o null.
+     */
     function viewVersion(v: number | null): void {
         ctx.viewVersion.value = v;
     }
 
+    /**
+     * Aprueba la versión actual: si no es aprobable muestra los bloqueos; si lo es,
+     * pide confirmación con notas opcionales y envía la huella del dataset
+     * (`expected_hash`) para que el servidor rechace (409) si las cifras cambiaron.
+     * Un 422 con bloqueos se muestra como lista; al terminar vuelve a la versión vigente.
+     */
     async function approve(): Promise<void> {
         const d = ctx.dataset.value;
         const r = report.value;
@@ -201,16 +251,27 @@ export function useErGovernance(ctx: Ctx) {
         );
 
         try {
-            const res = await apiJson<{
+            // La aprobación corre en cola: mientras esté «en proceso» se consulta la tarea
+            // cada 3 s; al terminar se recarga el reporte con la versión congelada.
+            const res = await runErTask<{
                 message: string;
                 version: VersionSummary;
-            }>(ctx.url('/aprobar'), {
-                method: 'POST',
-                body: JSON.stringify({
-                    notes: (ok.value as string)?.trim() || null,
-                    expected_hash: d.meta.dataset_hash,
-                }),
-            });
+            }>(
+                ctx.url('/aprobar'),
+                ctx.url('/tareas'),
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        notes: (ok.value as string)?.trim() || null,
+                        expected_hash: d.meta.dataset_hash,
+                    }),
+                },
+                (t) =>
+                    updateBusy(
+                        'Aprobando en segundo plano…',
+                        `${t.current_step ?? 'En cola'} La pantalla se actualizará sola al terminar.`,
+                    ),
+            );
             ctx.viewVersion.value = null;
             await Promise.all([ctx.loadDataset(), loadHistory()]);
             closeSwal();
@@ -233,13 +294,33 @@ export function useErGovernance(ctx: Ctx) {
                     confirmButtonText: 'Entendido',
                 });
             } else if (e instanceof ApiError && e.status === 409) {
-                await swal.fire({
-                    icon: 'warning',
-                    title: 'Las cifras cambiaron',
-                    text: e.message,
-                    confirmButtonText: 'Recargar el reporte',
-                });
-                await ctx.loadDataset();
+                // El backend distingue el conflicto en `conflict` (o `processing`):
+                // aprobacion_en_curso / candado_expirado / procesamiento en curso
+                // = otra operación ocupa el periodo (reintentar); hash_revisado,
+                // datos_cambiaron, version_cambio, version_duplicada = cambiaron
+                // las cifras o la versión (recargar y revisar).
+                const conflict = String(e.body.conflict ?? '');
+                const busy =
+                    e.body.processing === true ||
+                    conflict === 'aprobacion_en_curso' ||
+                    conflict === 'candado_expirado';
+
+                if (busy) {
+                    await swal.fire({
+                        icon: 'info',
+                        title: 'Hay otra operación en curso',
+                        text: e.message,
+                        confirmButtonText: 'Entendido',
+                    });
+                } else {
+                    await swal.fire({
+                        icon: 'warning',
+                        title: 'Las cifras cambiaron',
+                        text: e.message,
+                        confirmButtonText: 'Recargar el reporte',
+                    });
+                    await ctx.loadDataset();
+                }
             } else {
                 await showError(e, 'No se pudo aprobar');
             }
@@ -248,6 +329,11 @@ export function useErGovernance(ctx: Ctx) {
         }
     }
 
+    /**
+     * Abre una nueva versión de trabajo sobre un periodo aprobado. Exige un motivo
+     * de al menos 10 caracteres (queda en la bitácora); la versión aprobada sigue
+     * siendo la oficial hasta que se apruebe la nueva.
+     */
     async function openNewVersion(): Promise<void> {
         const r = report.value;
 

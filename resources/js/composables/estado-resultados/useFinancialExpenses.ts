@@ -1,3 +1,12 @@
+/**
+ * Módulo: pestaña «Gastos financieros» del Estado de Resultados.
+ *
+ * Rutas usadas (EstadoResultadosFinancialExpensesController, routes/web.php):
+ * - GET  `{base}/estado-resultados/{periodo}/gastos-financieros` (panel del periodo)
+ * - POST `{base}/estado-resultados/creditos/{credito}/amortizacion` (sube/sustituye tabla)
+ * - GET  `{base}/estado-resultados/creditos/plantilla-amortizacion[?credito=…]` (plantilla)
+ * Los intereses de la tabla de amortización van entre EBIT y EBT; el capital se excluye.
+ */
 import { ref } from 'vue';
 import type { Ref } from 'vue';
 import type {
@@ -10,9 +19,11 @@ import { useConfirm } from '@/composables/useConfirm';
 import { downloadFile } from '@/lib/downloadOverlay';
 import { busy, htmlList, showError, swal } from './erSwal';
 
+/** Contexto que la pantalla del ER inyecta a la pestaña. */
 interface Ctx {
     /** Base de la app (props.base de Inertia). */
     base: string;
+    /** Periodo mostrado. */
     periodId: Ref<number>;
     /** Recarga el dataset del ER (las cifras del estado cambian con la tabla). */
     reloadDataset: () => Promise<void>;
@@ -22,34 +33,60 @@ interface Ctx {
  * Pestaña «Gastos financieros»: carga del panel del periodo, subida / sustitución de la
  * tabla de amortización de cada crédito y descarga de la plantilla. Todo el feedback
  * pasa por SweetAlert2 (erSwal); nunca se anuncia éxito sin confirmación del servidor.
+ * @param ctx Base de la app, periodo mostrado y recarga del dataset.
+ * @returns Estado reactivo del panel y acciones (`load`, `upload`, `downloadTemplate`).
  */
 export function useFinancialExpenses(ctx: Ctx) {
     const { confirm } = useConfirm();
+    /** Panel del periodo: créditos, tablas cargadas, totales y reglas de carga. */
     const data = ref<FinancialExpensesPayload | null>(null);
     const loading = ref(false);
     const error = ref<string | null>(null);
+    /** Clave del crédito cuya tabla se está subiendo (null si ninguna). */
     const uploading = ref<string | null>(null);
 
     const root = `${ctx.base}/estado-resultados`;
 
+    /** Número de la última lectura del panel (descarta respuestas viejas). */
+    let loadRequest = 0;
+
+    /** Lee el panel de gastos financieros del periodo mostrado. */
     async function load(): Promise<void> {
+        // Guardia de respuestas viejas: si se cambia de periodo mientras carga,
+        // sólo la petición más reciente escribe datos, error y `loading`.
+        const id = ++loadRequest;
         loading.value = true;
         error.value = null;
 
         try {
-            data.value = await apiJson<FinancialExpensesPayload>(
+            const res = await apiJson<FinancialExpensesPayload>(
                 `${root}/${ctx.periodId.value}/gastos-financieros`,
             );
+
+            if (id === loadRequest) {
+                data.value = res;
+            }
         } catch (e) {
-            error.value =
-                e instanceof Error
-                    ? e.message
-                    : 'No se pudo leer la información de gastos financieros.';
+            if (id === loadRequest) {
+                error.value =
+                    e instanceof Error
+                        ? e.message
+                        : 'No se pudo leer la información de gastos financieros.';
+            }
         } finally {
-            loading.value = false;
+            if (id === loadRequest) {
+                loading.value = false;
+            }
         }
     }
 
+    /**
+     * Sube (o sustituye, previa confirmación) la tabla de amortización de un crédito.
+     * Valida la extensión en el navegador; al terminar recarga panel y dataset y
+     * muestra interés/capital del periodo y las columnas leídas.
+     * @param credit Crédito del periodo al que pertenece la tabla.
+     * @param file Archivo elegido.
+     */
     async function upload(credit: CreditPeriod, file: File): Promise<void> {
         const rules = data.value?.rules;
         const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
@@ -130,6 +167,10 @@ export function useFinancialExpenses(ctx: Ctx) {
         }
     }
 
+    /**
+     * Descarga la plantilla de tabla de amortización.
+     * @param creditKey Crédito para el que se genera (opcional).
+     */
     async function downloadTemplate(creditKey?: string): Promise<void> {
         const q = creditKey ? `?credito=${encodeURIComponent(creditKey)}` : '';
         // downloadFile muestra su propia pantalla de carga y explica cualquier error.

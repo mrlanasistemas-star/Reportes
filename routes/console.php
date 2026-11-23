@@ -16,6 +16,14 @@ Schedule::command('okr:close-due')->dailyAt('06:15');
 // api_query_logs, nunca crecimiento ilimitado.
 Schedule::command('api:query-logs:prune')->dailyAt('03:00');
 
+// Rendimiento (23-nov-2026) — con CACHE_STORE=database la tabla `cache` crecía sin purga
+// (Laravel sólo borra una clave vencida si alguien la vuelve a leer). Sólo borra filas ya
+// vencidas; con Redis no hace nada. Ver docs/MANUAL-DESARROLLADOR.md.
+Schedule::command('reportes:purgar-cache-vencida')->dailyAt('03:10')->withoutOverlapping();
+// Jobs fallidos: se conservan 30 días para diagnóstico; lotes terminados/viejos, 7 días.
+Schedule::command('queue:prune-failed --hours=720')->dailyAt('03:20');
+Schedule::command('queue:prune-batches --hours=168 --unfinished=168 --cancelled=168')->dailyAt('03:25');
+
 // Calculadora de Efectividad — borra espacios temporales vencidos (Excel leídos y
 // cifrados, PDF/PNG no descargados). Ya no hay ejecuciones persistentes que recuperar.
 Schedule::command('efectividad:limpiar-temporales')->everyTenMinutes()->withoutOverlapping();
@@ -35,11 +43,17 @@ Schedule::command('radiografia:precalentar')
     ->onOneServer()
     ->runInBackground();
 
+// Comando de ejemplo que trae Laravel por defecto (imprime una frase). No lee ni escribe
+// datos del sistema; se conserva solo por compatibilidad con la plantilla del framework.
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-// Aliases for reconcile section commands: reconcile-gastos 5 == reconcile gastos 5
+// Alias de los comandos de conciliación por sección: `reportes:reconcile-gastos 5` equivale
+// a `reportes:reconcile gastos 5` (ver ReconcileSectionCommand). Solo lectura: reconstruyen
+// el snapshot de la Radiografía en memoria y comparan crudo vs procesado. Los alias NO
+// aceptan la opción --target; para comparar contra un valor manual usa el comando base:
+//   php artisan reportes:reconcile ingresos 21 --target=18324971.76
 foreach (['gastos', 'nomina', 'ingresos', 'cartera', 'moras', 'fondeo'] as $section) {
     Artisan::command("reportes:reconcile-{$section} {period_id}", function (int $period_id) use ($section) {
         $this->call('reportes:reconcile', ['section' => $section, 'period_id' => $period_id]);

@@ -1,6 +1,12 @@
+/**
+ * Módulo: animación de "conteo" para los importes del Estado de Resultados
+ * (tarjetas de KPI). Sólo es visual: el valor final mostrado siempre coincide
+ * con el dato real.
+ */
 import { onBeforeUnmount, ref, watch } from 'vue';
 import type { WatchSource } from 'vue';
 
+/** Indica si el usuario pidió reducir animaciones (y si existe `window`, para SSR). */
 const prefersReducedMotion = () =>
     typeof window !== 'undefined' &&
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -9,11 +15,18 @@ const prefersReducedMotion = () =>
  * Cuenta animada hacia un importe del dataset. El valor final SIEMPRE es el del
  * dataset (sólo los cuadros intermedios se interpolan); con movimiento reducido
  * salta directo al valor.
+ * @param source Fuente reactiva con el importe destino.
+ * @param duration Duración de la animación en ms (<= 0 desactiva la animación).
+ * @returns Ref con el valor a mostrar en cada cuadro.
  */
 export function useCountUp(source: WatchSource<number>, duration = 900) {
     const display = ref(0);
     let frame = 0;
 
+    /**
+     * Anima `display` desde su valor actual hasta `to` con easing cúbico de salida.
+     * Cancela cualquier animación previa para no encimar cuadros.
+     */
     function animate(to: number): void {
         cancelAnimationFrame(frame);
 
@@ -39,6 +52,7 @@ export function useCountUp(source: WatchSource<number>, duration = 900) {
         frame = requestAnimationFrame(tick);
     }
 
+    /** Re-anima cada vez que cambia el importe (inmediato al montar); valores no numéricos cuentan como 0. */
     watch(source, (v) => animate(Number(v) || 0), { immediate: true });
     onBeforeUnmount(() => cancelAnimationFrame(frame));
 

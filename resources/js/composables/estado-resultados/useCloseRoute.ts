@@ -1,9 +1,19 @@
+/**
+ * Módulo: "Ruta de cierre" del Estado de Resultados.
+ *
+ * Traduce el dataset del periodo (que entrega EstadoResultadosController) en
+ * cinco pasos ordenados —fuentes, procesamiento, revisión de movimientos,
+ * ajustes contables y validaciones— con sus bloqueos en lenguaje de negocio,
+ * para guiar al usuario hasta que el reporte deje de ser preliminar.
+ */
 import { computed } from 'vue';
 import type { Ref } from 'vue';
 import type { Dataset } from '@/components/estado-resultados/types';
 
+/** Estado visual de un paso: terminado, el siguiente por resolver o pendiente posterior. */
 export type StepState = 'done' | 'current' | 'todo';
 
+/** Paso de la ruta de cierre, con su avance, bloqueos y a qué pestaña lleva su botón. */
 export interface CloseStep {
     key: string;
     title: string;
@@ -13,7 +23,9 @@ export interface CloseStep {
     progress: number;
     done: boolean;
     state: StepState;
+    /** Motivos concretos que impiden dar el paso por terminado. */
     blockers: string[];
+    /** Destino del botón del paso: pestaña, filtro opcional y texto del botón. */
     go: { tab: string; filter?: string; label: string };
 }
 
@@ -21,8 +33,14 @@ export interface CloseStep {
  * Ruta de cierre del periodo: los pasos reales para que el Estado de Resultados
  * deje de ser preliminar. Sólo lee el dataset (no calcula dinero): estados de
  * fuentes, procesamiento, pendientes, ajustes sin información y validaciones.
+ * @param dataset Dataset del periodo mostrado (null mientras carga).
+ * @returns `steps`, `blockers` (todos juntos), `complete`, `doneCount` y `current`.
  */
 export function useCloseRoute(dataset: Ref<Dataset | null>) {
+    /**
+     * Los cinco pasos con su estado. El primero no terminado queda como
+     * `current`; los siguientes no terminados como `todo`.
+     */
     const steps = computed<CloseStep[]>(() => {
         const d = dataset.value;
 
@@ -207,11 +225,15 @@ export function useCloseRoute(dataset: Ref<Dataset | null>) {
         }));
     });
 
+    /** Todos los bloqueos de todos los pasos, en orden. */
     const blockers = computed(() => steps.value.flatMap((s) => s.blockers));
+    /** True cuando hay dataset y ningún paso tiene bloqueos (periodo listo para cierre). */
     const complete = computed(
         () => steps.value.length > 0 && blockers.value.length === 0,
     );
+    /** Cuántos pasos están terminados. */
     const doneCount = computed(() => steps.value.filter((s) => s.done).length);
+    /** El paso por resolver ahora (el primero sin terminar), o null si no hay. */
     const current = computed(
         () => steps.value.find((s) => s.state === 'current') ?? null,
     );

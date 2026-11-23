@@ -1,3 +1,13 @@
+/**
+ * Módulo: acciones de escritura del Estado de Resultados.
+ *
+ * Agrupa las operaciones que el usuario dispara desde la pantalla del ER y que
+ * llaman a las rutas del periodo (`ctx.url(...)`, atendidas por
+ * EstadoResultadosController): `/procesar` (en cola, vía runErTask),
+ * `/cargas` y `/cargas/noi-corporativo`, `/cargas/{slot}/archivo/{part}`,
+ * `/clasificar`, `/aceptar-sugerencias`, `/ajustes`, `/ajustes/historial` y
+ * `/exportar/{excel|pdf}`. Expone también las banderas de "en curso" que usa la UI.
+ */
 import { ref } from 'vue';
 import type { Ref } from 'vue';
 import { apiJson, escapeHtml } from '@/components/estado-resultados/types';
@@ -9,8 +19,17 @@ import type {
 import { useConfirm } from '@/composables/useConfirm';
 import { useToast } from '@/composables/useToast';
 import { downloadFile } from '@/lib/downloadOverlay';
-import { busy, closeSwal, htmlList as list, showError, swal } from './erSwal';
+import {
+    busy,
+    closeSwal,
+    htmlList as list,
+    showError,
+    swal,
+    updateBusy,
+} from './erSwal';
+import { runErTask } from './erTask';
 
+/** Renglón del historial de cambios de un ajuste contable (estado/importe anterior y nuevo). */
 export interface AdjustmentLog {
     label: string;
     old_state: string | null;
@@ -22,17 +41,25 @@ export interface AdjustmentLog {
     at: string;
 }
 
+/** Contexto que la pantalla del ER inyecta a las acciones. */
 interface Ctx {
+    /** Arma la URL de una ruta del periodo mostrado a partir de su sufijo. */
     url: (path: string) => string;
+    /** Alcance actual del reporte (p. ej. consolidado o sucursal). */
     scope: Ref<string>;
+    /** Query string con el alcance, para historial y exportaciones. */
     scopeQuery: () => string;
+    /** Recarga el dataset del periodo tras cualquier cambio confirmado. */
     loadDataset: () => Promise<void>;
+    /** Permisos del usuario en el módulo. */
     can: Permissions;
+    /** Días de tolerancia del cruce banco vs. ERP (sólo se muestra en la confirmación). */
     toleranceDays: number;
     /** Lo que falta para que el reporte sea definitivo (vacío = completo). */
     blockers: () => string[];
     /** Motivo por el que no se admiten cambios (versión aprobada o consulta histórica). */
     lockReason: () => string | null;
+    /** Extensiones y tamaño máximo permitidos, para validar antes de subir. */
     uploadRules?: UploadRules | null;
 }
 
@@ -40,24 +67,35 @@ interface Ctx {
  * Acciones del módulo (cargar, procesar, clasificar, ajustes, exportar). Toda la
  * retroalimentación pasa por SweetAlert2: confirmación, carga en curso, éxito
  * real o error explicado. Nunca se anuncia éxito si el servidor no lo confirmó.
+ * @param ctx Funciones y datos del periodo mostrado.
+ * @returns Banderas reactivas de estado y las acciones del módulo.
  */
 export function useErActions(ctx: Ctx) {
     const toast = useToast();
     const { confirm } = useConfirm();
 
+    /** Hay un procesamiento de conciliación en curso. */
     const processing = ref(false);
+    /** Cuenta/fuente (slot) cuyo archivo se está subiendo o quitando. */
     const uploadingSlot = ref<string | null>(null);
     /** Archivo de la cuenta en curso: 1 (obligatorio) o 2 (opcional). */
     const uploadingPart = ref<number | null>(null);
     /** Sube con cada intento de carga (éxito o rechazo) para refrescar la bitácora. */
     const uploadSeq = ref(0);
+    /** Se está guardando una clasificación manual. */
     const classifying = ref(false);
+    /** Se están aceptando sugerencias. */
     const accepting = ref(false);
+    /** Concepto del ajuste que se está guardando (null si ninguno). */
     const savingAdjustment = ref<string | null>(null);
+    /** Historial de ajustes cargado bajo demanda (se vacía al guardar un ajuste). */
     const adjustmentLogs = ref<AdjustmentLog[]>([]);
     const logsLoading = ref(false);
 
-    /** Ninguna escritura sale si la versión mostrada es de solo lectura. */
+    /**
+     * Ninguna escritura sale si la versión mostrada es de solo lectura.
+     * @returns true si se puede escribir; si no, avisa el motivo y devuelve false.
+     */
     async function guard(): Promise<boolean> {
         const reason = ctx.lockReason();
 
@@ -75,6 +113,11 @@ export function useErActions(ctx: Ctx) {
         return false;
     }
 
+    /**
+     * Procesa la conciliación del periodo (cruce banco vs. ERP + reglas de
+     * clasificación) y recarga el dataset al terminar.
+     * @param ask false para omitir la confirmación (cuando ya se preguntó en otro aviso).
+     */
     async function process(ask = true): Promise<void> {
         if (!(await guard())) {
             return;
@@ -100,9 +143,17 @@ export function useErActions(ctx: Ctx) {
         );
 
         try {
-            const res = await apiJson<{ message: string }>(
+            // Se procesa en cola: si el servidor responde «en proceso» se consulta la
+            // tarea cada 3 s y el aviso muestra la etapa; al terminar se recarga el reporte.
+            const res = await runErTask<{ message: string }>(
                 ctx.url('/procesar'),
+                ctx.url('/tareas'),
                 { method: 'POST' },
+                (t) =>
+                    updateBusy(
+                        'Procesando conciliación en segundo plano…',
+                        `${t.current_step ?? 'En cola'} La pantalla se actualizará sola al terminar.`,
+                    ),
             );
             await ctx.loadDataset();
             closeSwal();
@@ -114,6 +165,15 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
+    /**
+     * Sube un archivo de fuente. Valida extensión y tamaño en el navegador y luego:
+     * - `noi_corporativo`: POST `/cargas/noi-corporativo` (no requiere procesar).
+     * - resto (estados de cuenta): POST `/cargas` y ofrece procesar la conciliación.
+     * Siempre incrementa `uploadSeq` para refrescar la bitácora de intentos.
+     * @param slot Identificador de la cuenta/fuente.
+     * @param file Archivo elegido.
+     * @param part 1 (obligatorio) o 2 (opcional) para cuentas con dos archivos.
+     */
     async function upload(slot: string, file: File, part = 1): Promise<void> {
         if (!(await guard())) {
             return;
@@ -246,17 +306,22 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
-    /** Quita el archivo 2 (opcional) de una cuenta; la confirmación la pide la tarjeta. */
+    /**
+     * Quita un archivo (en la práctica el 2, opcional) de una cuenta; la
+     * confirmación la pide la tarjeta. Los textos usan el número real de `part`.
+     */
     async function removePart(slot: string, part: number): Promise<void> {
         if (!(await guard())) {
             return;
         }
 
+        const other = part === 1 ? 2 : 1;
+
         uploadingSlot.value = slot;
         uploadingPart.value = part;
         busy(
-            'Quitando archivo 2…',
-            'Retiramos sus movimientos del reporte. Lo repetido con el archivo 1 se sigue contando una vez.',
+            `Quitando archivo ${part}…`,
+            `Retiramos sus movimientos del reporte. Lo repetido con el archivo ${other} se sigue contando una vez.`,
         );
 
         try {
@@ -267,7 +332,7 @@ export function useErActions(ctx: Ctx) {
             await ctx.loadDataset();
             const go = await swal.fire({
                 icon: 'success',
-                title: 'Archivo 2 quitado',
+                title: `Archivo ${part} quitado`,
                 html: `<p>${escapeHtml(res.message)}</p>`,
                 showCancelButton: ctx.can.procesar,
                 confirmButtonText: ctx.can.procesar
@@ -280,7 +345,7 @@ export function useErActions(ctx: Ctx) {
                 await process(false);
             }
         } catch (e) {
-            await showError(e, 'No se pudo quitar el archivo 2');
+            await showError(e, `No se pudo quitar el archivo ${part}`);
         } finally {
             uploadingSlot.value = null;
             uploadingPart.value = null;
@@ -288,6 +353,12 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
+    /**
+     * Clasifica manualmente movimientos del banco (POST `/clasificar`).
+     * @param fingerprints Huellas de los movimientos elegidos.
+     * @param payload Tratamiento asignado y notas.
+     * @returns true si el servidor lo guardó.
+     */
     async function classify(
         fingerprints: string[],
         payload: { treatment: string; notes: string },
@@ -319,7 +390,14 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
-    /** `ask=false` sólo para la cola guiada (un movimiento, acción explícita). */
+    /**
+     * Acepta el tratamiento sugerido por el sistema para los movimientos dados
+     * (POST `/aceptar-sugerencias`).
+     * `ask=false` sólo para la cola guiada (un movimiento, acción explícita).
+     * @param fingerprints Huellas de movimientos con sugerencia.
+     * @param ask Pedir confirmación antes de aplicar.
+     * @returns true si se aplicaron.
+     */
     async function acceptSuggestions(
         fingerprints: string[],
         ask = true,
@@ -380,6 +458,10 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
+    /**
+     * Guarda el estado/importe de un ajuste contable del alcance actual (PUT `/ajustes`).
+     * Vacía el historial cargado para que se vuelva a leer actualizado.
+     */
     async function saveAdjustment(p: {
         concept: string;
         state: AdjustmentState;
@@ -410,6 +492,7 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
+    /** Lee el historial de cambios de ajustes del alcance actual (GET `/ajustes/historial`). */
     async function loadLogs(): Promise<void> {
         logsLoading.value = true;
 
@@ -426,7 +509,11 @@ export function useErActions(ctx: Ctx) {
         }
     }
 
-    /** Exportar un reporte preliminar exige confirmación explícita. */
+    /**
+     * Descarga el reporte en Excel o PDF (GET `/exportar/{kind}`).
+     * Exportar un reporte preliminar exige confirmación explícita.
+     * @param kind Formato de salida.
+     */
     async function exportFile(kind: 'excel' | 'pdf'): Promise<void> {
         const blockers = ctx.blockers();
 

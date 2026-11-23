@@ -1,3 +1,12 @@
+/**
+ * Módulo: carga del dataset del Estado de Resultados.
+ *
+ * El dataset (estado de resultados, conciliación, fuentes, ajustes,
+ * validaciones…) lo calcula el servidor en
+ * GET `{base}/estado-resultados/{periodo}/dataset?alcance=…[&version=…]`
+ * (EstadoResultadosController). Este composable es la única fuente del periodo,
+ * alcance y versión mostrados en la pantalla, y mantiene la URL sincronizada.
+ */
 import { usePage } from '@inertiajs/vue3';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
@@ -7,11 +16,13 @@ import {
 } from '@/components/estado-resultados/types';
 import type { Dataset } from '@/components/estado-resultados/types';
 
+/** Alcance seleccionable (consolidado o sucursal) que el servidor permite al usuario. */
 export interface ScopeOption {
     key: string;
     label: string;
 }
 
+/** Respuesta del endpoint `/dataset`: el dataset y los alcances permitidos. */
 interface Entry {
     dataset: Dataset;
     scopes: ScopeOption[];
@@ -29,6 +40,8 @@ const MAX_CACHED = 8;
  *    nunca cae en el consolidado, que el servidor le rechaza); si no, el primero permitido.
  *  - Volver a un periodo/alcance ya visto se muestra al instante y se revalida en silencio.
  *  - Si falla una RECARGA (tras guardar algo) se conserva lo último cargado y se avisa.
+ * @param initial Periodo, alcance y versión con que abre la pantalla (props del controlador).
+ * @returns Estado reactivo, helpers de URL y `loadDataset`/`abort`.
  */
 export function useErDataset(initial: {
     periodId: number;
@@ -61,16 +74,24 @@ export function useErDataset(initial: {
     /** Momento en que empezó la carga en curso (para la pantalla de carga). */
     const loadingSince = ref<number | null>(null);
 
+    /** URL de una ruta del periodo mostrado: `{base}/estado-resultados/{periodo}{path}`. */
     const url = (path: string) =>
         `${appBase}/estado-resultados/${periodId.value}${path}`;
+    /** Query string con el alcance (y la versión consultada, si hay). */
     const scopeQuery = () =>
         `alcance=${encodeURIComponent(scope.value)}` +
         (viewVersion.value ? `&version=${viewVersion.value}` : '');
+    /** El alcance mostrado es el consolidado (true mientras no hay dataset). */
     const consolidated = computed(
         () => dataset.value?.meta.scope.consolidated ?? true,
     );
+    /** Clave de lo que se está pidiendo: periodo|alcance|versión. */
     const keyOf = () =>
         `${periodId.value}|${scope.value}|${viewVersion.value ?? ''}`;
+    /**
+     * Clave de un dataset ya cargado (periodo y alcance del propio dataset).
+     * La versión se toma de `viewVersion` actual, no del dataset.
+     */
     const datasetKey = (d: Dataset | null) =>
         d
             ? `${d.meta.period.id}|${d.meta.scope.key}|${viewVersion.value ?? ''}`
@@ -80,10 +101,14 @@ export function useErDataset(initial: {
         () => !!loadError.value && datasetKey(dataset.value) === keyOf(),
     );
 
+    /** Memoria de datasets vistos en esta pantalla (máx. MAX_CACHED). */
     const memory = new Map<string, Entry>();
+    /** Controlador de la petición en curso (se aborta al pedir otra). */
     let controller: AbortController | null = null;
+    /** Número de petición vigente: descarta respuestas de peticiones anteriores. */
     let requestId = 0;
 
+    /** Guarda una respuesta en memoria como la más reciente y recorta las más antiguas. */
     function remember(key: string, entry: Entry): void {
         memory.delete(key);
         memory.set(key, entry);
@@ -96,6 +121,8 @@ export function useErDataset(initial: {
     /**
      * Carga el dataset del periodo/alcance/versión actuales.
      * `force` (por defecto tras una acción) ignora la memoria: siempre pregunta al servidor.
+     * Ante 403/422 (alcance no permitido o inexistente en el periodo) cambia al primer
+     * alcance permitido, lo que dispara una nueva carga vía el watch de `scope`.
      */
     async function loadDataset(opts: { force?: boolean } = {}): Promise<void> {
         if (!periodId.value) {
@@ -185,7 +212,10 @@ export function useErDataset(initial: {
         loadingSince.value = null;
     }
 
-    // Mantiene la URL compartible (periodo + alcance) sin recargar la página.
+    /**
+     * Mantiene la URL compartible (periodo + alcance + versión) sin recargar la página
+     * (history.replaceState conservando el estado de Inertia).
+     */
     function syncUrl(): void {
         if (typeof window === 'undefined') {
             return;
@@ -207,6 +237,7 @@ export function useErDataset(initial: {
     // Varios cambios en el mismo ciclo (periodo → alcance → versión) = UNA sola carga.
     let scheduled = false;
 
+    /** Agrupa los cambios del mismo ciclo en un microtask: sincroniza la URL y carga (usando memoria). */
     function schedule(): void {
         if (scheduled) {
             return;
@@ -220,6 +251,7 @@ export function useErDataset(initial: {
         });
     }
 
+    /** Al cambiar de periodo: valida el alcance, vuelve a la versión vigente y agenda la carga. */
     watch(periodId, () => {
         // Se conserva el alcance si el usuario lo tiene permitido; si no, el primero permitido.
         if (!scopes.value.some((s) => s.key === scope.value)) {
@@ -229,8 +261,10 @@ export function useErDataset(initial: {
         viewVersion.value = null;
         schedule();
     });
+    /** Cambiar alcance o versión también agenda (una sola) carga. */
     watch(scope, schedule);
     watch(viewVersion, schedule);
+    /** Carga inicial al montar; al desmontar se cancela la petición en curso. */
     onMounted(() => loadDataset({ force: false }));
     onBeforeUnmount(() => controller?.abort());
 
