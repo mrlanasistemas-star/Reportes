@@ -66,7 +66,15 @@ jobs:
         run: npm run build
 
       - name: Tests
-        run: ./vendor/bin/pest
+        shell: bash
+        run: |
+          set -o pipefail
+          # Cada prueba fallida queda también como anotación del job (visible sin
+          # permisos de admin sobre los logs del repositorio).
+          ./vendor/bin/pest --colors=never 2>&1 | tee pest.log || {
+            grep -E "FAILED|Failed asserting|Exception:|Error:" pest.log | head -40 | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
 
 
   radiography-mysql:
