@@ -4707,7 +4707,8 @@ class RadiographySnapshotBuilder
             ->groupBy('b.name', 'e.expense_date')
             ->get();
 
-        $month = (int) ($period->month ?? (int) date('n'));
+        // P13 (7-dic → 3-ene) no tiene mes propio: se usa diciembre para la rejilla de días.
+        $month = min(12, (int) ($period->month ?? (int) date('n')));
         $year = (int) ($period->year ?? (int) date('Y'));
         $daysInMonth = (int) date('t', mktime(0, 0, 0, $month, 1, $year));
         $dayNames = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];

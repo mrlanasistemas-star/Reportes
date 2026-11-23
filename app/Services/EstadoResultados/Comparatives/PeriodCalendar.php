@@ -72,8 +72,9 @@ class PeriodCalendar
         for ($i = 0; $i < $months; $i++) {
             array_unshift($out, ['year' => $y, 'month' => $m, 'period' => $i === 0 ? $period : $this->byYearMonth($y, $m)]);
             if (--$m === 0) {
-                $m = 12;
                 $y--;
+                // Calendario de 13 periodos: el año anterior termina en P13 si existe.
+                $m = $this->lastMonthOf($y);
             }
         }
 
@@ -96,9 +97,17 @@ class PeriodCalendar
         if ([(int) $from->year, (int) $from->month] > [(int) $to->year, (int) $to->month]) {
             [$from, $to] = [$to, $from];
         }
-        $n = ((int) $to->year - (int) $from->year) * 12 + (int) $to->month - (int) $from->month + 1;
-        if ($n > $max) {
-            throw new \InvalidArgumentException('El rango máximo es de '.$max.' meses.');
+        // Se cuentan los periodos recorriendo hacia atrás (respeta años con P13).
+        $n = 1;
+        [$y, $m] = [(int) $to->year, (int) $to->month];
+        while ([$y, $m] !== [(int) $from->year, (int) $from->month]) {
+            if (--$m === 0) {
+                $y--;
+                $m = $this->lastMonthOf($y);
+            }
+            if (++$n > $max) {
+                throw new \InvalidArgumentException('El rango máximo es de '.$max.' meses.');
+            }
         }
         $grid = $this->grid($to, $n);
         $grid[0]['period'] = $from;
@@ -114,6 +123,16 @@ class PeriodCalendar
      */
     public static function monthLabel(int $year, int $month): string
     {
-        return (self::MONTHS[$month] ?? (string) $month).' '.$year;
+        return (self::MONTHS[$month] ?? sprintf('P%02d', $month)).' '.$year;
+    }
+
+    /**
+     * Último número de periodo mensual del año (13 si tiene P13; si no, 12).
+     *
+     * @param  int  $year  Año.
+     */
+    private function lastMonthOf(int $year): int
+    {
+        return $this->monthly()->contains(fn (Period $p) => (int) $p->year === $year && (int) $p->month === 13) ? 13 : 12;
     }
 }

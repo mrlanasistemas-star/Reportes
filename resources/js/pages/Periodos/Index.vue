@@ -144,6 +144,38 @@ const monthSelectOptions = monthNames
     .map((label, value) => ({ value: String(value), label }))
     .filter((option) => option.value !== '0');
 
+/**
+ * Opciones del mes operativo: calendario MR LANA de 13 periodos (P01–P13) por año.
+ * El número coincide con el mes que más abarca (P04 = abril … P12 = diciembre) y P13
+ * (7-dic → 3-ene) no tiene mes propio. Los periodos que ya existen en el año elegido se
+ * muestran ocupados con su nombre: elegirlos de nuevo reasignaría sus semanas.
+ */
+const operativePeriodOptions = computed(() => {
+    const year = Number(monthlyForm.year);
+    const taken = new Map<number, string>();
+
+    for (const p of props.periods) {
+        if (p.type === 'monthly' && Number(p.year) === year && p.month) {
+            taken.set(Number(p.month), p.label);
+        }
+    }
+
+    return Array.from({ length: 13 }, (_, i) => {
+        const n = i + 1;
+        const code = `P${String(n).padStart(2, '0')}`;
+        const hint = n <= 12 ? monthNames[n] : 'dic–ene';
+        const existing = taken.get(n);
+
+        return {
+            value: String(n),
+            label: existing
+                ? `${code} · ya existe (${existing})`
+                : `${code} · ${hint}`,
+            disabled: Boolean(existing),
+        };
+    });
+});
+
 /** Estado explícito de colapso por grupo de semanas (clave del grupo → colapsado). */
 const collapsedWeeklyGroups = ref<Record<string, boolean>>({});
 
@@ -861,12 +893,18 @@ function getStatusClasses(period: {
                             </div>
 
                             <div class="space-y-2">
-                                <label class="text-sm font-semibold">Mes</label>
+                                <label class="text-sm font-semibold"
+                                    >Periodo operativo</label
+                                >
                                 <SelectField
                                     v-model="monthlyForm.month"
-                                    :options="monthSelectOptions"
-                                    placeholder="Selecciona un mes"
+                                    :options="operativePeriodOptions"
+                                    placeholder="Selecciona P01 a P13"
                                 />
+                                <p class="text-xs text-muted-foreground">
+                                    13 periodos de 4 semanas por año. Los que ya
+                                    existen aparecen ocupados.
+                                </p>
                                 <InputError
                                     :message="monthlyForm.errors.month"
                                 />

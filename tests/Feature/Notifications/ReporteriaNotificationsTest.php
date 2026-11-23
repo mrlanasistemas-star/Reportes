@@ -129,7 +129,7 @@ it('notifica al usuario cuando la generación del reporte falla', function () {
     Notification::assertSentTo($user, RadiographyGenerationFinished::class, function (RadiographyGenerationFinished $n) use ($run, $user) {
         $data = $n->toArray($user);
 
-        return $n->runId === $run->id && $n->success === false && $data['kind'] === 'failed' && $data['period_label'] === 'Junio 2026';
+        return $n->runId === $run->id && $n->success === false && $data['kind'] === 'failed' && str_starts_with($data['period_label'], 'Junio 2026');
     });
     Mail::assertSent(ReportGenerationFailedMail::class);
 });

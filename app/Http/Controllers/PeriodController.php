@@ -168,7 +168,8 @@ class PeriodController extends Controller
         $validated = $request->validate([
             'type' => ['required', 'string', 'in:weekly,monthly,bimonthly,quarterly,semiannual,annual'],
             'year' => ['required', 'integer', 'min:2020', 'max:2100'],
-            'month' => ['required', 'integer', 'min:1', 'max:12'],
+            // Semanas: mes calendario 1-12. Mes operativo: periodo P01-P13 (calendario de 13 periodos).
+            'month' => ['required', 'integer', 'min:1', $request->input('type') === 'monthly' ? 'max:'.PeriodGenerationService::MAX_OPERATIVE_PERIODS : 'max:12'],
             'week_ids' => ['nullable', 'array'],
             'week_ids.*' => ['integer', 'exists:periods,id'],
         ], [
@@ -179,7 +180,7 @@ class PeriodController extends Controller
             'month.required' => 'El mes base es obligatorio.',
             'month.integer' => 'El mes base debe ser numérico.',
             'month.min' => 'El mes base no es válido.',
-            'month.max' => 'El mes base no es válido.',
+            'month.max' => $request->input('type') === 'monthly' ? 'El periodo operativo debe ser de P01 a P13.' : 'El mes base no es válido.',
         ]);
 
         $type = $validated['type'];
@@ -288,7 +289,7 @@ class PeriodController extends Controller
                 ->where('id', '!=', $period->id)
                 ->where('type', $period->type)
                 ->get(['id', 'name', 'custom_name', 'type', 'year', 'month', 'sequence'])
-                ->first(fn (Period $p) => mb_strtolower($p->label) === mb_strtolower($name));
+                ->first(fn (Period $p) => mb_strtolower($p->shortLabel()) === mb_strtolower($name));
 
             if ($duplicate) {
                 return back()->with('error', "Ya existe otro periodo llamado \"{$duplicate->label}\". Usa un nombre distinto para no confundirlos.");

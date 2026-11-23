@@ -252,7 +252,7 @@ class DashboardController extends Controller
                 ->header('Content-Type', 'text/html; charset=UTF-8');
         }
 
-        $filename = 'dashboard-'.Str::slug($period->label).($branchName ? '-'.Str::slug($branchName) : '-todas-las-sucursales').'.pdf';
+        $filename = 'dashboard-'.Str::slug($period->shortLabel()).($branchName ? '-'.Str::slug($branchName) : '-todas-las-sucursales').'.pdf';
 
         return response()->download($path, $filename, ['Content-Type' => 'application/pdf'])->deleteFileAfterSend();
     }
@@ -306,7 +306,7 @@ class DashboardController extends Controller
                 ->header('Content-Type', 'text/html; charset=UTF-8');
         }
 
-        $filename = 'dashboard-'.Str::slug($period->label).($branchName ? '-'.Str::slug($branchName) : '-todas-las-sucursales').'.xlsx';
+        $filename = 'dashboard-'.Str::slug($period->shortLabel()).($branchName ? '-'.Str::slug($branchName) : '-todas-las-sucursales').'.xlsx';
 
         return response()->download($path, $filename, ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])->deleteFileAfterSend();
     }

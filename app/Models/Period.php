@@ -115,16 +115,47 @@ class Period extends Model
      * Accessor `label`: nombre visible del periodo. Usa `custom_name` si el usuario
      * capturó uno; si no, el nombre del sistema (systemLabel()).
      *
+     * 23-nov-2026: un periodo operativo (P01-P13) no se entiende solo con su nombre (dos
+     * pueden caer en el mismo mes calendario), así que el mensual se muestra SIEMPRE con
+     * su rango de fechas: «P11 2026 (12 oct – 8 nov 2026)». Sin fechas: shortLabel().
+     *
      * @return string Etiqueta a mostrar.
      */
     public function getLabelAttribute(): string
     {
-        $custom = trim((string) ($this->custom_name ?? ''));
-        if ($custom !== '') {
-            return $custom;
+        $base = $this->shortLabel();
+
+        if ($this->type === 'monthly' && $this->start_date && $this->end_date) {
+            return $base.' ('.self::dateRangeLabel($this->start_date, $this->end_date).')';
         }
 
-        return $this->systemLabel();
+        return $base;
+    }
+
+    /**
+     * Nombre visible SIN fechas: el manual si existe; si no, el del sistema. Para ejes de
+     * gráficas y para comparar nombres (p. ej. evitar duplicados al renombrar).
+     */
+    public function shortLabel(): string
+    {
+        $custom = trim((string) ($this->custom_name ?? ''));
+
+        return $custom !== '' ? $custom : $this->systemLabel();
+    }
+
+    /**
+     * Rango corto en español: «12 oct – 8 nov 2026», o «7 dic 2026 – 3 ene 2027» si cruza
+     * de año.
+     */
+    public static function dateRangeLabel(\DateTimeInterface $start, \DateTimeInterface $end): string
+    {
+        $m = [1 => 'ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+        $a = (int) $start->format('j').' '.$m[(int) $start->format('n')];
+        $b = (int) $end->format('j').' '.$m[(int) $end->format('n')].' '.$end->format('Y');
+
+        return $start->format('Y') === $end->format('Y')
+            ? "{$a} – {$b}"
+            : "{$a} {$start->format('Y')} – {$b}";
     }
 
     /**

@@ -31,7 +31,8 @@ it('renames a period without touching its id, code, dates or related records', f
     $this->actingAs($user)->patch("/periodos/{$period->id}/nombre", ['custom_name' => '  P04   2026 '])->assertRedirect();
 
     $fresh = $period->fresh();
-    expect($fresh->label)->toBe('P04 2026')
+    expect($fresh->label)->toBe('P04 2026 (30 mar – 26 abr 2026)')
+        ->and($fresh->shortLabel())->toBe('P04 2026')
         ->and($fresh->custom_name)->toBe('P04 2026')
         ->and($fresh->name)->toBe('Abril 2026')            // nombre del sistema intacto
         ->and($fresh->systemLabel())->toBe('Abril 2026')
@@ -48,7 +49,7 @@ it('restores the system name when the custom name is empty or equal to it', func
     $period->forceFill(['custom_name' => 'P04 2026'])->save();
 
     $this->actingAs($user)->patch("/periodos/{$period->id}/nombre", ['custom_name' => ''])->assertRedirect();
-    expect($period->fresh()->custom_name)->toBeNull()->and($period->fresh()->label)->toBe('Abril 2026');
+    expect($period->fresh()->custom_name)->toBeNull()->and($period->fresh()->shortLabel())->toBe('Abril 2026');
 
     $this->actingAs($user)->patch("/periodos/{$period->id}/nombre", ['custom_name' => 'abril 2026'])->assertRedirect();
     expect($period->fresh()->custom_name)->toBeNull();
@@ -86,7 +87,7 @@ it('keeps the custom name when the system regenerates the period', function () {
     $regenerated = app(PeriodGenerationService::class)->generateMonthly(2026, 4, [$week->id]);
 
     expect($regenerated->id)->toBe($period->id)
-        ->and($period->fresh()->label)->toBe('P04 2026')
+        ->and($period->fresh()->shortLabel())->toBe('P04 2026')
         ->and($period->fresh()->name)->toBe('Abril 2026');
 });
 
@@ -103,7 +104,7 @@ it('exposes the custom and system names in the API', function () {
         ->assertOk()
         ->assertJsonPath('id', $period->id)
         ->assertJsonPath('code', 'M-2026-04')
-        ->assertJsonPath('label', 'P04 2026')
+        ->assertJsonPath('label', 'P04 2026 (30 mar – 26 abr 2026)')
         ->assertJsonPath('custom_name', 'P04 2026')
         ->assertJsonPath('system_label', 'Abril 2026');
 });

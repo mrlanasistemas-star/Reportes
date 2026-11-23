@@ -375,7 +375,7 @@ it('keeps previous periods visible in the labor history and never shows unconfir
         ->and($props['summary']['pendientes_conciliacion'])->toBe(1)
         ->and($props['summary']['plantilla'])->toBe(1)
         ->and(collect($props['labor']['pending'])->pluck('nombre_normalizado')->all())->toBe(['hist dos'])
-        ->and(collect($props['labor_history'])->pluck('label')->all())->toContain('Abril 2026', 'Mayo 2026')
+        ->and(collect($props['labor_history'])->pluck('label')->map(fn ($l) => preg_replace('/ \(.*\)$/', '', (string) $l))->all())->toContain('Abril 2026', 'Mayo 2026')
         ->and($props['can_reconcile'])->toBeTrue();
 
     // Construir/consultar Mayo no reescribe Abril.

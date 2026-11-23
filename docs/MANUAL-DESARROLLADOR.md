@@ -156,6 +156,18 @@ flowchart LR
 
 ### 3.2 Periodos
 
+**Calendario MR LANA de 13 periodos (P01-P13).** Cada año tiene 13 periodos operativos de
+4 semanas (lunes a domingo). El campo `month` de un periodo `monthly` es su **número de
+periodo**: P04-P12 coinciden con el mes calendario que más abarcan y **P13** (7-dic → 3-ene)
+no tiene mes propio (nombre del sistema `P13 AAAA`, código `M-AAAA-13`). En Periodos → «Configurar
+mes operativo» se elige P01-P13; los que ya existen aparecen ocupados. Si se elige un periodo
+que ya existe y tiene archivos cargados, **nunca** se le reasignan las semanas (antes, registrar
+«Noviembre» otra vez para P12 pisaba P11). P13 se suma al último bimestre, trimestre y semestre
+y al anual **solo** si ese año ya tiene P13. El nombre visible de un periodo mensual siempre lleva
+su rango de fechas: «P11 2026 (12 oct – 8 nov 2026)» (`Period::label`); sin fechas:
+`Period::shortLabel()`. El selector del Estado de Resultados es una cuadrícula P01-P13.
+Pruebas: `tests/Feature/OperativePeriodsThirteenTest.php`.
+
 Tabla `periods`, modelo `App\Models\Period`. Tipos (`type`): `weekly`, `monthly`, `bimonthly`,
 `quarterly`, `semiannual`, `annual`.
 

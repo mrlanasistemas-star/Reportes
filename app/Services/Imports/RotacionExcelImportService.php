@@ -512,6 +512,10 @@ class RotacionExcelImportService
         }
 
         // Primero: campo month del periodo (lo más confiable — start_date puede caer en el mes anterior)
+        // P13 (7-dic → 3-ene) cae casi todo en diciembre.
+        if ((int) $period->month === 13) {
+            return self::MESES_ES[12];
+        }
         if (! empty($period->month) && isset(self::MESES_ES[(int) $period->month])) {
             return self::MESES_ES[(int) $period->month];
         }

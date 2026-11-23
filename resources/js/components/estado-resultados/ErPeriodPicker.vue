@@ -58,7 +58,7 @@ const props = withDefaults(
 
 const periodId = defineModel<number>({ required: true });
 
-/** Nombres completos de los meses. */
+/** Nombres completos de los meses (para fechas). */
 const MONTHS = [
     'Enero',
     'Febrero',
@@ -73,6 +73,15 @@ const MONTHS = [
     'Noviembre',
     'Diciembre',
 ];
+/**
+ * Calendario MR LANA: 13 periodos de 4 semanas por año (P01–P13). El índice de celda
+ * (0-12) sale del código M-AAAA-NN del periodo.
+ */
+const PERIOD_SLOTS = Array.from(
+    { length: 13 },
+    (_, i) => `P${String(i + 1).padStart(2, '0')}`,
+);
+const LAST_SLOT = PERIOD_SLOTS.length - 1;
 /** Abreviaturas de los meses para el rango de fechas. */
 const SHORT = [
     'ene',
@@ -92,7 +101,7 @@ const SHORT = [
 /** Mes contable identificado por año y mes. */
 interface Slot {
     year: number;
-    month: number; // 0-11
+    month: number; // 0-12 (P01-P13)
 }
 
 /**
@@ -201,7 +210,7 @@ function splitLabel(p: PeriodOption | null): { month: string; year: string } {
         return { month: p?.label ?? 'Sin periodo', year: '' };
     }
 
-    return { month: MONTHS[s.month], year: String(s.year) };
+    return { month: PERIOD_SLOTS[s.month] ?? p.label, year: String(s.year) };
 }
 
 /** Mes y año que muestra el disparador. */
@@ -239,7 +248,7 @@ watch(open, (on) => {
 
 /** Celdas de los 12 meses del año visible con su periodo, selección, "reciente" y estado. */
 const cells = computed(() =>
-    MONTHS.map((name, month) => {
+    PERIOD_SLOTS.map((name, month) => {
         const slot = { year: viewYear.value, month };
         const period = bySlot.value.get(keyOf(slot)) ?? null;
         const status = period ? props.statuses[period.id] : undefined;
@@ -247,7 +256,8 @@ const cells = computed(() =>
         return {
             month,
             name,
-            short: name.slice(0, 3),
+            short: name,
+            range: period ? rangeText(period) : '',
             period,
             selected: !!period && period.id === periodId.value,
             latest: !!period && period.id === latest.value?.id,
@@ -255,9 +265,9 @@ const cells = computed(() =>
         };
     }),
 );
-/** Celdas agrupadas en 4 filas de 3 meses. */
+/** Celdas agrupadas en filas de 4 periodos (13 → 4 + 4 + 4 + 1). */
 const rows = computed(() =>
-    [0, 1, 2, 3].map((r) => cells.value.slice(r * 3, r * 3 + 3)),
+    [0, 1, 2, 3].map((r) => cells.value.slice(r * 4, r * 4 + 4)),
 );
 /** Leyenda solo de los estados que sí aparecen en el año visible. */
 const legend = computed(() => {
@@ -358,12 +368,12 @@ function moveTo(year: number, month: number): void {
     let m = month;
 
     while (m < 0) {
-        m += 12;
+        m += PERIOD_SLOTS.length;
         y--;
     }
 
-    while (m > 11) {
-        m -= 12;
+    while (m > LAST_SLOT) {
+        m -= PERIOD_SLOTS.length;
         y++;
     }
 
@@ -399,10 +409,10 @@ function onGridKey(e: KeyboardEvent): void {
     const map: Record<string, () => void> = {
         ArrowLeft: () => moveTo(y, m - 1),
         ArrowRight: () => moveTo(y, m + 1),
-        ArrowUp: () => moveTo(y, m - 3),
-        ArrowDown: () => moveTo(y, m + 3),
+        ArrowUp: () => moveTo(y, m - 4),
+        ArrowDown: () => moveTo(y, m + 4),
         Home: () => moveTo(y, 0),
-        End: () => moveTo(y, 11),
+        End: () => moveTo(y, LAST_SLOT),
         PageUp: () => moveTo(y - 1, m),
         PageDown: () => moveTo(y + 1, m),
     };
@@ -554,7 +564,7 @@ const arrowCls =
                         <div
                             :key="viewYear"
                             role="grid"
-                            :aria-label="`Meses de ${viewYear}`"
+                            :aria-label="`Periodos de ${viewYear}`"
                             :data-year="viewYear"
                             class="flex flex-col gap-1.5"
                             @keydown="onGridKey"
@@ -563,7 +573,7 @@ const arrowCls =
                                 v-for="(row, r) in rows"
                                 :key="r"
                                 role="row"
-                                class="grid grid-cols-3 gap-1.5"
+                                class="grid grid-cols-4 gap-1.5"
                             >
                                 <div
                                     v-for="c in row"
@@ -583,7 +593,7 @@ const arrowCls =
                                                 ? `${c.name} ${viewYear}${c.status ? ', ' + c.status.label : ''}${c.latest ? ', el más reciente' : ''}`
                                                 : `${c.name} ${viewYear}, sin periodo`
                                         "
-                                        class="relative flex h-14 w-full flex-col items-center justify-center rounded-xl text-sm transition focus-visible:ring-3 focus-visible:ring-emerald-500/40 focus-visible:outline-none sm:h-12"
+                                        class="relative flex min-h-16 w-full flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-1.5 text-sm transition focus-visible:ring-3 focus-visible:ring-emerald-500/40 focus-visible:outline-none"
                                         :class="
                                             c.selected
                                                 ? 'bg-emerald-700 font-semibold text-white shadow-[0_8px_18px_-10px_rgb(4_120_87/0.9)] dark:bg-emerald-500 dark:text-emerald-950'
@@ -607,6 +617,16 @@ const arrowCls =
                                                 ]"
                                                 aria-hidden="true"
                                         /></span>
+                                        <span
+                                            v-if="c.range"
+                                            class="text-[0.6875rem] leading-none tabular-nums"
+                                            :class="
+                                                c.selected
+                                                    ? 'text-white/85 dark:text-emerald-950/75'
+                                                    : 'text-muted-foreground'
+                                            "
+                                            >{{ c.range }}</span
+                                        >
                                         <span
                                             v-if="c.latest"
                                             class="text-[0.625rem] leading-none font-medium"

@@ -16,6 +16,13 @@ use Illuminate\Support\Collection;
  */
 class PeriodGenerationService
 {
+    /**
+     * Calendario MR LANA: 13 periodos de 4 semanas por ejercicio (P01-P13). El campo
+     * `month` de un periodo mensual operativo es su número de periodo; P04-P12 coinciden
+     * con el mes calendario que más abarcan y P13 (7-dic → 3-ene) no tiene mes propio.
+     */
+    public const MAX_OPERATIVE_PERIODS = 13;
+
     // ── Punto de entrada principal ────────────────────────────────────
 
     /**
@@ -175,6 +182,10 @@ class PeriodGenerationService
      */
     public function generateMonthly(int $year, int $month, array $weekIds = []): Period
     {
+        if ($month < 1 || $month > self::MAX_OPERATIVE_PERIODS) {
+            throw new \RuntimeException('El periodo operativo debe ser de P01 a P'.self::MAX_OPERATIVE_PERIODS.'.');
+        }
+
         if (! empty($weekIds)) {
             $weeks = Period::query()
                 ->whereIn('id', $weekIds)
@@ -195,8 +206,29 @@ class PeriodGenerationService
             5 => 'Mayo',  6 => 'Junio',   7 => 'Julio',    8 => 'Agosto',
             9 => 'Septiembre', 10 => 'Octubre', 11 => 'Noviembre', 12 => 'Diciembre',
         ];
-        $monthName = $monthNames[$month];
+        // P13 no tiene mes calendario propio (7-dic → 3-ene): se nombra por su número.
+        $monthName = $monthNames[$month] ?? null;
         $componentIds = $weeks->sortBy('start_date')->pluck('id')->map(fn ($id) => (int) $id)->values()->all();
+
+        // Protección (23-nov-2026): elegir un periodo que YA existe con otras semanas y con
+        // datos cargados reasignaba sus semanas en silencio (p. ej. registrar «Noviembre»
+        // otra vez para P12 pisaba P11). Con datos nunca se reasigna; sin datos sí se
+        // permite corregir sus semanas, como antes.
+        $existing = Period::query()->where('type', 'monthly')->where('year', $year)->where('month', $month)->where('sequence', 1)->first();
+        if ($existing) {
+            $current = array_map('intval', $existing->component_period_ids ?? []);
+            $sameWeeks = $current === $componentIds;
+            $hasData = $existing->reportUploads()->exists() || $existing->processRuns()->exists();
+            if (! $sameWeeks && $hasData) {
+                $next = $month < self::MAX_OPERATIVE_PERIODS ? sprintf(' Para el siguiente periodo elige P%02d.', $month + 1) : '';
+                throw new \RuntimeException(sprintf(
+                    'Ya existe %s (P%02d %d, del %s al %s) con archivos cargados: no se le cambian las semanas.%s',
+                    $existing->label, $month, $year,
+                    optional($existing->start_date)->format('d/m/Y'), optional($existing->end_date)->format('d/m/Y'),
+                    $next
+                ));
+            }
+        }
         $firstWeek = $weeks->sortBy('start_date')->first();
         $lastWeek = $weeks->sortByDesc('end_date')->first();
 
@@ -208,7 +240,7 @@ class PeriodGenerationService
                 'sequence' => 1,
             ],
             [
-                'name' => "{$monthName} {$year}",
+                'name' => $monthName ? "{$monthName} {$year}" : sprintf('P%02d %d', $month, $year),
                 'code' => sprintf('M-%04d-%02d', $year, $month),
                 'start_date' => $firstWeek->start_date->toDateString(),
                 'end_date' => $lastWeek->end_date->toDateString(),
@@ -239,6 +271,21 @@ class PeriodGenerationService
     }
 
     /**
+     * Agrega P13 al último bloque de una agrupación SOLO si ese año ya tiene P13; un año
+     * con 12 periodos se agrupa exactamente igual que antes.
+     *
+     * @param  int  $year  Año.
+     * @param  int[]  $months  Periodos del bloque.
+     * @return int[] Periodos del bloque, con 13 al final si existe P13.
+     */
+    private function withP13(int $year, array $months): array
+    {
+        $hasP13 = Period::query()->where('type', 'monthly')->where('year', $year)->where('month', 13)->exists();
+
+        return $hasP13 ? array_merge($months, [13]) : $months;
+    }
+
+    /**
      * Sincroniza los 6 bimestres del año (código BI-AAAA-NN).
      *
      * @param  int  $year  Año.
@@ -248,7 +295,7 @@ class PeriodGenerationService
     {
         $blocks = [
             1 => [1, 2], 2 => [3, 4],  3 => [5, 6],
-            4 => [7, 8], 5 => [9, 10], 6 => [11, 12],
+            4 => [7, 8], 5 => [9, 10], 6 => $this->withP13($year, [11, 12]),
         ];
 
         return $this->syncGroupedBlocks('bimonthly', $year, $blocks, 'Bimestre', 'BI');
@@ -264,7 +311,7 @@ class PeriodGenerationService
     {
         $blocks = [
             1 => [1, 2, 3], 2 => [4, 5, 6],
-            3 => [7, 8, 9], 4 => [10, 11, 12],
+            3 => [7, 8, 9], 4 => $this->withP13($year, [10, 11, 12]),
         ];
 
         return $this->syncGroupedBlocks('quarterly', $year, $blocks, 'Trimestre', 'TRI');
@@ -280,7 +327,7 @@ class PeriodGenerationService
     {
         $blocks = [
             1 => [1, 2, 3, 4, 5, 6],
-            2 => [7, 8, 9, 10, 11, 12],
+            2 => $this->withP13($year, [7, 8, 9, 10, 11, 12]),
         ];
 
         return $this->syncGroupedBlocks('semiannual', $year, $blocks, 'Semestre', 'SEM');
@@ -295,7 +342,7 @@ class PeriodGenerationService
      */
     private function syncAnnualPeriods(int $year): Collection
     {
-        $blocks = [1 => range(1, 12)];
+        $blocks = [1 => $this->withP13($year, range(1, 12))];
         $periods = $this->syncGroupedBlocks('annual', $year, $blocks, 'Anual', 'AN', includeYearInCode: true);
 
         if ($periods->isEmpty()) {

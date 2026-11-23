@@ -186,7 +186,7 @@ export function usePeriodosIndex(props: Props) {
         }
 
         if (type === 'monthly') {
-            return `Periodo mensual: ${monthNames[month] ?? 'Periodo'} ${year}`;
+            return `Periodo operativo: P${String(month).padStart(2, '0')} ${year}`;
         }
 
         if (type === 'bimonthly') {
@@ -246,7 +246,8 @@ export function usePeriodosIndex(props: Props) {
     const submitConfigureMonth = async () => {
         const year = Number(monthlyForm.year);
         const month = Number(monthlyForm.month);
-        const monthLabel = monthNames[month] ?? 'Periodo';
+        // Mes operativo = periodo P01–P13 del calendario MR LANA.
+        const monthLabel = `P${String(month).padStart(2, '0')}`;
 
         if (!year || !month) {
             await Swal.fire({

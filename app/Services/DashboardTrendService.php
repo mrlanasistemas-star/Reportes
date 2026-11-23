@@ -85,7 +85,7 @@ class DashboardTrendService
         return $selected->map(function (Period $p) use ($branchId, $versions) {
             $version = $versions[$p->id] ?? null;
             if ($version === null) {
-                return ['label' => $p->label, 'period_id' => $p->id, 'ebitda' => null, 'opex' => null, 'available' => false];
+                return ['label' => $p->shortLabel(), 'period_id' => $p->id, 'ebitda' => null, 'opex' => null, 'available' => false];
             }
 
             return Cache::remember($this->pointKey($p->id, $version, $branchId), self::POINT_TTL, fn () => $this->point($p, $branchId));
@@ -124,12 +124,12 @@ class DashboardTrendService
         $s = $this->exportService->buildSnapshot($p, $config);
 
         if ($branchId && ! ($s['scope']['available'] ?? true)) {
-            return ['label' => $p->label, 'period_id' => $p->id, 'ebitda' => null, 'opex' => null, 'available' => false];
+            return ['label' => $p->shortLabel(), 'period_id' => $p->id, 'ebitda' => null, 'opex' => null, 'available' => false];
         }
 
         // MISMO redondeo que los KPI de DashboardController::payloadForPeriod().
         return [
-            'label' => $p->label,
+            'label' => $p->shortLabel(),
             'period_id' => $p->id,
             'ebitda' => round((float) ($s['summary']['ebitda_final'] ?? 0), 2),
             'opex' => round((float) ($s['summary']['opex_total'] ?? 0), 2),
