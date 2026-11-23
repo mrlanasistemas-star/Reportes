@@ -72,7 +72,7 @@ class AuditPayrollCommand extends Command
         )));
 
         $this->info('════════════════════════════════════════════════════════════');
-        $this->info("  AUDITORÍA NÓMINA — {$period->name} (ID {$period->id})");
+        $this->info("  AUDITORÍA NÓMINA — {$period->label} (ID {$period->id})");
         $this->info('════════════════════════════════════════════════════════════');
         $this->line('  IDs de datos: [' . implode(', ', $dataIds) . ']');
 

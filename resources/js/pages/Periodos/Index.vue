@@ -9,6 +9,7 @@ import {
     Info,
     Lock,
     LockOpen,
+    Pencil,
     Plus,
     Search,
     Sparkles,
@@ -26,6 +27,8 @@ const props = withDefaults(
         periods: Array<{
             id: number
             name?: string | null
+            custom_name?: string | null
+            system_label?: string | null
             code: string
             type?: string | null
             sequence?: number | null
@@ -90,6 +93,7 @@ const {
     submitConfigureMonth,
     togglePeriod,
     destroyMonthly,
+    renamePeriod,
 } = usePeriodosIndex(props)
 
 form.type = 'weekly'
@@ -826,9 +830,25 @@ function getStatusClasses(period: {
 
                                 <!-- Header: nombre + estado -->
                                 <div class="flex items-start justify-between gap-3">
-                                    <span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
-                                        {{ period.label }}
-                                    </span>
+                                    <div class="flex min-w-0 flex-col items-start gap-1">
+                                        <div class="flex items-center gap-1">
+                                            <span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                                {{ period.label }}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                class="inline-flex size-7 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                                :aria-label="`Cambiar el nombre de ${period.label}`"
+                                                title="Cambiar nombre"
+                                                @click="renamePeriod(period)"
+                                            >
+                                                <Pencil class="size-3.5" aria-hidden="true" />
+                                            </button>
+                                        </div>
+                                        <span v-if="period.custom_name" class="text-[11px] text-muted-foreground">
+                                            Nombre del sistema: {{ period.system_label }}
+                                        </span>
+                                    </div>
                                     <span class="shrink-0 rounded-full border px-3 py-1 text-xs font-semibold" :class="getStatusClasses(period)">
                                         {{ getStatusLabel(period) }}
                                     </span>

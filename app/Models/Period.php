@@ -10,6 +10,7 @@ class Period extends Model {
 
     protected $fillable = [
         'name',
+        'custom_name',
         'code',
         'type',
         'year',
@@ -56,7 +57,20 @@ class Period extends Model {
 
     // ── Label ──────────────────────────────────────────────────────────
 
+    // Nombre manual (23-nov-2026): si el usuario capturó uno, es el que se muestra en
+    // todo el sistema y en la API. Solo cambia la etiqueta: id, code, fechas y todas
+    // las relaciones por period_id quedan intactas.
     public function getLabelAttribute(): string {
+        $custom = trim((string) ($this->custom_name ?? ''));
+        if ($custom !== '') {
+            return $custom;
+        }
+
+        return $this->systemLabel();
+    }
+
+    /** Nombre que asigna el sistema (sin el nombre manual). */
+    public function systemLabel(): string {
         if (!empty($this->name)) {
             return $this->name;
         }

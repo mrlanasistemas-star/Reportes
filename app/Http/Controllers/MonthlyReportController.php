@@ -616,7 +616,7 @@ class MonthlyReportController extends Controller {
         return Period::query()
             ->when($visibleIds !== null, fn ($q) => $q->whereIn('id', $visibleIds))
             ->orderByDesc('year')->orderByDesc('month')->orderByDesc('sequence')
-            ->get(['id', 'name', 'code', 'type', 'year', 'month'])
+            ->get(['id', 'name', 'custom_name', 'code', 'type', 'year', 'month'])
             ->map(fn ($p) => [
                 'id'           => $p->id,
                 'label'        => $p->label,

@@ -45,7 +45,7 @@ class RepairUploadStatusCommand extends Command
         )));
 
         $this->info("════════════════════════════════════════════════════════════");
-        $this->info("  REPAIR UPLOAD STATUS — {$period->name} (ID {$period->id})");
+        $this->info("  REPAIR UPLOAD STATUS — {$period->label} (ID {$period->id})");
         $this->info("  Modo: " . ($dryRun ? 'DRY-RUN (sin cambios)' : ($reimport ? 'REIMPORT' : 'REPARACIÓN')) );
         $this->info("════════════════════════════════════════════════════════════");
 

@@ -36,7 +36,7 @@ class EmployeeBranchAssignmentController extends Controller
             ->orderByDesc('year')
             ->orderByDesc('month')
             ->orderByDesc('sequence')
-            ->get(['id', 'name', 'code', 'type', 'year', 'month', 'sequence', 'start_date', 'end_date']);
+            ->get(['id', 'name', 'custom_name', 'code', 'type', 'year', 'month', 'sequence', 'start_date', 'end_date']);
 
         $selectedPeriod = $periods->firstWhere('id', (int) $request->integer('period_id'))
             ?? $periods->first();

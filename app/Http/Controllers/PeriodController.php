@@ -72,6 +72,8 @@ class PeriodController extends Controller
             return [
                 'id'                     => $period->id,
                 'name'                   => $period->name,
+                'custom_name'            => $period->custom_name,
+                'system_label'           => $period->systemLabel(),
                 'code'                   => $period->code,
                 'type'                   => $period->type,
                 'sequence'               => $period->sequence,
@@ -190,6 +192,58 @@ class PeriodController extends Controller
         $generator->syncDerivedPeriods($year);
 
         return back()->with('success', "El mes operativo \"{$label}\" fue eliminado. Las semanas base siguen disponibles.");
+    }
+
+    /**
+     * Nombre manual del periodo (23-nov-2026). SOLO cambia la etiqueta visible:
+     * id, code, fechas, semanas y todo lo ligado por period_id (ingresos, gastos,
+     * cargas, radiografías, Estado de Resultados) quedan exactamente igual.
+     * Enviar el nombre vacío devuelve el nombre del sistema.
+     */
+    public function rename(Request $request, Period $period): RedirectResponse
+    {
+        $validated = $request->validate([
+            'custom_name' => ['nullable', 'string', 'max:120'],
+        ], [
+            'custom_name.string' => 'El nombre debe ser texto.',
+            'custom_name.max'    => 'El nombre no puede tener más de 120 caracteres.',
+        ]);
+
+        $name = preg_replace('/\s+/u', ' ', trim((string) ($validated['custom_name'] ?? '')));
+        $name = $name === '' ? null : $name;
+
+        if ($name !== null && mb_strtolower($name) === mb_strtolower($period->systemLabel())) {
+            $name = null; // igual al del sistema: no hace falta guardarlo como manual
+        }
+
+        $before = $period->label;
+
+        if ($name !== null) {
+            $duplicate = Period::query()
+                ->where('id', '!=', $period->id)
+                ->where('type', $period->type)
+                ->get(['id', 'name', 'custom_name', 'type', 'year', 'month', 'sequence'])
+                ->first(fn (Period $p) => mb_strtolower($p->label) === mb_strtolower($name));
+
+            if ($duplicate) {
+                return back()->with('error', "Ya existe otro periodo llamado \"{$duplicate->label}\". Usa un nombre distinto para no confundirlos.");
+            }
+        }
+
+        // Solo la columna del nombre manual: nunca se tocan id, code ni fechas.
+        $period->forceFill(['custom_name' => $name])->save();
+
+        \Illuminate\Support\Facades\Log::info('periodos.renombrar', [
+            'period_id' => $period->id,
+            'code'      => $period->code,
+            'antes'     => $before,
+            'despues'   => $period->label,
+            'user_id'   => $request->user()?->id,
+        ]);
+
+        return back()->with('success', $name === null
+            ? "El periodo volvió a su nombre del sistema: \"{$period->label}\"."
+            : "El periodo \"{$before}\" ahora se llama \"{$period->label}\". Su información no cambió.");
     }
 
     public function close(Period $period, PeriodCloseGuardService $guard): RedirectResponse

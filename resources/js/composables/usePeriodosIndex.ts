@@ -5,6 +5,8 @@ import { computed, ref } from 'vue'
 type PeriodItem = {
     id: number
     name?: string | null
+    custom_name?: string | null
+    system_label?: string | null
     code: string
     type?: string | null
     sequence?: number | null
@@ -284,7 +286,37 @@ return
         })
     }
 
+    // Nombre manual (23-nov-2026): solo cambia la etiqueta; la información del
+    // periodo (ingresos, gastos, cargas, reportes) sigue ligada a su id.
+    const renamePeriod = async (period: PeriodItem) => {
+        const escape = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
+        const systemLabel = period.system_label ?? period.label
+
+        const result = await Swal.fire({
+            title: 'Cambiar nombre del periodo',
+            html: `<p style="font-size:14px;margin-bottom:6px">Nombre del sistema: <strong>${escape(systemLabel)}</strong></p>`
+                + '<p style="font-size:13px;color:#64748b">Solo cambia cómo se ve el nombre. Las fechas, las semanas y toda la información del periodo se conservan igual. Déjalo vacío para volver al nombre del sistema.</p>',
+            input: 'text',
+            inputValue: period.custom_name ?? '',
+            inputPlaceholder: systemLabel,
+            inputAttributes: { maxlength: '120', 'aria-label': 'Nuevo nombre del periodo' },
+            showCancelButton: true,
+            confirmButtonText: 'Guardar nombre',
+            cancelButtonText: 'Cancelar',
+            inputValidator: (value) => (value && value.trim().length > 120 ? 'Máximo 120 caracteres.' : undefined),
+        })
+
+        if (!result.isConfirmed) {
+            return
+        }
+
+        router.patch(`/periodos/${period.id}/nombre`, { custom_name: (result.value ?? '').trim() || null }, {
+            preserveScroll: true,
+        })
+    }
+
     return {
+        renamePeriod,
         filters,
         form,
         monthlyForm,

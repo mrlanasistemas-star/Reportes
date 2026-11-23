@@ -126,6 +126,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->group(function () {
             Route::get('/', [PeriodController::class, 'index'])->name('index');
             Route::post('/', [PeriodController::class, 'store'])->middleware('permission:periodos,crear')->name('store');
+            // Nombre manual (23-nov-2026): solo la etiqueta, nunca id/fechas/relaciones.
+            Route::patch('/{period}/nombre', [PeriodController::class, 'rename'])->middleware('permission:periodos,crear')->name('rename');
             Route::delete('/{period}', [PeriodController::class, 'destroy'])->middleware('permission:periodos,eliminar')->name('destroy');
             Route::post('/{period}/close', [PeriodController::class, 'close'])->middleware('permission:periodos,cerrar')->name('close');
             Route::post('/{period}/open', [PeriodController::class, 'open'])->middleware('permission:periodos,cerrar')->name('open');

@@ -301,7 +301,7 @@ class OkrPlacementAttributionResolver
                 ->orWhereIn('id', DB::table('period_employee_rosters')->whereIn('employee_id', $group)->select('period_id')))
             ->orderByDesc('start_date')
             ->orderByDesc('id')
-            ->first(['id', 'name']);
+            ->first(['id', 'name', 'custom_name']);
 
         if ($period === null) {
             return $this->periodBranchCache[$key] = ['branches' => [], 'label' => null];
@@ -316,7 +316,7 @@ class OkrPlacementAttributionResolver
             ->map(fn ($n) => BranchRouteCatalog::officialBranchFor((string) $n) ?? mb_strtoupper(trim((string) $n)))
             ->unique()->values()->all();
 
-        return $this->periodBranchCache[$key] = ['branches' => $names, 'label' => $period->name];
+        return $this->periodBranchCache[$key] = ['branches' => $names, 'label' => (trim((string) ($period->custom_name ?? '')) !== '' ? $period->custom_name : $period->name)];
     }
 
     /** @return array{employee_id:null, status:string, method:null, note:string, suggestions:string[]} */

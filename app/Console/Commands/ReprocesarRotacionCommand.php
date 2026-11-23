@@ -28,7 +28,7 @@ class ReprocesarRotacionCommand extends Command
 
         $this->line('');
         $this->info("══════════════════════════════════════════════════");
-        $this->info("  REPROCESAR ROTACIÓN — {$period->name} (ID {$periodId})");
+        $this->info("  REPROCESAR ROTACIÓN — {$period->label} (ID {$periodId})");
         $this->info("══════════════════════════════════════════════════");
 
         // Find the rotación upload for this period

@@ -27,7 +27,7 @@ class ReprocesarImssCommand extends Command
 
         $this->line('');
         $this->info('══════════════════════════════════════════════════');
-        $this->info("  REPROCESAR IMSS — {$period->name} (ID {$periodId})");
+        $this->info("  REPROCESAR IMSS — {$period->label} (ID {$periodId})");
         $this->info('══════════════════════════════════════════════════');
 
         $upload = ReportUpload::query()

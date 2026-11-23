@@ -93,7 +93,7 @@ class DebugUiOptionsCommand extends Command
         $this->line("\n<fg=cyan>PERIODOS enviados al frontend (allPeriods)</>");
         $periodsWithSnap = PeriodSummary::where('status', 'generated')->pluck('period_id')->flip();
         $allPeriods = Period::orderByDesc('year')->orderByDesc('month')->orderByDesc('sequence')
-            ->get(['id', 'name', 'code', 'type', 'year', 'month']);
+            ->get(['id', 'name', 'custom_name', 'code', 'type', 'year', 'month']);
 
         $byType = $allPeriods->groupBy('type');
         foreach ($byType as $type => $ps) {
