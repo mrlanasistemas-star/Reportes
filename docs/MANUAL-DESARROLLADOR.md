@@ -2476,7 +2476,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://reportes.mr-lana.com/storage/re
 ```
 
 Con la configuración en caché, `env()` fuera de `config/` devuelve `null`. Tras cambiar `.env`
-o `config/`: `php artisan optimize:clear && php artisan optimize`.
+o `config/`: `php artisan config:clear && php artisan route:clear && php artisan view:clear && php artisan optimize`.
 
 Checklist:
 
@@ -2519,7 +2519,7 @@ sudo -u www-data npm ci && sudo -u www-data npm run build
 sudo -u www-data php artisan migrate --force
 
 # 3) Cachés (una caché de rutas vieja = 404 en módulos nuevos)
-sudo -u www-data php artisan optimize:clear && sudo -u www-data php artisan optimize
+sudo -u www-data php artisan config:clear && sudo -u www-data php artisan route:clear && sudo -u www-data php artisan view:clear && sudo -u www-data php artisan optimize
 
 # 4) Código nuevo en FPM (OPcache) y en el worker
 sudo systemctl reload php8.4-fpm
@@ -2531,12 +2531,12 @@ sudo -u www-data php artisan reports:pdf-health
 
 **Reversión**: las migraciones son aditivas, así que **no** hace falta `migrate:rollback` (no
 correrlo sobre datos reales). `git checkout $(cat ~/respaldos/version_anterior.txt)`, `composer
-install`, `npm ci && npm run build`, `optimize:clear && optimize`, reload FPM,
+install`, `npm ci && npm run build`, `config:clear && route:clear && view:clear && optimize` (nunca `optimize:clear`: borra también la caché de datos y todo se recalcula lento), reload FPM,
 `queue:restart`, `up`. Si hubo daño de datos: restaurar el dump en una base **nueva**, revisarla
 y luego cambiar `DB_DATABASE`.
 
 **«404» en un módulo nuevo** (el menú lo muestra pero la ruta no responde): caché de rutas vieja
-(`optimize:clear` + `optimize`), OPcache con código anterior (reload FPM), migraciones o build
+(`config:clear`/`route:clear`/`view:clear` + `optimize`; no `optimize:clear`, que vacía la caché de la radiografía), OPcache con código anterior (reload FPM), migraciones o build
 pendientes (`reportes:verificar-despliegue` lo indica). `php artisan route:list
 --path=usuarios` debe mostrar `usuarios.index`.
 

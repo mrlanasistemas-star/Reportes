@@ -207,7 +207,7 @@ En resumen:
    en orden») y `php artisan reports:pdf-health`.
 
 Cada actualización: respaldo → `git pull` → `composer install` → `npm ci && npm run build` →
-`migrate --force` → `optimize:clear && optimize` → `reload php8.4-fpm` → `queue:restart`.
+`migrate --force` → `config:clear && route:clear && view:clear && optimize` (nunca `optimize:clear`: borra también la caché de datos y todo se recalcula lento) → `reload php8.4-fpm` → `queue:restart`.
 
 ## 6. Comandos clave
 

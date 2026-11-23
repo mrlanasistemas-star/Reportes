@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Period;
 use App\Models\PeriodSummary;
+use App\Services\DashboardTrendService;
 use App\Services\RadiografiaExportService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -70,7 +71,12 @@ class WarmRadiografiaGeneralCommand extends Command
             $periods = $query->whereIn('id', $explicitIds)->orderByDesc('start_date')->get();
         } else {
             $ultimos = $this->option('ultimos');
-            $limit = max(1, (int) ($ultimos !== null && $ultimos !== '' ? $ultimos : config('radiografia.precalentar.periodos', 3)));
+            // Sin --ultimos: nunca menos meses de los que usa la tendencia del Dashboard
+            // (23-nov-2026). Con 3 fijos, los meses 4-6 se enfriaban cada 12 h y la
+            // gráfica tardaba ~1 min por mes en recalcularse a la vista del usuario.
+            $limit = ($ultimos !== null && $ultimos !== '')
+                ? max(1, (int) $ultimos)
+                : max(1, (int) config('radiografia.precalentar.periodos', DashboardTrendService::PERIODS_COUNT), DashboardTrendService::PERIODS_COUNT);
             $periods = $query->where('type', 'monthly')->where('code', 'not like', 'TEST-%')
                 ->orderByDesc('start_date')->limit($limit)->get();
         }

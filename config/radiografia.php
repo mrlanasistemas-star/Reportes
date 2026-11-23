@@ -47,7 +47,8 @@ return [
     'precalentar' => [
         'activo' => (bool) env('RADIOGRAFIA_PRECALENTAR', true),
         // Cuántos periodos mensuales con radiografía vigente (los más recientes) se mantienen calientes.
-        'periodos' => (int) env('RADIOGRAFIA_PRECALENTAR_PERIODOS', 3),
+        // Mínimo efectivo: los meses de la tendencia del Dashboard (DashboardTrendService::PERIODS_COUNT = 6).
+        'periodos' => (int) env('RADIOGRAFIA_PRECALENTAR_PERIODOS', 6),
         // Edad a partir de la cual el valor en caché se recalcula y reemplaza. Debe ser
         // MENOR que cache.ttl_horas (con margen para la frecuencia del scheduler).
         'refrescar_horas' => (int) env('RADIOGRAFIA_PRECALENTAR_REFRESCAR_HORAS', 6),

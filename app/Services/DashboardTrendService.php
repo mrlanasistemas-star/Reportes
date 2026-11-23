@@ -29,7 +29,8 @@ class DashboardTrendService
 {
     private const POINT_TTL = 43_200; // 12 h — la clave ya cambia sola al regenerar el periodo
 
-    private const PERIODS_COUNT = 6;
+    /** Meses que muestra la tendencia. El precalentado automático cubre al menos estos. */
+    public const PERIODS_COUNT = 6;
 
     private const CACHE_VERSION = 'v2';
 
