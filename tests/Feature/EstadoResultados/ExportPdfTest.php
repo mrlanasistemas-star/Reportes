@@ -198,6 +198,11 @@ it('render real con Browsershot (se omite si no hay Chrome/Chromium disponible)'
             break;
         } catch (PdfRenderException $e) {
             expect(is_file($out))->toBeFalse('el exportador debe borrar el archivo parcial');
+            // El binario encontrado no arranca en este entorno (p. ej. runner de CI sin
+            // dependencias del sistema): es falta de entorno, no un error del PDF.
+            if (in_array($e->code(), [PdfRenderException::CHROME_NOT_FOUND, PdfRenderException::NODE_NOT_FOUND], true)) {
+                $this->markTestSkipped('Chrome/Chromium o Node no se pudieron ejecutar en este entorno ('.$e->code().').');
+            }
             if (! in_array($e->code(), [PdfRenderException::TIMEOUT, PdfRenderException::CHART_TIMEOUT, PdfRenderException::HTML_FAILED], true) || $try >= 2) {
                 in_array($e->code(), [PdfRenderException::TIMEOUT, PdfRenderException::CHART_TIMEOUT], true)
                     ? $this->markTestSkipped('Chrome excedió el tiempo en este entorno ('.$e->code().').')
