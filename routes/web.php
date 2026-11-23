@@ -1,31 +1,32 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
-use Laravel\Fortify\Features;
-use App\Http\Controllers\PeriodController;
-use App\Http\Controllers\ReportUploadController;
-use App\Http\Controllers\EmployeeBranchAssignmentController;
-use App\Http\Controllers\EmployeeController;
-use App\Http\Controllers\ValidationController;
-use App\Http\Controllers\MonthlyReportController;
-use App\Http\Controllers\SystemGuideController;
+use App\Http\Controllers\ApiDocumentationController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\EfectividadCalculadoraController;
-use App\Http\Controllers\EstadoResultadosController;
+use App\Http\Controllers\EmployeeBranchAssignmentController;
+use App\Http\Controllers\EmployeeController;
 use App\Http\Controllers\EstadoResultadosComparativoController;
-use App\Http\Controllers\EstadoResultadosControlController;
 use App\Http\Controllers\EstadoResultadosConceptCatalogController;
+use App\Http\Controllers\EstadoResultadosControlController;
+use App\Http\Controllers\EstadoResultadosController;
 use App\Http\Controllers\EstadoResultadosFinancialExpensesController;
+use App\Http\Controllers\ExpenseReviewController;
+use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\NotificationController;
-use App\Http\Controllers\ApiDocumentationController;
-use App\Http\Controllers\SeoController;
 use App\Http\Controllers\Okr\ResponsibleController as UserAdministrationController;
 use App\Http\Controllers\Okr\RoleController as RoleAdministrationController;
+use App\Http\Controllers\PeriodController;
+use App\Http\Controllers\ReportUploadController;
+use App\Http\Controllers\SeoController;
+use App\Http\Controllers\SystemGuideController;
+use App\Http\Controllers\ValidationController;
+use Illuminate\Support\Facades\Route;
+use Laravel\Fortify\Features;
 
 Route::redirect('/', '/login');
 
 // SEO — robots.txt y sitemap.xml servidos por ruta (dominio desde APP_URL).
-// Qué páginas son públicas/indexables: config/seo.php — ver docs/seo.md.
+// Qué páginas son públicas/indexables: config/seo.php — ver docs/MANUAL-DESARROLLADOR.md.
 Route::get('/robots.txt', [SeoController::class, 'robots'])->name('robots');
 Route::get('/sitemap.xml', [SeoController::class, 'sitemap'])->name('sitemap');
 
@@ -33,7 +34,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Módulo OKR (08-sep-2026) — dentro del MISMO grupo auth+verified que el
     // resto de Reportería, nunca autenticación aparte. Además de su regla propia
     // (EnsureOkrAccessEnabled) exige el módulo 'okr' (ver routes/okr.php).
-    require __DIR__ . '/okr.php';
+    require __DIR__.'/okr.php';
 
     // Notificaciones internas persistentes (campana de la cabecera). Solo las del
     // propio usuario; los trabajos activos de Reportería solo se incluyen para
@@ -65,27 +66,27 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // ve cada rol se configura en "Usuarios y accesos" (ModuleAccessService). El
     // admin ve todo siempre. Reemplaza al antiguo EnsureReporteriaAccess fijo.
     Route::middleware('module:dashboard')->group(function () {
-    // Cierre 17-sep-2026 ronda 4 — el Dashboard ahora resume el periodo más reciente
-    // con radiografía generada (antes era una página estática sin datos). Ver
-    // DashboardController — misma fuente (RadiografiaExportService) que Web/Excel/PDF.
-    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
-    Route::get('/dashboard-data', [DashboardController::class, 'data'])->name('dashboard.data');
-    Route::get('/dashboard-trend', [DashboardController::class, 'trend'])->name('dashboard.trend');
-    // PDF del Dashboard (15-oct-2026): KPI + gráficas del periodo/sucursal elegidos
-    // (antes el botón descargaba la Radiografía completa). Mismo permiso de
-    // exportación que tenía el enlace anterior.
-    Route::get('/dashboard/exportar.pdf', [DashboardController::class, 'exportPdf'])->middleware('permission:reportes,exportar')->name('dashboard.export-pdf');
-    // Fase 7.3 — Excel del Dashboard: mismo alcance, mismos datos y MISMO permiso que el PDF.
-    Route::get('/dashboard/exportar.xlsx', [DashboardController::class, 'exportExcel'])->middleware('permission:reportes,exportar')->name('dashboard.export-excel');
-    // Alias 'home' — el scaffolding de auth (login/logout/verificación/tests de
-    // ejemplo) espera route('home') por convención de Laravel; este proyecto no tenía
-    // ese nombre registrado, lo que rompía AuthenticationTest/
-    // VerificationNotificationTest/ProfileUpdateTest/ExampleTest con "Route [home] not
-    // defined." Debe responder 200 directamente (no un redirect), y en una URI PROPIA:
-    // registrar dos rutas con la MISMA URI '/dashboard' (una named 'dashboard', otra
-    // 'home') hace que Laravel pierda la resolución por nombre de la primera —
-    // confirmado con `php artisan route:list --name=dashboard` (vacío) tras probarlo.
-    Route::get('/home', [DashboardController::class, 'index'])->name('home');
+        // Cierre 17-sep-2026 ronda 4 — el Dashboard ahora resume el periodo más reciente
+        // con radiografía generada (antes era una página estática sin datos). Ver
+        // DashboardController — misma fuente (RadiografiaExportService) que Web/Excel/PDF.
+        Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+        Route::get('/dashboard-data', [DashboardController::class, 'data'])->name('dashboard.data');
+        Route::get('/dashboard-trend', [DashboardController::class, 'trend'])->name('dashboard.trend');
+        // PDF del Dashboard (15-oct-2026): KPI + gráficas del periodo/sucursal elegidos
+        // (antes el botón descargaba la Radiografía completa). Mismo permiso de
+        // exportación que tenía el enlace anterior.
+        Route::get('/dashboard/exportar.pdf', [DashboardController::class, 'exportPdf'])->middleware('permission:reportes,exportar')->name('dashboard.export-pdf');
+        // Fase 7.3 — Excel del Dashboard: mismo alcance, mismos datos y MISMO permiso que el PDF.
+        Route::get('/dashboard/exportar.xlsx', [DashboardController::class, 'exportExcel'])->middleware('permission:reportes,exportar')->name('dashboard.export-excel');
+        // Alias 'home' — el scaffolding de auth (login/logout/verificación/tests de
+        // ejemplo) espera route('home') por convención de Laravel; este proyecto no tenía
+        // ese nombre registrado, lo que rompía AuthenticationTest/
+        // VerificationNotificationTest/ProfileUpdateTest/ExampleTest con "Route [home] not
+        // defined." Debe responder 200 directamente (no un redirect), y en una URI PROPIA:
+        // registrar dos rutas con la MISMA URI '/dashboard' (una named 'dashboard', otra
+        // 'home') hace que Laravel pierda la resolución por nombre de la primera —
+        // confirmado con `php artisan route:list --name=dashboard` (vacío) tras probarlo.
+        Route::get('/home', [DashboardController::class, 'index'])->name('home');
     });
 
     Route::prefix('historico-general')
@@ -109,6 +110,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('/{period}/incidencias/refrescar', [ReportUploadController::class, 'refreshIncidents'])->middleware('permission:carga,procesar')->name('incidents.refresh');
             Route::get('/{period}/personas-sin-sucursal', [ReportUploadController::class, 'personasSinSucursal'])->name('personas-sin-sucursal');
             Route::post('/{period}/personas-sin-sucursal/confirmar-coincidencia', [ReportUploadController::class, 'confirmarCoincidencia'])->middleware('permission:carga,procesar')->name('personas-sin-sucursal.confirmar');
+            // Revisión de gastos (opcional, 23-nov-2026): desglose + decisiones manuales antes de generar.
+            Route::get('/{period}/revision-gastos', [ExpenseReviewController::class, 'index'])->name('expense-review.index');
+            Route::get('/{period}/revision-gastos/opciones', [ExpenseReviewController::class, 'filterOptions'])->name('expense-review.filter-options');
+            Route::get('/{period}/revision-gastos/conceptos', [ExpenseReviewController::class, 'concepts'])->name('expense-review.concepts');
+            Route::get('/{period}/revision-gastos/{expense}/bitacora', [ExpenseReviewController::class, 'history'])->whereNumber('expense')->name('expense-review.history');
+            Route::post('/{period}/revision-gastos/decisiones', [ExpenseReviewController::class, 'saveDecisions'])->middleware('permission:carga,procesar')->name('expense-review.decisions');
+            Route::post('/{period}/revision-gastos/conceptos', [ExpenseReviewController::class, 'saveConcept'])->middleware('permission:carga,procesar')->name('expense-review.concepts.save');
             Route::post('/{period}/coincidencias/descartar', [ReportUploadController::class, 'descartarCoincidencia'])->middleware('permission:carga,procesar')->name('coincidencias.descartar');
             Route::post('/{period}/incidencias/ubicacion-pendiente/resolver', [ReportUploadController::class, 'resolvePendingLocation'])->middleware('permission:carga,procesar')->name('incidents.resolve-location');
             Route::post('/{period}/generar-radiografia', [ReportUploadController::class, 'generateRadiography'])->middleware('permission:carga,generar')->name('generate-radiography');
@@ -230,6 +238,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
             // 20-nov-2026 — quitar el «Archivo 2 (opcional)» de una cuenta (el archivo 1 sólo se sustituye).
             Route::delete('/{period}/cargas/{slot}/archivo/{part}', 'removeUploadPart')->whereIn('slot', ['administrativa', 'excedentes'])->whereNumber('part')->middleware(['throttle:30,1', 'permission:estado_resultados,cargar'])->name('remove-upload-part');
             Route::post('/{period}/procesar', 'process')->middleware(['throttle:20,1', 'permission:estado_resultados,procesar'])->name('process');
+            // 23-nov-2026 — procesar/aprobar corren en cola: estado de la tarea (polling liviano).
+            Route::get('/{period}/tareas', 'activeTasks')->whereNumber('period')->middleware('throttle:120,1')->name('tasks');
+            Route::get('/{period}/tareas/{task}', 'task')->whereNumber('period')->whereNumber('task')->middleware('throttle:120,1')->name('task');
             Route::post('/{period}/clasificar', 'classify')->middleware('permission:estado_resultados,clasificar')->name('classify');
             Route::post('/{period}/aceptar-sugerencias', 'acceptSuggestions')->middleware('permission:estado_resultados,clasificar')->name('accept-suggestions');
             Route::put('/{period}/ajustes', 'saveAdjustment')->middleware('permission:estado_resultados,ajustes')->name('adjustments');
@@ -311,4 +322,4 @@ if (Features::enabled(Features::updatePasswords())) {
     // Espacio para lógica futura si la ocupas.
 }
 
-require __DIR__ . '/settings.php';
+require __DIR__.'/settings.php';

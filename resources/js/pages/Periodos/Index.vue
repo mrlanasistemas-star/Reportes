@@ -1,5 +1,18 @@
 <script setup lang="ts">
-import { Head } from '@inertiajs/vue3'
+/**
+ * Pantalla «Periodos» (ruta `/periodos`).
+ *
+ * Administra el ciclo de periodos del sistema:
+ * 1. Generar semanas base de un mes (POST `/periodos`).
+ * 2. Agruparlas en un mes operativo (POST `/periodos` con `week_ids`).
+ * 3. Consultar el listado: meses operativos (con avance de archivos, pendientes de cierre,
+ *    renombrar y eliminar), periodos agrupados automáticos (bimestre, trimestre, semestre,
+ *    anual; con cerrar/reabrir) y semanas base agrupadas por mes (colapsables).
+ *
+ * Props: `periods` (todos los periodos) y `availableWeeks` (semanas libres para meses operativos).
+ * La lógica de formularios y acciones vive en `usePeriodosIndex`; aquí solo hay formato y agrupación visual.
+ */
+import { Head, Link, usePage } from '@inertiajs/vue3';
 
 import {
     CalendarDays,
@@ -14,60 +27,67 @@ import {
     Search,
     Sparkles,
     Trash2,
-} from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+} from 'lucide-vue-next';
+import { computed, ref } from 'vue';
 
-import SelectField from '@/components/forms/SelectField.vue'
-import InputError from '@/components/InputError.vue'
-import { usePeriodosIndex } from '@/composables/usePeriodosIndex'
-import { index as periodosIndex } from '@/routes/periodos'
+import SelectField from '@/components/forms/SelectField.vue';
+import InputError from '@/components/InputError.vue';
+import { usePeriodosIndex } from '@/composables/usePeriodosIndex';
+import { index as periodosIndex } from '@/routes/periodos';
 
+// Acceso a «Revisar gastos» (Carga de archivos) — solo UX; el backend vuelve a validar.
+/** `true` si el usuario tiene el módulo «carga» (muestra el enlace a Revisar gastos). */
+const canReviewExpenses = computed(() =>
+    ((usePage().props as any).auth?.modules ?? []).includes('carga'),
+);
+
+/** Props: periodos existentes y semanas base disponibles (ambas listas vacías por defecto). */
 const props = withDefaults(
     defineProps<{
         periods: Array<{
-            id: number
-            name?: string | null
-            custom_name?: string | null
-            system_label?: string | null
-            code: string
-            type?: string | null
-            sequence?: number | null
-            label: string
-            year: number
-            month: number | null
-            start_date?: string | null
-            end_date?: string | null
-            is_closed?: boolean
-            is_compound?: boolean
-            can_receive_uploads?: boolean
-            component_labels?: string[]
+            id: number;
+            name?: string | null;
+            custom_name?: string | null;
+            system_label?: string | null;
+            code: string;
+            type?: string | null;
+            sequence?: number | null;
+            label: string;
+            year: number;
+            month: number | null;
+            start_date?: string | null;
+            end_date?: string | null;
+            is_closed?: boolean;
+            is_compound?: boolean;
+            can_receive_uploads?: boolean;
+            component_labels?: string[];
             component_weeks?: Array<{
-                id: number
-                sequence: number | null
-                start_date: string | null
-                end_date: string | null
-            }>
-            uploaded_sources_count?: number
-            required_sources_count?: number
-            can_close?: boolean
-            close_issues_count?: number
-            close_issues_preview?: string[]
-        }>
+                id: number;
+                sequence: number | null;
+                start_date: string | null;
+                end_date: string | null;
+            }>;
+            uploaded_sources_count?: number;
+            required_sources_count?: number;
+            can_close?: boolean;
+            close_issues_count?: number;
+            close_issues_preview?: string[];
+        }>;
         availableWeeks?: Array<{
-            id: number
-            label: string
-            year: number
-            month: number
-            sequence: number
-            start_date?: string
-            end_date?: string
-        }>
+            id: number;
+            label: string;
+            year: number;
+            month: number;
+            sequence: number;
+            start_date?: string;
+            end_date?: string;
+        }>;
     }>(),
     {
         periods: () => [],
         availableWeeks: () => [],
     },
-)
+);
 
 // Mismo patrón que resources/js/pages/settings/Profile.vue (evita el error de tipos
 // del overload de h() al envolver AppLayout manualmente con breadcrumbs).
@@ -80,8 +100,9 @@ defineOptions({
             },
         ],
     },
-})
+});
 
+/** Estado y acciones de la pantalla (ver `usePeriodosIndex`). */
 const {
     filters,
     form,
@@ -94,10 +115,12 @@ const {
     togglePeriod,
     destroyMonthly,
     renamePeriod,
-} = usePeriodosIndex(props)
+} = usePeriodosIndex(props);
 
-form.type = 'weekly'
+// El alta manual solo permite semanas base; los demás tipos se generan solos.
+form.type = 'weekly';
 
+/** Nombres de mes indexados 1–12 (posición 0 vacía). */
 const monthNames = [
     '',
     'Enero',
@@ -112,286 +135,387 @@ const monthNames = [
     'Octubre',
     'Noviembre',
     'Diciembre',
-]
+];
 
 // Opciones para los SelectField (antes <select> nativo) — mismos value/label que
 // las <option> que reemplazan, ningún cambio de comportamiento.
-const periodTypeOptions = [{ value: 'weekly', label: 'Semanal (base)' }]
+const periodTypeOptions = [{ value: 'weekly', label: 'Semanal (base)' }];
 const monthSelectOptions = monthNames
     .map((label, value) => ({ value: String(value), label }))
-    .filter((option) => option.value !== '0')
+    .filter((option) => option.value !== '0');
 
-const collapsedWeeklyGroups = ref<Record<string, boolean>>({})
+/** Estado explícito de colapso por grupo de semanas (clave del grupo → colapsado). */
+const collapsedWeeklyGroups = ref<Record<string, boolean>>({});
 
+/**
+ * Alterna el colapso de un grupo de semanas.
+ *
+ * @param key Clave del grupo (año-mes-título).
+ */
 function toggleWeeklyGroup(key: string) {
-    collapsedWeeklyGroups.value[key] = !isWeeklyGroupCollapsed(key)
+    collapsedWeeklyGroups.value[key] = !isWeeklyGroupCollapsed(key);
 }
 
 // Fase 8.7: las semanas base son material de consulta; solo el primer mes del
 // listado empieza abierto para que la página no sea un muro de tarjetas.
+/**
+ * Indica si un grupo de semanas está colapsado: usa el estado explícito si existe; si no,
+ * solo el primer grupo del listado empieza abierto.
+ *
+ * @param key Clave del grupo.
+ * @returns `true` si está colapsado.
+ */
 function isWeeklyGroupCollapsed(key: string) {
-    const explicit = collapsedWeeklyGroups.value[key]
+    const explicit = collapsedWeeklyGroups.value[key];
 
     if (explicit !== undefined) {
-        return explicit
+        return explicit;
     }
 
-    return groupedWeeklyPeriods.value[0]?.key !== key
+    return groupedWeeklyPeriods.value[0]?.key !== key;
 }
 
+/**
+ * Formatea una fecha ISO como «d mmm aaaa» (es-MX).
+ *
+ * @param date Fecha `AAAA-MM-DD`.
+ * @returns Fecha corta, «Sin fecha» si no hay, o el texto original si no se puede leer.
+ */
 function formatShortDate(date?: string | null) {
     if (!date) {
-return 'Sin fecha'
-}
+        return 'Sin fecha';
+    }
 
-    const parsed = new Date(`${date}T00:00:00`)
+    const parsed = new Date(`${date}T00:00:00`);
 
     if (Number.isNaN(parsed.getTime())) {
-return date
-}
+        return date;
+    }
 
     return new Intl.DateTimeFormat('es-MX', {
         day: 'numeric',
         month: 'short',
         year: 'numeric',
-    }).format(parsed)
+    }).format(parsed);
 }
 
+/**
+ * Formatea una fecha ISO como «d de mes de aaaa» (es-MX).
+ *
+ * @param date Fecha `AAAA-MM-DD`.
+ * @returns Fecha larga, «Sin fecha» si no hay, o el texto original si no se puede leer.
+ */
 function formatLongDate(date?: string | null) {
     if (!date) {
-return 'Sin fecha'
-}
+        return 'Sin fecha';
+    }
 
-    const parsed = new Date(`${date}T00:00:00`)
+    const parsed = new Date(`${date}T00:00:00`);
 
     if (Number.isNaN(parsed.getTime())) {
-return date
-}
+        return date;
+    }
 
     return new Intl.DateTimeFormat('es-MX', {
         day: 'numeric',
         month: 'long',
         year: 'numeric',
-    }).format(parsed)
+    }).format(parsed);
 }
 
+/**
+ * Describe un rango de fechas en texto largo («X al Y», «Desde X», «Hasta Y»).
+ *
+ * @param start Fecha inicial.
+ * @param end   Fecha final.
+ * @returns Texto del rango.
+ */
 function formatRange(start?: string | null, end?: string | null) {
     if (!start && !end) {
-return 'Sin rango definido'
-}
+        return 'Sin rango definido';
+    }
 
     if (start && !end) {
-return `Desde ${formatLongDate(start)}`
-}
+        return `Desde ${formatLongDate(start)}`;
+    }
 
     if (!start && end) {
-return `Hasta ${formatLongDate(end)}`
-}
+        return `Hasta ${formatLongDate(end)}`;
+    }
 
-    return `${formatLongDate(start)} al ${formatLongDate(end)}`
+    return `${formatLongDate(start)} al ${formatLongDate(end)}`;
 }
 
 // ── Helpers para la selección de semanas en el formulario mensual ──
 
-function weekCrossesMonth(week: { start_date?: string; end_date?: string }): boolean {
+/**
+ * Indica si una semana empieza en un mes y termina en otro.
+ *
+ * @param week Semana con fechas ISO.
+ * @returns `true` si cruza el cambio de mes.
+ */
+function weekCrossesMonth(week: {
+    start_date?: string;
+    end_date?: string;
+}): boolean {
     if (!week.start_date || !week.end_date) {
-return false
+        return false;
+    }
+
+    return week.start_date.substring(5, 7) !== week.end_date.substring(5, 7);
 }
 
-    return week.start_date.substring(5, 7) !== week.end_date.substring(5, 7)
-}
-
-function weekFromPreviousMonth(week: { start_date?: string }, selectedMonth: number): boolean {
+/**
+ * Indica si la semana inicia en un mes anterior al mes seleccionado (semana sobrante).
+ *
+ * @param week          Semana con fecha de inicio ISO.
+ * @param selectedMonth Mes operativo elegido (1–12).
+ * @returns `true` si viene de un mes anterior.
+ */
+function weekFromPreviousMonth(
+    week: { start_date?: string },
+    selectedMonth: number,
+): boolean {
     if (!week.start_date) {
-return false
+        return false;
+    }
+
+    return parseInt(week.start_date.substring(5, 7)) < selectedMonth;
 }
 
-    return parseInt(week.start_date.substring(5, 7)) < selectedMonth
-}
-
+/** Semanas marcadas en el formulario mensual, ordenadas por fecha de inicio. */
 const selectedWeeksDetail = computed(() => {
-    const ids = new Set(monthlyForm.week_ids)
+    const ids = new Set(monthlyForm.week_ids);
 
     return filteredWeeksForMonth.value
         .filter((w) => ids.has(w.id))
-        .sort((a, b) => (a.start_date ?? '').localeCompare(b.start_date ?? ''))
-})
+        .sort((a, b) => (a.start_date ?? '').localeCompare(b.start_date ?? ''));
+});
 
+/** Resumen de la selección (primera/última semana, rango y cantidad) o `null` si no hay selección. */
 const selectedWeeksSummary = computed(() => {
-    const weeks = selectedWeeksDetail.value
+    const weeks = selectedWeeksDetail.value;
 
     if (!weeks.length) {
-return null
-}
+        return null;
+    }
 
-    const first = weeks[0]
-    const last  = weeks[weeks.length - 1]
+    const first = weeks[0];
+    const last = weeks[weeks.length - 1];
 
     return {
         firstSequence: first.sequence,
-        lastSequence:  last.sequence,
-        startDate:     first.start_date,
-        endDate:       last.end_date,
-        count:         weeks.length,
-    }
-})
+        lastSequence: last.sequence,
+        startDate: first.start_date,
+        endDate: last.end_date,
+        count: weeks.length,
+    };
+});
 
+/** `true` si entre las semanas marcadas hay un salto (el inicio de una no es el día siguiente al fin de la anterior). */
 const hasNonConsecutiveWeeks = computed(() => {
-    const weeks = selectedWeeksDetail.value
+    const weeks = selectedWeeksDetail.value;
 
     if (weeks.length < 2) {
-return false
-}
-
-    for (let i = 1; i < weeks.length; i++) {
-        const prevEnd   = weeks[i - 1].end_date
-        const currStart = weeks[i].start_date
-
-        if (!prevEnd || !currStart) {
-continue
-}
-
-        const expected = new Date(`${prevEnd}T00:00:00`)
-        expected.setDate(expected.getDate() + 1)
-        const expectedStr = expected.toISOString().split('T')[0]
-
-        if (expectedStr !== currStart) {
-return true
-}
+        return false;
     }
 
-    return false
-})
+    for (let i = 1; i < weeks.length; i++) {
+        const prevEnd = weeks[i - 1].end_date;
+        const currStart = weeks[i].start_date;
 
+        if (!prevEnd || !currStart) {
+            continue;
+        }
+
+        // Todo en UTC (parseo, suma y formato): mezclar medianoche local con
+        // toISOString() (UTC) corre la fecha un día según la zona horaria.
+        const expected = new Date(`${String(prevEnd).slice(0, 10)}T00:00:00Z`);
+        expected.setUTCDate(expected.getUTCDate() + 1);
+        const expectedStr = expected.toISOString().split('T')[0];
+
+        if (expectedStr !== String(currStart).slice(0, 10)) {
+            return true;
+        }
+    }
+
+    return false;
+});
+
+/**
+ * Porcentaje (0–100) de archivos cargados respecto a los requeridos.
+ *
+ * @param period Periodo con conteos de fuentes.
+ * @returns Porcentaje; 0 si no requiere archivos.
+ */
 function getProgress(period: {
-    uploaded_sources_count?: number
-    required_sources_count?: number
+    uploaded_sources_count?: number;
+    required_sources_count?: number;
 }) {
-    const uploaded = Number(period.uploaded_sources_count ?? 0)
-    const required = Number(period.required_sources_count ?? 0)
+    const uploaded = Number(period.uploaded_sources_count ?? 0);
+    const required = Number(period.required_sources_count ?? 0);
 
     if (!required) {
-return 0
+        return 0;
+    }
+
+    return Math.min((uploaded / required) * 100, 100);
 }
 
-    return Math.min((uploaded / required) * 100, 100)
-}
-
+/**
+ * Texto del avance de archivos («X de Y archivo(s) completados»).
+ *
+ * @param period Periodo con conteos de fuentes.
+ * @returns Texto del avance.
+ */
 function getProgressText(period: {
-    uploaded_sources_count?: number
-    required_sources_count?: number
+    uploaded_sources_count?: number;
+    required_sources_count?: number;
 }) {
-    const uploaded = Number(period.uploaded_sources_count ?? 0)
-    const required = Number(period.required_sources_count ?? 0)
+    const uploaded = Number(period.uploaded_sources_count ?? 0);
+    const required = Number(period.required_sources_count ?? 0);
 
     if (!required) {
-return 'No requiere carga de archivos'
+        return 'No requiere carga de archivos';
+    }
+
+    return `${uploaded} de ${required} archivo(s) completados`;
 }
 
-    return `${uploaded} de ${required} archivo(s) completados`
-}
-
+/**
+ * Título del mes de un periodo («Mes Año»); si no hay mes usa la fecha de inicio.
+ *
+ * @param period Periodo con mes, año y fecha de inicio.
+ * @returns Título del mes.
+ */
 function getMonthTitle(period: {
-    month: number | null
-    year: number
-    start_date?: string | null
+    month: number | null;
+    year: number;
+    start_date?: string | null;
 }) {
     if (period.month && monthNames[period.month]) {
-        return `${monthNames[period.month]} ${period.year}`
+        return `${monthNames[period.month]} ${period.year}`;
     }
 
     if (period.start_date) {
-        const parsed = new Date(`${period.start_date}T00:00:00`)
+        const parsed = new Date(`${period.start_date}T00:00:00`);
 
         if (!Number.isNaN(parsed.getTime())) {
             return new Intl.DateTimeFormat('es-MX', {
                 month: 'long',
                 year: 'numeric',
-            }).format(parsed)
+            }).format(parsed);
         }
     }
 
-    return `Periodo ${period.year}`
+    return `Periodo ${period.year}`;
 }
 
+/**
+ * Nombre visible del grupo según el tipo de periodo agregado.
+ *
+ * @param period Periodo con `type`.
+ * @returns «Bimestres», «Trimestres», «Semestres», «Anual» o «Periodo».
+ */
 function getFriendlyType(period: { type?: string | null }) {
     switch (period.type) {
         case 'bimonthly':
-            return 'Bimestres'
+            return 'Bimestres';
         case 'quarterly':
-            return 'Trimestres'
+            return 'Trimestres';
         case 'semiannual':
-            return 'Semestres'
+            return 'Semestres';
         case 'annual':
-            return 'Anual'
+            return 'Anual';
         default:
-            return 'Periodo'
+            return 'Periodo';
     }
 }
 
+/**
+ * Título corto del periodo según tipo y secuencia («Semana 3», «Trimestre 2», …).
+ *
+ * @param period Periodo.
+ * @returns Título corto o la etiqueta del periodo.
+ */
 function getPeriodTitle(period: {
-    type?: string | null
-    sequence?: number | null
-    year: number
-    label: string
+    type?: string | null;
+    sequence?: number | null;
+    year: number;
+    label: string;
 }) {
     if (period.type === 'weekly' && period.sequence) {
-return `Semana ${period.sequence}`
-}
+        return `Semana ${period.sequence}`;
+    }
 
     if (period.type === 'bimonthly' && period.sequence) {
-return `Bimestre ${period.sequence}`
-}
+        return `Bimestre ${period.sequence}`;
+    }
 
     if (period.type === 'quarterly' && period.sequence) {
-return `Trimestre ${period.sequence}`
-}
+        return `Trimestre ${period.sequence}`;
+    }
 
     if (period.type === 'semiannual' && period.sequence) {
-return `Semestre ${period.sequence}`
-}
+        return `Semestre ${period.sequence}`;
+    }
 
     if (period.type === 'annual') {
-return `Anual ${period.year}`
+        return `Anual ${period.year}`;
+    }
+
+    return period.label;
 }
 
-    return period.label
-}
-
+/**
+ * Subtítulo del periodo: su rango de fechas en texto largo.
+ *
+ * @param period Periodo con fechas.
+ * @returns Rango legible.
+ */
 function getPeriodSubtitle(period: {
-    start_date?: string | null
-    end_date?: string | null
+    start_date?: string | null;
+    end_date?: string | null;
 }) {
-    return formatRange(period.start_date, period.end_date)
+    return formatRange(period.start_date, period.end_date);
 }
 
+/** Semanas base del listado filtrado. */
 const weeklyPeriods = computed(() =>
     filteredPeriods.value.filter((period) => period.type === 'weekly'),
-)
+);
 
+/** Meses operativos del listado filtrado. */
 const monthlyPeriods = computed(() =>
     filteredPeriods.value.filter((period) => period.type === 'monthly'),
-)
+);
 
+/** Periodos agregados automáticos (ni semanales ni mensuales) del listado filtrado. */
 const nonWeeklyPeriods = computed(() =>
-    filteredPeriods.value.filter((period) => period.type !== 'weekly' && period.type !== 'monthly'),
-)
+    filteredPeriods.value.filter(
+        (period) => period.type !== 'weekly' && period.type !== 'monthly',
+    ),
+);
 
+/**
+ * Semanas agrupadas por mes calendario, con conteos de abiertas/cerradas/bloqueadas y
+ * ordenadas por secuencia (y fecha de inicio como desempate).
+ */
 const groupedWeeklyPeriods = computed(() => {
     const groups = weeklyPeriods.value.reduce<
         Array<{
-            key: string
-            title: string
-            periods: typeof weeklyPeriods.value
-            openCount: number
-            closedCount: number
-            blockedCount: number
+            key: string;
+            title: string;
+            periods: typeof weeklyPeriods.value;
+            openCount: number;
+            closedCount: number;
+            blockedCount: number;
         }>
     >((acc, period) => {
-        const title = getMonthTitle(period)
-        const key = `${period.year}-${period.month ?? 0}-${title}`
+        const title = getMonthTitle(period);
+        const key = `${period.year}-${period.month ?? 0}-${title}`;
 
-        let group = acc.find((item) => item.key === key)
+        let group = acc.find((item) => item.key === key);
 
         if (!group) {
             group = {
@@ -401,58 +525,62 @@ const groupedWeeklyPeriods = computed(() => {
                 openCount: 0,
                 closedCount: 0,
                 blockedCount: 0,
-            }
-            acc.push(group)
+            };
+            acc.push(group);
         }
 
-        group.periods.push(period)
+        group.periods.push(period);
 
         if (period.is_closed) {
-            group.closedCount += 1
+            group.closedCount += 1;
         } else {
-            group.openCount += 1
+            group.openCount += 1;
         }
 
         if (!period.is_closed && period.can_close === false) {
-            group.blockedCount += 1
+            group.blockedCount += 1;
         }
 
-        return acc
-    }, [])
+        return acc;
+    }, []);
 
     return groups.map((group) => ({
         ...group,
         periods: [...group.periods].sort((a, b) => {
-            const aSequence = a.sequence ?? 0
-            const bSequence = b.sequence ?? 0
+            const aSequence = a.sequence ?? 0;
+            const bSequence = b.sequence ?? 0;
 
             if (aSequence !== bSequence) {
-return aSequence - bSequence
-}
+                return aSequence - bSequence;
+            }
 
-            return (a.start_date ?? '').localeCompare(b.start_date ?? '')
+            return (a.start_date ?? '').localeCompare(b.start_date ?? '');
         }),
-    }))
-})
+    }));
+});
 
+/**
+ * Periodos automáticos agrupados por tipo (bimestre → trimestre → semestre → anual),
+ * cada grupo ordenado por año descendente y secuencia ascendente.
+ */
 const groupedOtherPeriods = computed(() => {
     const orderMap: Record<string, number> = {
         bimonthly: 1,
         quarterly: 2,
         semiannual: 3,
         annual: 4,
-    }
+    };
 
     const groups = nonWeeklyPeriods.value.reduce<
         Array<{
-            key: string
-            type: string
-            title: string
-            periods: typeof nonWeeklyPeriods.value
+            key: string;
+            type: string;
+            title: string;
+            periods: typeof nonWeeklyPeriods.value;
         }>
     >((acc, period) => {
-        const type = period.type ?? 'other'
-        let group = acc.find((item) => item.type === type)
+        const type = period.type ?? 'other';
+        let group = acc.find((item) => item.type === type);
 
         if (!group) {
             group = {
@@ -460,60 +588,69 @@ const groupedOtherPeriods = computed(() => {
                 type,
                 title: getFriendlyType(period),
                 periods: [],
-            }
-            acc.push(group)
+            };
+            acc.push(group);
         }
 
-        group.periods.push(period)
+        group.periods.push(period);
 
-        return acc
-    }, [])
+        return acc;
+    }, []);
 
     return groups
         .map((group) => ({
             ...group,
             periods: [...group.periods].sort((a, b) => {
                 if (a.year !== b.year) {
-return b.year - a.year
-}
+                    return b.year - a.year;
+                }
 
-                const aSequence = a.sequence ?? 0
-                const bSequence = b.sequence ?? 0
+                const aSequence = a.sequence ?? 0;
+                const bSequence = b.sequence ?? 0;
 
-                return aSequence - bSequence
+                return aSequence - bSequence;
             }),
         }))
-        .sort((a, b) => (orderMap[a.type] ?? 99) - (orderMap[b.type] ?? 99))
-})
+        .sort((a, b) => (orderMap[a.type] ?? 99) - (orderMap[b.type] ?? 99));
+});
 
-function getStatusLabel(period: {
-    is_closed?: boolean
-    can_close?: boolean
-}) {
+/**
+ * Etiqueta de estado del periodo: «Cerrado», «Requiere revisión» (no se puede cerrar) o «Disponible».
+ *
+ * @param period Periodo.
+ * @returns Etiqueta de estado.
+ */
+function getStatusLabel(period: { is_closed?: boolean; can_close?: boolean }) {
     if (period.is_closed) {
-return 'Cerrado'
-}
+        return 'Cerrado';
+    }
 
     if (period.can_close === false) {
-return 'Requiere revisión'
+        return 'Requiere revisión';
+    }
+
+    return 'Disponible';
 }
 
-    return 'Disponible'
-}
-
+/**
+ * Clases Tailwind de la insignia de estado (gris cerrado, ámbar requiere revisión, verde disponible).
+ *
+ * @param period Periodo.
+ * @returns Clases CSS.
+ */
 function getStatusClasses(period: {
-    is_closed?: boolean
-    can_close?: boolean
+    is_closed?: boolean;
+    can_close?: boolean;
 }) {
     if (period.is_closed) {
-        return 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-500/20 dark:bg-slate-500/15 dark:text-slate-300'
+        return 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-500/20 dark:bg-slate-500/15 dark:text-slate-300';
     }
 
     if (period.can_close === false) {
-        return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+        return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300';
     }
 
-    return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300';
 }
 </script>
 
@@ -522,271 +659,437 @@ function getStatusClasses(period: {
 
     <div class="p-4 sm:p-6 lg:p-8">
         <div class="mx-auto max-w-screen-2xl space-y-6">
-
             <!-- Fase 8.7: encabezado compacto con el ciclo explicado en una línea. -->
             <header class="flex flex-col gap-1" data-tour="periodos-header">
                 <p class="app-kicker">Operación</p>
                 <h1 class="app-title">Periodos</h1>
                 <p class="app-subtitle max-w-3xl">
-                    Ciclo: <strong class="font-semibold text-foreground">1. Generar semanas</strong> →
-                    <strong class="font-semibold text-foreground">2. Agruparlas en un mes operativo</strong> →
-                    3. Cargar los archivos de ese mes en «Carga de archivos». Bimestres, trimestres y demás se arman solos.
+                    Ciclo:
+                    <strong class="font-semibold text-foreground"
+                        >1. Generar semanas</strong
+                    >
+                    →
+                    <strong class="font-semibold text-foreground"
+                        >2. Agruparlas en un mes operativo</strong
+                    >
+                    → 3. Cargar los archivos de ese mes en «Carga de archivos».
+                    Bimestres, trimestres y demás se arman solos.
                 </p>
             </header>
 
+            <!-- Formularios: Paso 1 (generar semanas) y Paso 2 (mes operativo) -->
             <div class="grid gap-6 xl:grid-cols-2 xl:items-start">
-            <section class="app-card overflow-hidden" data-tour="periodos-generate">
-                <div class="border-b px-4 py-4 sm:px-5">
-                    <div class="flex items-start justify-between gap-4">
-                        <div>
-                            <p class="app-kicker">Paso 1</p>
-                            <h2 class="mt-0.5 text-lg font-semibold tracking-tight">Generar semanas del mes</h2>
-                            <p class="mt-1 text-sm text-muted-foreground">
-                                Selecciona el año y mes base. Los periodos agregados se recalculan automáticamente.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <form @submit.prevent="submitCreate" class="space-y-5 p-4 sm:p-5">
-                    <div class="app-banner app-banner-info">
-                        <Info aria-hidden="true" />
-                        <div class="flex items-start gap-3">
-                            <div class="text-sm text-muted-foreground">
-                                <p class="font-semibold text-foreground">Generación automática activada</p>
-                                <p class="mt-1">
-                                    Solo se generan semanas manualmente. Bimestres, trimestres, semestres y anual
-                                    se crean o actualizan solos con base en las semanas existentes.
+                <!-- Paso 1: generar semanas del mes -->
+                <section
+                    class="app-card overflow-hidden"
+                    data-tour="periodos-generate"
+                >
+                    <div class="border-b px-4 py-4 sm:px-5">
+                        <div class="flex items-start justify-between gap-4">
+                            <div>
+                                <p class="app-kicker">Paso 1</p>
+                                <h2
+                                    class="mt-0.5 text-lg font-semibold tracking-tight"
+                                >
+                                    Generar semanas del mes
+                                </h2>
+                                <p class="mt-1 text-sm text-muted-foreground">
+                                    Selecciona el año y mes base. Los periodos
+                                    agregados se recalculan automáticamente.
                                 </p>
                             </div>
                         </div>
                     </div>
 
-                    <div class="grid gap-4 sm:grid-cols-2">
-                        <div class="space-y-2 sm:col-span-2">
-                            <label class="text-sm font-semibold">Tipo de periodo</label>
-                            <SelectField v-model="form.type" :options="periodTypeOptions" />
-                            <InputError :message="form.errors.type" />
-                        </div>
-
-                        <div class="space-y-2">
-                            <label class="text-sm font-semibold">Año</label>
-                            <input
-                                v-model="form.year"
-                                type="number"
-                                class="app-input"
-                                min="2020"
-                                max="2100"
-                                placeholder="2026"
-                            />
-                            <InputError :message="form.errors.year" />
-                        </div>
-
-                        <div class="space-y-2">
-                            <label class="text-sm font-semibold">Mes base</label>
-                            <SelectField v-model="form.month" :options="monthSelectOptions" placeholder="Selecciona un mes" />
-                            <InputError :message="form.errors.month" />
-                        </div>
-                    </div>
-
-                    <div class="rounded-2xl border border-dashed border-border/70 bg-muted/30 px-4 py-3">
-                        <p class="text-sm text-muted-foreground">
-                            Se generará:
-                            <span class="font-semibold text-foreground">
-                                {{ createLabel || 'Selecciona año y mes' }}
-                            </span>
-                        </p>
-                        <p class="mt-1 text-xs text-muted-foreground">
-                            Se crean semanas base para ese mes. Los bimestres/trimestres/etc. se recalculan automáticamente.
-                        </p>
-                    </div>
-
-                    <div class="flex justify-end border-t pt-4">
-                        <button type="submit" class="app-btn app-btn-primary h-10 rounded-lg px-5 disabled:cursor-not-allowed disabled:opacity-60" :disabled="form.processing">
-                            <Plus class="size-4" />
-                            {{ form.processing ? 'Generando…' : 'Generar semanas y sincronizar' }}
-                        </button>
-                    </div>
-                </form>
-            </section>
-
-            <!-- ── Configurar mes operativo ── -->
-            <section class="app-card overflow-hidden" data-tour="periodos-monthly">
-                <div class="border-b px-4 py-4 sm:px-5">
-                    <div class="flex items-start justify-between gap-4">
-                        <div>
-                            <p class="app-kicker">Paso 2</p>
-                            <h2 class="mt-0.5 text-lg font-semibold tracking-tight">Configurar mes operativo</h2>
-                            <p class="mt-1 text-sm text-muted-foreground">
-                                Selecciona el año, mes y las semanas que formarán el periodo mensual operativo.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <form @submit.prevent="submitConfigureMonth" class="space-y-5 p-4 sm:p-5">
-                    <div class="app-banner app-banner-success">
-                        <Info aria-hidden="true" />
-                        <div class="flex items-start gap-3">
-                            <div class="text-sm text-muted-foreground">
-                                <p class="font-semibold text-foreground">Agrupa semanas en un mes operativo</p>
-                                <p class="mt-1">
-                                    Se muestran <strong class="text-foreground">todas las semanas disponibles no asignadas</strong>
-                                    del año seleccionado — incluyendo semanas sobrantes de meses anteriores y semanas
-                                    que cruzan el cambio de mes. Selecciona 3, 4 o 5 semanas consecutivas según el rango
-                                    operativo real. Las semanas no seleccionadas quedan disponibles para el siguiente mes.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="grid gap-4 sm:grid-cols-2">
-                        <div class="space-y-2">
-                            <label class="text-sm font-semibold">Año</label>
-                            <input
-                                v-model="monthlyForm.year"
-                                type="number"
-                                class="app-input"
-                                min="2020"
-                                max="2100"
-                                placeholder="2026"
-                            />
-                            <InputError :message="monthlyForm.errors.year" />
-                        </div>
-
-                        <div class="space-y-2">
-                            <label class="text-sm font-semibold">Mes</label>
-                            <SelectField v-model="monthlyForm.month" :options="monthSelectOptions" placeholder="Selecciona un mes" />
-                            <InputError :message="monthlyForm.errors.month" />
-                        </div>
-                    </div>
-
-                    <div v-if="monthlyForm.year && monthlyForm.month" class="space-y-3">
-                        <div>
-                            <p class="text-sm font-semibold">Semanas disponibles para este mes operativo</p>
-                            <p class="mt-0.5 text-xs text-muted-foreground">
-                                Selecciona las semanas que formarán este mes operativo. Pueden incluir semanas que inician en un mes calendario anterior o terminan en el siguiente.
-                            </p>
-                        </div>
-
-                        <div v-if="filteredWeeksForMonth.length" class="grid max-h-80 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
-                            <label
-                                v-for="week in filteredWeeksForMonth"
-                                :key="week.id"
-                                class="flex cursor-pointer items-start gap-3 rounded-xl border bg-muted/20 px-3.5 py-2.5 transition"
-                                :class="monthlyForm.week_ids.includes(week.id)
-                                    ? 'border-primary/40 bg-primary/5'
-                                    : 'border-border/70 hover:border-primary/25 hover:bg-primary/5'"
-                            >
-                                <input
-                                    type="checkbox"
-                                    :value="week.id"
-                                    v-model="monthlyForm.week_ids"
-                                    class="mt-0.5 size-4 rounded accent-primary"
-                                />
-                                <div class="min-w-0 flex-1">
-                                    <div class="flex flex-wrap items-center gap-2">
-                                        <span class="text-sm font-semibold text-foreground">
-                                            Semana {{ week.sequence }}
-                                        </span>
-                                        <span
-                                            v-if="weekCrossesMonth(week)"
-                                            class="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-500/15 dark:text-violet-300"
-                                        >
-                                            Cruza mes
-                                        </span>
-                                        <span
-                                            v-else-if="weekFromPreviousMonth(week, Number(monthlyForm.month))"
-                                            class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
-                                        >
-                                            Del mes anterior
-                                        </span>
-                                    </div>
-                                    <p class="mt-0.5 text-xs text-muted-foreground">
-                                        {{ formatShortDate(week.start_date) }} al {{ formatShortDate(week.end_date) }}
+                    <form
+                        @submit.prevent="submitCreate"
+                        class="space-y-5 p-4 sm:p-5"
+                    >
+                        <div class="app-banner app-banner-info">
+                            <Info aria-hidden="true" />
+                            <div class="flex items-start gap-3">
+                                <div class="text-sm text-muted-foreground">
+                                    <p class="font-semibold text-foreground">
+                                        Generación automática activada
+                                    </p>
+                                    <p class="mt-1">
+                                        Solo se generan semanas manualmente.
+                                        Bimestres, trimestres, semestres y anual
+                                        se crean o actualizan solos con base en
+                                        las semanas existentes.
                                     </p>
                                 </div>
-                            </label>
+                            </div>
                         </div>
 
-                        <div v-else class="rounded-2xl border border-dashed border-amber-300/60 bg-amber-50/40 px-4 py-4 dark:border-amber-500/20 dark:bg-amber-500/5">
-                            <p class="text-sm text-amber-700 dark:text-amber-300">
-                                No hay semanas disponibles para el año {{ monthlyForm.year }}.
-                                Todas las semanas ya fueron asignadas a meses operativos,
-                                o aún no se han generado semanas para ese año.
-                            </p>
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            <div class="space-y-2 sm:col-span-2">
+                                <label class="text-sm font-semibold"
+                                    >Tipo de periodo</label
+                                >
+                                <SelectField
+                                    v-model="form.type"
+                                    :options="periodTypeOptions"
+                                />
+                                <InputError :message="form.errors.type" />
+                            </div>
+
+                            <div class="space-y-2">
+                                <label class="text-sm font-semibold">Año</label>
+                                <input
+                                    v-model="form.year"
+                                    type="number"
+                                    class="app-input"
+                                    min="2020"
+                                    max="2100"
+                                    placeholder="2026"
+                                />
+                                <InputError :message="form.errors.year" />
+                            </div>
+
+                            <div class="space-y-2">
+                                <label class="text-sm font-semibold"
+                                    >Mes base</label
+                                >
+                                <SelectField
+                                    v-model="form.month"
+                                    :options="monthSelectOptions"
+                                    placeholder="Selecciona un mes"
+                                />
+                                <InputError :message="form.errors.month" />
+                            </div>
                         </div>
 
-                        <!-- Advertencia de semanas no consecutivas -->
                         <div
-                            v-if="hasNonConsecutiveWeeks"
-                            class="rounded-2xl border border-red-200 bg-red-50/60 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/10"
+                            class="rounded-2xl border border-dashed border-border/70 bg-muted/30 px-4 py-3"
                         >
-                            <p class="text-sm font-semibold text-red-700 dark:text-red-300">
-                                Las semanas seleccionadas no son consecutivas
-                            </p>
-                            <p class="mt-0.5 text-xs text-red-600 dark:text-red-400">
-                                Un mes operativo debe formarse con semanas seguidas sin saltos entre ellas.
-                            </p>
-                        </div>
-
-                        <!-- Resumen de selección -->
-                        <div
-                            v-if="selectedWeeksSummary"
-                            class="rounded-2xl border border-emerald-200/60 bg-emerald-50/40 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/5"
-                        >
-                            <p class="text-[10px] font-bold uppercase tracking-widest text-emerald-700/70 dark:text-emerald-400/70">
-                                Resumen del mes operativo
-                            </p>
-                            <p class="mt-1.5 text-sm font-semibold text-foreground">
-                                Semana {{ selectedWeeksSummary.firstSequence }}
-                                <span v-if="selectedWeeksSummary.firstSequence !== selectedWeeksSummary.lastSequence">
-                                    a Semana {{ selectedWeeksSummary.lastSequence }}
+                            <p class="text-sm text-muted-foreground">
+                                Se generará:
+                                <span class="font-semibold text-foreground">
+                                    {{ createLabel || 'Selecciona año y mes' }}
                                 </span>
                             </p>
-                            <p class="mt-0.5 text-xs text-muted-foreground">
-                                {{ formatShortDate(selectedWeeksSummary.startDate) }} al {{ formatShortDate(selectedWeeksSummary.endDate) }}
-                            </p>
-                            <p class="mt-0.5 text-xs text-muted-foreground">
-                                {{ selectedWeeksSummary.count }} semana(s)
+                            <p class="mt-1 text-xs text-muted-foreground">
+                                Se crean semanas base para ese mes. Los
+                                bimestres/trimestres/etc. se recalculan
+                                automáticamente.
                             </p>
                         </div>
+
+                        <div class="flex justify-end border-t pt-4">
+                            <button
+                                type="submit"
+                                class="app-btn app-btn-primary h-10 rounded-lg px-5 disabled:cursor-not-allowed disabled:opacity-60"
+                                :disabled="form.processing"
+                            >
+                                <Plus class="size-4" />
+                                {{
+                                    form.processing
+                                        ? 'Generando…'
+                                        : 'Generar semanas y sincronizar'
+                                }}
+                            </button>
+                        </div>
+                    </form>
+                </section>
+
+                <!-- ── Configurar mes operativo ── -->
+                <section
+                    class="app-card overflow-hidden"
+                    data-tour="periodos-monthly"
+                >
+                    <div class="border-b px-4 py-4 sm:px-5">
+                        <div class="flex items-start justify-between gap-4">
+                            <div>
+                                <p class="app-kicker">Paso 2</p>
+                                <h2
+                                    class="mt-0.5 text-lg font-semibold tracking-tight"
+                                >
+                                    Configurar mes operativo
+                                </h2>
+                                <p class="mt-1 text-sm text-muted-foreground">
+                                    Selecciona el año, mes y las semanas que
+                                    formarán el periodo mensual operativo.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <form
+                        @submit.prevent="submitConfigureMonth"
+                        class="space-y-5 p-4 sm:p-5"
+                    >
+                        <div class="app-banner app-banner-success">
+                            <Info aria-hidden="true" />
+                            <div class="flex items-start gap-3">
+                                <div class="text-sm text-muted-foreground">
+                                    <p class="font-semibold text-foreground">
+                                        Agrupa semanas en un mes operativo
+                                    </p>
+                                    <p class="mt-1">
+                                        Se muestran
+                                        <strong class="text-foreground"
+                                            >todas las semanas disponibles no
+                                            asignadas</strong
+                                        >
+                                        del año seleccionado — incluyendo
+                                        semanas sobrantes de meses anteriores y
+                                        semanas que cruzan el cambio de mes.
+                                        Selecciona 3, 4 o 5 semanas consecutivas
+                                        según el rango operativo real. Las
+                                        semanas no seleccionadas quedan
+                                        disponibles para el siguiente mes.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            <div class="space-y-2">
+                                <label class="text-sm font-semibold">Año</label>
+                                <input
+                                    v-model="monthlyForm.year"
+                                    type="number"
+                                    class="app-input"
+                                    min="2020"
+                                    max="2100"
+                                    placeholder="2026"
+                                />
+                                <InputError
+                                    :message="monthlyForm.errors.year"
+                                />
+                            </div>
+
+                            <div class="space-y-2">
+                                <label class="text-sm font-semibold">Mes</label>
+                                <SelectField
+                                    v-model="monthlyForm.month"
+                                    :options="monthSelectOptions"
+                                    placeholder="Selecciona un mes"
+                                />
+                                <InputError
+                                    :message="monthlyForm.errors.month"
+                                />
+                            </div>
+                        </div>
+
                         <div
-                            v-else-if="filteredWeeksForMonth.length && monthlyForm.week_ids.length === 0"
-                            class="rounded-2xl border border-dashed border-border/60 px-4 py-3"
+                            v-if="monthlyForm.year && monthlyForm.month"
+                            class="space-y-3"
                         >
-                            <p class="text-xs text-muted-foreground">
-                                Selecciona las semanas que formarán el rango operativo.
-                            </p>
+                            <div>
+                                <p class="text-sm font-semibold">
+                                    Semanas disponibles para este mes operativo
+                                </p>
+                                <p class="mt-0.5 text-xs text-muted-foreground">
+                                    Selecciona las semanas que formarán este mes
+                                    operativo. Pueden incluir semanas que
+                                    inician en un mes calendario anterior o
+                                    terminan en el siguiente.
+                                </p>
+                            </div>
+
+                            <div
+                                v-if="filteredWeeksForMonth.length"
+                                class="grid max-h-80 gap-2 overflow-y-auto pr-1 sm:grid-cols-2"
+                            >
+                                <label
+                                    v-for="week in filteredWeeksForMonth"
+                                    :key="week.id"
+                                    class="flex cursor-pointer items-start gap-3 rounded-xl border bg-muted/20 px-3.5 py-2.5 transition"
+                                    :class="
+                                        monthlyForm.week_ids.includes(week.id)
+                                            ? 'border-primary/40 bg-primary/5'
+                                            : 'border-border/70 hover:border-primary/25 hover:bg-primary/5'
+                                    "
+                                >
+                                    <input
+                                        type="checkbox"
+                                        :value="week.id"
+                                        v-model="monthlyForm.week_ids"
+                                        class="mt-0.5 size-4 rounded accent-primary"
+                                    />
+                                    <div class="min-w-0 flex-1">
+                                        <div
+                                            class="flex flex-wrap items-center gap-2"
+                                        >
+                                            <span
+                                                class="text-sm font-semibold text-foreground"
+                                            >
+                                                Semana {{ week.sequence }}
+                                            </span>
+                                            <span
+                                                v-if="weekCrossesMonth(week)"
+                                                class="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-500/15 dark:text-violet-300"
+                                            >
+                                                Cruza mes
+                                            </span>
+                                            <span
+                                                v-else-if="
+                                                    weekFromPreviousMonth(
+                                                        week,
+                                                        Number(
+                                                            monthlyForm.month,
+                                                        ),
+                                                    )
+                                                "
+                                                class="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
+                                            >
+                                                Del mes anterior
+                                            </span>
+                                        </div>
+                                        <p
+                                            class="mt-0.5 text-xs text-muted-foreground"
+                                        >
+                                            {{
+                                                formatShortDate(week.start_date)
+                                            }}
+                                            al
+                                            {{ formatShortDate(week.end_date) }}
+                                        </p>
+                                    </div>
+                                </label>
+                            </div>
+
+                            <div
+                                v-else
+                                class="rounded-2xl border border-dashed border-amber-300/60 bg-amber-50/40 px-4 py-4 dark:border-amber-500/20 dark:bg-amber-500/5"
+                            >
+                                <p
+                                    class="text-sm text-amber-700 dark:text-amber-300"
+                                >
+                                    No hay semanas disponibles para el año
+                                    {{ monthlyForm.year }}. Todas las semanas ya
+                                    fueron asignadas a meses operativos, o aún
+                                    no se han generado semanas para ese año.
+                                </p>
+                            </div>
+
+                            <!-- Advertencia de semanas no consecutivas -->
+                            <div
+                                v-if="hasNonConsecutiveWeeks"
+                                class="rounded-2xl border border-red-200 bg-red-50/60 px-4 py-3 dark:border-red-500/20 dark:bg-red-500/10"
+                            >
+                                <p
+                                    class="text-sm font-semibold text-red-700 dark:text-red-300"
+                                >
+                                    Las semanas seleccionadas no son
+                                    consecutivas
+                                </p>
+                                <p
+                                    class="mt-0.5 text-xs text-red-600 dark:text-red-400"
+                                >
+                                    Un mes operativo debe formarse con semanas
+                                    seguidas sin saltos entre ellas.
+                                </p>
+                            </div>
+
+                            <!-- Resumen de selección -->
+                            <div
+                                v-if="selectedWeeksSummary"
+                                class="rounded-2xl border border-emerald-200/60 bg-emerald-50/40 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/5"
+                            >
+                                <p
+                                    class="text-[10px] font-bold tracking-widest text-emerald-700/70 uppercase dark:text-emerald-400/70"
+                                >
+                                    Resumen del mes operativo
+                                </p>
+                                <p
+                                    class="mt-1.5 text-sm font-semibold text-foreground"
+                                >
+                                    Semana
+                                    {{ selectedWeeksSummary.firstSequence }}
+                                    <span
+                                        v-if="
+                                            selectedWeeksSummary.firstSequence !==
+                                            selectedWeeksSummary.lastSequence
+                                        "
+                                    >
+                                        a Semana
+                                        {{ selectedWeeksSummary.lastSequence }}
+                                    </span>
+                                </p>
+                                <p class="mt-0.5 text-xs text-muted-foreground">
+                                    {{
+                                        formatShortDate(
+                                            selectedWeeksSummary.startDate,
+                                        )
+                                    }}
+                                    al
+                                    {{
+                                        formatShortDate(
+                                            selectedWeeksSummary.endDate,
+                                        )
+                                    }}
+                                </p>
+                                <p class="mt-0.5 text-xs text-muted-foreground">
+                                    {{ selectedWeeksSummary.count }} semana(s)
+                                </p>
+                            </div>
+                            <div
+                                v-else-if="
+                                    filteredWeeksForMonth.length &&
+                                    monthlyForm.week_ids.length === 0
+                                "
+                                class="rounded-2xl border border-dashed border-border/60 px-4 py-3"
+                            >
+                                <p class="text-xs text-muted-foreground">
+                                    Selecciona las semanas que formarán el rango
+                                    operativo.
+                                </p>
+                            </div>
+
+                            <InputError
+                                :message="monthlyForm.errors.week_ids"
+                            />
                         </div>
 
-                        <InputError :message="monthlyForm.errors.week_ids" />
-                    </div>
-
-                    <div class="flex flex-col items-end gap-1.5 border-t pt-4">
-                        <button
-                            type="submit"
-                            class="app-btn app-btn-primary h-10 rounded-lg px-5 disabled:cursor-not-allowed disabled:opacity-60"
-                            :disabled="monthlyForm.processing || monthlyForm.week_ids.length === 0"
+                        <div
+                            class="flex flex-col items-end gap-1.5 border-t pt-4"
                         >
-                            <Plus class="size-4" />
-                            {{ monthlyForm.processing ? 'Creando…' : 'Crear mes operativo' }}
-                        </button>
-                        <p v-if="monthlyForm.week_ids.length === 0 && !monthlyForm.processing" class="app-help">
-                            Se habilita al elegir año, mes y al menos una semana.
-                        </p>
-                    </div>
-                </form>
-            </section>
+                            <button
+                                type="submit"
+                                class="app-btn app-btn-primary h-10 rounded-lg px-5 disabled:cursor-not-allowed disabled:opacity-60"
+                                :disabled="
+                                    monthlyForm.processing ||
+                                    monthlyForm.week_ids.length === 0
+                                "
+                            >
+                                <Plus class="size-4" />
+                                {{
+                                    monthlyForm.processing
+                                        ? 'Creando…'
+                                        : 'Crear mes operativo'
+                                }}
+                            </button>
+                            <p
+                                v-if="
+                                    monthlyForm.week_ids.length === 0 &&
+                                    !monthlyForm.processing
+                                "
+                                class="app-help"
+                            >
+                                Se habilita al elegir año, mes y al menos una
+                                semana.
+                            </p>
+                        </div>
+                    </form>
+                </section>
             </div>
 
+            <!-- Listado de periodos: búsqueda, meses operativos, agrupados automáticos y semanas base -->
             <section class="app-card overflow-hidden" data-tour="periodos-list">
                 <div class="border-b px-4 py-4 sm:px-5">
-                    <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                    <div
+                        class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between"
+                    >
                         <div>
-                            <h2 class="text-lg font-semibold tracking-tight">Listado de periodos</h2>
+                            <h2 class="text-lg font-semibold tracking-tight">
+                                Listado de periodos
+                            </h2>
                             <p class="mt-1 text-sm text-muted-foreground">
-                                Las semanas se agrupan por mes y los demás periodos aparecen como agrupaciones automáticas.
+                                Las semanas se agrupan por mes y los demás
+                                periodos aparecen como agrupaciones automáticas.
                             </p>
                         </div>
 
@@ -809,13 +1112,18 @@ function getStatusClasses(period: {
                     <!-- ── Periodos mensuales operativos ── -->
                     <div v-if="monthlyPeriods.length" class="space-y-5">
                         <div class="flex items-center gap-3">
-                            <div class="flex size-11 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                            <div
+                                class="flex size-11 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                            >
                                 <CalendarDays class="size-5" />
                             </div>
                             <div>
-                                <h3 class="text-base font-bold tracking-tight">Periodos mensuales operativos</h3>
+                                <h3 class="text-base font-bold tracking-tight">
+                                    Periodos mensuales operativos
+                                </h3>
                                 <p class="text-sm text-muted-foreground">
-                                    Agrupan semanas base y habilitan reportes mensuales, bimestrales, etc.
+                                    Agrupan semanas base y habilitan reportes
+                                    mensuales, bimestrales, etc.
                                 </p>
                             </div>
                         </div>
@@ -826,13 +1134,21 @@ function getStatusClasses(period: {
                                 :key="period.id"
                                 class="relative flex flex-col overflow-hidden rounded-xl border border-border/70 bg-background p-5 shadow-soft-xs"
                             >
-                                <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400/80 via-teal-400/80 to-emerald-200/20" />
+                                <div
+                                    class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-400/80 via-teal-400/80 to-emerald-200/20"
+                                />
 
                                 <!-- Header: nombre + estado -->
-                                <div class="flex items-start justify-between gap-3">
-                                    <div class="flex min-w-0 flex-col items-start gap-1">
+                                <div
+                                    class="flex items-start justify-between gap-3"
+                                >
+                                    <div
+                                        class="flex min-w-0 flex-col items-start gap-1"
+                                    >
                                         <div class="flex items-center gap-1">
-                                            <span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                            <span
+                                                class="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300"
+                                            >
                                                 {{ period.label }}
                                             </span>
                                             <button
@@ -842,57 +1158,164 @@ function getStatusClasses(period: {
                                                 title="Cambiar nombre"
                                                 @click="renamePeriod(period)"
                                             >
-                                                <Pencil class="size-3.5" aria-hidden="true" />
+                                                <Pencil
+                                                    class="size-3.5"
+                                                    aria-hidden="true"
+                                                />
                                             </button>
                                         </div>
-                                        <span v-if="period.custom_name" class="text-[11px] text-muted-foreground">
-                                            Nombre del sistema: {{ period.system_label }}
+                                        <span
+                                            v-if="period.custom_name"
+                                            class="text-[11px] text-muted-foreground"
+                                        >
+                                            Nombre del sistema:
+                                            {{ period.system_label }}
                                         </span>
                                     </div>
-                                    <span class="shrink-0 rounded-full border px-3 py-1 text-xs font-semibold" :class="getStatusClasses(period)">
+                                    <span
+                                        class="shrink-0 rounded-full border px-3 py-1 text-xs font-semibold"
+                                        :class="getStatusClasses(period)"
+                                    >
                                         {{ getStatusLabel(period) }}
                                     </span>
                                 </div>
 
                                 <!-- Resumen operativo -->
                                 <div class="mt-4 space-y-1.5">
-                                    <div v-if="period.component_weeks?.length" class="flex items-baseline gap-2">
-                                        <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide w-28 shrink-0">Periodo op.</span>
-                                        <span class="text-sm font-semibold text-foreground">
-                                            Semana {{ period.component_weeks[0].sequence }}
-                                            a Semana {{ period.component_weeks[period.component_weeks.length - 1].sequence }}
+                                    <div
+                                        v-if="period.component_weeks?.length"
+                                        class="flex items-baseline gap-2"
+                                    >
+                                        <span
+                                            class="w-28 shrink-0 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                                            >Periodo op.</span
+                                        >
+                                        <span
+                                            class="text-sm font-semibold text-foreground"
+                                        >
+                                            Semana
+                                            {{
+                                                period.component_weeks[0]
+                                                    .sequence
+                                            }}
+                                            a Semana
+                                            {{
+                                                period.component_weeks[
+                                                    period.component_weeks
+                                                        .length - 1
+                                                ].sequence
+                                            }}
                                         </span>
                                     </div>
                                     <div class="flex items-baseline gap-2">
-                                        <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide w-28 shrink-0">Rango</span>
+                                        <span
+                                            class="w-28 shrink-0 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                                            >Rango</span
+                                        >
                                         <span class="text-sm text-foreground">
-                                            {{ formatShortDate(period.start_date) }} al {{ formatShortDate(period.end_date) }}
+                                            {{
+                                                formatShortDate(
+                                                    period.start_date,
+                                                )
+                                            }}
+                                            al
+                                            {{
+                                                formatShortDate(period.end_date)
+                                            }}
                                         </span>
                                     </div>
-                                    <div v-if="period.component_weeks?.length" class="flex items-baseline gap-2">
-                                        <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide w-28 shrink-0">Total</span>
-                                        <span class="text-sm text-foreground">{{ period.component_weeks.length }} semana(s)</span>
+                                    <div
+                                        v-if="period.component_weeks?.length"
+                                        class="flex items-baseline gap-2"
+                                    >
+                                        <span
+                                            class="w-28 shrink-0 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                                            >Total</span
+                                        >
+                                        <span class="text-sm text-foreground"
+                                            >{{
+                                                period.component_weeks.length
+                                            }}
+                                            semana(s)</span
+                                        >
                                     </div>
                                 </div>
 
                                 <!-- Fase 8.7: disponibilidad de datos del mes -->
-                                <div v-if="period.required_sources_count" class="mt-4">
-                                    <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
-                                        <span class="font-semibold text-foreground">Archivos cargados</span>
-                                        <span class="text-muted-foreground tabular-nums">{{ getProgressText(period) }}</span>
+                                <div
+                                    v-if="period.required_sources_count"
+                                    class="mt-4"
+                                >
+                                    <div
+                                        class="mb-1.5 flex items-center justify-between gap-3 text-xs"
+                                    >
+                                        <span
+                                            class="font-semibold text-foreground"
+                                            >Archivos cargados</span
+                                        >
+                                        <span
+                                            class="text-muted-foreground tabular-nums"
+                                            >{{ getProgressText(period) }}</span
+                                        >
                                     </div>
-                                    <div class="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" :aria-valuenow="Math.round(getProgress(period))" aria-valuemin="0" aria-valuemax="100" :aria-label="`Archivos cargados de ${period.label}`">
-                                        <div class="h-full rounded-full bg-primary transition-all" :style="{ width: `${getProgress(period)}%` }" />
+                                    <div
+                                        class="h-2 overflow-hidden rounded-full bg-muted"
+                                        role="progressbar"
+                                        :aria-valuenow="
+                                            Math.round(getProgress(period))
+                                        "
+                                        aria-valuemin="0"
+                                        aria-valuemax="100"
+                                        :aria-label="`Archivos cargados de ${period.label}`"
+                                    >
+                                        <div
+                                            class="h-full rounded-full bg-primary transition-all"
+                                            :style="{
+                                                width: `${getProgress(period)}%`,
+                                            }"
+                                        />
                                     </div>
                                 </div>
 
-                                <div v-if="!period.is_closed && period.can_close === false && period.close_issues_count" class="app-banner app-banner-warning mt-3 text-xs">
+                                <div
+                                    v-if="
+                                        !period.is_closed &&
+                                        period.can_close === false &&
+                                        period.close_issues_count
+                                    "
+                                    class="app-banner app-banner-warning mt-3 text-xs"
+                                >
                                     <Info aria-hidden="true" />
                                     <div>
-                                        <p class="font-semibold">{{ period.close_issues_count }} pendiente(s) por revisar</p>
-                                        <ul v-if="period.close_issues_preview?.length" class="mt-1 list-disc pl-4 text-muted-foreground">
-                                            <li v-for="issue in period.close_issues_preview" :key="issue">{{ issue }}</li>
+                                        <p class="font-semibold">
+                                            {{ period.close_issues_count }}
+                                            pendiente(s) por revisar
+                                        </p>
+                                        <ul
+                                            v-if="
+                                                period.close_issues_preview
+                                                    ?.length
+                                            "
+                                            class="mt-1 list-disc pl-4 text-muted-foreground"
+                                        >
+                                            <li
+                                                v-for="issue in period.close_issues_preview"
+                                                :key="issue"
+                                            >
+                                                {{ issue }}
+                                            </li>
                                         </ul>
+                                        <Link
+                                            v-if="canReviewExpenses"
+                                            :href="`/historico-general?periodo=${period.id}&paso=gastos`"
+                                            class="mt-1.5 inline-flex items-center gap-1 font-semibold text-primary hover:underline"
+                                        >
+                                            Revisar gastos
+                                            <ChevronRight
+                                                class="size-3.5"
+                                                aria-hidden="true"
+                                            />
+                                        </Link>
                                     </div>
                                 </div>
 
@@ -901,7 +1324,9 @@ function getStatusClasses(period: {
                                     v-if="period.component_weeks?.length"
                                     class="mt-4 mb-4 rounded-2xl border border-emerald-200/60 bg-emerald-50/40 px-4 py-3 dark:border-emerald-500/20 dark:bg-emerald-500/5"
                                 >
-                                    <p class="mb-2.5 text-[10px] font-bold uppercase tracking-widest text-emerald-700/70 dark:text-emerald-400/70">
+                                    <p
+                                        class="mb-2.5 text-[10px] font-bold tracking-widest text-emerald-700/70 uppercase dark:text-emerald-400/70"
+                                    >
                                         Semanas incluidas
                                     </p>
                                     <ul class="space-y-1.5">
@@ -910,24 +1335,49 @@ function getStatusClasses(period: {
                                             :key="w.id"
                                             class="flex items-center gap-2 text-xs"
                                         >
-                                            <span class="size-1.5 shrink-0 rounded-full bg-emerald-400 dark:bg-emerald-500" />
-                                            <span class="font-semibold text-foreground">Semana {{ w.sequence }}</span>
-                                            <span class="text-muted-foreground">—</span>
-                                            <span class="text-muted-foreground">{{ formatShortDate(w.start_date) }} al {{ formatShortDate(w.end_date) }}</span>
+                                            <span
+                                                class="size-1.5 shrink-0 rounded-full bg-emerald-400 dark:bg-emerald-500"
+                                            />
+                                            <span
+                                                class="font-semibold text-foreground"
+                                                >Semana {{ w.sequence }}</span
+                                            >
+                                            <span class="text-muted-foreground"
+                                                >—</span
+                                            >
+                                            <span class="text-muted-foreground"
+                                                >{{
+                                                    formatShortDate(
+                                                        w.start_date,
+                                                    )
+                                                }}
+                                                al
+                                                {{
+                                                    formatShortDate(w.end_date)
+                                                }}</span
+                                            >
                                         </li>
                                     </ul>
                                 </div>
 
                                 <!-- Acción peligrosa separada y discreta (pide confirmación). -->
-                                <div class="mt-auto flex items-center justify-between gap-3 border-t border-border/60 pt-3">
-                                    <span class="app-help">Las semanas no se borran: vuelven a quedar libres.</span>
+                                <div
+                                    class="mt-auto flex items-center justify-between gap-3 border-t border-border/60 pt-3"
+                                >
+                                    <span class="app-help"
+                                        >Las semanas no se borran: vuelven a
+                                        quedar libres.</span
+                                    >
                                     <button
                                         type="button"
                                         class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-danger transition hover:bg-danger-soft"
                                         :aria-label="`Eliminar el mes operativo ${period.label}`"
                                         @click="destroyMonthly(period)"
                                     >
-                                        <Trash2 class="size-3.5" aria-hidden="true" />
+                                        <Trash2
+                                            class="size-3.5"
+                                            aria-hidden="true"
+                                        />
                                         Eliminar
                                     </button>
                                 </div>
@@ -935,15 +1385,21 @@ function getStatusClasses(period: {
                         </div>
                     </div>
 
+                    <!-- ── Periodos agrupados automáticos (bimestre, trimestre, semestre, anual) ── -->
                     <div v-if="groupedOtherPeriods.length" class="space-y-5">
                         <div class="flex items-center gap-3">
-                            <div class="flex size-11 items-center justify-center rounded-2xl bg-slate-500/10 text-slate-700 dark:text-slate-300">
+                            <div
+                                class="flex size-11 items-center justify-center rounded-2xl bg-slate-500/10 text-slate-700 dark:text-slate-300"
+                            >
                                 <Sparkles class="size-5" />
                             </div>
                             <div>
-                                <h3 class="text-base font-bold tracking-tight">Periodos agrupados automáticos</h3>
+                                <h3 class="text-base font-bold tracking-tight">
+                                    Periodos agrupados automáticos
+                                </h3>
                                 <p class="text-sm text-muted-foreground">
-                                    Se generan solos cuando ya existen suficientes semanas para formar cada bloque.
+                                    Se generan solos cuando ya existen
+                                    suficientes semanas para formar cada bloque.
                                 </p>
                             </div>
                         </div>
@@ -958,11 +1414,14 @@ function getStatusClasses(period: {
                                     {{ group.title }}
                                 </h3>
                                 <p class="text-sm text-muted-foreground">
-                                    {{ group.periods.length }} periodo(s) generados automáticamente
+                                    {{ group.periods.length }} periodo(s)
+                                    generados automáticamente
                                 </p>
                             </div>
 
-                            <div class="grid gap-4 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-3">
+                            <div
+                                class="grid gap-4 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-3"
+                            >
                                 <article
                                     v-for="period in group.periods"
                                     :key="period.id"
@@ -970,23 +1429,47 @@ function getStatusClasses(period: {
                                 >
                                     <div
                                         class="absolute inset-x-0 top-0 h-1"
-                                        :class="period.is_closed ? 'bg-slate-300 dark:bg-slate-600' : 'bg-gradient-to-r from-primary/70 via-sky-400/70 to-primary/20'"
+                                        :class="
+                                            period.is_closed
+                                                ? 'bg-slate-300 dark:bg-slate-600'
+                                                : 'bg-gradient-to-r from-primary/70 via-sky-400/70 to-primary/20'
+                                        "
                                     />
 
-                                    <div class="flex items-start justify-between gap-3">
+                                    <div
+                                        class="flex items-start justify-between gap-3"
+                                    >
                                         <div class="min-w-0">
-                                            <span class="inline-flex items-center rounded-full bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary">
+                                            <span
+                                                class="inline-flex items-center rounded-full bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary"
+                                            >
                                                 {{ getPeriodTitle(period) }}
                                             </span>
 
-                                            <p class="mt-3 text-sm font-semibold text-foreground">
+                                            <p
+                                                class="mt-3 text-sm font-semibold text-foreground"
+                                            >
                                                 {{ getPeriodSubtitle(period) }}
                                             </p>
 
-                                            <p v-if="period.component_labels?.length" class="mt-1 text-xs text-muted-foreground">
-                                                Meses operativos: {{ period.component_labels.join(', ') }}
+                                            <p
+                                                v-if="
+                                                    period.component_labels
+                                                        ?.length
+                                                "
+                                                class="mt-1 text-xs text-muted-foreground"
+                                            >
+                                                Meses operativos:
+                                                {{
+                                                    period.component_labels.join(
+                                                        ', ',
+                                                    )
+                                                }}
                                             </p>
-                                            <p v-else class="mt-1 text-xs text-muted-foreground">
+                                            <p
+                                                v-else
+                                                class="mt-1 text-xs text-muted-foreground"
+                                            >
                                                 Agrupación de meses operativos.
                                             </p>
                                         </div>
@@ -999,51 +1482,96 @@ function getStatusClasses(period: {
                                         </span>
                                     </div>
 
-                                    <div class="mt-4 mb-4 rounded-xl border border-border/60 bg-muted/25 p-3.5">
-                                        <div class="mb-2 flex items-center justify-between gap-3">
-                                            <span class="text-sm font-semibold text-foreground">
+                                    <div
+                                        class="mt-4 mb-4 rounded-xl border border-border/60 bg-muted/25 p-3.5"
+                                    >
+                                        <div
+                                            class="mb-2 flex items-center justify-between gap-3"
+                                        >
+                                            <span
+                                                class="text-sm font-semibold text-foreground"
+                                            >
                                                 Progreso del periodo
                                             </span>
-                                            <span class="text-xs font-medium text-muted-foreground">
+                                            <span
+                                                class="text-xs font-medium text-muted-foreground"
+                                            >
                                                 {{ getProgressText(period) }}
                                             </span>
                                         </div>
 
-                                        <div class="h-2.5 overflow-hidden rounded-full bg-background shadow-inner">
+                                        <div
+                                            class="h-2.5 overflow-hidden rounded-full bg-background shadow-inner"
+                                        >
                                             <div
                                                 class="h-full rounded-full transition-all duration-500"
-                                                :class="period.is_closed ? 'bg-slate-400 dark:bg-slate-500' : 'bg-primary'"
-                                                :style="{ width: `${getProgress(period)}%` }"
+                                                :class="
+                                                    period.is_closed
+                                                        ? 'bg-slate-400 dark:bg-slate-500'
+                                                        : 'bg-primary'
+                                                "
+                                                :style="{
+                                                    width: `${getProgress(period)}%`,
+                                                }"
                                             />
                                         </div>
                                     </div>
 
-                                    <div class="mt-auto flex items-center justify-between gap-3 border-t border-border/60 pt-3">
-                                        <span class="app-help">Se pide confirmación antes de cambiar el estado.</span>
+                                    <div
+                                        class="mt-auto flex items-center justify-between gap-3 border-t border-border/60 pt-3"
+                                    >
+                                        <span class="app-help"
+                                            >Se pide confirmación antes de
+                                            cambiar el estado.</span
+                                        >
                                         <button
                                             type="button"
                                             class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition"
-                                            :class="period.is_closed ? 'border-warning-border text-warning hover:bg-warning-soft' : 'border-border text-foreground hover:bg-muted'"
+                                            :class="
+                                                period.is_closed
+                                                    ? 'border-warning-border text-warning hover:bg-warning-soft'
+                                                    : 'border-border text-foreground hover:bg-muted'
+                                            "
                                             @click="togglePeriod(period)"
                                         >
-                                            <LockOpen v-if="period.is_closed" class="size-3.5" aria-hidden="true" />
-                                            <Lock v-else class="size-3.5" aria-hidden="true" />
-                                            {{ period.is_closed ? 'Reabrir periodo' : 'Cerrar periodo' }}
+                                            <LockOpen
+                                                v-if="period.is_closed"
+                                                class="size-3.5"
+                                                aria-hidden="true"
+                                            />
+                                            <Lock
+                                                v-else
+                                                class="size-3.5"
+                                                aria-hidden="true"
+                                            />
+                                            {{
+                                                period.is_closed
+                                                    ? 'Reabrir periodo'
+                                                    : 'Cerrar periodo'
+                                            }}
                                         </button>
                                     </div>
                                 </article>
                             </div>
                         </section>
                     </div>
+                    <!-- ── Semanas base agrupadas por mes (colapsables) ── -->
                     <div v-if="groupedWeeklyPeriods.length" class="space-y-5">
                         <div class="flex items-center gap-3">
-                            <div class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                            <div
+                                class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+                            >
                                 <CalendarDays class="size-5" />
                             </div>
                             <div>
-                                <h3 class="text-base font-bold tracking-tight">Semanas calendario por mes</h3>
+                                <h3 class="text-base font-bold tracking-tight">
+                                    Semanas calendario por mes
+                                </h3>
                                 <p class="text-sm text-muted-foreground">
-                                    Se muestran las semanas base generadas por calendario. Sirven para armar los meses operativos, pero no son reportes mensuales por sí mismas.
+                                    Se muestran las semanas base generadas por
+                                    calendario. Sirven para armar los meses
+                                    operativos, pero no son reportes mensuales
+                                    por sí mismas.
                                 </p>
                             </div>
                         </div>
@@ -1054,22 +1582,46 @@ function getStatusClasses(period: {
                             class="overflow-hidden rounded-2xl border border-border/70 bg-background shadow-soft-xs"
                         >
                             <div class="border-b bg-muted/30 px-5 py-4 sm:px-6">
-                                <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                <div
+                                    class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
+                                >
                                     <div class="flex items-center gap-3">
-                                        <div class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                                        <div
+                                            class="flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+                                        >
                                             <CalendarDays class="size-5" />
                                         </div>
 
                                         <div>
-                                            <h3 class="text-lg font-bold tracking-tight">
+                                            <h3
+                                                class="text-lg font-bold tracking-tight"
+                                            >
                                                 {{ group.title }}
                                             </h3>
-                                            <p class="text-sm text-muted-foreground">
-                                                {{ group.periods.length }} semana(s) generadas
-                                                <span v-if="group.periods.length">
+                                            <p
+                                                class="text-sm text-muted-foreground"
+                                            >
+                                                {{ group.periods.length }}
+                                                semana(s) generadas
+                                                <span
+                                                    v-if="group.periods.length"
+                                                >
                                                     · Rango:
-                                                    {{ formatShortDate(group.periods[0]?.start_date) }}
-                                                    al {{ formatShortDate(group.periods[group.periods.length - 1]?.end_date) }}
+                                                    {{
+                                                        formatShortDate(
+                                                            group.periods[0]
+                                                                ?.start_date,
+                                                        )
+                                                    }}
+                                                    al
+                                                    {{
+                                                        formatShortDate(
+                                                            group.periods[
+                                                                group.periods
+                                                                    .length - 1
+                                                            ]?.end_date,
+                                                        )
+                                                    }}
                                                 </span>
                                             </p>
                                         </div>
@@ -1078,18 +1630,25 @@ function getStatusClasses(period: {
                                     <button
                                         type="button"
                                         class="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-semibold transition hover:bg-muted"
-                                        :aria-expanded="!isWeeklyGroupCollapsed(group.key)"
+                                        :aria-expanded="
+                                            !isWeeklyGroupCollapsed(group.key)
+                                        "
                                         @click="toggleWeeklyGroup(group.key)"
                                     >
                                         <ChevronDown
-                                            v-if="!isWeeklyGroupCollapsed(group.key)"
+                                            v-if="
+                                                !isWeeklyGroupCollapsed(
+                                                    group.key,
+                                                )
+                                            "
                                             class="size-4"
                                         />
-                                        <ChevronRight
-                                            v-else
-                                            class="size-4"
-                                        />
-                                        {{ isWeeklyGroupCollapsed(group.key) ? 'Ver semanas' : 'Ocultar' }}
+                                        <ChevronRight v-else class="size-4" />
+                                        {{
+                                            isWeeklyGroupCollapsed(group.key)
+                                                ? 'Ver semanas'
+                                                : 'Ocultar'
+                                        }}
                                     </button>
                                 </div>
                             </div>
@@ -1103,32 +1662,47 @@ function getStatusClasses(period: {
                                     :key="period.id"
                                     class="relative overflow-hidden rounded-xl border border-border/70 bg-background p-4"
                                 >
-                                    <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/50 via-primary/20 to-transparent" />
+                                    <div
+                                        class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary/50 via-primary/20 to-transparent"
+                                    />
 
-                                    <div class="flex items-center justify-between gap-3">
-                                        <span class="inline-flex items-center rounded-full bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary">
+                                    <div
+                                        class="flex items-center justify-between gap-3"
+                                    >
+                                        <span
+                                            class="inline-flex items-center rounded-full bg-primary/8 px-2.5 py-1 text-[11px] font-semibold text-primary"
+                                        >
                                             {{ getPeriodTitle(period) }}
                                         </span>
-                                        <span class="text-xs text-muted-foreground">
+                                        <span
+                                            class="text-xs text-muted-foreground"
+                                        >
                                             Semana base
                                         </span>
                                     </div>
 
-                                    <p class="mt-3 text-sm font-semibold text-foreground">
+                                    <p
+                                        class="mt-3 text-sm font-semibold text-foreground"
+                                    >
                                         {{ getPeriodSubtitle(period) }}
                                     </p>
-                                    <p class="mt-0.5 text-xs text-muted-foreground">
-                                        {{ formatShortDate(period.start_date) }} — {{ formatShortDate(period.end_date) }}
+                                    <p
+                                        class="mt-0.5 text-xs text-muted-foreground"
+                                    >
+                                        {{ formatShortDate(period.start_date) }}
+                                        — {{ formatShortDate(period.end_date) }}
                                     </p>
                                 </article>
                             </div>
                         </section>
                     </div>
-
                 </div>
 
+                <!-- Estado vacío -->
                 <div v-else class="px-4 py-12 text-center sm:px-5">
-                    <div class="mx-auto flex size-14 items-center justify-center rounded-2xl bg-muted">
+                    <div
+                        class="mx-auto flex size-14 items-center justify-center rounded-2xl bg-muted"
+                    >
                         <FolderOpen class="size-6 text-muted-foreground" />
                     </div>
                     <p class="mt-4 text-sm font-semibold">No hay periodos</p>

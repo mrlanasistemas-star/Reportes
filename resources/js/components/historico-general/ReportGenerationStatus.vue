@@ -1,58 +1,101 @@
 <script setup lang="ts">
-import { Clock3, MailCheck, AlertCircle, RefreshCw, ChevronDown } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
-import StatusBadge from './StatusBadge.vue'
+/**
+ * Tarjeta de estado de la generación de la Radiografía de un periodo: fallida (con botón
+ * de reintento y detalle técnico colapsable con el id del run), en proceso, completada o
+ * pendiente. Props: `period` (radiography_run_status, radiography_running,
+ * radiography_ready, radiography_run_log, radiography_run_id). Emits: `retry`. No llama rutas.
+ */
+import {
+    Clock3,
+    MailCheck,
+    AlertCircle,
+    RefreshCw,
+    ChevronDown,
+} from 'lucide-vue-next';
+import { computed, ref } from 'vue';
+import StatusBadge from './StatusBadge.vue';
 
-const props = defineProps<{ period: any }>()
-const emit = defineEmits<{ (e: 'retry'): void }>()
+/** Props: periodo con los campos de estado del run de radiografía. */
+const props = defineProps<{ period: any }>();
+/** `retry`: el usuario pidió reintentar la generación. */
+const emit = defineEmits<{ (e: 'retry'): void }>();
 
-const showTechDetail = ref(false)
+/** Muestra/oculta el detalle técnico del error. */
+const showTechDetail = ref(false);
 
-const isFailed = computed(() => props.period?.radiography_run_status === 'failed')
-const isRunning = computed(() => props.period?.radiography_running)
-const isSuccess = computed(() => props.period?.radiography_ready)
+/** El último run terminó en 'failed'. */
+const isFailed = computed(
+    () => props.period?.radiography_run_status === 'failed',
+);
+/** Hay una generación en curso. */
+const isRunning = computed(() => props.period?.radiography_running);
+/** El reporte quedó listo (tiene prioridad sobre un run fallido). */
+const isSuccess = computed(() => props.period?.radiography_ready);
 
+/** Código para StatusBadge: completed > running > error > pending. */
 const statusKey = computed(() => {
     if (isSuccess.value) {
-return 'completed'
-}
+        return 'completed';
+    }
 
     if (isRunning.value) {
-return 'running'
-}
+        return 'running';
+    }
 
     if (isFailed.value) {
-return 'error'
-}
+        return 'error';
+    }
 
-    return 'pending'
-})
+    return 'pending';
+});
 
-const publicLog = computed(() => props.period?.radiography_run_log ?? '')
+/** Mensaje público del run (log visible al usuario). */
+const publicLog = computed(() => props.period?.radiography_run_log ?? '');
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
-
+    <section
+        class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20"
+    >
         <!-- Estado fallido — solo si el reporte no quedó listo realmente -->
         <template v-if="isFailed && !isSuccess">
-            <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div
+                class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between"
+            >
                 <div class="flex gap-4">
-                    <div class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400">
+                    <div
+                        class="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400"
+                    >
                         <AlertCircle class="size-6" />
                     </div>
                     <div>
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-red-600 dark:text-red-400">Estado de generación</p>
-                        <h3 class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50">La generación falló</h3>
-                        <p class="mt-1 text-sm leading-6 whitespace-pre-line text-slate-600 dark:text-slate-300">
-                            {{ publicLog || 'No se pudo generar la Radiografía. Revisa las fuentes cargadas e inténtalo nuevamente.' }}
+                        <p
+                            class="text-xs font-black tracking-[0.22em] text-red-600 uppercase dark:text-red-400"
+                        >
+                            Estado de generación
                         </p>
-                        <p v-if="period?.radiography_run_finished_at" class="mt-1 text-xs text-slate-400">
+                        <h3
+                            class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50"
+                        >
+                            La generación falló
+                        </h3>
+                        <p
+                            class="mt-1 text-sm leading-6 whitespace-pre-line text-slate-600 dark:text-slate-300"
+                        >
+                            {{
+                                publicLog ||
+                                'No se pudo generar la Radiografía. Revisa las fuentes cargadas e inténtalo nuevamente.'
+                            }}
+                        </p>
+                        <p
+                            v-if="period?.radiography_run_finished_at"
+                            class="mt-1 text-xs text-slate-400"
+                        >
                             Falló el {{ period.radiography_run_finished_at }}
                         </p>
                     </div>
                 </div>
-                <StatusBadge status="error"  />
+                <StatusBadge status="error" />
             </div>
 
             <!-- Acciones -->
@@ -71,39 +114,73 @@ const publicLog = computed(() => props.period?.radiography_run_log ?? '')
                     class="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900 dark:border-slate-700 dark:bg-transparent dark:text-slate-300 dark:hover:border-slate-600 dark:hover:text-slate-50"
                     @click="showTechDetail = !showTechDetail"
                 >
-                    <ChevronDown class="size-4 transition-transform" :class="{ 'rotate-180': showTechDetail }" />
+                    <ChevronDown
+                        class="size-4 transition-transform"
+                        :class="{ 'rotate-180': showTechDetail }"
+                    />
                     Ver detalle técnico
                 </button>
             </div>
 
             <!-- Detalle técnico colapsable -->
-            <div v-if="showTechDetail" class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
-                <p class="font-semibold text-slate-700 dark:text-slate-300">Información de referencia</p>
-                <p class="mt-1">Código de referencia: Run #{{ period?.radiography_run_id ?? '—' }}</p>
-                <p class="mt-1 text-slate-400">El equipo técnico puede consultar el error completo en los logs del sistema usando este código.</p>
+            <div
+                v-if="showTechDetail"
+                class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400"
+            >
+                <p class="font-semibold text-slate-700 dark:text-slate-300">
+                    Información de referencia
+                </p>
+                <p class="mt-1">
+                    Código de referencia: Run #{{
+                        period?.radiography_run_id ?? '—'
+                    }}
+                </p>
+                <p class="mt-1 text-slate-400">
+                    El equipo técnico puede consultar el error completo en los
+                    logs del sistema usando este código.
+                </p>
             </div>
         </template>
 
         <!-- Estado normal (en progreso / completado / pendiente) -->
         <template v-else>
-            <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div
+                class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
+            >
                 <div class="flex gap-4">
-                    <div class="flex size-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
+                    <div
+                        class="flex size-12 items-center justify-center rounded-2xl bg-slate-950 text-white"
+                    >
                         <Clock3 class="size-6" />
                     </div>
                     <div>
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-primary">Estado de generación</p>
-                        <h3 class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50">{{ publicLog || 'Sin generación en curso' }}</h3>
-                        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Cuando el job termine, el usuario recibirá un correo y el reporte quedará en Reportes mensuales.</p>
+                        <p
+                            class="text-xs font-black tracking-[0.22em] text-primary uppercase"
+                        >
+                            Estado de generación
+                        </p>
+                        <h3
+                            class="mt-1 text-lg font-black text-slate-950 dark:text-slate-50"
+                        >
+                            {{ publicLog || 'Sin generación en curso' }}
+                        </h3>
+                        <p
+                            class="mt-1 text-sm text-slate-600 dark:text-slate-300"
+                        >
+                            Cuando el job termine, el usuario recibirá un correo
+                            y el reporte quedará en Reportes mensuales.
+                        </p>
                     </div>
                 </div>
-                <StatusBadge :status="statusKey"  />
+                <StatusBadge :status="statusKey" />
             </div>
-            <div class="mt-5 flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300">
+            <div
+                class="mt-5 flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
+            >
                 <MailCheck class="size-5" />
-                Te avisaremos por correo cuando la Radiografía esté lista o si falla.
+                Te avisaremos por correo cuando la Radiografía esté lista o si
+                falla.
             </div>
         </template>
-
     </section>
 </template>

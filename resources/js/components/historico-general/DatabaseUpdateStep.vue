@@ -1,234 +1,384 @@
 <script setup lang="ts">
-import { AlertTriangle, Ban, CheckCircle, Clock, DatabaseZap, LoaderCircle, RefreshCw, ShieldCheck, TriangleAlert, XCircle } from 'lucide-vue-next'
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
-import SectionHeader from './SectionHeader.vue'
-import StatusBadge from './StatusBadge.vue'
+/**
+ * Etapa «Cargar registros» del flujo Histórico general. Muestra el estado del job que
+ * carga las fuentes del periodo a la BD (en cola, en proceso con avance/fuente/archivo/filas,
+ * fallido, cancelado, atascado u huérfano), las estadísticas posteriores (personas, registros,
+ * sucursales, ubicaciones pendientes, incidencias) y las sucursales consideradas.
+ * Hace su propio polling cada 3 s a GET /historico-general/{periodo}/actualizacion-bd/progreso
+ * mientras el run está en cola/ejecución, más un contador de segundos local.
+ * Props: `period`, `canUpdate`. Emits: `update`, `cancel`, `clear-stuck`, `refresh`,
+ * `process-now`, `requeue` (las peticiones las hace la página).
+ */
+import {
+    AlertTriangle,
+    Ban,
+    CheckCircle,
+    Clock,
+    DatabaseZap,
+    LoaderCircle,
+    RefreshCw,
+    ShieldCheck,
+    TriangleAlert,
+    XCircle,
+} from 'lucide-vue-next';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
+import SectionHeader from './SectionHeader.vue';
+import StatusBadge from './StatusBadge.vue';
 
-const props = defineProps<{ period: any; canUpdate: boolean }>()
+/** Props: periodo con campos database_update_* y si ya puede iniciarse la carga. */
+const props = defineProps<{ period: any; canUpdate: boolean }>();
+/**
+ * Emits: `update` iniciar carga; `cancel` cancelar; `clear-stuck` limpiar estado atascado;
+ * `refresh` recargar props de la página; `process-now` ejecutar sin worker; `requeue` reencolar job.
+ */
 const emit = defineEmits<{
-    (e: 'update'): void
-    (e: 'cancel'): void
-    (e: 'clear-stuck'): void
-    (e: 'refresh'): void
-    (e: 'process-now'): void
-    (e: 'requeue'): void
-}>()
+    (e: 'update'): void;
+    (e: 'cancel'): void;
+    (e: 'clear-stuck'): void;
+    (e: 'refresh'): void;
+    (e: 'process-now'): void;
+    (e: 'requeue'): void;
+}>();
 
-// Live state — initially from Inertia props, updated by dedicated polling
-const liveStatus     = ref<string | null>(null)
-const liveLog        = ref<string | null>(null)
-const liveError      = ref<string | null>(null)
-const liveQueuedAt   = ref<string | null>(null)
-const liveStartedAt  = ref<string | null>(null)
-const liveFinishedAt = ref<string | null>(null)
-const liveElapsed    = ref<number | null>(null)
-const liveStuck      = ref(false)
-const liveMeta       = ref<any>(null)
-const liveOrphaned   = ref(false)
-const liveCanProcessNow = ref(false)
+// Estado en vivo: se inicializa con las props de Inertia y lo actualiza el polling propio
+const liveStatus = ref<string | null>(null);
+const liveLog = ref<string | null>(null);
+const liveError = ref<string | null>(null);
+const liveQueuedAt = ref<string | null>(null);
+const liveStartedAt = ref<string | null>(null);
+const liveFinishedAt = ref<string | null>(null);
+const liveElapsed = ref<number | null>(null);
+const liveStuck = ref(false);
+const liveMeta = ref<any>(null);
+const liveOrphaned = ref(false);
+const liveCanProcessNow = ref(false);
 
+/** Copia el estado del run desde las props del periodo al estado en vivo. */
 const syncFromProps = () => {
-    liveStatus.value        = props.period?.database_update_run_status ?? null
-    liveLog.value           = props.period?.database_update_run_log ?? null
-    liveError.value         = props.period?.database_update_run_error ?? null
-    liveQueuedAt.value      = props.period?.database_update_run_queued_at ?? null
-    liveStartedAt.value     = props.period?.database_update_run_started_at ?? null
-    liveFinishedAt.value    = props.period?.database_update_run_finished_at ?? null
-    liveElapsed.value       = typeof props.period?.database_update_elapsed_seconds === 'number'
-        ? props.period.database_update_elapsed_seconds
-        : null
-    liveStuck.value         = !!props.period?.database_update_stuck_warning
-    liveMeta.value          = props.period?.database_update_run_metadata ?? null
-    liveOrphaned.value      = !!props.period?.database_update_job_orphaned
-    liveCanProcessNow.value = !!props.period?.database_update_can_process_now
-}
+    liveStatus.value = props.period?.database_update_run_status ?? null;
+    liveLog.value = props.period?.database_update_run_log ?? null;
+    liveError.value = props.period?.database_update_run_error ?? null;
+    liveQueuedAt.value = props.period?.database_update_run_queued_at ?? null;
+    liveStartedAt.value = props.period?.database_update_run_started_at ?? null;
+    liveFinishedAt.value =
+        props.period?.database_update_run_finished_at ?? null;
+    liveElapsed.value =
+        typeof props.period?.database_update_elapsed_seconds === 'number'
+            ? props.period.database_update_elapsed_seconds
+            : null;
+    liveStuck.value = !!props.period?.database_update_stuck_warning;
+    liveMeta.value = props.period?.database_update_run_metadata ?? null;
+    liveOrphaned.value = !!props.period?.database_update_job_orphaned;
+    liveCanProcessNow.value = !!props.period?.database_update_can_process_now;
+};
 
-watch(() => props.period?.database_update_run_status, syncFromProps, { immediate: true })
+/** Re-sincroniza el estado en vivo cuando cambia el estatus del run en las props. */
+watch(() => props.period?.database_update_run_status, syncFromProps, {
+    immediate: true,
+});
 
-// Dedicated polling against the JSON endpoint — independent of Inertia page reload
-let pollTimer: ReturnType<typeof setInterval> | null = null
+// Polling propio contra el endpoint JSON, independiente de la recarga de Inertia
+/** Intervalo del polling de progreso (null = inactivo). */
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+/** Detiene el polling de progreso. */
 const clearPoll = () => {
- if (pollTimer) {
- clearInterval(pollTimer); pollTimer = null 
-} 
-}
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+};
 
+/**
+ * Consulta GET /historico-general/{periodo}/actualizacion-bd/progreso y actualiza el estado en vivo.
+ * Al llegar a un estado terminal detiene el polling y emite `refresh`. Los errores se ignoran
+ * (se reintenta en el siguiente ciclo).
+ */
 const pollProgress = async () => {
     if (!props.period?.id) {
-return
-}
+        return;
+    }
 
     try {
-        const res = await fetch(`/historico-general/${props.period.id}/actualizacion-bd/progreso`, {
-            headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
-        })
+        const res = await fetch(
+            `/historico-general/${props.period.id}/actualizacion-bd/progreso`,
+            {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    Accept: 'application/json',
+                },
+            },
+        );
 
         if (!res.ok) {
-return
-}
+            return;
+        }
 
-        const data = await res.json()
-        liveStatus.value        = data.status
-        liveLog.value           = data.log
-        liveError.value         = data.error_message
-        liveQueuedAt.value      = data.queued_at
-        liveStartedAt.value     = data.started_at
-        liveFinishedAt.value    = data.finished_at
-        liveElapsed.value       = typeof data.elapsed_seconds === 'number' ? data.elapsed_seconds : null
-        liveStuck.value         = !!data.stuck_warning
-        liveMeta.value          = data.metadata ?? null
-        liveOrphaned.value      = !!data.orphaned
-        liveCanProcessNow.value = !!data.can_process_now
+        const data = await res.json();
+        liveStatus.value = data.status;
+        liveLog.value = data.log;
+        liveError.value = data.error_message;
+        liveQueuedAt.value = data.queued_at;
+        liveStartedAt.value = data.started_at;
+        liveFinishedAt.value = data.finished_at;
+        liveElapsed.value =
+            typeof data.elapsed_seconds === 'number'
+                ? data.elapsed_seconds
+                : null;
+        liveStuck.value = !!data.stuck_warning;
+        liveMeta.value = data.metadata ?? null;
+        liveOrphaned.value = !!data.orphaned;
+        liveCanProcessNow.value = !!data.can_process_now;
 
-        // Stop polling once terminal
+        // Detener el polling al llegar a un estado terminal
         if (!['queued', 'running'].includes(data.status ?? '')) {
-            clearPoll()
-            emit('refresh')
+            clearPoll();
+            emit('refresh');
         }
     } catch {
-        // silent — next tick will retry
+        // silencioso: el siguiente ciclo reintenta
     }
-}
+};
 
+/** Arranca el polling cada 3 s mientras el estatus sea queued/running; lo detiene en otro caso. */
 watch(
     () => liveStatus.value,
     (status) => {
-        clearPoll()
+        clearPoll();
 
         if (status === 'queued' || status === 'running') {
-            pollTimer = setInterval(pollProgress, 3000)
+            pollTimer = setInterval(pollProgress, 3000);
         }
     },
-    { immediate: true }
-)
+    { immediate: true },
+);
 
-// Live elapsed ticker — increments every second while running/queued
-const liveSeconds = ref<number | null>(null)
-let ticker: ReturnType<typeof setInterval> | null = null
+// Contador de tiempo transcurrido: suma 1 cada segundo mientras está en cola/ejecución
+/** Segundos transcurridos mostrados (null = desconocido). */
+const liveSeconds = ref<number | null>(null);
+/** Intervalo del contador de segundos. */
+let ticker: ReturnType<typeof setInterval> | null = null;
 
+/** Detiene el contador de segundos. */
 const clearTicker = () => {
- if (ticker) {
- clearInterval(ticker); ticker = null 
-} 
-}
+    if (ticker) {
+        clearInterval(ticker);
+        ticker = null;
+    }
+};
 
+/** Reinicia el contador con el tiempo reportado por el servidor y lo hace avanzar mientras el run esté activo. */
 watch(
     () => [liveElapsed.value, liveStatus.value] as const,
     ([secs, status]) => {
-        clearTicker()
-        liveSeconds.value = typeof secs === 'number' ? secs : null
+        clearTicker();
+        liveSeconds.value = typeof secs === 'number' ? secs : null;
 
         if (status === 'queued' || status === 'running') {
             ticker = setInterval(() => {
                 if (liveSeconds.value !== null) {
-liveSeconds.value++
-}
-            }, 1000)
+                    liveSeconds.value++;
+                }
+            }, 1000);
         }
     },
-    { immediate: true }
-)
+    { immediate: true },
+);
 
-onMounted(syncFromProps)
+/** Al montar, toma el estado de las props; al desmontar, limpia polling y contador. */
+onMounted(syncFromProps);
 
 onUnmounted(() => {
-    clearTicker()
-    clearPoll()
-})
+    clearTicker();
+    clearPoll();
+});
 
-const dbRunStatus    = computed(() => liveStatus.value)
-const dbRunLog       = computed(() => liveLog.value)
-const dbRunError     = computed(() => liveError.value)
-const dbRunQueued    = computed(() => liveQueuedAt.value)
-const dbRunStarted   = computed(() => liveStartedAt.value)
-const dbRunFinished  = computed(() => liveFinishedAt.value)
-const stuckWarning   = computed(() => liveStuck.value)
-const jobOrphaned    = computed(() => liveOrphaned.value)
-const canProcessNow  = computed(() => liveCanProcessNow.value)
+/** Alias de lectura del estado en vivo (estatus, log, error, fechas, atascado, huérfano, procesar ahora). */
+const dbRunStatus = computed(() => liveStatus.value);
+const dbRunLog = computed(() => liveLog.value);
+const dbRunError = computed(() => liveError.value);
+const dbRunQueued = computed(() => liveQueuedAt.value);
+const dbRunStarted = computed(() => liveStartedAt.value);
+const dbRunFinished = computed(() => liveFinishedAt.value);
+const stuckWarning = computed(() => liveStuck.value);
+const jobOrphaned = computed(() => liveOrphaned.value);
+const canProcessNow = computed(() => liveCanProcessNow.value);
 
+/** Tiempo transcurrido formateado («N seg» o «M min SS seg»). */
 const elapsedFormatted = computed(() => {
     if (liveSeconds.value === null) {
-return null
-}
+        return null;
+    }
 
-    const s = liveSeconds.value
-    const mins = Math.floor(s / 60)
-    const secs = s % 60
+    const s = liveSeconds.value;
+    const mins = Math.floor(s / 60);
+    const secs = s % 60;
 
     if (mins === 0) {
-return `${secs} seg`
-}
+        return `${secs} seg`;
+    }
 
-    return `${mins} min ${String(secs).padStart(2, '0')} seg`
-})
-const isQueued      = computed(() => dbRunStatus.value === 'queued')
-const isRunning     = computed(() => ['queued', 'running'].includes(dbRunStatus.value ?? ''))
-const isFailed      = computed(() => dbRunStatus.value === 'failed')
-const isCancelled   = computed(() => dbRunStatus.value === 'cancelled')
-const dbDone        = computed(() => !!props.period?.database_updated)
+    return `${mins} min ${String(secs).padStart(2, '0')} seg`;
+});
+/** El run está en cola. */
+const isQueued = computed(() => dbRunStatus.value === 'queued');
+/** El run está en cola o ejecutándose. */
+const isRunning = computed(() =>
+    ['queued', 'running'].includes(dbRunStatus.value ?? ''),
+);
+/** El run falló. */
+const isFailed = computed(() => dbRunStatus.value === 'failed');
+/** El run fue cancelado. */
+const isCancelled = computed(() => dbRunStatus.value === 'cancelled');
+/** Los registros del periodo ya están cargados en BD. */
+const dbDone = computed(() => !!props.period?.database_updated);
 
-const runMeta        = computed(() => liveMeta.value)
-const progress       = computed(() => runMeta.value?.progress_percent ?? null)
-const currentStep    = computed(() => runMeta.value?.current_step ?? null)
-const currentSource  = computed(() => runMeta.value?.current_source ?? null)
-const currentFile    = computed(() => runMeta.value?.current_file ?? null)
-const processedRows  = computed(() => runMeta.value?.processed_rows ?? runMeta.value?.cobranza_rows_read ?? null)
-const totalRows      = computed(() => runMeta.value?.total_rows ?? runMeta.value?.cobranza_total_rows ?? null)
-const stats          = computed(() => runMeta.value?.stats ?? null)
+/** Metadatos del run (avance, paso, fuente, archivo, filas, estadísticas). */
+const runMeta = computed(() => liveMeta.value);
+const progress = computed(() => runMeta.value?.progress_percent ?? null);
+const currentStep = computed(() => runMeta.value?.current_step ?? null);
+const currentSource = computed(() => runMeta.value?.current_source ?? null);
+const currentFile = computed(() => runMeta.value?.current_file ?? null);
+const processedRows = computed(
+    () =>
+        runMeta.value?.processed_rows ??
+        runMeta.value?.cobranza_rows_read ??
+        null,
+);
+const totalRows = computed(
+    () =>
+        runMeta.value?.total_rows ?? runMeta.value?.cobranza_total_rows ?? null,
+);
+/** Estadísticas posteriores a la carga (si existen). */
+const stats = computed(() => runMeta.value?.stats ?? null);
 
 // "Personas detectadas" acepta tanto el campo nuevo como el legacy
-const personsDetected    = computed(() => stats.value?.persons_detected ?? stats.value?.employees_detected ?? undefined)
-const recordsLoaded      = computed(() => stats.value?.records_loaded ?? undefined)
-const recordsExcluded    = computed(() => stats.value?.records_excluded ?? undefined)
-const branchesIncluded   = computed(() => stats.value?.branches_included ?? undefined)
-const branchesExcluded   = computed(() => stats.value?.branches_excluded ?? undefined)
-const pendingLocations   = computed(() => stats.value?.pending_locations ?? undefined)
-const criticalIncidents  = computed(() => stats.value?.critical_incidents ?? stats.value?.incidents_created ?? undefined)
-const warnings           = computed(() => stats.value?.warnings ?? undefined)
+/** Estadísticas individuales con respaldo a nombres de campo anteriores; undefined = no reportado. */
+const personsDetected = computed(
+    () =>
+        stats.value?.persons_detected ??
+        stats.value?.employees_detected ??
+        undefined,
+);
+const recordsLoaded = computed(() => stats.value?.records_loaded ?? undefined);
+const recordsExcluded = computed(
+    () => stats.value?.records_excluded ?? undefined,
+);
+const branchesIncluded = computed(
+    () => stats.value?.branches_included ?? undefined,
+);
+const branchesExcluded = computed(
+    () => stats.value?.branches_excluded ?? undefined,
+);
+const pendingLocations = computed(
+    () => stats.value?.pending_locations ?? undefined,
+);
+const criticalIncidents = computed(
+    () =>
+        stats.value?.critical_incidents ??
+        stats.value?.incidents_created ??
+        undefined,
+);
+const warnings = computed(() => stats.value?.warnings ?? undefined);
 
 // Las 12 sucursales operativas — fuente de verdad fija
+/** Sucursales mostradas como incluidas en el reporte general (lista fija informativa). */
 const INCLUDED_BRANCHES = [
-    'ATLACOMULCO', 'ATLIXCO', 'CORDOBA', 'CUERNAVACA', 'HUAMANTLA',
-    'IXTLAHUACA', 'MIACATLAN', 'ORIZABA', 'SAN LUIS POTOSI',
-    'TENANGO DEL VALLE', 'TLAXCALA', 'TULA',
-]
+    'ATLACOMULCO',
+    'ATLIXCO',
+    'CORDOBA',
+    'CUERNAVACA',
+    'HUAMANTLA',
+    'IXTLAHUACA',
+    'MIACATLAN',
+    'ORIZABA',
+    'SAN LUIS POTOSI',
+    'TENANGO DEL VALLE',
+    'TLAXCALA',
+    'TULA',
+];
+/** Sucursales mostradas como excluidas con su motivo (lista fija informativa). */
 const EXCLUDED_BRANCHES = [
     { name: 'SAN JUAN DEL RÍO', reason: 'Sucursal cerrada' },
-    { name: 'CORPORATIVO',       reason: 'No operativo' },
-]
+    { name: 'CORPORATIVO', reason: 'No operativo' },
+];
 
+/** Colores, etiqueta e ícono del recuadro de estado según la situación de la carga. */
 const statusConfig = computed(() => {
-    if (dbDone.value)      {
-return { color: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/20', text: 'text-emerald-700 dark:text-emerald-300', label: 'Registros cargados',  icon: CheckCircle,  iconClass: 'text-emerald-600 dark:text-emerald-400' }
-}
+    if (dbDone.value) {
+        return {
+            color: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-500/10 dark:border-emerald-500/20',
+            text: 'text-emerald-700 dark:text-emerald-300',
+            label: 'Registros cargados',
+            icon: CheckCircle,
+            iconClass: 'text-emerald-600 dark:text-emerald-400',
+        };
+    }
 
-    if (isQueued.value)    {
-return { color: 'bg-brand-accent/10 border-brand-accent/30  ',   text: 'text-brand-accent ',  label: 'En cola…',            icon: LoaderCircle, iconClass: 'text-brand-accent  animate-spin' }
-}
+    if (isQueued.value) {
+        return {
+            color: 'bg-brand-accent/10 border-brand-accent/30  ',
+            text: 'text-brand-accent ',
+            label: 'En cola…',
+            icon: LoaderCircle,
+            iconClass: 'text-brand-accent  animate-spin',
+        };
+    }
 
-    if (isRunning.value)   {
-return { color: 'bg-accent border-primary/30  ',   text: 'text-primary ',  label: 'Cargando…',           icon: LoaderCircle, iconClass: 'text-primary  animate-spin' }
-}
+    if (isRunning.value) {
+        return {
+            color: 'bg-accent border-primary/30  ',
+            text: 'text-primary ',
+            label: 'Cargando…',
+            icon: LoaderCircle,
+            iconClass: 'text-primary  animate-spin',
+        };
+    }
 
-    if (isFailed.value)    {
-return { color: 'bg-rose-50 border-rose-200 dark:bg-rose-500/10 dark:border-rose-500/20',       text: 'text-rose-700 dark:text-rose-300',    label: 'Falló',               icon: XCircle,      iconClass: 'text-rose-600 dark:text-rose-400' }
-}
+    if (isFailed.value) {
+        return {
+            color: 'bg-rose-50 border-rose-200 dark:bg-rose-500/10 dark:border-rose-500/20',
+            text: 'text-rose-700 dark:text-rose-300',
+            label: 'Falló',
+            icon: XCircle,
+            iconClass: 'text-rose-600 dark:text-rose-400',
+        };
+    }
 
     if (isCancelled.value) {
-return { color: 'bg-muted border-border  ',    text: 'text-muted-foreground ',   label: 'Carga cancelada',     icon: Ban,          iconClass: 'text-muted-foreground' }
-}
+        return {
+            color: 'bg-muted border-border  ',
+            text: 'text-muted-foreground ',
+            label: 'Carga cancelada',
+            icon: Ban,
+            iconClass: 'text-muted-foreground',
+        };
+    }
 
-    if (props.canUpdate)   {
-return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground ',   label: 'Lista para cargar',   icon: ShieldCheck,  iconClass: 'text-muted-foreground' }
-}
+    if (props.canUpdate) {
+        return {
+            color: 'bg-muted/50 border-border  ',
+            text: 'text-muted-foreground ',
+            label: 'Lista para cargar',
+            icon: ShieldCheck,
+            iconClass: 'text-muted-foreground',
+        };
+    }
 
-    return                 { color: 'bg-amber-50 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/20',            text: 'text-amber-700 dark:text-amber-300',   label: 'Faltan fuentes',      icon: TriangleAlert, iconClass: 'text-amber-600 dark:text-amber-400' }
-})
+    return {
+        color: 'bg-amber-50 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/20',
+        text: 'text-amber-700 dark:text-amber-300',
+        label: 'Faltan fuentes',
+        icon: TriangleAlert,
+        iconClass: 'text-amber-600 dark:text-amber-400',
+    };
+});
 </script>
 
 <template>
-    <section class="rounded-2xl border border-border bg-card p-6 shadow-soft-sm">
+    <section
+        class="rounded-2xl border border-border bg-card p-6 shadow-soft-sm"
+    >
         <SectionHeader
             eyebrow="Etapa 2"
             title="Cargar registros"
@@ -236,114 +386,275 @@ return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground 
         />
 
         <div class="mt-6 space-y-4">
-
             <!-- Fila superior: fuentes + estado -->
             <div class="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
-
                 <!-- Fuentes requeridas -->
                 <div class="rounded-2xl border border-border bg-muted/50 p-5">
                     <div class="flex items-center gap-3">
                         <DatabaseZap class="size-6 shrink-0 text-primary" />
                         <div>
-                            <p class="font-semibold text-foreground">Fuentes requeridas</p>
-                            <p class="text-sm text-muted-foreground">NOI Nómina + Lendus Ingresos Cobranza</p>
+                            <p class="font-semibold text-foreground">
+                                Fuentes requeridas
+                            </p>
+                            <p class="text-sm text-muted-foreground">
+                                NOI Nómina + Lendus Ingresos Cobranza
+                            </p>
                         </div>
                     </div>
                     <div class="mt-4 flex flex-wrap gap-2">
-                        <StatusBadge :status="period?.missing_database_sources?.includes('noi_nomina') ? 'blocked' : 'completed'" label="NOI Nómina" />
-                        <StatusBadge :status="period?.missing_database_sources?.includes('lendus_ingresos_cobranza') ? 'blocked' : 'completed'" label="Cobranza" />
+                        <StatusBadge
+                            :status="
+                                period?.missing_database_sources?.includes(
+                                    'noi_nomina',
+                                )
+                                    ? 'blocked'
+                                    : 'completed'
+                            "
+                            label="NOI Nómina"
+                        />
+                        <StatusBadge
+                            :status="
+                                period?.missing_database_sources?.includes(
+                                    'lendus_ingresos_cobranza',
+                                )
+                                    ? 'blocked'
+                                    : 'completed'
+                            "
+                            label="Cobranza"
+                        />
                     </div>
-                    <!-- Stale uploads banner: files replaced after last successful run -->
-                    <div v-if="period?.has_stale_uploads" class="mt-4 flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
-                        <svg class="mt-0.5 size-5 shrink-0 text-amber-500" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                    <!-- Aviso de cargas desactualizadas: archivos reemplazados después de la última carga exitosa -->
+                    <div
+                        v-if="period?.has_stale_uploads"
+                        class="mt-4 flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10"
+                    >
+                        <svg
+                            class="mt-0.5 size-5 shrink-0 text-amber-500"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke-width="2"
+                            stroke="currentColor"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
+                            />
                         </svg>
                         <div>
-                            <p class="font-bold text-amber-800 dark:text-amber-300">Archivos reemplazados después de la última carga</p>
-                            <p class="mt-1 text-sm text-amber-700 dark:text-amber-400">
-                                Se subieron archivos nuevos después de que Cargar registros completó. Los datos de BD ya no corresponden a los archivos actuales. Ejecuta nuevamente <strong>Cargar registros</strong>.
+                            <p
+                                class="font-bold text-amber-800 dark:text-amber-300"
+                            >
+                                Archivos reemplazados después de la última carga
                             </p>
-                            <ul v-if="period?.stale_upload_details?.length" class="mt-2 list-disc space-y-0.5 pl-4 text-xs text-amber-700 dark:text-amber-400">
-                                <li v-for="s in period.stale_upload_details" :key="s.code">
-                                    <strong>{{ s.code }}</strong> — {{ s.filename }} (subido {{ s.uploaded }}, última carga {{ s.last_run }})
+                            <p
+                                class="mt-1 text-sm text-amber-700 dark:text-amber-400"
+                            >
+                                Se subieron archivos nuevos después de que
+                                Cargar registros completó. Los datos de BD ya no
+                                corresponden a los archivos actuales. Ejecuta
+                                nuevamente <strong>Cargar registros</strong>.
+                            </p>
+                            <ul
+                                v-if="period?.stale_upload_details?.length"
+                                class="mt-2 list-disc space-y-0.5 pl-4 text-xs text-amber-700 dark:text-amber-400"
+                            >
+                                <li
+                                    v-for="s in period.stale_upload_details"
+                                    :key="s.code"
+                                >
+                                    <strong>{{ s.code }}</strong> —
+                                    {{ s.filename }} (subido {{ s.uploaded }},
+                                    última carga {{ s.last_run }})
                                 </li>
                             </ul>
                         </div>
                     </div>
-                    <ul v-if="period?.blocking_reasons?.length" class="mt-4 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-                        <li v-for="reason in period.blocking_reasons" :key="reason">{{ reason }}</li>
+                    <ul
+                        v-if="period?.blocking_reasons?.length"
+                        class="mt-4 list-disc space-y-1 pl-5 text-sm text-muted-foreground"
+                    >
+                        <li
+                            v-for="reason in period.blocking_reasons"
+                            :key="reason"
+                        >
+                            {{ reason }}
+                        </li>
                     </ul>
                 </div>
 
                 <!-- Estado y acciones -->
                 <div class="space-y-4">
-
-                    <!-- Card de estado -->
-                    <div class="rounded-2xl border p-5 transition-all duration-300" :class="statusConfig.color">
+                    <!-- Tarjeta de estado -->
+                    <div
+                        class="rounded-2xl border p-5 transition-all duration-300"
+                        :class="statusConfig.color"
+                    >
                         <div class="flex items-center gap-3">
-                            <component :is="statusConfig.icon" class="size-6 shrink-0" :class="statusConfig.iconClass" />
+                            <component
+                                :is="statusConfig.icon"
+                                class="size-6 shrink-0"
+                                :class="statusConfig.iconClass"
+                            />
                             <div class="min-w-0 flex-1">
-                                <p class="font-semibold text-foreground">{{ statusConfig.label }}</p>
-                                <p v-if="dbRunLog" class="mt-0.5 truncate text-xs leading-5" :class="statusConfig.text">{{ dbRunLog }}</p>
+                                <p class="font-semibold text-foreground">
+                                    {{ statusConfig.label }}
+                                </p>
+                                <p
+                                    v-if="dbRunLog"
+                                    class="mt-0.5 truncate text-xs leading-5"
+                                    :class="statusConfig.text"
+                                >
+                                    {{ dbRunLog }}
+                                </p>
                             </div>
                         </div>
 
                         <!-- Barra de progreso con detalle -->
                         <div v-if="isRunning && progress !== null" class="mt-4">
-                            <div class="mb-1.5 flex items-center justify-between text-xs font-medium text-muted-foreground">
+                            <div
+                                class="mb-1.5 flex items-center justify-between text-xs font-medium text-muted-foreground"
+                            >
                                 <span class="truncate pr-3">
-                                    <span v-if="currentSource" class="font-bold text-primary">{{ currentSource }}</span>
-                                    <span v-else-if="currentStep">{{ currentStep }}</span>
+                                    <span
+                                        v-if="currentSource"
+                                        class="font-bold text-primary"
+                                        >{{ currentSource }}</span
+                                    >
+                                    <span v-else-if="currentStep">{{
+                                        currentStep
+                                    }}</span>
                                     <span v-else>Procesando…</span>
                                 </span>
-                                <span class="shrink-0 font-semibold text-primary">{{ progress }}%</span>
+                                <span
+                                    class="shrink-0 font-semibold text-primary"
+                                    >{{ progress }}%</span
+                                >
                             </div>
-                            <div class="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                                class="h-2.5 w-full overflow-hidden rounded-full bg-muted"
+                            >
                                 <div
                                     class="h-full rounded-full bg-primary transition-all duration-700"
                                     :style="{ width: `${progress}%` }"
                                 />
                             </div>
                             <!-- Detalle de filas si está disponible -->
-                            <div v-if="processedRows !== null && totalRows !== null" class="mt-2 text-xs text-muted-foreground">
-                                {{ Number(processedRows).toLocaleString('es-MX') }} / {{ Number(totalRows).toLocaleString('es-MX') }} filas
-                                <span v-if="currentFile" class="ml-2 text-muted-foreground">— {{ currentFile }}</span>
+                            <div
+                                v-if="
+                                    processedRows !== null && totalRows !== null
+                                "
+                                class="mt-2 text-xs text-muted-foreground"
+                            >
+                                {{
+                                    Number(processedRows).toLocaleString(
+                                        'es-MX',
+                                    )
+                                }}
+                                /
+                                {{
+                                    Number(totalRows).toLocaleString('es-MX')
+                                }}
+                                filas
+                                <span
+                                    v-if="currentFile"
+                                    class="ml-2 text-muted-foreground"
+                                    >— {{ currentFile }}</span
+                                >
                             </div>
                         </div>
 
-                        <div v-if="dbRunQueued || dbRunStarted || dbRunFinished || elapsedFormatted" class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                            <span v-if="dbRunQueued && !dbRunStarted">En cola: <strong>{{ dbRunQueued }}</strong></span>
-                            <span v-if="dbRunStarted">Inicio: <strong>{{ dbRunStarted }}</strong></span>
-                            <span v-if="dbRunFinished">Fin: <strong>{{ dbRunFinished }}</strong></span>
-                            <span v-if="elapsedFormatted" class="flex items-center gap-1">
-                                <Clock class="size-3 shrink-0" />Transcurrido: <strong>{{ elapsedFormatted }}</strong>
+                        <div
+                            v-if="
+                                dbRunQueued ||
+                                dbRunStarted ||
+                                dbRunFinished ||
+                                elapsedFormatted
+                            "
+                            class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"
+                        >
+                            <span v-if="dbRunQueued && !dbRunStarted"
+                                >En cola:
+                                <strong>{{ dbRunQueued }}</strong></span
+                            >
+                            <span v-if="dbRunStarted"
+                                >Inicio:
+                                <strong>{{ dbRunStarted }}</strong></span
+                            >
+                            <span v-if="dbRunFinished"
+                                >Fin: <strong>{{ dbRunFinished }}</strong></span
+                            >
+                            <span
+                                v-if="elapsedFormatted"
+                                class="flex items-center gap-1"
+                            >
+                                <Clock class="size-3 shrink-0" />Transcurrido:
+                                <strong>{{ elapsedFormatted }}</strong>
                             </span>
                         </div>
-                        <div v-if="isFailed && dbRunError" class="mt-3 break-all rounded-xl bg-rose-100 p-3 font-mono text-xs leading-5 text-rose-800 dark:bg-rose-500/10 dark:text-rose-300">{{ dbRunError }}</div>
+                        <div
+                            v-if="isFailed && dbRunError"
+                            class="mt-3 rounded-xl bg-rose-100 p-3 font-mono text-xs leading-5 break-all text-rose-800 dark:bg-rose-500/10 dark:text-rose-300"
+                        >
+                            {{ dbRunError }}
+                        </div>
                     </div>
 
                     <!-- Alerta de proceso atascado -->
-                    <div v-if="stuckWarning" class="rounded-2xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
+                    <div
+                        v-if="stuckWarning"
+                        class="rounded-2xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10"
+                    >
                         <div class="flex items-start gap-2.5">
-                            <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                            <AlertTriangle
+                                class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+                            />
                             <div class="min-w-0 flex-1">
-                                <p class="text-sm font-bold text-amber-800 dark:text-amber-300">El proceso lleva más tiempo del esperado</p>
-                                <p class="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400">
-                                    {{ isQueued ? 'Lleva más de 5 min en cola sin iniciar.' : 'Lleva más de 30 min ejecutando.' }}
+                                <p
+                                    class="text-sm font-bold text-amber-800 dark:text-amber-300"
+                                >
+                                    El proceso lleva más tiempo del esperado
+                                </p>
+                                <p
+                                    class="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400"
+                                >
+                                    {{
+                                        isQueued
+                                            ? 'Lleva más de 5 min en cola sin iniciar.'
+                                            : 'Lleva más de 30 min ejecutando.'
+                                    }}
                                     Verifica que el worker esté activo:
                                 </p>
-                                <code class="mt-2 block break-all rounded-xl bg-amber-100 px-3 py-2 font-mono text-[11px] leading-5 text-amber-900 dark:bg-amber-500/15 dark:text-amber-200">
-                                    php -d memory_limit=1024M artisan queue:work database --queue=default --tries=1 --timeout=1800 --memory=1024 --sleep=3 -vvv
+                                <code
+                                    class="mt-2 block rounded-xl bg-amber-100 px-3 py-2 font-mono text-[11px] leading-5 break-all text-amber-900 dark:bg-amber-500/15 dark:text-amber-200"
+                                >
+                                    php -d memory_limit=1024M artisan queue:work
+                                    database --queue=default --tries=1
+                                    --timeout=1800 --memory=1024 --sleep=3 -vvv
                                 </code>
                                 <div class="mt-3 flex flex-wrap gap-2">
-                                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-card px-3 py-2 text-xs font-bold text-amber-700 transition hover:bg-amber-50 dark:border-amber-500/30 dark:text-amber-400 dark:hover:bg-amber-500/10" @click="emit('refresh')">
-                                        <RefreshCw class="size-3.5" />Verificar estado
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-card px-3 py-2 text-xs font-bold text-amber-700 transition hover:bg-amber-50 dark:border-amber-500/30 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                                        @click="emit('refresh')"
+                                    >
+                                        <RefreshCw class="size-3.5" />Verificar
+                                        estado
                                     </button>
-                                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-300 bg-card px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('cancel')">
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1.5 rounded-xl border border-rose-300 bg-card px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                                        @click="emit('cancel')"
+                                    >
                                         <Ban class="size-3.5" />Cancelar proceso
                                     </button>
-                                    <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground transition hover:bg-muted" @click="emit('clear-stuck')">
-                                        <RefreshCw class="size-3.5" />Limpiar estado atascado
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold text-muted-foreground transition hover:bg-muted"
+                                        @click="emit('clear-stuck')"
+                                    >
+                                        <RefreshCw class="size-3.5" />Limpiar
+                                        estado atascado
                                     </button>
                                 </div>
                             </div>
@@ -352,22 +663,55 @@ return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground 
 
                     <!-- Aviso corriendo (sin stuck) -->
                     <div v-if="isRunning && !stuckWarning" class="space-y-3">
-
                         <!-- Run en cola sin job → worker inactivo o run huérfano -->
-                        <div v-if="isQueued && jobOrphaned" class="rounded-2xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
+                        <div
+                            v-if="isQueued && jobOrphaned"
+                            class="rounded-2xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10"
+                        >
                             <div class="flex items-start gap-2.5">
-                                <AlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                                <AlertTriangle
+                                    class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+                                />
                                 <div class="min-w-0 flex-1">
-                                    <p class="text-sm font-bold text-amber-800 dark:text-amber-300">Run en cola sin job activo</p>
-                                    <p class="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400">El run está marcado como "en cola" pero no hay ningún job encolado para procesarlo. Esto ocurre si el job fue eliminado o nunca se encoló correctamente.</p>
+                                    <p
+                                        class="text-sm font-bold text-amber-800 dark:text-amber-300"
+                                    >
+                                        Run en cola sin job activo
+                                    </p>
+                                    <p
+                                        class="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-400"
+                                    >
+                                        El run está marcado como "en cola" pero
+                                        no hay ningún job encolado para
+                                        procesarlo. Esto ocurre si el job fue
+                                        eliminado o nunca se encoló
+                                        correctamente.
+                                    </p>
                                     <div class="mt-3 flex flex-wrap gap-2">
-                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-card px-3 py-2 text-xs font-bold text-amber-700 transition hover:bg-amber-50 dark:border-amber-500/30 dark:text-amber-400 dark:hover:bg-amber-500/10" @click="emit('requeue')">
-                                            <RefreshCw class="size-3.5" />Reencolar job
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-card px-3 py-2 text-xs font-bold text-amber-700 transition hover:bg-amber-50 dark:border-amber-500/30 dark:text-amber-400 dark:hover:bg-amber-500/10"
+                                            @click="emit('requeue')"
+                                        >
+                                            <RefreshCw
+                                                class="size-3.5"
+                                            />Reencolar job
                                         </button>
-                                        <button v-if="canProcessNow" type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-card px-3 py-2 text-xs font-bold text-primary transition hover:bg-accent" @click="emit('process-now')">
-                                            <DatabaseZap class="size-3.5" />Procesar ahora (local)
+                                        <button
+                                            v-if="canProcessNow"
+                                            type="button"
+                                            class="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-card px-3 py-2 text-xs font-bold text-primary transition hover:bg-accent"
+                                            @click="emit('process-now')"
+                                        >
+                                            <DatabaseZap
+                                                class="size-3.5"
+                                            />Procesar ahora (local)
                                         </button>
-                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-card px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('cancel')">
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-card px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                                            @click="emit('cancel')"
+                                        >
                                             <Ban class="size-3.5" />Cancelar
                                         </button>
                                     </div>
@@ -376,21 +720,58 @@ return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground 
                         </div>
 
                         <!-- Run en cola con job → worker apagado -->
-                        <div v-else-if="isQueued && !jobOrphaned" class="rounded-2xl border border-brand-accent/30 bg-brand-accent/10 p-4">
+                        <div
+                            v-else-if="isQueued && !jobOrphaned"
+                            class="rounded-2xl border border-brand-accent/30 bg-brand-accent/10 p-4"
+                        >
                             <div class="flex items-start gap-2.5">
-                                <LoaderCircle class="mt-0.5 size-4 shrink-0 animate-spin text-brand-accent" />
+                                <LoaderCircle
+                                    class="mt-0.5 size-4 shrink-0 animate-spin text-brand-accent"
+                                />
                                 <div class="min-w-0 flex-1">
-                                    <p class="text-sm font-bold text-brand-accent">Job en cola — worker inactivo</p>
-                                    <p class="mt-1 text-xs leading-5 text-brand-accent">El job está encolado correctamente. Necesitas iniciar el worker para que se procese. Puedes cerrar esta ventana; recibirás correo cuando termine.</p>
-                                    <code class="mt-2 block rounded-xl bg-brand-accent/10 px-3 py-2 font-mono text-[11px] leading-5 text-brand-accent">php artisan queue:work --tries=1 --timeout=0 -vvv</code>
+                                    <p
+                                        class="text-sm font-bold text-brand-accent"
+                                    >
+                                        Job en cola — worker inactivo
+                                    </p>
+                                    <p
+                                        class="mt-1 text-xs leading-5 text-brand-accent"
+                                    >
+                                        El job está encolado correctamente.
+                                        Necesitas iniciar el worker para que se
+                                        procese. Puedes cerrar esta ventana;
+                                        recibirás correo cuando termine.
+                                    </p>
+                                    <code
+                                        class="mt-2 block rounded-xl bg-brand-accent/10 px-3 py-2 font-mono text-[11px] leading-5 text-brand-accent"
+                                        >php artisan queue:work --tries=1
+                                        --timeout=0 -vvv</code
+                                    >
                                     <div class="mt-3 flex flex-wrap gap-2">
-                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-brand-accent/30 bg-card px-3 py-2 text-xs font-bold text-brand-accent transition hover:bg-brand-accent/10" @click="emit('refresh')">
-                                            <RefreshCw class="size-3.5" />Verificar estado
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center gap-1.5 rounded-xl border border-brand-accent/30 bg-card px-3 py-2 text-xs font-bold text-brand-accent transition hover:bg-brand-accent/10"
+                                            @click="emit('refresh')"
+                                        >
+                                            <RefreshCw
+                                                class="size-3.5"
+                                            />Verificar estado
                                         </button>
-                                        <button v-if="canProcessNow" type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-card px-3 py-2 text-xs font-bold text-primary transition hover:bg-accent" @click="emit('process-now')">
-                                            <DatabaseZap class="size-3.5" />Procesar ahora (local)
+                                        <button
+                                            v-if="canProcessNow"
+                                            type="button"
+                                            class="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-card px-3 py-2 text-xs font-bold text-primary transition hover:bg-accent"
+                                            @click="emit('process-now')"
+                                        >
+                                            <DatabaseZap
+                                                class="size-3.5"
+                                            />Procesar ahora (local)
                                         </button>
-                                        <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-card px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('cancel')">
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-card px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                                            @click="emit('cancel')"
+                                        >
                                             <Ban class="size-3.5" />Cancelar
                                         </button>
                                     </div>
@@ -399,14 +780,31 @@ return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground 
                         </div>
 
                         <!-- Running normalmente -->
-                        <div v-else class="rounded-2xl border border-primary/30 bg-accent p-4">
-                            <p class="text-sm font-bold text-primary">La carga corre en segundo plano.</p>
-                            <p class="mt-1 text-xs text-primary">Puedes cerrar esta ventana. Te avisaremos por correo cuando termine.</p>
+                        <div
+                            v-else
+                            class="rounded-2xl border border-primary/30 bg-accent p-4"
+                        >
+                            <p class="text-sm font-bold text-primary">
+                                La carga corre en segundo plano.
+                            </p>
+                            <p class="mt-1 text-xs text-primary">
+                                Puedes cerrar esta ventana. Te avisaremos por
+                                correo cuando termine.
+                            </p>
                             <div class="mt-3 flex flex-wrap gap-2">
-                                <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-card px-3 py-2 text-xs font-bold text-primary transition hover:bg-accent" @click="emit('refresh')">
-                                    <RefreshCw class="size-3.5" />Actualizar estado
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center gap-1.5 rounded-xl border border-primary/30 bg-card px-3 py-2 text-xs font-bold text-primary transition hover:bg-accent"
+                                    @click="emit('refresh')"
+                                >
+                                    <RefreshCw class="size-3.5" />Actualizar
+                                    estado
                                 </button>
-                                <button type="button" class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-card px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10" @click="emit('cancel')">
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-card px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                                    @click="emit('cancel')"
+                                >
                                     <Ban class="size-3.5" />Cancelar proceso
                                 </button>
                             </div>
@@ -414,65 +812,167 @@ return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground 
                     </div>
 
                     <!-- Botón acción principal -->
-                    <button v-if="!isRunning" type="button"
-                        class="inline-flex h-12 w-full items-center justify-center rounded-2xl px-5 text-sm font-semibold transition focus:outline-none focus:ring-4 disabled:cursor-not-allowed disabled:opacity-50"
-                        :class="isFailed ? 'bg-rose-600 text-white shadow-lg shadow-rose-200 hover:bg-rose-700 focus:ring-rose-100' : isCancelled ? 'bg-primary text-white shadow-lg hover:bg-primary/90 focus:ring-ring/30' : dbDone ? 'bg-primary text-white shadow-lg hover:bg-primary/90 focus:ring-ring/30' : 'bg-primary text-white shadow-lg hover:bg-primary/90 focus:ring-ring/30'"
+                    <button
+                        v-if="!isRunning"
+                        type="button"
+                        class="inline-flex h-12 w-full items-center justify-center rounded-2xl px-5 text-sm font-semibold transition focus:ring-4 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                        :class="
+                            isFailed
+                                ? 'bg-rose-600 text-white shadow-lg shadow-rose-200 hover:bg-rose-700 focus:ring-rose-100'
+                                : isCancelled
+                                  ? 'bg-primary text-white shadow-lg hover:bg-primary/90 focus:ring-ring/30'
+                                  : dbDone
+                                    ? 'bg-primary text-white shadow-lg hover:bg-primary/90 focus:ring-ring/30'
+                                    : 'bg-primary text-white shadow-lg hover:bg-primary/90 focus:ring-ring/30'
+                        "
                         :disabled="!canUpdate && !isFailed && !isCancelled"
                         @click="emit('update')"
                     >
                         <ShieldCheck class="mr-2 size-5" />
-                        <span v-if="isFailed">Reintentar carga de registros</span>
-                        <span v-else-if="isCancelled">Reiniciar carga de registros</span>
-                        <span v-else-if="dbDone">Volver a cargar desde archivos actuales</span>
+                        <span v-if="isFailed"
+                            >Reintentar carga de registros</span
+                        >
+                        <span v-else-if="isCancelled"
+                            >Reiniciar carga de registros</span
+                        >
+                        <span v-else-if="dbDone"
+                            >Volver a cargar desde archivos actuales</span
+                        >
                         <span v-else>Cargar registros</span>
                     </button>
-
                 </div>
             </div>
 
-            <!-- Stats post-procesamiento -->
-            <div v-if="stats" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                <div v-if="personsDetected !== undefined" class="rounded-2xl border border-primary/30 bg-accent p-4 text-center">
-                    <p class="text-xs font-bold text-primary">Personas detectadas</p>
-                    <p class="mt-1 text-2xl font-semibold text-primary">{{ personsDetected }}</p>
+            <!-- Estadísticas posteriores al procesamiento -->
+            <div
+                v-if="stats"
+                class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+            >
+                <div
+                    v-if="personsDetected !== undefined"
+                    class="rounded-2xl border border-primary/30 bg-accent p-4 text-center"
+                >
+                    <p class="text-xs font-bold text-primary">
+                        Personas detectadas
+                    </p>
+                    <p class="mt-1 text-2xl font-semibold text-primary">
+                        {{ personsDetected }}
+                    </p>
                 </div>
-                <div v-if="recordsLoaded !== undefined" class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-center dark:border-emerald-500/20 dark:bg-emerald-500/10">
-                    <p class="text-xs font-bold text-emerald-600 dark:text-emerald-400">Registros cargados</p>
-                    <p class="mt-1 text-2xl font-semibold text-emerald-800 dark:text-emerald-200">{{ Number(recordsLoaded).toLocaleString('es-MX') }}</p>
+                <div
+                    v-if="recordsLoaded !== undefined"
+                    class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-center dark:border-emerald-500/20 dark:bg-emerald-500/10"
+                >
+                    <p
+                        class="text-xs font-bold text-emerald-600 dark:text-emerald-400"
+                    >
+                        Registros cargados
+                    </p>
+                    <p
+                        class="mt-1 text-2xl font-semibold text-emerald-800 dark:text-emerald-200"
+                    >
+                        {{ Number(recordsLoaded).toLocaleString('es-MX') }}
+                    </p>
                 </div>
-                <div v-if="recordsExcluded !== undefined" class="rounded-2xl border border-border bg-muted/50 p-4 text-center">
-                    <p class="text-xs font-bold text-muted-foreground">Registros excluidos</p>
-                    <p class="mt-1 text-2xl font-semibold text-foreground/80">{{ Number(recordsExcluded).toLocaleString('es-MX') }}</p>
+                <div
+                    v-if="recordsExcluded !== undefined"
+                    class="rounded-2xl border border-border bg-muted/50 p-4 text-center"
+                >
+                    <p class="text-xs font-bold text-muted-foreground">
+                        Registros excluidos
+                    </p>
+                    <p class="mt-1 text-2xl font-semibold text-foreground/80">
+                        {{ Number(recordsExcluded).toLocaleString('es-MX') }}
+                    </p>
                 </div>
-                <div v-if="branchesIncluded !== undefined" class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-center dark:border-emerald-500/20 dark:bg-emerald-500/10">
-                    <p class="text-xs font-bold text-emerald-600 dark:text-emerald-400">Sucursales incluidas</p>
-                    <p class="mt-1 text-2xl font-semibold text-emerald-800 dark:text-emerald-200">{{ branchesIncluded }}</p>
+                <div
+                    v-if="branchesIncluded !== undefined"
+                    class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-center dark:border-emerald-500/20 dark:bg-emerald-500/10"
+                >
+                    <p
+                        class="text-xs font-bold text-emerald-600 dark:text-emerald-400"
+                    >
+                        Sucursales incluidas
+                    </p>
+                    <p
+                        class="mt-1 text-2xl font-semibold text-emerald-800 dark:text-emerald-200"
+                    >
+                        {{ branchesIncluded }}
+                    </p>
                 </div>
-                <div v-if="branchesExcluded !== undefined" class="rounded-2xl border border-rose-100 bg-rose-50 p-4 text-center dark:border-rose-500/20 dark:bg-rose-500/10">
-                    <p class="text-xs font-bold text-rose-600 dark:text-rose-400">Sucursales excluidas</p>
-                    <p class="mt-1 text-2xl font-semibold text-rose-800 dark:text-rose-200">{{ branchesExcluded }}</p>
+                <div
+                    v-if="branchesExcluded !== undefined"
+                    class="rounded-2xl border border-rose-100 bg-rose-50 p-4 text-center dark:border-rose-500/20 dark:bg-rose-500/10"
+                >
+                    <p
+                        class="text-xs font-bold text-rose-600 dark:text-rose-400"
+                    >
+                        Sucursales excluidas
+                    </p>
+                    <p
+                        class="mt-1 text-2xl font-semibold text-rose-800 dark:text-rose-200"
+                    >
+                        {{ branchesExcluded }}
+                    </p>
                 </div>
-                <div v-if="criticalIncidents !== undefined" class="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-center dark:border-amber-500/20 dark:bg-amber-500/10">
-                    <p class="text-xs font-bold text-amber-600 dark:text-amber-400">Incidencias críticas</p>
-                    <p class="mt-1 text-2xl font-semibold text-amber-800 dark:text-amber-200">{{ criticalIncidents }}</p>
+                <div
+                    v-if="criticalIncidents !== undefined"
+                    class="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-center dark:border-amber-500/20 dark:bg-amber-500/10"
+                >
+                    <p
+                        class="text-xs font-bold text-amber-600 dark:text-amber-400"
+                    >
+                        Incidencias críticas
+                    </p>
+                    <p
+                        class="mt-1 text-2xl font-semibold text-amber-800 dark:text-amber-200"
+                    >
+                        {{ criticalIncidents }}
+                    </p>
                 </div>
-                <div v-if="warnings !== undefined" class="rounded-2xl border border-orange-100 bg-orange-50 p-4 text-center dark:border-orange-500/20 dark:bg-orange-500/10">
-                    <p class="text-xs font-bold text-orange-600 dark:text-orange-400">Advertencias</p>
-                    <p class="mt-1 text-2xl font-semibold text-orange-800 dark:text-orange-200">{{ warnings }}</p>
+                <div
+                    v-if="warnings !== undefined"
+                    class="rounded-2xl border border-orange-100 bg-orange-50 p-4 text-center dark:border-orange-500/20 dark:bg-orange-500/10"
+                >
+                    <p
+                        class="text-xs font-bold text-orange-600 dark:text-orange-400"
+                    >
+                        Advertencias
+                    </p>
+                    <p
+                        class="mt-1 text-2xl font-semibold text-orange-800 dark:text-orange-200"
+                    >
+                        {{ warnings }}
+                    </p>
                 </div>
-                <div v-if="pendingLocations !== undefined && pendingLocations > 0" class="rounded-2xl border border-red-200 bg-red-50 p-4 text-center dark:border-red-500/20 dark:bg-red-500/10">
-                    <p class="text-xs font-bold text-red-600 dark:text-red-400">Ubicaciones pendientes</p>
-                    <p class="mt-1 text-2xl font-semibold text-red-800 dark:text-red-200">{{ pendingLocations }}</p>
+                <div
+                    v-if="
+                        pendingLocations !== undefined && pendingLocations > 0
+                    "
+                    class="rounded-2xl border border-red-200 bg-red-50 p-4 text-center dark:border-red-500/20 dark:bg-red-500/10"
+                >
+                    <p class="text-xs font-bold text-red-600 dark:text-red-400">
+                        Ubicaciones pendientes
+                    </p>
+                    <p
+                        class="mt-1 text-2xl font-semibold text-red-800 dark:text-red-200"
+                    >
+                        {{ pendingLocations }}
+                    </p>
                 </div>
             </div>
 
             <!-- Sucursales tomadas en cuenta para el reporte general -->
             <div class="rounded-2xl border border-border bg-muted/50 p-5">
-                <p class="mb-4 text-sm font-semibold text-foreground">Sucursales tomadas en cuenta para el reporte general</p>
+                <p class="mb-4 text-sm font-semibold text-foreground">
+                    Sucursales tomadas en cuenta para el reporte general
+                </p>
 
                 <!-- Incluidas -->
                 <div class="mb-4">
-                    <p class="mb-2 text-xs font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                    <p
+                        class="mb-2 text-xs font-bold tracking-wide text-emerald-700 uppercase dark:text-emerald-400"
+                    >
                         Incluidas ({{ INCLUDED_BRANCHES.length }})
                     </p>
                     <div class="flex flex-wrap gap-2">
@@ -488,7 +988,9 @@ return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground 
 
                 <!-- Excluidas -->
                 <div class="mb-4">
-                    <p class="mb-2 text-xs font-bold uppercase tracking-wide text-rose-700 dark:text-rose-400">
+                    <p
+                        class="mb-2 text-xs font-bold tracking-wide text-rose-700 uppercase dark:text-rose-400"
+                    >
                         Excluidas ({{ EXCLUDED_BRANCHES.length }})
                     </p>
                     <div class="flex flex-wrap gap-2">
@@ -498,31 +1000,62 @@ return { color: 'bg-muted/50 border-border  ',     text: 'text-muted-foreground 
                             class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-bold text-rose-800 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300"
                         >
                             {{ item.name }}
-                            <span class="font-normal text-rose-500 dark:text-rose-400">— {{ item.reason }}</span>
+                            <span
+                                class="font-normal text-rose-500 dark:text-rose-400"
+                                >— {{ item.reason }}</span
+                            >
                         </span>
                     </div>
                 </div>
 
                 <!-- Pendientes: solo si hay -->
-                <div v-if="pendingLocations !== undefined && pendingLocations > 0">
-                    <p class="mb-2 text-xs font-bold uppercase tracking-wide text-red-700 dark:text-red-400">
+                <div
+                    v-if="
+                        pendingLocations !== undefined && pendingLocations > 0
+                    "
+                >
+                    <p
+                        class="mb-2 text-xs font-bold tracking-wide text-red-700 uppercase dark:text-red-400"
+                    >
                         Ubicaciones pendientes ({{ pendingLocations }})
                     </p>
                     <p class="text-xs text-red-700 dark:text-red-400">
-                        Se detectaron {{ pendingLocations }} ubicación(es) no reconocida(s). Revisa las incidencias críticas antes de continuar.
+                        Se detectaron {{ pendingLocations }} ubicación(es) no
+                        reconocida(s). Revisa las incidencias críticas antes de
+                        continuar.
                     </p>
                 </div>
 
                 <!-- Totales -->
-                <div class="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
-                    <span>Sucursales incluidas: <strong class="text-emerald-700 dark:text-emerald-400">{{ INCLUDED_BRANCHES.length }}</strong></span>
-                    <span>Sucursales excluidas: <strong class="text-rose-700 dark:text-rose-400">{{ EXCLUDED_BRANCHES.length }}</strong></span>
-                    <span v-if="pendingLocations !== undefined && pendingLocations > 0">
-                        Ubicaciones pendientes: <strong class="text-red-700 dark:text-red-400">{{ pendingLocations }}</strong>
+                <div
+                    class="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-border pt-3 text-xs text-muted-foreground"
+                >
+                    <span
+                        >Sucursales incluidas:
+                        <strong
+                            class="text-emerald-700 dark:text-emerald-400"
+                            >{{ INCLUDED_BRANCHES.length }}</strong
+                        ></span
+                    >
+                    <span
+                        >Sucursales excluidas:
+                        <strong class="text-rose-700 dark:text-rose-400">{{
+                            EXCLUDED_BRANCHES.length
+                        }}</strong></span
+                    >
+                    <span
+                        v-if="
+                            pendingLocations !== undefined &&
+                            pendingLocations > 0
+                        "
+                    >
+                        Ubicaciones pendientes:
+                        <strong class="text-red-700 dark:text-red-400">{{
+                            pendingLocations
+                        }}</strong>
                     </span>
                 </div>
             </div>
-
         </div>
     </section>
 </template>

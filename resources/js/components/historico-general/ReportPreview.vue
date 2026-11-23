@@ -1,10 +1,24 @@
 <script setup lang="ts">
-import { ExternalLink } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
-import EmptyState from './EmptyState.vue'
-import SectionHeader from './SectionHeader.vue'
+/**
+ * Etapa «Vista previa» del flujo Histórico general: banda de encabezado, tarjetas de
+ * métricas (globales del periodo o filtradas por sucursal/gestor), mini-tabla de empleados
+ * y enlace a la vista previa completa (/reportes-mensuales/{periodo}/preview).
+ * Para alcance sucursal/gestor consulta GET /reportes-mensuales/{periodo}/filtrado-datos.
+ * Props: `period`, `preview` (datos de vista previa de Inertia), `config` (reportConfig),
+ * `identityState` (estado por identidad exacta). Sin emits.
+ */
+import { ExternalLink } from 'lucide-vue-next';
+import { computed, ref, watch } from 'vue';
+import EmptyState from './EmptyState.vue';
+import SectionHeader from './SectionHeader.vue';
 
-const props = defineProps<{ period: any; preview: any | null; config: any; identityState?: any }>()
+/** Props: periodo, vista previa global, configuración del reporte y estado por identidad (opcional). */
+const props = defineProps<{
+    period: any;
+    preview: any | null;
+    config: any;
+    identityState?: any;
+}>();
 
 // PROBLEMA 2/4/5 (auditoría 27-ago-2026): la disponibilidad de Vista previa
 // (period.radiography_ready) ya es correcta para cualquier alcance — depende solo de
@@ -12,164 +26,212 @@ const props = defineProps<{ period: any; preview: any | null; config: any; ident
 // enlace "Ver reporte completo" para un alcance por sucursal/gestor sí puede diferir
 // del que este componente arma a mano (identityState.previewUrl, resuelto por
 // identidad exacta) — se prefiere cuando coincide con la configuración actual.
+/** El `identityState` corresponde exactamente a la configuración actual. */
 const identityMatches = computed(() => {
-    const s = props.identityState
+    const s = props.identityState;
 
     if (!s) {
-return false
-}
+        return false;
+    }
 
-    return s.reportType === (props.config?.report_type ?? 'simple')
-        && s.scope === (props.config?.scope ?? 'general')
-        && (s.branchId ?? null) === (props.config?.branch_id ?? null)
-        && (s.employeeId ?? null) === (props.config?.employee_id ?? null)
-        && (s.comparePeriodId ?? null) === (props.config?.compare_period_id ?? null)
-})
+    return (
+        s.reportType === (props.config?.report_type ?? 'simple') &&
+        s.scope === (props.config?.scope ?? 'general') &&
+        (s.branchId ?? null) === (props.config?.branch_id ?? null) &&
+        (s.employeeId ?? null) === (props.config?.employee_id ?? null) &&
+        (s.comparePeriodId ?? null) ===
+            (props.config?.compare_period_id ?? null)
+    );
+});
 
+/**
+ * Formatea un número como moneda MXN.
+ * @param v Importe.
+ * @returns Texto con formato es-MX.
+ */
 const money = (v: number) =>
-    new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Number(v || 0))
+    new Intl.NumberFormat('es-MX', {
+        style: 'currency',
+        currency: 'MXN',
+    }).format(Number(v || 0));
 
-// ── Filtered data fetch ──────────────────────────────────────────────────────
-const filteredData    = ref<any>(null)
-const filteredLoading = ref(false)
+// ── Datos filtrados ──────────────────────────────────────────────────────────
+/** Respuesta de filtrado-datos (label + data) para alcance sucursal/gestor; null en general. */
+const filteredData = ref<any>(null);
+/** Hay una consulta de datos filtrados en curso. */
+const filteredLoading = ref(false);
 
+/**
+ * Cuando cambian alcance, sucursal, gestor, periodo o disponibilidad del reporte, consulta
+ * GET /reportes-mensuales/{periodo}/filtrado-datos si el alcance es sucursal/gestor y el
+ * reporte está listo; en otro caso limpia `filteredData`. Se ejecuta al montar (immediate).
+ */
 watch(
-    () => [props.config?.scope, props.config?.branch_id, props.config?.employee_id, props.period?.id, props.period?.radiography_ready] as const,
+    () =>
+        [
+            props.config?.scope,
+            props.config?.branch_id,
+            props.config?.employee_id,
+            props.period?.id,
+            props.period?.radiography_ready,
+        ] as const,
     async ([scope, branchId, employeeId, periodId, ready]) => {
-        if (!ready || !periodId || (scope !== 'branch' && scope !== 'employee')) {
-            filteredData.value = null
+        if (
+            !ready ||
+            !periodId ||
+            (scope !== 'branch' && scope !== 'employee')
+        ) {
+            filteredData.value = null;
 
-            return
+            return;
         }
 
         if (scope === 'branch' && !branchId) {
- filteredData.value = null;
+            filteredData.value = null;
 
- return 
-}
+            return;
+        }
 
         if (scope === 'employee' && !employeeId) {
- filteredData.value = null;
+            filteredData.value = null;
 
- return 
-}
+            return;
+        }
 
-        filteredLoading.value = true
+        filteredLoading.value = true;
 
         try {
-            const p = new URLSearchParams({ scope: String(scope) })
+            const p = new URLSearchParams({ scope: String(scope) });
 
-            if (scope === 'branch')   {
-p.set('branch_id',   String(branchId))
-}
+            if (scope === 'branch') {
+                p.set('branch_id', String(branchId));
+            }
 
             if (scope === 'employee') {
-p.set('employee_id', String(employeeId))
-}
+                p.set('employee_id', String(employeeId));
+            }
 
-            const res = await fetch(`/reportes-mensuales/${periodId}/filtrado-datos?${p}`, {
-                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            })
-            filteredData.value = res.ok ? await res.json() : null
+            const res = await fetch(
+                `/reportes-mensuales/${periodId}/filtrado-datos?${p}`,
+                {
+                    headers: {
+                        Accept: 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                },
+            );
+            filteredData.value = res.ok ? await res.json() : null;
         } catch {
- filteredData.value = null 
-} finally {
- filteredLoading.value = false 
-}
+            filteredData.value = null;
+        } finally {
+            filteredLoading.value = false;
+        }
     },
     { immediate: true },
-)
+);
 
 // ── Labels ───────────────────────────────────────────────────────────────────
+/** Etiqueta del alcance filtrado («Sucursal: X» / «Gestor: Y») o null en general. */
 const scopeLabel = computed(() => {
-    const s = props.config?.scope
+    const s = props.config?.scope;
 
-    if (s === 'branch')   {
-return filteredData.value?.label ? `Sucursal: ${filteredData.value.label}` : null
-}
+    if (s === 'branch') {
+        return filteredData.value?.label
+            ? `Sucursal: ${filteredData.value.label}`
+            : null;
+    }
 
     if (s === 'employee') {
-return filteredData.value?.label ? `Gestor: ${filteredData.value.label}`   : null
-}
+        return filteredData.value?.label
+            ? `Gestor: ${filteredData.value.label}`
+            : null;
+    }
 
-    return null
-})
+    return null;
+});
 
 // ── Metric cards ─────────────────────────────────────────────────────────────
+/** Tarjetas de métricas: las filtradas si hay datos de alcance; si no, las globales del periodo. */
 const metricCards = computed(() => {
-    const d = filteredData.value?.data
+    const d = filteredData.value?.data;
 
     if (d) {
         const cards: { l: string; v: any }[] = [
             { l: 'Recuperación', v: money(d.recuperacion ?? 0) },
-            { l: 'Colocación',   v: money(d.colocacion   ?? 0) },
-            { l: 'Cartera',      v: money(d.cartera       ?? 0) },
-            { l: 'Mora %',       v: (d.mora_pct ?? 0).toFixed(2) + '%' },
-        ]
+            { l: 'Colocación', v: money(d.colocacion ?? 0) },
+            { l: 'Cartera', v: money(d.cartera ?? 0) },
+            { l: 'Mora %', v: (d.mora_pct ?? 0).toFixed(2) + '%' },
+        ];
 
-        if (d.gastos      !== undefined) {
-cards.push({ l: 'Gastos Op.',  v: money(d.gastos) })
-}
+        if (d.gastos !== undefined) {
+            cards.push({ l: 'Gastos Op.', v: money(d.gastos) });
+        }
 
-        if (d.nomina      !== undefined) {
-cards.push({ l: 'Nómina',      v: money(d.nomina) })
-}
+        if (d.nomina !== undefined) {
+            cards.push({ l: 'Nómina', v: money(d.nomina) });
+        }
 
         if (d.operaciones !== undefined) {
-cards.push({ l: 'Operaciones', v: d.operaciones })
-}
+            cards.push({ l: 'Operaciones', v: d.operaciones });
+        }
 
-        if (d.pagos       !== undefined) {
-cards.push({ l: 'Pagos',       v: money(d.pagos) })
-}
+        if (d.pagos !== undefined) {
+            cards.push({ l: 'Pagos', v: money(d.pagos) });
+        }
 
-        if (d.neto        !== undefined) {
-cards.push({ l: 'Neto nómina', v: money(d.neto) })
-}
+        if (d.neto !== undefined) {
+            cards.push({ l: 'Neto nómina', v: money(d.neto) });
+        }
 
-        return cards
+        return cards;
     }
 
-    const gm = props.period?.preview_summary?.global_metrics ?? props.preview?.metrics ?? {}
+    const gm =
+        props.period?.preview_summary?.global_metrics ??
+        props.preview?.metrics ??
+        {};
 
     return [
-        { l: 'Empleados',      v: (gm.total_empleados ?? 0) },
-        { l: 'Pagos',          v: money(gm.pagos_total ?? 0) },
-        { l: 'Recuperación',   v: money(gm.recuperacion_total ?? 0) },
-        { l: 'Colocación',     v: money(gm.colocacion_total ?? 0) },
-        { l: 'Cartera',        v: money(gm.valor_cartera_total ?? 0) },
-        { l: 'Mora %',         v: (gm.mora_porcentaje ?? 0).toFixed(2) + '%' },
+        { l: 'Empleados', v: gm.total_empleados ?? 0 },
+        { l: 'Pagos', v: money(gm.pagos_total ?? 0) },
+        { l: 'Recuperación', v: money(gm.recuperacion_total ?? 0) },
+        { l: 'Colocación', v: money(gm.colocacion_total ?? 0) },
+        { l: 'Cartera', v: money(gm.valor_cartera_total ?? 0) },
+        { l: 'Mora %', v: (gm.mora_porcentaje ?? 0).toFixed(2) + '%' },
         { l: 'Gastos totales', v: money(gm.gasto_total ?? 0) },
-        { l: 'Neto nómina',    v: money(gm.neto_total ?? 0) },
-    ]
-})
+        { l: 'Neto nómina', v: money(gm.neto_total ?? 0) },
+    ];
+});
 
 // ── "Ver reporte completo" URL — preserva el filtro aplicado ─────────────────
+/** URL de «Ver reporte completo» respetando el filtro aplicado (null si no está listo). */
 const previewUrl = computed(() => {
     if (identityMatches.value && props.identityState.previewUrl) {
-return props.identityState.previewUrl
-}
+        return props.identityState.previewUrl;
+    }
 
     if (!props.period?.radiography_ready) {
-return null
-}
+        return null;
+    }
 
-    const base = `/reportes-mensuales/${props.period.id}/preview`
+    const base = `/reportes-mensuales/${props.period.id}/preview`;
 
     if (props.config?.scope === 'branch' && props.config?.branch_id) {
-return `${base}?scope=branch&branch_id=${props.config.branch_id}`
-}
+        return `${base}?scope=branch&branch_id=${props.config.branch_id}`;
+    }
 
     if (props.config?.scope === 'employee' && props.config?.employee_id) {
-return `${base}?scope=employee&employee_id=${props.config.employee_id}`
-}
+        return `${base}?scope=employee&employee_id=${props.config.employee_id}`;
+    }
 
-    return base
-})
+    return base;
+});
 </script>
 
 <template>
-    <section class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20">
+    <section
+        class="rounded-[2rem] border border-white/70 bg-white p-6 shadow-xl shadow-slate-200/70 dark:border-white/10 dark:bg-card dark:shadow-black/20"
+    >
         <SectionHeader
             eyebrow="Etapa 5"
             title="Vista previa web"
@@ -184,20 +246,57 @@ return `${base}?scope=employee&employee_id=${props.config.employee_id}`
         />
 
         <div v-else class="mt-6 space-y-5">
-            <!-- Header band -->
-            <div class="overflow-hidden rounded-2xl border border-primary/20 bg-accent/60 p-5 text-foreground">
-                <p class="text-xs font-black uppercase tracking-widest text-primary">Radiografía generada</p>
+            <!-- Banda de encabezado -->
+            <div
+                class="overflow-hidden rounded-2xl border border-primary/20 bg-accent/60 p-5 text-foreground"
+            >
+                <p
+                    class="text-xs font-black tracking-widest text-primary uppercase"
+                >
+                    Radiografía generada
+                </p>
                 <h3 class="mt-1 text-xl font-black">{{ period.label }}</h3>
-                <p v-if="scopeLabel || period.preview_summary?.generated_at" class="mt-1 text-xs text-muted-foreground">
+                <p
+                    v-if="scopeLabel || period.preview_summary?.generated_at"
+                    class="mt-1 text-xs text-muted-foreground"
+                >
                     <span v-if="scopeLabel">{{ scopeLabel }}</span>
-                    <span v-if="scopeLabel && period.preview_summary?.generated_at">&nbsp;·&nbsp;</span>
-                    <span v-if="period.preview_summary?.generated_at">{{ period.preview_summary.generated_at }}</span>
+                    <span
+                        v-if="
+                            scopeLabel && period.preview_summary?.generated_at
+                        "
+                        >&nbsp;·&nbsp;</span
+                    >
+                    <span v-if="period.preview_summary?.generated_at">{{
+                        period.preview_summary.generated_at
+                    }}</span>
                 </p>
             </div>
 
-            <!-- Metric cards (filtradas si scope=branch/employee) -->
-            <div v-if="filteredLoading" class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                <svg class="size-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+            <!-- Tarjetas de métricas (filtradas si scope=branch/employee) -->
+            <div
+                v-if="filteredLoading"
+                class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400"
+            >
+                <svg
+                    class="size-4 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                >
+                    <circle
+                        class="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        stroke-width="4"
+                    />
+                    <path
+                        class="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                </svg>
                 Cargando datos filtrados…
             </div>
             <div v-else class="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -206,20 +305,39 @@ return `${base}?scope=employee&employee_id=${props.config.employee_id}`
                     :key="card.l"
                     class="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/40"
                 >
-                    <p class="text-xs font-bold uppercase tracking-wider text-slate-400">{{ card.l }}</p>
-                    <p class="mt-1 text-base font-black text-slate-950 dark:text-slate-50">{{ card.v }}</p>
+                    <p
+                        class="text-xs font-bold tracking-wider text-slate-400 uppercase"
+                    >
+                        {{ card.l }}
+                    </p>
+                    <p
+                        class="mt-1 text-base font-black text-slate-950 dark:text-slate-50"
+                    >
+                        {{ card.v }}
+                    </p>
                 </div>
             </div>
 
-            <!-- Employees mini-table (from preview prop) -->
-            <div v-if="preview?.employees?.length" class="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
-                <div class="border-b border-slate-100 bg-slate-50 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
-                    <p class="text-xs font-black text-slate-700 dark:text-slate-300">Empleados (primeros {{ preview.employees.length }})</p>
+            <!-- Mini-tabla de empleados (desde la prop preview) -->
+            <div
+                v-if="preview?.employees?.length"
+                class="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800"
+            >
+                <div
+                    class="border-b border-slate-100 bg-slate-50 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-800/40"
+                >
+                    <p
+                        class="text-xs font-black text-slate-700 dark:text-slate-300"
+                    >
+                        Empleados (primeros {{ preview.employees.length }})
+                    </p>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="min-w-full text-xs">
                         <thead>
-                            <tr class="border-b text-left text-slate-400 dark:border-slate-800">
+                            <tr
+                                class="border-b text-left text-slate-400 dark:border-slate-800"
+                            >
                                 <th class="px-3 py-2">Empleado</th>
                                 <th class="px-3 py-2">Sucursal</th>
                                 <th class="px-3 py-2 text-right">Pagos</th>
@@ -228,19 +346,35 @@ return `${base}?scope=employee&employee_id=${props.config.employee_id}`
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="row in preview.employees.slice(0, 10)" :key="row.id" class="border-b last:border-0 dark:border-slate-800">
-                                <td class="px-3 py-2 font-semibold">{{ row.employee_name }}</td>
-                                <td class="px-3 py-2 text-slate-500 dark:text-slate-400">{{ row.branch_name ?? '—' }}</td>
-                                <td class="px-3 py-2 text-right">{{ money(row.total_payments) }}</td>
-                                <td class="px-3 py-2 text-right">{{ money(row.total_expenses) }}</td>
-                                <td class="px-3 py-2 text-right font-black">{{ money(row.net_amount) }}</td>
+                            <tr
+                                v-for="row in preview.employees.slice(0, 10)"
+                                :key="row.id"
+                                class="border-b last:border-0 dark:border-slate-800"
+                            >
+                                <td class="px-3 py-2 font-semibold">
+                                    {{ row.employee_name }}
+                                </td>
+                                <td
+                                    class="px-3 py-2 text-slate-500 dark:text-slate-400"
+                                >
+                                    {{ row.branch_name ?? '—' }}
+                                </td>
+                                <td class="px-3 py-2 text-right">
+                                    {{ money(row.total_payments) }}
+                                </td>
+                                <td class="px-3 py-2 text-right">
+                                    {{ money(row.total_expenses) }}
+                                </td>
+                                <td class="px-3 py-2 text-right font-black">
+                                    {{ money(row.net_amount) }}
+                                </td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
             </div>
 
-            <!-- CTA: full preview page -->
+            <!-- Acción: abrir la vista previa completa -->
             <div v-if="previewUrl" class="flex justify-end">
                 <a
                     :href="previewUrl"

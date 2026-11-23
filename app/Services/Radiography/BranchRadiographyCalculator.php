@@ -6,11 +6,24 @@ use App\Models\Period;
 use App\Services\BranchResolverService;
 use App\Services\OpexClassificationService;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
- * Builds per-branch financial summaries for the 12 operative sucursales.
- * GLOBAL is always derived as the sum of those branch summaries,
- * never recalculated independently from all fact_* rows.
+ * Calculadora de resúmenes financieros por sucursal operativa de la Radiografía.
+ *
+ * Construye, para cada sucursal operativa (las que BranchResolverService::isSheetBranch()
+ * reconoce), un resumen con cartera, mora por tramos, colocación, recuperación y sus
+ * componentes, OPEX (gastos ERP/Lendus), Nómina y Capital Humano, IMSS patronal y
+ * pólizas CRECE. El GLOBAL siempre se obtiene como la suma de esos resúmenes
+ * (sumGlobal) más la bolsa "sin asignar"; nunca se recalcula por separado desde
+ * todas las filas fact_*.
+ *
+ * También es la fuente canónica ÚNICA de las fórmulas de KPI compartidas por UI,
+ * Excel y PDF: nominaTotalFor(), ingresoEbitdaBaseFor(), gastosTotalesFor(),
+ * ebitdaFinalFor(), margenEbitdaFor() y recoveryExclusionSql().
+ * Lo usan PeriodRadiographyService, RadiographySnapshotBuilder,
+ * RadiographyWorkbookBuilder y RadiographyStyleHelper. Solo LEE la BD.
  */
 class BranchRadiographyCalculator
 {
@@ -23,10 +36,10 @@ class BranchRadiographyCalculator
     // ExpenseObservationAttributionService).
     private const NOMINA_CAT = 'Nómina y Capital Humano';
 
-    // DEPRECATED — kept only so old references don't break during the transition. No longer
-    // used to compute nomina_total: since the 2026-07-10 rewrite, nomina_total already has
-    // every NOI deduction subtracted at the source (accumulateNomina()), and nomina_detalle /
-    // nomina_informativo are NEVER summed by any consumer. Regla: Nómina KPI = NOI neto
+    // OBSOLETO — se conserva solo para no romper referencias antiguas durante la transición. Ya no
+    // se usa para calcular nomina_total: desde la reescritura del 2026-07-10, nomina_total ya trae
+    // las deducciones NOI resueltas en origen (accumulateNomina()), y nomina_detalle /
+    // nomina_informativo NUNCA los suma ningún consumidor. (Nota: la regla vigente de nominaTotalFor() usa percepciones brutas; ver ese método.) Regla anterior: Nómina KPI = NOI neto
     // (percepciones − deducciones), nada de gastos ERP/Lendus/IMSS lo infla.
     public const NOMINA_DEDUCTION_LABELS = [
         'IMSS',
@@ -44,7 +57,10 @@ class BranchRadiographyCalculator
         'Descuentos FONACOT',
     ];
 
-
+    /**
+     * @param  BranchResolverService  $resolver  Resuelve rutas/oficinas a la sucursal real.
+     * @param  OpexClassificationService  $opexClassifier  Clasificación canónica de conceptos OPEX.
+     */
     public function __construct(
         private readonly BranchResolverService $resolver,
         private readonly OpexClassificationService $opexClassifier,
@@ -64,6 +80,9 @@ class BranchRadiographyCalculator
      * están incluidos en imss_patronal/gastos_empleados_nomina, no se vuelven a sumar.
      * Todo consumidor (PeriodRadiographyService, RadiographySnapshotBuilder, RadiographyStyleHelper,
      * RadiographyWorkbookBuilder, PDF, Preview.vue) DEBE usar este método — no reimplementar la suma.
+     *
+     * @param  array  $branchOrGlobal  Resumen de sucursal o GLOBAL.
+     * @return float Total del KPI Nómina y Capital Humano.
      */
     public static function nominaTotalFor(array $branchOrGlobal): float
     {
@@ -92,18 +111,21 @@ class BranchRadiographyCalculator
      * 'IMSS' dentro de nomina_informativo es el MISMO monto que imss_patronal
      * (ver accumulateImssPatronal(), que llena ambos a la vez) — se excluye aquí
      * para no contarlo dos veces; se muestra como 'IMSS patronal' en su lugar.
+     *
+     * @param  array  $branchOrGlobal  Resumen de sucursal o GLOBAL.
+     * @return array Desglose por componente cuya suma es exactamente nominaTotalFor().
      */
     public static function nominaBreakdownFor(array $branchOrGlobal): array
     {
         $rows = [
-            'Sueldo'             => (float) ($branchOrGlobal['nomina_total'] ?? 0),
-            'Comisiones'         => (float) ($branchOrGlobal['comisiones'] ?? 0),
-            'Bonos'              => (float) ($branchOrGlobal['bonos'] ?? 0),
+            'Sueldo' => (float) ($branchOrGlobal['nomina_total'] ?? 0),
+            'Comisiones' => (float) ($branchOrGlobal['comisiones'] ?? 0),
+            'Bonos' => (float) ($branchOrGlobal['bonos'] ?? 0),
             'Bonos aceleradores' => (float) ($branchOrGlobal['bonos_aceleradores'] ?? 0),
-            'Vacaciones'         => (float) ($branchOrGlobal['vacaciones'] ?? 0),
-            'Prima vacacional'   => (float) ($branchOrGlobal['prima_vacacional'] ?? 0),
+            'Vacaciones' => (float) ($branchOrGlobal['vacaciones'] ?? 0),
+            'Prima vacacional' => (float) ($branchOrGlobal['prima_vacacional'] ?? 0),
             'Otras percepciones' => (float) ($branchOrGlobal['otros_percepciones'] ?? 0),
-            'IMSS patronal'      => (float) ($branchOrGlobal['imss_patronal'] ?? 0),
+            'IMSS patronal' => (float) ($branchOrGlobal['imss_patronal'] ?? 0),
         ];
 
         foreach ((array) ($branchOrGlobal['nomina_informativo'] ?? []) as $label => $amount) {
@@ -134,20 +156,31 @@ class BranchRadiographyCalculator
      * — mismo criterio siempre, nunca una copia de texto divergente. Un código no listado
      * (ej. P107) cae en 'otros_percepciones' en vez de perderse silenciosamente, para que
      * SUM(categorías) == SUM(percepciones) sin excepción.
+     *
+     * @param  string  $concept  Concepto NOI (p. ej. "P001 SUELDO").
+     * @return string Clave de categoría de nómina (sueldo, comisiones, bonos, vacaciones, prima, otros_percepciones...).
      */
     public static function classifyPercepcionConcept(string $concept): string
     {
         return match (true) {
-            str_starts_with($concept, 'P001')                                        => 'nomina_total',
-            (bool) preg_match('/^P(002|119)/', $concept)                             => 'comisiones',
-            (bool) preg_match('/^P(009|027|113)/', $concept)                         => 'vacaciones',
-            str_starts_with($concept, 'P010')                                        => 'prima_vacacional',
-            str_starts_with($concept, 'P118')                                        => 'bonos_aceleradores',
+            str_starts_with($concept, 'P001') => 'nomina_total',
+            (bool) preg_match('/^P(002|119)/', $concept) => 'comisiones',
+            (bool) preg_match('/^P(009|027|113)/', $concept) => 'vacaciones',
+            str_starts_with($concept, 'P010') => 'prima_vacacional',
+            str_starts_with($concept, 'P118') => 'bonos_aceleradores',
             (bool) preg_match('/^P(108|109|110|112|114|115|120|123|124)/', $concept) => 'bonos',
-            default                                                                   => 'otros_percepciones',
+            default => 'otros_percepciones',
         };
     }
 
+    /**
+     * Ingreso base EBITDA = interés recuperado + IVA recuperado + cargos (moratorios)
+     * + comisión por apertura + cargos adicionales + excedente recuperado + 30%
+     * reconocido de Seguro CRECE. NUNCA incluye capital recuperado. Fuente canónica única.
+     *
+     * @param  array  $branchOrGlobal  Resumen de sucursal o GLOBAL.
+     * @return float Ingreso base EBITDA.
+     */
     public static function ingresoEbitdaBaseFor(array $branchOrGlobal): float
     {
         return (float) ($branchOrGlobal['interes_recuperado'] ?? 0)
@@ -162,6 +195,9 @@ class BranchRadiographyCalculator
     /**
      * Gastos Totales = OPEX (gastos_operativos) + Nómina y Capital Humano (nominaTotalFor()).
      * Fuente canónica única — ver ingresoEbitdaBaseFor()/nominaTotalFor().
+     *
+     * @param  array  $branchOrGlobal  Resumen de sucursal o GLOBAL.
+     * @return float OPEX + Nómina y Capital Humano.
      */
     public static function gastosTotalesFor(array $branchOrGlobal): float
     {
@@ -170,6 +206,9 @@ class BranchRadiographyCalculator
 
     /**
      * EBITDA final = Ingreso base EBITDA − Gastos Totales. Fuente canónica única.
+     *
+     * @param  array  $branchOrGlobal  Resumen de sucursal o GLOBAL.
+     * @return float EBITDA final.
      */
     public static function ebitdaFinalFor(array $branchOrGlobal): float
     {
@@ -178,28 +217,32 @@ class BranchRadiographyCalculator
 
     /**
      * Margen EBITDA = EBITDA final / Ingreso base EBITDA * 100. Fuente canónica única.
+     *
+     * @param  array  $branchOrGlobal  Resumen de sucursal o GLOBAL.
+     * @return float Margen EBITDA en porcentaje, 2 decimales (0 si el ingreso base es ≤ 0).
      */
     public static function margenEbitdaFor(array $branchOrGlobal): float
     {
         $base = self::ingresoEbitdaBaseFor($branchOrGlobal);
+
         return $base > 0 ? round(self::ebitdaFinalFor($branchOrGlobal) / $base * 100, 2) : 0.0;
     }
 
     /**
-     * Resolves all DB branches to their real operative sucursal.
+     * Resuelve todas las sucursales de la BD a su sucursal operativa real.
      *
-     * Returns:
-     *   'operative'   => [branch_id => real_sucursal_name]  (only the 12 operative branches)
-     *   'corporativo' => [branch_id, ...]
+     * @return array{operative: array<int,string>, corporativo: array<int,int>}
+     *                                                                          'operative'   => [branch_id => nombre de la sucursal real] (solo sucursales operativas);
+     *                                                                          'corporativo' => [branch_id, ...] (registros que resuelven a CORPORATIVO).
      */
     public function buildBranchMap(): array
     {
-        $operativeMap    = [];
-        $corporativoIds  = [];
+        $operativeMap = [];
+        $corporativoIds = [];
 
         foreach (DB::table('branches')->get() as $b) {
             $real = $this->resolver->resolveRealBranchFromRoute($b->name);
-            if (!$real) {
+            if (! $real) {
                 continue;
             }
             if ($this->resolver->isSheetBranch($real)) {
@@ -213,7 +256,9 @@ class BranchRadiographyCalculator
     }
 
     /**
-     * Returns branch_ids that resolve to AGUASCALIENTES (any route/alias).
+     * Devuelve los branch_id que resuelven a AGUASCALIENTES (cualquier ruta/alias).
+     *
+     * @return array<int,int> Ids de sucursal de Aguascalientes.
      */
     private function buildAguascalientesBranchIds(): array
     {
@@ -224,6 +269,7 @@ class BranchRadiographyCalculator
                 $ids[] = (int) $b->id;
             }
         }
+
         return $ids;
     }
 
@@ -236,6 +282,9 @@ class BranchRadiographyCalculator
      * Sin filtro por estatus, producto, substatus, reestructura, membresía, migración.
      * Incluye TODAS las sucursales/rutas excepto AGS — distinto de accumulateCartera() que solo
      * usa las 13 operativas.
+     *
+     * @param  array  $dataIds  Periodos de datos a sumar.
+     * @return array Valor cartera y cartera vencida globales (sin Aguascalientes).
      */
     public function computeCarteraGlobalSinFiltro(array $dataIds): array
     {
@@ -243,7 +292,7 @@ class BranchRadiographyCalculator
 
         $base = DB::table('fact_portfolios')
             ->whereIn('period_id', $dataIds)
-            ->when(!empty($agsIds), fn ($q) => $q->whereNotIn('branch_id', $agsIds));
+            ->when(! empty($agsIds), fn ($q) => $q->whereNotIn('branch_id', $agsIds));
 
         $valorCartera = (float) $base->clone()->sum('balance');
 
@@ -262,11 +311,14 @@ class BranchRadiographyCalculator
     }
 
     /**
-     * Raw NOI totals (percepciones/deducciones/neto pagado), unfiltered by the payroll
-     * classification whitelist used for Sueldos/Comisiones/etc. — this is the "what the
-     * worker actually received" figure, shown separately from Nómina y Capital Humano
-     * (which is a company-expense concept, not a net-pay concept). Deductions are shown
-     * here to explain the worker's net pay; they are NEVER added again as a company expense.
+     * Totales NOI crudos (percepciones/deducciones/neto pagado), sin el filtro de
+     * clasificación usado para Sueldos/Comisiones/etc. — es la cifra de "lo que el
+     * trabajador realmente recibió", mostrada aparte de Nómina y Capital Humano (que es
+     * un concepto de gasto de la empresa, no de pago neto). Las deducciones se muestran
+     * aquí para explicar el neto del trabajador; NUNCA se vuelven a sumar como gasto de la empresa.
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @return array Percepciones, deducciones y neto pagado.
      */
     public function computeNoiPercepcionesDeducciones(array $dataIds): array
     {
@@ -282,12 +334,18 @@ class BranchRadiographyCalculator
 
         return [
             'percepciones' => $percepciones,
-            'deducciones'  => $deducciones,
-            'neto_pagado'  => $percepciones - $deducciones,
+            'deducciones' => $deducciones,
+            'neto_pagado' => $percepciones - $deducciones,
         ];
     }
 
-    /** Igual que computeNoiPercepcionesDeducciones() pero para UN solo colaborador. */
+    /**
+     * Igual que computeNoiPercepcionesDeducciones() pero para UN solo colaborador.
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  int  $employeeId  Colaborador.
+     * @return array Percepciones, deducciones y neto pagado del colaborador.
+     */
     public function computeNoiPercepcionesDeduccionesForEmployee(array $dataIds, int $employeeId): array
     {
         return $this->computeNoiPercepcionesDeduccionesForEmployees($dataIds, [$employeeId]);
@@ -302,6 +360,10 @@ class BranchRadiographyCalculator
      * mismo periodo (fila duplicada histórica, importada antes de una fusión de identidad) —
      * filtrar solo por el employee_id "canónico" perdería el NOI real de esa persona, dando
      * el patrón "total > 0 pero NOI = 0" reportado.
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  array  $employeeIds  Ids que representan a la misma persona.
+     * @return array Percepciones, deducciones y neto pagado combinados.
      */
     public function computeNoiPercepcionesDeduccionesForEmployees(array $dataIds, array $employeeIds): array
     {
@@ -324,8 +386,8 @@ class BranchRadiographyCalculator
 
         return [
             'percepciones' => $percepciones,
-            'deducciones'  => $deducciones,
-            'neto_pagado'  => $percepciones - $deducciones,
+            'deducciones' => $deducciones,
+            'neto_pagado' => $percepciones - $deducciones,
         ];
     }
 
@@ -333,6 +395,11 @@ class BranchRadiographyCalculator
      * Igual que computeNoiPercepcionesDeducciones() pero restringido a los colaboradores
      * con employee_branch_assignments → $branchId en este periodo. Empleados NOI sin
      * asignación resuelta no se cuentan aquí (quedan fuera del alcance de la sucursal).
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  int  $periodId  Periodo de las asignaciones empleado → sucursal.
+     * @param  int  $branchId  Sucursal.
+     * @return array Percepciones, deducciones y neto pagado de la sucursal.
      */
     public function computeNoiPercepcionesDeduccionesForBranch(array $dataIds, int $periodId, int $branchId): array
     {
@@ -359,61 +426,71 @@ class BranchRadiographyCalculator
 
         return [
             'percepciones' => $percepciones,
-            'deducciones'  => $deducciones,
-            'neto_pagado'  => $percepciones - $deducciones,
+            'deducciones' => $deducciones,
+            'neto_pagado' => $percepciones - $deducciones,
         ];
     }
 
     /**
-     * Builds per-branch summaries for the 12 operative branches plus an unassigned bucket.
+     * Construye los resúmenes por sucursal operativa más una bolsa sin asignar.
      *
-     * Returns ['branches' => [...12 summaries...], 'unassigned' => [nómina/comisiones/bonos/gastos sin sucursal]]
-     * GLOBAL must be computed via sumGlobal($branches, $unassigned) to include unassigned amounts.
+     * Devuelve ['branches' => [...resúmenes...], 'unassigned' => [nómina/comisiones/bonos/gastos sin sucursal]]
+     * El GLOBAL debe calcularse con sumGlobal($branches, $unassigned) para incluir lo sin asignar.
      *
-     * @param array $includedBranchIds When non-empty, only these branch IDs contribute to metrics.
+     * @param  array  $includedBranchIds  Si no está vacío, solo esas sucursales aportan a las métricas.
      */
     /**
-     * @param array $closingDataIds dataIds para métricas de CIERRE (cartera, mora) — un
-     *   estado/snapshot al corte, no un flujo. Para un periodo mensual normal es igual a
-     *   $dataIds (mismo mes). Para un periodo automático (bimestral/trimestral) debe ser
-     *   SOLO el último mes componente — sumar cartera/mora de varios meses la
-     *   tri/duplicaría, porque cada mes es una foto completa de "Saldos Por Cliente", no
-     *   movimientos incrementales. Si se omite, se usa $dataIds (comportamiento anterior,
-     *   sin cambio para todo caller que no pase el 4º argumento).
+     * Construye los resúmenes de las sucursales operativas más la bolsa "sin asignar"
+     * (nómina/comisiones/bonos/gastos de empleados sin sucursal). Ejecuta en orden las
+     * acumulaciones de cartera, colocación, recuperación, mora, gastos, nómina,
+     * pólizas CRECE e IMSS patronal. El GLOBAL debe calcularse con
+     * sumGlobal($branches, $unassigned) para incluir los montos sin asignar.
+     *
+     * @param  array  $closingDataIds  dataIds para métricas de CIERRE (cartera, mora) — un
+     *                                 estado/snapshot al corte, no un flujo. Para un periodo mensual normal es igual a
+     *                                 $dataIds (mismo mes). Para un periodo automático (bimestral/trimestral) debe ser
+     *                                 SOLO el último mes componente — sumar cartera/mora de varios meses la
+     *                                 tri/duplicaría, porque cada mes es una foto completa de "Saldos Por Cliente", no
+     *                                 movimientos incrementales. Si se omite, se usa $dataIds (comportamiento anterior,
+     *                                 sin cambio para todo caller que no pase el 4º argumento).
+     * @param  Period  $period  Periodo del reporte.
+     * @param  array  $dataIds  Periodos de datos (meses/semanas base) para métricas de flujo.
+     * @param  array  $includedBranchIds  Si no está vacío, solo esas sucursales aportan a las métricas.
+     * @return array{branches: array, unassigned: array} Resúmenes por sucursal y bolsa sin asignar.
      */
     public function buildBranches(Period $period, array $dataIds, array $includedBranchIds = [], array $closingDataIds = []): array
     {
         $closingDataIds = empty($closingDataIds) ? $dataIds : $closingDataIds;
-        $maps            = $this->buildBranchMap();
-        $operativeMap    = $maps['operative'];
-        $corporativoIds  = $maps['corporativo'];
+        $maps = $this->buildBranchMap();
+        $operativeMap = $maps['operative'];
+        $corporativoIds = $maps['corporativo'];
 
-        // Filter operativeMap to only the requested branches.
-        // Routes that resolve to the same real branch are excluded when that branch is excluded.
-        if (!empty($includedBranchIds)) {
+        // Filtra operativeMap a solo las sucursales solicitadas.
+        // Las rutas que resuelven a la misma sucursal real se excluyen cuando esa sucursal se excluye.
+        if (! empty($includedBranchIds)) {
             $includedNames = DB::table('branches')
                 ->whereIn('id', $includedBranchIds)
                 ->pluck('name')
-                ->map(fn ($n) => strtoupper(trim((string) \Illuminate\Support\Str::ascii($n))))
+                ->map(fn ($n) => strtoupper(trim((string) Str::ascii($n))))
                 ->all();
 
             $operativeMap = array_filter(
                 $operativeMap,
                 fn ($resolvedName) => in_array(
-                    strtoupper(trim((string) \Illuminate\Support\Str::ascii($resolvedName))),
+                    strtoupper(trim((string) Str::ascii($resolvedName))),
                     $includedNames,
                     true
                 )
             );
         }
 
-        $operativeIds    = array_keys($operativeMap);
+        $operativeIds = array_keys($operativeMap);
 
         $summaries = [];
         foreach ($this->resolver->operativeFinancialBranches() as $sucursal) {
-            if (!empty($includedBranchIds)) {
-                $sucNorm = strtoupper(trim((string) \Illuminate\Support\Str::ascii($sucursal)));
-                if (!in_array($sucNorm, $includedNames, true)) {
+            if (! empty($includedBranchIds)) {
+                $sucNorm = strtoupper(trim((string) Str::ascii($sucursal)));
+                if (! in_array($sucNorm, $includedNames, true)) {
                     continue;
                 }
             }
@@ -449,9 +526,14 @@ class BranchRadiographyCalculator
     }
 
     /**
-     * Sums all branch metrics to produce the GLOBAL summary.
-     * GLOBAL = SUM(branches) + unassigned(nómina/comisiones/bonos/gastos).
-     * Cartera / recuperación / colocación / mora come ONLY from branches (not unassigned).
+     * Suma las métricas de todas las sucursales para producir el resumen GLOBAL.
+     * GLOBAL = SUMA(sucursales) + sin asignar (nómina/comisiones/bonos/gastos de empleados).
+     * Cartera / recuperación / colocación / mora vienen SOLO de las sucursales (no de sin asignar).
+     * Los gastos de CORPORATIVO no se suman.
+     *
+     * @param  array  $branches  Resúmenes por sucursal.
+     * @param  array  $unassigned  Bolsa sin asignar.
+     * @return array Resumen GLOBAL (incluye desgloses de gastos, nómina e informativos).
      */
     public function sumGlobal(array $branches, array $unassigned = []): array
     {
@@ -468,13 +550,13 @@ class BranchRadiographyCalculator
             }
         }
 
-        // Add unassigned EMPLOYEE amounts to GLOBAL (employees belong to the period regardless of branch).
-        // CORPORATIVO gastos are NOT added — CORPORATIVO is excluded entirely from ERP/Lendus gastos.
+        // Suma al GLOBAL los montos de EMPLEADOS sin sucursal (pertenecen al periodo sin importar sucursal).
+        // Los gastos de CORPORATIVO NO se suman — CORPORATIVO se excluye por completo de gastos ERP/Lendus.
         foreach (['nomina_total', 'comisiones', 'bonos', 'bonos_aceleradores', 'vacaciones', 'prima_vacacional', 'otros_percepciones', 'imss_patronal', 'gastos_empleados_nomina'] as $key) {
             $global[$key] += (float) ($unassigned[$key] ?? 0);
         }
 
-        // Sum gastos_detalle across all branches for GLOBAL breakdown
+        // Suma gastos_detalle de todas las sucursales para el desglose GLOBAL
         $global['gastos_detalle'] = [];
         foreach ($branches as $branch) {
             foreach ($branch['gastos_detalle'] ?? [] as $concept => $amount) {
@@ -482,7 +564,7 @@ class BranchRadiographyCalculator
             }
         }
 
-        // Sum nomina_detalle across all branches + unassigned for GLOBAL breakdown
+        // Suma nomina_detalle de todas las sucursales + sin asignar para el desglose GLOBAL
         $global['nomina_detalle'] = [];
         foreach ($branches as $branch) {
             foreach ($branch['nomina_detalle'] ?? [] as $label => $amount) {
@@ -493,8 +575,8 @@ class BranchRadiographyCalculator
             $global['nomina_detalle'][$label] = ($global['nomina_detalle'][$label] ?? 0.0) + (float) $amount;
         }
 
-        // Sum nomina_informativo across all branches + unassigned for GLOBAL breakdown (never
-        // affects nomina_total — pure display, see accumulateNomina()/accumulateImssPatronal()).
+        // Suma nomina_informativo de todas las sucursales + sin asignar para el desglose GLOBAL (nunca
+        // afecta nomina_total — solo visual, ver accumulateNomina()/accumulateImssPatronal()).
         $global['nomina_informativo'] = [];
         foreach ($branches as $branch) {
             foreach ($branch['nomina_informativo'] ?? [] as $label => $amount) {
@@ -505,7 +587,7 @@ class BranchRadiographyCalculator
             $global['nomina_informativo'][$label] = ($global['nomina_informativo'][$label] ?? 0.0) + (float) $amount;
         }
 
-        // Sum otros_detalle across all branches for GLOBAL breakdown
+        // Suma otros_detalle de todas las sucursales para el desglose GLOBAL
         $global['otros_detalle'] = [];
         foreach ($branches as $branch) {
             foreach ($branch['otros_detalle'] ?? [] as $concept => $amount) {
@@ -525,23 +607,27 @@ class BranchRadiographyCalculator
     }
 
     /**
-     * Unified payroll data for ALL outputs: UI, Excel GLOBAL, hojas sucursal, NÓMINA, PDF.
+     * Datos de nómina unificados para TODAS las salidas: UI, Excel GLOBAL, hojas por
+     * sucursal, hoja NÓMINA y PDF.
+     * Devuelve una lista plana de filas [sucursal, concepto, monto, fuente, empleados];
+     * la fila "GLOBAL" es la suma de sucursales + sin asignar. Todos los conceptos
+     * (incluidos los códigos D que se muestran) se devuelven en positivo.
      *
-     * Returns a flat list of rows: [sucursal, concepto, monto, fuente, empleados].
-     * "GLOBAL" row is the sum of branches + unassigned bucket.
-     * All concepts (including D-codes shown in the report) are returned as positive amounts.
+     * @param  Period  $period  Periodo del reporte.
+     * @param  array  $dataIds  Periodos de datos.
+     * @return array<int,array> Filas de nómina por sucursal y GLOBAL.
      */
     public function buildPayrollByBranchForRadiography(Period $period, array $dataIds): array
     {
         ['branches' => $branches, 'unassigned' => $unassigned] = $this->buildBranches($period, $dataIds);
         $global = $this->sumGlobal($branches, $unassigned);
 
-        $rows    = [];
+        $rows = [];
         $sources = [
-            'nomina_total'     => ['label' => 'Nómina',           'fuente' => 'NOI P001 + D111 − todas las deducciones NOI'],
-            'comisiones'       => ['label' => 'Comisiones',        'fuente' => 'NOI P002'],
-            'bonos'            => ['label' => 'Bonos',             'fuente' => 'NOI P108/109/120/123'],
-            'vacaciones'       => ['label' => 'Vacaciones',        'fuente' => 'NOI P009'],
+            'nomina_total' => ['label' => 'Nómina',           'fuente' => 'NOI P001 + D111 − todas las deducciones NOI'],
+            'comisiones' => ['label' => 'Comisiones',        'fuente' => 'NOI P002'],
+            'bonos' => ['label' => 'Bonos',             'fuente' => 'NOI P108/109/120/123'],
+            'vacaciones' => ['label' => 'Vacaciones',        'fuente' => 'NOI P009'],
             'prima_vacacional' => ['label' => 'Prima vacacional',  'fuente' => 'NOI P010'],
         ];
 
@@ -550,15 +636,21 @@ class BranchRadiographyCalculator
         foreach ($allBranches as $suc => $calc) {
             foreach ($sources as $key => ['label' => $label, 'fuente' => $fuente]) {
                 $monto = (float) ($calc[$key] ?? 0);
-                if ($monto == 0.0) continue;
+                if ($monto == 0.0) {
+                    continue;
+                }
                 $rows[] = ['sucursal' => $suc, 'concepto' => $label, 'monto' => $monto, 'fuente' => $fuente, 'empleados' => 0];
             }
             foreach ($calc['nomina_detalle'] ?? [] as $label => $monto) {
-                if ((float) $monto == 0.0) continue;
+                if ((float) $monto == 0.0) {
+                    continue;
+                }
                 $rows[] = ['sucursal' => $suc, 'concepto' => "{$label} (ya restado del total)", 'monto' => (float) $monto, 'fuente' => 'NOI D — deducción', 'empleados' => 0];
             }
             foreach ($calc['nomina_informativo'] ?? [] as $label => $monto) {
-                if ((float) $monto == 0.0) continue;
+                if ((float) $monto == 0.0) {
+                    continue;
+                }
                 $rows[] = ['sucursal' => $suc, 'concepto' => "{$label} (informativo, no suma)", 'monto' => (float) $monto, 'fuente' => 'ERP/Lendus/IMSS — no afecta KPI', 'empleados' => 0];
             }
         }
@@ -568,6 +660,15 @@ class BranchRadiographyCalculator
 
     // ── Cartera ──────────────────────────────────────────────────────────────
 
+    /**
+     * Suma valor de cartera (balance) y número de contratos de fact_portfolios por
+     * sucursal operativa.
+     *
+     * @param  array  $dataIds  Periodos de cierre (foto de cartera).
+     * @param  array  $branchIds  Sucursales a consultar.
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     */
     private function accumulateCartera(array $dataIds, array $branchIds, array $operativeMap, array &$summaries): void
     {
         $rows = DB::table('fact_portfolios')
@@ -579,16 +680,27 @@ class BranchRadiographyCalculator
 
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($summaries[$suc])) {
+            if (! $suc || ! isset($summaries[$suc])) {
                 continue;
             }
             $summaries[$suc]['valor_cartera'] += (float) $row->cartera;
-            $summaries[$suc]['contratos']     += (int)   $row->contratos;
+            $summaries[$suc]['contratos'] += (int) $row->contratos;
         }
     }
 
     // ── Colocación ───────────────────────────────────────────────────────────
 
+    /**
+     * Colocación = SUMA(monto desembolsado) de fact_placements con origen DESEMBOLSO o
+     * REFINANCIAMIENTO (excluye reestructura/unificación). Cuenta créditos y calcula el
+     * seguro CRECE/COMADRES solo como dato informativo (no se resta del KPI).
+     * Usa JSON_EXTRACT (MySQL).
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  array  $branchIds  Sucursales a consultar.
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     */
     private function accumulateColocacion(array $dataIds, array $branchIds, array $operativeMap, array &$summaries): void
     {
         // Otorgamientos = SUM(Monto desembolsado) donde credit_origin IN ('DESEMBOLSO','REFINANCIAMIENTO').
@@ -609,11 +721,11 @@ class BranchRadiographyCalculator
 
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($summaries[$suc])) {
+            if (! $suc || ! isset($summaries[$suc])) {
                 continue;
             }
-            $summaries[$suc]['colocacion']         += (float) $row->colocacion;
-            $summaries[$suc]['creditos_colocados'] += (int)   $row->creditos;
+            $summaries[$suc]['colocacion'] += (float) $row->colocacion;
+            $summaries[$suc]['creditos_colocados'] += (int) $row->creditos;
             $summaries[$suc]['seguro_crece_comadres_informativo'] += (float) $row->seguro_informativo;
         }
     }
@@ -657,16 +769,27 @@ class BranchRadiographyCalculator
         return [
             'components' => "WHEN `transaction` NOT IN ('PAGO', 'DESCUENTO') THEN 0
                 WHEN is_savehearts = 1 THEN 0",
-            'recovery'   => "WHEN `transaction` NOT IN ('PAGO', 'DESCUENTO') THEN 0
+            'recovery' => "WHEN `transaction` NOT IN ('PAGO', 'DESCUENTO') THEN 0
                 WHEN is_savehearts = 1 THEN COALESCE(savehearts_crece_share, 0)",
         ];
     }
 
     /**
+     * Acumula recuperación total y sus componentes (capital, interés, IVA, cargos,
+     * excedente, 30% Seguro CRECE y residual) por sucursal con las reglas de
+     * recoveryExclusionSql(). Las filas sin sucursal operativa se resuelven por prefijo
+     * de contrato/acreditado en pasos adicionales; Corporativo se excluye.
+     *
      * Público (en vez de privado) para permitir pruebas unitarias dirigidas de las
      * reglas de Recuperación sin pasar por buildBranches() completo, que también
      * ejecuta accumulateColocacion() y otras consultas con funciones MySQL-only
      * (JSON_EXTRACT, LEFT) no portables a SQLite (usado por la suite de pruebas).
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  array  $branchIds  Sucursales a consultar.
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     * @param  array  $corporativoIds  Ids de CORPORATIVO a excluir.
      */
     public function accumulateRecuperacion(array $dataIds, array $branchIds, array $operativeMap, array &$summaries, array $corporativoIds = []): void
     {
@@ -710,7 +833,7 @@ class BranchRadiographyCalculator
         SUM(CASE WHEN `transaction` = 'CONDONACION' AND UPPER(COALESCE(operation,'')) LIKE '%UNIFICACION%' THEN total_amount ELSE 0 END) as unificacion_excluida,
         SUM(CASE WHEN `transaction` = 'CONDONACION' THEN total_amount ELSE 0 END) as condonacion_excluida";
 
-        // Pass 1: branches already mapped to an operative sucursal via branch_id
+        // Paso 1: sucursales ya mapeadas a una sucursal operativa por branch_id
         // Fase 7.4 (rendimiento, 15-oct-2026) — las sumas de Pass 3 (COMISIÓN POR
         // APERTURA) y Pass 5 (ACUERDO CON CLIENTE) viajan en ESTA misma consulta como
         // SUM(CASE ...) con exactamente sus filtros: antes eran dos barridos extra de
@@ -729,73 +852,75 @@ class BranchRadiographyCalculator
 
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($summaries[$suc])) {
+            if (! $suc || ! isset($summaries[$suc])) {
                 continue;
             }
-            $summaries[$suc]['recuperacion_total']      += (float) $row->recovery;
-            $summaries[$suc]['recuperacion_bruta']      += (float) $row->bruto;
-            $summaries[$suc]['seguro_excluido_bruto']   += (float) $row->seguro_excluido;
+            $summaries[$suc]['recuperacion_total'] += (float) $row->recovery;
+            $summaries[$suc]['recuperacion_bruta'] += (float) $row->bruto;
+            $summaries[$suc]['seguro_excluido_bruto'] += (float) $row->seguro_excluido;
             $summaries[$suc]['seguro_savehearts_bruto'] += (float) $row->seguro_savehearts;
-            $summaries[$suc]['seguro_comadres_bruto']   += (float) $row->seguro_comadres;
-            $summaries[$suc]['seguro_crece_bruto']      += (float) $row->crece_bruto;
+            $summaries[$suc]['seguro_comadres_bruto'] += (float) $row->seguro_comadres;
+            $summaries[$suc]['seguro_crece_bruto'] += (float) $row->crece_bruto;
             $summaries[$suc]['seguro_crece_reconocido'] += (float) $row->crece_reconocido;
-            $summaries[$suc]['capital_recuperado']      += (float) $row->capital;
-            $summaries[$suc]['interes_recuperado']      += (float) $row->interest;
-            $summaries[$suc]['impuesto_recuperado']     += (float) $row->tax;
-            $summaries[$suc]['charges']                 += (float) $row->charges;
-            $summaries[$suc]['cargos_adicionales']      += (float) ($row->cargos_iniciales ?? 0);
-            $summaries[$suc]['excedente_recuperado']    += (float) ($row->excedente_monto   ?? 0);
-            $summaries[$suc]['unificacion_excluida']    += (float) ($row->unificacion_excluida ?? 0);
-            $summaries[$suc]['condonacion_excluida']    += (float) ($row->condonacion_excluida ?? 0);
+            $summaries[$suc]['capital_recuperado'] += (float) $row->capital;
+            $summaries[$suc]['interes_recuperado'] += (float) $row->interest;
+            $summaries[$suc]['impuesto_recuperado'] += (float) $row->tax;
+            $summaries[$suc]['charges'] += (float) $row->charges;
+            $summaries[$suc]['cargos_adicionales'] += (float) ($row->cargos_iniciales ?? 0);
+            $summaries[$suc]['excedente_recuperado'] += (float) ($row->excedente_monto ?? 0);
+            $summaries[$suc]['unificacion_excluida'] += (float) ($row->unificacion_excluida ?? 0);
+            $summaries[$suc]['condonacion_excluida'] += (float) ($row->condonacion_excluida ?? 0);
         }
 
-        // Fallback rows (branch_id not in the operative map) are resolved via contract/
-        // accredited_name prefix in Pass 2/4/6 below. When there are none for this
-        // period, skip building those queries entirely — cheap existence check first,
-        // avoids running the heavier LEFT()/JSON_EXTRACT() fallback SQL for nothing.
+        // Las filas de respaldo (branch_id fuera del mapa operativo) se resuelven por prefijo de
+        // contrato/accredited_name en los pasos 2/4/6 de abajo. Si no hay ninguna en este
+        // periodo, esas consultas se omiten por completo — primero una revisión barata de existencia,
+        // que evita ejecutar en vano el SQL de respaldo más pesado con LEFT()/JSON_EXTRACT().
         $hasFallbackRows = DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->whereNotIn('branch_id', $branchIds)
-            ->when(!empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
+            ->when(! empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
             ->exists();
 
-        // Pass 2: route branches not in operativeMap (e.g. CUITLAHUAC, ATOTONILCO…)
+        // Paso 2: rutas fuera de operativeMap (p. ej. CUITLAHUAC, ATOTONILCO…)
         // Resolve to operative sucursal via contract prefix.
-        // CORPORATIVO branches are explicitly excluded.
+        // Las sucursales CORPORATIVO se excluyen explícitamente.
         $fallback = $hasFallbackRows ? DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->whereNotIn('branch_id', $branchIds)
-            ->when(!empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
+            ->when(! empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
             ->selectRaw("branch_id, contract, {$recoverySql}")
             ->groupBy('branch_id', 'contract')
             ->get() : collect();
 
         foreach ($fallback as $row) {
             $suc = $this->resolver->resolveBranchNameFromCode((string) $row->contract);
-            if (!$suc || !$this->resolver->isSheetBranch($suc) || !isset($summaries[$suc])) {
+            if (! $suc || ! $this->resolver->isSheetBranch($suc) || ! isset($summaries[$suc])) {
                 continue;
             }
-            $summaries[$suc]['recuperacion_total']      += (float) $row->recovery;
-            $summaries[$suc]['recuperacion_bruta']      += (float) $row->bruto;
-            $summaries[$suc]['seguro_excluido_bruto']   += (float) $row->seguro_excluido;
+            $summaries[$suc]['recuperacion_total'] += (float) $row->recovery;
+            $summaries[$suc]['recuperacion_bruta'] += (float) $row->bruto;
+            $summaries[$suc]['seguro_excluido_bruto'] += (float) $row->seguro_excluido;
             $summaries[$suc]['seguro_savehearts_bruto'] += (float) $row->seguro_savehearts;
-            $summaries[$suc]['seguro_comadres_bruto']   += (float) $row->seguro_comadres;
-            $summaries[$suc]['seguro_crece_bruto']      += (float) $row->crece_bruto;
+            $summaries[$suc]['seguro_comadres_bruto'] += (float) $row->seguro_comadres;
+            $summaries[$suc]['seguro_crece_bruto'] += (float) $row->crece_bruto;
             $summaries[$suc]['seguro_crece_reconocido'] += (float) $row->crece_reconocido;
-            $summaries[$suc]['capital_recuperado']      += (float) $row->capital;
-            $summaries[$suc]['interes_recuperado']      += (float) $row->interest;
-            $summaries[$suc]['impuesto_recuperado']     += (float) $row->tax;
-            $summaries[$suc]['charges']                 += (float) $row->charges;
-            $summaries[$suc]['cargos_adicionales']      += (float) ($row->cargos_iniciales ?? 0);
-            $summaries[$suc]['excedente_recuperado']    += (float) ($row->excedente_monto   ?? 0);
-            $summaries[$suc]['unificacion_excluida']    += (float) ($row->unificacion_excluida ?? 0);
-            $summaries[$suc]['condonacion_excluida']    += (float) ($row->condonacion_excluida ?? 0);
+            $summaries[$suc]['capital_recuperado'] += (float) $row->capital;
+            $summaries[$suc]['interes_recuperado'] += (float) $row->interest;
+            $summaries[$suc]['impuesto_recuperado'] += (float) $row->tax;
+            $summaries[$suc]['charges'] += (float) $row->charges;
+            $summaries[$suc]['cargos_adicionales'] += (float) ($row->cargos_iniciales ?? 0);
+            $summaries[$suc]['excedente_recuperado'] += (float) ($row->excedente_monto ?? 0);
+            $summaries[$suc]['unificacion_excluida'] += (float) ($row->unificacion_excluida ?? 0);
+            $summaries[$suc]['condonacion_excluida'] += (float) ($row->condonacion_excluida ?? 0);
         }
 
         // Pass 3: COMISIÓN POR APERTURA (mapped branches) — suma ya traída por Pass 1.
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($summaries[$suc])) continue;
+            if (! $suc || ! isset($summaries[$suc])) {
+                continue;
+            }
             $summaries[$suc]['comision_apertura'] += (float) $row->pass3_comision;
         }
 
@@ -803,7 +928,7 @@ class BranchRadiographyCalculator
         $comApFb = $hasFallbackRows ? DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->whereNotIn('branch_id', $branchIds)
-            ->when(!empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
+            ->when(! empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
             ->where('operation', 'COMISIÓN POR APERTURA')
             ->selectRaw("branch_id, LEFT(JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '$.accredited_name')), 3) AS prefix3, SUM(total_amount) AS comision")
             ->groupByRaw("branch_id, LEFT(JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '$.accredited_name')), 3)")
@@ -811,17 +936,21 @@ class BranchRadiographyCalculator
 
         foreach ($comApFb as $row) {
             $prefix3 = strtoupper(trim((string) $row->prefix3));
-            $suc     = $this->resolver->resolveBranchNameFromCode($prefix3);
-            if (!$suc || !$this->resolver->isSheetBranch($suc) || !isset($summaries[$suc])) continue;
+            $suc = $this->resolver->resolveBranchNameFromCode($prefix3);
+            if (! $suc || ! $this->resolver->isSheetBranch($suc) || ! isset($summaries[$suc])) {
+                continue;
+            }
             $summaries[$suc]['comision_apertura'] += (float) $row->comision;
         }
 
         // Pass 5: ACUERDO CON CLIENTE — charges_due maps to cargos_inicio (mapped branches)
-        // Only include rows also counted in recuperacion_total (same exclusion filter as Pass 1+2).
+        // Solo filas que también cuentan en recuperacion_total (mismo filtro de exclusión que los pasos 1+2).
         // (suma ya traída por Pass 1 — mismos filtros, ver arriba)
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($summaries[$suc])) continue;
+            if (! $suc || ! isset($summaries[$suc])) {
+                continue;
+            }
             $summaries[$suc]['cargos_inicio'] += (float) $row->pass5_cargos;
         }
 
@@ -829,7 +958,7 @@ class BranchRadiographyCalculator
         $acuerdosFb = $hasFallbackRows ? DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->whereNotIn('branch_id', $branchIds)
-            ->when(!empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
+            ->when(! empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
             ->where('operation', 'ACUERDO CON CLIENTE')
             ->where('charges_due', '>', 0)
             ->whereIn('transaction', ['PAGO', 'DESCUENTO'])
@@ -840,8 +969,10 @@ class BranchRadiographyCalculator
 
         foreach ($acuerdosFb as $row) {
             $prefix3 = strtoupper(trim((string) $row->prefix3));
-            $suc     = $this->resolver->resolveBranchNameFromCode($prefix3);
-            if (!$suc || !$this->resolver->isSheetBranch($suc) || !isset($summaries[$suc])) continue;
+            $suc = $this->resolver->resolveBranchNameFromCode($prefix3);
+            if (! $suc || ! $this->resolver->isSheetBranch($suc) || ! isset($summaries[$suc])) {
+                continue;
+            }
             $summaries[$suc]['cargos_inicio'] += (float) $row->cargos;
         }
 
@@ -866,16 +997,18 @@ class BranchRadiographyCalculator
         $otrosFb = DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
             ->whereNotIn('branch_id', $branchIds)
-            ->when(!empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
+            ->when(! empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
             ->whereRaw($otrosCond)
-            ->selectRaw("branch_id, contract, concept, operation, SUM(total_amount) as monto")
+            ->selectRaw('branch_id, contract, concept, operation, SUM(total_amount) as monto')
             ->groupBy('branch_id', 'contract', 'concept', 'operation')
             ->get();
 
         $applyOtros = function ($row, ?string $suc) use (&$summaries): void {
-            if (!$suc || !isset($summaries[$suc])) return;
+            if (! $suc || ! isset($summaries[$suc])) {
+                return;
+            }
             $concept = trim((string) ($row->concept ?? ''));
-            $label   = $concept !== '' ? $concept : (trim((string) ($row->operation ?? '')) ?: 'Otros conceptos');
+            $label = $concept !== '' ? $concept : (trim((string) ($row->operation ?? '')) ?: 'Otros conceptos');
             $summaries[$suc]['otros_detalle'][$label] = ($summaries[$suc]['otros_detalle'][$label] ?? 0.0) + (float) $row->monto;
         };
 
@@ -887,8 +1020,8 @@ class BranchRadiographyCalculator
             $applyOtros($row, ($suc && $this->resolver->isSheetBranch($suc)) ? $suc : null);
         }
 
-        // Residual: amounts in recuperacion_total not explained by any named component
-        // (e.g. GASTOS DE COBRANZA rows where all 6 component columns are zero).
+        // Residual: montos de recuperacion_total que no explica ningún componente con nombre
+        // (p. ej. filas GASTOS DE COBRANZA con las 6 columnas de componente en cero).
         // Ensures SUM(all components) == recuperacion_total exactly.
         // IMPORTANTE: seguro_crece_reconocido (30% de CRECE) SÍ forma parte de
         // recuperacion_total (ver $exclRecovery arriba) pero NO es uno de los 6
@@ -920,17 +1053,20 @@ class BranchRadiographyCalculator
      * divergente), agrupada por producto en vez de por sucursal. La suma de todas las
      * filas == recuperacion_total global, siempre, incluyendo el 30% reconocido de
      * Seguro CRECE como columna propia (nunca oculto dentro de un residual "otros").
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @return array<int,array> Filas de recuperación por producto.
      */
     public function buildRecoveryByProduct(array $dataIds): array
     {
-        $maps           = $this->buildBranchMap();
+        $maps = $this->buildBranchMap();
         $corporativoIds = $maps['corporativo'] ?? [];
 
         ['components' => $excl, 'recovery' => $exclRecovery] = self::recoveryExclusionSql();
 
         $rows = DB::table('fact_recoveries')
             ->whereIn('period_id', $dataIds)
-            ->when(!empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
+            ->when(! empty($corporativoIds), fn ($q) => $q->whereNotIn('branch_id', $corporativoIds))
             ->selectRaw("
                 COALESCE(NULLIF(TRIM(product_name), ''), 'Sin producto') as product,
                 SUM(CASE {$exclRecovery} ELSE total_amount END) as recovery,
@@ -947,37 +1083,37 @@ class BranchRadiographyCalculator
                 SUM(CASE WHEN `transaction` IN ('PAGO', 'DESCUENTO') THEN COALESCE(savehearts_crece_share, 0) ELSE 0 END) as seguro_crece_reconocido
             ")
             ->groupBy('product_name')
-            ->havingRaw('SUM(CASE ' . $exclRecovery . ' ELSE total_amount END) != 0')
+            ->havingRaw('SUM(CASE '.$exclRecovery.' ELSE total_amount END) != 0')
             ->orderByDesc('recovery')
             ->get();
 
         $result = [];
-        $total  = 0.0;
+        $total = 0.0;
         foreach ($rows as $r) {
-            $recovery   = (float) $r->recovery;
-            $capital    = (float) $r->capital;
-            $interest   = (float) $r->interest;
-            $tax        = (float) $r->tax;
-            $morat      = (float) $r->moratorios;
+            $recovery = (float) $r->recovery;
+            $capital = (float) $r->capital;
+            $interest = (float) $r->interest;
+            $tax = (float) $r->tax;
+            $morat = (float) $r->moratorios;
             $cargosAdic = (float) $r->cargos_adicionales;
-            $excedente  = (float) $r->excedente;
-            $comAp      = (float) $r->comision_apertura;
-            $cargosIni  = (float) $r->cargos_inicio;
-            $crece30    = (float) $r->seguro_crece_reconocido;
-            $otros      = round($recovery - $capital - $interest - $tax - $morat - $cargosAdic - $excedente - $comAp - $cargosIni - $crece30, 2);
+            $excedente = (float) $r->excedente;
+            $comAp = (float) $r->comision_apertura;
+            $cargosIni = (float) $r->cargos_inicio;
+            $crece30 = (float) $r->seguro_crece_reconocido;
+            $otros = round($recovery - $capital - $interest - $tax - $morat - $cargosAdic - $excedente - $comAp - $cargosIni - $crece30, 2);
             $result[] = [
-                'product'                => $r->product,
-                'capital'                => $capital,
-                'interes'                => $interest,
-                'impuesto'               => $tax,
-                'moratorios'             => $morat,
-                'cargos_adicionales'     => $cargosAdic,
-                'excedente_recuperado'   => $excedente,
-                'comision_apertura'      => $comAp,
-                'cargos_inicio'          => $cargosIni,
-                'seguro_crece_reconocido'=> $crece30,
-                'otros'                  => $otros,
-                'total'                  => $recovery,
+                'product' => $r->product,
+                'capital' => $capital,
+                'interes' => $interest,
+                'impuesto' => $tax,
+                'moratorios' => $morat,
+                'cargos_adicionales' => $cargosAdic,
+                'excedente_recuperado' => $excedente,
+                'comision_apertura' => $comAp,
+                'cargos_inicio' => $cargosIni,
+                'seguro_crece_reconocido' => $crece30,
+                'otros' => $otros,
+                'total' => $recovery,
             ];
             $total += $recovery;
         }
@@ -997,6 +1133,16 @@ class BranchRadiographyCalculator
     // Filtros: days_past_due > 0 (excluye contratos al corriente). Sin otros filtros.
     // Buckets: 1-30 / 31-60 / 61-90 / 91-120 / 120+ (sin contaminar entre sí).
 
+    /**
+     * Cartera vencida por sucursal y por tramo de días de atraso (0-30, 31-60, 61-90,
+     * 91-120, >120): suma capital vencido + interés e IVA atrasados + interés moratorio
+     * e IVA de fact_portfolios con days_past_due > 0, además de conteos y componentes.
+     *
+     * @param  array  $dataIds  Periodos de cierre (foto de cartera).
+     * @param  array  $branchIds  Sucursales a consultar.
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     */
     private function accumulateMora(array $dataIds, array $branchIds, array $operativeMap, array &$summaries): void
     {
         $rows = DB::table('fact_portfolios')
@@ -1022,48 +1168,48 @@ class BranchRadiographyCalculator
 
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($summaries[$suc])) {
+            if (! $suc || ! isset($summaries[$suc])) {
                 continue;
             }
 
-            $dpd     = (int) $row->days_past_due;
+            $dpd = (int) $row->days_past_due;
             $vencido = (float) $row->vencido;
-            $capital  = (float) $row->capital_vencido;
-            $interes  = (float) $row->interes_vencido;
+            $capital = (float) $row->capital_vencido;
+            $interes = (float) $row->interes_vencido;
             $impuesto = (float) $row->impuesto_vencido;
-            $morat    = (float) $row->moratorio_vencido;
+            $morat = (float) $row->moratorio_vencido;
             $impMorat = (float) $row->imp_moratorio_vencido;
 
             $bucket = match (true) {
-                $dpd <= 30  => 'mora_0_30',
-                $dpd <= 60  => 'mora_31_60',
-                $dpd <= 90  => 'mora_61_90',
+                $dpd <= 30 => 'mora_0_30',
+                $dpd <= 60 => 'mora_31_60',
+                $dpd <= 90 => 'mora_61_90',
                 $dpd <= 120 => 'mora_91_120',
-                default     => 'mora_120_plus',
+                default => 'mora_120_plus',
             };
 
-            $summaries[$suc][$bucket]                   += $vencido;
-            $summaries[$suc]["{$bucket}_cnt"]            += (int) $row->cnt;
-            $summaries[$suc]["{$bucket}_capital"]        += $capital;
-            $summaries[$suc]["{$bucket}_interes"]        += $interes;
-            $summaries[$suc]["{$bucket}_impuesto"]       += $impuesto;
-            $summaries[$suc]["{$bucket}_moratorio"]      += $morat;
-            $summaries[$suc]["{$bucket}_imp_moratorio"]  += $impMorat;
+            $summaries[$suc][$bucket] += $vencido;
+            $summaries[$suc]["{$bucket}_cnt"] += (int) $row->cnt;
+            $summaries[$suc]["{$bucket}_capital"] += $capital;
+            $summaries[$suc]["{$bucket}_interes"] += $interes;
+            $summaries[$suc]["{$bucket}_impuesto"] += $impuesto;
+            $summaries[$suc]["{$bucket}_moratorio"] += $morat;
+            $summaries[$suc]["{$bucket}_imp_moratorio"] += $impMorat;
 
-            $summaries[$suc]['cartera_vencida']          += $vencido;
-            $summaries[$suc]['mora_total_capital']        += $capital;
-            $summaries[$suc]['mora_total_interes']        += $interes;
-            $summaries[$suc]['mora_total_impuesto']       += $impuesto;
-            $summaries[$suc]['mora_total_moratorio']      += $morat;
-            $summaries[$suc]['mora_total_imp_moratorio']  += $impMorat;
+            $summaries[$suc]['cartera_vencida'] += $vencido;
+            $summaries[$suc]['mora_total_capital'] += $capital;
+            $summaries[$suc]['mora_total_interes'] += $interes;
+            $summaries[$suc]['mora_total_impuesto'] += $impuesto;
+            $summaries[$suc]['mora_total_moratorio'] += $morat;
+            $summaries[$suc]['mora_total_imp_moratorio'] += $impMorat;
         }
     }
 
     /**
-     * Returns the Lendus data_source ID to query for the given period set.
-     * Always uses gastos_lendus (PDF) — the XLS importer does not assign branch_ids,
-     * causing all Excel rows to be excluded by the whereIn(branch_id) filter in
-     * accumulateGastos(). PDF rows have proper branch_ids from the sucursal column.
+     * Devuelve el/los id(s) de data_source de Lendus a consultar para el conjunto de periodos.
+     * Siempre usa gastos_lendus (PDF) — el importador XLS no asigna branch_id,
+     * lo que haría que todas las filas del Excel quedaran fuera por el filtro whereIn(branch_id) de
+     * accumulateGastos(). Las filas del PDF traen branch_id correcto desde la columna de sucursal.
      */
     /**
      * gastos_lendus (PDF) y gastos_lendus_excel (Excel) son el MISMO conjunto de transacciones
@@ -1076,21 +1222,39 @@ class BranchRadiographyCalculator
      * reporte, coincide exacto con reportes:audit-gastos-lendus / audit-fondeos, y es la fuente
      * usada aquí desde 2026-07. canonicalGastoConcept() ya está preparado para sus categorías
      * genéricas truncadas ("Gastos Operativos" con concept PAGO/COMPRA DE/ENGANCHE DE/etc.).
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @return array<int,int> Ids de data_sources de Lendus a consultar.
      */
     private function resolveLendusIds(array $dataIds): array
     {
         $pdfId = DB::table('data_sources')->where('code', 'gastos_lendus')->value('id');
+
         return array_values(array_filter([$pdfId]));
     }
 
     // ── Gastos por categoría (excedentes, fondeo, gastos_op) ────────────────
     //
-    // Nómina is handled separately by accumulateNomina() using NOI payroll data.
+    // La nómina se calcula aparte en accumulateNomina() con los datos de NOI.
     //
-    // Source logic:
-    //   • gastos_lendus_excel (preferred) or gastos_lendus (PDF fallback)
-    //   • gastos_erp → all valid-status rows (no LENDUS_PRESENT_CATS filter)
+    // Lógica de fuentes:
+    //   • gastos_lendus (PDF) — ver resolveLendusIds(): hoy solo se consulta el PDF
+    //   • gastos_erp → todas las filas con estatus válido (sin filtro LENDUS_PRESENT_CATS)
 
+    /**
+     * Acumula OPEX por sucursal desde fact_expenses, procesando Lendus (PDF) y ERP por
+     * separado: totales cargados, exclusiones (pólizas/seguros, fondeo, excedentes,
+     * corporativo) y detalle por concepto canónico. La decisión de qué entra a OPEX la
+     * toma OpexClassificationService; los conceptos de nómina (NOI, IMSS, motos/cascos,
+     * finiquito, médicos) se dejan a accumulateNomina().
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  array  $branchIds  Sucursales a consultar.
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     * @param  array  $corporativoIds  Ids de CORPORATIVO.
+     * @param  array  $unassigned  Bolsa sin asignar (se modifica por referencia).
+     */
     private function accumulateGastos(
         array $dataIds,
         array $branchIds,
@@ -1104,18 +1268,18 @@ class BranchRadiographyCalculator
         $erpSrcId = DB::table('data_sources')->where('code', 'gastos_erp')->value('id');
         $erpId = $erpSrcId;
 
-        // IDs to query: operative branches + corporativo (corporativo goes to unassigned)
+        // IDs a consultar: sucursales operativas + corporativo (corporativo va a sin asignar)
         $queryIds = array_unique(array_merge($branchIds, $corporativoIds));
 
         $corpIdSet = array_flip($corporativoIds);
 
-        // Process Lendus and ERP separately to track individual totals and apply source-specific rules.
-        // Lendus 'Pólizas' (seguros/coberturas passthrough) → seguros_lendus_puente, NOT gastos_operativos.
-        // ERP 'Pólizas' (vehicle/office insurance, real expense) → gastos_erp_total + gastos_operativos.
-        // ERP categories are NOT filtered by LENDUS_PRESENT_CATS — validated totals include all valid-status rows.
+        // Lendus y ERP se procesan por separado para llevar totales propios y aplicar reglas por fuente.
+        // 'Pólizas' de Lendus (seguros/coberturas de paso) → seguros_lendus_puente, NO gastos_operativos.
+        // 'Pólizas' de ERP (seguro vehicular/oficina, gasto real) → gastos_erp_total + gastos_operativos.
+        // Las categorías ERP NO se filtran por LENDUS_PRESENT_CATS — los totales validados incluyen todas las filas con estatus válido.
 
         $lendusRows = [];
-        if (!empty($lendusIds)) {
+        if (! empty($lendusIds)) {
             $lendusRows = DB::table('fact_expenses as e')
                 ->join('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
                 ->whereIn('e.period_id', $dataIds)
@@ -1141,15 +1305,15 @@ class BranchRadiographyCalculator
         foreach ([['lendus', $lendusRows], ['erp', $erpRows]] as [$srcType, $rows]) {
             foreach ($rows as $row) {
                 $branchId = (int) $row->branch_id;
-                $cat      = (string) $row->category;
+                $cat = (string) $row->category;
                 $catUpper = strtoupper($cat);
-                $amt      = (float) $row->total;
+                $amt = (float) $row->total;
 
                 $suc = $operativeMap[$branchId] ?? null;
-                if (!$suc || !isset($summaries[$suc])) {
-                    // CORPORATIVO and any non-operative/unmapped branch: excluded entirely.
-                    // ERP: "Sucursal" filter only — Corporativo and blank are out, no exceptions.
-                    // Lendus: has zero CORPORATIVO rows in practice, so this is a no-op for it.
+                if (! $suc || ! isset($summaries[$suc])) {
+                    // CORPORATIVO y cualquier sucursal no operativa/sin mapeo: se excluyen por completo.
+                    // ERP: solo filtro por "Sucursal" — Corporativo y vacíos quedan fuera, sin excepción.
+                    // Lendus: en la práctica no tiene filas CORPORATIVO, así que no le afecta.
                     continue;
                 }
 
@@ -1163,25 +1327,27 @@ class BranchRadiographyCalculator
                     // canónica — auditoría 07-sep-2026), nunca una lista duplicada aquí.
                     $summaries[$suc]['gastos_erp_cargado'] += $amt;
                     $ercClassification = $this->opexClassifier->classify($cat, (string) ($row->concept ?? ''), OpexClassificationService::SOURCE_ERP);
-                    if (!$ercClassification['is_opex']) {
+                    if (! $ercClassification['is_opex']) {
                         $summaries[$suc]['gastos_erp_excluido_seguros'] += $amt;
+
                         continue;
                     }
                     $summaries[$suc]['gastos_operativos'] += $amt;
-                    $summaries[$suc]['gastos_erp_total']  += $amt;
-                    $concept   = (string) ($row->concept ?? '');
+                    $summaries[$suc]['gastos_erp_total'] += $amt;
+                    $concept = (string) ($row->concept ?? '');
                     $canonical = $this->canonicalGastoConcept($cat, $concept) ?? $this->unmappedGastoLabel($cat, $concept);
                     $summaries[$suc]['gastos_detalle'][$canonical] = ($summaries[$suc]['gastos_detalle'][$canonical] ?? 0.0) + $amt;
+
                     continue;
                 }
 
-                // Lendus: track total cargado (before all exclusions)
+                // Lendus: total cargado (antes de cualquier exclusión)
                 $summaries[$suc]['gastos_lendus_cargado'] += $amt;
 
                 $conceptUp = strtoupper(trim((string) ($row->concept ?? '')));
                 $conceptUp = preg_replace('/\s+/u', ' ', $conceptUp) ?? $conceptUp;
 
-                // The PDF (gastos_lendus) records some concepts with only a generic label under
+                // El PDF (gastos_lendus) registra algunos conceptos solo con una etiqueta genérica bajo
                 // "Gastos Operativos":
                 //
                 // "PAGO" = PAGO FINANCIAMIENTO MOTO, "COMPRA DE" = COMPRA DE CASCOS, "ENGANCHE DE"
@@ -1193,6 +1359,7 @@ class BranchRadiographyCalculator
                 if ($cat === 'Gastos Operativos' && in_array($conceptUp, ['PAGO', 'COMPRA DE', 'ENGANCHE DE', 'ANTICIPO DE'], true)) {
                     $summaries[$suc]['gastos_lendus_excluido_nomina'] += $amt;
                     $summaries[$suc]['gastos_lendus_pago_generico_excluido'][$conceptUp] = ($summaries[$suc]['gastos_lendus_pago_generico_excluido'][$conceptUp] ?? 0.0) + $amt;
+
                     continue;
                 }
 
@@ -1204,31 +1371,31 @@ class BranchRadiographyCalculator
                 // se mueven al KPI Nómina y Capital Humano (ver accumulateNomina(), que los
                 // suma a gastos_empleados_nomina). NOMINA/PAGO DE IMSS/DEDUCCIONES/PAGO
                 // PRESTAMO Z siguen sin sumar a ningún KPI: ya cubiertos por NOI/IMSS oficial.
-                $classification  = $this->opexClassifier->classify($cat, (string) ($row->concept ?? ''), OpexClassificationService::SOURCE_LENDUS);
-                $isExcedente     = $classification['type'] === OpexClassificationService::TYPE_EXCEDENTE;
-                $isFondeo        = $classification['type'] === OpexClassificationService::TYPE_FONDEO;
+                $classification = $this->opexClassifier->classify($cat, (string) ($row->concept ?? ''), OpexClassificationService::SOURCE_LENDUS);
+                $isExcedente = $classification['type'] === OpexClassificationService::TYPE_EXCEDENTE;
+                $isFondeo = $classification['type'] === OpexClassificationService::TYPE_FONDEO;
                 $isSegurosPuente = $classification['type'] === OpexClassificationService::TYPE_POLIZAS;
-                $isNomina        = in_array($classification['type'], [
+                $isNomina = in_array($classification['type'], [
                     OpexClassificationService::TYPE_NOMINA_COVERED_BY_NOI,
                     OpexClassificationService::TYPE_NOMINA_EMPLEADO,
                 ], true);
 
                 if ($isExcedente) {
-                    $summaries[$suc]['excedentes']                       += $amt;
+                    $summaries[$suc]['excedentes'] += $amt;
                     $summaries[$suc]['gastos_lendus_excluido_excedentes'] += $amt;
                 } elseif ($isFondeo) {
-                    $summaries[$suc]['prestamos_fondea']                 += $amt;
-                    $summaries[$suc]['gastos_lendus_excluido_fondeo']    += $amt;
+                    $summaries[$suc]['prestamos_fondea'] += $amt;
+                    $summaries[$suc]['gastos_lendus_excluido_fondeo'] += $amt;
                 } elseif ($isNomina) {
-                    $summaries[$suc]['gastos_lendus_excluido_nomina']    += $amt;
-                    // skip — accumulateNomina() handles these (NOI, IMSS o Motos/Cascos vía Excel)
+                    $summaries[$suc]['gastos_lendus_excluido_nomina'] += $amt;
+                    // se omite — accumulateNomina() los maneja (NOI, IMSS o Motos/Cascos vía Excel)
                 } elseif ($isSegurosPuente) {
-                    $summaries[$suc]['seguros_lendus_puente']            += $amt;
-                    $summaries[$suc]['gastos_lendus_excluido_polizas']   += $amt;
+                    $summaries[$suc]['seguros_lendus_puente'] += $amt;
+                    $summaries[$suc]['gastos_lendus_excluido_polizas'] += $amt;
                 } else {
-                    $summaries[$suc]['gastos_operativos']  += $amt;
+                    $summaries[$suc]['gastos_operativos'] += $amt;
                     $summaries[$suc]['gastos_lendus_total'] += $amt;
-                    $concept   = (string) ($row->concept ?? '');
+                    $concept = (string) ($row->concept ?? '');
                     $canonical = $this->canonicalGastoConcept($cat, $concept) ?? $this->unmappedGastoLabel($cat, $concept);
                     $summaries[$suc]['gastos_detalle'][$canonical] = ($summaries[$suc]['gastos_detalle'][$canonical] ?? 0.0) + $amt;
                 }
@@ -1238,14 +1405,27 @@ class BranchRadiographyCalculator
 
     // ── Nómina / Comisiones / Bonos (via employee_branch_assignments) ───────
     //
-    // Per-branch allocation uses employee_branch_assignments directly.
-    // Employees WITHOUT a branch assignment → unassigned bucket.
-    // Employees assigned to a non-operative branch → unassigned bucket.
-    // GLOBAL = SUM(branches) + unassigned (all employees always counted).
+    // La asignación por sucursal usa employee_branch_assignments directamente.
+    // Empleados SIN asignación de sucursal → bolsa sin asignar.
+    // Empleados asignados a una sucursal no operativa → bolsa sin asignar.
+    // GLOBAL = SUMA(sucursales) + sin asignar (todos los empleados siempre cuentan).
     //
-    // Sources: NOMINANUEVA (noi_nomina) + NOMINAF (noi_nomina_fiscal).
+    // Fuentes: NOMINANUEVA (noi_nomina) + NOMINAF (noi_nomina_fiscal).
     // P001 SUELDO → nomina_total | P002 → comisiones | P108/109/120/123 → bonos.
 
+    /**
+     * Acumula Nómina y Capital Humano por sucursal: percepciones NOI (normal y fiscal)
+     * por categoría vía employee_branch_assignments del periodo mensual, gastos reales
+     * de empleados (motos, cascos, finiquito, médicos) y deducciones solo informativas.
+     * Empleados sin sucursal o en sucursal no operativa van a la bolsa sin asignar
+     * (con detalle por empleado para la hoja SIN ASIGNAR).
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     * @param  array  $unassigned  Bolsa sin asignar (se modifica por referencia).
+     * @param  array  $corporativoIds  Ids de CORPORATIVO.
+     */
     private function accumulateNomina(array $dataIds, array $operativeMap, array &$summaries, array &$unassigned, array $corporativoIds = []): void
     {
         $operativeIds = array_keys($operativeMap);
@@ -1269,24 +1449,25 @@ class BranchRadiographyCalculator
             ->leftJoin('employees as e', 'n.employee_id', '=', 'e.id')
             ->whereIn('n.period_id', $dataIds)
             ->where('n.concept_type', 'percepcion')
-            ->selectRaw("
+            ->selectRaw('
                 COALESCE(eba.branch_id, -1) AS assigned_branch_id,
                 n.concept,
                 SUM(n.amount) AS total,
                 COUNT(DISTINCT n.employee_id) AS emps
-            ")
-            ->groupByRaw("COALESCE(eba.branch_id, -1), n.concept")
+            ')
+            ->groupByRaw('COALESCE(eba.branch_id, -1), n.concept')
             ->get();
 
         foreach ($rows as $row) {
             $branchId = (int) $row->assigned_branch_id;
-            $concept  = (string) $row->concept;
-            $amount   = (float) $row->total;
+            $concept = (string) $row->concept;
+            $amount = (float) $row->total;
 
             $bucket = self::classifyPercepcionConcept($concept);
 
             if ($branchId === -1) {
                 $unassigned[$bucket] += $amount;
+
                 continue;
             }
 
@@ -1317,34 +1498,34 @@ class BranchRadiographyCalculator
             })
             ->whereIn('n.period_id', $dataIds)
             ->where('n.concept_type', 'deduccion')
-            ->selectRaw("COALESCE(eba.branch_id, -1) AS assigned_branch_id, n.concept, SUM(n.amount) AS total")
-            ->groupByRaw("COALESCE(eba.branch_id, -1), n.concept")
+            ->selectRaw('COALESCE(eba.branch_id, -1) AS assigned_branch_id, n.concept, SUM(n.amount) AS total')
+            ->groupByRaw('COALESCE(eba.branch_id, -1), n.concept')
             ->get();
 
         foreach ($dedRows as $row) {
             $branchId = (int) $row->assigned_branch_id;
-            $concept  = (string) $row->concept;
-            $amount   = (float) $row->total;
+            $concept = (string) $row->concept;
+            $amount = (float) $row->total;
 
             $label = match (true) {
                 (bool) preg_match('/^D(092|094|105|129)/', $concept) => 'Descuentos Infonavit',
-                str_starts_with($concept, 'D093')                    => 'Descuentos FONACOT',
-                str_starts_with($concept, 'D113')                    => 'Descuento Servicios Moto',
-                str_starts_with($concept, 'D125')                    => 'Financiamiento Celular',
-                str_starts_with($concept, 'D112')                    => 'Descuento de uniformes',
-                str_starts_with($concept, 'D119')                    => 'Descuento gastos sin comprobar',
-                str_starts_with($concept, 'D117')                    => 'Descuento extravío tarjeta de circulación',
-                (bool) preg_match('/^D(122|126|127)/', $concept)     => 'Descuentos Tienda Mr Lana',
-                str_starts_with($concept, 'D114')                    => 'Descuento Servicios Automóvil',
-                str_starts_with($concept, 'D118')                    => 'Descuento faltante en caja',
-                str_starts_with($concept, 'D137')                    => 'Diferencia NF',
-                (bool) preg_match('/^D(002|009)/', $concept)         => 'IMSS trabajador (retención)',
-                str_starts_with($concept, 'D003')                    => 'Anticipo de nómina',
-                str_starts_with($concept, 'D004')                    => 'Préstamo Personal',
-                str_starts_with($concept, 'D010')                    => 'Pensión Alimenticia',
-                (bool) preg_match('/^D(123|128)/', $concept)         => 'Descuento nómina — Financiamiento Moto (NOI)',
-                str_starts_with($concept, 'D111')                    => 'Subsidio para el Empleo APL',
-                default                                              => "Deducción NOI {$concept}",
+                str_starts_with($concept, 'D093') => 'Descuentos FONACOT',
+                str_starts_with($concept, 'D113') => 'Descuento Servicios Moto',
+                str_starts_with($concept, 'D125') => 'Financiamiento Celular',
+                str_starts_with($concept, 'D112') => 'Descuento de uniformes',
+                str_starts_with($concept, 'D119') => 'Descuento gastos sin comprobar',
+                str_starts_with($concept, 'D117') => 'Descuento extravío tarjeta de circulación',
+                (bool) preg_match('/^D(122|126|127)/', $concept) => 'Descuentos Tienda Mr Lana',
+                str_starts_with($concept, 'D114') => 'Descuento Servicios Automóvil',
+                str_starts_with($concept, 'D118') => 'Descuento faltante en caja',
+                str_starts_with($concept, 'D137') => 'Diferencia NF',
+                (bool) preg_match('/^D(002|009)/', $concept) => 'IMSS trabajador (retención)',
+                str_starts_with($concept, 'D003') => 'Anticipo de nómina',
+                str_starts_with($concept, 'D004') => 'Préstamo Personal',
+                str_starts_with($concept, 'D010') => 'Pensión Alimenticia',
+                (bool) preg_match('/^D(123|128)/', $concept) => 'Descuento nómina — Financiamiento Moto (NOI)',
+                str_starts_with($concept, 'D111') => 'Subsidio para el Empleo APL',
+                default => "Deducción NOI {$concept}",
             };
 
             // Route per-branch (or unassigned) — displayed en tabla, YA restado de nomina_total arriba.
@@ -1362,12 +1543,12 @@ class BranchRadiographyCalculator
         //    en accumulateGastos()). Se muestran también en nomina_informativo para el desglose
         //    visible en UI/Excel/PDF (ese desglose ya está incluido en el total, no es informativo
         //    "sin sumar" — el nombre del array se conserva por compatibilidad con los consumidores).
-        if (!empty($operativeIds)) {
-            $lendusIds  = $this->resolveLendusIds($dataIds);
+        if (! empty($operativeIds)) {
+            $lendusIds = $this->resolveLendusIds($dataIds);
 
             // PAGO FINIQUITO / GASTOS MEDICOS (gastos_lendus, PDF): $64,987.59 y $4,140.00 en
             // Junio 2026, 100% en sucursales operativas. Se suman a gastos_empleados_nomina.
-            if (!empty($lendusIds)) {
+            if (! empty($lendusIds)) {
                 $finiquitoMedicoRows = DB::table('fact_expenses as e')
                     ->join('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
                     ->whereIn('e.period_id', $dataIds)
@@ -1379,7 +1560,7 @@ class BranchRadiographyCalculator
                     ->get();
 
                 foreach ($finiquitoMedicoRows as $row) {
-                    $label  = str_contains((string) $row->concept, 'FINIQUITO') ? 'Finiquito' : 'Gastos médicos';
+                    $label = str_contains((string) $row->concept, 'FINIQUITO') ? 'Finiquito' : 'Gastos médicos';
                     $amount = (float) $row->total;
 
                     $suc = $row->branch_id ? ($operativeMap[(int) $row->branch_id] ?? null) : null;
@@ -1397,7 +1578,7 @@ class BranchRadiographyCalculator
             // PDF, categoría "Gastos Operativos" con concept truncado — ver misma lectura en
             // accumulateGastos()). $148,227.15 + $8,974.00 + $12,000.00 en Junio 2026. Se suman a
             // gastos_empleados_nomina.
-            if (!empty($lendusIds)) {
+            if (! empty($lendusIds)) {
                 $motoCascoRows = DB::table('fact_expenses as e')
                     ->join('report_uploads as ru', 'e.report_upload_id', '=', 'ru.id')
                     ->whereIn('e.period_id', $dataIds)
@@ -1410,9 +1591,9 @@ class BranchRadiographyCalculator
 
                 foreach ($motoCascoRows as $row) {
                     $label = match ((string) $row->concept) {
-                        'COMPRA DE'   => 'Cascos',
+                        'COMPRA DE' => 'Cascos',
                         'ENGANCHE DE' => 'Enganche de Motocicleta',
-                        default       => 'Financiamiento de Motos', // 'PAGO'
+                        default => 'Financiamiento de Motos', // 'PAGO'
                     };
                     $amount = (float) $row->total;
 
@@ -1428,7 +1609,7 @@ class BranchRadiographyCalculator
             }
         }
 
-        // Collect per-employee detail for the SIN ASIGNAR sheet
+        // Reúne el detalle por empleado para la hoja SIN ASIGNAR
         $unassignedEmps = DB::table('fact_noi_movements as n')
             ->leftJoin('employee_branch_assignments as eba', function ($join) {
                 // Match exacto por period_id (NO whereIn sobre todo dataIds): fact_noi_movements
@@ -1463,18 +1644,27 @@ class BranchRadiographyCalculator
 
         foreach ($unassignedEmps as $emp) {
             $unassigned['empleados'][] = [
-                'nombre'  => $emp->nombre,
-                'emp_id'  => $emp->employee_id,
-                'fuente'  => $emp->fuente,
-                'p001'    => (float) $emp->p001,
-                'p002'    => (float) $emp->p002,
-                'bonos'   => (float) $emp->bonos,
+                'nombre' => $emp->nombre,
+                'emp_id' => $emp->employee_id,
+                'fuente' => $emp->fuente,
+                'p001' => (float) $emp->p001,
+                'p002' => (float) $emp->p002,
+                'bonos' => (float) $emp->bonos,
             ];
         }
     }
 
     // ── Pólizas CRECE (savehearts_crece_share) ───────────────────────────────
 
+    /**
+     * Suma por sucursal el 30% reconocido de Seguro CRECE (savehearts_crece_share) de
+     * fact_recoveries en polizas_crece_30.
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  array  $branchIds  Sucursales a consultar.
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     */
     private function accumulatePolizasCrece(array $dataIds, array $branchIds, array $operativeMap, array &$summaries): void
     {
         if (empty($branchIds)) {
@@ -1491,7 +1681,7 @@ class BranchRadiographyCalculator
 
         foreach ($rows as $row) {
             $suc = $operativeMap[(int) $row->branch_id] ?? null;
-            if (!$suc || !isset($summaries[$suc])) {
+            if (! $suc || ! isset($summaries[$suc])) {
                 continue;
             }
             $summaries[$suc]['polizas_crece_30'] += (float) $row->crece_share;
@@ -1515,6 +1705,17 @@ class BranchRadiographyCalculator
     // Distinto del D002/D009 de NOI (deducción del trabajador, excluida por
     // completo).
 
+    /**
+     * Suma el IMSS patronal derivado (fact_imss, included_in_report) a imss_patronal y
+     * al desglose informativo de cada sucursal operativa; lo de sucursales no
+     * operativas se registra en unassigned['imss_excluido'].
+     *
+     * @param  array  $dataIds  Periodos de datos.
+     * @param  array  $branchIds  Sucursales (no se usa en la consulta).
+     * @param  array  $operativeMap  branch_id => sucursal real.
+     * @param  array  $summaries  Resúmenes por sucursal (se modifican por referencia).
+     * @param  array  $unassigned  Bolsa sin asignar (se modifica por referencia).
+     */
     private function accumulateImssPatronal(array $dataIds, array $branchIds, array $operativeMap, array &$summaries, array &$unassigned): void
     {
         $derivedRows = DB::table('fact_imss')
@@ -1525,9 +1726,9 @@ class BranchRadiographyCalculator
             ->get();
 
         foreach ($derivedRows as $row) {
-            $branchId   = (int)    $row->branch_id;
+            $branchId = (int) $row->branch_id;
             $branchName = (string) ($row->branch_name ?? 'Sin nombre');
-            $amount     = (float)  $row->total;
+            $amount = (float) $row->total;
 
             $suc = $operativeMap[$branchId] ?? null;
             if ($suc && isset($summaries[$suc])) {
@@ -1541,122 +1742,131 @@ class BranchRadiographyCalculator
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /** Público para permitir pruebas unitarias dirigidas (ver accumulateRecuperacion()). */
+    /**
+     * Público para permitir pruebas unitarias dirigidas (ver accumulateRecuperacion()).
+     *
+     * @param  string  $sucursal  Nombre de la sucursal.
+     * @return array Resumen con todas las métricas en cero y desgloses vacíos.
+     */
     public function emptyBranchSummary(string $sucursal): array
     {
         return [
-            'sucursal'            => $sucursal,
-            'valor_cartera'       => 0.0,
-            'contratos'           => 0,
-            'colocacion'          => 0.0,
-            'creditos_colocados'  => 0,
+            'sucursal' => $sucursal,
+            'valor_cartera' => 0.0,
+            'contratos' => 0,
+            'colocacion' => 0.0,
+            'creditos_colocados' => 0,
             'seguro_crece_comadres_informativo' => 0.0,
-            'capital_recuperado'        => 0.0,
-            'interes_recuperado'        => 0.0,
-            'impuesto_recuperado'       => 0.0,
-            'charges'                   => 0.0,  // charges_due moratorios (excl. ACUERDO CON CLIENTE)
-            'cargos_adicionales'        => 0.0,  // DB charges column (PAGO A CONTRATO)
-            'excedente_recuperado'      => 0.0,  // DB excedente column
-            'cargos_inicio'             => 0.0,  // ACUERDO CON CLIENTE charges_due
-            'comision_apertura'         => 0.0,
-            'otros_recuperacion'        => 0.0,  // residual: total - named components
-            'otros_detalle'             => [],   // concepto real => monto (desglose del residual, nunca bolsa genérica)
-            'recuperacion_total'        => 0.0,
-            'recuperacion_bruta'        => 0.0,
-            'seguro_excluido_bruto'     => 0.0,  // total no-CRECE savehearts (Savehearts + Comadres)
-            'seguro_savehearts_bruto'   => 0.0,  // solo Cobertura Savehearts (non-CRECE, non-Comadres)
-            'seguro_comadres_bruto'     => 0.0,  // Cobertura Crédito Grupal / Comadres (non-CRECE)
-            'seguro_crece_bruto'        => 0.0,
-            'seguro_crece_reconocido'   => 0.0,
-            'unificacion_excluida'      => 0.0,
-            'condonacion_excluida'      => 0.0,
-            'cartera_vencida'     => 0.0,  // SUM 5 cols vencidas donde days_past_due>0
-            'mora_0_30'           => 0.0,
-            'mora_31_60'          => 0.0,
-            'mora_61_90'          => 0.0,
-            'mora_91_120'         => 0.0,
-            'mora_120_plus'       => 0.0,
-            'mora_0_30_cnt'           => 0,
-            'mora_31_60_cnt'          => 0,
-            'mora_61_90_cnt'          => 0,
-            'mora_91_120_cnt'         => 0,
-            'mora_120_plus_cnt'       => 0,
+            'capital_recuperado' => 0.0,
+            'interes_recuperado' => 0.0,
+            'impuesto_recuperado' => 0.0,
+            'charges' => 0.0,  // charges_due moratorios (excl. ACUERDO CON CLIENTE)
+            'cargos_adicionales' => 0.0,  // DB charges column (PAGO A CONTRATO)
+            'excedente_recuperado' => 0.0,  // DB excedente column
+            'cargos_inicio' => 0.0,  // ACUERDO CON CLIENTE charges_due
+            'comision_apertura' => 0.0,
+            'otros_recuperacion' => 0.0,  // residual: total - named components
+            'otros_detalle' => [],   // concepto real => monto (desglose del residual, nunca bolsa genérica)
+            'recuperacion_total' => 0.0,
+            'recuperacion_bruta' => 0.0,
+            'seguro_excluido_bruto' => 0.0,  // total no-CRECE savehearts (Savehearts + Comadres)
+            'seguro_savehearts_bruto' => 0.0,  // solo Cobertura Savehearts (non-CRECE, non-Comadres)
+            'seguro_comadres_bruto' => 0.0,  // Cobertura Crédito Grupal / Comadres (non-CRECE)
+            'seguro_crece_bruto' => 0.0,
+            'seguro_crece_reconocido' => 0.0,
+            'unificacion_excluida' => 0.0,
+            'condonacion_excluida' => 0.0,
+            'cartera_vencida' => 0.0,  // SUM 5 cols vencidas donde days_past_due>0
+            'mora_0_30' => 0.0,
+            'mora_31_60' => 0.0,
+            'mora_61_90' => 0.0,
+            'mora_91_120' => 0.0,
+            'mora_120_plus' => 0.0,
+            'mora_0_30_cnt' => 0,
+            'mora_31_60_cnt' => 0,
+            'mora_61_90_cnt' => 0,
+            'mora_91_120_cnt' => 0,
+            'mora_120_plus_cnt' => 0,
             // Per-bucket component breakdown
-            'mora_0_30_capital'       => 0.0,
-            'mora_0_30_interes'       => 0.0,
-            'mora_0_30_impuesto'      => 0.0,
-            'mora_0_30_moratorio'     => 0.0,
+            'mora_0_30_capital' => 0.0,
+            'mora_0_30_interes' => 0.0,
+            'mora_0_30_impuesto' => 0.0,
+            'mora_0_30_moratorio' => 0.0,
             'mora_0_30_imp_moratorio' => 0.0,
-            'mora_31_60_capital'       => 0.0,
-            'mora_31_60_interes'       => 0.0,
-            'mora_31_60_impuesto'      => 0.0,
-            'mora_31_60_moratorio'     => 0.0,
+            'mora_31_60_capital' => 0.0,
+            'mora_31_60_interes' => 0.0,
+            'mora_31_60_impuesto' => 0.0,
+            'mora_31_60_moratorio' => 0.0,
             'mora_31_60_imp_moratorio' => 0.0,
-            'mora_61_90_capital'       => 0.0,
-            'mora_61_90_interes'       => 0.0,
-            'mora_61_90_impuesto'      => 0.0,
-            'mora_61_90_moratorio'     => 0.0,
+            'mora_61_90_capital' => 0.0,
+            'mora_61_90_interes' => 0.0,
+            'mora_61_90_impuesto' => 0.0,
+            'mora_61_90_moratorio' => 0.0,
             'mora_61_90_imp_moratorio' => 0.0,
-            'mora_91_120_capital'       => 0.0,
-            'mora_91_120_interes'       => 0.0,
-            'mora_91_120_impuesto'      => 0.0,
-            'mora_91_120_moratorio'     => 0.0,
+            'mora_91_120_capital' => 0.0,
+            'mora_91_120_interes' => 0.0,
+            'mora_91_120_impuesto' => 0.0,
+            'mora_91_120_moratorio' => 0.0,
             'mora_91_120_imp_moratorio' => 0.0,
-            'mora_120_plus_capital'       => 0.0,
-            'mora_120_plus_interes'       => 0.0,
-            'mora_120_plus_impuesto'      => 0.0,
-            'mora_120_plus_moratorio'     => 0.0,
+            'mora_120_plus_capital' => 0.0,
+            'mora_120_plus_interes' => 0.0,
+            'mora_120_plus_impuesto' => 0.0,
+            'mora_120_plus_moratorio' => 0.0,
             'mora_120_plus_imp_moratorio' => 0.0,
             // Totals across all buckets
-            'mora_total_capital'       => 0.0,
-            'mora_total_interes'       => 0.0,
-            'mora_total_impuesto'      => 0.0,
-            'mora_total_moratorio'     => 0.0,
+            'mora_total_capital' => 0.0,
+            'mora_total_interes' => 0.0,
+            'mora_total_impuesto' => 0.0,
+            'mora_total_moratorio' => 0.0,
             'mora_total_imp_moratorio' => 0.0,
-            'gastos_operativos'                  => 0.0,  // = gastos_erp_total + gastos_lendus_total (OPEX final)
-            'gastos_erp_total'                   => 0.0,  // ERP que queda en OPEX (completo, excl. Corporativo y Pólizas)
-            'gastos_erp_cargado'                 => 0.0,  // ERP total cargado (antes de excluir Pólizas)
-            'gastos_erp_excluido_seguros'        => 0.0,  // ERP excluido: Pólizas (seguros vehiculares/oficina)
-            'gastos_lendus_total'                => 0.0,  // Lendus que queda en OPEX
-            'gastos_lendus_cargado'              => 0.0,  // Lendus total cargado (antes de todas las exclusiones)
-            'gastos_lendus_excluido_fondeo'      => 0.0,  // Lendus excluido: fondeos entre sucursales
-            'gastos_lendus_excluido_excedentes'  => 0.0,  // Lendus excluido: envíos a corporativo/excedentes
-            'gastos_lendus_excluido_nomina'      => 0.0,  // Lendus excluido: nómina real (NOMINA/IMSS/DEDUCCIONES)
+            'gastos_operativos' => 0.0,  // = gastos_erp_total + gastos_lendus_total (OPEX final)
+            'gastos_erp_total' => 0.0,  // ERP que queda en OPEX (completo, excl. Corporativo y Pólizas)
+            'gastos_erp_cargado' => 0.0,  // ERP total cargado (antes de excluir Pólizas)
+            'gastos_erp_excluido_seguros' => 0.0,  // ERP excluido: Pólizas (seguros vehiculares/oficina)
+            'gastos_lendus_total' => 0.0,  // Lendus que queda en OPEX
+            'gastos_lendus_cargado' => 0.0,  // Lendus total cargado (antes de todas las exclusiones)
+            'gastos_lendus_excluido_fondeo' => 0.0,  // Lendus excluido: fondeos entre sucursales
+            'gastos_lendus_excluido_excedentes' => 0.0,  // Lendus excluido: envíos a corporativo/excedentes
+            'gastos_lendus_excluido_nomina' => 0.0,  // Lendus excluido: nómina real (NOMINA/IMSS/DEDUCCIONES)
             'gastos_lendus_reclasificado_nomina' => 0.0,  // Lendus reclasificado: FINIQUITO/MEDICO → Nómina
-            'gastos_lendus_excluido_polizas'     => 0.0,  // Lendus excluido: seguros/coberturas puente
-            'seguros_lendus_puente'              => 0.0,  // alias de gastos_lendus_excluido_polizas (backward compat)
+            'gastos_lendus_excluido_polizas' => 0.0,  // Lendus excluido: seguros/coberturas puente
+            'seguros_lendus_puente' => 0.0,  // alias de gastos_lendus_excluido_polizas (backward compat)
             // Lendus PDF "PAGO"/"COMPRA DE"/"ANTICIPO DE" bajo "Gastos Operativos" — excluidos
             // de OPEX porque duplican financiamiento de motos/cascos/anticipo ya contados vía
             // el Excel. Se guarda aparte (no solo el total) para que la auditoría pueda
             // comparar contra el Excel y detectar si algún periodo futuro deja de coincidir.
             'gastos_lendus_pago_generico_excluido' => [], // 'PAGO'|'COMPRA DE'|'ENGANCHE DE'|'ANTICIPO DE' => amount
-            'gastos_detalle'                     => [],   // canonical_concept => amount (summed from source data)
-            'nomina_total'         => 0.0,  // KPI Nómina: SUM(percepciones NOI) − SUM(deducciones NOI). Fuente única.
-            'comisiones'           => 0.0,
-            'bonos'                => 0.0,
-            'bonos_aceleradores'   => 0.0,  // P118, separado de 'bonos' por petición explícita
-            'vacaciones'           => 0.0,
-            'prima_vacacional'     => 0.0,
-            'otros_percepciones'   => 0.0,  // percepciones NOI con código no catalogado (ej. P107) — igual cuentan (regla: TODAS las percepciones)
-            'imss_patronal'            => 0.0,  // IMSS patronal operativo — SÍ se suma al KPI Nómina (ver nominaTotalFor())
-            'gastos_empleados_nomina'  => 0.0,  // Financiamiento de Motos + Enganche + Cascos + Finiquito + Gastos médicos — SÍ se suma al KPI Nómina
-            'nomina_detalle'       => [],   // display_label => amount — deducciones NOI (YA restadas de nomina_total, solo informativo)
-            'nomina_informativo'   => [],   // display_label => amount — desglose de detalle (IMSS/Motos/Enganche/Cascos/Finiquito/Médicos YA incluidos en imss_patronal/gastos_empleados_nomina; el resto sigue siendo puramente informativo)
-            'excedentes'           => 0.0,
-            'prestamos_fondea'     => 0.0,
-            'polizas_crece_30'     => 0.0,
+            'gastos_detalle' => [],   // concepto canónico => monto (sumado desde la fuente)
+            'nomina_total' => 0.0,  // KPI Nómina: SUM(percepciones NOI) − SUM(deducciones NOI). Fuente única.
+            'comisiones' => 0.0,
+            'bonos' => 0.0,
+            'bonos_aceleradores' => 0.0,  // P118, separado de 'bonos' por petición explícita
+            'vacaciones' => 0.0,
+            'prima_vacacional' => 0.0,
+            'otros_percepciones' => 0.0,  // percepciones NOI con código no catalogado (ej. P107) — igual cuentan (regla: TODAS las percepciones)
+            'imss_patronal' => 0.0,  // IMSS patronal operativo — SÍ se suma al KPI Nómina (ver nominaTotalFor())
+            'gastos_empleados_nomina' => 0.0,  // Financiamiento de Motos + Enganche + Cascos + Finiquito + Gastos médicos — SÍ se suma al KPI Nómina
+            'nomina_detalle' => [],   // display_label => amount — deducciones NOI (YA restadas de nomina_total, solo informativo)
+            'nomina_informativo' => [],   // display_label => amount — desglose de detalle (IMSS/Motos/Enganche/Cascos/Finiquito/Médicos YA incluidos en imss_patronal/gastos_empleados_nomina; el resto sigue siendo puramente informativo)
+            'excedentes' => 0.0,
+            'prestamos_fondea' => 0.0,
+            'polizas_crece_30' => 0.0,
         ];
     }
 
     /**
-     * Maps a fact_expenses category + concept to a canonical nómina display label.
+     * Convierte categoría + concepto de fact_expenses a una etiqueta canónica de nómina.
      */
     /**
-     * Maps a raw fact_expenses category/concept (Nómina y Capital Humano) to its canonical
-     * display label. Never falls back to a generic "Otros conceptos nómina" bucket — an
-     * unmapped concept is identified by its own real name (visible in
-     * RadiographyCalculator::AuditNominaMapeoCommand) instead of being hidden under a vague
-     * label, per the rule that every peso must be traceable to its source concept.
+     * Convierte la categoría/concepto de un gasto de Nómina y Capital Humano a su
+     * etiqueta canónica de despliegue. Nunca cae en una bolsa genérica "Otros
+     * conceptos nómina": un concepto sin mapeo se identifica con su propio nombre real
+     * (visible en reportes:audit-nomina-mapeo) en lugar de ocultarse bajo una etiqueta
+     * vaga, porque cada peso debe poder rastrearse a su concepto de origen.
+     *
+     * @param  string  $category  Categoría del gasto.
+     * @param  string  $concept  Concepto del gasto.
+     * @return string Etiqueta canónica.
      */
     private function canonicalNominaExpense(string $category, string $concept): string
     {
@@ -1669,28 +1879,32 @@ class BranchRadiographyCalculator
         if ($cat === 'FINANCIAMIENTO CELULAR' || str_contains($con, 'CELULAR')) {
             return 'Financiamiento Celular';
         }
+
         return match (true) {
-            str_contains($con, 'CASCO')                                                             => 'Cascos',
-            str_contains($con, 'MEDICO') || str_contains($con, 'MÉDICO')                           => 'Gastos médicos',
-            str_contains($con, 'FINIQUITO')                                                         => 'Finiquito',
-            str_contains($con, 'FORMATERIA') || str_contains($con, 'FORMATERÍA')                   => 'Formatería',
-            str_contains($con, 'FINANCIAMIENTO MOTO') || str_contains($con, 'MOTO')                => 'Financiamiento de Motos',
-            str_contains($con, 'UNIFORME')                                                          => 'Descuento de uniformes',
-            str_contains($con, 'INFONAVIT')                                                         => 'Descuentos Infonavit',
-            str_contains($con, 'FONACOT')                                                           => 'Descuentos FONACOT',
-            str_contains($con, 'PENSION') || str_contains($con, 'PENSIÓN')                         => 'Pensión Alimenticia',
-            str_contains($con, 'MR LANA') || str_contains($con, 'TIENDA')                          => 'Descuentos Tienda Mr Lana',
-            str_contains($con, 'PRESTAMO Z') || str_contains($con, 'PRÉSTAMO Z')                   => 'Anticipo de nómina',
+            str_contains($con, 'CASCO') => 'Cascos',
+            str_contains($con, 'MEDICO') || str_contains($con, 'MÉDICO') => 'Gastos médicos',
+            str_contains($con, 'FINIQUITO') => 'Finiquito',
+            str_contains($con, 'FORMATERIA') || str_contains($con, 'FORMATERÍA') => 'Formatería',
+            str_contains($con, 'FINANCIAMIENTO MOTO') || str_contains($con, 'MOTO') => 'Financiamiento de Motos',
+            str_contains($con, 'UNIFORME') => 'Descuento de uniformes',
+            str_contains($con, 'INFONAVIT') => 'Descuentos Infonavit',
+            str_contains($con, 'FONACOT') => 'Descuentos FONACOT',
+            str_contains($con, 'PENSION') || str_contains($con, 'PENSIÓN') => 'Pensión Alimenticia',
+            str_contains($con, 'MR LANA') || str_contains($con, 'TIENDA') => 'Descuentos Tienda Mr Lana',
+            str_contains($con, 'PRESTAMO Z') || str_contains($con, 'PRÉSTAMO Z') => 'Anticipo de nómina',
             default => $this->unmappedNominaLabel($category, $concept),
         };
     }
 
     /**
-     * Collapses any whitespace variant (regular space, non-breaking space \u{00A0}, tabs) to a
-     * single space before matching. Source files (Lendus exports) sometimes encode the spaces
-     * between words as non-breaking spaces, which silently breaks str_contains() matching and
-     * was the root cause of legitimate concepts (e.g. "PAGO·PRESTAMO·Z" with NBSPs) falling into
-     * an unmapped/"Otros" bucket instead of their real label.
+     * Colapsa cualquier variante de espacio (espacio normal, espacio duro \u{00A0},
+     * tabuladores) a un solo espacio antes de comparar. Los exportes de Lendus a veces
+     * codifican los espacios como espacios duros, lo que rompía str_contains() en
+     * silencio y fue la causa raíz de que conceptos legítimos (p. ej. "PAGO·PRESTAMO·Z"
+     * con NBSP) cayeran en una bolsa sin mapeo/"Otros" en vez de su etiqueta real.
+     *
+     * @param  string  $text  Texto original.
+     * @return string Texto con espacios normalizados.
      */
     private function normalizeConceptText(string $text): string
     {
@@ -1698,159 +1912,197 @@ class BranchRadiographyCalculator
     }
 
     /**
-     * An expense concept under "Nómina y Capital Humano" that doesn't match any known label.
-     * Logged for audit (see reportes:audit-nomina-mapeo) and shown in the report under its own
-     * real concept name — never silently merged into a generic "Otros" line.
+     * Concepto de gasto bajo "Nómina y Capital Humano" que no coincide con ninguna
+     * etiqueta conocida. Se registra en el log para auditoría (reportes:audit-nomina-mapeo)
+     * y se muestra en el reporte con su propio nombre real — nunca se mezcla en silencio
+     * en una línea genérica "Otros".
+     *
+     * @param  string  $category  Categoría del gasto.
+     * @param  string  $concept  Concepto del gasto.
+     * @return string Etiqueta con el nombre real del concepto.
      */
     private function unmappedNominaLabel(string $category, string $concept): string
     {
-        \Illuminate\Support\Facades\Log::warning('Concepto de nómina sin mapeo canónico — revisar canonicalNominaExpense().', [
+        Log::warning('Concepto de nómina sin mapeo canónico — revisar canonicalNominaExpense().', [
             'category' => $category,
-            'concept'  => $concept,
+            'concept' => $concept,
         ]);
 
         $clean = trim($concept) !== '' ? trim($concept) : trim($category);
 
-        return 'Sin clasificar: ' . $clean;
+        return 'Sin clasificar: '.$clean;
     }
 
     /**
-     * Maps a raw DB expense category + concept to the canonical display name used in the Excel.
-     * Concept is used when category is generic (e.g. 'Gastos Operativos').
-     * Unrecognized concepts return null — caller routes them to an audit bucket.
+     * Solo lectura (Revisión de gastos, 23-nov-2026): línea del detalle de OPEX a la que
+     * va HOY un categoría+concepto; null = cae en «Sin clasificar». Mismo mapeo, sin log.
+     *
+     * @param  string  $category  Categoría del gasto.
+     * @param  string  $concept  Concepto del gasto.
+     * @return string|null Línea de OPEX o null (sin clasificar).
+     */
+    public function gastoReportLine(string $category, string $concept = ''): ?string
+    {
+        return $this->canonicalGastoConcept($category, $concept);
+    }
+
+    /**
+     * Convierte una categoría + concepto de gasto de la BD al nombre canónico que se
+     * muestra en el Excel. El concepto se usa cuando la categoría es genérica (p. ej.
+     * 'Gastos Operativos'), incluidos los conceptos truncados del PDF de Lendus.
+     * Los conceptos no reconocidos devuelven null — el llamador los manda a una bolsa de auditoría.
+     *
+     * @param  string  $category  Categoría del gasto.
+     * @param  string  $concept  Concepto del gasto.
+     * @return string|null Nombre canónico o null.
      */
     private function canonicalGastoConcept(string $category, string $concept = ''): ?string
     {
-        $cat  = strtoupper(trim($category));
-        $con  = strtoupper(trim($concept));
-        // Combined string for catch-all matching
-        $both = $cat . ' ' . $con;
+        $cat = strtoupper(trim($category));
+        $con = strtoupper(trim($concept));
+        // Texto combinado para coincidencias generales
+        $both = $cat.' '.$con;
 
-        // Exact category matches first (most specific)
+        // Primero coincidencias exactas de categoría (lo más específico)
         return match (true) {
-            // --- Lendus PDF truncated concepts under 'Gastos Operativos' ---
-            // The PDF omits the full description; matched against the Excel export same period.
-            $cat === 'GASTOS OPERATIVOS' && $con === 'GASTOS'          => 'Emergentes',
-            $cat === 'GASTOS OPERATIVOS' && $con === 'PAGO'            => 'Financiamiento de Motos',
-            $cat === 'GASTOS OPERATIVOS' && $con === 'SERVICIOS DE'    => 'Señora Limpieza',
-            $cat === 'GASTOS OPERATIVOS' && $con === 'ENGANCHE DE'     => 'Servicios de Motocicletas',
-            $cat === 'GASTOS OPERATIVOS' && $con === 'GASTOS POR'      => 'Transportes',
-            $cat === 'GASTOS OPERATIVOS' && $con === 'INSUMOS DE'      => 'Insumos de Papelería',
-            $cat === 'GASTOS OPERATIVOS' && $con === 'COMISIONES POR'  => 'Comisiones Oxxo',
+            // --- Conceptos truncados del PDF de Lendus bajo 'Gastos Operativos' ---
+            // El PDF omite la descripción completa; se cotejó contra el Excel del mismo periodo.
+            $cat === 'GASTOS OPERATIVOS' && $con === 'GASTOS' => 'Emergentes',
+            $cat === 'GASTOS OPERATIVOS' && $con === 'PAGO' => 'Financiamiento de Motos',
+            $cat === 'GASTOS OPERATIVOS' && $con === 'SERVICIOS DE' => 'Señora Limpieza',
+            $cat === 'GASTOS OPERATIVOS' && $con === 'ENGANCHE DE' => 'Servicios de Motocicletas',
+            $cat === 'GASTOS OPERATIVOS' && $con === 'GASTOS POR' => 'Transportes',
+            $cat === 'GASTOS OPERATIVOS' && $con === 'INSUMOS DE' => 'Insumos de Papelería',
+            $cat === 'GASTOS OPERATIVOS' && $con === 'COMISIONES POR' => 'Comisiones Oxxo',
             // --- ERP concept-level matches (full concept, specific enough) ---
-            str_contains($con, 'INSUMOS SUCURSALES')                   => 'Insumos de Cafetería',
+            str_contains($con, 'INSUMOS SUCURSALES') => 'Insumos de Cafetería',
             // FLYERS Y VINILES ya NO mapea a Publicidad: validado contra tabla manual Junio 2026
             // (target Publicidad = $0.00) — cae a unmappedGastoLabel() para quedar trazable como
             // "Sin clasificar: FLYERS Y VINILES" en vez de inflar Publicidad silenciosamente.
             // --- Category-level direct matches ---
-            str_contains($cat, 'GASTOS EMERGENTES') || $cat === 'EMERGENTES'                                => 'Emergentes',
-            str_contains($cat, 'INSUMOS DE CAFETERIA') || str_contains($cat, 'INSUMOS DE CAFETERÍA')        => 'Insumos de Cafetería',
-            str_contains($cat, 'INSUMOS DE LIMPIEZA')                                                        => 'Insumos de Limpieza',
-            str_contains($cat, 'INSUMOS DE PAPELERIA') || str_contains($cat, 'INSUMOS DE PAPELERÍA')        => 'Insumos de Papelería',
-            str_contains($cat, 'SERVICIOS DE LIMPIEZA')                                                      => 'Señora Limpieza',
-            str_contains($cat, 'SERVICIOS DE MOTOCICLETAS') || str_contains($cat, 'SERVICIOS MOTO')         => 'Servicios de Motocicletas',
-            str_contains($cat, 'SOFTWARE PÓLIZA') || str_contains($cat, 'SOFTWARE POLIZA')                  => 'Software Póliza Anual',
-            str_contains($cat, 'RENTA DE BODEGAS') || str_contains($cat, 'RENTAS BODEGAS')                  => 'Renta de Bodegas',
-            str_contains($cat, 'RENTA OFICINA') || str_contains($cat, 'RENTAS OFICINAS')                    => 'Renta Oficina',
-            str_contains($cat, 'RECARGAS TELEFÓNICAS') || str_contains($cat, 'RECARGAS TELEFONICAS')        => 'Recargas Telefónicas',
-            str_contains($cat, 'COMISIONES OXXO')                                                            => 'Comisiones Oxxo',
-            str_contains($cat, 'MULTAS E INFRACCIONES')                                                      => 'Multas e Infracciones',
+            str_contains($cat, 'GASTOS EMERGENTES') || $cat === 'EMERGENTES' => 'Emergentes',
+            str_contains($cat, 'INSUMOS DE CAFETERIA') || str_contains($cat, 'INSUMOS DE CAFETERÍA') => 'Insumos de Cafetería',
+            str_contains($cat, 'INSUMOS DE LIMPIEZA') => 'Insumos de Limpieza',
+            str_contains($cat, 'INSUMOS DE PAPELERIA') || str_contains($cat, 'INSUMOS DE PAPELERÍA') => 'Insumos de Papelería',
+            str_contains($cat, 'SERVICIOS DE LIMPIEZA') => 'Señora Limpieza',
+            str_contains($cat, 'SERVICIOS DE MOTOCICLETAS') || str_contains($cat, 'SERVICIOS MOTO') => 'Servicios de Motocicletas',
+            str_contains($cat, 'SOFTWARE PÓLIZA') || str_contains($cat, 'SOFTWARE POLIZA') => 'Software Póliza Anual',
+            str_contains($cat, 'RENTA DE BODEGAS') || str_contains($cat, 'RENTAS BODEGAS') => 'Renta de Bodegas',
+            str_contains($cat, 'RENTA OFICINA') || str_contains($cat, 'RENTAS OFICINAS') => 'Renta Oficina',
+            str_contains($cat, 'RECARGAS TELEFÓNICAS') || str_contains($cat, 'RECARGAS TELEFONICAS') => 'Recargas Telefónicas',
+            str_contains($cat, 'COMISIONES OXXO') => 'Comisiones Oxxo',
+            str_contains($cat, 'MULTAS E INFRACCIONES') => 'Multas e Infracciones',
             str_contains($cat, 'TRÁMITES GUBERNAMENTALES') || str_contains($cat, 'TRAMITES GUBERNAMENTALES') => 'Trámites Gubernamentales',
-            str_contains($cat, 'MOBILIARIO Y EQUIPO')                                                        => 'Mobiliario y Equipo',
-            str_contains($cat, 'MANTENIMIENTO')                                                              => 'Mantenimiento',
-            str_contains($cat, 'PAQUETERÍA') || str_contains($cat, 'PAQUETERIA')                            => 'Paquetería',
-            str_contains($cat, 'TELÉFONO E INTERNET') || str_contains($cat, 'TELEFONO E INTERNET')          => 'Teléfono e Internet',
-            str_contains($cat, 'PÓLIZAS') || str_contains($cat, 'POLIZAS')                                  => 'Pólizas',
-            str_contains($cat, 'PUBLICIDAD')                                                                  => 'Publicidad',
-            str_contains($cat, 'MECÁNICOS') || str_contains($cat, 'MECANICOS')                              => 'Mecánicos',
-            str_contains($cat, 'TRANSPORTES')                                                                => 'Transportes',
-            str_contains($cat, 'PEGOTES')                                                                    => 'Pegotes',
-            str_contains($cat, 'PERMISOS VEHICULARES')                                                       => 'Permisos Vehiculares',
-            str_contains($cat, 'VIÁTICOS') || str_contains($cat, 'VIATICOS')                                => 'Viáticos',
-            str_contains($cat, 'FLETES')                                                                     => 'Fletes',
-            str_contains($cat, 'FORMATERÍA') || str_contains($cat, 'FORMATERIA')                            => 'Formatería',
-            str_contains($cat, 'EVENTOS')                                                                    => 'Eventos',
-            str_contains($cat, 'GASTOS LEGALES')                                                             => 'Gastos legales',
-            $cat === 'GASOLINA'                                                                               => 'Gasolina',
-            $cat === 'FINANCIAMIENTO CELULAR'                                                                 => 'Financiamiento Celular',
-            $cat === 'LUZ'                                                                                    => 'Luz',
-            $cat === 'AGUA'                                                                                   => 'Agua',
-            // --- Concept-level matching for generic categories (e.g. 'Gastos Operativos') ---
-            str_contains($both, 'EMERGENTE')                                                                 => 'Emergentes',
-            str_contains($both, 'CAFETERIA') || str_contains($both, 'CAFETERÍA')                            => 'Insumos de Cafetería',
-            str_contains($both, 'LIMPIEZA') && str_contains($both, 'SEÑORA')                                 => 'Señora Limpieza',
-            str_contains($both, 'LIMPIEZA')                                                                  => 'Insumos de Limpieza',
-            str_contains($both, 'PAPELERIA') || str_contains($both, 'PAPELERÍA')                            => 'Insumos de Papelería',
-            str_contains($both, 'RENTA') && str_contains($both, 'BODEGA')                                   => 'Renta de Bodegas',
-            str_contains($both, 'RENTA') && !str_contains($both, 'BODEGA')                                  => 'Renta Oficina',
-            str_contains($both, 'OXXO') || str_contains($both, 'TRANSACCION')                               => 'Comisiones Oxxo',
+            str_contains($cat, 'MOBILIARIO Y EQUIPO') => 'Mobiliario y Equipo',
+            str_contains($cat, 'MANTENIMIENTO') => 'Mantenimiento',
+            str_contains($cat, 'PAQUETERÍA') || str_contains($cat, 'PAQUETERIA') => 'Paquetería',
+            str_contains($cat, 'TELÉFONO E INTERNET') || str_contains($cat, 'TELEFONO E INTERNET') => 'Teléfono e Internet',
+            str_contains($cat, 'PÓLIZAS') || str_contains($cat, 'POLIZAS') => 'Pólizas',
+            str_contains($cat, 'PUBLICIDAD') => 'Publicidad',
+            str_contains($cat, 'MECÁNICOS') || str_contains($cat, 'MECANICOS') => 'Mecánicos',
+            str_contains($cat, 'TRANSPORTES') => 'Transportes',
+            str_contains($cat, 'PEGOTES') => 'Pegotes',
+            str_contains($cat, 'PERMISOS VEHICULARES') => 'Permisos Vehiculares',
+            str_contains($cat, 'VIÁTICOS') || str_contains($cat, 'VIATICOS') => 'Viáticos',
+            str_contains($cat, 'FLETES') => 'Fletes',
+            str_contains($cat, 'FORMATERÍA') || str_contains($cat, 'FORMATERIA') => 'Formatería',
+            str_contains($cat, 'EVENTOS') => 'Eventos',
+            str_contains($cat, 'GASTOS LEGALES') => 'Gastos legales',
+            $cat === 'GASOLINA' => 'Gasolina',
+            $cat === 'FINANCIAMIENTO CELULAR' => 'Financiamiento Celular',
+            $cat === 'LUZ' => 'Luz',
+            $cat === 'AGUA' => 'Agua',
+            // --- Coincidencia por concepto para categorías genéricas (p. ej. 'Gastos Operativos') ---
+            str_contains($both, 'EMERGENTE') => 'Emergentes',
+            str_contains($both, 'CAFETERIA') || str_contains($both, 'CAFETERÍA') => 'Insumos de Cafetería',
+            str_contains($both, 'LIMPIEZA') && str_contains($both, 'SEÑORA') => 'Señora Limpieza',
+            str_contains($both, 'LIMPIEZA') => 'Insumos de Limpieza',
+            str_contains($both, 'PAPELERIA') || str_contains($both, 'PAPELERÍA') => 'Insumos de Papelería',
+            str_contains($both, 'RENTA') && str_contains($both, 'BODEGA') => 'Renta de Bodegas',
+            str_contains($both, 'RENTA') && ! str_contains($both, 'BODEGA') => 'Renta Oficina',
+            str_contains($both, 'OXXO') || str_contains($both, 'TRANSACCION') => 'Comisiones Oxxo',
             str_contains($both, 'MOTOCICLETA') || (str_contains($both, 'MOTO') && str_contains($both, 'SERVICIO')) => 'Servicios de Motocicletas',
             str_contains($both, 'POLIZA ANUAL') || str_contains($both, 'PÓLIZA ANUAL') || str_contains($both, 'SOFTWARE') || str_contains($both, 'LICENCIA') => 'Software Póliza Anual',
             str_contains($both, 'POLIZA') || str_contains($both, 'PÓLIZA') || str_contains($both, 'SEGURO') => 'Pólizas',
-            str_contains($both, 'RECARGA')                                                                   => 'Recargas Telefónicas',
-            str_contains($both, 'INTERNET') || str_contains($both, 'TELEFON')                               => 'Teléfono e Internet',
-            str_contains($both, 'LUZ') || str_contains($both, 'ELECTR')                                     => 'Luz',
-            str_contains($both, 'AGUA')                                                                      => 'Agua',
+            str_contains($both, 'RECARGA') => 'Recargas Telefónicas',
+            str_contains($both, 'INTERNET') || str_contains($both, 'TELEFON') => 'Teléfono e Internet',
+            str_contains($both, 'LUZ') || str_contains($both, 'ELECTR') => 'Luz',
+            str_contains($both, 'AGUA') => 'Agua',
             str_contains($both, 'MOBILIARIO') || str_contains($both, 'EQUIPO DE COMPUTO') || str_contains($both, 'ACCESORIOS EQUIPO') => 'Mobiliario y Equipo',
-            str_contains($both, 'MANTENIMIENTO')                                                             => 'Mantenimiento',
+            str_contains($both, 'MANTENIMIENTO') => 'Mantenimiento',
             str_contains($both, 'PAQUETERIA') || str_contains($both, 'PAQUETERÍA') || str_contains($both, 'ENVIO') => 'Paquetería',
-            str_contains($both, 'GUBERNAMENTAL') || str_contains($both, 'TRAMITE')                          => 'Trámites Gubernamentales',
-            str_contains($both, 'PUBLICIDAD')                                                                => 'Publicidad',
-            str_contains($both, 'MECANICO') || str_contains($both, 'MECÁNICO')                              => 'Mecánicos',
-            str_contains($both, 'MULTA') || str_contains($both, 'INFRACCION')                               => 'Multas e Infracciones',
+            str_contains($both, 'GUBERNAMENTAL') || str_contains($both, 'TRAMITE') => 'Trámites Gubernamentales',
+            str_contains($both, 'PUBLICIDAD') => 'Publicidad',
+            str_contains($both, 'MECANICO') || str_contains($both, 'MECÁNICO') => 'Mecánicos',
+            str_contains($both, 'MULTA') || str_contains($both, 'INFRACCION') => 'Multas e Infracciones',
             str_contains($both, 'TRANSPORTE') || str_contains($both, 'TAXI') || str_contains($both, 'RUTA') || str_contains($both, 'DILIGENCIA') => 'Transportes',
-            str_contains($both, 'PEGOTE')                                                                    => 'Pegotes',
-            str_contains($both, 'PERMISO')                                                                   => 'Permisos Vehiculares',
+            str_contains($both, 'PEGOTE') => 'Pegotes',
+            str_contains($both, 'PERMISO') => 'Permisos Vehiculares',
             str_contains($both, 'VIATICO') || str_contains($both, 'VIÁTICO') || str_contains($both, 'SUPERVISION') || str_contains($both, 'CAPACITACION') => 'Viáticos',
-            str_contains($both, 'FLETE')                                                                     => 'Fletes',
-            str_contains($both, 'FORMATERIA') || str_contains($both, 'FORMATERÍA')                          => 'Formatería',
-            str_contains($both, 'EVENTO')                                                                    => 'Eventos',
-            str_contains($both, 'LEGAL') || str_contains($both, 'DOMINIO')                                  => 'Gastos legales',
-            default                                                                                          => null,
+            str_contains($both, 'FLETE') => 'Fletes',
+            str_contains($both, 'FORMATERIA') || str_contains($both, 'FORMATERÍA') => 'Formatería',
+            str_contains($both, 'EVENTO') => 'Eventos',
+            str_contains($both, 'LEGAL') || str_contains($both, 'DOMINIO') => 'Gastos legales',
+            default => null,
         };
     }
 
+    /**
+     * Etiqueta para un gasto operativo sin mapeo canónico ("Sin clasificar: <concepto>")
+     * y registro de advertencia en el log para revisar canonicalGastoConcept().
+     *
+     * @param  string  $category  Categoría del gasto.
+     * @param  string  $concept  Concepto del gasto.
+     * @return string Etiqueta "Sin clasificar: ...".
+     */
     private function unmappedGastoLabel(string $category, string $concept): string
     {
         $text = trim($concept) !== '' ? trim($concept) : trim($category);
-        \Illuminate\Support\Facades\Log::warning('Concepto de gasto operativo sin mapeo canónico — revisar canonicalGastoConcept().', [
+        Log::warning('Concepto de gasto operativo sin mapeo canónico — revisar canonicalGastoConcept().', [
             'category' => $category,
-            'concept'  => $concept,
+            'concept' => $concept,
         ]);
-        return 'Sin clasificar: ' . $text;
+
+        return 'Sin clasificar: '.$text;
     }
 
+    /**
+     * Bolsa "sin asignar" vacía: montos de nómina, IMSS, gastos de empleados y gastos
+     * sin sucursal operativa, con sus desgloses.
+     *
+     * @return array Estructura con todos los montos en cero.
+     */
     private function emptyUnassigned(): array
     {
         return [
-            'nomina_total'       => 0.0,
-            'comisiones'         => 0.0,
-            'bonos'              => 0.0,
+            'nomina_total' => 0.0,
+            'comisiones' => 0.0,
+            'bonos' => 0.0,
             'bonos_aceleradores' => 0.0,  // P118
-            'vacaciones'         => 0.0,
-            'prima_vacacional'   => 0.0,
+            'vacaciones' => 0.0,
+            'prima_vacacional' => 0.0,
             'otros_percepciones' => 0.0,
-            'imss_patronal'            => 0.0,
-            'gastos_empleados_nomina'  => 0.0,
-            'nomina_detalle'     => [],   // display_label => amount
+            'imss_patronal' => 0.0,
+            'gastos_empleados_nomina' => 0.0,
+            'nomina_detalle' => [],   // display_label => amount
             'nomina_informativo' => [],   // display_label => amount — desglose de detalle (ver nota en emptyBranchSummary())
-            'gastos_operativos'                  => 0.0,
-            'gastos_erp_total'                   => 0.0,
-            'gastos_erp_cargado'                 => 0.0,
-            'gastos_erp_excluido_seguros'        => 0.0,
-            'gastos_lendus_total'                => 0.0,
-            'gastos_lendus_cargado'              => 0.0,
-            'gastos_lendus_excluido_fondeo'      => 0.0,
-            'gastos_lendus_excluido_excedentes'  => 0.0,
-            'gastos_lendus_excluido_nomina'      => 0.0,
+            'gastos_operativos' => 0.0,
+            'gastos_erp_total' => 0.0,
+            'gastos_erp_cargado' => 0.0,
+            'gastos_erp_excluido_seguros' => 0.0,
+            'gastos_lendus_total' => 0.0,
+            'gastos_lendus_cargado' => 0.0,
+            'gastos_lendus_excluido_fondeo' => 0.0,
+            'gastos_lendus_excluido_excedentes' => 0.0,
+            'gastos_lendus_excluido_nomina' => 0.0,
             'gastos_lendus_reclasificado_nomina' => 0.0,
-            'gastos_lendus_excluido_polizas'     => 0.0,
-            'seguros_lendus_puente'              => 0.0,
-            'empleados'          => [],   // per-employee detail for SIN ASIGNAR sheet
-            'gastos_items'       => [],   // per-gasto detail for SIN ASIGNAR sheet
+            'gastos_lendus_excluido_polizas' => 0.0,
+            'seguros_lendus_puente' => 0.0,
+            'empleados' => [],   // per-employee detail for SIN ASIGNAR sheet
+            'gastos_items' => [],   // per-gasto detail for SIN ASIGNAR sheet
             'pension_alimenticia_detectada' => 0.0, // D010 — auditoría, de respaldo (va a nomina_detalle)
-            'prestamo_personal_detectado'   => 0.0, // D004 — auditoría, NO se suma a Nómina y Capital Humano
-            'imss_excluido'                 => [],  // branch_name => amount — IMSS de sucursales no operativas (CORPORATIVO/TULANCINGO), excluido del global
+            'prestamo_personal_detectado' => 0.0, // D004 — auditoría, NO se suma a Nómina y Capital Humano
+            'imss_excluido' => [],  // branch_name => amount — IMSS de sucursales no operativas (CORPORATIVO/TULANCINGO), excluido del global
         ];
     }
 }

@@ -8,22 +8,34 @@ use App\Enums\ProcessType;
 use App\Enums\ReportUploadStatus;
 use App\Models\ProcessRun;
 use App\Models\ReportUpload;
+use App\Services\ExpenseReview\ExpenseReviewService;
 use App\Services\Imports\GastosErpExcelImportService;
 use App\Services\Imports\GastosImportService;
 use App\Services\Imports\GastosLendusExcelImportService;
 use App\Services\Imports\GastosLendusPdfImportService;
 use App\Services\Imports\ImssExcelImportService;
 use App\Services\Imports\LendusCarteraFotoImportService;
-use App\Services\Imports\LendusIngresosCobranzaImportService;
-use App\Services\Imports\NoiNominaImportService;
 use App\Services\Imports\LendusEmployeeDirectoryImportService;
+use App\Services\Imports\LendusIngresosCobranzaImportService;
 use App\Services\Imports\LendusMinistracionesImportService;
 use App\Services\Imports\LendusSaldosClienteImportService;
+use App\Services\Imports\NoiNominaImportService;
 use App\Services\Imports\RotacionExcelImportService;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Analiza (importa) un archivo fuente ya subido: elige el importador según la fuente
+ * de datos (NOI, gastos Lendus/ERP, Lendus cobranza/ministraciones/saldos, IMSS,
+ * rotación, directorio) y registra el resultado en un ProcessRun.
+ *
+ * Es el paso "Cargar registros" del flujo de periodos; lo llaman DatabaseUpdateService,
+ * jobs de actualización y comandos de reproceso.
+ */
 class ReportAnalysisService
 {
+    /**
+     * Recibe por inyección un importador por cada fuente de datos soportada.
+     */
     public function __construct(
         protected NoiNominaImportService $noiNominaImportService,
         protected GastosImportService $gastosImportService,
@@ -37,8 +49,7 @@ class ReportAnalysisService
         protected LendusSaldosClienteImportService $lendusSaldosClienteImportService,
         protected LendusEmployeeDirectoryImportService $lendusEmployeeDirectoryImportService,
         protected LendusCarteraFotoImportService $lendusCarteraFotoImportService,
-    ) {
-    }
+    ) {}
 
     /** Incidencias de identidad (NOI) del ÚLTIMO analyze() — ver pullLastImportIncidents(). */
     private array $lastImportIncidents = [];
@@ -49,18 +60,36 @@ class ReportAnalysisService
      * PersonIdentityResolverService::evaluateNoiCandidateEvidence()). Pensado para que
      * DatabaseUpdateService las recolecte tras cada llamada a analyze() sin cambiar la
      * firma pública del método (usado por 10 llamadores distintos).
+     *
+     * @return array Incidencias del último análisis (vacío si no hubo o ya se recogieron).
      */
     public function pullLastImportIncidents(): array
     {
         $incidents = $this->lastImportIncidents;
         $this->lastImportIncidents = [];
+
         return $incidents;
     }
 
+    /**
+     * Importa el archivo de una carga con el importador de su fuente.
+     *
+     * Efectos: marca la carga en Processing, crea un ProcessRun (tipo Import) que se va
+     * actualizando con el avance, ejecuta el importador dentro de una transacción y,
+     * si la fuente es de gastos, vuelve a aplicar las decisiones de revisión de gastos.
+     * Al terminar deja la carga en Processed (aunque se insertaran 0 filas) y el run en
+     * Success; si falla, ambos quedan en Failed y la excepción se relanza.
+     *
+     * @param  ReportUpload  $upload  Carga a analizar (debe tener fuente de datos).
+     * @return ProcessRun Registro de la corrida recargado desde BD.
+     *
+     * @throws \RuntimeException Si la carga no tiene fuente o la fuente no tiene importador.
+     * @throws \Throwable Cualquier error del importador (se relanza tras marcar Failed).
+     */
     public function analyze(ReportUpload $upload): ProcessRun
     {
         $sourceCode = $upload->dataSource?->code;
-        if (!$sourceCode) {
+        if (! $sourceCode) {
             throw new \RuntimeException('El archivo no tiene una fuente de datos asociada.');
         }
         $upload->update([
@@ -89,23 +118,29 @@ class ReportAnalysisService
                         'log' => (string) ($stats['log'] ?? $run->log),
                     ]);
                 };
+
                 return match ($sourceCode) {
                     DataSourceCode::NoiNomina->value,
-                    DataSourceCode::NoiNominaFiscal->value        => $this->noiNominaImportService->handle($upload, $progress),
-                    DataSourceCode::Gastos->value                 => $this->gastosImportService->handle($upload, $progress),
-                    DataSourceCode::GastosLendus->value           => $this->gastosLendusPdfImportService->handle($upload, $progress),
-                    DataSourceCode::GastosErp->value              => $this->gastosErpExcelImportService->handle($upload, $progress),
-                    DataSourceCode::GastosLendusExcel->value      => $this->gastosLendusExcelImportService->handle($upload, $progress),
+                    DataSourceCode::NoiNominaFiscal->value => $this->noiNominaImportService->handle($upload, $progress),
+                    DataSourceCode::Gastos->value => $this->gastosImportService->handle($upload, $progress),
+                    DataSourceCode::GastosLendus->value => $this->gastosLendusPdfImportService->handle($upload, $progress),
+                    DataSourceCode::GastosErp->value => $this->gastosErpExcelImportService->handle($upload, $progress),
+                    DataSourceCode::GastosLendusExcel->value => $this->gastosLendusExcelImportService->handle($upload, $progress),
                     DataSourceCode::LendusIngresosCobranza->value => $this->lendusIngresosCobranzaImportService->handle($upload, $progress),
-                    DataSourceCode::LendusMinistraciones->value   => $this->lendusMinistracionesImportService->handle($upload, $progress),
-                    DataSourceCode::LendusSaldosCliente->value    => $this->lendusSaldosClienteImportService->handle($upload, $progress),
+                    DataSourceCode::LendusMinistraciones->value => $this->lendusMinistracionesImportService->handle($upload, $progress),
+                    DataSourceCode::LendusSaldosCliente->value => $this->lendusSaldosClienteImportService->handle($upload, $progress),
                     DataSourceCode::LendusSaldosClienteFoto->value => $this->lendusCarteraFotoImportService->handle($upload, $progress),
-                    DataSourceCode::LendusEmpleados->value        => $this->lendusEmployeeDirectoryImportService->handle($upload, $progress),
-                    DataSourceCode::Imss->value                   => $this->imssExcelImportService->handle($upload, $progress),
-                    DataSourceCode::Rotacion->value               => $this->rotacionExcelImportService->handle($upload, $progress),
+                    DataSourceCode::LendusEmpleados->value => $this->lendusEmployeeDirectoryImportService->handle($upload, $progress),
+                    DataSourceCode::Imss->value => $this->imssExcelImportService->handle($upload, $progress),
+                    DataSourceCode::Rotacion->value => $this->rotacionExcelImportService->handle($upload, $progress),
                     default => throw new \RuntimeException("La fuente [{$sourceCode}] aún no tiene importador implementado."),
                 };
             });
+            // Revisión de gastos (23-nov-2026): el importador borró y reinsertó fact_expenses;
+            // se vuelven a aplicar las decisiones manuales guardadas por huella (no-op si no hay).
+            if (in_array($sourceCode, ExpenseReviewService::EXPENSE_SOURCES, true)) {
+                app(ExpenseReviewService::class)->applyForPeriodSafely((int) $upload->period_id);
+            }
             $this->lastImportIncidents = $result['incidents'] ?? [];
             $rowsRead = (int) ($result['rows_read'] ?? 0);
             $rowsInserted = (int) ($result['rows_inserted'] ?? 0);
@@ -142,7 +177,7 @@ class ReportAnalysisService
             ]);
             throw $exception;
         }
+
         return $run->fresh();
     }
-
 }

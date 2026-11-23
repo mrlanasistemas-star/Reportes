@@ -1,189 +1,327 @@
 <script setup lang="ts">
-import { SlidersHorizontal } from 'lucide-vue-next'
-import { computed, watch } from 'vue'
-import SearchableSelect from './SearchableSelect.vue'
-import SectionHeader from './SectionHeader.vue'
+/**
+ * Etapa «Configurar reporte» del flujo Histórico general. Permite elegir el tipo de reporte
+ * (simple o comparativo mes vs mes; los periodos no mensuales solo ofrecen simple), el
+ * periodo comparable, el alcance (general, por sucursal o por gestor), la sucursal o el
+ * colaborador (roster canónico del periodo) y las sucursales operativas incluidas en el
+ * reporte general.
+ * Props: `period`, `modelValue` (reportConfig, v-model), `periods`, `branches`, `employees`,
+ * `canGenerate`. Emits: `update:modelValue` (config completa actualizada) y `next`.
+ * No llama rutas; solo actualiza la configuración del padre.
+ */
+import { SlidersHorizontal } from 'lucide-vue-next';
+import { computed, watch } from 'vue';
+import SearchableSelect from './SearchableSelect.vue';
+import SectionHeader from './SectionHeader.vue';
 
+/** Configuración del reporte compartida con la página (ver reportConfig en historico-general/index.vue). */
 interface ReportConfig {
-    report_type: string
-    scope: string
-    branch_id: number | null
-    employee_id: number | null
-    compare_period_id: number | null
-    extra_employee_expense_amount: number
-    extra_employee_expense_notes: string
-    included_branch_ids: number[]
+    report_type: string;
+    scope: string;
+    branch_id: number | null;
+    employee_id: number | null;
+    compare_period_id: number | null;
+    extra_employee_expense_amount: number;
+    extra_employee_expense_notes: string;
+    included_branch_ids: number[];
 }
 
+/** Props: periodo actual, configuración (v-model), catálogos de periodos/sucursales/colaboradores y si el periodo puede generar. */
 const props = defineProps<{
-    period: any
-    modelValue: ReportConfig
-    periods: any[]
-    branches: Array<{ id: number; name: string }>
-    employees: Array<{ id: number; full_name: string; branch_name?: string }>
-    canGenerate: boolean
-}>()
-const emit = defineEmits<{ (event: 'update:modelValue', value: ReportConfig): void; (event: 'next'): void }>()
+    period: any;
+    modelValue: ReportConfig;
+    periods: any[];
+    branches: Array<{ id: number; name: string }>;
+    employees: Array<{ id: number; full_name: string; branch_name?: string }>;
+    canGenerate: boolean;
+}>();
+/** `update:modelValue`: nueva configuración; `next`: avanzar a la siguiente etapa. */
+const emit = defineEmits<{
+    (event: 'update:modelValue', value: ReportConfig): void;
+    (event: 'next'): void;
+}>();
 
-const update = (patch: Partial<ReportConfig>) => emit('update:modelValue', { ...props.modelValue, ...patch })
+/**
+ * Emite la configuración con los campos indicados sobrescritos (inmutable).
+ * @param patch Campos a cambiar.
+ */
+const update = (patch: Partial<ReportConfig>) =>
+    emit('update:modelValue', { ...props.modelValue, ...patch });
 
-const isBranchScope   = computed(() => props.modelValue.scope === 'branch')
-const isEmployeeScope = computed(() => props.modelValue.scope === 'employee')
-const isComparative   = computed(() => props.modelValue.report_type !== 'simple')
-const hasFilters      = computed(() => isBranchScope.value || isEmployeeScope.value || isComparative.value)
+/** El alcance es por sucursal. */
+const isBranchScope = computed(() => props.modelValue.scope === 'branch');
+/** El alcance es por gestor/colaborador. */
+const isEmployeeScope = computed(() => props.modelValue.scope === 'employee');
+/** El tipo de reporte es comparativo. */
+const isComparative = computed(() => props.modelValue.report_type !== 'simple');
+/** Hay algún filtro activo (sucursal, gestor o comparativo). */
+const hasFilters = computed(
+    () => isBranchScope.value || isEmployeeScope.value || isComparative.value,
+);
 
+/** Periodos del mismo tipo que el actual (excluyéndolo) para comparar. */
 const comparablePeriods = computed(() =>
-    props.periods.filter((p) => p.id !== props.period?.id && p.type === props.period?.type)
-)
+    props.periods.filter(
+        (p) => p.id !== props.period?.id && p.type === props.period?.type,
+    ),
+);
 
+/** Nombres de las 13 sucursales operativas oficiales. */
 const OPERATIVE_BRANCH_NAMES = new Set([
-    'ATLACOMULCO', 'ATLIXCO', 'CORDOBA', 'CUERNAVACA', 'HUAMANTLA',
-    'IXTLAHUACA', 'MIACATLAN', 'ORIZABA', 'SAN JUAN DEL RÍO',
-    'SAN LUIS POTOSI', 'TENANGO DEL VALLE', 'TLAXCALA', 'TULA',
-])
+    'ATLACOMULCO',
+    'ATLIXCO',
+    'CORDOBA',
+    'CUERNAVACA',
+    'HUAMANTLA',
+    'IXTLAHUACA',
+    'MIACATLAN',
+    'ORIZABA',
+    'SAN JUAN DEL RÍO',
+    'SAN LUIS POTOSI',
+    'TENANGO DEL VALLE',
+    'TLAXCALA',
+    'TULA',
+]);
 
+/** Rutas/nombres que parecen sucursal pero no lo son; nunca se ofrecen. */
 const FORBIDDEN_BRANCH_LIKE_ROUTES = new Set([
-    '20 DE NOVIEMBRE', 'ACAJ', 'AGUASCALIENTES', 'ALMOLOYA DE JUAREZ',
-    'APIX-SUR', 'APIZ-CEN', 'CHIHUAHUA', 'DURANGO', 'CORPORATIVO',
-    'FALSO', 'NORTE',
-])
+    '20 DE NOVIEMBRE',
+    'ACAJ',
+    'AGUASCALIENTES',
+    'ALMOLOYA DE JUAREZ',
+    'APIX-SUR',
+    'APIZ-CEN',
+    'CHIHUAHUA',
+    'DURANGO',
+    'CORPORATIVO',
+    'FALSO',
+    'NORTE',
+]);
 
-// The 12 operative branches with their DB IDs
+/** Sucursales operativas del catálogo (con su id de BD), filtradas por las listas anteriores. */
 const operativeBranches = computed(() =>
     props.branches.filter((b) => {
-        const name = b.name.trim().toUpperCase()
+        const name = b.name.trim().toUpperCase();
 
-        return !FORBIDDEN_BRANCH_LIKE_ROUTES.has(name) && OPERATIVE_BRANCH_NAMES.has(name)
-    })
-)
+        return (
+            !FORBIDDEN_BRANCH_LIKE_ROUTES.has(name) &&
+            OPERATIVE_BRANCH_NAMES.has(name)
+        );
+    }),
+);
 
-// For the branch selector dropdown (scope=branch), only show included ones
+/** Opciones del selector de sucursal (alcance sucursal): solo las sucursales incluidas. */
 const operativeBranchItems = computed(() =>
     operativeBranches.value
         .filter((b) => props.modelValue.included_branch_ids.includes(b.id))
-        .map((b) => ({ id: b.id, label: b.name }))
-)
+        .map((b) => ({ id: b.id, label: b.name })),
+);
 
+/** Opciones del selector de colaborador (nombre + sucursal como subetiqueta). */
 const employeeItems = computed(() =>
-    props.employees.map((e) => ({ id: e.id, label: e.full_name, sublabel: e.branch_name ?? undefined }))
-)
+    props.employees.map((e) => ({
+        id: e.id,
+        label: e.full_name,
+        sublabel: e.branch_name ?? undefined,
+    })),
+);
 
+/**
+ * Incluye o excluye una sucursal del reporte general.
+ * @param branchId Id de la sucursal.
+ */
 function toggleBranch(branchId: number) {
-    const current = props.modelValue.included_branch_ids
+    const current = props.modelValue.included_branch_ids;
     const next = current.includes(branchId)
         ? current.filter((id) => id !== branchId)
-        : [...current, branchId]
-    update({ included_branch_ids: next })
+        : [...current, branchId];
+    update({ included_branch_ids: next });
 }
 
+/** Incluye todas las sucursales operativas. */
 function selectAllBranches() {
-    update({ included_branch_ids: operativeBranches.value.map((b) => b.id) })
+    update({ included_branch_ids: operativeBranches.value.map((b) => b.id) });
 }
 
+/** Excluye todas las sucursales. */
 function deselectAllBranches() {
-    update({ included_branch_ids: [] })
+    update({ included_branch_ids: [] });
 }
 
-const includedCount  = computed(() => props.modelValue.included_branch_ids.length)
+/** Número de sucursales incluidas. */
+const includedCount = computed(
+    () => props.modelValue.included_branch_ids.length,
+);
+/** Sucursales operativas excluidas actualmente. */
 const excludedBranches = computed(() =>
-    operativeBranches.value.filter((b) => !props.modelValue.included_branch_ids.includes(b.id))
-)
+    operativeBranches.value.filter(
+        (b) => !props.modelValue.included_branch_ids.includes(b.id),
+    ),
+);
 
+/** La configuración está completa y el periodo puede generar: habilita «Siguiente». */
 const canSubmit = computed(() => {
     if (!props.canGenerate || !props.modelValue.report_type) {
-return false
-}
+        return false;
+    }
 
     if (isComparative.value && !props.modelValue.compare_period_id) {
-return false
-}
+        return false;
+    }
 
     if (isBranchScope.value && !props.modelValue.branch_id) {
-return false
-}
+        return false;
+    }
 
     if (isEmployeeScope.value && !props.modelValue.employee_id) {
-return false
-}
+        return false;
+    }
 
-    if (!isBranchScope.value && !isEmployeeScope.value && props.modelValue.included_branch_ids.length === 0) {
-return false
-}
+    if (
+        !isBranchScope.value &&
+        !isEmployeeScope.value &&
+        props.modelValue.included_branch_ids.length === 0
+    ) {
+        return false;
+    }
 
-    return true
-})
+    return true;
+});
 
+/** Catálogo de tipos de reporte (clave, etiqueta y descripción). */
 const REPORT_TYPES = [
-    { k: 'simple',               l: 'Radiografía simple',                d: 'Solo datos del periodo elegido. Sin comparativos ni flechas.' },
-    { k: 'month_vs_month',       l: 'Comparativo mes vs mes',            d: 'Requiere seleccionar un periodo comparable.' },
-    { k: 'bimester_vs_bimester', l: 'Comparativo bimestre vs bimestre',  d: 'Solo periodos bimestrales completos.' },
-    { k: 'quarter_vs_quarter',   l: 'Comparativo trimestre vs trimestre', d: 'Solo periodos trimestrales completos.' },
-]
+    {
+        k: 'simple',
+        l: 'Radiografía simple',
+        d: 'Solo datos del periodo elegido. Sin comparativos ni flechas.',
+    },
+    {
+        k: 'month_vs_month',
+        l: 'Comparativo mes vs mes',
+        d: 'Requiere seleccionar un periodo comparable.',
+    },
+    {
+        k: 'bimester_vs_bimester',
+        l: 'Comparativo bimestre vs bimestre',
+        d: 'Solo periodos bimestrales completos.',
+    },
+    {
+        k: 'quarter_vs_quarter',
+        l: 'Comparativo trimestre vs trimestre',
+        d: 'Solo periodos trimestrales completos.',
+    },
+];
 
 // Un periodo bimestral/trimestral (y semestral/anual) YA es un consolidado de varios meses
 // por sí mismo — no tiene sentido ofrecer "comparativo X vs X" como tipo de reporte aquí,
 // eso generaría un segundo eje de comparación redundante. Solo mensual mantiene la opción
 // de comparativo mes vs mes; el resto de periodos solo ofrece Radiografía simple.
+/** Tipos ofrecidos para el periodo actual: simple + mes vs mes en mensuales; solo simple en el resto. */
 const availableReportTypes = computed(() =>
     props.period?.type === 'monthly'
-        ? REPORT_TYPES.filter((rt) => rt.k === 'simple' || rt.k === 'month_vs_month')
-        : REPORT_TYPES.filter((rt) => rt.k === 'simple')
-)
+        ? REPORT_TYPES.filter(
+              (rt) => rt.k === 'simple' || rt.k === 'month_vs_month',
+          )
+        : REPORT_TYPES.filter((rt) => rt.k === 'simple'),
+);
 
+/** Si el tipo de reporte elegido no está disponible para el tipo de periodo, regresa a simple y limpia el comparable. */
 watch(
     () => props.period?.type,
     () => {
-        if (!availableReportTypes.value.some((rt) => rt.k === props.modelValue.report_type)) {
-            update({ report_type: 'simple', compare_period_id: null })
+        if (
+            !availableReportTypes.value.some(
+                (rt) => rt.k === props.modelValue.report_type,
+            )
+        ) {
+            update({ report_type: 'simple', compare_period_id: null });
         }
     },
     { immediate: true },
-)
+);
 
+/** Catálogo de alcances del reporte. */
 const SCOPES = [
-    { k: 'general',  l: 'General' },
-    { k: 'branch',   l: 'Por sucursal' },
+    { k: 'general', l: 'General' },
+    { k: 'branch', l: 'Por sucursal' },
     { k: 'employee', l: 'Por empleado / gestor' },
-]
+];
 </script>
 
 <template>
-    <section class="rounded-2xl border border-border bg-card p-6 shadow-soft-sm">
-        <SectionHeader eyebrow="Etapa 4" title="Configurar reporte" description="Define el tipo, alcance y filtros del reporte. Una vez guardada la configuración podrás proceder a generar el reporte." />
+    <section
+        class="rounded-2xl border border-border bg-card p-6 shadow-soft-sm"
+    >
+        <SectionHeader
+            eyebrow="Etapa 4"
+            title="Configurar reporte"
+            description="Define el tipo, alcance y filtros del reporte. Una vez guardada la configuración podrás proceder a generar el reporte."
+        />
 
         <div class="mt-6 grid gap-5 xl:grid-cols-[1fr_0.85fr]">
             <!-- Columna izquierda -->
             <div class="space-y-5">
-
                 <!-- Tipo de reporte -->
                 <div class="rounded-2xl border border-border p-5">
-                    <p class="mb-3 text-sm font-semibold text-foreground">Tipo de reporte</p>
+                    <p class="mb-3 text-sm font-semibold text-foreground">
+                        Tipo de reporte
+                    </p>
                     <div class="grid gap-3 md:grid-cols-2">
                         <button
                             v-for="option in availableReportTypes"
                             :key="option.k"
                             type="button"
                             class="rounded-2xl border p-4 text-left transition hover:border-primary/30 hover:bg-accent"
-                            :class="modelValue.report_type === option.k ? 'border-primary/30 bg-accent ring-2 ring-primary/20 ' : 'border-border '"
-                            @click="update({ report_type: option.k, compare_period_id: option.k === 'simple' ? null : modelValue.compare_period_id })"
+                            :class="
+                                modelValue.report_type === option.k
+                                    ? 'border-primary/30 bg-accent ring-2 ring-primary/20'
+                                    : 'border-border'
+                            "
+                            @click="
+                                update({
+                                    report_type: option.k,
+                                    compare_period_id:
+                                        option.k === 'simple'
+                                            ? null
+                                            : modelValue.compare_period_id,
+                                })
+                            "
                         >
-                            <p class="font-semibold text-foreground">{{ option.l }}</p>
-                            <p class="mt-1 text-xs leading-5 text-muted-foreground">{{ option.d }}</p>
+                            <p class="font-semibold text-foreground">
+                                {{ option.l }}
+                            </p>
+                            <p
+                                class="mt-1 text-xs leading-5 text-muted-foreground"
+                            >
+                                {{ option.d }}
+                            </p>
                         </button>
                     </div>
                 </div>
 
                 <!-- Alcance -->
                 <div class="rounded-2xl border border-border p-5">
-                    <p class="mb-3 text-sm font-semibold text-foreground">Alcance</p>
+                    <p class="mb-3 text-sm font-semibold text-foreground">
+                        Alcance
+                    </p>
                     <div class="grid gap-3 md:grid-cols-3">
                         <button
                             v-for="option in SCOPES"
                             :key="option.k"
                             type="button"
                             class="rounded-2xl border px-4 py-3 text-sm font-semibold transition hover:border-primary/30 hover:bg-accent"
-                            :class="modelValue.scope === option.k ? 'border-primary/30 bg-accent text-primary ' : 'border-border text-foreground/80 '"
-                            @click="update({ scope: option.k, branch_id: null, employee_id: null })"
+                            :class="
+                                modelValue.scope === option.k
+                                    ? 'border-primary/30 bg-accent text-primary'
+                                    : 'border-border text-foreground/80'
+                            "
+                            @click="
+                                update({
+                                    scope: option.k,
+                                    branch_id: null,
+                                    employee_id: null,
+                                })
+                            "
                         >
                             {{ option.l }}
                         </button>
@@ -191,68 +329,133 @@ const SCOPES = [
                 </div>
 
                 <!-- Filtros condicionales -->
-                <div v-if="hasFilters" class="rounded-2xl border border-border p-5 space-y-4">
-                    <p class="text-sm font-semibold text-foreground">Filtros y comparación</p>
+                <div
+                    v-if="hasFilters"
+                    class="space-y-4 rounded-2xl border border-border p-5"
+                >
+                    <p class="text-sm font-semibold text-foreground">
+                        Filtros y comparación
+                    </p>
 
                     <div v-if="isBranchScope">
                         <label class="block">
-                            <span class="text-xs font-bold text-muted-foreground">Sucursal</span>
+                            <span
+                                class="text-xs font-bold text-muted-foreground"
+                                >Sucursal</span
+                            >
                             <div class="mt-1">
                                 <SearchableSelect
                                     :items="operativeBranchItems"
                                     :model-value="modelValue.branch_id"
                                     placeholder="Buscar sucursal..."
-                                    @update:model-value="update({ branch_id: $event })"
+                                    @update:model-value="
+                                        update({ branch_id: $event })
+                                    "
                                 />
                             </div>
                         </label>
-                        <p v-if="!modelValue.branch_id" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Selecciona una sucursal para continuar.</p>
+                        <p
+                            v-if="!modelValue.branch_id"
+                            class="mt-1.5 text-xs text-amber-600 dark:text-amber-400"
+                        >
+                            Selecciona una sucursal para continuar.
+                        </p>
                     </div>
 
                     <div v-if="isEmployeeScope">
                         <label class="block">
-                            <span class="text-xs font-bold text-muted-foreground">Empleado / gestor</span>
+                            <span
+                                class="text-xs font-bold text-muted-foreground"
+                                >Empleado / gestor</span
+                            >
                             <div class="mt-1">
                                 <SearchableSelect
                                     :items="employeeItems"
                                     :model-value="modelValue.employee_id"
                                     placeholder="Buscar empleado o gestor..."
-                                    @update:model-value="update({ employee_id: $event })"
+                                    @update:model-value="
+                                        update({ employee_id: $event })
+                                    "
                                 />
                             </div>
                         </label>
-                        <p v-if="!modelValue.employee_id" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Selecciona un empleado o gestor para continuar.</p>
+                        <p
+                            v-if="!modelValue.employee_id"
+                            class="mt-1.5 text-xs text-amber-600 dark:text-amber-400"
+                        >
+                            Selecciona un empleado o gestor para continuar.
+                        </p>
                     </div>
 
                     <div v-if="isComparative">
                         <label class="block">
-                            <span class="text-xs font-bold text-muted-foreground">Periodo a comparar</span>
+                            <span
+                                class="text-xs font-bold text-muted-foreground"
+                                >Periodo a comparar</span
+                            >
                             <select
                                 :value="modelValue.compare_period_id ?? ''"
                                 class="mt-1 h-11 w-full rounded-2xl border border-border bg-muted/50 px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30"
-                                @change="update({ compare_period_id: Number(($event.target as HTMLSelectElement).value) || null })"
+                                @change="
+                                    update({
+                                        compare_period_id:
+                                            Number(
+                                                (
+                                                    $event.target as HTMLSelectElement
+                                                ).value,
+                                            ) || null,
+                                    })
+                                "
                             >
-                                <option value="">Selecciona periodo comparable</option>
-                                <option v-for="item in comparablePeriods" :key="item.id" :value="item.id">{{ item.label }}</option>
+                                <option value="">
+                                    Selecciona periodo comparable
+                                </option>
+                                <option
+                                    v-for="item in comparablePeriods"
+                                    :key="item.id"
+                                    :value="item.id"
+                                >
+                                    {{ item.label }}
+                                </option>
                             </select>
                         </label>
-                        <p v-if="!modelValue.compare_period_id" class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">Selecciona el periodo a comparar.</p>
+                        <p
+                            v-if="!modelValue.compare_period_id"
+                            class="mt-1.5 text-xs text-amber-600 dark:text-amber-400"
+                        >
+                            Selecciona el periodo a comparar.
+                        </p>
                     </div>
                 </div>
-
             </div>
 
             <!-- Columna derecha -->
             <div class="space-y-5">
-
                 <!-- Sucursales editables — solo cuando alcance = general -->
-                <div v-if="!isBranchScope && !isEmployeeScope" class="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-5 dark:border-emerald-500/20 dark:bg-emerald-500/10">
+                <div
+                    v-if="!isBranchScope && !isEmployeeScope"
+                    class="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-5 dark:border-emerald-500/20 dark:bg-emerald-500/10"
+                >
                     <div class="mb-3 flex items-center justify-between">
-                        <p class="text-sm font-semibold text-foreground">Sucursales que se tomarán en cuenta</p>
+                        <p class="text-sm font-semibold text-foreground">
+                            Sucursales que se tomarán en cuenta
+                        </p>
                         <div class="flex items-center gap-2 text-xs">
-                            <button type="button" class="font-bold text-primary hover:underline" @click="selectAllBranches">Todas</button>
+                            <button
+                                type="button"
+                                class="font-bold text-primary hover:underline"
+                                @click="selectAllBranches"
+                            >
+                                Todas
+                            </button>
                             <span class="text-muted-foreground/60">|</span>
-                            <button type="button" class="font-bold text-rose-600 hover:underline dark:text-rose-400" @click="deselectAllBranches">Ninguna</button>
+                            <button
+                                type="button"
+                                class="font-bold text-rose-600 hover:underline dark:text-rose-400"
+                                @click="deselectAllBranches"
+                            >
+                                Ninguna
+                            </button>
                         </div>
                     </div>
 
@@ -261,68 +464,146 @@ const SCOPES = [
                             v-for="branch in operativeBranches"
                             :key="branch.id"
                             class="flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 transition hover:bg-emerald-100/60 dark:hover:bg-emerald-500/10"
-                            :class="modelValue.included_branch_ids.includes(branch.id) ? 'bg-card/80 ' : 'opacity-50'"
+                            :class="
+                                modelValue.included_branch_ids.includes(
+                                    branch.id,
+                                )
+                                    ? 'bg-card/80'
+                                    : 'opacity-50'
+                            "
                         >
                             <input
                                 type="checkbox"
                                 class="size-4 rounded accent-emerald-600"
-                                :checked="modelValue.included_branch_ids.includes(branch.id)"
+                                :checked="
+                                    modelValue.included_branch_ids.includes(
+                                        branch.id,
+                                    )
+                                "
                                 @change="toggleBranch(branch.id)"
                             />
-                            <span class="text-sm font-bold text-foreground">{{ branch.name }}</span>
+                            <span class="text-sm font-bold text-foreground">{{
+                                branch.name
+                            }}</span>
                         </label>
                     </div>
 
-                    <div class="mt-3 border-t border-emerald-200 pt-3 text-xs text-muted-foreground space-y-1 dark:border-emerald-500/20">
-                        <p class="text-emerald-700 font-bold dark:text-emerald-400">{{ includedCount }} sucursal(es) incluida(s)</p>
-                        <p v-if="excludedBranches.length > 0" class="text-rose-600 dark:text-rose-400">
-                            Excluidas para este reporte:
-                            <span v-for="(b, i) in excludedBranches" :key="b.id">{{ b.name }}<span v-if="i < excludedBranches.length - 1">, </span></span>
+                    <div
+                        class="mt-3 space-y-1 border-t border-emerald-200 pt-3 text-xs text-muted-foreground dark:border-emerald-500/20"
+                    >
+                        <p
+                            class="font-bold text-emerald-700 dark:text-emerald-400"
+                        >
+                            {{ includedCount }} sucursal(es) incluida(s)
                         </p>
-                        <p>Siempre excluida: <span class="font-bold text-rose-700 dark:text-rose-400">CORPORATIVO</span> (no operativo) · SAN JUAN DEL RÍO se incluye si tiene movimiento en el periodo.</p>
+                        <p
+                            v-if="excludedBranches.length > 0"
+                            class="text-rose-600 dark:text-rose-400"
+                        >
+                            Excluidas para este reporte:
+                            <span v-for="(b, i) in excludedBranches" :key="b.id"
+                                >{{ b.name
+                                }}<span v-if="i < excludedBranches.length - 1"
+                                    >,
+                                </span></span
+                            >
+                        </p>
+                        <p>
+                            Siempre excluida:
+                            <span
+                                class="font-bold text-rose-700 dark:text-rose-400"
+                                >CORPORATIVO</span
+                            >
+                            (no operativo) · SAN JUAN DEL RÍO se incluye si
+                            tiene movimiento en el periodo.
+                        </p>
                     </div>
 
-                    <p v-if="includedCount === 0" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+                    <p
+                        v-if="includedCount === 0"
+                        class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300"
+                    >
                         Selecciona al menos una sucursal para continuar.
                     </p>
                 </div>
 
                 <!-- Sucursales en modo lectura cuando alcance = sucursal -->
-                <div v-if="isBranchScope" class="rounded-2xl border border-border bg-muted/50 p-5">
-                    <p class="mb-2 text-xs font-bold text-muted-foreground">El reporte por sucursal solo incluye la sucursal seleccionada.</p>
+                <div
+                    v-if="isBranchScope"
+                    class="rounded-2xl border border-border bg-muted/50 p-5"
+                >
+                    <p class="mb-2 text-xs font-bold text-muted-foreground">
+                        El reporte por sucursal solo incluye la sucursal
+                        seleccionada.
+                    </p>
                 </div>
 
                 <!-- Gasto general por gestor -->
-                <div v-if="isEmployeeScope" class="rounded-2xl border border-primary/30 bg-accent p-5">
+                <div
+                    v-if="isEmployeeScope"
+                    class="rounded-2xl border border-primary/30 bg-accent p-5"
+                >
                     <div class="flex items-center gap-3">
                         <SlidersHorizontal class="size-5 text-primary" />
-                        <p class="font-semibold text-foreground">Gasto general por gestor</p>
+                        <p class="font-semibold text-foreground">
+                            Gasto general por gestor
+                        </p>
                     </div>
-                    <p class="mt-2 text-sm leading-6 text-muted-foreground">Monto aproximado de gastos operativos mensuales asignados al gestor seleccionado. Se guardará en el reporte para auditoría.</p>
+                    <p class="mt-2 text-sm leading-6 text-muted-foreground">
+                        Monto aproximado de gastos operativos mensuales
+                        asignados al gestor seleccionado. Se guardará en el
+                        reporte para auditoría.
+                    </p>
                     <div class="mt-4 space-y-3">
                         <label class="block">
-                            <span class="text-xs font-bold text-muted-foreground">Gasto mensual aproximado (MXN)</span>
+                            <span
+                                class="text-xs font-bold text-muted-foreground"
+                                >Gasto mensual aproximado (MXN)</span
+                            >
                             <div class="relative mt-1">
-                                <span class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-muted-foreground">$</span>
+                                <span
+                                    class="pointer-events-none absolute inset-y-0 left-4 flex items-center text-sm text-muted-foreground"
+                                    >$</span
+                                >
                                 <input
                                     type="number"
                                     min="0"
                                     step="100"
-                                    :value="modelValue.extra_employee_expense_amount"
-                                    class="h-11 w-full rounded-2xl border border-border bg-card pl-8 pr-4 text-sm outline-none focus:ring-4 focus:ring-ring/30"
+                                    :value="
+                                        modelValue.extra_employee_expense_amount
+                                    "
+                                    class="h-11 w-full rounded-2xl border border-border bg-card pr-4 pl-8 text-sm outline-none focus:ring-4 focus:ring-ring/30"
                                     placeholder="0"
-                                    @input="update({ extra_employee_expense_amount: Number(($event.target as HTMLInputElement).value) })"
+                                    @input="
+                                        update({
+                                            extra_employee_expense_amount:
+                                                Number(
+                                                    (
+                                                        $event.target as HTMLInputElement
+                                                    ).value,
+                                                ),
+                                        })
+                                    "
                                 />
                             </div>
                         </label>
                         <label class="block">
-                            <span class="text-xs font-bold text-muted-foreground">Notas del gasto (opcional)</span>
+                            <span
+                                class="text-xs font-bold text-muted-foreground"
+                                >Notas del gasto (opcional)</span
+                            >
                             <input
                                 type="text"
                                 :value="modelValue.extra_employee_expense_notes"
                                 class="mt-1 h-11 w-full rounded-2xl border border-border bg-card px-4 text-sm outline-none focus:ring-4 focus:ring-ring/30"
                                 placeholder="Ej. incluye viáticos y comunicación"
-                                @input="update({ extra_employee_expense_notes: ($event.target as HTMLInputElement).value })"
+                                @input="
+                                    update({
+                                        extra_employee_expense_notes: (
+                                            $event.target as HTMLInputElement
+                                        ).value,
+                                    })
+                                "
                             />
                         </label>
                     </div>
@@ -340,23 +621,63 @@ const SCOPES = [
                     </button>
 
                     <!-- Razón de bloqueo cuando la etapa 2 no está completa -->
-                    <div v-if="!canGenerate" class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
-                        <p class="mb-1 font-semibold">No puedes continuar todavía:</p>
-                        <ul v-if="period?.blocking_reasons?.length" class="list-inside list-disc space-y-1">
-                            <li v-for="reason in period.blocking_reasons" :key="reason">{{ reason }}</li>
+                    <div
+                        v-if="!canGenerate"
+                        class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300"
+                    >
+                        <p class="mb-1 font-semibold">
+                            No puedes continuar todavía:
+                        </p>
+                        <ul
+                            v-if="period?.blocking_reasons?.length"
+                            class="list-inside list-disc space-y-1"
+                        >
+                            <li
+                                v-for="reason in period.blocking_reasons"
+                                :key="reason"
+                            >
+                                {{ reason }}
+                            </li>
                         </ul>
-                        <p v-else>Completa las etapas previas (Cargar registros) antes de configurar el reporte.</p>
+                        <p v-else>
+                            Completa las etapas previas (Cargar registros) antes
+                            de configurar el reporte.
+                        </p>
                     </div>
 
                     <!-- Razón de bloqueo cuando canGenerate=true pero falta configuración -->
-                    <div v-else-if="!canSubmit" class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-                        <p v-if="isBranchScope && !modelValue.branch_id">Selecciona una sucursal para continuar.</p>
-                        <p v-else-if="isEmployeeScope && !modelValue.employee_id">Selecciona un empleado o gestor para continuar.</p>
-                        <p v-else-if="isComparative && !modelValue.compare_period_id">Selecciona el periodo a comparar.</p>
-                        <p v-else-if="!isBranchScope && !isEmployeeScope && includedCount === 0">Selecciona al menos una sucursal para continuar.</p>
+                    <div
+                        v-else-if="!canSubmit"
+                        class="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300"
+                    >
+                        <p v-if="isBranchScope && !modelValue.branch_id">
+                            Selecciona una sucursal para continuar.
+                        </p>
+                        <p
+                            v-else-if="
+                                isEmployeeScope && !modelValue.employee_id
+                            "
+                        >
+                            Selecciona un empleado o gestor para continuar.
+                        </p>
+                        <p
+                            v-else-if="
+                                isComparative && !modelValue.compare_period_id
+                            "
+                        >
+                            Selecciona el periodo a comparar.
+                        </p>
+                        <p
+                            v-else-if="
+                                !isBranchScope &&
+                                !isEmployeeScope &&
+                                includedCount === 0
+                            "
+                        >
+                            Selecciona al menos una sucursal para continuar.
+                        </p>
                     </div>
                 </div>
-
             </div>
         </div>
     </section>
