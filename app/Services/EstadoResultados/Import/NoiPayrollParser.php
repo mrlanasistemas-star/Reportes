@@ -4,6 +4,7 @@ namespace App\Services\EstadoResultados\Import;
 
 use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\PersonName;
+use App\Support\MoneyText;
 use Illuminate\Support\Str;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -444,20 +445,8 @@ class NoiPayrollParser
      */
     private function toDecimal(mixed $value): ?float
     {
-        if ($value === null || $value === '') {
-            return null;
-        }
-        if (is_numeric($value)) {
-            return (float) $value;
-        }
-        $v = str_replace(['$', ' '], '', (string) $value);
-        if (str_contains($v, ',') && str_contains($v, '.')) {
-            $v = str_replace(',', '', $v);
-        } elseif (str_contains($v, ',')) {
-            $v = str_replace(',', '.', $v);
-        }
-
-        return is_numeric($v) ? (float) $v : null;
+        // Regla única de montos en texto (incluye «12,500» = 12500): ver App\Support\MoneyText.
+        return MoneyText::toDecimal($value);
     }
 
     /**

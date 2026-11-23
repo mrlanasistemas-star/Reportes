@@ -3023,8 +3023,18 @@ Consolidado de la auditoría integral del 23-nov-2026 y de lo que sigue vigente 
   `reportes:mover-cargas-a-privado` (falta **ejecutarlo** en el VPS).
 - Purga de caché vencida, `queue:prune-failed`/`prune-batches` programados; índices de
   rendimiento; ER «Procesar»/«Aprobar» en cola.
-- `.github/workflows/tests.yml`: `run: |` multilínea y `composer audit` separado (confirmar que
-  CI vuelve a verde).
+- `.github/workflows/tests.yml`: `run: |` multilínea y `composer audit` separado. CI en verde
+  (tests y linter) desde el 23-nov-2026.
+- Montos en texto con coma de miles («12,500») ya no se leen como decimal (12.5): regla única
+  `App\Support\MoneyText` en Lendus cobranza, NOI y la nómina NOI del Estado de Resultados.
+  Pruebas: `tests/Unit/MoneyTextTest.php`.
+- Importaciones «a medias»: cada importación ya corre dentro de `DB::transaction`
+  (`ReportAnalysisService::analyze`). Solo quedaría a medias con tablas MyISAM, por eso el
+  despliegue exige InnoDB.
+- Reglas de negocio que **se dejaron como están por decisión del dueño** (cambian cifras ya
+  reportadas; validar con datos reales antes de tocarlas): las tres reglas de recuperación,
+  gastos sin estatus o cancelados, conceptos de nómina que empiezan con «D», lista fija de
+  sucursales en algunos puntos.
 
 ### 16.2 Urgente
 

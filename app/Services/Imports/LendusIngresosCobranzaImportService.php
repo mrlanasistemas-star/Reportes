@@ -11,6 +11,7 @@ use App\Models\ReportUpload;
 use App\Services\BranchResolverService;
 use App\Services\ColumnMapService;
 use App\Services\SaveheartsRuleService;
+use App\Support\MoneyText;
 use App\Support\ReportUploadStorage;
 use Carbon\Carbon;
 use Illuminate\Support\Str;
@@ -1184,23 +1185,8 @@ class LendusIngresosCobranzaImportService
      */
     private function toDecimal(mixed $value): ?float
     {
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        if (is_numeric($value)) {
-            return (float) $value;
-        }
-
-        $value = str_replace(['$', ' '], '', (string) $value);
-
-        if (str_contains($value, ',') && str_contains($value, '.')) {
-            $value = str_replace(',', '', $value);
-        } elseif (str_contains($value, ',') && ! str_contains($value, '.')) {
-            $value = str_replace(',', '.', $value);
-        }
-
-        return is_numeric($value) ? (float) $value : null;
+        // Regla única de montos en texto (incluye «12,500» = 12500): ver App\Support\MoneyText.
+        return MoneyText::toDecimal($value);
     }
 
     /**
