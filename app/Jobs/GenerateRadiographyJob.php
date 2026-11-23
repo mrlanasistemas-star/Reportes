@@ -140,6 +140,14 @@ class GenerateRadiographyJob implements ShouldQueue
         // (snapshot/consolidación vs Excel vs PDF vs correo) sin adivinar.
         $tStart = microtime(true);
 
+        // Regeneración rápida (23-nov-2026): llega desde «Actualizar reporte con
+        // clasificaciones». Los registros del periodo no cambiaron (solo asignaciones de
+        // la revisión de gastos, ya aplicadas al guardar), así que se omiten los pasos 3,
+        // 3b y 3c, que darían el mismo resultado. Se quita del config para que el cálculo
+        // y las exportaciones reciban exactamente la configuración de siempre.
+        $fastReclassification = (bool) ($this->config['regeneracion_rapida'] ?? false);
+        unset($this->config['regeneracion_rapida']);
+
         $period = Period::query()->findOrFail($this->periodId);
 
         $run = $this->runId
@@ -210,55 +218,60 @@ class GenerateRadiographyJob implements ShouldQueue
             $this->updateProgress($run, 48, 'Métricas calculadas', 'Resumen del periodo registrado. Iniciando revisión de asignaciones.');
             $run->update(['period_summary_id' => $summary->id]);
 
-            // ── 3. Verifica y refina asignaciones de sucursal (lee tablas fact, NO re-importa) ──
-            // Se omite si todo empleado relevante ya tiene asignación (EBA) — evita un escaneo de 168×61K filas.
-            $this->updateProgress($run, 55, 'Revisando asignaciones de sucursales', 'Verificando y refinando asignaciones automáticas de empleados por cobranza, colocación y cartera.');
-            if ($this->shouldRunAutomatch($period->id)) {
-                $branchAutoMatch->handle($period->id, function (int $percent, string $step, string $log) use ($run) {
-                    $this->updateProgress($run, $percent, $step, $log);
-                });
-            } else {
-                $this->updateProgress($run, 66, 'Asignaciones verificadas', 'Todos los empleados ya tienen sucursal — omitiendo auto-asignación.');
-            }
-
-            // ── 3b. Resuelve gastos Excel de Lendus / Financiamiento de Motos-Cascos →
-            // employee_id/branch_id ──────────────────────────────────────────────────
-            // Retoma 21-sep-2026, Parte A: ANTES estos dos pasos lanzaban RuntimeException
-            // y detenían TODA la generación (incluso un comparativo GENERAL) si un solo
-            // gasto del Excel no tenía contraparte exacta (monto+fecha) en el PDF de
-            // Lendus. Bug de regla de negocio, no de datos: OPEX y "Nómina y Capital
-            // Humano" — general Y por sucursal — se calculan SIEMPRE desde el PDF de
-            // Lendus (100% resuelto en su propia columna Sucursal), nunca desde este
-            // Excel — ver AttributionRequirementService. Un gasto sin par en el PDF
-            // SIGUE contando íntegro en OPEX/Nómina; solo queda pendiente el desglose
-            // informativo por sucursal/gestor derivado del Excel. Ya NO bloqueante para
-            // ningún scope — se registra como incidencia informativa (PeriodIncident) +
-            // metadata del run, nunca "generación detenida".
-            $this->updateProgress($run, 66, 'Resolviendo sucursal de gastos Excel', 'Emparejando cada gasto del Excel de Lendus contra su fila equivalente en el PDF (monto + fecha) para enriquecer el desglose por sucursal.');
             $dataIds = $snapshotBuilder->resolveDataIdsPublic($period);
-            $this->resolveGastosExcelNonBlocking($gastosExcelResolver, $attributionRequirement, $period, $summary, $dataIds, $reportType, $scope, $run);
 
-            $this->updateProgress($run, 67, 'Resolviendo Financiamiento de Motos', 'Vinculando cada movimiento de Financiamiento de Motos/Cascos con su empleado y sucursal.');
-            $this->resolveMotosNonBlocking($motosAssignment, $attributionRequirement, $period, $summary, $dataIds, $reportType, $scope, $run);
+            if ($fastReclassification) {
+                $this->updateProgress($run, 67, 'Actualización rápida', 'Solo cambiaron clasificaciones de gastos: se omiten la revisión de asignaciones y las atribuciones automáticas (los registros no cambiaron).');
+            } else {
+                // ── 3. Verifica y refina asignaciones de sucursal (lee tablas fact, NO re-importa) ──
+                // Se omite si todo empleado relevante ya tiene asignación (EBA) — evita un escaneo de 168×61K filas.
+                $this->updateProgress($run, 55, 'Revisando asignaciones de sucursales', 'Verificando y refinando asignaciones automáticas de empleados por cobranza, colocación y cartera.');
+                if ($this->shouldRunAutomatch($period->id)) {
+                    $branchAutoMatch->handle($period->id, function (int $percent, string $step, string $log) use ($run) {
+                        $this->updateProgress($run, $percent, $step, $log);
+                    });
+                } else {
+                    $this->updateProgress($run, 66, 'Asignaciones verificadas', 'Todos los empleados ya tienen sucursal — omitiendo auto-asignación.');
+                }
 
-            // ── 3c. Atribuir OPEX a colaboradores vía Observación/Justificación ────────
-            // NO bloqueante — igual que los pasos anteriores (gastosExcelResolver/
-            // motosAssignment, que desde el 21-sep-2026 tampoco detienen la generación),
-            // aquí "no atribuible"/"ambiguo"/"conflicto" son estados finales VÁLIDOS y
-            // esperados (el gasto sigue siendo OPEX general/sucursal igual que antes, solo
-            // no se pudo vincular a un colaborador específico) — nunca deben detener la
-            // generación del reporte. Cualquier excepción inesperada se loggea y se
-            // ignora: es una mejora dimensional, no un requisito para que el reporte exista.
-            $this->updateProgress($run, 67, 'Atribuyendo gastos a colaboradores', 'Resolviendo el colaborador beneficiario de gastos OPEX vía Observación/Justificación del reporte de gastos.');
-            try {
-                $expenseAttribution->attributeForPeriod($period, $dataIds);
-            } catch (\Throwable $attributionException) {
-                Log::warning('GenerateRadiographyJob: no se pudo atribuir OPEX a colaboradores vía Observación/Justificación (el reporte sigue generándose con los gastos sin esa atribución adicional).', [
-                    'period_id' => $period->id,
-                    'run_id' => $run->id,
-                    'exception' => get_class($attributionException),
-                    'message' => $attributionException->getMessage(),
-                ]);
+                // ── 3b. Resuelve gastos Excel de Lendus / Financiamiento de Motos-Cascos →
+                // employee_id/branch_id ──────────────────────────────────────────────────
+                // Retoma 21-sep-2026, Parte A: ANTES estos dos pasos lanzaban RuntimeException
+                // y detenían TODA la generación (incluso un comparativo GENERAL) si un solo
+                // gasto del Excel no tenía contraparte exacta (monto+fecha) en el PDF de
+                // Lendus. Bug de regla de negocio, no de datos: OPEX y "Nómina y Capital
+                // Humano" — general Y por sucursal — se calculan SIEMPRE desde el PDF de
+                // Lendus (100% resuelto en su propia columna Sucursal), nunca desde este
+                // Excel — ver AttributionRequirementService. Un gasto sin par en el PDF
+                // SIGUE contando íntegro en OPEX/Nómina; solo queda pendiente el desglose
+                // informativo por sucursal/gestor derivado del Excel. Ya NO bloqueante para
+                // ningún scope — se registra como incidencia informativa (PeriodIncident) +
+                // metadata del run, nunca "generación detenida".
+                $this->updateProgress($run, 66, 'Resolviendo sucursal de gastos Excel', 'Emparejando cada gasto del Excel de Lendus contra su fila equivalente en el PDF (monto + fecha) para enriquecer el desglose por sucursal.');
+                $this->resolveGastosExcelNonBlocking($gastosExcelResolver, $attributionRequirement, $period, $summary, $dataIds, $reportType, $scope, $run);
+
+                $this->updateProgress($run, 67, 'Resolviendo Financiamiento de Motos', 'Vinculando cada movimiento de Financiamiento de Motos/Cascos con su empleado y sucursal.');
+                $this->resolveMotosNonBlocking($motosAssignment, $attributionRequirement, $period, $summary, $dataIds, $reportType, $scope, $run);
+
+                // ── 3c. Atribuir OPEX a colaboradores vía Observación/Justificación ────────
+                // NO bloqueante — igual que los pasos anteriores (gastosExcelResolver/
+                // motosAssignment, que desde el 21-sep-2026 tampoco detienen la generación),
+                // aquí "no atribuible"/"ambiguo"/"conflicto" son estados finales VÁLIDOS y
+                // esperados (el gasto sigue siendo OPEX general/sucursal igual que antes, solo
+                // no se pudo vincular a un colaborador específico) — nunca deben detener la
+                // generación del reporte. Cualquier excepción inesperada se loggea y se
+                // ignora: es una mejora dimensional, no un requisito para que el reporte exista.
+                $this->updateProgress($run, 67, 'Atribuyendo gastos a colaboradores', 'Resolviendo el colaborador beneficiario de gastos OPEX vía Observación/Justificación del reporte de gastos.');
+                try {
+                    $expenseAttribution->attributeForPeriod($period, $dataIds);
+                } catch (\Throwable $attributionException) {
+                    Log::warning('GenerateRadiographyJob: no se pudo atribuir OPEX a colaboradores vía Observación/Justificación (el reporte sigue generándose con los gastos sin esa atribución adicional).', [
+                        'period_id' => $period->id,
+                        'run_id' => $run->id,
+                        'exception' => get_class($attributionException),
+                        'message' => $attributionException->getMessage(),
+                    ]);
+                }
             }
 
             // ── 3d. Revisión manual de gastos (opcional) — las decisiones del usuario ganan

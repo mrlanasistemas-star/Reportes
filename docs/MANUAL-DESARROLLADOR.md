@@ -1168,6 +1168,20 @@ sucursal se atribuye un gasto y la categoría de un concepto.
   clasificación OPEX), `ExpenseObservationAttributionService` (por Observación/Justificación),
   `GastosExcelBranchResolverService` y `FinanciamientoMotosAssignmentService`.
 
+**Actualizar un reporte ya generado con clasificaciones (regeneración rápida).** Si el
+reporte del periodo ya existe y después se clasifican gastos, al guardar aparece el botón
+«Actualizar reporte con clasificaciones». Envía la misma generación
+(`POST /historico-general/{periodo}/generar-radiografia`) con `config.regeneracion_rapida = true`:
+
+- El controlador la rechaza si esa identidad de reporte nunca se generó (primero va una generación completa).
+- `GenerateRadiographyJob` quita la marca del config (el cálculo y las exportaciones reciben la
+  configuración de siempre) y **omite** los pasos 3 (revisión de asignaciones de sucursal), 3b
+  (gastos Excel y motos) y 3c (atribución OPEX por observación): los registros no cambiaron y las
+  decisiones ya se aplicaron al guardar. Sí recalcula métricas (paso 1), aplica decisiones (3d),
+  consolida por empleado (4) y genera Excel y PDF (5 y 6). Mismo run, progreso y notificaciones.
+- Periodos cerrados no admiten cambios en la revisión (hay que reabrirlos). Los Excel/PDF ya
+  descargados no cambian: se descargan otra vez. Pruebas: `tests/Feature/QuickRegenerationTest.php`.
+
 ### 6.4 Colaboradores (asignación a sucursal, roster)
 
 - **Rutas**: `/asignaciones-empleado-sucursal` (pendientes, match automático, conciliar

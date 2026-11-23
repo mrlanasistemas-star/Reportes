@@ -1548,6 +1548,58 @@ const generateReport = () => {
     );
 };
 
+/**
+ * Actualiza el reporte YA generado solo con las clasificaciones de la revisión de gastos
+ * (POST .../generar-radiografia con `regeneracion_rapida`). El job omite la revisión de
+ * asignaciones y las atribuciones automáticas porque los registros no cambiaron; recalcula
+ * métricas, consolidado, Excel y PDF. Lleva a la etapa «Generar reporte» para ver el avance.
+ */
+const quickRegenerateReport = async () => {
+    if (isGeneratingReport.value || !selectedPeriodId.value) {
+        return;
+    }
+
+    const result = await Swal.fire({
+        title: '¿Actualizar el reporte con tus clasificaciones?',
+        text: 'Se recalcula el reporte con las asignaciones que guardaste, sin volver a procesar los archivos. Se genera en segundo plano y te avisaremos cuando esté listo.',
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: 'Sí, actualizar',
+        cancelButtonText: 'Cancelar',
+    });
+
+    if (!result.isConfirmed) {
+        return;
+    }
+
+    isGeneratingReport.value = true;
+    router.post(
+        `/historico-general/${selectedPeriodId.value}/generar-radiografia`,
+        { config: { ...reportConfig.value, regeneracion_rapida: true } },
+        {
+            preserveScroll: true,
+            onSuccess: (page) => {
+                const flash = (page.props as any)?.flash ?? {};
+
+                if (flash.error) {
+                    return;
+                }
+
+                selectStep('generate');
+            },
+            onError: () =>
+                Swal.fire(
+                    'No se pudo iniciar',
+                    'Ya hay una generación en proceso o el reporte aún no se ha generado.',
+                    'error',
+                ),
+            onFinish: () => {
+                isGeneratingReport.value = false;
+            },
+        },
+    );
+};
+
 /** Cancela la generación del reporte en curso (POST .../generar-reporte/cancelar), previa confirmación. */
 const cancelGeneration = async () => {
     if (!selectedPeriodId.value) {
@@ -1980,6 +2032,7 @@ const processGenerationNow = async () => {
                             )
                         "
                         @changed="() => router.reload({ only: ['periods'] })"
+                        @quick-regenerate="quickRegenerateReport"
                     />
                     <!-- Etapa «Generar reporte» -->
                     <GenerateReportStep

@@ -1282,6 +1282,15 @@ class ReportUploadController extends Controller
         ];
         ['latest' => $latestRun, 'latest_success' => $latestSuccessRun] = PeriodRadiographyRun::resolveForIdentity($identityForGate);
 
+        // Regeneración rápida (23-nov-2026): solo para reflejar clasificaciones de la
+        // revisión de gastos sobre un reporte YA generado (mismos registros, solo cambian
+        // asignaciones). El job omite la revisión de asignaciones y las atribuciones
+        // automáticas; recalcula métricas, consolidado, Excel y PDF.
+        $config['regeneracion_rapida'] = (bool) ($config['regeneracion_rapida'] ?? false);
+        if ($config['regeneracion_rapida'] && ! $latestSuccessRun) {
+            return back()->with('error', 'Este reporte todavía no se ha generado. Genéralo completo una vez; después podrás actualizarlo con tus clasificaciones.');
+        }
+
         $bdSourceCodes = DataSource::query()->where('is_active', true)->where('is_required_for_bd', true)->pluck('code')->values()->all();
         $reportSourceCodes = DataSource::query()->where('is_active', true)->where('is_required_for_report', true)->pluck('code')->values()->all();
 

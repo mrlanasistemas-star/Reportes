@@ -5,6 +5,7 @@ import {
     Info,
     Loader2,
     ReceiptText,
+    RefreshCw,
     Tags,
 } from 'lucide-vue-next';
 import { computed, onMounted, ref } from 'vue';
@@ -43,7 +44,17 @@ const props = defineProps<{ period: any }>();
  * - `continue`: avanzar al paso de generación del reporte.
  * - `changed`: se guardó una decisión o un destino de concepto (el reporte debe regenerarse).
  */
-const emit = defineEmits<{ (e: 'continue'): void; (e: 'changed'): void }>();
+/**
+ * - `continue`: ir a la siguiente etapa.
+ * - `changed`: se guardó una decisión (el padre recarga el estado del periodo).
+ * - `quick-regenerate`: actualizar el reporte YA generado solo con las clasificaciones
+ *   (regeneración rápida: sin revisar asignaciones ni atribuciones automáticas).
+ */
+const emit = defineEmits<{
+    (e: 'continue'): void;
+    (e: 'changed'): void;
+    (e: 'quick-regenerate'): void;
+}>();
 
 /** Id del periodo activo (o `null`). */
 const periodId = computed<number | null>(() => props.period?.id ?? null);
@@ -220,12 +231,25 @@ function onConceptChanged() {
             </p>
         </div>
 
-        <div v-if="changedThisVisit" class="app-banner app-banner-info text-sm">
+        <!-- Cambios guardados: actualización rápida del reporte ya generado -->
+        <div
+            v-if="changedThisVisit"
+            class="app-banner app-banner-info flex flex-wrap items-center gap-3 text-sm"
+        >
             <Info aria-hidden="true" />
-            <p>
-                Guardaste cambios: genera (o vuelve a generar) el reporte para
-                que la radiografía los refleje.
+            <p class="min-w-0 flex-1">
+                Guardaste cambios. Si el reporte ya estaba generado, actualízalo
+                solo con estas clasificaciones: no se vuelven a procesar los
+                archivos ni las asignaciones automáticas, por eso es más rápido.
             </p>
+            <button
+                type="button"
+                class="app-btn app-btn-primary h-9 shrink-0"
+                @click="emit('quick-regenerate')"
+            >
+                <RefreshCw class="size-4" aria-hidden="true" />
+                Actualizar reporte con clasificaciones
+            </button>
         </div>
 
         <!-- Pestañas -->
