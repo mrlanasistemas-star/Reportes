@@ -68,3 +68,11 @@ yarn-error.log
 /docs/**/*.xlsm
 /docs/**/*.xls
 /docs/**/*.csv
+
+# 23-nov-2026: ningún PDF ni libro de Excel se versiona (documentos de la empresa,
+# plantillas originales y ejemplos ya viven en producción / en local). Las salidas
+# PDF/Excel del sistema se generan en tiempo de ejecución.
+*.pdf
+*.xlsx
+*.xlsm
+*.xls
