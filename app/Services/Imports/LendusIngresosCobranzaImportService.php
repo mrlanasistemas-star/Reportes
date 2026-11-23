@@ -11,41 +11,80 @@ use App\Models\ReportUpload;
 use App\Services\BranchResolverService;
 use App\Services\ColumnMapService;
 use App\Services\SaveheartsRuleService;
+use App\Support\ReportUploadStorage;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use OpenSpout\Reader\XLSX\Options;
+use OpenSpout\Reader\XLSX\Reader;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 
-class LendusIngresosCobranzaImportService {
-
+/**
+ * Importador del reporte "Ingresos Cobranza" de Lendus (fuente
+ * `lendus_ingresos_cobranza`): cada fila es un pago recibido y alimenta la
+ * RECUPERACIÓN (fact_recoveries) y la Efectividad de Cobranza.
+ *
+ * Tiene dos modos:
+ * - handle(): importación completa por bloques de 1,000 filas (PhpSpreadsheet con
+ *   filtro de lectura) a fact_recoveries, con columnas autorizadas de
+ *   ColumnMapService, sucursal por prefijo de contrato y regla Savehearts.
+ * - scanForDatabaseUpdate(): lectura en streaming (OpenSpout) usada por
+ *   "Cargar registros" para detectar promotores y sus sucursales y dar de alta
+ *   empleados, sucursales y asignaciones empleado → sucursal del periodo.
+ * Lo usan ReportAnalysisService y DatabaseUpdateService.
+ */
+class LendusIngresosCobranzaImportService
+{
     // Máx 20 chars — columna `importer_version` es VARCHAR(20) en MySQL/MariaDB real
     // (SQLite, usado en tests, no valida longitud y deja pasar strings más largos sin error).
     public const IMPORTER_VERSION = 'ea_aprobada_2026_10';
 
     private array $branchCache = [];
 
+    /**
+     * @param  BranchResolverService  $branchResolver  Resuelve sucursal por código/ruta y normaliza productos.
+     * @param  ColumnMapService  $columnMap  Catálogo de columnas autorizadas por fuente.
+     * @param  SaveheartsRuleService  $savehearts  Detecta pagos Savehearts y calcula la parte de la empresa.
+     */
     public function __construct(
         private readonly BranchResolverService $branchResolver,
         private readonly ColumnMapService $columnMap,
         private readonly SaveheartsRuleService $savehearts,
     ) {}
 
+    /**
+     * Importa el archivo a fact_recoveries.
+     * Flujo: lee una vista previa de 30 filas para detectar encabezados, exige la
+     * columna de promotor, borra las recuperaciones previas del upload y procesa el
+     * resto en bloques de 1,000 filas con inserción masiva. Por cada fila guarda
+     * montos (capital, interés, IVA, cargos, excedente, total), fechas, producto
+     * normalizado y original, banderas Savehearts y versión del importador.
+     * Los montos de TODOS los seguros se conservan; la exclusión se hace al consultar
+     * (bandera is_savehearts).
+     * Efectos: borra e inserta fact_recoveries del upload; puede crear sucursales.
+     * Nota: un error al preparar una fila detiene la importación con excepción
+     * (los bloques ya insertados permanecen).
+     *
+     * @param  ReportUpload  $upload  Archivo subido a importar.
+     * @param  callable|null  $progress  Callback opcional con estadísticas cada 250 filas y por bloque insertado.
+     * @return array<string,mixed> Estadísticas (leídas, insertadas, omitidas, con error) y log.
+     *
+     * @throws \RuntimeException Si falta el archivo, no tiene hojas/filas, faltan columnas mínimas o falla una fila.
+     */
     public function handle(ReportUpload $upload, ?callable $progress = null): array
     {
-        if (!$upload->stored_path) {
+        if (! $upload->stored_path) {
             throw new \RuntimeException('El archivo no tiene stored_path.');
         }
 
-        if (!Storage::disk('public')->exists($upload->stored_path)) {
+        if (! ReportUploadStorage::exists($upload->stored_path)) {
             throw new \RuntimeException('El archivo físico no existe en storage/public.');
         }
 
         @set_time_limit(0);
 
-        $absolutePath = Storage::disk('public')->path($upload->stored_path);
+        $absolutePath = ReportUploadStorage::path($upload->stored_path);
 
         $reader = IOFactory::createReaderForFile($absolutePath);
         $reader->setReadDataOnly(true);
@@ -84,7 +123,7 @@ class LendusIngresosCobranzaImportService {
         $headerRowIndex = $this->detectHeaderRowIndex($previewRows);
         $headerRow = $previewRows[$headerRowIndex] ?? null;
 
-        if (!$headerRow || !is_array($headerRow)) {
+        if (! $headerRow || ! is_array($headerRow)) {
             throw new \RuntimeException('No se encontró una fila de encabezados válida en el archivo de cobranza.');
         }
 
@@ -93,16 +132,16 @@ class LendusIngresosCobranzaImportService {
         $requiredColumns = ['promoter_name'];
 
         $missingRequired = collect($requiredColumns)
-            ->filter(fn (string $field) => !array_key_exists($field, $headerMap))
+            ->filter(fn (string $field) => ! array_key_exists($field, $headerMap))
             ->values()
             ->all();
 
-        if (!empty($missingRequired)) {
+        if (! empty($missingRequired)) {
             throw new \RuntimeException(
                 'El archivo de cobranza no contiene columnas mínimas requeridas: '
-                . implode(', ', $missingRequired)
-                . '. Encabezados detectados: '
-                . implode(', ', array_values(array_filter($headerRow, fn ($value) => filled($value))))
+                .implode(', ', $missingRequired)
+                .'. Encabezados detectados: '
+                .implode(', ', array_values(array_filter($headerRow, fn ($value) => filled($value))))
             );
         }
 
@@ -132,8 +171,9 @@ class LendusIngresosCobranzaImportService {
             $batch = [];
 
             foreach ($chunkRows as $row) {
-                if (!is_array($row) || $this->isEmptyRow($row)) {
+                if (! is_array($row) || $this->isEmptyRow($row)) {
                     $rowsSkipped++;
+
                     continue;
                 }
 
@@ -152,18 +192,19 @@ class LendusIngresosCobranzaImportService {
                 try {
                     $mapped = $this->mapRow($row, $headerMap);
 
-                    if (!$this->shouldInsertRow($mapped)) {
+                    if (! $this->shouldInsertRow($mapped)) {
                         $rowsSkipped++;
+
                         continue;
                     }
 
-                    // ── Savehearts rule ────────────────────────────────────────
+                    // ── Regla Savehearts ────────────────────────────────────────
                     $isSavehearts = $this->savehearts->isSaveheartsRow($mapped);
                     $saveheartsShare = $isSavehearts
                         ? $this->savehearts->saveheartsCompanyShare($mapped)
                         : 0.0;
-                    // Amounts preserved for ALL seguros (including non-CRECE).
-                    // Exclusion is handled at query time via is_savehearts flag.
+                    // Se conservan los montos de TODOS los seguros (incluidos los que no son CRECE).
+                    // La exclusión se hace al consultar, con la bandera is_savehearts.
 
                     $branch = $this->resolveBranchFromCobranza(
                         $mapped['contract'],
@@ -172,68 +213,68 @@ class LendusIngresosCobranzaImportService {
                     );
 
                     $batch[] = [
-                        'period_id'               => $upload->period_id,
-                        'report_upload_id'        => $upload->id,
-                        'branch_id'               => $branch?->id,
-                        'office_name_raw'         => $mapped['branch_name_raw'],
-                        'contract'                => $mapped['contract'],
-                        'client_name'             => $mapped['client_name'],
-                        'acreditado'              => $mapped['acreditado'],
-                        'normalized_client_name'  => $mapped['client_name']
+                        'period_id' => $upload->period_id,
+                        'report_upload_id' => $upload->id,
+                        'branch_id' => $branch?->id,
+                        'office_name_raw' => $mapped['branch_name_raw'],
+                        'contract' => $mapped['contract'],
+                        'client_name' => $mapped['client_name'],
+                        'acreditado' => $mapped['acreditado'],
+                        'normalized_client_name' => $mapped['client_name']
                             ? $this->normalizeHumanName($mapped['client_name'])
                             : null,
-                        'promoter_name'           => $mapped['promoter_name'],
-                        'product_name'            => $mapped['product_name'],
+                        'promoter_name' => $mapped['promoter_name'],
+                        'product_name' => $mapped['product_name'],
                         // Texto original (la Efectividad V4 excluye por REESTRUCT/UNIFICAC/CONDONAC/COBERTURA).
-                        'product_name_raw'        => $mapped['product_name_raw'] !== null ? mb_substr($mapped['product_name_raw'], 0, 160) : null,
-                        'operation'               => $mapped['operation'],
-                        'concept'                 => $mapped['concept'],
-                        'transaction'             => $mapped['transaction'],
-                        'capital'                 => $mapped['capital'],
-                        'interest'                => $mapped['interest'],
-                        'tax'                     => $mapped['tax'],
-                        'charges'                 => $mapped['charges'],
-                        'charges_due'             => $mapped['charges_due'],
-                        'excedente'               => $mapped['excedente'],
-                        'total_amount'            => $mapped['total_amount'],
-                        'days_past_due'           => $mapped['days_past_due'],
-                        'payment_date'            => $mapped['payment_date'],
-                        'installment_due_date'    => $mapped['installment_due_date'],
-                        'installment_number'      => $mapped['installment_number'],
-                        'contract_due_date'       => $mapped['contract_due_date'],
-                        'is_savehearts'           => $isSavehearts,
-                        'savehearts_crece_share'  => $saveheartsShare,
-                        'importer_version'        => self::IMPORTER_VERSION,
-                        'raw_payload'             => json_encode([
-                            'branch_name_raw'       => $mapped['branch_name_raw'],
-                            'promoter_name'         => $mapped['promoter_name'],
-                            'client_name'           => $mapped['client_name'],
-                            'acreditado'            => $mapped['acreditado'],
-                            'product_name'          => $mapped['product_name'],
-                            'operation'             => $mapped['operation'],
-                            'concept'               => $mapped['concept'],
-                            'transaction'           => $mapped['transaction'],
+                        'product_name_raw' => $mapped['product_name_raw'] !== null ? mb_substr($mapped['product_name_raw'], 0, 160) : null,
+                        'operation' => $mapped['operation'],
+                        'concept' => $mapped['concept'],
+                        'transaction' => $mapped['transaction'],
+                        'capital' => $mapped['capital'],
+                        'interest' => $mapped['interest'],
+                        'tax' => $mapped['tax'],
+                        'charges' => $mapped['charges'],
+                        'charges_due' => $mapped['charges_due'],
+                        'excedente' => $mapped['excedente'],
+                        'total_amount' => $mapped['total_amount'],
+                        'days_past_due' => $mapped['days_past_due'],
+                        'payment_date' => $mapped['payment_date'],
+                        'installment_due_date' => $mapped['installment_due_date'],
+                        'installment_number' => $mapped['installment_number'],
+                        'contract_due_date' => $mapped['contract_due_date'],
+                        'is_savehearts' => $isSavehearts,
+                        'savehearts_crece_share' => $saveheartsShare,
+                        'importer_version' => self::IMPORTER_VERSION,
+                        'raw_payload' => json_encode([
+                            'branch_name_raw' => $mapped['branch_name_raw'],
+                            'promoter_name' => $mapped['promoter_name'],
+                            'client_name' => $mapped['client_name'],
+                            'acreditado' => $mapped['acreditado'],
+                            'product_name' => $mapped['product_name'],
+                            'operation' => $mapped['operation'],
+                            'concept' => $mapped['concept'],
+                            'transaction' => $mapped['transaction'],
                             'total_amount_original' => $mapped['total_amount'],
-                            'installment_due_date'  => $mapped['installment_due_date'],
-                            'installment_number'    => $mapped['installment_number'],
-                            'contract_due_date'     => $mapped['contract_due_date'],
+                            'installment_due_date' => $mapped['installment_due_date'],
+                            'installment_number' => $mapped['installment_number'],
+                            'contract_due_date' => $mapped['contract_due_date'],
                         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                        'created_at'              => now(),
-                        'updated_at'              => now(),
+                        'created_at' => now(),
+                        'updated_at' => now(),
                     ];
                 } catch (\Throwable $e) {
                     $rowsWithErrors++;
 
                     throw new \RuntimeException(
                         'Error al preparar fila de cobranza. '
-                        . 'Promotor: ' . ($mapped['promoter_name'] ?? 'N/D')
-                        . ' | Cliente: ' . ($mapped['client_name'] ?? 'N/D')
-                        . ' | Detalle: ' . $e->getMessage()
+                        .'Promotor: '.($mapped['promoter_name'] ?? 'N/D')
+                        .' | Cliente: '.($mapped['client_name'] ?? 'N/D')
+                        .' | Detalle: '.$e->getMessage()
                     );
                 }
             }
 
-            if (!empty($batch)) {
+            if (! empty($batch)) {
                 Recovery::query()->insert($batch);
                 $rowsInserted += count($batch);
                 if ($progress) {
@@ -266,26 +307,47 @@ class LendusIngresosCobranzaImportService {
         ];
     }
 
+    /**
+     * Escaneo rápido para "Cargar registros" (no inserta pagos):
+     * 1. Estima filas para la barra de progreso.
+     * 2. Lee en streaming la primera hoja; detecta encabezados con las primeras 30
+     *    filas no vacías y acumula promotor → oficinas en memoria. Cada 1,000 filas
+     *    actualiza el avance, revisa cancelación del run y un tope de tiempo.
+     * 3. Registra incidencias 'warning' de promotores sin sucursal (no bloquean el reporte).
+     * 4. Inserta empleados nuevos (source_system = lendus_cobranza).
+     * 5. Upsert de sucursales: la sucursal real deducida del código del promotor y
+     *    también las oficinas/rutas crudas como respaldo.
+     * 6. Upsert de employee_branch_assignments del periodo (prefiere la sucursal real).
+     * Efectos: escribe employees, branches y employee_branch_assignments; actualiza el run.
+     *
+     * @param  ReportUpload  $upload  Upload de cobranza del periodo.
+     * @param  PeriodDatabaseUpdateRun|null  $run  Run de "Cargar registros" para reportar avance (opcional).
+     * @param  int  $progressStart  Porcentaje inicial de esta etapa en la barra global.
+     * @param  int  $progressEnd  Porcentaje final de esta etapa en la barra global.
+     * @return array<string,mixed> Promotores, sucursales, asignaciones e incidencias detectadas, filas leídas/excluidas y duración.
+     *
+     * @throws \RuntimeException Si falta el archivo, no hay filas, no hay columna de promotor, se canceló el run o se excedió el tiempo.
+     */
     public function scanForDatabaseUpdate(
         ReportUpload $upload,
         ?PeriodDatabaseUpdateRun $run = null,
         int $progressStart = 55,
         int $progressEnd = 78,
     ): array {
-        if (!$upload->stored_path) {
+        if (! $upload->stored_path) {
             throw new \RuntimeException('El archivo de cobranza no tiene ruta de almacenamiento.');
         }
 
-        if (!Storage::disk('public')->exists($upload->stored_path)) {
+        if (! ReportUploadStorage::exists($upload->stored_path)) {
             throw new \RuntimeException('El archivo físico de cobranza no existe en storage/public.');
         }
 
         @set_time_limit(0);
 
-        $startTime    = microtime(true);
-        $absolutePath = Storage::disk('public')->path($upload->stored_path);
+        $startTime = microtime(true);
+        $absolutePath = ReportUploadStorage::path($upload->stored_path);
 
-        // ── 1. Metadata-only read for row-count estimate (progress bar) ────
+        // ── 1. Lectura solo de metadatos para estimar filas (barra de progreso) ────
         $this->updateRun($run, $progressStart, 'Preparando Cobranza…');
         $infoReader = IOFactory::createReaderForFile($absolutePath);
         $infoReader->setReadDataOnly(true);
@@ -301,39 +363,39 @@ class LendusIngresosCobranzaImportService {
             throw new \RuntimeException('El archivo de cobranza no contiene filas con datos.');
         }
 
-        // ── 2. Single-pass streaming with OpenSpout (one file open total) ──
-        // Buffer the first 30 non-empty rows to detect the header, then stream
-        // the rest row-by-row without ever reopening the file.
+        // ── 2. Lectura en streaming de una sola pasada con OpenSpout (el archivo se abre una vez) ──
+        // Guarda las primeras 30 filas no vacías para detectar el encabezado y luego lee
+        // el resto fila por fila sin volver a abrir el archivo.
         $this->updateRun($run, $progressStart + 2, 'Abriendo Cobranza en modo streaming…');
 
-        $spoutOptions = new \OpenSpout\Reader\XLSX\Options(
+        $spoutOptions = new Options(
             SHOULD_FORMAT_DATES: false,
             SHOULD_PRESERVE_EMPTY_ROWS: false,
         );
-        $spoutReader = new \OpenSpout\Reader\XLSX\Reader($spoutOptions);
+        $spoutReader = new Reader($spoutOptions);
         $spoutReader->open($absolutePath);
 
-        $headerBuffer     = []; // first ≤30 non-empty rows for header detection
-        $headerDetected   = false;
+        $headerBuffer = []; // primeras ≤30 filas no vacías para detectar el encabezado
+        $headerDetected = false;
         $promoterColIndex = null;
-        $branchColIndex   = null;
+        $branchColIndex = null;
 
-        $rowsRead          = 0;
-        $rowsSkipped       = 0;
-        $streamedCount     = 0; // non-empty rows yielded by OpenSpout
+        $rowsRead = 0;
+        $rowsSkipped = 0;
+        $streamedCount = 0; // filas no vacías entregadas por OpenSpout
         $promoterBranchMap = [];
-        $noAnyBranch       = [];
+        $noAnyBranch = [];
 
         try {
             foreach ($spoutReader->getSheetIterator() as $sheet) {
                 foreach ($sheet->getRowIterator() as $row) {
                     $streamedCount++;
-                    // OpenSpout Row::toArray() returns a sparse 0-indexed array
-                    // keyed by the actual column position — same indices as buildHeaderMap.
+                    // OpenSpout Row::toArray() devuelve un arreglo disperso base 0
+                    // indexado por la posición real de la columna — mismos índices que buildHeaderMap.
                     $values = $row->toArray();
 
-                    // ── Phase A: collect buffer until we can detect the header ─
-                    if (!$headerDetected) {
+                    // ── Fase A: acumula filas hasta poder detectar el encabezado ─
+                    if (! $headerDetected) {
                         $headerBuffer[] = $values;
 
                         if (count($headerBuffer) >= 30) {
@@ -341,21 +403,22 @@ class LendusIngresosCobranzaImportService {
                             $headerDetected = true;
                             $this->updateRun($run, $progressStart + 5, 'Leyendo Lendus Cobranza…');
                         }
+
                         continue;
                     }
 
-                    // ── Phase B: stream data rows directly ─────────────────────
+                    // ── Fase B: procesa las filas de datos directamente ─────────────────────
                     $this->accumulateCobranzaRow(
                         $values, $promoterColIndex, $branchColIndex,
                         $promoterBranchMap, $noAnyBranch, $rowsRead, $rowsSkipped
                     );
 
-                    // Every 1000 data rows: progress update + cancellation + time check
+                    // Cada 1000 filas: avance + revisión de cancelación + tope de tiempo
                     if ($rowsRead % 1_000 === 0 && $rowsRead > 0) {
 
                         if ($run) {
                             $run->refresh();
-                            if (!in_array($run->status, ['running', 'queued'], true)) {
+                            if (! in_array($run->status, ['running', 'queued'], true)) {
                                 throw new \RuntimeException('El proceso fue cancelado durante la lectura de Cobranza.');
                             }
                         }
@@ -368,36 +431,36 @@ class LendusIngresosCobranzaImportService {
                         }
 
                         if ($run && $totalRowsEstimate > 1) {
-                            $pct  = (int) ($progressStart + ($streamedCount / $totalRowsEstimate) * ($progressEnd - $progressStart));
-                            $pct  = min($progressEnd, max($progressStart + 5, $pct));
+                            $pct = (int) ($progressStart + ($streamedCount / $totalRowsEstimate) * ($progressEnd - $progressStart));
+                            $pct = min($progressEnd, max($progressStart + 5, $pct));
                             $uniq = count($promoterBranchMap);
                             $run->update([
-                                'log'      => "Leyendo Cobranza… {$rowsRead} filas, {$uniq} promotores únicos.",
+                                'log' => "Leyendo Cobranza… {$rowsRead} filas, {$uniq} promotores únicos.",
                                 'metadata' => array_merge($run->metadata ?? [], [
-                                    'current_step'     => "Leyendo Lendus Cobranza… {$uniq} promotores",
+                                    'current_step' => "Leyendo Lendus Cobranza… {$uniq} promotores",
                                     'progress_percent' => $pct,
-                                    'current_source'   => 'lendus_ingresos_cobranza',
-                                    'processed_rows'   => $rowsRead,
-                                    'total_rows'       => $totalRowsEstimate,
-                                    'cobranza_rows_read'          => $rowsRead,
-                                    'cobranza_rows_skipped'       => $rowsSkipped,
-                                    'cobranza_total_rows'         => $totalRowsEstimate,
+                                    'current_source' => 'lendus_ingresos_cobranza',
+                                    'processed_rows' => $rowsRead,
+                                    'total_rows' => $totalRowsEstimate,
+                                    'cobranza_rows_read' => $rowsRead,
+                                    'cobranza_rows_skipped' => $rowsSkipped,
+                                    'cobranza_total_rows' => $totalRowsEstimate,
                                     'cobranza_promoters_detected' => $uniq,
                                 ]),
                             ]);
                         }
                     }
                 }
-                break; // only first sheet
+                break; // solo la primera hoja
             }
 
-            // ── Handle files with fewer than 30 non-empty rows ─────────────
-            if (!$headerDetected && !empty($headerBuffer)) {
+            // ── Archivos con menos de 30 filas no vacías ─────────────
+            if (! $headerDetected && ! empty($headerBuffer)) {
                 [$promoterColIndex, $branchColIndex] = $this->detectCobranzaColumns($headerBuffer);
             }
 
-            // Process the data rows that were buffered during header detection
-            // (rows after the header line within the 30-row buffer)
+            // Procesa las filas de datos que quedaron en el búfer de detección de encabezado
+            // (filas posteriores al encabezado dentro del búfer de 30 filas)
             if ($promoterColIndex !== null) {
                 $headerBufferIndex = $this->detectHeaderRowIndex($headerBuffer);
                 foreach (array_slice($headerBuffer, $headerBufferIndex + 1) as $bufferedValues) {
@@ -412,23 +475,23 @@ class LendusIngresosCobranzaImportService {
             $spoutReader->close();
         }
 
-        // ── 4. Incidents: promoters that never appeared with a branch ──────
-        // Severity 'warning' (not 'high') so these don't block report generation.
+        // ── 4. Incidencias: promotores que nunca aparecieron con sucursal ──────
+        // Severidad 'warning' (no 'high') para que no bloqueen la generación del reporte.
         $incidents = [];
         foreach ($noAnyBranch as $normalized => $rawName) {
             if (empty($promoterBranchMap[$normalized]['branches'])) {
                 $incidents[] = [
-                    'type'     => 'promoter_without_branch',
+                    'type' => 'promoter_without_branch',
                     'severity' => 'warning',
-                    'message'  => "Promotor sin sucursal: {$rawName}",
+                    'message' => "Promotor sin sucursal: {$rawName}",
                 ];
             }
         }
 
-        // ── 5. Bulk-insert new Employees (preload to avoid per-row queries) ─
-        // employees table has no unique constraint on (normalized_name, source_system),
-        // so we load existing IDs first and only insert genuinely new rows.
-        $existingEmployees = !empty($promoterBranchMap)
+        // ── 5. Inserción masiva de empleados nuevos (precarga para evitar consultas por fila) ─
+        // la tabla employees no tiene índice único en (normalized_name, source_system),
+        // así que primero se cargan los existentes y solo se insertan los realmente nuevos.
+        $existingEmployees = ! empty($promoterBranchMap)
             ? Employee::query()
                 ->where('source_system', 'lendus_cobranza')
                 ->whereIn('normalized_name', array_keys($promoterBranchMap))
@@ -438,14 +501,14 @@ class LendusIngresosCobranzaImportService {
 
         $newEmployeeRows = [];
         foreach ($promoterBranchMap as $normalized => $data) {
-            if (!isset($existingEmployees[$normalized])) {
+            if (! isset($existingEmployees[$normalized])) {
                 $newEmployeeRows[] = [
-                    'full_name'       => $data['full_name'],
+                    'full_name' => $data['full_name'],
                     'normalized_name' => $normalized,
-                    'is_active'       => true,
-                    'source_system'   => 'lendus_cobranza',
-                    'created_at'      => now(),
-                    'updated_at'      => now(),
+                    'is_active' => true,
+                    'source_system' => 'lendus_cobranza',
+                    'created_at' => now(),
+                    'updated_at' => now(),
                 ];
             }
         }
@@ -454,7 +517,7 @@ class LendusIngresosCobranzaImportService {
             Employee::query()->insert($chunk);
         }
 
-        $employeeIdMap = !empty($promoterBranchMap)
+        $employeeIdMap = ! empty($promoterBranchMap)
             ? Employee::query()
                 ->where('source_system', 'lendus_cobranza')
                 ->whereIn('normalized_name', array_keys($promoterBranchMap))
@@ -462,83 +525,85 @@ class LendusIngresosCobranzaImportService {
                 ->all()
             : [];
 
-        // ── 6. Bulk upsert Branches (code has DB unique constraint) ────────
-        // First pass: collect all branches. For each promoter that looks like a code
-        // (e.g., "ORI09247"), resolve the real branch name using BranchResolverService.
+        // ── 6. Upsert masivo de sucursales (code tiene índice único en BD) ────────
+        // Primera pasada: reúne todas las sucursales. Para cada promotor con forma de código
+        // (p. ej. "ORI09247") resuelve la sucursal real con BranchResolverService.
         $branchRows = [];
         foreach ($promoterBranchMap as $normalizedPromoter => $data) {
             $promoterRaw = $data['full_name'] ?? $normalizedPromoter;
 
-            // If promoter name looks like a code, resolve real branch from its prefix
+            // Si el promotor parece código, resuelve la sucursal real por su prefijo
             $realBranchFromCode = null;
             if (preg_match('/^[A-Z]{2,4}\d{4,}/i', $promoterRaw)) {
                 $resolvedName = $this->branchResolver->resolveBranchNameFromCode($promoterRaw);
                 if ($resolvedName) {
                     $realNormalized = $this->normalizeHumanName($resolvedName);
-                    if ($realNormalized !== '' && !isset($branchRows[$realNormalized])) {
+                    if ($realNormalized !== '' && ! isset($branchRows[$realNormalized])) {
                         $code = Str::upper(Str::limit(
                             preg_replace('/[^A-Za-z0-9]+/', '_', Str::ascii($realNormalized)),
                             60, ''
                         ));
                         $branchRows[$realNormalized] = [
-                            'code'            => $code ?: 'SUCURSAL_' . substr(md5($realNormalized), 0, 8),
-                            'name'            => $resolvedName,
+                            'code' => $code ?: 'SUCURSAL_'.substr(md5($realNormalized), 0, 8),
+                            'name' => $resolvedName,
                             'normalized_name' => $realNormalized,
-                            'is_active'       => true,
-                            'created_at'      => now(),
-                            'updated_at'      => now(),
+                            'is_active' => true,
+                            'created_at' => now(),
+                            'updated_at' => now(),
                         ];
                         $realBranchFromCode = $realNormalized;
                     }
                 }
             }
 
-            // Also register the raw office/route branches (used as fallback)
+            // También registra las oficinas/rutas crudas (se usan como respaldo)
             foreach ($data['branches'] as $normalizedBranch => $rawBranchName) {
-                if (!isset($branchRows[$normalizedBranch])) {
+                if (! isset($branchRows[$normalizedBranch])) {
                     $code = Str::upper(Str::limit(
                         preg_replace('/[^A-Za-z0-9]+/', '_', Str::ascii($normalizedBranch)),
                         60, ''
                     ));
                     $branchRows[$normalizedBranch] = [
-                        'code'            => $code ?: 'SUCURSAL_' . substr(md5($normalizedBranch), 0, 8),
-                        'name'            => $rawBranchName,
+                        'code' => $code ?: 'SUCURSAL_'.substr(md5($normalizedBranch), 0, 8),
+                        'name' => $rawBranchName,
                         'normalized_name' => $normalizedBranch,
-                        'is_active'       => true,
-                        'created_at'      => now(),
-                        'updated_at'      => now(),
+                        'is_active' => true,
+                        'created_at' => now(),
+                        'updated_at' => now(),
                     ];
                 }
             }
 
-            // Override the 'branches' map to use the real branch if resolved
+            // Si se resolvió la sucursal real, se usa en lugar del mapa de oficinas
             if ($realBranchFromCode) {
                 $promoterBranchMap[$normalizedPromoter]['real_branch_normalized'] = $realBranchFromCode;
             }
         }
 
-        if (!empty($branchRows)) {
+        if (! empty($branchRows)) {
             foreach (array_chunk(array_values($branchRows), 300) as $chunk) {
                 Branch::query()->upsert($chunk, ['code'], ['name', 'normalized_name', 'is_active', 'updated_at']);
             }
         }
 
-        $branchIdMap = !empty($branchRows)
+        $branchIdMap = ! empty($branchRows)
             ? Branch::query()
                 ->whereIn('code', array_column(array_values($branchRows), 'code'))
                 ->pluck('id', 'normalized_name')
                 ->all()
             : [];
 
-        // ── 7. Bulk upsert EmployeeBranchAssignments ───────────────────────
-        // DB unique constraint: (period_id, employee_id)
-        // Prefer real branch (resolved from promoter code prefix) over route/office branch.
+        // ── 7. Upsert masivo de EmployeeBranchAssignments ───────────────────────
+        // Índice único en BD: (period_id, employee_id)
+        // Se prefiere la sucursal real (por prefijo del código de promotor) sobre la oficina/ruta.
         $assignmentRows = [];
         foreach ($promoterBranchMap as $normalizedPromoter => $data) {
             $employeeId = $employeeIdMap[$normalizedPromoter] ?? null;
-            if (!$employeeId) continue;
+            if (! $employeeId) {
+                continue;
+            }
 
-            // Use real branch if resolved from promoter code prefix
+            // Usa la sucursal real si se resolvió por prefijo del código de promotor
             $realBranchNormalized = $data['real_branch_normalized'] ?? null;
             $branchesToAssign = $realBranchNormalized
                 ? [$realBranchNormalized => true]
@@ -546,18 +611,20 @@ class LendusIngresosCobranzaImportService {
 
             foreach ($branchesToAssign as $normalizedBranch => $_) {
                 $branchId = $branchIdMap[$normalizedBranch] ?? null;
-                if (!$branchId) continue;
+                if (! $branchId) {
+                    continue;
+                }
 
                 $assignmentRows[] = [
-                    'period_id'           => $upload->period_id,
-                    'employee_id'         => $employeeId,
-                    'branch_id'           => $branchId,
-                    'source_type'         => 'lendus',
-                    'match_type'          => 'normalized',
-                    'confidence'          => '0.80',
+                    'period_id' => $upload->period_id,
+                    'employee_id' => $employeeId,
+                    'branch_id' => $branchId,
+                    'source_type' => 'lendus',
+                    'match_type' => 'normalized',
+                    'confidence' => '0.80',
                     'was_manual_reviewed' => false,
-                    'created_at'          => now(),
-                    'updated_at'          => now(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
                 ];
             }
         }
@@ -570,29 +637,40 @@ class LendusIngresosCobranzaImportService {
             );
         }
 
-        // Routes and non-operative location strings from cobranza are silently ignored.
-        // They are NOT branches, they do not generate incidents, and they do not block the report.
+        // Las rutas y ubicaciones no operativas de cobranza se ignoran en silencio.
+        // NO son sucursales, no generan incidencias y no bloquean el reporte.
 
         $duration = round(microtime(true) - $startTime, 1);
 
         return [
-            'promoters_detected'           => count($promoterBranchMap),
-            'branches_detected'            => count($branchRows),
-            'records_loaded'               => $rowsRead,
-            'records_excluded'             => $rowsSkipped,
-            'pending_locations'            => 0,
-            'pending_location_names'       => [],
-            'cobranza_rows_read'           => $rowsRead,
-            'cobranza_rows_skipped'        => $rowsSkipped,
-            'cobranza_promoters_detected'  => count($promoterBranchMap),
-            'cobranza_branches_detected'   => count($branchRows),
+            'promoters_detected' => count($promoterBranchMap),
+            'branches_detected' => count($branchRows),
+            'records_loaded' => $rowsRead,
+            'records_excluded' => $rowsSkipped,
+            'pending_locations' => 0,
+            'pending_location_names' => [],
+            'cobranza_rows_read' => $rowsRead,
+            'cobranza_rows_skipped' => $rowsSkipped,
+            'cobranza_promoters_detected' => count($promoterBranchMap),
+            'cobranza_branches_detected' => count($branchRows),
             'cobranza_assignments_created' => count($assignmentRows),
-            'cobranza_incidents_created'   => count($incidents),
-            'cobranza_duration_seconds'    => $duration,
-            'incidents'                    => $incidents,
+            'cobranza_incidents_created' => count($incidents),
+            'cobranza_duration_seconds' => $duration,
+            'incidents' => $incidents,
         ];
     }
 
+    /**
+     * Lee solo el rango de filas indicado de una hoja (filtro de lectura de
+     * PhpSpreadsheet) para no cargar el archivo completo en memoria.
+     *
+     * @param  string  $path  Ruta absoluta del archivo.
+     * @param  string  $sheetName  Hoja a leer.
+     * @param  int  $startRow  Primera fila (1-based).
+     * @param  int  $endRow  Última fila (inclusive).
+     * @param  string  $lastColumnLetter  Última columna con datos.
+     * @return array<int,array> Filas del rango (valores calculados).
+     */
     private function readChunk(
         string $path,
         string $sheetName,
@@ -608,13 +686,25 @@ class LendusIngresosCobranzaImportService {
         }
 
         $reader->setLoadSheetsOnly([$sheetName]);
-        $reader->setReadFilter(new class($startRow, $endRow) implements IReadFilter {
+        $reader->setReadFilter(new class($startRow, $endRow) implements IReadFilter
+        {
+            /**
+             * @param  int  $startRow  Primera fila permitida.
+             * @param  int  $endRow  Última fila permitida.
+             */
             public function __construct(
                 private readonly int $startRow,
                 private readonly int $endRow,
-            ) {
-            }
+            ) {}
 
+            /**
+             * Filtro de lectura: solo permite celdas dentro del rango de filas.
+             *
+             * @param  string  $columnAddress  Columna de la celda.
+             * @param  int  $row  Fila de la celda.
+             * @param  string  $worksheetName  Hoja (no se usa).
+             * @return bool true si la celda se debe leer.
+             */
             public function readCell($columnAddress, $row, $worksheetName = ''): bool
             {
                 return $row >= $this->startRow && $row <= $this->endRow;
@@ -624,7 +714,7 @@ class LendusIngresosCobranzaImportService {
         $spreadsheet = $reader->load($path);
         $sheet = $spreadsheet->getSheetByName($sheetName) ?? $spreadsheet->getActiveSheet();
 
-        $range = 'A' . $startRow . ':' . $lastColumnLetter . $endRow;
+        $range = 'A'.$startRow.':'.$lastColumnLetter.$endRow;
 
         $rows = $sheet->rangeToArray(
             $range,
@@ -641,19 +731,24 @@ class LendusIngresosCobranzaImportService {
     }
 
     /**
-     * Detect promoter and branch column indices from a buffer of header rows.
-     * Returns [promoterColIndex, branchColIndex] using 0-based column positions.
+     * Detecta los índices (base 0) de las columnas de promotor y de oficina/sucursal
+     * a partir del bloque de filas iniciales.
+     *
+     * @param  array  $rows  Primeras filas no vacías del archivo.
+     * @return array{0:int,1:int|null} [índice de promotor, índice de oficina o null].
+     *
+     * @throws \RuntimeException Si no se encuentra la columna de promotor/asesor.
      */
     private function detectCobranzaColumns(array $rows): array
     {
-        $headerRowIndex   = $this->detectHeaderRowIndex($rows);
-        $headerRow        = $rows[$headerRowIndex] ?? [];
-        $headerMap        = $this->buildHeaderMap($headerRow);
+        $headerRowIndex = $this->detectHeaderRowIndex($rows);
+        $headerRow = $rows[$headerRowIndex] ?? [];
+        $headerMap = $this->buildHeaderMap($headerRow);
         $promoterColIndex = $headerMap['promoter_name'] ?? null;
-        $branchColIndex   = $headerMap['branch_name_raw'] ?? null;
+        $branchColIndex = $headerMap['branch_name_raw'] ?? null;
 
         if ($promoterColIndex === null) {
-            $detected = implode(', ', array_filter(array_map(fn($v) => $this->cellToString($v), $headerRow), fn($v) => $v !== ''));
+            $detected = implode(', ', array_filter(array_map(fn ($v) => $this->cellToString($v), $headerRow), fn ($v) => $v !== ''));
             throw new \RuntimeException(
                 "No se encontró columna de promotor/asesor en cobranza. Encabezados detectados: {$detected}"
             );
@@ -663,8 +758,17 @@ class LendusIngresosCobranzaImportService {
     }
 
     /**
-     * Accumulate one data row into the promoterBranchMap (in-place, by reference).
-     * Called once per streamed row; no DB queries.
+     * Acumula una fila en el mapa promotor → oficinas (por referencia, sin consultas a BD).
+     * Se llama una vez por fila leída en streaming. Lleva además la lista de
+     * promotores que aún no han aparecido con ninguna oficina.
+     *
+     * @param  array  $values  Valores de la fila.
+     * @param  int  $promoterColIndex  Índice de la columna de promotor.
+     * @param  int|null  $branchColIndex  Índice de la columna de oficina (null si no existe).
+     * @param  array  $promoterBranchMap  Mapa acumulado nombre normalizado => full_name + oficinas.
+     * @param  array  $noAnyBranch  Promotores sin oficina detectada.
+     * @param  int  $rowsRead  Contador de filas leídas.
+     * @param  int  $rowsSkipped  Contador de filas omitidas (sin promotor).
      */
     private function accumulateCobranzaRow(
         array $values,
@@ -679,18 +783,20 @@ class LendusIngresosCobranzaImportService {
 
         if ($promoterRaw === null) {
             $rowsSkipped++;
+
             return;
         }
 
         $normalizedPromoter = $this->normalizeHumanName($promoterRaw);
         if ($normalizedPromoter === '') {
             $rowsSkipped++;
+
             return;
         }
 
         $rowsRead++;
 
-        if (!isset($promoterBranchMap[$normalizedPromoter])) {
+        if (! isset($promoterBranchMap[$normalizedPromoter])) {
             $promoterBranchMap[$normalizedPromoter] = ['full_name' => $promoterRaw, 'branches' => []];
         }
 
@@ -709,6 +815,16 @@ class LendusIngresosCobranzaImportService {
         }
     }
 
+    /**
+     * Escribe paso actual, porcentaje y (opcional) filas procesadas/total en el
+     * metadata del run de "Cargar registros". Sin run no hace nada.
+     *
+     * @param  PeriodDatabaseUpdateRun|null  $run  Run a actualizar.
+     * @param  int  $pct  Porcentaje global de avance.
+     * @param  string  $step  Texto del paso actual.
+     * @param  int  $processedRows  Filas procesadas (opcional).
+     * @param  int  $totalRows  Total estimado de filas (opcional).
+     */
     private function updateRun(
         ?PeriodDatabaseUpdateRun $run,
         int $pct,
@@ -716,30 +832,39 @@ class LendusIngresosCobranzaImportService {
         int $processedRows = 0,
         int $totalRows = 0,
     ): void {
-        if (!$run) return;
+        if (! $run) {
+            return;
+        }
 
         $extra = ['current_source' => 'lendus_ingresos_cobranza'];
         if ($totalRows > 0) {
             $extra['processed_rows'] = $processedRows;
-            $extra['total_rows']     = $totalRows;
+            $extra['total_rows'] = $totalRows;
         }
 
         $run->update([
-            'log'      => $step,
+            'log' => $step,
             'metadata' => array_merge($run->metadata ?? [], [
-                'current_step'     => $step,
+                'current_step' => $step,
                 'progress_percent' => $pct,
             ] + $extra),
         ]);
     }
 
+    /**
+     * Devuelve la fila con más coincidencias de encabezados conocidos de cobranza
+     * (promotor, contrato, producto, operación, capital, interés, total, oficina...).
+     *
+     * @param  array  $rows  Filas candidatas (vista previa).
+     * @return int Índice del renglón de encabezados.
+     */
     private function detectHeaderRowIndex(array $rows): int
     {
         $bestIndex = 0;
         $bestScore = -1;
 
         foreach ($rows as $index => $row) {
-            if (!is_array($row)) {
+            if (! is_array($row)) {
                 continue;
             }
 
@@ -785,6 +910,14 @@ class LendusIngresosCobranzaImportService {
         return $bestIndex;
     }
 
+    /**
+     * Mapea cada campo autorizado (ColumnMapService, 'lendus_ingresos_cobranza') a la
+     * primera columna cuyo encabezado normalizado coincide exactamente con un alias,
+     * sin reutilizar columnas.
+     *
+     * @param  array  $headerRow  Celdas del encabezado.
+     * @return array<string,int> Campo => índice de columna.
+     */
     private function buildHeaderMap(array $headerRow): array
     {
         $normalizedHeaders = [];
@@ -795,17 +928,17 @@ class LendusIngresosCobranzaImportService {
             }
         }
 
-        // Use ColumnMapService as the single source of truth for authorized columns.
+        // ColumnMapService es la única fuente de verdad de las columnas autorizadas.
         $defs = $this->columnMap->getFieldDefinitions('lendus_ingresos_cobranza');
-        $map  = [];
+        $map = [];
         $matched = [];
 
         foreach ($defs as $field => $def) {
             foreach ($def['aliases'] as $alias) {
                 foreach ($normalizedHeaders as $index => $normalizedHeader) {
-                    if ($normalizedHeader === $alias && !in_array($index, $matched, true)) {
+                    if ($normalizedHeader === $alias && ! in_array($index, $matched, true)) {
                         $map[$field] = $index;
-                        $matched[]   = $index;
+                        $matched[] = $index;
                         break 2;
                     }
                 }
@@ -815,76 +948,97 @@ class LendusIngresosCobranzaImportService {
         return $map;
     }
 
+    /**
+     * Convierte la fila en un arreglo normalizado: textos, producto normalizado y
+     * original, fechas (cuota/vencimiento solo si el Excel las trae; nunca se
+     * reconstruyen), montos por componente y total. Si no hay columna Total, el
+     * total = capital + interés + IVA + cargos + cargos vencidos.
+     *
+     * @param  array  $row  Fila de datos.
+     * @param  array  $headerMap  Mapa campo => índice.
+     * @return array<string,mixed> Pago normalizado.
+     */
     private function mapRow(array $row, array $headerMap): array
     {
-        $promoterName   = $this->cleanString($this->valueFromRow($row, $headerMap, 'promoter_name'));
-        $contract       = $this->cleanString($this->valueFromRow($row, $headerMap, 'contract'));
-        $clientName     = $this->cleanString($this->valueFromRow($row, $headerMap, 'client_name'));
-        $branchNameRaw  = $this->cleanString($this->valueFromRow($row, $headerMap, 'branch_name_raw'));
+        $promoterName = $this->cleanString($this->valueFromRow($row, $headerMap, 'promoter_name'));
+        $contract = $this->cleanString($this->valueFromRow($row, $headerMap, 'contract'));
+        $clientName = $this->cleanString($this->valueFromRow($row, $headerMap, 'client_name'));
+        $branchNameRaw = $this->cleanString($this->valueFromRow($row, $headerMap, 'branch_name_raw'));
         $rawProductName = $this->cleanString($this->valueFromRow($row, $headerMap, 'product_name'));
-        $productName    = $rawProductName
+        $productName = $rawProductName
             ? $this->branchResolver->normalizeProduct($rawProductName, null, null)
             : null;
 
-        $operation   = $this->cleanString($this->valueFromRow($row, $headerMap, 'operation'));
-        $concept     = $this->cleanString($this->valueFromRow($row, $headerMap, 'concept'));
+        $operation = $this->cleanString($this->valueFromRow($row, $headerMap, 'operation'));
+        $concept = $this->cleanString($this->valueFromRow($row, $headerMap, 'concept'));
         $transaction = $this->cleanString($this->valueFromRow($row, $headerMap, 'transaction'));
         $paymentDate = $this->toDateValue($this->valueFromRow($row, $headerMap, 'payment_date'));
-        $acreditado  = $this->cleanString($this->valueFromRow($row, $headerMap, 'acreditado'));
+        $acreditado = $this->cleanString($this->valueFromRow($row, $headerMap, 'acreditado'));
 
         // Fecha cuota / número de cuota / vencimiento de contrato: solo si el Excel los trae.
         // Nunca se reconstruyen (p.ej. a partir de "Días vencidos pago").
         $installmentDueDate = $this->toDateValue($this->valueFromRow($row, $headerMap, 'installment_due_date'));
-        $installmentNumber  = $this->cleanString($this->valueFromRow($row, $headerMap, 'installment_number'));
-        $contractDueDate     = $this->toDateValue($this->valueFromRow($row, $headerMap, 'contract_due_date'));
+        $installmentNumber = $this->cleanString($this->valueFromRow($row, $headerMap, 'installment_number'));
+        $contractDueDate = $this->toDateValue($this->valueFromRow($row, $headerMap, 'contract_due_date'));
 
-        $capital     = $this->toDecimal($this->valueFromRow($row, $headerMap, 'capital'))      ?? 0;
-        $interest    = $this->toDecimal($this->valueFromRow($row, $headerMap, 'interest'))     ?? 0;
-        $tax         = $this->toDecimal($this->valueFromRow($row, $headerMap, 'tax'))          ?? 0;
-        $charges     = $this->toDecimal($this->valueFromRow($row, $headerMap, 'charges'))      ?? 0;
-        $chargesDue  = $this->toDecimal($this->valueFromRow($row, $headerMap, 'charges_due'))  ?? 0;
-        $excedente   = $this->toDecimal($this->valueFromRow($row, $headerMap, 'excedente'))    ?? 0;
+        $capital = $this->toDecimal($this->valueFromRow($row, $headerMap, 'capital')) ?? 0;
+        $interest = $this->toDecimal($this->valueFromRow($row, $headerMap, 'interest')) ?? 0;
+        $tax = $this->toDecimal($this->valueFromRow($row, $headerMap, 'tax')) ?? 0;
+        $charges = $this->toDecimal($this->valueFromRow($row, $headerMap, 'charges')) ?? 0;
+        $chargesDue = $this->toDecimal($this->valueFromRow($row, $headerMap, 'charges_due')) ?? 0;
+        $excedente = $this->toDecimal($this->valueFromRow($row, $headerMap, 'excedente')) ?? 0;
         $daysPastDue = (int) ($this->toDecimal($this->valueFromRow($row, $headerMap, 'days_past_due')) ?? 0) ?: null;
 
         $explicitTotal = $this->toDecimal($this->valueFromRow($row, $headerMap, 'total'));
-        $totalAmount   = $explicitTotal ?? ($capital + $interest + $tax + $charges + $chargesDue);
+        $totalAmount = $explicitTotal ?? ($capital + $interest + $tax + $charges + $chargesDue);
 
         return [
-            'promoter_name'   => $promoterName,
-            'contract'        => $contract,
-            'client_name'     => $clientName,
-            'acreditado'      => $acreditado,
+            'promoter_name' => $promoterName,
+            'contract' => $contract,
+            'client_name' => $clientName,
+            'acreditado' => $acreditado,
             'branch_name_raw' => $branchNameRaw,
-            'product_name'    => $productName,
+            'product_name' => $productName,
             'product_name_raw' => $rawProductName,
-            'operation'       => $operation,
-            'concept'         => $concept,
-            'transaction'     => $transaction,
-            'payment_date'    => $paymentDate,
+            'operation' => $operation,
+            'concept' => $concept,
+            'transaction' => $transaction,
+            'payment_date' => $paymentDate,
             'installment_due_date' => $installmentDueDate,
-            'installment_number'   => $installmentNumber,
-            'contract_due_date'     => $contractDueDate,
-            'capital'         => $capital,
-            'interest'        => $interest,
-            'tax'             => $tax,
-            'charges'         => $charges,
-            'charges_due'     => $chargesDue,
-            'excedente'       => $excedente,
-            'total_amount'    => $totalAmount,
-            'days_past_due'   => $daysPastDue,
+            'installment_number' => $installmentNumber,
+            'contract_due_date' => $contractDueDate,
+            'capital' => $capital,
+            'interest' => $interest,
+            'tax' => $tax,
+            'charges' => $charges,
+            'charges_due' => $chargesDue,
+            'excedente' => $excedente,
+            'total_amount' => $totalAmount,
+            'days_past_due' => $daysPastDue,
         ];
     }
 
+    /**
+     * Solo se insertan filas con promotor.
+     *
+     * @param  array  $mapped  Fila normalizada.
+     * @return bool true si tiene promotor.
+     */
     private function shouldInsertRow(array $mapped): bool
     {
         return filled($mapped['promoter_name']);
     }
 
     /**
-     * Resolves the operative branch using:
-     * 1. Contract code prefix (e.g. "24ORI032294" → ORI → ORIZABA)
-     * 2. Promoter name if it starts with a recognizable code prefix
-     * 3. Raw branch/office column (internal — never shown as a metric)
+     * Resuelve la sucursal operativa en este orden:
+     * 1. Prefijo del código de contrato (p. ej. "24ORI032294" → ORI → ORIZABA).
+     * 2. Nombre del promotor si empieza con un prefijo de código reconocible.
+     * 3. Columna cruda de oficina/sucursal (interna — nunca se muestra como métrica).
+     *
+     * @param  string|null  $contract  Contrato del pago.
+     * @param  string|null  $promoterName  Promotor (a veces viene como código).
+     * @param  string|null  $branchNameRaw  Oficina/ruta tal como viene.
+     * @return Branch|null Sucursal resuelta o null.
      */
     private function resolveBranchFromCobranza(?string $contract, ?string $promoterName, ?string $branchNameRaw): ?Branch
     {
@@ -905,9 +1059,16 @@ class LendusIngresosCobranzaImportService {
         return $this->resolveBranch($branchNameRaw);
     }
 
+    /**
+     * Convierte una oficina/ruta a la sucursal operativa oficial (sin crear rutas
+     * desconocidas), con caché en memoria por nombre normalizado.
+     *
+     * @param  string|null  $branchName  Oficina/ruta.
+     * @return Branch|null Sucursal oficial o null.
+     */
     private function resolveBranch(?string $branchName): ?Branch
     {
-        if (!$branchName) {
+        if (! $branchName) {
             return null;
         }
 
@@ -921,22 +1082,33 @@ class LendusIngresosCobranzaImportService {
             return $this->branchCache[$normalized];
         }
 
-        // Resolve route/office name → official operative branch. Never auto-create unknown routes.
+        // Convierte ruta/oficina → sucursal operativa oficial. Nunca crea rutas desconocidas.
         $branch = $this->branchResolver->resolveOfficialBranchByName($branchName);
 
         return $this->branchCache[$normalized] = $branch;
     }
 
-
+    /**
+     * @param  array  $row  Fila de datos.
+     * @param  array  $headerMap  Mapa campo => índice.
+     * @param  string  $field  Campo lógico.
+     * @return mixed Valor de la celda o null si la columna no existe.
+     */
     private function valueFromRow(array $row, array $headerMap, string $field): mixed
     {
-        if (!array_key_exists($field, $headerMap)) {
+        if (! array_key_exists($field, $headerMap)) {
             return null;
         }
 
         return $row[$headerMap[$field]] ?? null;
     }
 
+    /**
+     * Normaliza un encabezado a snake (ASCII, minúsculas, no alfanuméricos → '_').
+     *
+     * @param  string  $value  Encabezado.
+     * @return string Encabezado normalizado.
+     */
     private function normalizeHeader(string $value): string
     {
         return Str::of($value)
@@ -947,6 +1119,12 @@ class LendusIngresosCobranzaImportService {
             ->value();
     }
 
+    /**
+     * Normaliza un nombre de persona u oficina (ASCII, minúsculas, sin signos, espacios simples).
+     *
+     * @param  string|null  $value  Texto original.
+     * @return string Texto normalizado ('' si viene vacío).
+     */
     private function normalizeHumanName(?string $value): string
     {
         return Str::of((string) $value)
@@ -958,6 +1136,10 @@ class LendusIngresosCobranzaImportService {
             ->value();
     }
 
+    /**
+     * @param  mixed  $value  Valor de celda.
+     * @return string|null Texto recortado o null si queda vacío.
+     */
     private function cleanString(mixed $value): ?string
     {
         if ($value === null) {
@@ -969,6 +1151,12 @@ class LendusIngresosCobranzaImportService {
         return $value !== '' ? $value : null;
     }
 
+    /**
+     * Convierte cualquier valor de celda a texto (fechas como Y-m-d, booleanos como 1/0).
+     *
+     * @param  mixed  $value  Valor de celda.
+     * @return string Texto recortado.
+     */
     private function cellToString(mixed $value): string
     {
         if ($value === null) {
@@ -983,9 +1171,17 @@ class LendusIngresosCobranzaImportService {
         if (is_scalar($value)) {
             return trim((string) $value);
         }
+
         return trim((string) json_encode($value, JSON_UNESCAPED_UNICODE));
     }
 
+    /**
+     * Convierte un monto a float SIN redondear. Si el texto trae coma y punto, la
+     * coma se toma como separador de miles; si solo trae coma, se toma como decimal.
+     *
+     * @param  mixed  $value  Valor de celda.
+     * @return float|null Monto o null si no es numérico.
+     */
     private function toDecimal(mixed $value): ?float
     {
         if ($value === null || $value === '') {
@@ -1000,13 +1196,19 @@ class LendusIngresosCobranzaImportService {
 
         if (str_contains($value, ',') && str_contains($value, '.')) {
             $value = str_replace(',', '', $value);
-        } elseif (str_contains($value, ',') && !str_contains($value, '.')) {
+        } elseif (str_contains($value, ',') && ! str_contains($value, '.')) {
             $value = str_replace(',', '.', $value);
         }
 
         return is_numeric($value) ? (float) $value : null;
     }
 
+    /**
+     * Convierte una fecha (DateTime, serie de Excel o texto) a 'Y-m-d'.
+     *
+     * @param  mixed  $value  Valor de celda.
+     * @return string|null Fecha ISO o null.
+     */
     private function toDateValue(mixed $value): ?string
     {
         if ($value === null || $value === '') {
@@ -1028,6 +1230,10 @@ class LendusIngresosCobranzaImportService {
         }
     }
 
+    /**
+     * @param  array  $row  Fila leída.
+     * @return bool true si todas las celdas están vacías.
+     */
     private function isEmptyRow(array $row): bool
     {
         foreach ($row as $value) {

@@ -13,6 +13,7 @@ use App\Models\ReportUpload;
 use App\Services\Efectividad\V4\EfectividadV4DataAdapter;
 use App\Services\Efectividad\V4\EfectividadV4Exception;
 use App\Services\Imports\LendusCarteraFotoImportService;
+use App\Support\ReportUploadStorage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -26,9 +27,22 @@ use Illuminate\Support\Facades\DB;
  * la fuente `lendus_saldos_cliente_foto` y su fecha en `snapshot_date`. Se cargan
  * desde este módulo porque cada archivo necesita una FECHA (no un mes), y el
  * flujo mensual de Histórico General admite un solo archivo vigente por fuente.
+ *
+ * Nota (23-nov-2026): este controlador no está referenciado en routes/*.php.
  */
 class EfectividadCobranzaFuentesController extends Controller
 {
+    /**
+     * Disponibilidad de fuentes para calcular la Efectividad V4 de un periodo.
+     *
+     * Sólo lectura. Si el adaptador indica que el periodo/modo no es soportable, responde 200 con
+     * `supported: false`, el código y el mensaje (no es un error HTTP).
+     *
+     * @param  Request  $request  `period_id` (obligatorio), `branch_id`, `mode` (SEMANAL | DIARIO, por
+     *                            defecto SEMANAL) y `cutoff_date` opcionales.
+     * @param  EfectividadV4DataAdapter  $adapter  Revisa fotografías por fecha e ingresos disponibles.
+     * @return JsonResponse { supported, engine_version, ...disponibilidad }.
+     */
     public function availability(Request $request, EfectividadV4DataAdapter $adapter): JsonResponse
     {
         $data = $request->validate([
@@ -48,6 +62,14 @@ class EfectividadCobranzaFuentesController extends Controller
         return response()->json(['supported' => true, 'engine_version' => EfectividadCobranzaRun::currentEngineVersion()] + $disp);
     }
 
+    /**
+     * Lista las fotografías de cartera cargadas con fecha entre `from` y `to` (máx. 200, más recientes primero).
+     *
+     * Por cada carga devuelve su estado, quién y cuándo la subió, el estado de la fotografía
+     * procesada (filas y oficinas) y el último log de proceso en versión pública (máx. 400 caracteres).
+     *
+     * @param  Request  $request  `from` y `to` (fechas; to ≥ from).
+     */
     public function index(Request $request): JsonResponse
     {
         $data = $request->validate(['from' => ['required', 'date'], 'to' => ['required', 'date', 'after_or_equal:from']]);
@@ -76,6 +98,18 @@ class EfectividadCobranzaFuentesController extends Controller
         ])->values()]);
     }
 
+    /**
+     * Recibe una fotografía diaria de cartera (Excel de Saldos por Cliente de Lendus) para una fecha.
+     *
+     * Reglas: la fecha no puede ser futura; debe existir una semana operativa (periodo weekly) que
+     * la contenga o, si es el «domingo base», la semana que empieza al día siguiente.
+     * Efectos: guarda el archivo en el disco de reportes, crea el ReportUpload (estado Pending,
+     * fuente lendus_saldos_cliente_foto, `snapshot_date`) y despacha ImportPortfolioSnapshotJob
+     * para procesarlo en segundo plano.
+     *
+     * @param  Request  $request  `snapshot_date`, `file` (xls/xlsx/xlsm, máx. 128 MB) y `notes` opcional.
+     * @return JsonResponse { upload_id, snapshot_date, message }; 422 por fecha/semana; 500 si falta la fuente.
+     */
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
@@ -111,7 +145,7 @@ class EfectividadCobranzaFuentesController extends Controller
             'covered_period_ids' => [$period->id],
             'data_source_id' => $source->id,
             'original_name' => $file->getClientOriginalName(),
-            'stored_path' => $file->store('reports', 'public'),
+            'stored_path' => ReportUploadStorage::store($file, 'reports'),
             'mime_type' => $file->getClientMimeType(),
             'file_size' => $file->getSize(),
             'uploaded_by' => $request->user()?->id,
@@ -130,6 +164,14 @@ class EfectividadCobranzaFuentesController extends Controller
         ]);
     }
 
+    /**
+     * Vuelve a procesar una fotografía de cartera ya cargada.
+     *
+     * Efectos: pone la carga en Pending (escribe en BD) y despacha ImportPortfolioSnapshotJob.
+     *
+     * @param  int  $upload  Id del ReportUpload (sólo fotografías; 404 si no).
+     * @return JsonResponse Mensaje; 409 si ya está pendiente o en proceso.
+     */
     public function reprocess(int $upload): JsonResponse
     {
         $model = ReportUpload::snapshots()->findOrFail($upload);

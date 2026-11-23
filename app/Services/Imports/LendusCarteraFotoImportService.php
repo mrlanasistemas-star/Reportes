@@ -9,9 +9,9 @@ use App\Models\ReportUpload;
 use App\Services\BranchResolverService;
 use App\Services\Efectividad\V4\EfectividadV4Calculator;
 use App\Services\Efectividad\V4\EfectividadV4ColumnMap;
+use App\Support\ReportUploadStorage;
 use DateTimeInterface;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use OpenSpout\Reader\XLSX\Options;
 use OpenSpout\Reader\XLSX\Reader;
 use RuntimeException;
@@ -44,20 +44,42 @@ class LendusCarteraFotoImportService
         'fecha_ultima_transaccion' => ['Fecha última transacción', 'Fecha ultima transaccion'],
     ];
 
+    /**
+     * @param  BranchResolverService  $branchResolver  Resuelve sucursal por código de contrato/promotor u oficina.
+     */
     public function __construct(private readonly BranchResolverService $branchResolver) {}
 
+    /**
+     * Importa la fotografía en streaming (OpenSpout, solo la primera hoja):
+     * 1. Busca el renglón de encabezados en las primeras 30 filas (requiere Contrato,
+     *    Oficina y Substatus) y valida las columnas obligatorias del motor V4.
+     * 2. Crea el PortfolioSnapshot en estado 'importing' (reemplaza el de un reproceso
+     *    del mismo upload) e inserta las filas por lotes de 500 en portfolio_snapshot_rows.
+     * 3. Rechaza (y descarta lo insertado) si no hay contratos o si alguna
+     *    "Fecha última transacción" es posterior a la fecha declarada.
+     * 4. Activa la fotografía con sus sucursales/oficinas y marca como reemplazadas
+     *    las fotografías activas de la misma fecha que cubren alguna de sus sucursales.
+     * Agrega un aviso al log si la transacción más reciente es de más de 2 días antes.
+     * Efectos: escribe portfolio_snapshots y portfolio_snapshot_rows; puede crear sucursales.
+     *
+     * @param  ReportUpload  $upload  Upload de la fotografía (debe tener snapshot_date).
+     * @param  callable|null  $progress  Callback opcional con estadísticas por cada lote guardado.
+     * @return array<string,mixed> Estadísticas, log, snapshot_id y max_ultima_transaccion.
+     *
+     * @throws RuntimeException Si falta fecha o archivo, faltan encabezados/columnas, no hay contratos o la fecha es incompatible.
+     */
     public function handle(ReportUpload $upload, ?callable $progress = null): array
     {
         if (! $upload->snapshot_date) {
             throw new RuntimeException('La fotografía de cartera no tiene fecha (snapshot_date).');
         }
-        if (! $upload->stored_path || ! Storage::disk('public')->exists($upload->stored_path)) {
+        if (! $upload->stored_path || ! ReportUploadStorage::exists($upload->stored_path)) {
             throw new RuntimeException('El archivo físico de la fotografía de cartera no existe en el almacenamiento.');
         }
         @ini_set('memory_limit', '1024M');
         @set_time_limit(0);
 
-        $path = Storage::disk('public')->path($upload->stored_path);
+        $path = ReportUploadStorage::path($upload->stored_path);
         $fecha = $upload->snapshot_date->format('Y-m-d');
         $calc = new EfectividadV4Calculator;
 
@@ -229,6 +251,10 @@ class LendusCarteraFotoImportService
     /**
      * Bitácora apta para la UI: una excepción genérica del lector (OpenSpout) puede
      * traer la ruta física del archivo; nunca se muestra una ruta del servidor.
+     * Quita storage_path/base_path y reduce cualquier ruta de hoja de cálculo a su nombre de archivo.
+     *
+     * @param  string|null  $log  Texto de log original.
+     * @return string|null Texto sin rutas del servidor.
      */
     public static function mensajePublico(?string $log): ?string
     {
@@ -242,6 +268,19 @@ class LendusCarteraFotoImportService
         return preg_replace('#(?:[A-Za-z]:)?[\\\\/](?:[^\s\\\\/:"\']+[\\\\/])+([^\s\\\\/:"\']+\.(?:xlsx|xlsm|xls|csv))#u', '$1', $log);
     }
 
+    /**
+     * Crea el registro de la fotografía (estado 'importing') con encabezados
+     * detectados, fila de encabezado, número de columnas, SHA-1 del archivo y versión
+     * del importador. Si el upload ya tenía fotografías (reproceso), las borra con sus filas.
+     *
+     * @param  ReportUpload  $upload  Upload de origen.
+     * @param  string  $fecha  Fecha declarada de la fotografía (Y-m-d).
+     * @param  array  $map  Mapa campo => índice de columna detectado.
+     * @param  int  $headerRow  Número de fila (1-based) del encabezado.
+     * @param  int  $sourceColumns  Número de columnas no vacías del encabezado.
+     * @param  string  $path  Ruta absoluta del archivo (para la huella SHA-1).
+     * @return PortfolioSnapshot Fotografía creada.
+     */
     private function crearSnapshot(ReportUpload $upload, string $fecha, array $map, int $headerRow, int $sourceColumns, string $path): PortfolioSnapshot
     {
         // Reproceso del mismo archivo: se reemplazan sus filas anteriores.
@@ -264,13 +303,25 @@ class LendusCarteraFotoImportService
         ]);
     }
 
+    /**
+     * Elimina la fotografía y todas sus filas (se usa cuando la importación se rechaza).
+     *
+     * @param  PortfolioSnapshot  $snapshot  Fotografía a descartar.
+     */
     private function descartar(PortfolioSnapshot $snapshot): void
     {
         PortfolioSnapshotRow::query()->where('portfolio_snapshot_id', $snapshot->id)->delete();
         $snapshot->delete();
     }
 
-    /** Una fotografía nueva de la misma fecha sustituye a las anteriores que cubren alguna de sus sucursales. */
+    /**
+     * Una fotografía nueva de la misma fecha sustituye a las anteriores que cubren
+     * alguna de sus sucursales (o a todas si alguna de las dos no tiene sucursales):
+     * quedan con status 'replaced' y replaced_by_id apuntando a la nueva.
+     *
+     * @param  PortfolioSnapshot  $nueva  Fotografía recién activada.
+     * @return int Número de fotografías reemplazadas.
+     */
     private function reemplazarAnteriores(PortfolioSnapshot $nueva): int
     {
         $propias = array_map('intval', $nueva->branch_ids ?? []);
@@ -294,6 +345,15 @@ class LendusCarteraFotoImportService
         return $n;
     }
 
+    /**
+     * Resuelve la sucursal del contrato en orden: prefijo del contrato, prefijo del
+     * código de promotor, ruta de la oficina → sucursal oficial, o nombre oficial de la oficina.
+     *
+     * @param  string  $contrato  Número de contrato.
+     * @param  string|null  $promotorCodigo  Código del promotor.
+     * @param  string|null  $oficina  Nombre de la oficina/ruta.
+     * @return Branch|null Sucursal resuelta (puede crearse) o null.
+     */
     private function resolverSucursal(string $contrato, ?string $promotorCodigo, ?string $oficina): ?Branch
     {
         if ($branch = $this->branchResolver->findOrCreateBranchByCode($contrato)) {
@@ -311,11 +371,25 @@ class LendusCarteraFotoImportService
         return null;
     }
 
+    /**
+     * @param  array  $values  Valores de la fila.
+     * @param  array  $map  Mapa campo => índice.
+     * @param  string  $campo  Campo lógico.
+     * @return mixed Valor de la celda o null si la columna no existe.
+     */
     private function v(array $values, array $map, string $campo): mixed
     {
         return isset($map[$campo]) ? ($values[$map[$campo]] ?? null) : null;
     }
 
+    /**
+     * Convierte una celda a texto conservando el original (enteros sin ".0", fechas
+     * como Y-m-d), truncado a 160 caracteres.
+     *
+     * @param  mixed  $v  Valor de celda.
+     * @param  bool  $nullSiVacio  Si es true, un texto vacío se devuelve como null.
+     * @return string|null Texto de la celda.
+     */
     private function texto(mixed $v, bool $nullSiVacio = true): ?string
     {
         if ($v === null) {
@@ -330,6 +404,12 @@ class LendusCarteraFotoImportService
         return $nullSiVacio && trim($s) === '' ? null : $s;
     }
 
+    /**
+     * Convierte una celda a número SIN redondear (misma interpretación que el motor V4).
+     *
+     * @param  mixed  $v  Valor de celda.
+     * @return float|null Número o null si viene vacío.
+     */
     private function numero(mixed $v): ?float
     {
         if ($v === null || $v === '') {
@@ -342,6 +422,10 @@ class LendusCarteraFotoImportService
         return (new EfectividadV4Calculator)->numero($v);
     }
 
+    /**
+     * @param  mixed  $v  Valor de celda.
+     * @return int|null Número redondeado a entero o null.
+     */
     private function entero(mixed $v): ?int
     {
         $n = $this->numero($v);
@@ -349,6 +433,13 @@ class LendusCarteraFotoImportService
         return $n === null ? null : (int) round($n);
     }
 
+    /**
+     * Convierte una celda de fecha (DateTime, serie de Excel o texto) a 'Y-m-d'
+     * con el mismo lector de fechas del motor V4.
+     *
+     * @param  mixed  $v  Valor de celda.
+     * @return string|null Fecha ISO o null.
+     */
     private function fecha(mixed $v): ?string
     {
         if ($v === null || $v === '') {
@@ -362,6 +453,10 @@ class LendusCarteraFotoImportService
         return $dia === null ? null : gmdate('Y-m-d', $dia * 86400);
     }
 
+    /**
+     * @param  string  $ymd  Fecha 'Y-m-d'.
+     * @return string Fecha en formato 'd/m/Y' para mensajes.
+     */
     private function dmy(string $ymd): string
     {
         return date('d/m/Y', strtotime($ymd));

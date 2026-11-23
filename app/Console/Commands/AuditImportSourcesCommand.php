@@ -4,39 +4,57 @@ namespace App\Console\Commands;
 
 use App\Models\Period;
 use App\Services\ColumnMapService;
+use App\Support\ReportUploadStorage;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
-use Maatwebsite\Excel\Facades\Excel;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 
 /**
- * Audits every report_upload for a given period:
- * shows file, data_source, records inserted, product breakdown, columns mapped.
+ * Comando `reportes:audit-import-sources` — audita cada `report_upload` de un periodo:
+ * archivo, fuente (data_source), estado, registros insertados en las tablas de hechos,
+ * desglose por producto/categoría y, con `--show-columns`, las columnas mapeadas por
+ * ColumnMapService (usadas, requeridas/opcionales faltantes e ignoradas) para Ministraciones,
+ * Ingresos/Cobranza y Saldos por cliente. Termina con los totales globales por tabla de hechos.
+ *
+ * Escribe en BD: NO — solo lectura (lee los primeros 20 renglones del archivo físico).
+ *
+ * Ejemplos:
+ *   php artisan reportes:audit-import-sources 21
+ *   php artisan reportes:audit-import-sources 21 --show-columns
  */
 class AuditImportSourcesCommand extends Command
 {
-    protected $signature   = 'reportes:audit-import-sources {period_id} {--show-columns : Muestra columnas detectadas por archivo}';
+    protected $signature = 'reportes:audit-import-sources {period_id} {--show-columns : Muestra columnas detectadas por archivo}';
+
     protected $description = 'Auditoría completa de archivos importados para un periodo';
 
+    /**
+     * Lista los uploads del periodo y despacha la auditoría específica según el código de fuente;
+     * al final imprime los conteos globales de cada tabla de hechos.
+     *
+     * @return int 0 al terminar (también si no hay archivos); 1 si el periodo no existe.
+     */
     public function handle(): int
     {
         $period = Period::find($this->argument('period_id'));
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo {$this->argument('period_id')} no encontrado.");
+
             return 1;
         }
 
         $allPeriods = Period::all();
-        $weeklyIds  = $period->resolveBaseWeeklyIds($allPeriods);
-        $dataIds    = array_values(array_unique(array_merge(
+        $weeklyIds = $period->resolveBaseWeeklyIds($allPeriods);
+        $dataIds = array_values(array_unique(array_merge(
             empty($weeklyIds) ? [] : $weeklyIds,
             [$period->id]
         )));
 
-        $this->info("════════════════════════════════════════════════════════════");
+        $this->info('════════════════════════════════════════════════════════════');
         $this->info("  AUDITORÍA DE FUENTES — {$period->label} (ID {$period->id})");
-        $this->info("  DataIds: [" . implode(', ', $dataIds) . "]");
-        $this->info("════════════════════════════════════════════════════════════");
+        $this->info('  DataIds: ['.implode(', ', $dataIds).']');
+        $this->info('════════════════════════════════════════════════════════════');
 
         $uploads = DB::table('report_uploads as ru')
             ->join('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
@@ -47,6 +65,7 @@ class AuditImportSourcesCommand extends Command
 
         if ($uploads->isEmpty()) {
             $this->warn("No hay archivos registrados para el periodo {$period->id}.");
+
             return 0;
         }
 
@@ -59,46 +78,53 @@ class AuditImportSourcesCommand extends Command
             $this->line("│  Archivo:     {$upload->original_name}");
             $this->line("│  Upload ID:   {$upload->id}");
             $this->line("│  Estado:      {$upload->status}");
-            $this->line("│  Subido:      " . ($upload->uploaded_at ?? 'N/D'));
-            $this->line("│  Tamaño:      " . number_format($upload->file_size / 1024, 1) . " KB");
+            $this->line('│  Subido:      '.($upload->uploaded_at ?? 'N/D'));
+            $this->line('│  Tamaño:      '.number_format($upload->file_size / 1024, 1).' KB');
 
-            if ($showColumns && in_array($upload->code, ['lendus_ministraciones','lendus_ingresos_cobranza','lendus_saldos_cliente'])) {
+            if ($showColumns && in_array($upload->code, ['lendus_ministraciones', 'lendus_ingresos_cobranza', 'lendus_saldos_cliente'])) {
                 $this->auditColumns($upload, $cm);
             }
 
             match ($upload->code) {
-                'lendus_ministraciones'    => $this->auditPlacements($upload->id, $dataIds),
+                'lendus_ministraciones' => $this->auditPlacements($upload->id, $dataIds),
                 'lendus_ingresos_cobranza' => $this->auditRecoveries($upload->id, $dataIds),
-                'lendus_saldos_cliente'    => $this->auditPortfolio($upload->id, $dataIds),
+                'lendus_saldos_cliente' => $this->auditPortfolio($upload->id, $dataIds),
                 'noi_nomina',
-                'noi_nomina_fiscal'        => $this->auditNoi($upload->id, $dataIds),
+                'noi_nomina_fiscal' => $this->auditNoi($upload->id, $dataIds),
                 'gastos_lendus',
                 'gastos_lendus_excel',
-                'gastos_erp'               => $this->auditGastos($upload->id, $dataIds),
-                'lendus_empleados'         => $this->auditEmpleados($upload->id, $dataIds),
-                default                    => $this->line("│  (sin auditoría específica para este tipo)")
+                'gastos_erp' => $this->auditGastos($upload->id, $dataIds),
+                'lendus_empleados' => $this->auditEmpleados($upload->id, $dataIds),
+                default => $this->line('│  (sin auditoría específica para este tipo)')
             };
 
-            $this->line("└" . str_repeat("─", 60));
+            $this->line('└'.str_repeat('─', 60));
         }
 
         $this->line('');
-        $this->info("TOTALES GLOBALES DEL PERIODO:");
-        $this->line("  fact_placements:     " . DB::table('fact_placements')->whereIn('period_id', $dataIds)->count() . " filas");
-        $this->line("  fact_recoveries:     " . DB::table('fact_recoveries')->whereIn('period_id', $dataIds)->count() . " filas");
-        $this->line("  fact_portfolios:     " . DB::table('fact_portfolios')->whereIn('period_id', $dataIds)->count() . " filas");
-        $this->line("  fact_noi_movements:  " . DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)->count() . " filas");
-        $this->line("  fact_expenses:       " . DB::table('fact_expenses')->whereIn('period_id', $dataIds)->count() . " filas");
+        $this->info('TOTALES GLOBALES DEL PERIODO:');
+        $this->line('  fact_placements:     '.DB::table('fact_placements')->whereIn('period_id', $dataIds)->count().' filas');
+        $this->line('  fact_recoveries:     '.DB::table('fact_recoveries')->whereIn('period_id', $dataIds)->count().' filas');
+        $this->line('  fact_portfolios:     '.DB::table('fact_portfolios')->whereIn('period_id', $dataIds)->count().' filas');
+        $this->line('  fact_noi_movements:  '.DB::table('fact_noi_movements')->whereIn('period_id', $dataIds)->count().' filas');
+        $this->line('  fact_expenses:       '.DB::table('fact_expenses')->whereIn('period_id', $dataIds)->count().' filas');
 
         return 0;
     }
 
+    /**
+     * Resume lo insertado en `fact_placements` por un upload: registros, monto, productos y
+     * registros sin producto o sin sucursal.
+     *
+     * @param  int  $uploadId  ID del report_upload.
+     * @param  array<int>  $dataIds  IDs de periodos de datos (no se usa en el filtro actual).
+     */
     private function auditPlacements(int $uploadId, array $dataIds): void
     {
-        $total   = DB::table('fact_placements')->where('report_upload_id', $uploadId)->count();
-        $amount  = DB::table('fact_placements')->where('report_upload_id', $uploadId)->sum('amount');
+        $total = DB::table('fact_placements')->where('report_upload_id', $uploadId)->count();
+        $amount = DB::table('fact_placements')->where('report_upload_id', $uploadId)->sum('amount');
 
-        $this->line("│  → fact_placements: {$total} registros insertados, monto=$" . number_format((float)$amount, 2));
+        $this->line("│  → fact_placements: {$total} registros insertados, monto=$".number_format((float) $amount, 2));
 
         $byProduct = DB::table('fact_placements')
             ->where('report_upload_id', $uploadId)
@@ -107,10 +133,10 @@ class AuditImportSourcesCommand extends Command
             ->orderByDesc('total')
             ->get();
 
-        $this->line("│  Productos detectados:");
+        $this->line('│  Productos detectados:');
         foreach ($byProduct as $p) {
             $label = $p->product_name ?? 'NULL/Sin producto';
-            $this->line("│    {$label}: {$p->cnt} ops, $" . number_format((float)$p->total, 2));
+            $this->line("│    {$label}: {$p->cnt} ops, $".number_format((float) $p->total, 2));
         }
 
         $noProduct = DB::table('fact_placements')
@@ -130,24 +156,31 @@ class AuditImportSourcesCommand extends Command
         }
     }
 
+    /**
+     * Resume lo insertado en `fact_recoveries` por un upload: totales por componente, filas
+     * Savehearts, participación CRECE y top 15 productos.
+     *
+     * @param  int  $uploadId  ID del report_upload.
+     * @param  array<int>  $dataIds  IDs de periodos de datos (no se usa en el filtro actual).
+     */
     private function auditRecoveries(int $uploadId, array $dataIds): void
     {
-        $total  = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->count();
-        $cap    = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('capital');
-        $int    = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('interest');
-        $tax    = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('tax');
-        $char   = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('charges');
-        $tot    = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('total_amount');
-        $sh     = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->where('is_savehearts', true)->count();
-        $shAmt  = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('savehearts_crece_share');
+        $total = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->count();
+        $cap = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('capital');
+        $int = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('interest');
+        $tax = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('tax');
+        $char = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('charges');
+        $tot = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('total_amount');
+        $sh = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->where('is_savehearts', true)->count();
+        $shAmt = DB::table('fact_recoveries')->where('report_upload_id', $uploadId)->sum('savehearts_crece_share');
 
         $this->line("│  → fact_recoveries: {$total} registros");
-        $this->line("│    Capital: $" . number_format((float)$cap, 2) .
-                    "  Interés: $" . number_format((float)$int, 2) .
-                    "  Impuesto: $" . number_format((float)$tax, 2));
-        $this->line("│    Cargos: $" . number_format((float)$char, 2) .
-                    "  Total: $" . number_format((float)$tot, 2));
-        $this->line("│    Savehearts: {$sh} filas, crece_30_share=$" . number_format((float)$shAmt, 2));
+        $this->line('│    Capital: $'.number_format((float) $cap, 2).
+                    '  Interés: $'.number_format((float) $int, 2).
+                    '  Impuesto: $'.number_format((float) $tax, 2));
+        $this->line('│    Cargos: $'.number_format((float) $char, 2).
+                    '  Total: $'.number_format((float) $tot, 2));
+        $this->line("│    Savehearts: {$sh} filas, crece_30_share=$".number_format((float) $shAmt, 2));
 
         $byProduct = DB::table('fact_recoveries')
             ->where('report_upload_id', $uploadId)
@@ -157,10 +190,10 @@ class AuditImportSourcesCommand extends Command
             ->limit(15)
             ->get();
 
-        $this->line("│  Top productos en recuperación:");
+        $this->line('│  Top productos en recuperación:');
         foreach ($byProduct as $p) {
             $label = $p->product_name ?? 'NULL/Sin producto';
-            $this->line("│    {$label}: {$p->cnt} filas, $" . number_format((float)$p->total, 2));
+            $this->line("│    {$label}: {$p->cnt} filas, $".number_format((float) $p->total, 2));
         }
 
         $noProduct = DB::table('fact_recoveries')
@@ -172,16 +205,23 @@ class AuditImportSourcesCommand extends Command
         }
     }
 
+    /**
+     * Resume lo insertado en `fact_portfolios` por un upload: contratos, cartera, vencida,
+     * contratos en mora y top 15 productos.
+     *
+     * @param  int  $uploadId  ID del report_upload.
+     * @param  array<int>  $dataIds  IDs de periodos de datos (no se usa en el filtro actual).
+     */
     private function auditPortfolio(int $uploadId, array $dataIds): void
     {
-        $total   = DB::table('fact_portfolios')->where('report_upload_id', $uploadId)->count();
+        $total = DB::table('fact_portfolios')->where('report_upload_id', $uploadId)->count();
         $balance = DB::table('fact_portfolios')->where('report_upload_id', $uploadId)->sum('balance');
         $vencida = DB::table('fact_portfolios')->where('report_upload_id', $uploadId)->sum('past_due_balance');
-        $mora    = DB::table('fact_portfolios')->where('report_upload_id', $uploadId)->where('days_past_due', '>', 0)->count();
+        $mora = DB::table('fact_portfolios')->where('report_upload_id', $uploadId)->where('days_past_due', '>', 0)->count();
 
         $this->line("│  → fact_portfolios: {$total} contratos");
-        $this->line("│    Cartera: $" . number_format((float)$balance, 2) .
-                    "  Vencida: $" . number_format((float)$vencida, 2) .
+        $this->line('│    Cartera: $'.number_format((float) $balance, 2).
+                    '  Vencida: $'.number_format((float) $vencida, 2).
                     "  En mora: {$mora} contratos");
 
         $byProduct = DB::table('fact_portfolios')
@@ -192,19 +232,25 @@ class AuditImportSourcesCommand extends Command
             ->limit(15)
             ->get();
 
-        $this->line("│  Top productos en cartera:");
+        $this->line('│  Top productos en cartera:');
         foreach ($byProduct as $p) {
             $label = $p->product_name ?? 'NULL/Sin producto';
-            $this->line("│    {$label}: {$p->cnt} contratos, $" . number_format((float)$p->cartera, 2));
+            $this->line("│    {$label}: {$p->cnt} contratos, $".number_format((float) $p->cartera, 2));
         }
     }
 
+    /**
+     * Resume los movimientos NOI insertados por un upload, agrupados por tipo de concepto.
+     *
+     * @param  int  $uploadId  ID del report_upload.
+     * @param  array<int>  $dataIds  IDs de periodos de datos (no se usa en el filtro actual).
+     */
     private function auditNoi(int $uploadId, array $dataIds): void
     {
         $total = DB::table('fact_noi_movements')->where('report_upload_id', $uploadId)->count();
-        $sum   = DB::table('fact_noi_movements')->where('report_upload_id', $uploadId)->sum('amount');
+        $sum = DB::table('fact_noi_movements')->where('report_upload_id', $uploadId)->sum('amount');
 
-        $this->line("│  → fact_noi_movements: {$total} movimientos, total=$" . number_format((float)$sum, 2));
+        $this->line("│  → fact_noi_movements: {$total} movimientos, total=$".number_format((float) $sum, 2));
 
         $byType = DB::table('fact_noi_movements')
             ->where('report_upload_id', $uploadId)
@@ -215,17 +261,23 @@ class AuditImportSourcesCommand extends Command
 
         foreach ($byType as $t) {
             $label = $t->concept_type ?? 'NULL';
-            $this->line("│    {$label}: {$t->cnt} filas, $" . number_format((float)$t->total, 2));
+            $this->line("│    {$label}: {$t->cnt} filas, $".number_format((float) $t->total, 2));
         }
     }
 
+    /**
+     * Resume los gastos insertados por un upload y sus 10 categorías principales.
+     *
+     * @param  int  $uploadId  ID del report_upload.
+     * @param  array<int>  $dataIds  IDs de periodos de datos (no se usa en el filtro actual).
+     */
     private function auditGastos(int $uploadId, array $dataIds): void
     {
         $total = DB::table('fact_expenses')->where('report_upload_id', $uploadId)->count();
-        $sum   = DB::table('fact_expenses')->where('report_upload_id', $uploadId)
+        $sum = DB::table('fact_expenses')->where('report_upload_id', $uploadId)
             ->selectRaw('SUM(COALESCE(NULLIF(paid_amount,0), amount)) as t')->value('t');
 
-        $this->line("│  → fact_expenses: {$total} registros, total=$" . number_format((float)$sum, 2));
+        $this->line("│  → fact_expenses: {$total} registros, total=$".number_format((float) $sum, 2));
 
         $byCat = DB::table('fact_expenses')
             ->where('report_upload_id', $uploadId)
@@ -238,42 +290,67 @@ class AuditImportSourcesCommand extends Command
 
         foreach ($byCat as $c) {
             $label = $c->category ?? 'Sin categoría';
-            $this->line("│    {$label}: {$c->cnt} filas, $" . number_format((float)$c->total, 2));
+            $this->line("│    {$label}: {$c->cnt} filas, $".number_format((float) $c->total, 2));
         }
     }
 
+    /**
+     * Para el directorio de empleados Lendus (no inserta en tablas de hechos) informa cuántas
+     * asignaciones empleado→sucursal existen en los periodos de datos.
+     *
+     * @param  int  $uploadId  ID del report_upload (informativo).
+     * @param  array<int>  $dataIds  IDs de periodos de datos.
+     */
     private function auditEmpleados(int $uploadId, array $dataIds): void
     {
-        $this->line("│  → Usado para resolución de sucursales (no inserta en fact tables)");
+        $this->line('│  → Usado para resolución de sucursales (no inserta en fact tables)');
         $ebaCount = DB::table('employee_branch_assignments')
             ->whereIn('period_id', $dataIds)
             ->count();
         $this->line("│    employee_branch_assignments para el periodo: {$ebaCount} registros");
     }
 
+    /**
+     * Lee los primeros 20 renglones del archivo físico, detecta la fila de encabezado por
+     * palabras clave y muestra cómo ColumnMapService mapea cada columna.
+     *
+     * @param  object  $upload  Fila de report_uploads (con stored_path y code).
+     * @param  ColumnMapService  $cm  Servicio de columnas autorizadas por fuente.
+     */
     private function auditColumns(object $upload, ColumnMapService $cm): void
     {
-        if (!Storage::disk('public')->exists($upload->stored_path)) {
-            $this->line("│  ⚠ Archivo físico no encontrado para auditoría de columnas");
+        if (! ReportUploadStorage::exists($upload->stored_path)) {
+            $this->line('│  ⚠ Archivo físico no encontrado para auditoría de columnas');
+
             return;
         }
 
-        $abs = Storage::disk('public')->path($upload->stored_path);
+        $abs = ReportUploadStorage::path($upload->stored_path);
 
         // Read only first 20 rows to avoid memory exhaustion on large files
         try {
-            $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReaderForFile($abs);
+            $reader = IOFactory::createReaderForFile($abs);
             $reader->setReadDataOnly(true);
             if (method_exists($reader, 'setReadFilter')) {
-                $filter = new class implements \PhpOffice\PhpSpreadsheet\Reader\IReadFilter {
-                    public function readCell($columnAddress, $row, $worksheetName = '') {
+                $filter = new class implements IReadFilter
+                {
+                    /**
+                     * Filtro de lectura de PhpSpreadsheet: solo carga los primeros 20 renglones.
+                     *
+                     * @param  string  $columnAddress  Columna de la celda.
+                     * @param  int  $row  Número de renglón.
+                     * @param  string  $worksheetName  Nombre de la hoja.
+                     * @return bool true si el renglón es ≤ 20.
+                     */
+                    public function readCell($columnAddress, $row, $worksheetName = '')
+                    {
                         return $row <= 20;
                     }
                 };
                 $reader->setReadFilter($filter);
             }
-            $ss   = $reader->load($abs);
-            $ws   = $ss->getActiveSheet();
+            $ss = $reader->load($abs);
+            $ws = $ss->getActiveSheet();
             $rows = [];
             foreach ($ws->getRowIterator(1, 20) as $row) {
                 $rowData = [];
@@ -285,59 +362,79 @@ class AuditImportSourcesCommand extends Command
             $ss->disconnectWorksheets();
             unset($ss);
         } catch (\Throwable $e) {
-            $this->line("│  ⚠ Error leyendo archivo para columnas: " . $e->getMessage());
+            $this->line('│  ⚠ Error leyendo archivo para columnas: '.$e->getMessage());
+
             return;
         }
 
         // Find header row (first row with score ≥ 3)
-        $keywords = ['cliente','promotor','nombre_promotor','monto_desembolsado','producto_de_credito',
-                     'contrato','capital','interes','dias_vencido','balance','saldo_actual'];
-        $headerIdx = 0; $best = -1;
+        $keywords = ['cliente', 'promotor', 'nombre_promotor', 'monto_desembolsado', 'producto_de_credito',
+            'contrato', 'capital', 'interes', 'dias_vencido', 'balance', 'saldo_actual'];
+        $headerIdx = 0;
+        $best = -1;
         foreach (array_slice($rows, 0, 20, true) as $i => $row) {
-            if (!is_array($row)) continue;
+            if (! is_array($row)) {
+                continue;
+            }
             $score = 0;
             foreach ($row as $v) {
-                $n = $this->normalizeH((string)($v ?? ''));
-                if (in_array($n, $keywords)) $score++;
+                $n = $this->normalizeH((string) ($v ?? ''));
+                if (in_array($n, $keywords)) {
+                    $score++;
+                }
             }
-            if ($score > $best) { $best = $score; $headerIdx = $i; }
+            if ($score > $best) {
+                $best = $score;
+                $headerIdx = $i;
+            }
         }
 
-        $header  = $rows[$headerIdx] ?? [];
-        $result  = $cm->resolveHeader($upload->code, $header);
-        $map     = $result['map'];
+        $header = $rows[$headerIdx] ?? [];
+        $result = $cm->resolveHeader($upload->code, $header);
+        $map = $result['map'];
 
-        $this->line("│");
+        $this->line('│');
         $this->line("│  COLUMNAS (fila encabezado: {$headerIdx}):");
-        $this->line("│  ┌─ USADAS:");
+        $this->line('│  ┌─ USADAS:');
         foreach ($map as $field => $colIdx) {
-            $rawName = trim((string)($header[$colIdx] ?? ''));
+            $rawName = trim((string) ($header[$colIdx] ?? ''));
             $this->line("│  │  {$field} ← Col {$colIdx}: \"{$rawName}\"");
         }
-        if (!empty($result['missingRequired'])) {
-            $this->line("│  ├─ REQUERIDAS FALTANTES:");
-            foreach ($result['missingRequired'] as $f) $this->line("│  │  ! {$f}");
+        if (! empty($result['missingRequired'])) {
+            $this->line('│  ├─ REQUERIDAS FALTANTES:');
+            foreach ($result['missingRequired'] as $f) {
+                $this->line("│  │  ! {$f}");
+            }
         }
-        if (!empty($result['missingOptional'])) {
-            $this->line("│  ├─ OPCIONALES FALTANTES:");
-            foreach ($result['missingOptional'] as $f) $this->line("│  │  - {$f}");
+        if (! empty($result['missingOptional'])) {
+            $this->line('│  ├─ OPCIONALES FALTANTES:');
+            foreach ($result['missingOptional'] as $f) {
+                $this->line("│  │  - {$f}");
+            }
         }
         $ignoredCount = count($result['ignored']);
         $this->line("│  └─ IGNORADAS: {$ignoredCount} columnas");
         foreach (array_slice($result['ignored'], 0, 10, true) as $norm => $idx) {
-            $rawName = trim((string)($header[$idx] ?? ''));
+            $rawName = trim((string) ($header[$idx] ?? ''));
             $this->line("│     Col {$idx}: \"{$rawName}\" [{$norm}]");
         }
         if ($ignoredCount > 10) {
-            $this->line("│     ... y " . ($ignoredCount - 10) . " más");
+            $this->line('│     ... y '.($ignoredCount - 10).' más');
         }
     }
 
+    /**
+     * Normaliza un encabezado: minúsculas, sin acentos y con no-alfanuméricos convertidos a "_".
+     *
+     * @param  string  $v  Encabezado original.
+     * @return string Encabezado normalizado.
+     */
     private function normalizeH(string $v): string
     {
         $v = trim(mb_strtolower($v));
-        $v = str_replace(['á','é','í','ó','ú','ü','ñ'],['a','e','i','o','u','u','n'],$v);
-        $v = preg_replace('/[^a-z0-9]+/u','_',$v) ?? $v;
-        return trim($v,'_');
+        $v = str_replace(['á', 'é', 'í', 'ó', 'ú', 'ü', 'ñ'], ['a', 'e', 'i', 'o', 'u', 'u', 'n'], $v);
+        $v = preg_replace('/[^a-z0-9]+/u', '_', $v) ?? $v;
+
+        return trim($v, '_');
     }
 }

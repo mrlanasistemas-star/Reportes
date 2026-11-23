@@ -10,12 +10,17 @@ use Illuminate\Support\Facades\Route;
 use Throwable;
 
 /**
- * Verificación posterior al despliegue: detecta lo que deja una versión "a medias"
- * aunque el frontend ya sea nuevo — rutas que el backend no conoce (caché de rutas
- * vieja u OPcache sin recargar: el sidebar muestra Usuarios/Roles y dan 404),
- * migraciones pendientes, páginas que faltan en el build, storage sin permisos o
- * configuración insegura. Sale con código 1 si algo crítico falla.
+ * Comando `reportes:verificar-despliegue` — verificación posterior al despliegue: detecta lo que
+ * deja una versión "a medias" aunque el frontend ya sea nuevo — rutas que el backend no conoce
+ * (caché de rutas vieja u OPcache sin recargar: el sidebar muestra Usuarios/Roles y dan 404),
+ * enlaces del sidebar sin ruta, cachés de rutas/configuración desactualizadas, migraciones
+ * pendientes, tablas que no son InnoDB, páginas que faltan en el build de Vite, storage sin
+ * permisos o con archivos sensibles públicos, fuentes Montserrat para PDF y configuración
+ * insegura. Sale con código 1 si algo crítico falla (los avisos no cuentan como falla).
  *
+ * Escribe en BD: NO — solo lectura.
+ *
+ * Ejemplo:
  *   php artisan reportes:verificar-despliegue
  */
 class VerifyDeploymentCommand extends Command
@@ -39,6 +44,12 @@ class VerifyDeploymentCommand extends Command
 
     private bool $failed = false;
 
+    /**
+     * Ejecuta todas las verificaciones e imprime el veredicto final.
+     *
+     * @param  Migrator  $migrator  Migrador de Laravel (para detectar migraciones pendientes).
+     * @return int SUCCESS si no hubo fallas críticas; FAILURE en caso contrario.
+     */
     public function handle(Migrator $migrator): int
     {
         $this->info('Verificación de despliegue — Reportes MR LANA');
@@ -64,6 +75,9 @@ class VerifyDeploymentCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Verifica que existan las rutas imprescindibles de CRITICAL_ROUTES.
+     */
     private function checkRoutes(): void
     {
         $missing = array_values(array_filter(self::CRITICAL_ROUTES, fn ($n) => ! Route::has($n)));
@@ -72,6 +86,9 @@ class VerifyDeploymentCommand extends Command
             : 'Faltan: '.implode(', ', $missing).'. Ejecuta `php artisan optimize:clear && php artisan optimize` y recarga PHP-FPM.');
     }
 
+    /**
+     * Verifica que cada enlace del sidebar apunte a una ruta registrada (si no, daría 404).
+     */
     private function checkSidebar(): void
     {
         $nav = @file_get_contents(resource_path('js/config/mainNav.ts')) ?: '';
@@ -89,6 +106,10 @@ class VerifyDeploymentCommand extends Command
             : 'Enlaces sin ruta (darían 404): '.implode(', ', $broken).'.');
     }
 
+    /**
+     * Verifica que la caché de rutas y la de configuración (si existen) sean más recientes que
+     * routes/*.php, config/*.php y .env; sin caché de rutas en producción emite un aviso.
+     */
     private function checkCaches(): void
     {
         $newestRoutes = max(array_map('filemtime', glob(base_path('routes/*.php')) ?: [0]));
@@ -105,6 +126,11 @@ class VerifyDeploymentCommand extends Command
         }
     }
 
+    /**
+     * Reporta las migraciones pendientes.
+     *
+     * @param  Migrator  $migrator  Migrador de Laravel.
+     */
     private function checkMigrations(Migrator $migrator): void
     {
         try {
@@ -120,8 +146,8 @@ class VerifyDeploymentCommand extends Command
     }
 
     /**
-     * MyISAM no tiene transacciones, bloqueos de fila ni llaves foráneas: los
-     * candados de folios OKR y la integridad referencial dependen de InnoDB.
+     * Verifica que las tablas usen InnoDB: MyISAM no tiene transacciones, bloqueos de fila ni llaves
+     * foráneas, y los candados de folios OKR y la integridad referencial dependen de InnoDB.
      */
     private function checkEngine(): void
     {
@@ -138,11 +164,14 @@ class VerifyDeploymentCommand extends Command
             $this->report('Motor InnoDB', $tables === [], $tables === []
                 ? 'Todas las tablas son InnoDB.'
                 : count($tables).' tablas no son InnoDB (p. ej. '.implode(', ', array_slice($tables, 0, 5)).'): define DB_ENGINE=InnoDB antes de migrar o conviértelas con ALTER TABLE … ENGINE=InnoDB.');
-        } catch (\Throwable) {
+        } catch (Throwable) {
             $this->report('Motor InnoDB', false, 'No se pudo consultar information_schema.');
         }
     }
 
+    /**
+     * Verifica que el manifest de Vite incluya las páginas esperadas.
+     */
     private function checkBuild(): void
     {
         $manifest = public_path('build/manifest.json');
@@ -158,6 +187,10 @@ class VerifyDeploymentCommand extends Command
             : 'El build no incluye: '.implode(', ', $missing).'. Vuelve a compilar con `npm run build`.');
     }
 
+    /**
+     * Verifica permisos de escritura de storage/ y bootstrap/cache y que no haya originales
+     * sensibles expuestos en storage/app/public (o que estén bloqueados por .htaccess).
+     */
     private function checkStorage(): void
     {
         $dirs = [storage_path('app/private'), storage_path('framework/cache'), storage_path('framework/sessions'), storage_path('framework/views'), storage_path('logs'), base_path('bootstrap/cache')];
@@ -166,21 +199,28 @@ class VerifyDeploymentCommand extends Command
         $public = storage_path('app/public');
         $sensitive = is_dir($public) ? array_filter(glob($public.'/*') ?: [], fn ($p) => preg_match('/report|upload|noi|lendus|okr|carta|warning|export|efectividad/i', basename($p))) : [];
         $denied = is_file($public.'/.htaccess') && str_contains((string) file_get_contents($public.'/.htaccess'), 'denied');
-        // Los originales viven en storage/app/public/{reports,report_uploads}: el symlink
+        // Desde nov-2026 las cargas nuevas van al disco privado; los originales heredados en
+        // storage/app/public/{reports,report_uploads} se mueven con reportes:mover-cargas-a-privado. El symlink
         // public/storage los expondría. Apache los bloquea con .htaccess; en Nginx se exige
-        // `location ^~ /storage/ { deny all; }` (docs/despliegue-vps-limpio.md, sección 10).
+        // `location ^~ /storage/ { deny all; }` (docs/MANUAL-DESARROLLADOR.md, sección 10).
         $this->report('Archivos sensibles públicos', $sensitive === [] || $denied, $sensitive === []
             ? 'Nada sensible en storage/app/public.'
-            : 'Hay originales en storage/app/public ('.implode(', ', array_map('basename', $sensitive)).'). '
+            : 'Hay originales en storage/app/public ('.implode(', ', array_map('basename', $sensitive)).'): muévelos con `php artisan reportes:mover-cargas-a-privado`. '
                 .($denied ? 'Bloqueados por .htaccess; en Nginx confirma `location ^~ /storage/ { deny all; }`.' : 'Falta storage/app/public/.htaccess y el bloqueo en Nginx: quedarían descargables.'), warn: $denied);
     }
 
+    /**
+     * Verifica que existan las fuentes Montserrat locales usadas por los PDF.
+     */
     private function checkFonts(): void
     {
         $fonts = glob(resource_path('fonts/montserrat/*.woff2')) ?: [];
         $this->report('Montserrat local', count($fonts) > 0, count($fonts) > 0 ? count($fonts).' archivos de fuente para PDF.' : 'Faltan resources/fonts/montserrat/*.woff2: los PDF saldrían sin Montserrat.');
     }
 
+    /**
+     * Revisa la configuración de producción: APP_DEBUG (crítico), APP_URL con https, cola distinta de sync, mailer real y ruta de Chrome para PDF (estos últimos como aviso).
+     */
     private function checkConfig(): void
     {
         $prod = app()->isProduction();
@@ -195,6 +235,15 @@ class VerifyDeploymentCommand extends Command
         $this->report('Chrome para PDF', true, $chrome !== '' ? "Configurado: {$chrome}. Prueba completa: `php artisan reports:pdf-health`." : 'Sin ruta explícita; prueba con `php artisan reports:pdf-health`.', warn: true);
     }
 
+    /**
+     * Imprime una línea OK / AVISO / FALLA y marca el resultado global como fallido si la
+     * verificación crítica no pasó.
+     *
+     * @param  string  $label  Nombre de la verificación.
+     * @param  bool  $ok  Resultado.
+     * @param  string  $detail  Detalle o acción sugerida.
+     * @param  bool  $warn  true para tratar un fallo como aviso (no crítico).
+     */
     private function report(string $label, bool $ok, string $detail, bool $warn = false): void
     {
         if (! $ok && ! $warn) {

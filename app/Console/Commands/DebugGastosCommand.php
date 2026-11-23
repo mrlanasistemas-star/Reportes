@@ -4,23 +4,42 @@ namespace App\Console\Commands;
 
 use App\Models\Period;
 use App\Support\ExpenseStatusNormalizer;
+use App\Support\ReportUploadStorage;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Smalot\PdfParser\Parser;
 
+/**
+ * Comando `reportes:debug-gastos` — diagnóstico de gastos del periodo (`fact_expenses`, solo el
+ * period_id indicado, sin expandir semanas): totales por fuente, por sucursal, ejemplos de
+ * registros sin sucursal (debe ser 0), totales por categoría y top 30 conceptos, fondeos,
+ * desglose de gastos ERP por estatus y validación de los totales contra las líneas "TOTAL:" del
+ * PDF de Gastos Lendus.
+ *
+ * Escribe en BD: NO — solo lectura (lee el PDF de Lendus si está en storage).
+ *
+ * Ejemplo:
+ *   php artisan reportes:debug-gastos 21
+ */
 class DebugGastosCommand extends Command
 {
-    protected $signature   = 'reportes:debug-gastos {periodId : ID del periodo a diagnosticar}';
+    protected $signature = 'reportes:debug-gastos {periodId : ID del periodo a diagnosticar}';
+
     protected $description = 'Diagnóstico de gastos: totales por fuente, sucursal, categoría, concepto. Valida que "Sin sucursal" sea 0.';
 
+    /**
+     * Imprime las secciones 1–8 del diagnóstico de gastos.
+     *
+     * @return int SUCCESS al terminar; FAILURE si el periodo no existe.
+     */
     public function handle(): int
     {
         $periodId = (int) $this->argument('periodId');
 
         $period = Period::find($periodId);
-        if (!$period) {
+        if (! $period) {
             $this->error("Periodo #{$periodId} no encontrado.");
+
             return self::FAILURE;
         }
 
@@ -64,7 +83,7 @@ class DebugGastosCommand extends Command
             ->where('e.period_id', $periodId)
             ->selectRaw("COALESCE(b.name, '⚠ Sin sucursal') as sucursal, COUNT(*) as registros, SUM(COALESCE(NULLIF(e.paid_amount,0), e.amount)) as total")
             ->groupBy('e.branch_id', 'b.name')
-            ->orderByRaw("b.name IS NULL DESC")
+            ->orderByRaw('b.name IS NULL DESC')
             ->orderByDesc('total')
             ->get();
 
@@ -205,6 +224,11 @@ class DebugGastosCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * Agrupa los gastos ERP del periodo por el estatus leído de raw_payload y muestra totales.
+     *
+     * @param  int  $periodId  ID del periodo.
+     */
     private function printErpStatusBreakdown(int $periodId): void
     {
         // Leer raw_payload->estatus de todos los gastos ERP del periodo
@@ -213,11 +237,12 @@ class DebugGastosCommand extends Command
             ->join('data_sources as ds', 'ru.data_source_id', '=', 'ds.id')
             ->where('e.period_id', $periodId)
             ->where('ds.code', 'gastos_erp')
-            ->selectRaw("e.raw_payload, COALESCE(NULLIF(e.paid_amount,0), e.amount) as monto")
+            ->selectRaw('e.raw_payload, COALESCE(NULLIF(e.paid_amount,0), e.amount) as monto')
             ->get();
 
         if ($erpRows->isEmpty()) {
             $this->line('  No hay registros ERP contabilizados para este periodo.');
+
             return;
         }
 
@@ -232,7 +257,7 @@ class DebugGastosCommand extends Command
         // Para contar ignorados necesitamos el conteo original
         // Usar raw_payload.estatus de los insertados + contar cuántos no están
         foreach ($erpRows as $row) {
-            $payload = is_string($row->raw_payload) ? json_decode($row->raw_payload, true) : (array)$row->raw_payload;
+            $payload = is_string($row->raw_payload) ? json_decode($row->raw_payload, true) : (array) $row->raw_payload;
             $rawStatus = $payload['estatus'] ?? null;
             $normStatus = $rawStatus ? ExpenseStatusNormalizer::normalize($rawStatus) : 'SIN ESTATUS';
             $statusTotals[$normStatus] = ($statusTotals[$normStatus] ?? ['count' => 0, 'total' => 0.0]);
@@ -251,12 +276,12 @@ class DebugGastosCommand extends Command
 
         $this->line('');
         $this->line(sprintf('  %-30s %s', 'ESTATUS (normalizado)', 'registros / monto'));
-        $this->line('  ' . str_repeat('─', 60));
+        $this->line('  '.str_repeat('─', 60));
 
         arsort($statusTotals);
         foreach ($statusTotals as $status => $data) {
             $isBillable = ExpenseStatusNormalizer::isBillable($status);
-            $marker     = $isBillable ? '<fg=green>✓</>' : '<fg=red>✗</>';
+            $marker = $isBillable ? '<fg=green>✓</>' : '<fg=red>✗</>';
             $this->line(sprintf(
                 '  %s %-28s registros=%-4d $%s',
                 $marker,
@@ -271,6 +296,12 @@ class DebugGastosCommand extends Command
         $this->line('  <fg=cyan>CAPTURADA/RECHAZADA/NO AUTORIZADA/CANCELADA se excluyen en la importación.</fg=cyan>');
     }
 
+    /**
+     * Lee el PDF de Gastos Lendus del periodo, extrae sus líneas TOTAL y las compara contra los
+     * totales importados en BD por categoría.
+     *
+     * @param  int  $periodId  ID del periodo.
+     */
     private function printPdfTotalsValidation(int $periodId): void
     {
         // Find the gastos_lendus upload for this period
@@ -281,31 +312,35 @@ class DebugGastosCommand extends Command
             ->select('ru.stored_path')
             ->first();
 
-        if (!$upload || !$upload->stored_path) {
+        if (! $upload || ! $upload->stored_path) {
             $this->line('  No hay archivo Gastos Lendus (PDF) cargado para este periodo.');
+
             return;
         }
 
-        if (!Storage::disk('public')->exists($upload->stored_path)) {
+        if (! ReportUploadStorage::exists($upload->stored_path)) {
             $this->line('  El archivo PDF no existe en storage. Omitiendo validación.');
+
             return;
         }
 
         // Extract TOTAL: lines from the PDF
         try {
-            $parser   = new Parser();
-            $pdf      = $parser->parseFile(Storage::disk('public')->path($upload->stored_path));
+            $parser = new Parser;
+            $pdf = $parser->parseFile(ReportUploadStorage::path($upload->stored_path));
             $pdfTotals = [];
 
             foreach ($pdf->getPages() as $page) {
                 foreach (explode("\n", $page->getText()) as $raw) {
                     $line = trim($raw);
-                    if (!str_starts_with($line, 'TOTAL:')) continue;
+                    if (! str_starts_with($line, 'TOTAL:')) {
+                        continue;
+                    }
                     // TOTAL: SUCURSAL\t$ 0.00$ X,XXX.XX\t...  (first $ = M_pag_empleado, second = real total)
                     if (preg_match('/^TOTAL:\s+(.+?)\s+\$\s*[\d,]+\.?\d*\$\s*([\d,]+\.?\d*)/', $line, $m)) {
                         $branch = trim($m[1]);
-                        $amt    = (float) str_replace(',', '', $m[2]);
-                        if ($branch !== '' && !str_starts_with($branch, '$')) {
+                        $amt = (float) str_replace(',', '', $m[2]);
+                        if ($branch !== '' && ! str_starts_with($branch, '$')) {
                             $pdfTotals[mb_strtoupper($branch)] = $amt;
                         }
                     }
@@ -313,11 +348,13 @@ class DebugGastosCommand extends Command
             }
         } catch (\Throwable $e) {
             $this->line("  No se pudo leer el PDF para validación: {$e->getMessage()}");
+
             return;
         }
 
         if (empty($pdfTotals)) {
             $this->line('  No se encontraron líneas TOTAL: en el PDF.');
+
             return;
         }
 
@@ -346,50 +383,50 @@ class DebugGastosCommand extends Command
             'TOTAL DB',
             'DIFERENCIA'
         ));
-        $this->line('  ' . str_repeat('─', 72));
+        $this->line('  '.str_repeat('─', 72));
 
         $allOk = true;
         foreach ($pdfTotalsNorm as $key => $entry) {
             $branch = $entry['label'];
             $pdfAmt = $entry['amt'];
             $dbAmt = isset($dbSums[$key]) ? (float) $dbSums[$key]->total : 0.0;
-            $diff  = $dbAmt - $pdfAmt;
-            $ok    = abs($diff) < 1.0;
+            $diff = $dbAmt - $pdfAmt;
+            $ok = abs($diff) < 1.0;
             $allOk = $allOk && $ok;
 
             $diffLabel = $ok
-                ? '<fg=green>' . number_format($diff, 2) . '</>'
-                : '<fg=red>' . number_format($diff, 2) . ' ⚠</>';
+                ? '<fg=green>'.number_format($diff, 2).'</>'
+                : '<fg=red>'.number_format($diff, 2).' ⚠</>';
 
             $this->line(sprintf(
                 '  %-28s %14s  %14s  %s',
                 mb_substr($branch, 0, 28),
-                '$' . number_format($pdfAmt, 2),
-                '$' . number_format($dbAmt, 2),
+                '$'.number_format($pdfAmt, 2),
+                '$'.number_format($dbAmt, 2),
                 $diffLabel
             ));
         }
 
         $totalPdf = array_sum(array_column($pdfTotalsNorm, 'amt'));
-        $totalDb  = (float) $dbSums->sum('total');
+        $totalDb = (float) $dbSums->sum('total');
         $totalDiff = $totalDb - $totalPdf;
 
-        $this->line('  ' . str_repeat('─', 72));
+        $this->line('  '.str_repeat('─', 72));
         $this->line(sprintf(
             '  %-28s %14s  %14s  %s',
             '→ TOTALES GLOBALES',
-            '$' . number_format($totalPdf, 2),
-            '$' . number_format($totalDb, 2),
+            '$'.number_format($totalPdf, 2),
+            '$'.number_format($totalDb, 2),
             abs($totalDiff) < 1.0
-                ? '<fg=green>' . number_format($totalDiff, 2) . '</>'
-                : '<fg=yellow>' . number_format($totalDiff, 2) . '</>'
+                ? '<fg=green>'.number_format($totalDiff, 2).'</>'
+                : '<fg=yellow>'.number_format($totalDiff, 2).'</>'
         ));
         $this->line('');
 
         if ($allOk) {
             $this->line('  <fg=green>✓ Todos los totales coinciden con el PDF.</>');
         } else {
-            $negCount  = count(array_filter($pdfTotalsNorm, fn ($e) => (isset($dbSums[$e['label']]) ? (float)$dbSums[$e['label']]->total : 0.0) < $e['amt'] - 1.0));
+            $negCount = count(array_filter($pdfTotalsNorm, fn ($e) => (isset($dbSums[$e['label']]) ? (float) $dbSums[$e['label']]->total : 0.0) < $e['amt'] - 1.0));
             $this->warn("  ⚠ {$negCount} sucursal(es) con DB < PDF.");
             $this->line('  <fg=cyan>Nota: Las diferencias negativas (DB < PDF) se explican por filas Cancelado</> ');
             $this->line('  <fg=cyan>que el PDF suma en su TOTAL pero la importación excluye correctamente.</>');
@@ -397,6 +434,10 @@ class DebugGastosCommand extends Command
         }
     }
 
+    /**
+     * @param  string  $s  Texto.
+     * @return string Texto en mayúsculas sin acentos.
+     */
     private function stripAccents(string $s): string
     {
         return strtr(mb_strtoupper($s), [

@@ -7,17 +7,33 @@ use App\Models\EmployeeMatchRejection;
 use App\Models\NoiMovement;
 use App\Models\ReportUpload;
 use App\Services\PersonIdentityResolverService;
+use App\Support\ReportUploadStorage;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use PhpOffice\PhpSpreadsheet\IOFactory;
 use Maatwebsite\Excel\Facades\Excel;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 
-
+/**
+ * Importador de la nómina NOI (fuentes `noi_nomina` y `noi_nomina_fiscal`):
+ * cada fila es un concepto (percepción/deducción) de un trabajador y alimenta
+ * fact_noi_movements, de donde salen Nómina y Capital Humano, roster de
+ * colaboradores, IMSS y rotación derivados.
+ *
+ * Responsabilidades:
+ * - Leer el archivo NOI (bloques "Clave del trabajador : N" + nombre, o formato
+ *   plano por encabezados) y guardar un movimiento por concepto con importe.
+ * - Resolver la IDENTIDAD del empleado de forma estable (ver resolveNoiIdentity()):
+ *   la clave NOI solo identifica dentro del mismo sistema y se valida contra el nombre.
+ * - Clasificar la evidencia de identidad fuera de NOI (PersonIdentityResolverService)
+ *   y generar incidencias de revisión sin bloquear nómina real.
+ * - Anclar con fila sintética a trabajadores cuyo bloque existe pero todos sus
+ *   conceptos vienen en $0, solo si tienen evidencia fuera de NOI.
+ * Lo usan ReportAnalysisService (handle) y DatabaseUpdateService (scanForDatabaseUpdate).
+ */
 class NoiNominaImportService
 {
     private const NOI_IDENTITY_TYPE = 'noi_clave';
@@ -41,10 +57,26 @@ class NoiNominaImportService
     /** Cache de evaluateNoiCandidateEvidence() por nombre normalizado, vigente solo dentro de una corrida de handle(). */
     private array $evidenceCache = [];
 
+    /**
+     * @param  PersonIdentityResolverService  $identityResolver  Evalúa evidencia de identidad y similitud de nombres.
+     */
     public function __construct(
         private readonly PersonIdentityResolverService $identityResolver,
     ) {}
 
+    /**
+     * Importa el archivo NOI del upload a fact_noi_movements.
+     * Efectos: reinicia cachés e identidad por archivo, borra los movimientos previos
+     * del upload, crea/actualiza employees, employee_external_identities,
+     * employee_aliases y employee_match_rejections, e inserta movimientos (incluidas
+     * filas ancla en $0). Devuelve incidencias de identidad para el panel.
+     *
+     * @param  ReportUpload  $upload  Archivo NOI subido.
+     * @param  callable|null  $progress  Callback opcional con estadísticas parciales.
+     * @return array<string,mixed> Estadísticas (leídas, insertadas, omitidas, con error), incidencias y log.
+     *
+     * @throws \RuntimeException Si falta el archivo, está vacío, no hay encabezados, faltan columnas mínimas o falla la inserción de una fila.
+     */
     public function handle(ReportUpload $upload, ?callable $progress = null): array
     {
         // BUG CRÍTICO (encontrado 2026-07-23): $employeeCache es una propiedad de instancia
@@ -62,17 +94,17 @@ class NoiNominaImportService
         $this->evidenceCache = [];
         $this->startIdentityScope($upload);
 
-        if (!$upload->stored_path) {
+        if (! $upload->stored_path) {
             throw new \RuntimeException('El archivo no tiene stored_path.');
         }
 
-        if (!Storage::disk('public')->exists($upload->stored_path)) {
+        if (! ReportUploadStorage::exists($upload->stored_path)) {
             throw new \RuntimeException('El archivo físico no existe en storage/public.');
         }
 
         @set_time_limit(0);
 
-        $absolutePath = Storage::disk('public')->path($upload->stored_path);
+        $absolutePath = ReportUploadStorage::path($upload->stored_path);
         $sheets = Excel::toArray([], $absolutePath);
 
         if (empty($sheets) || empty($sheets[0])) {
@@ -84,7 +116,7 @@ class NoiNominaImportService
         $headerRowIndex = $this->detectHeaderRowIndex($rows);
         $headerRow = $rows[$headerRowIndex] ?? null;
 
-        if (!$headerRow || !is_array($headerRow)) {
+        if (! $headerRow || ! is_array($headerRow)) {
             throw new \RuntimeException('No se encontró una fila de encabezados válida en el archivo NOI.');
         }
 
@@ -93,16 +125,16 @@ class NoiNominaImportService
         $requiredColumns = ['concept', 'amount'];
 
         $missingRequired = collect($requiredColumns)
-            ->filter(fn (string $field) => !array_key_exists($field, $headerMap))
+            ->filter(fn (string $field) => ! array_key_exists($field, $headerMap))
             ->values()
             ->all();
 
-        if (!empty($missingRequired)) {
+        if (! empty($missingRequired)) {
             throw new \RuntimeException(
                 'El archivo NOI no contiene columnas mínimas requeridas: '
-                . implode(', ', $missingRequired)
-                . '. Encabezados detectados: '
-                . implode(', ', array_values(array_filter($headerRow, fn ($value) => filled($value))))
+                .implode(', ', $missingRequired)
+                .'. Encabezados detectados: '
+                .implode(', ', array_values(array_filter($headerRow, fn ($value) => filled($value))))
             );
         }
 
@@ -135,12 +167,13 @@ class NoiNominaImportService
         // aunque su bloque "Clave del trabajador : N" exista en el archivo. Para el conteo
         // de colaboradores únicos (regla 2026-07-23: cada clave cuenta 1, sin importar si
         // tuvo movimientos con importe) se ancla con una fila sintética al final.
-        $blockEmployees  = [];
-        $insertedCodes   = [];
+        $blockEmployees = [];
+        $insertedCodes = [];
 
         foreach (array_slice($rows, $headerRowIndex + 1, null, true) as $rowIndex => $row) {
-            if (!is_array($row) || $this->isEmptyRow($row)) {
+            if (! is_array($row) || $this->isEmptyRow($row)) {
                 $rowsSkipped++;
+
                 continue;
             }
 
@@ -159,7 +192,7 @@ class NoiNominaImportService
                 }
 
                 if (
-                    !$this->isValidEmployeeName($mapped['employee_name']) &&
+                    ! $this->isValidEmployeeName($mapped['employee_name']) &&
                     $currentEmployeeName &&
                     ($mapped['concept'] || $mapped['amount'] !== null)
                 ) {
@@ -167,7 +200,7 @@ class NoiNominaImportService
                 }
 
                 if (
-                    !$mapped['employee_code'] &&
+                    ! $mapped['employee_code'] &&
                     $currentEmployeeCode &&
                     ($mapped['concept'] || $mapped['amount'] !== null)
                 ) {
@@ -178,15 +211,17 @@ class NoiNominaImportService
                     $blockEmployees[$mapped['employee_code']] = $mapped['employee_name'];
                 }
 
-                if (!$this->shouldInsertRow($mapped)) {
+                if (! $this->shouldInsertRow($mapped)) {
                     $rowsSkipped++;
+
                     continue;
                 }
 
                 $employee = $this->resolveEmployee($mapped);
 
-                if (!$employee) {
+                if (! $employee) {
                     $rowsSkipped++;
+
                     continue;
                 }
 
@@ -200,17 +235,17 @@ class NoiNominaImportService
                 // evidencia fuera de NOI se marca como incidencia NEEDS_REVIEW para que un
                 // humano confirme identidad/sucursal en el panel de incidencias.
                 $normEmpName = $this->normalizeName($mapped['employee_name']);
-                if ($normEmpName !== '' && !isset($flaggedNeedsReview[$normEmpName])) {
+                if ($normEmpName !== '' && ! isset($flaggedNeedsReview[$normEmpName])) {
                     $evidence = $this->evaluateEvidence($normEmpName, $mapped['employee_name']);
                     if ($evidence['found']) {
                         $identityStats[$evidence['is_non_portfolio_role'] ? 'matched_non_portfolio_role' : 'matched']++;
                     } else {
                         $identityStats['needs_review']++;
                         $identityIncidents[] = [
-                            'type'     => 'noi_identidad.sin_respaldo',
+                            'type' => 'noi_identidad.sin_respaldo',
                             'severity' => 'warning',
-                            'message'  => "\"{$mapped['employee_name']}\" tiene pago en NOI pero no se encontró en el directorio Lendus, cartera/colocación/cobranza ni asignaciones históricas. Verificar identidad y sucursal antes de confiar en el reporte.",
-                            'context'  => ['normalized_name' => $normEmpName, 'employee_id' => $employee->id],
+                            'message' => "\"{$mapped['employee_name']}\" tiene pago en NOI pero no se encontró en el directorio Lendus, cartera/colocación/cobranza ni asignaciones históricas. Verificar identidad y sucursal antes de confiar en el reporte.",
+                            'context' => ['normalized_name' => $normEmpName, 'employee_id' => $employee->id],
                         ];
                     }
                     $flaggedNeedsReview[$normEmpName] = true;
@@ -244,13 +279,13 @@ class NoiNominaImportService
 
                 throw new \RuntimeException(
                     'Error al insertar fila NOI. Empleado: '
-                    . ($mapped['employee_name'] ?? 'N/D')
-                    . ' | Concepto: '
-                    . ($mapped['concept'] ?? 'N/D')
-                    . ' | Amount: '
-                    . (($mapped['amount'] ?? null) === null ? 'NULL' : (string) $mapped['amount'])
-                    . ' | Detalle: '
-                    . $e->getMessage()
+                    .($mapped['employee_name'] ?? 'N/D')
+                    .' | Concepto: '
+                    .($mapped['concept'] ?? 'N/D')
+                    .' | Amount: '
+                    .(($mapped['amount'] ?? null) === null ? 'NULL' : (string) $mapped['amount'])
+                    .' | Detalle: '
+                    .$e->getMessage()
                 );
             }
 
@@ -287,14 +322,15 @@ class NoiNominaImportService
             $normBlockName = $this->normalizeName($name);
             $evidence = $normBlockName !== '' ? $this->evaluateEvidence($normBlockName, $name) : ['found' => false, 'is_non_portfolio_role' => false, 'detail' => 'Nombre vacío'];
 
-            if (!$evidence['found']) {
+            if (! $evidence['found']) {
                 $identityStats['skipped_stale_zero']++;
                 $identityIncidents[] = [
-                    'type'     => 'noi_identidad.stale_zero_ignorado',
+                    'type' => 'noi_identidad.stale_zero_ignorado',
                     'severity' => 'info',
-                    'message'  => "Ignorado: \"{$name}\" aparece en NOI con \$0 y sin actividad en el periodo, y no se encontró en el directorio Lendus, cartera/colocación/cobranza ni asignaciones históricas. No se creó como colaborador operativo.",
-                    'context'  => ['normalized_name' => $normBlockName, 'employee_code' => $code],
+                    'message' => "Ignorado: \"{$name}\" aparece en NOI con \$0 y sin actividad en el periodo, y no se encontró en el directorio Lendus, cartera/colocación/cobranza ni asignaciones históricas. No se creó como colaborador operativo.",
+                    'context' => ['normalized_name' => $normBlockName, 'employee_code' => $code],
                 ];
+
                 continue;
             }
 
@@ -307,7 +343,7 @@ class NoiNominaImportService
             ];
 
             $employee = $this->resolveEmployee($mapped);
-            if (!$employee) {
+            if (! $employee) {
                 continue;
             }
 
@@ -342,7 +378,7 @@ class NoiNominaImportService
             'incidents' => array_merge($identityIncidents, $this->identityIncidents),
             'log' => sprintf(
                 'Importación NOI completada. Leídas: %d, insertadas: %d, omitidas: %d, con error: %d. '
-                . 'Identidad — vinculados: %d, roles sin cartera: %d, requieren revisión: %d, ignorados ($0 sin respaldo): %d.',
+                .'Identidad — vinculados: %d, roles sin cartera: %d, requieren revisión: %d, ignorados ($0 sin respaldo): %d.',
                 $rowsRead,
                 $rowsInserted,
                 $rowsSkipped,
@@ -356,32 +392,50 @@ class NoiNominaImportService
     }
 
     /**
-     * Cached wrapper around PersonIdentityResolverService::evaluateNoiCandidateEvidence(),
-     * scoped to a single handle() run — a NOI file can repeat the same person across many
-     * rows (one per concepto), so the underlying DB lookups only need to run once per name.
+     * Envoltura con caché de PersonIdentityResolverService::evaluateNoiCandidateEvidence(),
+     * válida solo durante una corrida de handle(): un archivo NOI repite a la misma
+     * persona en muchas filas (una por concepto), así que las consultas a BD solo
+     * deben hacerse una vez por nombre.
+     *
+     * @param  string  $normalizedName  Nombre normalizado del trabajador.
+     * @param  string  $displayName  Nombre tal como viene en NOI.
+     * @return array Resultado de la evaluación de evidencia.
      */
     private function evaluateEvidence(string $normalizedName, string $displayName): array
     {
-        if (!array_key_exists($normalizedName, $this->evidenceCache)) {
+        if (! array_key_exists($normalizedName, $this->evidenceCache)) {
             $this->evidenceCache[$normalizedName] = $this->identityResolver->evaluateNoiCandidateEvidence($displayName);
         }
 
         return $this->evidenceCache[$normalizedName];
     }
 
+    /**
+     * Escaneo ligero para "Cargar registros": lee solo las columnas A y B por
+     * bloques, detecta cada trabajador (la clave del bloque se arrastra al nombre
+     * de las filas siguientes; en formato plano el nombre va en A) y resuelve su
+     * identidad con la MISMA regla que handle() (antes un upsert sin índice único
+     * duplicaba la plantilla en cada carga). No inserta movimientos.
+     * Efectos: crea/actualiza employees e identidades NOI.
+     *
+     * @param  ReportUpload  $upload  Upload NOI del periodo.
+     * @return array{employees_detected:int,rows_read:int,rows_skipped:int,incidents:array} Resumen del escaneo.
+     *
+     * @throws \RuntimeException Si falta el archivo, no tiene hojas o no tiene filas útiles.
+     */
     public function scanForDatabaseUpdate(ReportUpload $upload): array
     {
-        if (!$upload->stored_path) {
+        if (! $upload->stored_path) {
             throw new \RuntimeException('El archivo NOI no tiene ruta de almacenamiento.');
         }
 
-        if (!Storage::disk('public')->exists($upload->stored_path)) {
+        if (! ReportUploadStorage::exists($upload->stored_path)) {
             throw new \RuntimeException('El archivo físico de NOI no existe en storage/public.');
         }
 
         @set_time_limit(0);
 
-        $absolutePath = Storage::disk('public')->path($upload->stored_path);
+        $absolutePath = ReportUploadStorage::path($upload->stored_path);
 
         $reader = IOFactory::createReaderForFile($absolutePath);
         $reader->setReadDataOnly(true);
@@ -427,8 +481,9 @@ class NoiNominaImportService
             );
 
             foreach ($chunkRows as $row) {
-                if (!is_array($row) || $this->isEmptyRow($row)) {
+                if (! is_array($row) || $this->isEmptyRow($row)) {
                     $rowsSkipped++;
+
                     continue;
                 }
 
@@ -443,7 +498,7 @@ class NoiNominaImportService
                 if ($blockCode !== null) {
                     $currentCode = $blockCode;
                     // Formato plano (clave y nombre en la misma fila): el nombre va en A.
-                    if (!$this->isValidEmployeeName($col0)) {
+                    if (! $this->isValidEmployeeName($col0)) {
                         continue;
                     }
                 }
@@ -456,8 +511,9 @@ class NoiNominaImportService
                     $employeeName = $col0;
                 }
 
-                if (!$this->isValidEmployeeName($employeeName)) {
+                if (! $this->isValidEmployeeName($employeeName)) {
                     $rowsSkipped++;
+
                     continue;
                 }
 
@@ -465,6 +521,7 @@ class NoiNominaImportService
 
                 if ($normalized === '') {
                     $rowsSkipped++;
+
                     continue;
                 }
 
@@ -504,6 +561,10 @@ class NoiNominaImportService
         ];
     }
 
+    /**
+     * @param  string  $absolutePath  Ruta absoluta del archivo.
+     * @return string Nombre de la primera hoja ('Sheet1' si no se puede leer).
+     */
     private function firstSheetName(string $absolutePath): string
     {
         try {
@@ -516,13 +577,20 @@ class NoiNominaImportService
         }
     }
 
+    /**
+     * Devuelve, de las primeras 20 filas, la de mayor coincidencia con encabezados
+     * conocidos de NOI (nombre del trabajador, concepto, acumulado, importe, monto, total).
+     *
+     * @param  array  $rows  Filas de la hoja.
+     * @return int Índice del renglón de encabezados.
+     */
     private function detectHeaderRowIndex(array $rows): int
     {
         $bestIndex = 0;
         $bestScore = -1;
 
         foreach (array_slice($rows, 0, 20, true) as $index => $row) {
-            if (!is_array($row)) {
+            if (! is_array($row)) {
                 continue;
             }
 
@@ -555,6 +623,14 @@ class NoiNominaImportService
         return $bestIndex;
     }
 
+    /**
+     * Mapea campos lógicos (nombre del trabajador, concepto, tipo de concepto,
+     * importe, cantidad, tipo de nómina, fecha) a columnas por alias de encabezado
+     * normalizado, incluidos los formatos NOMBRE_TRAB / DESCRIP_CPTO / "Monto del periodo".
+     *
+     * @param  array  $headerRow  Celdas del encabezado.
+     * @return array<string,int> Campo => índice de columna.
+     */
     private function buildHeaderMap(array $headerRow): array
     {
         $normalizedHeaders = [];
@@ -641,6 +717,16 @@ class NoiNominaImportService
         return $map;
     }
 
+    /**
+     * Extrae los datos de la fila: clave del trabajador (columna B), nombre
+     * (prefiere el encabezado; si no, columnas B o A), concepto, tipo, importe,
+     * cantidad, tipo de nómina y fecha. Las deducciones D### negativas se guardan
+     * en valor absoluto (el SnapshotBuilder las resta; así no hay doble negativo).
+     *
+     * @param  array  $row  Fila de datos.
+     * @param  array  $headerMap  Mapa campo => índice.
+     * @return array<string,mixed> Fila normalizada.
+     */
     private function mapRow(array $row, array $headerMap): array
     {
         $col0 = $this->cleanString($row[0] ?? null);
@@ -668,8 +754,8 @@ class NoiNominaImportService
         $amount = $this->toDecimal($this->valueFromRow($row, $headerMap, 'amount'));
         $quantity = $this->toDecimal($this->valueFromRow($row, $headerMap, 'quantity'));
 
-        // Deducciones (D###) must be stored as positive absolute values.
-        // The SnapshotBuilder subtracts them; if they arrive as negative, abs() prevents double-negation.
+        // Las deducciones (D###) se guardan como valores absolutos positivos.
+        // El SnapshotBuilder las resta; si vienen negativas, abs() evita el doble negativo.
         if ($amount !== null && $concept && preg_match('/^D\d{3}\b/i', trim($concept)) && $amount < 0) {
             $amount = abs($amount);
         }
@@ -689,13 +775,20 @@ class NoiNominaImportService
         ];
     }
 
+    /**
+     * Indica si la fila es un movimiento real: nombre válido, concepto, importe
+     * distinto de cero y que no sea un renglón de acumulado/total/subtotal.
+     *
+     * @param  array  $mapped  Fila de mapRow().
+     * @return bool true si se inserta.
+     */
     private function shouldInsertRow(array $mapped): bool
     {
-        if (!$this->isValidEmployeeName($mapped['employee_name'])) {
+        if (! $this->isValidEmployeeName($mapped['employee_name'])) {
             return false;
         }
 
-        if (!$mapped['concept']) {
+        if (! $mapped['concept']) {
             return false;
         }
 
@@ -717,6 +810,9 @@ class NoiNominaImportService
     }
 
     /**
+     * Efecto secundario: puede crear o actualizar el Employee. Usa una caché por
+     * nombre+clave que solo vive dentro del archivo en curso.
+     *
      * Identidad ÚNICA y estable del empleado: nombre_normalizado + source_system='noi'.
      * "Clave del trabajador" (employee_code) NUNCA se usa como llave de búsqueda/upsert
      * — confirmado 2026-07-23 que el mismo número identifica personas distintas entre
@@ -726,13 +822,16 @@ class NoiNominaImportService
      * anterior cada vez que un periodo posterior reutilizaba ese código para otra persona.
      * employee_code se conserva solo como dato informativo (columna "Clave" en
      * auditorías/Excel) del ÚLTIMO archivo que lo reportó — nunca como identidad.
+     *
+     * @param  array  $mapped  Debe traer employee_code y employee_name.
+     * @return Employee|null Empleado resuelto o null si el nombre no es válido.
      */
     private function resolveEmployee(array $mapped): ?Employee
     {
         $employeeCode = $mapped['employee_code'] ?: null;
         $fullName = $mapped['employee_name'];
 
-        if (!$this->isValidEmployeeName($fullName)) {
+        if (! $this->isValidEmployeeName($fullName)) {
             return null;
         }
 
@@ -742,7 +841,7 @@ class NoiNominaImportService
             return null;
         }
 
-        $cacheKey = "name:{$normalizedName}|code:" . ($employeeCode ?? '-');
+        $cacheKey = "name:{$normalizedName}|code:".($employeeCode ?? '-');
 
         if (array_key_exists($cacheKey, $this->employeeCache)) {
             return $this->employeeCache[$cacheKey];
@@ -752,6 +851,10 @@ class NoiNominaImportService
     }
 
     /**
+     * Efectos: crea/actualiza employees, vincula la clave en
+     * employee_external_identities, registra alias y rechazos de fusión, y agrega
+     * incidencias de identidad del archivo.
+     *
      * Identidad NOI (cierre 2026-10) — una sola regla para handle() y para
      * scanForDatabaseUpdate():
      *
@@ -768,6 +871,11 @@ class NoiNominaImportService
      *      (o reutiliza por clave) un registro aparte y se registra el rechazo de
      *      fusión (employee_match_rejections) para que ningún consumidor los
      *      junte por nombre. Queda una incidencia para revisión.
+     *
+     * @param  string  $fullName  Nombre tal como viene en NOI.
+     * @param  string  $normalizedName  Nombre normalizado.
+     * @param  string|null  $code  Clave del trabajador (null si el formato no la trae).
+     * @return Employee Empleado resuelto o creado.
      */
     private function resolveNoiIdentity(string $fullName, string $normalizedName, ?string $code): Employee
     {
@@ -782,7 +890,7 @@ class NoiNominaImportService
 
         $seenInFile = $this->fileIdentity[$normalizedName] ?? [];
 
-        if ($code !== null && $seenInFile !== [] && !isset($seenInFile[$code])) {
+        if ($code !== null && $seenInFile !== [] && ! isset($seenInFile[$code])) {
             $employee = $this->employeeByNoiCode($code, $normalizedName, excludeIds: array_values($seenInFile))
                 ?? Employee::query()->create($attributes + [
                     'normalized_name' => $normalizedName,
@@ -795,7 +903,7 @@ class NoiNominaImportService
             $this->identityIncidents[] = [
                 'type' => 'noi_identidad.homonimo',
                 'severity' => 'warning',
-                'message' => "\"{$fullName}\" aparece con dos claves distintas en el mismo archivo NOI (" . implode(', ', array_keys($seenInFile)) . " y {$code}). Se registraron como personas distintas; verifica la identidad antes de conciliar.",
+                'message' => "\"{$fullName}\" aparece con dos claves distintas en el mismo archivo NOI (".implode(', ', array_keys($seenInFile))." y {$code}). Se registraron como personas distintas; verifica la identidad antes de conciliar.",
                 'context' => ['normalized_name' => $normalizedName, 'employee_code' => $code, 'employee_id' => $employee->id],
             ];
         } else {
@@ -839,10 +947,19 @@ class NoiNominaImportService
         return $employee;
     }
 
-    /** Employee vinculado a la clave NOI en este sistema, si el nombre es compatible. */
+    /**
+     * Employee vinculado a la clave NOI en este sistema, si el nombre es compatible
+     * (igual o similitud ≥ 90%). Si la clave está vinculada a alguien con nombre muy
+     * distinto, se considera reutilizada: no se usa y se registra una incidencia.
+     *
+     * @param  string  $code  Clave del trabajador.
+     * @param  string  $normalizedName  Nombre normalizado del archivo actual.
+     * @param  array  $excludeIds  Ids que no se deben devolver (homónimos ya vistos en el archivo).
+     * @return Employee|null Empleado vinculado o null.
+     */
     private function employeeByNoiCode(string $code, string $normalizedName, array $excludeIds = []): ?Employee
     {
-        if (!$this->identitiesAvailable()) {
+        if (! $this->identitiesAvailable()) {
             return null;
         }
 
@@ -875,9 +992,16 @@ class NoiNominaImportService
         return null;
     }
 
+    /**
+     * Registra la clave NOI como identidad externa del empleado en el sistema actual.
+     * Nunca reasigna en silencio una clave que ya está vinculada.
+     *
+     * @param  Employee  $employee  Empleado al que se vincula.
+     * @param  string  $code  Clave del trabajador.
+     */
     private function linkNoiCode(Employee $employee, string $code): void
     {
-        if (!$this->identitiesAvailable()) {
+        if (! $this->identitiesAvailable()) {
             return;
         }
 
@@ -904,9 +1028,17 @@ class NoiNominaImportService
         ]);
     }
 
+    /**
+     * Registra en employee_match_rejections que dos empleados NO deben fusionarse
+     * (p. ej. homónimos con claves distintas en la misma nómina). Ignora duplicados.
+     *
+     * @param  int  $a  Id del primer empleado.
+     * @param  int  $b  Id del segundo empleado.
+     * @param  string  $reason  Motivo (se trunca a 500 caracteres).
+     */
     private function rejectMerge(int $a, int $b, string $reason): void
     {
-        if ($a === $b || !Schema::hasTable('employee_match_rejections')) {
+        if ($a === $b || ! Schema::hasTable('employee_match_rejections')) {
             return;
         }
 
@@ -921,9 +1053,17 @@ class NoiNominaImportService
         ]);
     }
 
+    /**
+     * Guarda el nombre como alias del empleado (source 'noi_clave', confianza 0.95)
+     * si la tabla existe y el alias aún no está registrado.
+     *
+     * @param  Employee  $employee  Empleado.
+     * @param  string  $fullName  Nombre original.
+     * @param  string  $normalizedName  Nombre normalizado.
+     */
     private function registerAlias(Employee $employee, string $fullName, string $normalizedName): void
     {
-        if (!Schema::hasTable('employee_aliases')
+        if (! Schema::hasTable('employee_aliases')
             || DB::table('employee_aliases')->where('employee_id', $employee->id)->where('normalized_alias', $normalizedName)->exists()) {
             return;
         }
@@ -939,12 +1079,24 @@ class NoiNominaImportService
         ]);
     }
 
+    /**
+     * Indica (con caché) si existe la tabla employee_external_identities.
+     *
+     * @return bool true si la tabla existe.
+     */
     private function identitiesAvailable(): bool
     {
         return $this->identitiesTable ??= Schema::hasTable('employee_external_identities');
     }
 
-    /** Reinicia el estado de identidad: válido solo dentro de UN archivo. */
+    /**
+     * Define el sistema de identidad (noi_nomina o noi_nomina_fiscal), el nombre de
+     * archivo para mensajes y el periodo del upload.
+     *
+     * Reinicia el estado de identidad: válido solo dentro de UN archivo.
+     *
+     * @param  ReportUpload  $upload  Upload en proceso.
+     */
     private function startIdentityScope(ReportUpload $upload): void
     {
         $this->fileIdentity = [];
@@ -954,9 +1106,15 @@ class NoiNominaImportService
         $this->identityPeriodId = $upload->period_id ? (int) $upload->period_id : null;
     }
 
+    /**
+     * Extrae el número de "Clave del trabajador : N".
+     *
+     * @param  string|null  $value  Texto de la celda.
+     * @return string|null Clave o null si no está presente.
+     */
     private function extractEmployeeCode(?string $value): ?string
     {
-        if (!$value) {
+        if (! $value) {
             return null;
         }
 
@@ -967,15 +1125,27 @@ class NoiNominaImportService
         return null;
     }
 
+    /**
+     * @param  array  $row  Fila de datos.
+     * @param  array  $headerMap  Mapa campo => índice.
+     * @param  string  $field  Campo lógico.
+     * @return mixed Valor de la celda o null si la columna no existe.
+     */
     private function valueFromRow(array $row, array $headerMap, string $field): mixed
     {
-        if (!array_key_exists($field, $headerMap)) {
+        if (! array_key_exists($field, $headerMap)) {
             return null;
         }
 
         return $row[$headerMap[$field]] ?? null;
     }
 
+    /**
+     * Normaliza un encabezado a snake (ASCII, minúsculas, no alfanuméricos → '_').
+     *
+     * @param  string  $value  Encabezado.
+     * @return string Encabezado normalizado.
+     */
     private function normalizeHeader(string $value): string
     {
         return Str::of($value)
@@ -986,6 +1156,13 @@ class NoiNominaImportService
             ->value();
     }
 
+    /**
+     * Normaliza un nombre de persona (ASCII, minúsculas, sin signos, espacios simples).
+     * Es la llave de identidad por nombre.
+     *
+     * @param  string  $value  Nombre original.
+     * @return string Nombre normalizado.
+     */
     private function normalizeName(string $value): string
     {
         return Str::of($value)
@@ -997,6 +1174,12 @@ class NoiNominaImportService
             ->value();
     }
 
+    /**
+     * Normaliza texto libre (mismo algoritmo que normalizeName()).
+     *
+     * @param  string  $value  Texto original.
+     * @return string Texto normalizado.
+     */
     private function normalizeText(string $value): string
     {
         return Str::of($value)
@@ -1008,6 +1191,13 @@ class NoiNominaImportService
             ->value();
     }
 
+    /**
+     * Divide el nombre completo en nombre, apellido paterno y materno tomando las
+     * tres primeras palabras (aproximación; NOI no separa los campos).
+     *
+     * @param  string  $fullName  Nombre completo.
+     * @return array{0:?string,1:?string,2:?string} [nombre, paterno, materno].
+     */
     private function splitName(string $fullName): array
     {
         $parts = preg_split('/\s+/', trim($fullName)) ?: [];
@@ -1021,28 +1211,32 @@ class NoiNominaImportService
     }
 
     /**
-     * Infer concept type from NOI concept code prefix when concept_type column is missing.
-     * NOI typically uses: P### for percepciones, D### for deducciones.
+     * Infiere el tipo de concepto cuando falta la columna de tipo: P### = percepción,
+     * D### = deducción; si no hay código, usa palabras clave (sueldo, bono, prima...
+     * = percepción; descuento, préstamo, IMSS, ISR... = deducción).
+     *
+     * @param  string|null  $concept  Concepto NOI.
+     * @return string|null 'percepcion', 'deduccion' o null si no se puede inferir.
      */
     private function inferConceptType(?string $concept): ?string
     {
-        if (!$concept) {
+        if (! $concept) {
             return null;
         }
 
         $normalized = strtoupper(trim($concept));
 
-        // P### NOMBRE → percepcion
+        // P### NOMBRE → percepción
         if (preg_match('/^P\d{3}\b/', $normalized)) {
             return 'percepcion';
         }
 
-        // D### NOMBRE → deduccion
+        // D### NOMBRE → deducción
         if (preg_match('/^D\d{3}\b/', $normalized)) {
             return 'deduccion';
         }
 
-        // Keyword fallback
+        // Respaldo por palabras clave
         $lower = strtolower($normalized);
         if (str_contains($lower, 'sueldo') || str_contains($lower, 'salario') ||
             str_contains($lower, 'vacacion') || str_contains($lower, 'bono') ||
@@ -1060,6 +1254,10 @@ class NoiNominaImportService
         return null;
     }
 
+    /**
+     * @param  mixed  $value  Valor de celda.
+     * @return string|null Texto recortado o null si queda vacío.
+     */
     private function cleanString(mixed $value): ?string
     {
         if ($value === null) {
@@ -1071,9 +1269,16 @@ class NoiNominaImportService
         return $value !== '' ? $value : null;
     }
 
+    /**
+     * Indica si el texto puede ser un nombre de trabajador: descarta vacíos, guiones,
+     * la etiqueta "Clave del trabajador" y encabezados como "Nombre"/"Empleado".
+     *
+     * @param  string|null  $value  Texto candidato.
+     * @return bool true si parece nombre real.
+     */
     private function isValidEmployeeName(?string $value): bool
     {
-        if (!$value) {
+        if (! $value) {
             return false;
         }
 
@@ -1107,6 +1312,13 @@ class NoiNominaImportService
         return true;
     }
 
+    /**
+     * Convierte un importe a float SIN redondear. Con coma y punto, la coma es
+     * separador de miles; si solo hay coma, se toma como decimal.
+     *
+     * @param  mixed  $value  Valor de celda.
+     * @return float|null Importe o null si no es numérico.
+     */
     private function toDecimal(mixed $value): ?float
     {
         if ($value === null || $value === '') {
@@ -1121,13 +1333,19 @@ class NoiNominaImportService
 
         if (str_contains($value, ',') && str_contains($value, '.')) {
             $value = str_replace(',', '', $value);
-        } elseif (str_contains($value, ',') && !str_contains($value, '.')) {
+        } elseif (str_contains($value, ',') && ! str_contains($value, '.')) {
             $value = str_replace(',', '.', $value);
         }
 
         return is_numeric($value) ? (float) $value : null;
     }
 
+    /**
+     * Convierte una fecha (serie de Excel o texto) a 'Y-m-d'.
+     *
+     * @param  mixed  $value  Valor de celda.
+     * @return string|null Fecha ISO o null.
+     */
     private function toDateValue(mixed $value): ?string
     {
         if ($value === null || $value === '') {
@@ -1149,6 +1367,10 @@ class NoiNominaImportService
         }
     }
 
+    /**
+     * @param  array  $row  Fila leída.
+     * @return bool true si todas las celdas están vacías.
+     */
     private function isEmptyRow(array $row): bool
     {
         foreach ($row as $value) {
@@ -1160,6 +1382,16 @@ class NoiNominaImportService
         return true;
     }
 
+    /**
+     * Lee únicamente las columnas A y B del rango de filas indicado (filtro de
+     * lectura) para detectar trabajadores con poco consumo de memoria.
+     *
+     * @param  string  $path  Ruta absoluta del archivo.
+     * @param  string  $sheetName  Hoja a leer.
+     * @param  int  $startRow  Primera fila (1-based).
+     * @param  int  $endRow  Última fila (inclusive).
+     * @return array<int,array> Filas con las columnas A y B.
+     */
     private function readNoiEmployeeColumnsForDatabaseUpdate(
         string $path,
         string $sheetName,
@@ -1175,13 +1407,25 @@ class NoiNominaImportService
 
         $reader->setLoadSheetsOnly([$sheetName]);
 
-        $reader->setReadFilter(new class($startRow, $endRow) implements IReadFilter {
+        $reader->setReadFilter(new class($startRow, $endRow) implements IReadFilter
+        {
+            /**
+             * @param  int  $startRow  Primera fila permitida.
+             * @param  int  $endRow  Última fila permitida.
+             */
             public function __construct(
                 private readonly int $startRow,
                 private readonly int $endRow,
-            ) {
-            }
+            ) {}
 
+            /**
+             * Filtro de lectura: solo celdas de las columnas A y B dentro del rango de filas.
+             *
+             * @param  string  $columnAddress  Columna de la celda.
+             * @param  int  $row  Fila de la celda.
+             * @param  string  $worksheetName  Hoja (no se usa).
+             * @return bool true si la celda se debe leer.
+             */
             public function readCell($columnAddress, $row, $worksheetName = ''): bool
             {
                 if ($row < $this->startRow || $row > $this->endRow) {
@@ -1196,7 +1440,7 @@ class NoiNominaImportService
         $sheet = $spreadsheet->getSheetByName($sheetName) ?? $spreadsheet->getActiveSheet();
 
         $rows = $sheet->rangeToArray(
-            'A' . $startRow . ':B' . $endRow,
+            'A'.$startRow.':B'.$endRow,
             null,
             true,
             false,
@@ -1208,5 +1452,4 @@ class NoiNominaImportService
 
         return $rows;
     }
-
 }

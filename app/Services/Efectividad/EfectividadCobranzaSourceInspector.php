@@ -11,11 +11,11 @@ use App\Models\ReportUpload;
 use App\Services\ColumnMapService;
 use App\Services\Imports\LendusIngresosCobranzaImportService;
 use App\Services\Imports\LendusSaldosClienteImportService;
+use App\Support\ReportUploadStorage;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use OpenSpout\Reader\XLSX\Options as XlsxOptions;
 use OpenSpout\Reader\XLSX\Reader as XlsxReader;
@@ -85,6 +85,10 @@ class EfectividadCobranzaSourceInspector
         'saldo_impuesto_vencido' => ['saldo_impuesto_vencido', 'Saldo impuesto', false, 'Campo financiero de cartera vencida.', false],
     ];
 
+    /**
+     * @param  ColumnMapService  $columnMap  alias de encabezados por fuente
+     * @param  EfectividadCobranzaAprobadaDataAdapter  $adapter  resuelve el periodo de CARTERA
+     */
     public function __construct(
         private readonly ColumnMapService $columnMap,
         private readonly EfectividadCobranzaAprobadaDataAdapter $adapter,
@@ -95,6 +99,12 @@ class EfectividadCobranzaSourceInspector
     // ──────────────────────────────────────────────────────────────────────
 
     /**
+     * Etapa 1: localiza las cargas vigentes de Saldos por Cliente (snapshot del periodo de
+     * CARTERA) e Ingresos Cobranza (histórico) con sus filas importadas, y genera incidencias
+     * si faltan, no tienen registros o requieren reproceso. Sólo lectura.
+     *
+     * @param  Period  $period  periodo evaluado
+     * @param  int|null  $branchId  sucursal (null = todas)
      * @return array{sources: array<string,mixed>, issues: array<int,array<string,mixed>>, saldos_upload_id: ?int, ingresos_upload_id: ?int}
      */
     public function inspectSources(Period $period, ?int $branchId): array
@@ -227,6 +237,13 @@ class EfectividadCobranzaSourceInspector
     // ──────────────────────────────────────────────────────────────────────
 
     /**
+     * Etapa 2: verifica que las columnas que el motor necesita existan en los encabezados de los
+     * archivos y tengan datos en las filas importadas (conteo de nulos por campo); marca si los
+     * ingresos son incompatibles o requieren reprocesar fechas.
+     *
+     * @param  Period  $period  periodo evaluado
+     * @param  int|null  $branchId  sucursal
+     * @param  array  $sources  resultado de inspectSources()['sources']
      * @return array{columns: array<string,mixed>, issues: array<int,array<string,mixed>>, incompatible_ingresos: bool, reprocess_ingresos_dates: bool}
      */
     public function inspectColumns(Period $period, ?int $branchId, array $sources): array
@@ -433,7 +450,13 @@ class EfectividadCobranzaSourceInspector
     // ──────────────────────────────────────────────────────────────────────
 
     /**
+     * Traduce el estado de cobertura del adaptador (sin_datos, sin_cartera, bloqueado_sin_fechas…)
+     * a incidencias legibles y al tipo de falla que detiene la ejecución.
+     *
      * @param  array<string,mixed>  $coverage  cobertura del adaptador aprobado
+     * @param  Period  $period  periodo evaluado
+     * @param  bool  $incompatibleIngresos  los ingresos no tienen las columnas requeridas
+     * @param  bool  $reprocessIngresosDates  hay que reprocesar las fechas de ingresos
      * @return array{issues: array<int,array<string,mixed>>, failure_kind: ?string}
      */
     public function coverageIssues(array $coverage, Period $period, bool $incompatibleIngresos, bool $reprocessIngresosDates = false): array
@@ -534,6 +557,12 @@ class EfectividadCobranzaSourceInspector
     // Helpers
     // ──────────────────────────────────────────────────────────────────────
 
+    /**
+     * Cargas no sustituidas de una fuente, de la más reciente a la más antigua.
+     *
+     * @param  string  $sourceCode  código de data_sources
+     * @return mixed consulta Eloquent de ReportUpload
+     */
     private function uploadsQuery(string $sourceCode)
     {
         return ReportUpload::query()
@@ -542,7 +571,13 @@ class EfectividadCobranzaSourceInspector
             ->latest('id');
     }
 
-    /** @return array<int,int> report_upload_id => filas */
+    /**
+     * Filas importadas por carga (opcionalmente de una sucursal).
+     *
+     * @param  mixed  $query  consulta de la tabla de hechos
+     * @param  int|null  $branchId  sucursal
+     * @return array<int,int> report_upload_id => filas
+     */
     private function countByUpload($query, ?int $branchId): array
     {
         if ($branchId) {
@@ -568,6 +603,14 @@ class EfectividadCobranzaSourceInspector
             ->all();
     }
 
+    /**
+     * Resumen de una carga para la UI (archivo, periodo, fecha, estado, filas y última corrida
+     * de procesamiento).
+     *
+     * @param  ReportUpload  $upload  carga
+     * @param  int  $rows  filas importadas
+     * @return array<string, mixed>
+     */
     private function uploadSummary(ReportUpload $upload, int $rows): array
     {
         $lastRun = ProcessRun::query()->where('report_upload_id', $upload->id)->latest('id')->first();
@@ -578,7 +621,7 @@ class EfectividadCobranzaSourceInspector
             'period_id' => $upload->period_id,
             'uploaded_at' => $upload->uploaded_at?->toISOString() ?? $upload->created_at?->toISOString(),
             'status' => $upload->status?->value,
-            'file_exists' => $upload->stored_path ? Storage::disk('public')->exists($upload->stored_path) : false,
+            'file_exists' => $upload->stored_path ? ReportUploadStorage::exists($upload->stored_path) : false,
             'rows' => $rows,
             'last_process' => $lastRun ? [
                 'status' => $lastRun->status?->value,
@@ -618,7 +661,7 @@ class EfectividadCobranzaSourceInspector
             );
         }
 
-        if ($upload->stored_path && ! Storage::disk('public')->exists($upload->stored_path)) {
+        if ($upload->stored_path && ! ReportUploadStorage::exists($upload->stored_path)) {
             $issues[] = EfectividadCobranzaIssue::make(
                 'EC-SRC-ARCHIVO-FISICO-PERDIDO',
                 EfectividadCobranzaIssue::SEVERITY_INFO,
@@ -660,6 +703,11 @@ class EfectividadCobranzaSourceInspector
         return $result;
     }
 
+    /**
+     * Alias SQL seguro para el conteo de nulos de un campo («n_campo»).
+     *
+     * @param  string  $field  nombre de columna
+     */
     private function alias(string $field): string
     {
         return 'n_'.preg_replace('/[^a-z0-9_]/', '', $field);
@@ -676,11 +724,11 @@ class EfectividadCobranzaSourceInspector
     private function readHeader(int $uploadId): ?array
     {
         $upload = ReportUpload::query()->with('dataSource')->find($uploadId);
-        if (! $upload?->stored_path || ! Storage::disk('public')->exists($upload->stored_path)) {
+        if (! $upload?->stored_path || ! ReportUploadStorage::exists($upload->stored_path)) {
             return null;
         }
 
-        $path = Storage::disk('public')->path($upload->stored_path);
+        $path = ReportUploadStorage::path($upload->stored_path);
         $sourceCode = $upload->dataSource?->code ?? '';
         $cacheKey = sprintf('efectividad:headers:%d:%s:%s', $upload->id, @filemtime($path) ?: 0, @filesize($path) ?: 0);
 
@@ -763,8 +811,10 @@ class EfectividadCobranzaSourceInspector
         $reader->setReadDataOnly(true);
         $reader->setReadFilter(new class($maxRows) implements IReadFilter
         {
+            /** @param  int  $maxRow  última fila a cargar */
             public function __construct(private readonly int $maxRow) {}
 
+            /** Sólo carga las primeras $maxRow filas (encabezado). */
             public function readCell($columnAddress, $row, $worksheetName = ''): bool
             {
                 return $row <= $this->maxRow;
