@@ -36,6 +36,9 @@ class PeriodController extends Controller
                 'code'       => $period->code,
                 'type'       => $period->type,
                 'label'      => $period->label,
+                // Aditivo (23-nov-2026): nombre manual (null si no hay) y el del sistema.
+                'custom_name'  => $period->custom_name,
+                'system_label' => $period->systemLabel(),
                 'start_date' => optional($period->start_date)->toDateString(),
                 'end_date'   => optional($period->end_date)->toDateString(),
                 'is_closed'  => $period->is_closed,
@@ -63,6 +66,8 @@ class PeriodController extends Controller
             'code'       => $period->code,
             'type'       => $period->type,
             'label'      => $period->label,
+            'custom_name'  => $period->custom_name,
+            'system_label' => $period->systemLabel(),
             'start_date' => optional($period->start_date)->toDateString(),
             'end_date'   => optional($period->end_date)->toDateString(),
             'is_closed'  => $period->is_closed,

@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\CollectionsController;
 use App\Http\Controllers\Api\V1\EmployeeController;
 use App\Http\Controllers\Api\V1\FinancialController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\NaturalMonthController;
 use App\Http\Controllers\Api\V1\OkrController;
 use App\Http\Controllers\Api\V1\PeopleDirectoryController;
 use App\Http\Controllers\Api\V1\PeriodController;
@@ -73,6 +74,11 @@ Route::prefix('v1')
             // Actividad semanal de un mes (2026-11-17, Seguimiento de MR. LANA PEOPLE):
             // el bloque de colaboradores exige además employees.read (en el controlador).
             Route::get('/periods/{periodId}/weekly-activity', [PeriodWeeklyActivityController::class, 'show']);
+            // Meses naturales (2026-11-23): del 1 al último día del mes por la fecha de cada
+            // movimiento, sin tocar los periodos de 4 semanas. El bloque de colaboradores
+            // exige además employees.read (en el controlador). Ver docs §17.
+            Route::get('/calendar-months', [NaturalMonthController::class, 'index']);
+            Route::get('/calendar-months/{month}', [NaturalMonthController::class, 'show'])->where('month', '[0-9]{4}-[0-9]{2}');
         });
 
         // Exportación masiva: financial.read + límite de exportaciones; el bloque de

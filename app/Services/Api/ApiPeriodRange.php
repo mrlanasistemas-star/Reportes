@@ -87,6 +87,9 @@ class ApiPeriodRange
             'code' => $period->code,
             'type' => $period->type,
             'label' => $period->label,
+            // Aditivo (23-nov-2026): nombre manual y nombre del sistema. `label` ya es el visible.
+            'custom_name' => $period->custom_name,
+            'system_label' => $period->systemLabel(),
             'start_date' => optional($period->start_date)->toDateString(),
             'end_date' => optional($period->end_date)->toDateString(),
             'is_closed' => (bool) $period->is_closed,

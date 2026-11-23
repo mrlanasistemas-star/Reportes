@@ -148,6 +148,8 @@ respuesta ni valores financieros — solo metadata de QUIÉN pidió QUÉ.
 | GET | `/api/v1/periods/{id}/export` | `financial.read` (+ `employees.read` para colaboradores), `throttle:api-exports` |
 | GET | `/api/v1/periods/export?from_period_id=&to_period_id=` | ídem |
 | GET | `/api/v1/periods/{id}/weekly-activity?include=branches,employees` | `financial.read` (+ `employees.read` para colaboradores) — ver §15 |
+| GET | `/api/v1/calendar-months` | `financial.read` — ver §17 |
+| GET | `/api/v1/calendar-months/{AAAA-MM}?include=branches,employees,daily,bank_movements` | `financial.read` (+ `employees.read` para colaboradores) — ver §17 |
 
 Parámetros comunes: `scope` = `general`\|`branch`\|`employee` (default `general`), `branch_id`,
 `employee_id`, `period_id` (obligatorio en todos los endpoints financieros — la API nunca
@@ -708,3 +710,88 @@ permitida). `GET /capabilities` anuncia `features.people_directory: true`.
 
 Medición local (157 registros): `/people?per_page=500` ~0.15 s. Pruebas:
 `tests/Feature/Api/V1/ApiPeopleDirectoryTest.php`.
+
+## 17. Meses naturales y nombre manual de periodos (2026-11-23)
+
+### 17.1 Por qué existen las dos vistas
+
+MR LANA mide su operación (y el Estado de Resultados) en **periodos de cuatro semanas**, de lunes
+a domingo: 28 días y 20 jornadas por periodo (ver «Periodos de Cuatro Semanas MR LANA», Dirección
+Comercial, 20-nov-2026). Otras áreas necesitan cifras del **1 al último día del mes**. Las dos
+vistas son agrupaciones distintas de los **mismos** registros y conviven sin perjudicarse:
+
+- Cada registro (colocación, pago, gasto, movimiento bancario) sigue ligado a su periodo por
+  `period_id`. **Nada se mueve, copia ni reasigna.**
+- El mes natural se arma filtrando por la **fecha propia de cada registro**. Como cada registro
+  vive en un solo periodo, la suma no duplica; como el filtro es por fecha, no se pierde nada.
+- Ejemplo real (BD local): abril natural 2026 = 1–26 abr del periodo «Abril 2026»
+  (30-mar → 26-abr) + 27–30 abr del periodo «Mayo 2026» (27-abr → 24-may). Colocación
+  $14,670,661.24 = $11,966,404.22 + $2,704,257.02; Σ sucursales = Σ días = Σ colaboradores = total.
+
+### 17.2 `GET /api/v1/calendar-months` (`financial.read`)
+
+Meses con al menos un día cubierto por un periodo con datos, del más reciente al más antiguo:
+`month`, `date_from`, `date_to`, `days`, `covered_days`, `status` (`complete` | `partial`).
+
+### 17.3 `GET /api/v1/calendar-months/{AAAA-MM}` (`financial.read`)
+
+`include` (por omisión todo lo que el token permite): `branches`, `employees` (exige además
+`employees.read`; 403 si se pide sin él), `daily`, `bank_movements`. Mes inválido → 422.
+
+| Bloque | Fecha que decide | Regla |
+|---|---|---|
+| `totals.placement` | `fact_placements.operation_date` | `SUM(amount)` / `COUNT(*)` |
+| `totals.recovery` | `fact_recoveries.payment_date` | regla única del reporte (`recoveryExclusionSql()`): PAGO/DESCUENTO, seguros fuera, CRECE 30 % |
+| `totals.erp_expenses` | `fact_expenses.expense_date` | monto registrado en ERP (`amount`, `paid_amount`, `by_category`); **no** aplica las reglas de OPEX del reporte |
+| `bank_movements` | `estado_resultados_movements.movement_date` | cargos/abonos de cargas vigentes, sin copias «duplicado», una vez por huella, agrupados por tratamiento vigente (`by_treatment`, con `er_line` y `accounting`) y por sucursal |
+| `employees` | las de colocación y recuperación | mismo motor que §15 (lista y mapa de fusión de la radiografía de cada periodo) con un corte = el mes; `by_period` muestra cuánto aporta cada periodo |
+
+Otros campos:
+
+- `status`: `complete` (todos los días cubiertos por periodos con datos), `partial` o `no_data`.
+- `coverage`: `covered_days`, `missing_ranges` (p. ej. junio 2026 sin el periodo de julio:
+  22–30 jun) y `periods_without_data`.
+- `source_periods[]`: periodos que aportan, con `overlap {from,to,days}`, `radiography_status`
+  y `contributed` (colocación / recuperación / gastos ERP que trae cada uno).
+- `audit.outside_own_period_window`: filas con fecha dentro del mes pero fuera de la ventana de
+  4 semanas del periodo donde se cargaron (ya incluidas en los totales; solo informativo).
+- `reconciliation`: Σ sucursales, Σ días y Σ colaboradores contra el total.
+- `employees.missing_periods`: periodos con datos pero sin radiografía vigente (sus filas cuentan
+  en totales pero no tienen colaboradores).
+
+**Qué NO es:** no es un Estado de Resultados mensual. El ER oficial se mide por periodo de cuatro
+semanas y reconoce los gastos por **devengo** (p. ej. la renta prorrateada por días); aquí se
+entregan datos duros por fecha (flujo). Cartera y mora son cierres de periodo: se toman de
+`/periods/{id}/branches`.
+
+**Alcance:** un consumidor restringido solo recibe sus sucursales y colaboradores; sus `totals`
+son la suma de sus sucursales; `daily`, `unassigned`, `unidentified`, `bank_movements`
+(atribuido por nombre de sucursal), `audit` y `reconciliation` van en `null`.
+
+Caché 15 min con llave que cambia con cada radiografía regenerada y con cada cambio de
+movimientos bancarios del mes. Medido en local (abril 2026, 101 colaboradores): ~14 s en frío
+la primera vez (calcula la radiografía de dos periodos), instantáneo en caliente.
+
+`GET /capabilities` anuncia `features.natural_months: true` y el recurso `natural_months`.
+Pruebas: `tests/Feature/Api/V1/ApiNaturalMonthTest.php`.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://<host>/api/v1/calendar-months
+curl -H "Authorization: Bearer $TOKEN" "https://<host>/api/v1/calendar-months/2026-04?include=branches,daily"
+```
+
+### 17.4 Nombre manual de un periodo
+
+En **Periodos → mes operativo → lápiz «Cambiar nombre»** (permiso `periodos · crear`) se puede
+escribir cualquier nombre (máx. 120 caracteres, p. ej. «P04 2026»). Solo cambia la etiqueta:
+
+- Nueva columna `periods.custom_name` (NULL = usa el nombre del sistema). `name`, `code`, `id`,
+  fechas, semanas y todo lo ligado por `period_id` quedan intactos; el generador de periodos nunca
+  toca `custom_name`.
+- `label` (web, Excel, PDF y API) muestra el nombre manual; la API agrega `custom_name` y
+  `system_label` en `/periods`, `/periods/{id}` y en el bloque `period` de los demás endpoints.
+- Dejarlo vacío (o igual al del sistema) regresa al nombre del sistema. No se permiten dos
+  periodos del mismo tipo con el mismo nombre. Cada cambio queda en el log (`periodos.renombrar`).
+- Reportes ya generados (Excel/PDF guardados, caché del comparativo de 12 h) conservan el nombre
+  con el que se generaron hasta regenerarse.
+

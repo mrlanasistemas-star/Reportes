@@ -142,6 +142,38 @@ class PeriodWeeklyActivityService
         return $this->memo[$period->id] = Cache::remember($key, self::CACHE_TTL, fn () => $this->compute($period, (int) $summary->id, $weeks));
     }
 
+    /**
+     * Mismo cálculo que forPeriod() pero con cortes de fecha ARBITRARIOS en lugar de
+     * las semanas del mes (23-nov-2026, meses naturales). Cada corte es
+     * ['id' => ?int, 'start_date' => 'Y-m-d', 'end_date' => 'Y-m-d']; lo que no cae en
+     * ningún corte va a `outside_weeks`. Devuelve null si el periodo no tiene
+     * radiografía vigente (sin ella no hay lista de colaboradores ni mapa de fusión).
+     */
+    public function forPeriodSlots(Period $period, array $slots): ?array
+    {
+        $summary = $this->employeeKpis->currentSummary($period);
+        if ($summary === null) {
+            return null;
+        }
+
+        $slots = array_values(array_map(fn ($s) => [
+            'id' => $s['id'] ?? null,
+            'start_date' => (string) $s['start_date'],
+            'end_date' => (string) $s['end_date'],
+        ], $slots));
+
+        $key = sprintf(
+            'api_v1_period_slot_activity:%s:%d:%d:%d:%s',
+            self::CACHE_VERSION,
+            $period->id,
+            $summary->id,
+            $summary->updated_at?->timestamp ?? 0,
+            md5(json_encode($slots))
+        );
+
+        return Cache::remember($key, self::CACHE_TTL, fn () => $this->compute($period, (int) $summary->id, $slots));
+    }
+
     private function compute(Period $period, int $radiographyVersion, array $weeks): array
     {
         // Filas del reporte + mapa de fusión de ESTA misma construcción.

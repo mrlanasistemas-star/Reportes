@@ -414,7 +414,53 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "422": { description: Periodo no mensual / sin semanas componentes, o include inválido }
+        "422": { description: "Periodo no mensual / sin semanas componentes, o include inválido" }
+
+  /calendar-months:
+    get:
+      tags: [exports]
+      summary: Meses naturales con datos y su cobertura
+      description: >
+        Meses (del 1 al último día) con al menos un día cubierto por un periodo mensual con datos.
+        `status` = complete | partial. `financial.read`. Ver docs/api-reporteria.md §17.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /calendar-months/{month}:
+    get:
+      tags: [exports]
+      summary: Mes natural (1 al último día) por la fecha de cada movimiento
+      description: >
+        Colocación (operation_date), recuperación (payment_date, regla única del reporte), gastos
+        ERP (expense_date) y movimientos bancarios del ER (movement_date) del mes natural,
+        tomados de todos los periodos de 4 semanas que lo tocan, sin duplicar ni mover registros.
+        Incluye `coverage` (días cubiertos y faltantes), `source_periods` (cuánto aporta cada
+        periodo), `audit` y `reconciliation`. `financial.read`; el bloque `employees` exige además
+        `employees.read`. Consumidores restringidos: solo sus sucursales. Ver §17.
+      parameters:
+        - name: month
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[0-9]{4}-[0-9]{2}$", example: "2026-04" }
+        - name: include
+          in: query
+          required: false
+          schema: { type: string, example: "branches,employees,daily,bank_movements" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Mes inválido o include inválido }
 
   /periods/{periodId}/export:
     get:

@@ -40,6 +40,8 @@ class CapabilitiesController extends Controller
         'period_export' => 'financial.read',
         // Actividad semanal de un mes (2026-11-17): el bloque de colaboradores exige además employees.read.
         'period_weekly_activity' => 'financial.read',
+        // Meses naturales (2026-11-23): del 1 al último día del mes por fecha de cada movimiento.
+        'natural_months' => 'financial.read',
     ];
 
     /** Endpoints de cada recurso de exportación por periodo (informativo, aditivo). */
@@ -49,6 +51,7 @@ class CapabilitiesController extends Controller
         'period_branches_kpis' => ['GET /api/v1/periods/{id}/branches'],
         'period_export' => ['GET /api/v1/periods/{id}/export', 'GET /api/v1/periods/export'],
         'period_weekly_activity' => ['GET /api/v1/periods/{id}/weekly-activity'],
+        'natural_months' => ['GET /api/v1/calendar-months', 'GET /api/v1/calendar-months/{YYYY-MM}'],
     ];
 
     /**
@@ -94,6 +97,10 @@ class CapabilitiesController extends Controller
                 $resources[$resource]['employees_block_requires'] = 'employees.read';
                 $resources[$resource]['period_type'] = 'monthly';
             }
+            if ($resource === 'natural_months') {
+                $resources[$resource]['employees_block_requires'] = 'employees.read';
+                $resources[$resource]['period_type'] = 'calendar_month';
+            }
             if ($resource === 'period_export') {
                 // El bloque de colaboradores del export exige además employees.read.
                 $resources[$resource]['employees_block_requires'] = 'employees.read';
@@ -135,6 +142,8 @@ class CapabilitiesController extends Controller
                 'weekly_activity' => true,
                 // Directorio de personas agrupadas y sucursales con rutas (§16).
                 'people_directory' => true,
+                // Meses naturales: cifras del 1 al último día del mes por fecha (§17).
+                'natural_months' => true,
             ],
             'consumer' => [
                 'system_code' => $consumer->system_code,
