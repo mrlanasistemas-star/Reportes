@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Contenedor <main> del contenido principal junto a la barra lateral (variante inset). */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

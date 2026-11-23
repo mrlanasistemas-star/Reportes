@@ -1,11 +1,14 @@
+/** Tipos de navegación: migas de pan y elementos del menú. */
 import type { InertiaLinkProps } from '@inertiajs/vue3';
 import type { LucideIcon } from 'lucide-vue-next';
 
+/** Miga de pan: título y destino (string o ruta Wayfinder). */
 export type BreadcrumbItem = {
     title: string;
     href: NonNullable<InertiaLinkProps['href']>;
 };
 
+/** Elemento del menú principal / barra inferior. */
 export type NavItem = {
     title: string;
     href: NonNullable<InertiaLinkProps['href']>;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Contenedor de alerta (shadcn-vue): caja con borde para mensajes informativos o de error; acepta variante visual (default | destructive). */
 import type { HTMLAttributes } from "vue"
 import type { AlertVariants } from "."
 import { cn } from "@/lib/utils"

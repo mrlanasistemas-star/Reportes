@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Panel desplegable del select (portal, scroll y posicionamiento). */
 import type { SelectContentEmits, SelectContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

@@ -1,4 +1,17 @@
 <script setup lang="ts">
+/**
+ * BranchComparison — comparativa entre sucursales del Estado de Resultados.
+ *
+ * La usa ComparativesPanel. Muestra una tabla de sucursales ordenable por
+ * métrica (con una barra divergente desde 0 de la métrica elegida) y las
+ * columnas de ingresos, OPEX directo, EBITDA y margen; debajo, los totales,
+ * los gastos centralizados y la conciliación de la suma de sucursales al
+ * EBITDA consolidado.
+ *
+ * Props:
+ * - branches: datos de la comparativa por sucursal (renglones, totales,
+ *   opciones de orden, notas y si la vista está restringida).
+ */
 import { ArrowDownUp, Building2, Info, Lock } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import type { CompBranches } from './comparativas';
@@ -6,9 +19,12 @@ import { isNegative, mxn, num, pct } from './types';
 
 const props = defineProps<{ branches: CompBranches }>();
 
+/** Métrica por la que se ordena (empieza en el orden por defecto del servidor). */
 const sortKey = ref(props.branches.default_sort ?? 'ebitda');
+/** Sentido del orden: de mayor a menor ('desc') o de menor a mayor ('asc'). */
 const dir = ref<'desc' | 'asc'>('desc');
 
+/** Columnas numéricas de la tabla con su unidad (MXN o %). */
 const COLS = [
     { key: 'ingresos_operativos', label: 'Ingresos', unit: 'MXN' },
     { key: 'opex_total', label: 'OPEX directo', unit: 'MXN' },
@@ -16,8 +32,14 @@ const COLS = [
     { key: 'margen_ebitda', label: 'Margen', unit: '%' },
 ] as const;
 
+/** Claves de las columnas numéricas. */
 type Key = (typeof COLS)[number]['key'];
 
+/**
+ * Valor crudo (texto decimal o null) de una métrica de un renglón.
+ * @param r renglón de sucursal.
+ * @param k clave de la métrica.
+ */
 const val = (r: CompBranches['rows'][number], k: string) =>
     r[k as Key] as string | null;
 
@@ -26,6 +48,12 @@ const rows = computed(() =>
     [...props.branches.rows].sort((a, b) => {
         const va = val(a, sortKey.value);
         const vb = val(b, sortKey.value);
+
+        // Comparador consistente: dos nulos son iguales (si no, el orden
+        // dependía de la posición y sort() recibía un comparador incoherente).
+        if (va === null && vb === null) {
+            return 0;
+        }
 
         if (va === null) {
             return 1;
@@ -46,13 +74,20 @@ const scale = computed(() =>
         ...props.branches.rows.map((r) => Math.abs(num(val(r, sortKey.value)))),
     ),
 );
+/** Si algún valor es negativo (entonces las barras parten del centro). */
 const hasNegative = computed(() =>
     props.branches.rows.some((r) => num(val(r, sortKey.value)) < 0),
 );
+/** Unidad de la métrica de orden actual. */
 const unitOf = computed(
     () => COLS.find((c) => c.key === sortKey.value)?.unit ?? 'MXN',
 );
 
+/**
+ * Formatea un valor como moneda o porcentaje; null se muestra «Sin datos».
+ * @param v valor crudo.
+ * @param unit 'MXN' o '%'.
+ */
 function fmt(v: string | null, unit: string): string {
     return v === null ? 'Sin datos' : unit === '%' ? pct(v) : mxn(v);
 }
@@ -60,6 +95,7 @@ function fmt(v: string | null, unit: string): string {
 
 <template>
     <div class="space-y-4">
+        <!-- Tabla de sucursales con barra de la métrica elegida y totales -->
         <section class="rounded-2xl border bg-card shadow-soft-xs">
             <header
                 class="flex flex-wrap items-end justify-between gap-3 border-b px-5 py-4"
@@ -217,6 +253,7 @@ function fmt(v: string | null, unit: string): string {
             </div>
         </section>
 
+        <!-- Gastos centralizados y conciliación al EBITDA consolidado -->
         <div class="grid gap-4 lg:grid-cols-2">
             <section
                 v-if="branches.totals.centralizados"

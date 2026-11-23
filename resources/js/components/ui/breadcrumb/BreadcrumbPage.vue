@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Miga de pan de la página actual (no navegable, aria-current="page"). */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

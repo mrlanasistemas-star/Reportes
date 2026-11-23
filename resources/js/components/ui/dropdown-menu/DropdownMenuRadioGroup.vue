@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Grupo de opciones exclusivas (radio) del menú desplegable. */
 import type { DropdownMenuRadioGroupEmits, DropdownMenuRadioGroupProps } from "reka-ui"
 import {
   DropdownMenuRadioGroup,

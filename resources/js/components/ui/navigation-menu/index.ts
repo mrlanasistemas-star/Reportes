@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de NavigationMenu (shadcn-vue): exporta piezas y el estilo del disparador. */
 import { cva } from "class-variance-authority"
 
 export { default as NavigationMenu } from "./NavigationMenu.vue"

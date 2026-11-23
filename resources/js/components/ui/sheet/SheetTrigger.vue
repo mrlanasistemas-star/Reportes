@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Elemento que abre el panel lateral. */
 import type { DialogTriggerProps } from "reka-ui"
 import { DialogTrigger } from "reka-ui"
 

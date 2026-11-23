@@ -1,4 +1,18 @@
 <script setup lang="ts">
+/**
+ * DimensionGrid — «Cómo se trató, dimensión por dimensión»: cuadrícula con el
+ * tratamiento de un movimiento bancario en cada dimensión.
+ *
+ * La usa MovementDetailSheet. Cada cuadro responde una pregunta distinta (si
+ * entra al reporte, conciliación con ERP, categoría, tratamiento contable,
+ * fuente, revisión humana, cómo entró el dato y periodo de reconocimiento),
+ * coloreado según su estado. Debajo, las fechas disponibles del movimiento
+ * (operación, banco, captura y pago ERP, devengo).
+ *
+ * Props:
+ * - dimensions: estado del movimiento en cada dimensión (etiquetas del backend).
+ * - dates: fechas del movimiento, o null.
+ */
 import {
     CalendarClock,
     FileInput,
@@ -18,8 +32,10 @@ const props = defineProps<{
     dates?: MovementDates | null;
 }>();
 
+/** Tono de color de un cuadro. */
 type Tone = 'ok' | 'warn' | 'muted' | 'info' | 'bad';
 
+/** Clases de borde y fondo de cada tono. */
 const TONE: Record<Tone, string> = {
     ok: 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/20',
     warn: 'border-amber-300 bg-amber-50/70 dark:border-amber-800 dark:bg-amber-950/25',
@@ -28,7 +44,13 @@ const TONE: Record<Tone, string> = {
     muted: 'border-border bg-muted/30',
 };
 
-/** Tono por clave (sólo color; las etiquetas vienen del backend). */
+/**
+ * Tono por clave (sólo color; las etiquetas vienen del backend).
+ *
+ * @param dim dimensión (import, reconciliation, review, inclusion...).
+ * @param key clave del estado en esa dimensión, o null.
+ * @returns tono del cuadro; 'muted' si no hay regla para esa combinación.
+ */
 function toneOf(dim: string, key: string | null): Tone {
     const map: Record<string, Record<string, Tone>> = {
         import: {
@@ -57,6 +79,7 @@ function toneOf(dim: string, key: string | null): Tone {
     return map[dim]?.[key ?? ''] ?? 'muted';
 }
 
+/** Cuadros a mostrar, en orden, con su pregunta, icono y valor. */
 const cells = computed(() => {
     const d = props.dimensions;
 
@@ -112,6 +135,7 @@ const cells = computed(() => {
     ];
 });
 
+/** Fechas del movimiento que se muestran y su etiqueta. */
 const DATE_LABELS: Array<[keyof MovementDates, string]> = [
     ['operation', 'Operación'],
     ['bank', 'Banco'],
@@ -119,6 +143,7 @@ const DATE_LABELS: Array<[keyof MovementDates, string]> = [
     ['erp_payment', 'Pago ERP'],
     ['accrual', 'Devengo'],
 ];
+/** Fechas que sí vienen en el movimiento, con su etiqueta. */
 const dateList = computed(() =>
     props.dates
         ? DATE_LABELS.filter(([k]) => props.dates?.[k]).map(([k, l]) => ({

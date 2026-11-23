@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { Download } from 'lucide-vue-next'
-import { usePwaInstall } from '@/composables/usePwaInstall'
+/**
+ * InstallAppButton — botón "Descargar aplicación" para instalar la PWA.
+ *
+ * Se muestra en AppSidebarHeader (solo en pantallas grandes) únicamente cuando
+ * el navegador ofreció la instalación y la app aún no está instalada.
+ * Usa el composable usePwaInstall. Sin props ni emits.
+ */
+import { Download } from 'lucide-vue-next';
+import { usePwaInstall } from '@/composables/usePwaInstall';
 
-const { deferredPrompt, isInstalled, promptInstall } = usePwaInstall()
+const { deferredPrompt, isInstalled, promptInstall } = usePwaInstall();
 </script>
 
 <template>

@@ -1,7 +1,17 @@
 <script setup lang="ts">
+/**
+ * UserMenuContent — contenido del menú desplegable del usuario.
+ *
+ * Lo usan NavUser (menú lateral) y AppHeader. Muestra la información del
+ * usuario y enlaces a Perfil y Seguridad, además de "Cerrar sesión", que pide
+ * confirmación con SweetAlert antes de enviar el logout.
+ *
+ * Props:
+ * - user: usuario autenticado.
+ */
 import { Link, router } from '@inertiajs/vue3';
 import { LogOut, Settings, ShieldCheck } from 'lucide-vue-next';
-import Swal from 'sweetalert2';
+import { appSwal as Swal } from '@/components/feedback/ConfirmDialog';
 import {
     DropdownMenuGroup,
     DropdownMenuItem,
@@ -20,6 +30,10 @@ type Props = {
 
 defineProps<Props>();
 
+/**
+ * Pide confirmación para cerrar sesión; si se acepta, limpia la caché de
+ * Inertia (router.flushAll) y envía la petición de logout.
+ */
 const confirmLogout = async () => {
     const active = document.activeElement as HTMLElement | null;
     active?.blur();
@@ -51,14 +65,14 @@ const confirmLogout = async () => {
             const activeInside = document.activeElement as HTMLElement | null;
 
             if (activeInside?.blur) {
-activeInside.blur();
-}
+                activeInside.blur();
+            }
         },
     });
 
     if (!result.isConfirmed) {
-return;
-}
+        return;
+    }
 
     router.flushAll();
     router.post(logout());
@@ -82,7 +96,11 @@ return;
             </Link>
         </DropdownMenuItem>
         <DropdownMenuItem :as-child="true">
-            <Link class="block w-full cursor-pointer" :href="editSecurity()" prefetch>
+            <Link
+                class="block w-full cursor-pointer"
+                :href="editSecurity()"
+                prefetch
+            >
                 <ShieldCheck class="mr-2 h-4 w-4" />
                 Seguridad y contraseña
             </Link>

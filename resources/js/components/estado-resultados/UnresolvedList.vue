@@ -1,4 +1,18 @@
 <script setup lang="ts">
+/**
+ * UnresolvedList — lista «Sin resolver» de la pestaña Validación.
+ *
+ * Se usa en ValidationPanel. Cada partida muestra si bloquea la aprobación,
+ * cuántas siguen abiertas, el importe abierto y, si hay algo que la explique,
+ * un botón «Ver movimientos». No se dibuja si la lista está vacía.
+ *
+ * Props:
+ * - unresolved: partidas sin resolver (ControlUnresolved) con sus movimientos/archivos.
+ *
+ * Emits:
+ * - show(payload): pide abrir la lista de control con título, nota, movimientos
+ *   y archivos de la partida.
+ */
 import { ListTree, XCircle } from 'lucide-vue-next';
 import type {
     ControlFileRef,
@@ -23,6 +37,10 @@ const emit = defineEmits<{
     ];
 }>();
 
+/**
+ * Indica si la partida tiene movimientos, archivos o nota que mostrar.
+ * @param u partida sin resolver.
+ */
 const explainable = (u: ControlUnresolved) =>
     (u.items?.length ?? 0) > 0 || (u.files?.length ?? 0) > 0 || !!u.note;
 </script>

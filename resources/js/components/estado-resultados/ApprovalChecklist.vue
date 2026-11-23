@@ -1,4 +1,19 @@
 <script setup lang="ts">
+/**
+ * ApprovalChecklist — lista de verificación previa a aprobar el Estado de
+ * Resultados.
+ *
+ * La usa ReportStatusBar. A la izquierda muestra las fuentes del periodo
+ * (Radiografía, ERP, nómina, ajustes y cada cuenta bancaria) con su estado
+ * y sus observaciones bloqueantes o informativas; a la derecha, las
+ * diferencias de validación que siguen abiertas.
+ *
+ * Props:
+ * - dataset: dataset del reporte (fuentes y validación).
+ *
+ * Emits:
+ * - go(tab): ir a la pestaña indicada ('fuentes' o 'validacion').
+ */
 import {
     CheckCircle2,
     CircleAlert,
@@ -14,6 +29,7 @@ import type { Dataset } from './types';
 const props = defineProps<{ dataset: Dataset }>();
 defineEmits<{ go: [tab: string] }>();
 
+/** Semáforo de una fuente: completa, con observaciones o bloqueante. */
 type Tone = 'ok' | 'warn' | 'bad';
 
 /** Fuentes del periodo: completas, con observaciones informativas o bloqueantes. */
@@ -59,13 +75,16 @@ const sources = computed(() => {
     return [...simple, ...accounts];
 });
 
+/** Diferencias de validación que aún tienen partidas abiertas. */
 const open = computed(() =>
     (props.dataset.validation?.unresolved ?? []).filter(
         (u) => (u.open_count ?? u.count) > 0,
     ),
 );
 
+/** Icono de cada tono del semáforo. */
 const ICON = { ok: CheckCircle2, warn: CircleAlert, bad: XCircle };
+/** Color del icono de cada tono del semáforo. */
 const TONE = {
     ok: 'text-emerald-600 dark:text-emerald-400',
     warn: 'text-amber-600 dark:text-amber-400',
@@ -75,6 +94,7 @@ const TONE = {
 
 <template>
     <div class="grid gap-3 lg:grid-cols-2">
+        <!-- Fuentes del periodo -->
         <section class="rounded-xl border p-3">
             <div class="flex items-center justify-between gap-2">
                 <h4 class="text-sm font-bold">Fuentes del periodo</h4>
@@ -136,6 +156,7 @@ const TONE = {
             </ul>
         </section>
 
+        <!-- Diferencias de validación abiertas -->
         <section class="rounded-xl border p-3">
             <div class="flex items-center justify-between gap-2">
                 <h4 class="text-sm font-bold">Diferencias abiertas</h4>

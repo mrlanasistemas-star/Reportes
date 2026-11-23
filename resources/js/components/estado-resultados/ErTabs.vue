@@ -1,10 +1,24 @@
 <script setup lang="ts">
+/**
+ * ErTabs — barra de pestañas fija (sticky) del Estado de Resultados.
+ *
+ * Se usa en pages/EstadoResultados/Index. Pinta las pestañas con icono e
+ * insignia opcional, un separador "Cierre del mes" antes del primer grupo de
+ * cierre, un indicador animado bajo la pestaña activa y flechas laterales con
+ * desvanecido cuando no caben. Soporta teclado (flechas, Inicio, Fin).
+ *
+ * Props:
+ * - tabs: pestañas a mostrar (ver ErTab).
+ *
+ * v-model: clave de la pestaña activa.
+ */
 import { useResizeObserver } from '@vueuse/core';
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { Component } from 'vue';
 import { useTabIndicator } from '@/composables/useTabIndicator';
 
+/** Definición de una pestaña: clave, texto, icono, insignia, tono de la insignia y grupo. */
 export interface ErTab {
     key: string;
     label: string;
@@ -20,7 +34,9 @@ export interface ErTab {
 const props = defineProps<{ tabs: ErTab[] }>();
 const active = defineModel<string>({ required: true });
 
+/** Contenedor desplazable de las pestañas (tablist). */
 const nav = ref<HTMLElement | null>(null);
+// Posición y tamaño del indicador bajo la pestaña activa.
 const { indicatorStyle, indicatorReady } = useTabIndicator(
     nav,
     () => active.value,
@@ -32,9 +48,12 @@ const closeStart = computed(() =>
 );
 
 // Flechas y desvanecido en los bordes cuando no caben todas las pestañas.
+/** Hay pestañas ocultas a la izquierda. */
 const canLeft = ref(false);
+/** Hay pestañas ocultas a la derecha. */
 const canRight = ref(false);
 
+/** Recalcula si hay pestañas ocultas a cada lado según el desplazamiento. */
 function measure(): void {
     const el = nav.value;
 
@@ -46,6 +65,10 @@ function measure(): void {
     canRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 4;
 }
 
+/**
+ * Desplaza la barra un 70 % de su ancho hacia un lado.
+ * @param dir 1 = derecha, -1 = izquierda.
+ */
 function scrollBy(dir: 1 | -1): void {
     const el = nav.value;
 
@@ -59,18 +82,29 @@ function reveal(key: string): void {
         ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
+// Mide al cambiar el tamaño y, al montar, mide y muestra la pestaña activa.
 useResizeObserver(nav, measure);
 onMounted(() => {
     measure();
     reveal(active.value);
 });
+// Al cambiar la pestaña activa, la desplaza a la vista tras el render.
 watch(active, (k) => nextTick(() => reveal(k)));
 
+/**
+ * Activa una pestaña y le pasa el foco.
+ * @param key clave de la pestaña.
+ */
 function focusTab(key: string): void {
     active.value = key;
     nav.value?.querySelector<HTMLElement>(`[data-tab="${key}"]`)?.focus();
 }
 
+/**
+ * Navegación con teclado: flechas (circular), Inicio y Fin.
+ * @param e evento de teclado.
+ * @param i índice de la pestaña enfocada.
+ */
 function onKey(e: KeyboardEvent, i: number): void {
     const n = props.tabs.length;
     const target =
@@ -106,6 +140,7 @@ function onKey(e: KeyboardEvent, i: number): void {
                 aria-label="Secciones del Estado de Resultados"
                 @scroll.passive="measure"
             >
+                <!-- Pestañas, con separador antes del grupo de cierre -->
                 <template v-for="(t, i) in tabs" :key="t.key">
                     <span
                         v-if="i === closeStart && i > 0"

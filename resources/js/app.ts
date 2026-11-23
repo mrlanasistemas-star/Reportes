@@ -1,3 +1,15 @@
+/**
+ * Punto de entrada del frontend (Inertia + Vue 3) de Reportería MR LANA.
+ *
+ * Responsabilidades:
+ * - Arranca la app Inertia y decide qué layout envuelve cada página según su
+ *   nombre (auth/*, settings/*, resto → AppLayout).
+ * - Engancha los overlays globales de carga (navegación Inertia y descargas).
+ * - Registra el service worker mínimo para que el sitio sea instalable (PWA).
+ * - Maneja globalmente sesiones expiradas (419/401) y errores técnicos (5xx)
+ *   tanto en navegación Inertia como en llamadas fetch() crudas.
+ * - Aplica el tema claro/oscuro guardado al cargar la página.
+ */
 import { createInertiaApp, router } from '@inertiajs/vue3';
 import Swal from 'sweetalert2';
 import { initializeTheme } from '@/composables/useAppearance';
@@ -54,6 +66,12 @@ if ('serviceWorker' in navigator) {
 //      y ofrece recargar, en vez de fallar sin ningún mensaje visible.
 //
 // Ninguno de los dos cambia el comportamiento normal (200 OK) de ninguna pantalla.
+/**
+ * Manejador global de respuestas no-Inertia (páginas de error de Laravel).
+ * - 419/401: recarga la página para obtener sesión y token CSRF nuevos.
+ * - 5xx con cuerpo {message, reference}: muestra un SweetAlert con el mensaje
+ *   técnico en lugar de la página de error cruda.
+ */
 router.on('httpException', (event) => {
     const status = event.detail.response?.status;
 
@@ -82,17 +100,32 @@ router.on('httpException', (event) => {
 
         if (body && typeof body.message === 'string' && body.reference) {
             event.preventDefault();
-            Swal.fire({ icon: 'error', title: 'No se completó la operación', text: body.message, confirmButtonText: 'Entendido' });
+            Swal.fire({
+                icon: 'error',
+                title: 'No se completó la operación',
+                text: body.message,
+                confirmButtonText: 'Entendido',
+            });
         }
     }
 });
 
+/** Referencia al fetch nativo, antes de envolverlo. */
 const originalFetch = window.fetch.bind(window);
+/** Evita mostrar el aviso de sesión expirada más de una vez por carga. */
 let sessionExpiredNoticeShown = false;
+/**
+ * Envoltura global de window.fetch: si alguna llamada responde 419/401,
+ * avisa que la sesión expiró y recarga la página. La respuesta se devuelve
+ * intacta al llamador en todos los casos.
+ */
 window.fetch = async (...args: Parameters<typeof fetch>) => {
     const response = await originalFetch(...args);
 
-    if ((response.status === 419 || response.status === 401) && !sessionExpiredNoticeShown) {
+    if (
+        (response.status === 419 || response.status === 401) &&
+        !sessionExpiredNoticeShown
+    ) {
         sessionExpiredNoticeShown = true;
         Swal.fire({
             icon: 'info',
@@ -108,8 +141,19 @@ window.fetch = async (...args: Parameters<typeof fetch>) => {
     return response;
 };
 
+/**
+ * Inicializa Inertia.
+ * - title: agrega la marca al título de cada página (sin duplicarla).
+ * - layout: elige el layout persistente según el nombre del componente de página.
+ * - progress: barra superior con el color primario del tema.
+ */
 createInertiaApp({
-    title: (title) => (!title ? brandTitle : title.includes(brandTitle) ? title : `${title} — ${brandTitle}`),
+    title: (title) =>
+        !title
+            ? brandTitle
+            : title.includes(brandTitle)
+              ? title
+              : `${title} — ${brandTitle}`,
     layout: (name) => {
         switch (true) {
             // auth/Login y auth/ForgotPassword traen su propio layout de pantalla
@@ -127,13 +171,14 @@ createInertiaApp({
                 return AppLayout;
         }
     },
-    // Barra de navegación con el verde de la marca (--primary del modo claro);
+    // Barra de navegación con el token --primary (Inertia lo inserta en CSS, así
+    // que sigue al tema claro/oscuro);
     // sin spinner: para cargas largas ya está el overlay global.
     progress: {
-        color: '#047857',
+        color: 'var(--primary)',
         showSpinner: false,
     },
 });
 
-// This will set light / dark mode on page load...
+// Aplica el modo claro/oscuro guardado al cargar la página.
 initializeTheme();

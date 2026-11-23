@@ -1,4 +1,30 @@
 <script setup lang="ts">
+/**
+ * ConceptRuleDialog — diálogo para crear o editar una regla del catálogo de
+ * conceptos.
+ *
+ * Lo usa ConceptCatalogPanel. Captura nombre, texto a buscar (con su modo y
+ * campos), cuenta y dirección a las que aplica, tratamiento destino,
+ * prioridad, notas y si está activa. A la derecha muestra ConceptRulePreview
+ * con los movimientos del periodo que coincidirían; la vista previa se pide
+ * con retardo (400 ms) cada vez que cambia algo que afecta la coincidencia.
+ *
+ * Props:
+ * - open: si el diálogo está abierto (v-model:open).
+ * - rule: regla a editar (null = alta).
+ * - initial: valores iniciales para un alta (p. ej. desde un movimiento).
+ * - options: opciones del formulario que manda el backend.
+ * - treatments: catálogo de tratamientos (sólo se ofrecen los asignables).
+ * - saving: si se está guardando (bloquea cerrar).
+ * - periodLabel: periodo sobre el que se calcula la vista previa.
+ * - preview / previewLoading / previewError: resultado, carga y error de la vista previa.
+ *
+ * Emits:
+ * - update:open(v): abrir o cerrar el diálogo.
+ * - submit(draft, id): guardar la regla (id null = alta).
+ * - preview(draft, id): pedir la vista previa con los valores actuales.
+ * - clearPreview(): descartar la vista previa (al abrir o si el texto es muy corto).
+ */
 import { useDebounceFn } from '@vueuse/core';
 import { Loader2 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
@@ -45,11 +71,17 @@ const emit = defineEmits<{
 }>();
 
 // ── Estado (antes de cualquier watch) ─────────────────────────────────
+/** Valores capturados en el formulario. */
 const draft = ref<RuleDraft>(emptyDraft());
+/** Largo mínimo del texto a buscar (por defecto 3). */
 const minText = computed(() => props.options?.min_text ?? 3);
+/** Texto a buscar normalizado igual que en el backend. */
 const normalized = computed(() => normalizeText(draft.value.match_text));
+/** Si el texto normalizado no alcanza el largo mínimo. */
 const textTooShort = computed(() => normalized.value.length < minText.value);
+/** Tratamientos que se pueden asignar con una regla. */
 const assignable = computed(() => props.treatments.filter((t) => t.assignable));
+/** Tratamientos agrupados para el selector. */
 const groups = computed(() => [
     {
         label: 'Afectan el Estado de Resultados',
@@ -64,9 +96,11 @@ const groups = computed(() => [
         items: assignable.value.filter((t) => t.group === 'pendiente'),
     },
 ]);
+/** Metadatos del tratamiento elegido, o null. */
 const chosen = computed(
     () => assignable.value.find((t) => t.key === draft.value.treatment) ?? null,
 );
+/** Se puede guardar: nombre de 3+ caracteres, texto suficiente, al menos un campo y tratamiento válido. */
 const valid = computed(
     () =>
         draft.value.name.trim().length >= 3 &&
@@ -74,6 +108,7 @@ const valid = computed(
         draft.value.fields.length > 0 &&
         !!chosen.value,
 );
+/** Título del diálogo según sea alta o edición. */
 const title = computed(() =>
     props.rule
         ? `Editar regla «${props.rule.name}»`
@@ -92,12 +127,14 @@ const matchKey = computed(() =>
     ]),
 );
 
+/** Pide la vista previa con retardo, sólo con el diálogo abierto y texto suficiente. */
 const requestPreview = useDebounceFn(() => {
     if (props.open && !textTooShort.value) {
         emit('preview', { ...draft.value }, props.rule?.id ?? null);
     }
 }, 400);
 
+/** Al abrir, carga la regla (o el borrador precargado), limpia y pide la vista previa. */
 watch(
     () => props.open,
     (open) => {
@@ -113,6 +150,7 @@ watch(
     },
     { immediate: true },
 );
+/** Si cambia algo que afecta la coincidencia, vuelve a pedir la vista previa (o la limpia). */
 watch(matchKey, () => {
     if (textTooShort.value) {
         emit('clearPreview');
@@ -123,6 +161,10 @@ watch(matchKey, () => {
     requestPreview();
 });
 
+/**
+ * Cierra o abre el diálogo, salvo mientras se guarda.
+ * @param v nuevo estado de apertura.
+ */
 function close(v: boolean): void {
     if (!props.saving) {
         emit('update:open', v);
@@ -144,6 +186,7 @@ function close(v: boolean): void {
                 </DialogDescription>
             </DialogHeader>
 
+            <!-- Formulario de la regla (izquierda) y vista previa (derecha) -->
             <div class="grid gap-4 md:grid-cols-2">
                 <div class="space-y-3">
                     <label class="block space-y-1 text-sm">

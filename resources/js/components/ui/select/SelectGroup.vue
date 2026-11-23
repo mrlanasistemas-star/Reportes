@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Agrupador de opciones del select. */
 import type { SelectGroupProps } from "reka-ui"
 import { SelectGroup } from "reka-ui"
 

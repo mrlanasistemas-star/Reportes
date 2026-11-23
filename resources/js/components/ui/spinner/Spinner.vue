@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Indicador giratorio de carga (icono animado). */
 import type { HTMLAttributes } from "vue"
 import { Loader2Icon } from "lucide-vue-next"
 import { cn } from "@/lib/utils"

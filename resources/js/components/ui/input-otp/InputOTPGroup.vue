@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Agrupa visualmente varias casillas del código OTP. */
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { useForwardProps } from "reka-ui"

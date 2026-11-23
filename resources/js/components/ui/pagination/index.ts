@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Pagination (shadcn-vue). */
 export { default as Pagination } from "./Pagination.vue"
 export { default as PaginationContent } from "./PaginationContent.vue"
 export { default as PaginationEllipsis } from "./PaginationEllipsis.vue"

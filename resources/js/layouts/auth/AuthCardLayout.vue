@@ -1,4 +1,8 @@
 <script setup lang="ts">
+/**
+ * Variante de layout de autenticación con tarjeta centrada y logo enlazado
+ * al inicio. No se usa por defecto (app.ts usa AuthSimpleLayout).
+ */
 import { Link } from '@inertiajs/vue3';
 import AppLogoIcon from '@/components/AppLogoIcon.vue';
 import {
@@ -10,6 +14,7 @@ import {
 } from '@/components/ui/card';
 import { home } from '@/routes';
 
+/** Props: título y descripción de la tarjeta. */
 defineProps<{
     title?: string;
     description?: string;

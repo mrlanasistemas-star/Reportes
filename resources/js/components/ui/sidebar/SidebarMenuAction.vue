@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón de acción secundario a la derecha de una opción del menú lateral. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { Primitive } from "reka-ui"

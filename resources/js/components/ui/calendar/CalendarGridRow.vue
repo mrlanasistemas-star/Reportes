@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Fila (<tr>) de una semana en la cuadrícula del calendario. */
 import type { CalendarGridRowProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

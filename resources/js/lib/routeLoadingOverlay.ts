@@ -21,7 +21,9 @@ import { toast } from '@/components/feedback/Toast';
 // 600ms es el umbral clásico de "esto se siente lento, hace falta feedback" — por
 // debajo de eso una navegación se percibe instantánea y no debe interrumpirse con
 // pantalla completa.
+/** Id del overlay en el DOM. */
 const OVERLAY_ID = 'fv-route-loading';
+/** Retraso antes de mostrarlo (ver explicación arriba). */
 const SHOW_DELAY_MS = 600;
 
 // Cierre 18-sep-2026 — "Generar reporte"/"Cargar registros" solo encolan un Job
@@ -75,32 +77,68 @@ const LOCAL_FEEDBACK_MODULE_PATTERNS: RegExp[] = [/^\/okr(\/|$)/];
 // pantalla de espera que ya conocen los usuarios.
 const LONG_PROCESS_MUTATION_PATTERNS: RegExp[] = [/^\/historico-general\//];
 
-type OverlayVisit = { url: URL; method?: string; only?: string[]; async?: boolean; prefetch?: boolean };
+/** Subconjunto de la visita de Inertia que se usa para decidir si mostrar el overlay. */
+type OverlayVisit = {
+    url: URL;
+    method?: string;
+    only?: string[];
+    async?: boolean;
+    prefetch?: boolean;
+};
 
+/**
+ * Decide si una visita Inertia NO debe mostrar el overlay de pantalla completa:
+ * recargas parciales/asíncronas/precargas, encolado de jobs, módulo OKR, guardado
+ * de archivos en Histórico General y cualquier mutación (POST/PUT/PATCH/DELETE)
+ * que no sea un proceso largo de Histórico General.
+ */
 export function isExcludedFromGlobalOverlay(visit: OverlayVisit): boolean {
     // Recarga parcial de una tarjeta/consulta (only), petición asíncrona o precarga:
     // la página sigue usable y cada componente muestra su propio estado de carga.
-    if ((visit.only?.length ?? 0) > 0 || visit.async === true || visit.prefetch === true) {
+    if (
+        (visit.only?.length ?? 0) > 0 ||
+        visit.async === true ||
+        visit.prefetch === true
+    ) {
         return true;
     }
 
-    if (BACKGROUND_ENQUEUE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
+    if (
+        BACKGROUND_ENQUEUE_PATH_PATTERNS.some((pattern) =>
+            pattern.test(visit.url.pathname),
+        )
+    ) {
         return true;
     }
 
-    if (LOCAL_FEEDBACK_MODULE_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
+    if (
+        LOCAL_FEEDBACK_MODULE_PATTERNS.some((pattern) =>
+            pattern.test(visit.url.pathname),
+        )
+    ) {
         return true;
     }
 
     const method = (visit.method ?? 'get').toLowerCase();
 
-    if (method === 'post' && UPLOAD_SAVE_PATH_PATTERNS.some((pattern) => pattern.test(visit.url.pathname))) {
+    if (
+        method === 'post' &&
+        UPLOAD_SAVE_PATH_PATTERNS.some((pattern) =>
+            pattern.test(visit.url.pathname),
+        )
+    ) {
         return true;
     }
 
-    return method !== 'get' && !LONG_PROCESS_MUTATION_PATTERNS.some((pattern) => pattern.test(visit.url.pathname));
+    return (
+        method !== 'get' &&
+        !LONG_PROCESS_MUTATION_PATTERNS.some((pattern) =>
+            pattern.test(visit.url.pathname),
+        )
+    );
 }
 
+/** Elemento del overlay, timer de aparición y número de cargas activas. */
 let overlayEl: HTMLDivElement | null = null;
 let showTimer: ReturnType<typeof setTimeout> | undefined;
 let refCount = 0;
@@ -128,6 +166,7 @@ let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 let startedAt = 0;
 
+/** Ajusta textos del overlay según el tiempo transcurrido y muestra el botón de "seguir usando" a los 60 s. */
 function setSlowState(elapsedMs: number): void {
     const el = ensureOverlay();
     const title = el.querySelector<HTMLElement>('.fv-route-loading-title');
@@ -136,12 +175,13 @@ function setSlowState(elapsedMs: number): void {
 
     if (elapsedMs < SLOW_NOTICE_MS) {
         if (title) {
-title.textContent = 'Espera un momento';
-}
+            title.textContent = 'Espera un momento';
+        }
 
         if (text) {
-text.textContent = 'Estamos cargando toda la información que necesitas, esto puede tardar unos segundos.';
-}
+            text.textContent =
+                'Estamos cargando toda la información que necesitas, esto puede tardar unos segundos.';
+        }
 
         action?.setAttribute('hidden', '');
 
@@ -151,18 +191,20 @@ text.textContent = 'Estamos cargando toda la información que necesitas, esto pu
     const seconds = Math.round(elapsedMs / 1000);
 
     if (title) {
-title.textContent = `Sigue cargando… ${seconds} s`;
-}
+        title.textContent = `Sigue cargando… ${seconds} s`;
+    }
 
     if (text) {
-text.textContent = 'Este módulo reúne mucha información y puede tardar un poco más. No cierres ni recargues la ventana: se abrirá en cuanto termine.';
-}
+        text.textContent =
+            'Este módulo reúne mucha información y puede tardar un poco más. No cierres ni recargues la ventana: se abrirá en cuanto termine.';
+    }
 
     if (elapsedMs >= OFFER_DISMISS_MS) {
         action?.removeAttribute('hidden');
     }
 }
 
+/** Reinicia el contador de segundos y la red de seguridad de 10 min que libera la pantalla. */
 function armWatchdog(): void {
     clearTimeout(watchdogTimer);
     clearInterval(tickTimer);
@@ -174,18 +216,25 @@ function armWatchdog(): void {
             return;
         }
 
-        console.warn('[routeLoadingOverlay] 10 min sin confirmación de Inertia — se libera la pantalla por seguridad.');
+        console.warn(
+            '[routeLoadingOverlay] 10 min sin confirmación de Inertia — se libera la pantalla por seguridad.',
+        );
         refCount = 0;
         forceHideOverlay();
-        void toast.fire({ icon: 'warning', title: 'La carga no respondió después de 10 minutos. Revisa tu conexión y vuelve a intentarlo.' });
+        void toast.fire({
+            icon: 'warning',
+            title: 'La carga no respondió después de 10 minutos. Revisa tu conexión y vuelve a intentarlo.',
+        });
     }, HARD_SAFETY_MS);
 }
 
+/** Detiene el contador y la red de seguridad. */
 function stopWatchdog(): void {
     clearTimeout(watchdogTimer);
     clearInterval(tickTimer);
 }
 
+/** Crea (una sola vez) el overlay en <body> y lo devuelve. */
 function ensureOverlay(): HTMLDivElement {
     if (overlayEl) {
         return overlayEl;
@@ -210,21 +259,29 @@ function ensureOverlay(): HTMLDivElement {
         </div>
     `;
     // Ocultar NO cancela la carga: Inertia abrirá la pantalla cuando termine.
-    el.querySelector('.fv-route-loading-action')?.addEventListener('click', () => {
-        stopWatchdog();
-        forceHideOverlay();
-    });
+    el.querySelector('.fv-route-loading-action')?.addEventListener(
+        'click',
+        () => {
+            stopWatchdog();
+            forceHideOverlay();
+        },
+    );
     document.body.appendChild(el);
     overlayEl = el;
 
     return el;
 }
 
+/** Oculta el overlay de inmediato sin tocar el contador. */
 function forceHideOverlay(): void {
     clearTimeout(showTimer);
     ensureOverlay().classList.remove('is-visible');
 }
 
+/**
+ * Registra una carga activa y muestra el overlay tras `delay` ms (si no termina antes).
+ * Uso manual para cargas que no son navegación Inertia (fetch propio).
+ */
 export function showRouteLoading(delay = SHOW_DELAY_MS): void {
     refCount += 1;
     armWatchdog();
@@ -235,6 +292,7 @@ export function showRouteLoading(delay = SHOW_DELAY_MS): void {
     }, delay);
 }
 
+/** Termina una carga activa; oculta el overlay cuando ya no queda ninguna. */
 export function hideRouteLoading(): void {
     refCount = Math.max(0, refCount - 1);
 
@@ -246,6 +304,10 @@ export function hideRouteLoading(): void {
     forceHideOverlay();
 }
 
+/**
+ * Engancha el overlay a los eventos 'start'/'finish' del router de Inertia,
+ * contando cada visita una sola vez. Se llama una vez desde app.ts.
+ */
 export function attachInertiaRouteLoading(): void {
     router.on('start', (event) => {
         const visit = event.detail.visit;

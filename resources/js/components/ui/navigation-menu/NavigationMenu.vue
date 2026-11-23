@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Raíz del menú de navegación horizontal (shadcn-vue sobre reka-ui NavigationMenuRoot). */
 import type { NavigationMenuRootEmits, NavigationMenuRootProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

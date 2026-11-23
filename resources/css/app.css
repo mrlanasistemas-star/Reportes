@@ -128,7 +128,16 @@
     }
 
     /* Fase 8.15 — foco visible y consistente para teclado (no aparece con clic). */
-    :where(a, button, [role='button'], [role='tab'], [role='menuitem'], summary, input[type='checkbox'], input[type='radio']):focus-visible {
+    :where(
+        a,
+        button,
+        [role='button'],
+        [role='tab'],
+        [role='menuitem'],
+        summary,
+        input[type='checkbox'],
+        input[type='radio']
+    ):focus-visible {
         outline: 2px solid var(--ring);
         outline-offset: 2px;
     }
@@ -175,11 +184,21 @@
     }
 
     .app-input {
-        @apply h-11 w-full rounded-2xl border bg-background px-4 text-sm shadow-sm transition placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20;
+        @apply h-11 w-full min-w-0 rounded-2xl border bg-background px-4 text-sm text-foreground shadow-sm transition placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/20 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 aria-[invalid=true]:border-danger aria-[invalid=true]:ring-danger/20;
     }
 
     .app-textarea {
-        @apply w-full rounded-2xl border bg-background px-4 py-3 text-sm shadow-sm transition placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20;
+        @apply w-full min-w-0 rounded-2xl border bg-background px-4 py-3 text-sm text-foreground shadow-sm transition placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/20 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 aria-[invalid=true]:border-danger aria-[invalid=true]:ring-danger/20;
+    }
+
+    /* <select> nativo con el mismo aspecto que .app-input (filtros compactos donde
+       migrar a un Select de Radix no aporta). Fondo/texto con tokens → modo oscuro. */
+    .app-select {
+        @apply h-10 w-full min-w-0 cursor-pointer rounded-xl border border-input bg-background px-3 text-sm text-foreground shadow-xs transition focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 aria-[invalid=true]:border-danger;
+    }
+
+    .app-select option {
+        @apply bg-popover text-popover-foreground;
     }
 
     .app-btn {
@@ -440,7 +459,11 @@
 
     .swal2-container .app-swal-confirm.swal2-confirm {
         border: 1px solid #dc2626 !important;
-        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+        background: linear-gradient(
+            180deg,
+            #ef4444 0%,
+            #dc2626 100%
+        ) !important;
         color: #ffffff !important;
         box-shadow:
             0 14px 28px rgba(220, 38, 38, 0.28),
@@ -449,7 +472,11 @@
 
     .swal2-container .app-swal-confirm.swal2-confirm:hover {
         transform: translateY(-1px) !important;
-        background: linear-gradient(180deg, #f87171 0%, #dc2626 100%) !important;
+        background: linear-gradient(
+            180deg,
+            #f87171 0%,
+            #dc2626 100%
+        ) !important;
         box-shadow:
             0 18px 34px rgba(220, 38, 38, 0.34),
             inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
@@ -553,18 +580,38 @@
     /* style="--stagger-offset: 120ms" en el contenedor retrasa toda la serie
        (p. ej. campos de un formulario que entran después de su tarjeta). */
     .app-stagger > * {
-        animation-delay: calc(var(--stagger-offset, 0ms) + var(--app-delay, 0ms));
+        animation-delay: calc(
+            var(--stagger-offset, 0ms) + var(--app-delay, 0ms)
+        );
     }
 
-    .app-stagger > :nth-child(2) { --app-delay: calc(var(--stagger-step) * 1); }
-    .app-stagger > :nth-child(3) { --app-delay: calc(var(--stagger-step) * 2); }
-    .app-stagger > :nth-child(4) { --app-delay: calc(var(--stagger-step) * 3); }
-    .app-stagger > :nth-child(5) { --app-delay: calc(var(--stagger-step) * 4); }
-    .app-stagger > :nth-child(6) { --app-delay: calc(var(--stagger-step) * 5); }
-    .app-stagger > :nth-child(7) { --app-delay: calc(var(--stagger-step) * 6); }
-    .app-stagger > :nth-child(8) { --app-delay: calc(var(--stagger-step) * 7); }
-    .app-stagger > :nth-child(9) { --app-delay: calc(var(--stagger-step) * 8); }
-    .app-stagger > :nth-child(n + 10) { --app-delay: calc(var(--stagger-step) * 9); }
+    .app-stagger > :nth-child(2) {
+        --app-delay: calc(var(--stagger-step) * 1);
+    }
+    .app-stagger > :nth-child(3) {
+        --app-delay: calc(var(--stagger-step) * 2);
+    }
+    .app-stagger > :nth-child(4) {
+        --app-delay: calc(var(--stagger-step) * 3);
+    }
+    .app-stagger > :nth-child(5) {
+        --app-delay: calc(var(--stagger-step) * 4);
+    }
+    .app-stagger > :nth-child(6) {
+        --app-delay: calc(var(--stagger-step) * 5);
+    }
+    .app-stagger > :nth-child(7) {
+        --app-delay: calc(var(--stagger-step) * 6);
+    }
+    .app-stagger > :nth-child(8) {
+        --app-delay: calc(var(--stagger-step) * 7);
+    }
+    .app-stagger > :nth-child(9) {
+        --app-delay: calc(var(--stagger-step) * 8);
+    }
+    .app-stagger > :nth-child(n + 10) {
+        --app-delay: calc(var(--stagger-step) * 9);
+    }
 
     .app-page-enter {
         animation: app-page-in var(--duration-base) var(--ease-out) backwards;
@@ -607,13 +654,23 @@
         content: '';
         position: absolute;
         inset: 0;
-        background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.55), transparent);
+        background: linear-gradient(
+            90deg,
+            transparent,
+            rgb(255 255 255 / 0.55),
+            transparent
+        );
         transform: translateX(-100%);
         animation: app-shimmer 1.4s var(--ease-in-out) infinite;
     }
 
     .dark .app-skeleton::after {
-        background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.07), transparent);
+        background: linear-gradient(
+            90deg,
+            transparent,
+            rgb(255 255 255 / 0.07),
+            transparent
+        );
     }
 
     /* <TransitionGroup name="app-list">: entra con fade/escala, sale al
@@ -733,10 +790,14 @@
    el cierre sigue funcionando igual (también con movimiento reducido). */
 .swal2-container {
     --swal2-show-animation: app-swal-in var(--duration-base) var(--ease-out);
-    --swal2-hide-animation: app-swal-out var(--duration-fast) var(--ease-in) forwards;
-    --swal2-toast-show-animation: app-toast-in var(--duration-slow) var(--ease-out);
-    --swal2-toast-hide-animation: app-toast-out var(--duration-fast) var(--ease-in) forwards;
-    --swal2-backdrop-transition: background-color var(--duration-base) var(--ease-out);
+    --swal2-hide-animation: app-swal-out var(--duration-fast) var(--ease-in)
+        forwards;
+    --swal2-toast-show-animation: app-toast-in var(--duration-slow)
+        var(--ease-out);
+    --swal2-toast-hide-animation: app-toast-out var(--duration-fast)
+        var(--ease-in) forwards;
+    --swal2-backdrop-transition: background-color var(--duration-base)
+        var(--ease-out);
 }
 
 @keyframes app-swal-in {
@@ -934,7 +995,9 @@
     font-weight: 700;
     color: inherit;
     cursor: pointer;
-    transition: background 0.2s ease, transform 0.2s ease;
+    transition:
+        background 0.2s ease,
+        transform 0.2s ease;
 }
 
 .fv-route-loading-action:hover {

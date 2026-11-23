@@ -1,4 +1,31 @@
 <script setup lang="ts">
+/**
+ * MovementDetailSheet — panel lateral con el detalle de un movimiento.
+ *
+ * Se usa en pages/EstadoResultados/Index. Explica si el movimiento suma al
+ * resultado y por qué, muestra la partición del monto, sus dimensiones, la
+ * cadena de evidencia, los datos de banco/ERP, la conciliación, la
+ * clasificación financiera (con acciones para aceptar la sugerencia,
+ * clasificar o crear una regla de catálogo) y el historial de clasificación
+ * manual, que se pide al servidor al abrir.
+ *
+ * Props:
+ * - movement: movimiento a mostrar (null = nada).
+ * - open: si el panel está abierto.
+ * - historyUrl: construye la URL del historial a partir de la huella.
+ * - canClassify: permiso para clasificar.
+ * - toneOf: clases de color de la insignia de un tratamiento.
+ * - lookup: busca un movimiento del dataset por huella (para la cadena de evidencia).
+ * - lockReason: motivo de solo lectura (versión aprobada o histórica).
+ * - canCreateRule: permiso para crear reglas del catálogo de conceptos.
+ *
+ * Emits:
+ * - update:open: abrir o cerrar el panel.
+ * - classify: clasificar el movimiento (lista con su huella).
+ * - acceptSuggestion: aceptar el tratamiento sugerido (huella).
+ * - openMovement: abrir otro movimiento enlazado.
+ * - createRule: crear una regla de catálogo con el texto del movimiento.
+ */
 import {
     ArrowLeftRight,
     BookMarked,
@@ -47,6 +74,7 @@ const emit = defineEmits<{
     createRule: [m: Movement];
 }>();
 
+/** Cambio del historial de clasificación: tratamiento nuevo y anterior, motivo, usuario y fecha. */
 interface HistoryRow {
     treatment_label: string;
     previous_label: string | null;
@@ -54,14 +82,22 @@ interface HistoryRow {
     user: string | null;
     at: string | null;
 }
+/** Historial de clasificación del movimiento abierto. */
 const history = ref<HistoryRow[]>([]);
+/** Se está leyendo el historial. */
 const loadingHistory = ref(false);
+/** Mensaje de error al leer el historial. */
 const historyError = ref<string | null>(null);
 /** Cada lectura lleva un número; una respuesta vieja (otro movimiento) se descarta. */
 let historyRequest = 0;
 
+/** Movimiento mostrado (atajo a la prop). */
 const m = computed(() => props.movement);
 
+/**
+ * Lee el historial de clasificación del movimiento. Solo pide datos si el panel está
+ * abierto y el movimiento tiene clasificación manual; descarta respuestas viejas.
+ */
 async function loadHistory(): Promise<void> {
     const id = ++historyRequest;
     const fp = props.movement?.fingerprint;
@@ -98,8 +134,13 @@ async function loadHistory(): Promise<void> {
     }
 }
 
-watch(() => [props.open, props.movement?.fingerprint] as const, loadHistory);
+// Recarga el historial al abrir el panel o al cambiar de movimiento; immediate
+// cubre el caso en que el panel ya se monta abierto con un movimiento.
+watch(() => [props.open, props.movement?.fingerprint] as const, loadHistory, {
+    immediate: true,
+});
 
+/** Aviso principal: suma (con monto), requiere revisión, ya está en el ERP o no suma. */
 const headline = computed(() => {
     const mv = m.value;
 
@@ -147,6 +188,7 @@ const headline = computed(() => {
     <Sheet :open="open" @update:open="(v: boolean) => emit('update:open', v)">
         <SheetContent class="w-full overflow-y-auto sm:max-w-2xl">
             <template v-if="m">
+                <!-- Encabezado: concepto, cuenta y fila, fecha -->
                 <SheetHeader>
                     <SheetTitle class="pr-6 text-base">
                         {{ m.concept ?? 'Movimiento' }}
@@ -164,6 +206,7 @@ const headline = computed(() => {
                 </SheetHeader>
 
                 <div class="space-y-4 px-4 pb-6 text-sm">
+                    <!-- Si suma o no al resultado y por qué -->
                     <div class="rounded-2xl border p-3" :class="headline.cls">
                         <p class="flex items-center gap-2 font-bold">
                             <component :is="headline.icon" class="size-4" />
@@ -174,6 +217,7 @@ const headline = computed(() => {
                         </p>
                     </div>
 
+                    <!-- Partición del monto, dimensiones y cadena de evidencia -->
                     <AmountPartitionBar v-if="m.amounts" :amounts="m.amounts" />
                     <DimensionGrid
                         v-if="m.dimensions"
@@ -187,6 +231,7 @@ const headline = computed(() => {
                         @open="(x) => emit('openMovement', x)"
                     />
 
+                    <!-- Datos del movimiento: cargo, abono, folio, sucursal, beneficiario y referencia -->
                     <div class="grid grid-cols-2 gap-2 text-xs">
                         <div class="rounded-xl bg-muted/50 p-2">
                             <p class="text-muted-foreground">Cargo</p>
@@ -239,6 +284,7 @@ const headline = computed(() => {
                         </div>
                     </div>
 
+                    <!-- Conciliación con ERP y banco -->
                     <section class="space-y-2">
                         <h3 class="text-sm font-extrabold">Conciliación</h3>
                         <span
@@ -329,6 +375,7 @@ const headline = computed(() => {
                         </p>
                     </section>
 
+                    <!-- Clasificación financiera y acciones -->
                     <section class="space-y-2">
                         <h3 class="text-sm font-extrabold">
                             Clasificación financiera
@@ -413,6 +460,7 @@ const headline = computed(() => {
                         </p>
                     </section>
 
+                    <!-- Historial de clasificación manual -->
                     <section v-if="m.override" class="space-y-2">
                         <h3
                             class="flex items-center gap-1 text-sm font-extrabold"

@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * RequisitosCorte — tarjeta con los archivos que necesita el corte elegido
+ * (carteras e ingresos) y cuáles ya están disponibles o faltan.
+ *
+ * Se usa en pages/EfectividadCobranza/Index. Si todavía no hay un corte que
+ * mostrar, enseña la guía de qué cargar para la modalidad seleccionada.
+ *
+ * Props:
+ * - modo: modalidad seleccionada (diario, acumulado, semanal o mensual).
+ * - opcion: corte elegido con sus requisitos; null si aún no hay corte.
+ */
 import { CheckCircle2, CircleDashed, Receipt, Wallet } from 'lucide-vue-next';
 import type { Modo, OpcionCorte } from './types';
 
@@ -19,6 +30,7 @@ const GUIA: Record<Modo, string> = {
 <template>
     <div class="overflow-hidden rounded-2xl border bg-card" aria-live="polite">
         <template v-if="opcion">
+            <!-- Encabezado del corte con su estado (listo / faltan ingresos / faltan carteras) -->
             <div
                 class="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2.5"
             >
@@ -40,6 +52,7 @@ const GUIA: Record<Modo, string> = {
                     }}
                 </span>
             </div>
+            <!-- Lista de requisitos con palomita (disponible) o círculo punteado (faltante) -->
             <ul class="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-3">
                 <li
                     v-for="r in opcion.requisitos"
@@ -77,6 +90,7 @@ const GUIA: Record<Modo, string> = {
                     </div>
                 </li>
             </ul>
+            <!-- Mensaje final: todo listo o qué falta -->
             <p
                 class="border-t px-4 py-2.5 text-sm"
                 :class="

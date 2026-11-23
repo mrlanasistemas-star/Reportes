@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Disparador que abre el contenido de un elemento del menú de navegación (con chevrón). */
 import type { NavigationMenuTriggerProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

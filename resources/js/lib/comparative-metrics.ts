@@ -8,62 +8,87 @@
  * es la mejora) — un aumento de Mora se pintaría verde igual que un aumento de
  * EBITDA. La cifra numérica de la diferencia NUNCA cambia; solo el color semántico.
  */
-export type MetricDirection = 'increase_good' | 'decrease_good' | 'neutral'
+/** Sentido en que una métrica mejora: al subir, al bajar o sin juicio (neutral). */
+export type MetricDirection = 'increase_good' | 'decrease_good' | 'neutral';
 
+/** Dirección de mejora por etiqueta de métrica (las etiquetas deben coincidir con las del backend). */
 const DIRECTIONS: Record<string, MetricDirection> = {
-    'Recuperación': 'increase_good',
+    Recuperación: 'increase_good',
     'Ingreso base EBITDA': 'increase_good',
-    'Colocación': 'increase_good',
+    Colocación: 'increase_good',
     'Valor cartera': 'increase_good',
     'Cartera vencida': 'decrease_good',
     'Mora %': 'decrease_good',
-    'OPEX': 'decrease_good',
-    'Gastos': 'decrease_good', // alias usado en el comparativo scope=employee
+    OPEX: 'decrease_good',
+    Gastos: 'decrease_good', // alias usado en el comparativo scope=employee
     'Nómina y Capital Humano': 'neutral',
     'Gastos Totales': 'decrease_good',
-    'EBITDA': 'increase_good',
+    EBITDA: 'increase_good',
     'Margen EBITDA': 'increase_good',
     'Préstamos activos (contratos)': 'increase_good',
-    'IMSS': 'neutral',
-    'Percepciones': 'neutral',
+    IMSS: 'neutral',
+    Percepciones: 'neutral',
     'Deducciones (informativo)': 'neutral',
     'Neto pagado a trabajadores': 'neutral',
-    'Plantilla': 'neutral',
+    Plantilla: 'neutral',
     'Altas del periodo': 'neutral',
     'Bajas del periodo': 'decrease_good',
     'Rotación %': 'decrease_good',
-}
+};
 
+/** Dirección de mejora de una métrica; 'neutral' si la etiqueta no está registrada. */
 export function directionFor(label: string): MetricDirection {
-    return DIRECTIONS[label] ?? 'neutral'
+    return DIRECTIONS[label] ?? 'neutral';
 }
 
-/** 'good' | 'bad' | 'neutral' — nunca cambia la cifra, solo el tono semántico a aplicar. */
-export function toneFor(label: string, varPct: number): 'good' | 'bad' | 'neutral' {
+/**
+ * Tono semántico para colorear una variación: 'good' | 'bad' | 'neutral'.
+ * Nunca cambia la cifra, solo el color a aplicar.
+ * @param label etiqueta de la métrica.
+ * @param varPct variación porcentual (signo = sube/baja).
+ */
+export function toneFor(
+    label: string,
+    varPct: number,
+): 'good' | 'bad' | 'neutral' {
     if (varPct === 0) {
-return 'neutral'
-}
+        return 'neutral';
+    }
 
-    const dir = directionFor(label)
+    const dir = directionFor(label);
 
     if (dir === 'neutral') {
-return 'neutral'
-}
+        return 'neutral';
+    }
 
-    const isIncrease = varPct > 0
+    const isIncrease = varPct > 0;
 
     if (dir === 'increase_good') {
-return isIncrease ? 'good' : 'bad'
-}
+        return isIncrease ? 'good' : 'bad';
+    }
 
-    return isIncrease ? 'bad' : 'good'
+    return isIncrease ? 'bad' : 'good';
 }
 
 /** Métricas principales para las cards ejecutivas (B8) — subconjunto, nunca oculta el resto (tabla completa las conserva todas). */
-export const HEADLINE_METRICS = ['Recuperación', 'Colocación', 'EBITDA', 'Margen EBITDA', 'OPEX', 'Mora %', 'Valor cartera', 'Cartera vencida']
+export const HEADLINE_METRICS = [
+    'Recuperación',
+    'Colocación',
+    'EBITDA',
+    'Margen EBITDA',
+    'OPEX',
+    'Mora %',
+    'Valor cartera',
+    'Cartera vencida',
+];
 
 /** Grupo de métricas monetarias para el bar chart agrupado principal (B11) — nunca mezclado con porcentajes. */
-export const CHART_CURRENCY_METRICS = ['Recuperación', 'Colocación', 'EBITDA', 'OPEX']
+export const CHART_CURRENCY_METRICS = [
+    'Recuperación',
+    'Colocación',
+    'EBITDA',
+    'OPEX',
+];
 
 /** Grupo de métricas porcentuales para su propio chart (B11) — eje separado del anterior. */
-export const CHART_PERCENT_METRICS = ['Margen EBITDA', 'Mora %', 'Rotación %']
+export const CHART_PERCENT_METRICS = ['Margen EBITDA', 'Mora %', 'Rotación %'];

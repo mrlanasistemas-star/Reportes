@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Campo de texto base (shadcn-vue) con v-model y estilos de foco/error. */
 import type { HTMLAttributes } from "vue"
 import { useVModel } from "@vueuse/core"
 import { cn } from "@/lib/utils"

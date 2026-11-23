@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Calendario de selección de fecha (shadcn-vue sobre reka-ui CalendarRoot); arma encabezado, navegación y cuadrícula de días. */
 import type { CalendarRootEmits, CalendarRootProps, DateValue } from "reka-ui"
 import type { HTMLAttributes, Ref } from "vue"
 import type { LayoutTypes } from "."

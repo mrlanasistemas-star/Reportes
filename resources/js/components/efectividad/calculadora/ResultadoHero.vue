@@ -1,4 +1,19 @@
 <script setup lang="ts">
+/**
+ * ResultadoHero — tarjeta principal del resultado: título, ventana de ingresos y
+ * corte, estado del reporte, efectividad total del GRAN TOTAL y cifras clave.
+ *
+ * Se usa en pages/EfectividadCobranza/Index. Las cifras son siempre del reporte
+ * completo (sin filtros). Si el reporte es preliminar muestra un aviso con
+ * botón para ir al control y trazabilidad.
+ *
+ * Props:
+ * - resultado: resultado completo del cálculo.
+ * - duracionMs: tiempo que tardó el cálculo, en milisegundos (opcional).
+ *
+ * Emits:
+ * - verControl: se pidió abrir el panel de control y trazabilidad.
+ */
 import {
     ArrowDown,
     CheckCircle2,
@@ -26,6 +41,7 @@ const props = defineProps<{
 
 defineEmits<{ verControl: [] }>();
 
+/** Nombre visible de cada modalidad. */
 const MODO: Record<Resultado['modo'], string> = {
     DIARIO: 'Diario',
     ACUMULADO: 'Acumulado',
@@ -37,10 +53,14 @@ const MODO: Record<Resultado['modo'], string> = {
 const total = computed(
     () => props.resultado.filas.find((f) => f.tipo === 'gran_total') ?? null,
 );
+/** Parámetros de la ventana de cálculo (fechas de ingresos, corte y domingo base). */
 const p = computed(() => props.resultado.parametros);
+/** Control del cálculo; null en resultados que no lo traen. */
 const auditoria = computed(() => props.resultado.auditoria ?? null);
+/** true si el reporte quedó como PRELIMINAR. */
 const preliminar = computed(() => auditoria.value?.estado === 'PRELIMINAR');
 
+/** Duración del cálculo en texto ("menos de 1 s", "2.5 s"); null si no se midió. */
 const duracion = computed(() => {
     const ms = props.duracionMs;
 
@@ -53,6 +73,7 @@ const duracion = computed(() => {
         : `${(ms / 1000).toLocaleString('es-MX', { maximumFractionDigits: 1 })} s`;
 });
 
+/** Color del semáforo para la efectividad total (neutro si no aplica). */
 const efectividadColor = computed(() =>
     total.value ? semaforo(total.value) || 'text-foreground' : '',
 );

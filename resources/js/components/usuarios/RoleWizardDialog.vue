@@ -1,233 +1,545 @@
 <script setup lang="ts">
+/**
+ * RoleWizardDialog — asistente de 3 pasos para crear o editar un rol.
+ *
+ * Se usa en pages/roles/Index. Crea con POST a `storeUrl` o, al editar, guarda
+ * con PUT a `role.update_url`; se cierra al tener éxito.
+ *
+ * Props:
+ * - role: rol a editar (null = nuevo rol).
+ * - storeUrl: URL para crear el rol.
+ * - modules / actions: catálogos de módulos y acciones.
+ * - grantable: módulos y acciones que el usuario actual puede conceder.
+ *
+ * v-model:
+ * - open: visibilidad del diálogo.
+ */
 // Asistente de rol (prioridad 8): paso 1 nombre + descripción + nivel base,
 // paso 2 módulos que puede usar, paso 3 acciones dentro de cada módulo. Al
 // quitar un módulo se quitan sus acciones (el backend hace lo mismo: nunca
 // quedan privilegios residuales).
-import { useForm } from '@inertiajs/vue3'
-import { ArrowLeft, ArrowRight, Check, Loader2, ShieldPlus } from 'lucide-vue-next'
-import Swal from 'sweetalert2'
-import { computed, ref, watch } from 'vue'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import RolePermissionMatrix from './RolePermissionMatrix.vue'
-import { BASE_LEVELS, DEFAULT_ON_ENABLE, actionLabel, actionsIn, requiredBy, summaryText, toggleWithDependencies } from './roles'
-import type { ActionOption, Grantable, ModuleOption, RoleInfo } from './roles'
+import { useForm } from '@inertiajs/vue3';
+import {
+    ArrowLeft,
+    ArrowRight,
+    Check,
+    Loader2,
+    ShieldPlus,
+} from 'lucide-vue-next';
+import { computed, ref, watch } from 'vue';
+import { toastNotice } from '@/components/feedback/ConfirmDialog';
+import { Button } from '@/components/ui/button';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import RolePermissionMatrix from './RolePermissionMatrix.vue';
+import {
+    BASE_LEVELS,
+    DEFAULT_ON_ENABLE,
+    actionLabel,
+    actionsIn,
+    requiredBy,
+    summaryText,
+    toggleWithDependencies,
+} from './roles';
+import type { ActionOption, Grantable, ModuleOption, RoleInfo } from './roles';
 
-const props = defineProps<{ role: RoleInfo | null; storeUrl: string; modules: ModuleOption[]; actions: ActionOption[]; grantable: Grantable }>()
-const open = defineModel<boolean>('open', { default: false })
+const props = defineProps<{
+    role: RoleInfo | null;
+    storeUrl: string;
+    modules: ModuleOption[];
+    actions: ActionOption[];
+    grantable: Grantable;
+}>();
+const open = defineModel<boolean>('open', { default: false });
 
-const STEPS = ['Nombre', 'Módulos', 'Acciones'] as const
-const step = ref(0)
+/** Pasos del asistente. */
+const STEPS = ['Nombre', 'Módulos', 'Acciones'] as const;
+/** Índice del paso actual (0 a 2). */
+const step = ref(0);
 
+/** Formulario Inertia del rol: nombre, descripción, nivel base, módulos y acciones. */
 const form = useForm({
     name: '',
     description: '',
     base_level: 'colaborador' as string,
     modules: [] as string[],
     actions: {} as Record<string, string[]>,
-})
+});
 
-const isEdit = computed(() => props.role !== null)
-const isSystem = computed(() => props.role?.is_system ?? false)
+/** Se está editando un rol existente. */
+const isEdit = computed(() => props.role !== null);
+/** Rol del sistema: su nivel base no se puede cambiar. */
+const isSystem = computed(() => props.role?.is_system ?? false);
 
+/** Al abrir, vuelve al paso 1 y carga los datos del rol (o vacíos si es nuevo). */
 watch(open, (v) => {
     if (!v) {
-        return
+        return;
     }
 
-    step.value = 0
-    form.clearErrors()
-    form.name = props.role?.name ?? ''
-    form.description = props.role?.description ?? ''
-    form.base_level = props.role?.base_level ?? 'colaborador'
-    form.modules = [...(props.role?.modules ?? [])]
-    form.actions = JSON.parse(JSON.stringify(props.role?.actions ?? {}))
-})
+    step.value = 0;
+    form.clearErrors();
+    form.name = props.role?.name ?? '';
+    form.description = props.role?.description ?? '';
+    form.base_level = props.role?.base_level ?? 'colaborador';
+    form.modules = [...(props.role?.modules ?? [])];
+    form.actions = JSON.parse(JSON.stringify(props.role?.actions ?? {}));
+});
 
+/** Se puede dar el módulo si el actor lo tiene o si el rol ya lo tenía. */
 function canGrantModule(key: string): boolean {
-    return props.grantable.modules.includes(key) || form.modules.includes(key)
+    return props.grantable.modules.includes(key) || form.modules.includes(key);
 }
 
+/**
+ * Da o quita un módulo. Al quitarlo borra sus acciones; al darlo pre-marca
+ * las acciones de DEFAULT_ON_ENABLE que el actor puede conceder.
+ */
 function toggleModule(key: string) {
     if (form.modules.includes(key)) {
-        form.modules = form.modules.filter((m) => m !== key)
-        const next = { ...form.actions }
-        delete next[key]
-        form.actions = next
+        form.modules = form.modules.filter((m) => m !== key);
+        const next = { ...form.actions };
+        delete next[key];
+        form.actions = next;
     } else if (canGrantModule(key)) {
-        form.modules = [...form.modules, key]
-        const defaults = (DEFAULT_ON_ENABLE[key] ?? []).filter((a) => props.grantable.actions[key]?.includes(a))
+        form.modules = [...form.modules, key];
+        const defaults = (DEFAULT_ON_ENABLE[key] ?? []).filter((a) =>
+            props.grantable.actions[key]?.includes(a),
+        );
 
-        if (defaults.length && !(form.actions[key]?.length)) {
-            form.actions = { ...form.actions, [key]: defaults }
+        if (defaults.length && !form.actions[key]?.length) {
+            form.actions = { ...form.actions, [key]: defaults };
         }
     }
 }
 
+/** Se puede dar la acción si el actor la tiene o si el rol ya la tenía. */
 function canGrantAction(module: string, action: string): boolean {
-    return props.grantable.actions[module]?.includes(action) || form.actions[module]?.includes(action) || false
+    return (
+        props.grantable.actions[module]?.includes(action) ||
+        form.actions[module]?.includes(action) ||
+        false
+    );
 }
 
-const labelsOf = (module: string, list: string[]) => list.map((a) => `«${actionLabel(props.actions, module, a)}»`).join(', ')
+/** Lista de etiquetas de acciones entre comillas «», separadas por comas. */
+const labelsOf = (module: string, list: string[]) =>
+    list.map((a) => `«${actionLabel(props.actions, module, a)}»`).join(', ');
 
 // Dependencias entre acciones (ActionPermissionService::REQUIRES): al marcar una
 // se marcan las que requiere; al desmarcar una requerida se desmarcan las que
 // dependen de ella. Siempre con un aviso breve de lo que cambió además.
 function toggleAction(module: string, action: string) {
-    const { next, added, removed } = toggleWithDependencies(props.actions, module, form.actions[module] ?? [], action)
-    const blocked = added.filter((a) => !canGrantAction(module, a))
+    const { next, added, removed } = toggleWithDependencies(
+        props.actions,
+        module,
+        form.actions[module] ?? [],
+        action,
+    );
+    const blocked = added.filter((a) => !canGrantAction(module, a));
 
     if (blocked.length) {
         // Toast (sin botones): el diálogo del asistente mantiene el foco.
-        Swal.fire({ toast: true, position: 'bottom-end', icon: 'warning', text: `«${actionLabel(props.actions, module, action)}» requiere ${labelsOf(module, blocked)}, y tu propio rol no lo tiene.`, timer: 5000, showConfirmButton: false, timerProgressBar: true })
+        toastNotice('warning', '', {
+            position: 'bottom-end',
+            text: `«${actionLabel(props.actions, module, action)}» requiere ${labelsOf(module, blocked)}, y tu propio rol no lo tiene.`,
+            timer: 5000,
+        });
 
-        return
+        return;
     }
 
-    form.actions = { ...form.actions, [module]: next }
+    form.actions = { ...form.actions, [module]: next };
 
-    const label = `«${actionLabel(props.actions, module, action)}»`
+    const label = `«${actionLabel(props.actions, module, action)}»`;
     const text = added.length
         ? `${label} requiere ${labelsOf(module, added)}: se marcó también.`
-        : removed.length ? `Sin ${label} no aplica ${labelsOf(module, removed)}: se desmarcó también.` : null
+        : removed.length
+          ? `Sin ${label} no aplica ${labelsOf(module, removed)}: se desmarcó también.`
+          : null;
 
     if (text) {
-        Swal.fire({ toast: true, position: 'bottom-end', icon: 'info', text, timer: 4000, showConfirmButton: false, timerProgressBar: true })
+        toastNotice('info', '', { position: 'bottom-end', text, timer: 4000 });
     }
 }
 
+/**
+ * Marca todas las acciones concedibles del módulo (on = true) o las quita todas.
+ */
 function setAll(module: string, on: boolean) {
-    const allowed = actionsIn(props.actions, module).map((a) => a.action).filter((a) => canGrantAction(module, a))
+    const allowed = actionsIn(props.actions, module)
+        .map((a) => a.action)
+        .filter((a) => canGrantAction(module, a));
     // Nunca deja una acción sin sus requeridas (si falta alguna que no puede otorgar, se omite).
-    const consistent = allowed.filter((a) => requiredBy(props.actions, module, a).every((r) => allowed.includes(r)))
-    form.actions = { ...form.actions, [module]: on ? consistent : [] }
+    const consistent = allowed.filter((a) =>
+        requiredBy(props.actions, module, a).every((r) => allowed.includes(r)),
+    );
+    form.actions = { ...form.actions, [module]: on ? consistent : [] };
 }
 
-const summary = computed(() => summaryText(form.name.trim(), form.modules, form.actions))
-const canNext = computed(() => (step.value === 0 ? form.name.trim().length >= 3 : true))
+/** Frase resumen del rol según lo elegido. */
+const summary = computed(() =>
+    summaryText(form.name.trim(), form.modules, form.actions),
+);
+/** En el paso 1 exige un nombre de al menos 3 caracteres. */
+const canNext = computed(() =>
+    step.value === 0 ? form.name.trim().length >= 3 : true,
+);
+
+/**
+ * Primer error del backend sobre las acciones (`actions` o `actions.<módulo>[.n]`).
+ * Sin esto el rechazo de una acción no se mostraba en ningún paso.
+ */
+const actionsError = computed(() => {
+    const errors = form.errors as Record<string, string | undefined>;
+    const key = Object.keys(errors).find(
+        (k) => (k === 'actions' || k.startsWith('actions.')) && errors[k],
+    );
+
+    return key ? (errors[key] ?? null) : null;
+});
 
 // Si el backend rechaza algo, vuelve al paso donde está el campo con error.
-watch(() => form.errors, (errors) => {
-    if (errors.name || errors.base_level || errors.description) {
-        step.value = 0
-    } else if (errors.modules) {
-        step.value = 1
-    }
-}, { deep: true })
+watch(
+    () => form.errors,
+    (errors) => {
+        if (errors.name || errors.base_level || errors.description) {
+            step.value = 0;
+        } else if (errors.modules) {
+            step.value = 1;
+        } else if (actionsError.value) {
+            step.value = 2;
+        }
+    },
+    { deep: true },
+);
 
+/** Crea o actualiza el rol y cierra el diálogo al tener éxito. */
 function submit() {
-    const options = { preserveScroll: true, onSuccess: () => {
-        open.value = false
-    } }
+    const options = {
+        preserveScroll: true,
+        onSuccess: () => {
+            open.value = false;
+        },
+    };
 
     if (isEdit.value && props.role?.update_url) {
-        form.put(props.role.update_url, options)
+        form.put(props.role.update_url, options);
     } else {
-        form.post(props.storeUrl, options)
+        form.post(props.storeUrl, options);
     }
 }
 </script>
 
 <template>
     <Dialog v-model:open="open">
-        <DialogContent class="max-h-[92vh] w-[96vw] max-w-4xl overflow-y-auto p-0 sm:max-w-4xl">
+        <DialogContent
+            class="max-h-[92vh] w-[96vw] max-w-4xl overflow-y-auto p-0 sm:max-w-4xl"
+        >
+            <!-- Encabezado con título e indicador de pasos -->
             <div class="border-b border-border bg-card px-6 py-5">
-                <DialogTitle class="flex items-center gap-2 text-lg font-semibold text-foreground"><ShieldPlus class="size-5 text-primary" aria-hidden="true" /> {{ isEdit ? `Editar rol «${role?.name}»` : 'Nuevo rol' }}</DialogTitle>
-                <DialogDescription class="mt-1 text-sm text-muted-foreground">Los cambios aplican de inmediato a todos los usuarios con este rol.</DialogDescription>
+                <DialogTitle
+                    class="flex items-center gap-2 text-lg font-semibold text-foreground"
+                    ><ShieldPlus
+                        class="size-5 text-primary"
+                        aria-hidden="true"
+                    />
+                    {{
+                        isEdit ? `Editar rol «${role?.name}»` : 'Nuevo rol'
+                    }}</DialogTitle
+                >
+                <DialogDescription class="mt-1 text-sm text-muted-foreground"
+                    >Los cambios aplican de inmediato a todos los usuarios con
+                    este rol.</DialogDescription
+                >
                 <ol class="mt-4 flex gap-2">
-                    <li v-for="(label, i) in STEPS" :key="label" class="flex items-center gap-2 text-xs font-bold" :class="i <= step ? 'text-foreground' : 'text-muted-foreground'">
-                        <span class="flex size-6 items-center justify-center rounded-full border" :class="i < step ? 'border-primary bg-primary text-primary-foreground' : i === step ? 'border-primary text-primary' : 'border-border'">
-                            <Check v-if="i < step" class="size-3.5" /><template v-else>{{ i + 1 }}</template>
+                    <li
+                        v-for="(label, i) in STEPS"
+                        :key="label"
+                        class="flex items-center gap-2 text-xs font-bold"
+                        :class="
+                            i <= step
+                                ? 'text-foreground'
+                                : 'text-muted-foreground'
+                        "
+                    >
+                        <span
+                            class="flex size-6 items-center justify-center rounded-full border"
+                            :class="
+                                i < step
+                                    ? 'border-primary bg-primary text-primary-foreground'
+                                    : i === step
+                                      ? 'border-primary text-primary'
+                                      : 'border-border'
+                            "
+                        >
+                            <Check v-if="i < step" class="size-3.5" /><template
+                                v-else
+                                >{{ i + 1 }}</template
+                            >
                         </span>
                         {{ label }}
-                        <span v-if="i < STEPS.length - 1" class="mx-1 h-px w-6 bg-border" />
+                        <span
+                            v-if="i < STEPS.length - 1"
+                            class="mx-1 h-px w-6 bg-border"
+                        />
                     </li>
                 </ol>
             </div>
 
             <div class="space-y-5 p-6">
+                <!-- Paso 1: nombre, descripción y nivel base; paso 2: módulos; paso 3: acciones -->
                 <template v-if="step === 0">
                     <div class="grid gap-3 sm:grid-cols-2">
                         <label class="space-y-1">
-                            <span class="text-xs font-bold text-foreground">Nombre del rol</span>
-                            <input v-model="form.name" maxlength="80" placeholder="Ej. Gerente de Sucursal" class="app-input h-10 text-sm">
-                            <span v-if="form.errors.name" class="text-xs font-semibold text-rose-600">{{ form.errors.name }}</span>
+                            <span class="text-xs font-bold text-foreground"
+                                >Nombre del rol</span
+                            >
+                            <input
+                                v-model="form.name"
+                                maxlength="80"
+                                placeholder="Ej. Gerente de Sucursal"
+                                class="app-input h-10 text-sm"
+                            />
+                            <span
+                                v-if="form.errors.name"
+                                class="text-xs font-semibold text-rose-600"
+                                >{{ form.errors.name }}</span
+                            >
                         </label>
                         <label class="space-y-1">
-                            <span class="text-xs font-bold text-foreground">Descripción <span class="font-normal text-muted-foreground">(opcional)</span></span>
-                            <input v-model="form.description" maxlength="255" placeholder="Para qué sirve este rol" class="app-input h-10 text-sm">
+                            <span class="text-xs font-bold text-foreground"
+                                >Descripción
+                                <span class="font-normal text-muted-foreground"
+                                    >(opcional)</span
+                                ></span
+                            >
+                            <input
+                                v-model="form.description"
+                                maxlength="255"
+                                placeholder="Para qué sirve este rol"
+                                class="app-input h-10 text-sm"
+                            />
                         </label>
                     </div>
                     <div class="space-y-2">
-                        <p class="text-xs font-bold text-foreground">Nivel base <span class="font-normal text-muted-foreground">— qué información ve en OKR y documentos</span></p>
+                        <p class="text-xs font-bold text-foreground">
+                            Nivel base
+                            <span class="font-normal text-muted-foreground"
+                                >— qué información ve en OKR y documentos</span
+                            >
+                        </p>
                         <div class="grid gap-2 sm:grid-cols-2">
                             <button
-                                v-for="lvl in BASE_LEVELS" :key="lvl.key" type="button" :disabled="isSystem"
+                                v-for="lvl in BASE_LEVELS"
+                                :key="lvl.key"
+                                type="button"
+                                :disabled="isSystem"
                                 class="rounded-2xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60"
-                                :class="form.base_level === lvl.key ? 'border-primary bg-accent/60 ring-2 ring-primary/20' : 'border-border hover:border-primary/40'"
+                                :class="
+                                    form.base_level === lvl.key
+                                        ? 'border-primary bg-accent/60 ring-2 ring-primary/20'
+                                        : 'border-border hover:border-primary/40'
+                                "
                                 @click="form.base_level = lvl.key"
                             >
-                                <span class="flex items-center justify-between text-sm font-bold text-foreground">{{ lvl.label }} <Check v-if="form.base_level === lvl.key" class="size-4 text-primary" aria-hidden="true" /></span>
-                                <span class="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{{ lvl.hint }}</span>
+                                <span
+                                    class="flex items-center justify-between text-sm font-bold text-foreground"
+                                    >{{ lvl.label }}
+                                    <Check
+                                        v-if="form.base_level === lvl.key"
+                                        class="size-4 text-primary"
+                                        aria-hidden="true"
+                                /></span>
+                                <span
+                                    class="mt-0.5 block text-[11px] leading-4 text-muted-foreground"
+                                    >{{ lvl.hint }}</span
+                                >
                             </button>
                         </div>
-                        <p v-if="isSystem" class="text-[11px] text-muted-foreground">Es un rol del sistema: su nivel base no cambia, pero sí sus módulos y acciones.</p>
-                        <span v-if="form.errors.base_level" class="text-xs font-semibold text-rose-600">{{ form.errors.base_level }}</span>
+                        <p
+                            v-if="isSystem"
+                            class="text-[11px] text-muted-foreground"
+                        >
+                            Es un rol del sistema: su nivel base no cambia, pero
+                            sí sus módulos y acciones.
+                        </p>
+                        <span
+                            v-if="form.errors.base_level"
+                            class="text-xs font-semibold text-rose-600"
+                            >{{ form.errors.base_level }}</span
+                        >
                     </div>
                 </template>
 
                 <template v-else-if="step === 1">
-                    <p class="text-xs text-muted-foreground">Elige los módulos que este rol puede abrir (columna «Ver» de la matriz). {{ form.modules.length }} de {{ modules.length }} elegidos.</p>
+                    <p class="text-xs text-muted-foreground">
+                        Elige los módulos que este rol puede abrir (columna
+                        «Ver» de la matriz). {{ form.modules.length }} de
+                        {{ modules.length }} elegidos.
+                    </p>
                     <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                         <button
-                            v-for="m in modules" :key="m.key" type="button" :disabled="!canGrantModule(m.key)"
+                            v-for="m in modules"
+                            :key="m.key"
+                            type="button"
+                            :disabled="!canGrantModule(m.key)"
                             class="flex items-start gap-2.5 rounded-2xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50"
-                            :class="form.modules.includes(m.key) ? 'border-emerald-400/60 bg-emerald-500/5' : 'border-border hover:border-emerald-300'"
-                            :title="canGrantModule(m.key) ? m.description : 'Tu propio rol no tiene este módulo; no puedes otorgarlo.'"
+                            :class="
+                                form.modules.includes(m.key)
+                                    ? 'border-emerald-400/60 bg-emerald-500/5'
+                                    : 'border-border hover:border-emerald-300'
+                            "
+                            :title="
+                                canGrantModule(m.key)
+                                    ? m.description
+                                    : 'Tu propio rol no tiene este módulo; no puedes otorgarlo.'
+                            "
                             @click="toggleModule(m.key)"
                         >
-                            <span class="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md border transition" :class="form.modules.includes(m.key) ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-border'">
-                                <Check v-if="form.modules.includes(m.key)" class="size-3.5" />
+                            <span
+                                class="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md border transition"
+                                :class="
+                                    form.modules.includes(m.key)
+                                        ? 'border-emerald-500 bg-emerald-500 text-white'
+                                        : 'border-border'
+                                "
+                            >
+                                <Check
+                                    v-if="form.modules.includes(m.key)"
+                                    class="size-3.5"
+                                />
                             </span>
                             <span>
-                                <span class="block text-sm font-semibold text-foreground">{{ m.label }}</span>
-                                <span class="block text-[11px] leading-4 text-muted-foreground">{{ m.description }}</span>
+                                <span
+                                    class="block text-sm font-semibold text-foreground"
+                                    >{{ m.label }}</span
+                                >
+                                <span
+                                    class="block text-[11px] leading-4 text-muted-foreground"
+                                    >{{ m.description }}</span
+                                >
                             </span>
                         </button>
                     </div>
-                    <p v-if="form.errors.modules" class="text-xs font-semibold text-rose-600">{{ form.errors.modules }}</p>
-                    <p v-if="!form.modules.length" class="text-[11px] font-semibold text-amber-700 dark:text-amber-300">Sin módulos, solo verá la Guía del sistema y su Configuración.</p>
+                    <p
+                        v-if="form.errors.modules"
+                        class="text-xs font-semibold text-rose-600"
+                    >
+                        {{ form.errors.modules }}
+                    </p>
+                    <p
+                        v-if="!form.modules.length"
+                        class="text-[11px] font-semibold text-amber-700 dark:text-amber-300"
+                    >
+                        Sin módulos, solo verá la Guía del sistema y su
+                        Configuración.
+                    </p>
                 </template>
 
                 <template v-else>
-                    <p class="text-xs text-muted-foreground">Marca las acciones permitidas dentro de cada módulo elegido. «—» significa que ese módulo no tiene esa operación.</p>
-                    <div v-if="form.modules.length" class="flex flex-wrap gap-2">
-                        <span v-for="key in form.modules" :key="key" class="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-1 text-[11px] font-semibold text-foreground">
+                    <p class="text-xs text-muted-foreground">
+                        Marca las acciones permitidas dentro de cada módulo
+                        elegido. «—» significa que ese módulo no tiene esa
+                        operación.
+                    </p>
+                    <div
+                        v-if="form.modules.length"
+                        class="flex flex-wrap gap-2"
+                    >
+                        <span
+                            v-for="key in form.modules"
+                            :key="key"
+                            class="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-1 text-[11px] font-semibold text-foreground"
+                        >
                             {{ modules.find((m) => m.key === key)?.label }}
-                            <button v-if="actionsIn(actions, key).length" type="button" class="text-primary hover:underline" @click="setAll(key, true)">todas</button>
-                            <button v-if="actionsIn(actions, key).length" type="button" class="text-muted-foreground hover:underline" @click="setAll(key, false)">ninguna</button>
+                            <button
+                                v-if="actionsIn(actions, key).length"
+                                type="button"
+                                class="text-primary hover:underline"
+                                @click="setAll(key, true)"
+                            >
+                                todas
+                            </button>
+                            <button
+                                v-if="actionsIn(actions, key).length"
+                                type="button"
+                                class="text-muted-foreground hover:underline"
+                                @click="setAll(key, false)"
+                            >
+                                ninguna
+                            </button>
                         </span>
                     </div>
                     <RolePermissionMatrix
                         v-if="form.modules.length"
-                        :modules="form.modules" :actions="form.actions" :module-catalog="modules" :action-catalog="actions"
-                        :rows="form.modules" editable :grantable="grantable" @toggle="toggleAction"
+                        :modules="form.modules"
+                        :actions="form.actions"
+                        :module-catalog="modules"
+                        :action-catalog="actions"
+                        :rows="form.modules"
+                        editable
+                        :grantable="grantable"
+                        @toggle="toggleAction"
                     />
-                    <p v-else class="text-sm text-muted-foreground">No elegiste módulos en el paso 2.</p>
+                    <p v-else class="text-sm text-muted-foreground">
+                        No elegiste módulos en el paso 2.
+                    </p>
+                    <p
+                        v-if="actionsError"
+                        class="text-xs font-semibold text-rose-600"
+                        role="alert"
+                    >
+                        {{ actionsError }}
+                    </p>
                 </template>
 
-                <p class="rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground">{{ summary }}</p>
+                <!-- Resumen siempre visible -->
+                <p
+                    class="rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground"
+                >
+                    {{ summary }}
+                </p>
             </div>
 
-            <div class="flex items-center justify-between gap-2 border-t border-border px-6 py-4">
-                <Button type="button" variant="outline" class="h-10 gap-1.5 rounded-xl" @click="step === 0 ? (open = false) : step--">
-                    <ArrowLeft v-if="step > 0" class="size-4" /> {{ step === 0 ? 'Cancelar' : 'Atrás' }}
+            <!-- Navegación: cancelar/atrás, siguiente o guardar -->
+            <div
+                class="flex items-center justify-between gap-2 border-t border-border px-6 py-4"
+            >
+                <Button
+                    type="button"
+                    variant="outline"
+                    class="h-10 gap-1.5 rounded-xl"
+                    @click="step === 0 ? (open = false) : step--"
+                >
+                    <ArrowLeft v-if="step > 0" class="size-4" />
+                    {{ step === 0 ? 'Cancelar' : 'Atrás' }}
                 </Button>
-                <Button v-if="step < STEPS.length - 1" type="button" class="h-10 gap-1.5 rounded-xl" :disabled="!canNext" @click="step++">
+                <Button
+                    v-if="step < STEPS.length - 1"
+                    type="button"
+                    class="h-10 gap-1.5 rounded-xl"
+                    :disabled="!canNext"
+                    @click="step++"
+                >
                     Siguiente <ArrowRight class="size-4" />
                 </Button>
-                <Button v-else type="button" class="h-10 gap-1.5 rounded-xl" :disabled="form.processing || form.name.trim().length < 3" @click="submit">
-                    <Loader2 v-if="form.processing" class="size-4 animate-spin" /> {{ isEdit ? 'Guardar cambios' : 'Crear rol' }}
+                <Button
+                    v-else
+                    type="button"
+                    class="h-10 gap-1.5 rounded-xl"
+                    :disabled="form.processing || form.name.trim().length < 3"
+                    @click="submit"
+                >
+                    <Loader2
+                        v-if="form.processing"
+                        class="size-4 animate-spin"
+                    />
+                    {{ isEdit ? 'Guardar cambios' : 'Crear rol' }}
                 </Button>
             </div>
         </DialogContent>

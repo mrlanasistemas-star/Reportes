@@ -1,4 +1,33 @@
 <script setup lang="ts">
+/**
+ * MovementsTable — tabla de movimientos del Estado de Resultados.
+ *
+ * Se usa en pages/EstadoResultados/Index. Ofrece búsqueda (tecla "/"), filtro
+ * por cuenta, filtros por dimensión (inclusión, revisión, categoría), chips de
+ * filtros rápidos con conteo, aviso del foco externo (sección o tratamiento),
+ * acciones en lote (clasificar, aceptar sugerencias), tabla paginada de 50 en
+ * 50 navegable con teclado y una explicación de por qué cada movimiento suma
+ * o no al resultado.
+ *
+ * Props:
+ * - movements: movimientos del dataset.
+ * - canClassify: permiso para clasificar.
+ * - toneOf: clases de color de la insignia de un tratamiento.
+ * - resolve: convierte una clave de filtro en el filtro (chips, secciones, tratamientos).
+ * - dimensionCatalog: catálogo de dimensiones para las etiquetas de los filtros.
+ * - hiddenNote: aviso de movimientos ocultos por permisos.
+ * - lockReason: motivo de solo lectura; oculta las acciones de clasificación.
+ *
+ * v-model:
+ * - filter: clave del filtro activo (null = sin filtro).
+ *
+ * Emits:
+ * - open: abrir el detalle de un movimiento.
+ * - classify: clasificar movimientos (huellas).
+ * - acceptSuggestions: aceptar sugerencias (huellas y si se pide confirmación).
+ *
+ * Expone: clearSelection() y focusSearch().
+ */
 import { useEventListener } from '@vueuse/core';
 import {
     ChevronLeft,
@@ -39,6 +68,7 @@ const props = defineProps<{
     lockReason?: string | null;
 }>();
 
+/** Se puede clasificar: hay permiso y no está en solo lectura. */
 const canAct = computed(() => props.canClassify && !props.lockReason);
 const filterKey = defineModel<string | null>('filter', { default: null });
 
@@ -48,17 +78,22 @@ const emit = defineEmits<{
     acceptSuggestions: [fingerprints: string[], ask: boolean];
 }>();
 
+/** Avisos breves (copiado al portapapeles). */
 const toast = useToast();
+/** Texto de búsqueda. */
 const search = ref('');
+/** Cuenta de origen elegida ('todos' = todas). */
 const origin = ref('todos');
 /** Filtros por dimensión independiente ('' = todas). */
 const dimInclusion = ref('');
 const dimReview = ref('');
 const dimCategory = ref('');
+/** Algún movimiento trae dimensiones (si no, no se muestran sus filtros). */
 const hasDimensions = computed(() =>
     props.movements.some((m) => !!m.dimensions),
 );
 
+/** Dimensiones por las que se puede filtrar. */
 type Dim = 'inclusion' | 'review' | 'category';
 
 /** Opciones con conteo; sólo las que existen en los movimientos visibles. */
@@ -88,6 +123,7 @@ function dimOptions(dim: Dim) {
     }));
 }
 
+/** Los tres filtros por dimensión con sus opciones. */
 const dimFilters = computed(() => [
     {
         key: 'inclusion' as Dim,
@@ -101,19 +137,30 @@ const dimFilters = computed(() => [
         opts: dimOptions('category'),
     },
 ]);
+/** Valor elegido de cada dimensión, por clave. */
 const dimRefs = {
     inclusion: dimInclusion,
     review: dimReview,
     category: dimCategory,
 };
+/** Hay algún filtro por dimensión activo. */
 const dimActive = computed(
     () => !!(dimInclusion.value || dimReview.value || dimCategory.value),
 );
 
+/**
+ * Fija el valor de un filtro por dimensión.
+ * @param dim dimensión.
+ * @param value clave elegida ('' = todas).
+ */
 function setDim(dim: Dim, value: string): void {
     dimRefs[dim].value = value;
 }
 
+/**
+ * Indica si un movimiento cumple los filtros por dimensión activos.
+ * @param m movimiento.
+ */
 function dimMatch(m: Movement): boolean {
     const k = (dim: Dim) => m.dimensions?.[dim]?.key ?? '__none';
 
@@ -124,24 +171,32 @@ function dimMatch(m: Movement): boolean {
     );
 }
 
+/** Quita los filtros por dimensión. */
 function clearDims(): void {
     dimInclusion.value = '';
     dimReview.value = '';
     dimCategory.value = '';
 }
 
+/** Quita todos los filtros: chip/foco, búsqueda, cuenta y dimensiones. */
 function clearAll(): void {
     filterKey.value = null;
     search.value = '';
     origin.value = 'todos';
     clearDims();
 }
+/** Página actual. */
 const page = ref(1);
+/** Movimientos por página. */
 const perPage = 50;
+/** Huellas de los movimientos seleccionados. */
 const selected = ref<Set<string>>(new Set());
+/** Campo de búsqueda. */
 const searchInput = ref<HTMLInputElement | null>(null);
+/** Contenedor desplazable de la tabla. */
 const scroller = ref<HTMLElement | null>(null);
 
+/** Filtro activo resuelto a partir de su clave. */
 const active = computed(() =>
     filterKey.value ? props.resolve(filterKey.value) : null,
 );
@@ -152,6 +207,7 @@ const externalFocus = computed(() =>
         : null,
 );
 
+/** Cuentas de origen presentes en los movimientos (para el selector). */
 const origins = computed(() => {
     const map = new Map<string, string>();
 
@@ -167,6 +223,7 @@ const origins = computed(() => {
     return [...map.entries()].map(([key, label]) => ({ key, label }));
 });
 
+/** Conteo de cada chip rápido sobre todos los movimientos. */
 const counts = computed(() =>
     Object.fromEntries(
         QUICK_FILTERS.map((c) => [
@@ -176,6 +233,7 @@ const counts = computed(() =>
     ),
 );
 
+/** Movimientos que pasan el filtro activo, las dimensiones, la cuenta y la búsqueda. */
 const filtered = computed(() => {
     const q = search.value.trim().toLowerCase();
     const f = active.value;
@@ -214,35 +272,59 @@ const filtered = computed(() => {
     });
 });
 
+/** Movimientos del filtro que se pueden seleccionar (sin restringidos). */
+const filteredSelectable = computed(() => filtered.value.filter(selectable));
+/** Total de páginas (al menos 1). */
 const pages = computed(() =>
     Math.max(1, Math.ceil(filtered.value.length / perPage)),
 );
+/** Movimientos de la página actual. */
 const rows = computed(() =>
     filtered.value.slice((page.value - 1) * perPage, page.value * perPage),
 );
 
+// Al cambiar cualquier filtro, vuelve a la primera página y sube al inicio.
 watch([filterKey, search, origin, dimInclusion, dimReview, dimCategory], () => {
     page.value = 1;
     scroller.value?.scrollTo({ top: 0 });
 });
+// Si la página actual ya no existe, salta a la última.
 watch(pages, (p) => {
     if (page.value > p) {
         page.value = p;
     }
 });
 
+/**
+ * Un movimiento se puede seleccionar/clasificar si no está restringido por
+ * permisos y tiene huella (mismo criterio que MovementControlList).
+ */
+const selectable = (m: Movement) => !m.redacted && !!m.fingerprint;
+
+/** Movimientos seleccionados (aunque no estén en el filtro actual). */
 const selectedList = computed(() =>
-    props.movements.filter((m) => selected.value.has(m.fingerprint)),
+    props.movements.filter(
+        (m) => selectable(m) && selected.value.has(m.fingerprint),
+    ),
 );
+/** Pendiente con un tratamiento sugerido. */
 const hasSuggestion = (m: Movement) =>
     m.treatment === 'pendiente' && !!m.suggested_treatment;
+/** Seleccionados que tienen sugerencia. */
 const selectedWithSuggestion = computed(() =>
     selectedList.value.filter(hasSuggestion),
 );
+/** Movimientos del filtro actual que tienen sugerencia. */
 const visibleWithSuggestion = computed(() =>
-    filtered.value.filter(hasSuggestion),
+    filtered.value.filter((m) => selectable(m) && hasSuggestion(m)),
 );
+/** Movimientos seleccionables de la página actual. */
+const selectableRows = computed(() => rows.value.filter(selectable));
 
+/**
+ * Marca o desmarca un movimiento.
+ * @param fp huella del movimiento.
+ */
 function toggle(fp: string): void {
     const next = new Set(selected.value);
 
@@ -255,32 +337,39 @@ function toggle(fp: string): void {
     selected.value = next;
 }
 
+/** Todos los movimientos seleccionables de la página están seleccionados. */
 const allPageSelected = computed(
     () =>
-        rows.value.length > 0 &&
-        rows.value.every((m) => selected.value.has(m.fingerprint)),
+        selectableRows.value.length > 0 &&
+        selectableRows.value.every((m) => selected.value.has(m.fingerprint)),
 );
 
+/** Marca o desmarca todos los movimientos de la página. */
 function togglePage(): void {
     const next = new Set(selected.value);
 
     if (allPageSelected.value) {
-        rows.value.forEach((m) => next.delete(m.fingerprint));
+        selectableRows.value.forEach((m) => next.delete(m.fingerprint));
     } else {
-        rows.value.forEach((m) => next.add(m.fingerprint));
+        selectableRows.value.forEach((m) => next.add(m.fingerprint));
     }
 
     selected.value = next;
 }
 
+/** Selecciona todos los movimientos seleccionables del filtro (reemplaza la selección). */
 function selectAllFiltered(): void {
-    selected.value = new Set(filtered.value.map((m) => m.fingerprint));
+    selected.value = new Set(
+        filteredSelectable.value.map((m) => m.fingerprint),
+    );
 }
 
+/** Limpia la selección. */
 function clearSelection(): void {
     selected.value = new Set();
 }
 
+/** Enfoca el campo de búsqueda. */
 function focusSearch(): void {
     searchInput.value?.focus();
 }
@@ -305,6 +394,11 @@ useEventListener(window, 'keydown', (e: KeyboardEvent) => {
     focusSearch();
 });
 
+/**
+ * Copia un texto al portapapeles y avisa con un toast.
+ * @param text texto a copiar.
+ * @param what qué se copió (para el mensaje).
+ */
 async function copy(text: string, what: string): Promise<void> {
     try {
         await navigator.clipboard.writeText(text);
@@ -314,6 +408,11 @@ async function copy(text: string, what: string): Promise<void> {
     }
 }
 
+/**
+ * Teclado en una fila: Enter abre el detalle, espacio selecciona y flechas mueven el foco.
+ * @param e evento de teclado.
+ * @param m movimiento de la fila.
+ */
 function rowKey(e: KeyboardEvent, m: Movement): void {
     const row = e.currentTarget as HTMLElement;
 
@@ -334,16 +433,29 @@ function rowKey(e: KeyboardEvent, m: Movement): void {
     }
 }
 
+/**
+ * Activa un chip rápido, o lo quita si ya estaba activo.
+ * @param key clave del chip (null = Todos).
+ */
 function pickChip(key: string | null): void {
     filterKey.value = filterKey.value === key ? null : key;
 }
 
+/**
+ * Cambia de página y sube al inicio de la tabla.
+ * @param p número de página.
+ */
 async function goPage(p: number): Promise<void> {
     page.value = p;
     await nextTick();
     scroller.value?.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+/**
+ * Pista de conciliación: pagos en banco de un registro ERP, o el primer ERP emparejado
+ * de un movimiento de banco.
+ * @param m movimiento.
+ */
 function erpHint(m: Movement): string | null {
     if (m.source === 'erp') {
         return m.linked_bank.length
@@ -361,6 +473,7 @@ function erpHint(m: Movement): string | null {
     <section class="rounded-2xl border bg-card shadow-soft-xs">
         <!-- Barra de búsqueda y filtros -->
         <div class="space-y-3 border-b p-3 md:p-4">
+            <!-- Búsqueda y cuenta de origen -->
             <div class="flex flex-col gap-2 lg:flex-row lg:items-center">
                 <label class="relative flex-1">
                     <span class="sr-only">Buscar movimientos</span>
@@ -391,6 +504,7 @@ function erpHint(m: Movement): string | null {
                 </select>
             </div>
 
+            <!-- Filtros por dimensión y aviso de movimientos ocultos -->
             <div
                 v-if="hasDimensions || hiddenNote"
                 class="flex flex-wrap items-center gap-2"
@@ -444,6 +558,7 @@ function erpHint(m: Movement): string | null {
                 >
             </div>
 
+            <!-- Chips de filtros rápidos -->
             <div
                 class="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]"
                 role="toolbar"
@@ -489,6 +604,7 @@ function erpHint(m: Movement): string | null {
                 </button>
             </div>
 
+            <!-- Foco externo (sección o tratamiento) -->
             <Transition name="er-fade">
                 <div
                     v-if="externalFocus"
@@ -524,12 +640,13 @@ function erpHint(m: Movement): string | null {
                         >{{ selectedList.length }} seleccionado(s)</span
                     >
                     <button
-                        v-if="selectedList.length < filtered.length"
+                        v-if="selectedList.length < filteredSelectable.length"
                         type="button"
                         class="font-semibold text-cyan-700 hover:underline dark:text-cyan-300"
                         @click="selectAllFiltered"
                     >
-                        Seleccionar los {{ filtered.length }} del filtro
+                        Seleccionar los {{ filteredSelectable.length }} del
+                        filtro
                     </button>
                     <span class="flex-1" />
                     <Button
@@ -651,6 +768,7 @@ function erpHint(m: Movement): string | null {
                     >
                         <td v-if="canAct" class="pl-4" @click.stop>
                             <input
+                                v-if="selectable(m)"
                                 type="checkbox"
                                 class="size-4 accent-emerald-600"
                                 :checked="selected.has(m.fingerprint)"
@@ -771,6 +889,7 @@ function erpHint(m: Movement): string | null {
                                 {{ m.suggested_label }}</span
                             >
                         </td>
+                        <!-- ¿Suma al resultado? con la explicación en un popover -->
                         <td @click.stop>
                             <Popover>
                                 <PopoverTrigger as-child>
@@ -895,6 +1014,7 @@ function erpHint(m: Movement): string | null {
                 </tbody>
             </table>
 
+            <!-- Estado vacío -->
             <div
                 v-if="!rows.length"
                 class="flex flex-col items-center gap-2 px-4 py-16 text-center"
@@ -928,6 +1048,7 @@ function erpHint(m: Movement): string | null {
             </div>
         </div>
 
+        <!-- Pie: total y paginación -->
         <div
             v-if="rows.length"
             class="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground"

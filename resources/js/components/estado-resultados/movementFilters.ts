@@ -10,6 +10,7 @@
 import { isConciliated } from './types';
 import type { Movement, TreatmentMeta } from './types';
 
+/** Filtro con nombre: clave, etiqueta, explicación y función que decide si un movimiento entra. */
 export interface MovementFilter {
     key: string;
     label: string;
@@ -17,6 +18,7 @@ export interface MovementFilter {
     test: (m: Movement) => boolean;
 }
 
+/** Movimiento de banco dentro del periodo. */
 const bankInPeriod = (m: Movement) => m.source === 'banco' && m.in_period;
 
 /** Segmentos del embudo banco → resultado (mismos que el resumen de conciliación). */
@@ -106,6 +108,11 @@ export function lineFilter(sectionKey: string, title: string): MovementFilter {
     };
 }
 
+/**
+ * Filtro por tratamiento. "fuera_periodo" toma los movimientos de banco fuera del
+ * periodo; los demás, los de ese tratamiento (los de banco solo si están en el periodo).
+ * @param t clave y etiqueta del tratamiento.
+ */
 export function treatmentFilter(
     t: Pick<TreatmentMeta, 'key' | 'label'>,
 ): MovementFilter {

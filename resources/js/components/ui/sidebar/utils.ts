@@ -1,3 +1,4 @@
+/** Primitiva UI: Utilidades de la barra lateral: constantes (cookie, anchos, atajo) y el contexto compartido (SidebarContext) creado con reka-ui. */
 import { createContext } from "reka-ui"
 import type { ComputedRef, Ref } from 'vue';
 

@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Título del calendario (mes y año visibles). */
 import type { CalendarHeadingProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

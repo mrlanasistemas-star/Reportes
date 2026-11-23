@@ -1,6 +1,6 @@
 import type { Auth } from '@/types/auth';
 
-// Extend ImportMeta interface for Vite...
+// Extiende ImportMeta de Vite con las variables de entorno usadas (VITE_APP_NAME).
 declare module 'vite/client' {
     interface ImportMetaEnv {
         readonly VITE_APP_NAME: string;
@@ -13,6 +13,7 @@ declare module 'vite/client' {
     }
 }
 
+// Tipado de las props compartidas por Inertia en todas las páginas (page.props).
 declare module '@inertiajs/core' {
     export interface InertiaConfig {
         sharedPageProps: {
@@ -24,6 +25,7 @@ declare module '@inertiajs/core' {
     }
 }
 
+// Propiedades globales de Inertia disponibles en plantillas ($page, $inertia…).
 declare module 'vue' {
     interface ComponentCustomProperties {
         $inertia: typeof Router;

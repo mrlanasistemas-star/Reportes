@@ -1,4 +1,27 @@
 <script setup lang="ts">
+/**
+ * ValidationPanel — pestaña «Validación»: comprueba que cada peso del banco y
+ * del ERP termine en exactamente un destino.
+ *
+ * Se usa en pages/EstadoResultados/Index. Muestra el veredicto (ok / con
+ * pendientes / con diferencias), las partidas sin resolver, el embudo archivo →
+ * importado → destinos con las particiones en $0.00, el control total por
+ * archivo y la lista de movimientos (FileControlTable + MovementControlList),
+ * las diferencias banco ↔ ERP y los bloques de integridad (archivos,
+ * Radiografía, eliminaciones y NOI).
+ *
+ * Props:
+ * - validation: bloque `validation` del dataset.
+ * - movements: movimientos del dataset (ya redactados) para la lista de control.
+ * - canClassify / canExport: permisos para clasificar y exportar desde la lista.
+ * - lockReason: motivo por el que no se puede clasificar.
+ * - url: arma `/estado-resultados/{periodo}` + path; sin ella no se muestra la lista de control.
+ * - scopeQuery: consulta de alcance/versión que se agrega a las peticiones.
+ *
+ * Emits:
+ * - open(fingerprint): abrir el detalle de un movimiento.
+ * - classify(fingerprints): clasificar uno o varios movimientos.
+ */
 import {
     ArrowRight,
     CheckCircle2,
@@ -51,6 +74,7 @@ const emit = defineEmits<{
     classify: [fingerprints: string[]];
 }>();
 
+/** La validación vista con el tipo extendido de control total. */
 const v = computed(() => props.validation as unknown as ControlValidation);
 
 // ── Control total: lista de movimientos por estado / partida / archivo ──
@@ -60,6 +84,11 @@ const control = useMovementControl({
     scopeQuery: () => props.scopeQuery(),
 });
 
+/**
+ * Enfoca la lista de control en unos movimientos/archivos o un filtro y se
+ * desplaza hasta ella.
+ * @param opts título, nota, referencias, filtro y archivo (uploadId) a mostrar.
+ */
 async function showList(opts: {
     title: string;
     note?: string | null;
@@ -75,14 +104,17 @@ async function showList(opts: {
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+/** Desplaza la vista hasta la tabla de control por archivo. */
 function scrollToFiles(): void {
     document
         .getElementById('er-control-archivos')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+/** Control por archivo (null si el backend no lo manda). */
 const fileControl = computed(() => v.value.file_control ?? null);
 
+/** Título, clases e icono del veredicto por estado de la validación. */
 const STATUS = {
     ok: {
         title: 'Todo cuadra y no hay diferencias sin resolver',
@@ -101,6 +133,7 @@ const STATUS = {
     },
 } as const;
 
+/** Veredicto actual; un estado desconocido se trata como «con diferencias». */
 const status = computed(
     () =>
         STATUS[v.value.status as keyof typeof STATUS] ?? STATUS.con_diferencias,
@@ -149,12 +182,14 @@ const parts = computed(() => {
     }));
 });
 
+/** Las tres particiones que deben cuadrar en $0.00: banco, ERP fuera de Radiografía y total. */
 const partitions = computed<Array<{ label: string; p: PartitionCheck }>>(() => [
     { label: 'Estados de cuenta', p: v.value.partition.bank },
     { label: 'ERP fuera de Radiografía', p: v.value.partition.erp },
     { label: 'Todo el periodo', p: v.value.partition.all },
 ]);
 
+/** Lo importado coincide con lo leído del archivo (true si el backend no lo informa). */
 const importOk = computed(
     () => v.value.integrity.import_matches_source ?? true,
 );
@@ -381,11 +416,13 @@ const importOk = computed(
             @classify="(fps) => emit('classify', fps)"
         />
 
+        <!-- Diferencias banco ↔ ERP -->
         <ValidationDifferences
             :differences="v.differences"
             @open="(fp) => emit('open', fp)"
         />
 
+        <!-- Integridad, Radiografía, eliminaciones y NOI -->
         <div class="grid gap-4 xl:grid-cols-2">
             <!-- Integridad por archivo -->
             <section class="rounded-2xl border bg-card p-5 shadow-soft-xs">

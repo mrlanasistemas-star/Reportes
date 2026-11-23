@@ -1,4 +1,18 @@
 <script setup lang="ts">
+/**
+ * TwoFactorSetupModal — diálogo para activar la verificación en dos pasos.
+ *
+ * Se usa en pages/settings/Security. Paso 1: muestra el código QR y la clave
+ * manual para la app autenticadora. Paso 2 (si se requiere confirmación): pide
+ * el código de 6 dígitos y lo envía a la ruta two-factor.confirm. Si la
+ * verificación ya está activa, solo muestra el QR y la clave.
+ *
+ * Props:
+ * - requiresConfirmation: si es true se exige el paso de verificación del código.
+ * - twoFactorEnabled: indica si la verificación en dos pasos ya está activa.
+ *
+ * v-model:isOpen — controla si el diálogo está abierto.
+ */
 import { Form } from '@inertiajs/vue3';
 import { useClipboard } from '@vueuse/core';
 import { Check, Copy, ScanLine } from 'lucide-vue-next';
@@ -29,6 +43,7 @@ type Props = {
     twoFactorEnabled: boolean;
 };
 
+/** Tema efectivo (claro/oscuro); se usa para el contraste del código QR. */
 const { resolvedAppearance } = useAppearance();
 
 const props = defineProps<Props>();
@@ -38,11 +53,14 @@ const { copy, copied } = useClipboard();
 const { qrCodeSvg, manualSetupKey, clearSetupData, fetchSetupData, errors } =
     useTwoFactorAuth();
 
+/** true = se muestra el paso de captura del código de 6 dígitos. */
 const showVerificationStep = ref(false);
+/** Código de 6 dígitos que escribe el usuario. */
 const code = ref<string>('');
 
 const pinInputContainerRef = useTemplateRef('pinInputContainerRef');
 
+/** Título, descripción y texto del botón según el estado (ya activa, verificando o configurando). */
 const modalConfig = computed<TwoFactorConfigContent>(() => {
     if (props.twoFactorEnabled) {
         return {
@@ -56,7 +74,8 @@ const modalConfig = computed<TwoFactorConfigContent>(() => {
     if (showVerificationStep.value) {
         return {
             title: 'Verificar código de autenticación',
-            description: 'Ingresa el código de 6 dígitos de tu aplicación autenticadora',
+            description:
+                'Ingresa el código de 6 dígitos de tu aplicación autenticadora',
             buttonText: 'Continuar',
         };
     }
@@ -69,6 +88,10 @@ const modalConfig = computed<TwoFactorConfigContent>(() => {
     };
 });
 
+/**
+ * Botón "Continuar": pasa al paso de verificación (enfocando el primer dígito)
+ * o, si no se requiere confirmación, limpia los datos y cierra el diálogo.
+ */
 const handleModalNextStep = () => {
     if (props.requiresConfirmation) {
         showVerificationStep.value = true;
@@ -84,6 +107,7 @@ const handleModalNextStep = () => {
     isOpen.value = false;
 };
 
+/** Restablece el diálogo al cerrarse: vuelve al primer paso y borra el código. */
 const resetModalState = () => {
     if (props.twoFactorEnabled) {
         clearSetupData();
@@ -93,6 +117,10 @@ const resetModalState = () => {
     code.value = '';
 };
 
+/**
+ * Al cerrar el diálogo restablece su estado; al abrirlo descarga el QR y la
+ * clave de configuración si aún no se tienen.
+ */
 watch(
     () => isOpen.value,
     async (isOpen) => {
@@ -217,18 +245,35 @@ watch(
                                     <input
                                         type="text"
                                         readonly
+                                        aria-label="Clave de configuración manual"
                                         :value="manualSetupKey"
-                                        class="h-full w-full bg-background p-3 text-foreground"
+                                        class="h-full w-full min-w-0 bg-background p-3 font-mono text-sm text-foreground"
                                     />
                                     <button
+                                        type="button"
+                                        :aria-label="
+                                            copied
+                                                ? 'Clave copiada'
+                                                : 'Copiar clave'
+                                        "
+                                        :title="
+                                            copied
+                                                ? 'Clave copiada'
+                                                : 'Copiar clave'
+                                        "
                                         @click="copy(manualSetupKey || '')"
-                                        class="relative block h-auto border-l border-border px-3 hover:bg-muted"
+                                        class="relative block h-auto border-l border-border px-3 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
                                     >
                                         <Check
                                             v-if="copied"
-                                            class="w-4 text-green-500"
+                                            class="w-4 text-success"
+                                            aria-hidden="true"
                                         />
-                                        <Copy v-else class="w-4" />
+                                        <Copy
+                                            v-else
+                                            class="w-4"
+                                            aria-hidden="true"
+                                        />
                                     </button>
                                 </template>
                             </div>
@@ -256,6 +301,7 @@ watch(
                                 <InputOTP
                                     id="otp"
                                     v-model="code"
+                                    aria-label="Código de 6 dígitos de tu app de autenticación"
                                     :maxlength="6"
                                     :disabled="processing"
                                 >

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón/elemento que cierra el diálogo al hacer clic. */
 import type { DialogCloseProps } from "reka-ui"
 import { DialogClose } from "reka-ui"
 

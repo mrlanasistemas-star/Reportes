@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * SelectorModalidad — grupo de tarjetas tipo radio para elegir la modalidad
+ * del cálculo de efectividad (Diario, Acumulado, Semanal o Mensual).
+ *
+ * Se usa en pages/EfectividadCobranza/Index.
+ *
+ * Props:
+ * - disabled: bloquea el cambio de modalidad.
+ *
+ * v-model: modalidad seleccionada (Modo).
+ */
 import {
     CalendarCheck,
     CalendarDays,
@@ -9,8 +20,10 @@ import type { Modo } from './types';
 
 defineProps<{ disabled?: boolean }>();
 
+/** Modalidad seleccionada (v-model del componente). */
 const modo = defineModel<Modo>({ required: true });
 
+/** Modalidades disponibles con título, explicación e icono. */
 const MODOS: Array<{
     valor: Modo;
     titulo: string;

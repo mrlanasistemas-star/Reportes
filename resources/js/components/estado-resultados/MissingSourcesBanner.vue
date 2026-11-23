@@ -1,4 +1,17 @@
 <script setup lang="ts">
+/**
+ * MissingSourcesBanner — aviso de fuentes pendientes de cargar.
+ *
+ * Se usa en pages/EstadoResultados/Index. Solo aparece si falta alguna fuente;
+ * es ámbar si hay obligatorias pendientes y azul si solo faltan opcionales.
+ * Lista hasta tres nombres.
+ *
+ * Props:
+ * - checklist: lista de fuentes con su estado.
+ *
+ * Emits:
+ * - go: el usuario pulsa "Ver qué falta" (ir a la pestaña Fuentes).
+ */
 import { ArrowRight, FolderInput } from 'lucide-vue-next';
 import { computed } from 'vue';
 import type { SourceChecklist } from './types';
@@ -7,10 +20,13 @@ import type { SourceChecklist } from './types';
 const props = defineProps<{ checklist: SourceChecklist }>();
 defineEmits<{ go: [] }>();
 
+/** Fuentes que aún no están listas. */
 const pending = computed(() =>
     props.checklist.items.filter((i) => i.state !== 'lista'),
 );
+/** Fuentes pendientes que son obligatorias. */
 const required = computed(() => pending.value.filter((i) => i.required));
+/** Hasta tres nombres pendientes (sin el prefijo "Estado de cuenta: "), con "…" si hay más. */
 const names = computed(
     () =>
         pending.value
@@ -38,7 +54,10 @@ const names = computed(
                     ? 'Falta 1 fuente'
                     : `Faltan ${pending.length} fuentes`
             }}</b>
-            <span v-if="required.length !== pending.length">
+            <!-- Desglose sólo si hay obligatorias mezcladas con opcionales;
+                 si todas son opcionales se dice así (nunca «0 obligatorias»). -->
+            <span v-if="!required.length"> (todas opcionales)</span>
+            <span v-else-if="required.length !== pending.length">
                 ({{ required.length }} obligatoria{{
                     required.length === 1 ? '' : 's'
                 }})</span

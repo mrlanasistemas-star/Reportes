@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Casilla individual de un dígito del código OTP, con cursor simulado. */
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { useForwardProps } from "reka-ui"

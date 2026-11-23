@@ -1,4 +1,25 @@
 <script setup lang="ts">
+/**
+ * FinancialExpensesPanel — pestaña de gastos financieros (intereses LEROM/BBVA).
+ *
+ * Se usa en pages/EstadoResultados/Index. Solo funciona en el consolidado.
+ * Muestra la explicación (solo el interés va entre EBIT y EBT; el capital no
+ * es gasto), el aviso de periodo aprobado, el resumen del periodo (pagos,
+ * capital excluido e interés) y, por crédito, la carga de la tabla de
+ * amortización, el interés aplicado en Ajustes y su diferencia contra la tabla,
+ * el aviso de versión congelada desactualizada, la tabla y el cotejo bancario.
+ *
+ * Props:
+ * - base: URL base del módulo para las peticiones.
+ * - periodId: periodo consultado.
+ * - consolidated: el alcance mostrado es el consolidado.
+ * - canUpload: permiso para subir tablas (estado_resultados,ajustes).
+ * - rev: cambia al recargar el dataset; dispara releer el panel.
+ * - reloadDataset: recarga el dataset del reporte tras subir una tabla.
+ *
+ * Emits:
+ * - goAdjustments: ir a la pestaña Ajustes.
+ */
 import { Info, Loader2, Lock, RefreshCw } from 'lucide-vue-next';
 import { computed, toRef, watch } from 'vue';
 import { Button } from '@/components/ui/button';
@@ -24,12 +45,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{ goAdjustments: [] }>();
 
+/** Estado y acciones del panel (carga, subida de tablas y descarga de plantilla). */
 const fe = useFinancialExpenses({
     base: props.base,
     periodId: toRef(props, 'periodId'),
     reloadDataset: props.reloadDataset,
 });
 
+// Recarga el panel al cambiar periodo, revisión del dataset o alcance (solo en consolidado).
 watch(
     () => [props.periodId, props.rev, props.consolidated] as const,
     () => {
@@ -40,13 +63,19 @@ watch(
     { immediate: true },
 );
 
+/** Datos del panel ya cargados (null mientras no hay). */
 const data = computed(() => fe.data.value);
 
+/** Texto del origen del interés aplicado. */
 const ORIGIN_LABEL: Record<string, string> = {
     tabla_amortizacion: 'Viene de la tabla de amortización',
     manual: 'Captura manual en Ajustes (gana sobre la tabla)',
 };
 
+/**
+ * Explica de dónde sale el interés del crédito en este periodo, o por qué no hay información.
+ * @param c crédito del periodo.
+ */
 function adjustmentText(c: CreditPeriod): string {
     const a = c.adjustment;
 
@@ -62,6 +91,7 @@ function adjustmentText(c: CreditPeriod): string {
 
 <template>
     <div class="space-y-4">
+        <!-- Explicación: solo el interés es gasto -->
         <div
             class="flex items-start gap-2 rounded-2xl border border-sky-200 bg-sky-50/70 p-3 text-xs text-sky-950 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-100"
         >
@@ -88,6 +118,7 @@ function adjustmentText(c: CreditPeriod): string {
         </p>
 
         <template v-else>
+            <!-- Estados de carga y error -->
             <div
                 v-if="fe.loading.value && !data"
                 class="flex items-center gap-2 p-6 text-sm text-muted-foreground"
@@ -105,6 +136,7 @@ function adjustmentText(c: CreditPeriod): string {
                 </Button>
             </div>
 
+            <!-- Panel con datos -->
             <template v-if="data">
                 <div
                     v-if="data.locked"
@@ -120,6 +152,7 @@ function adjustmentText(c: CreditPeriod): string {
                     </p>
                 </div>
 
+                <!-- Resumen del periodo -->
                 <section
                     aria-label="Resumen del periodo"
                     class="grid gap-3 sm:grid-cols-3"
@@ -157,6 +190,7 @@ function adjustmentText(c: CreditPeriod): string {
                     </div>
                 </section>
 
+                <!-- Un bloque por crédito: carga, interés aplicado, aviso de congelado y tabla -->
                 <section
                     v-for="c in data.credits"
                     :key="c.credit.key"

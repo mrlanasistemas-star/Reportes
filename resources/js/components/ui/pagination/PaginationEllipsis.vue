@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Puntos suspensivos que indican páginas omitidas. */
 import type { PaginationEllipsisProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

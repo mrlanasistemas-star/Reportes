@@ -1,4 +1,23 @@
 <script setup lang="ts">
+/**
+ * AccountUploadCard — tarjeta de una cuenta bancaria en el panel de fuentes
+ * del Estado de Resultados.
+ *
+ * La usa SourcesPanel. Muestra el nombre y número de la cuenta, su estado
+ * (StatusBadge), una zona AccountFilePart por cada archivo (1 obligatorio y
+ * 2 opcional) y el historial plegable de cargas anteriores.
+ *
+ * Props:
+ * - account: datos de la cuenta (estado, archivos, historial, movimientos por revisar).
+ * - canUpload: si el usuario puede subir archivos.
+ * - uploadingPart: archivo de la cuenta que se está cargando o quitando (1 | 2) o null.
+ * - uploadRules: extensiones y tamaño máximo permitidos.
+ * - lockReason: motivo de solo lectura (versión aprobada / histórica).
+ *
+ * Emits:
+ * - upload(slot, file, part): subir `file` como archivo `part` de la cuenta `slot`.
+ * - remove(slot, part): quitar el archivo `part` de la cuenta `slot`.
+ */
 import { ChevronDown, FileSpreadsheet, History } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import {
@@ -29,6 +48,7 @@ const emit = defineEmits<{
     remove: [slot: string, part: number];
 }>();
 
+/** Si el historial de cargas está desplegado. */
 const showHistory = ref(false);
 
 /** Archivo 1 (obligatorio) y archivo 2 (opcional). Datasets viejos sólo traen `upload`. */
@@ -61,6 +81,11 @@ const STATUS_LABEL: Record<string, string> = {
     cargado: 'Cargado',
     rechazado: 'Rechazado',
 };
+/**
+ * Traduce el estado crudo de una carga del historial; si no está en el
+ * catálogo, lo capitaliza y cambia guiones bajos por espacios.
+ * @param s estado crudo.
+ */
 const statusLabel = (s: string) =>
     STATUS_LABEL[s] ??
     s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ');

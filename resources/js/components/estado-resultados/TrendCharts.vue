@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * TrendCharts — cuadrícula de gráficas de tendencia de Comparativas.
+ *
+ * Se usa en ComparativesPanel. Dibuja (cada una sólo si el backend la manda):
+ * evolución de resultados (líneas), ingresos vs OPEX con EBITDA (columnas +
+ * línea), márgenes (%) y composición del OPEX (dona + lista). Los meses sin
+ * datos quedan como hueco, nunca como $0.
+ *
+ * Props:
+ * - charts: datos de las gráficas (CompCharts) ya calculados por el backend.
+ */
 import { computed } from 'vue';
 import type { CompCharts, Series } from './comparativas';
 import ErChart from './ErChart.vue';
@@ -18,6 +29,7 @@ const COLOR: Record<string, string> = {
     margen_ebit: '#0f766e',
     margen_neto: '#065f46',
 };
+/** Paleta de la dona de composición del OPEX (se repite si hay más categorías). */
 const CAT_COLORS = [
     '#059669',
     '#14b8a6',
@@ -34,12 +46,14 @@ const toSeries = (list: Series[]) =>
         data: s.data.map((v) => (v === null ? null : num(v))),
     }));
 
+/** Eje Y en formato compacto de moneda. */
 const moneyAxis = {
     labels: {
         formatter: (v: number) =>
             v === null || v === undefined ? '' : compact(v),
     },
 };
+/** Tooltip en moneda; null se muestra como «Sin datos». */
 const moneyTooltip = {
     y: {
         formatter: (v: number | null) =>
@@ -47,6 +61,7 @@ const moneyTooltip = {
     },
 };
 
+/** Datos de la gráfica de evolución de resultados. */
 const evo = computed(() => props.charts.evolucion_resultados);
 /** Eje desde 0 cuando no hay negativos (sin escalas engañosas). */
 const floor = (list: Series[] | undefined) =>
@@ -54,6 +69,7 @@ const floor = (list: Series[] | undefined) =>
         ? 0
         : undefined;
 
+/** Opciones de ApexCharts para la evolución (líneas con línea de cero). */
 const evoOptions = computed(() => ({
     chart: { type: 'line' },
     colors: (evo.value?.series ?? []).map((s) => COLOR[s.key] ?? '#64748b'),
@@ -67,7 +83,9 @@ const evoOptions = computed(() => ({
     },
 }));
 
+/** Datos de ingresos vs OPEX (y la serie de resultado opcional). */
 const inc = computed(() => props.charts.ingresos_vs_opex);
+/** Series de ingresos/OPEX como columnas y, si existe, la de resultado como línea. */
 const incSeries = computed(() => {
     if (!inc.value) {
         return [];
@@ -83,6 +101,10 @@ const incSeries = computed(() => {
 
     return [...bars, ...line];
 });
+/**
+ * Opciones de la gráfica combinada; el grosor [0, 0, 3] supone dos series de
+ * columnas seguidas de la línea de EBITDA.
+ */
 const incOptions = computed(() => ({
     chart: { type: 'line', stacked: false },
     colors: [
@@ -102,7 +124,9 @@ const incOptions = computed(() => ({
     tooltip: { ...moneyTooltip, shared: true, intersect: false },
 }));
 
+/** Datos de márgenes (%). */
 const mar = computed(() => props.charts.margenes);
+/** Opciones de la gráfica de márgenes; null se muestra como «Sin margen». */
 const marOptions = computed(() => ({
     chart: { type: 'line' },
     colors: (mar.value?.series ?? []).map((s) => COLOR[s.key] ?? '#64748b'),
@@ -125,11 +149,13 @@ const marOptions = computed(() => ({
     annotations: { yaxis: [{ y: 0, borderColor: '#94a3b8' }] },
 }));
 
+/** Datos de composición del OPEX. */
 const comp = computed(() => props.charts.composicion_opex);
 /** Dona sólo si hay OPEX positivo; con total 0 no hay porcentajes que mostrar. */
 const compItems = computed(() =>
     (comp.value?.items ?? []).filter((i) => num(i.amount) > 0),
 );
+/** Opciones de la dona (etiquetas, colores, % en las porciones). */
 const compOptions = computed(() => ({
     labels: compItems.value.map((i) => i.label),
     colors: CAT_COLORS,
@@ -139,6 +165,11 @@ const compOptions = computed(() => ({
     dataLabels: { enabled: true, formatter: (v: number) => `${v.toFixed(1)}%` },
 }));
 
+/**
+ * Meses cuyo estado es «sin_datos».
+ * @param labels etiquetas de los meses.
+ * @param status estado de cada mes, en el mismo orden.
+ */
 const missingMonths = (
     labels: string[] | undefined,
     status: string[] | undefined,
@@ -147,6 +178,7 @@ const missingMonths = (
 
 <template>
     <div class="grid gap-4 xl:grid-cols-2">
+        <!-- Evolución de resultados -->
         <section
             v-if="evo"
             class="rounded-2xl border bg-card p-4 shadow-soft-xs"
@@ -168,6 +200,7 @@ const missingMonths = (
             </p>
         </section>
 
+        <!-- Ingresos vs OPEX y EBITDA -->
         <section
             v-if="inc"
             class="rounded-2xl border bg-card p-4 shadow-soft-xs"
@@ -182,6 +215,7 @@ const missingMonths = (
             />
         </section>
 
+        <!-- Márgenes -->
         <section
             v-if="mar"
             class="rounded-2xl border bg-card p-4 shadow-soft-xs"
@@ -200,6 +234,7 @@ const missingMonths = (
             </p>
         </section>
 
+        <!-- Composición del OPEX -->
         <section
             v-if="comp"
             class="rounded-2xl border bg-card p-4 shadow-soft-xs"

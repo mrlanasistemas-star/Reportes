@@ -1,4 +1,19 @@
 <script setup lang="ts">
+/**
+ * OutsidePanel — pestaña «Fuera del ER»: lo que se movió en el banco pero no es
+ * ingreso ni gasto del periodo (transferencias, CAPEX, deuda, personales,
+ * duplicados, pendientes, etc.).
+ *
+ * Se usa en pages/EstadoResultados/Index. A la izquierda, un renglón por grupo
+ * con barras de cargos y abonos; a la derecha, los flujos capturados en
+ * ajustes (sólo informativos).
+ *
+ * Props:
+ * - outside: bloque `outside` del dataset (groups y manual_flows).
+ *
+ * Emits:
+ * - openMovements(filterKey): abrir movimientos filtrados por el grupo, con formato `t:<clave>`.
+ */
 import {
     ArrowLeftRight,
     ArrowUpRight,
@@ -21,6 +36,7 @@ import type { Dataset } from './types';
 const props = defineProps<{ outside: Dataset['outside'] }>();
 const emit = defineEmits<{ openMovements: [filterKey: string] }>();
 
+/** Icono por clave de grupo; los no listados usan CircleSlash. */
 const ICONS: Record<string, unknown> = {
     capex: Building,
     capital_deuda: Landmark,
@@ -53,6 +69,7 @@ const groups = computed(() => {
 
 <template>
     <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.42fr)]">
+        <!-- Grupos de movimientos fuera del Estado de Resultados -->
         <section class="rounded-2xl border bg-card shadow-soft-xs">
             <header class="border-b px-5 py-4">
                 <h3 class="text-base font-extrabold">
@@ -159,6 +176,7 @@ const groups = computed(() => {
             </ul>
         </section>
 
+        <!-- Flujos manuales capturados en ajustes -->
         <section class="h-fit rounded-2xl border bg-card p-5 shadow-soft-xs">
             <h3 class="text-base font-extrabold">
                 Flujos capturados en ajustes

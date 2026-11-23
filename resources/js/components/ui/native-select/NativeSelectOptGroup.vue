@@ -2,6 +2,7 @@
 <!-- @strictTemplates true -->
 
 <script setup lang="ts">
+/** Primitiva UI: Grupo <optgroup> estilizado para NativeSelect. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Separador visual entre grupos de casillas del código OTP. */
 import type { HTMLAttributes } from "vue"
 import { MinusIcon } from "lucide-vue-next"
 import { useForwardProps } from "reka-ui"

@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Card (shadcn-vue): exporta la tarjeta y sus secciones. */
 export { default as Card } from "./Card.vue"
 export { default as CardAction } from "./CardAction.vue"
 export { default as CardContent } from "./CardContent.vue"

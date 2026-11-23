@@ -12,23 +12,36 @@ import type {
     WaterfallStep,
 } from './types';
 
+/**
+ * Explicación de un paso de la cascada: el paso mismo, la sección/categoría/
+ * resultado del estado de resultados que lo respalda, su fórmula, fuentes y
+ * qué le falta. La consumen ResultWaterfall y StepInspector.
+ */
 export interface StepMeta {
     step: WaterfallStep;
+    /** Sección del estado de resultados que respalda el paso (o null). */
     section: StatementSection | null;
     /** Categoría de OPEX cuando el paso es una de ellas. */
     category: OpexCategory | null;
+    /** Renglón de resultado (EBITDA, EBIT…) cuando el paso es un subtotal. */
     result: StatementResult | null;
+    /** Fórmula o explicación en texto (del backend o de FORMULAS). */
     formula: string;
+    /** Fuentes distintas de las líneas que componen el paso. */
     sources: string[];
+    /** true si el paso tiene importe y no le falta información. */
     complete: boolean;
+    /** Conceptos que faltan (del resultado o líneas «sin_informacion»). */
     missing: string[];
     /** Movimientos de banco/ERP que suman a esta línea (conteo, no dinero). */
     movementCount: number;
+    /** Grupo visual (ver STEP_GROUPS). */
     group: number;
     /** Clave de bloque para "Ver en el estado de resultados". */
     blockKey: string;
 }
 
+/** Grupos visuales de la cascada: 1 Ingresos, 2 OPEX, 3 del EBITDA a la utilidad neta. */
 export const STEP_GROUPS: Record<number, { label: string }> = {
     1: { label: 'Ingresos' },
     2: { label: 'OPEX · gastos operativos' },
@@ -36,6 +49,10 @@ export const STEP_GROUPS: Record<number, { label: string }> = {
 };
 
 /** Paso del modelo (1–9) → grupo visual. Versiones anteriores sin `step` usan `level`. */
+/**
+ * @param s paso (o barra) con `step`, `level` y `group`.
+ * @returns 1, 2 o 3 según STEP_GROUPS.
+ */
 export function groupOf(
     s: Pick<WaterfallStep, 'step' | 'level' | 'group'>,
 ): number {
@@ -57,6 +74,7 @@ const STEP_SECTION: Record<string, string> = {
     isr: 'isr',
 };
 
+/** Fórmulas de respaldo para pasos que no son subtotales (los subtotales traen la suya). */
 const FORMULAS: Record<string, string> = {
     ingresos_operativos:
         'Punto de partida: ingresos operativos cobrados en el periodo',
@@ -67,6 +85,13 @@ const FORMULAS: Record<string, string> = {
     isr: 'Se resta: impuesto sobre la renta del periodo',
 };
 
+/**
+ * Arma el StepMeta de cada paso de la cascada del dataset: indexa secciones,
+ * resultados y categorías de OPEX, cuenta los movimientos incluidos por línea
+ * y resuelve fórmula, fuentes, faltantes y la clave de bloque a abrir.
+ * @param d dataset del reporte.
+ * @returns mapa clave de paso → StepMeta.
+ */
 export function buildStepMeta(d: Dataset): Record<string, StepMeta> {
     const sections = new Map<string, StatementSection>();
     const results = new Map<string, StatementResult>();

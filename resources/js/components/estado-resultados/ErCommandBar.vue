@@ -1,4 +1,31 @@
 <script setup lang="ts">
+/**
+ * ErCommandBar — barra de comandos superior del Estado de Resultados.
+ *
+ * Se usa en pages/EstadoResultados/Index. Reúne el selector de periodo
+ * (ErPeriodPicker), el de alcance (ErScopePicker), la píldora de estado del
+ * reporte, la hora de cálculo con la huella de datos y los botones
+ * "Procesar conciliación", Excel y PDF según permisos.
+ *
+ * Props:
+ * - periods: periodos disponibles (id, código, etiqueta y fechas opcionales).
+ * - scopes: alcances disponibles (clave y etiqueta).
+ * - dataset: datos del reporte cargado (null mientras no hay).
+ * - loading: se están recalculando las cifras.
+ * - processing: se está procesando la conciliación.
+ * - can: permisos del usuario (procesar, exportar...).
+ * - complete / blockers: si el reporte está completo y qué falta (para la píldora).
+ * - lockReason: motivo por el que no se puede procesar (bloquea el botón).
+ * - snapshot: versión congelada (aprobada o sustituida); oculta "Procesar".
+ *
+ * v-model:
+ * - periodId: id del periodo seleccionado.
+ * - scope: clave del alcance seleccionado.
+ *
+ * Emits:
+ * - process: pedir el procesamiento de la conciliación.
+ * - export: exportar en 'excel' o 'pdf'.
+ */
 import {
     Clock3,
     FileSpreadsheet,
@@ -72,6 +99,7 @@ const processBlock = computed<string | null>(() => {
  * pide nada extra al servidor). Solo se toma de la versión vigente, no de una consultada.
  */
 const statuses = reactive<Record<number, PeriodStatus>>({});
+// Guarda el estado del periodo cada vez que llega un dataset de la versión vigente.
 watch(
     () => props.dataset?.meta,
     (m) => {
@@ -96,6 +124,7 @@ watch(
         <div
             class="flex max-w-full flex-[1_1_24rem] flex-col gap-1.5 sm:flex-row"
         >
+            <!-- Selectores de periodo y alcance -->
             <ErPeriodPicker
                 v-model="periodId"
                 class="min-w-0 sm:min-w-[17rem] sm:flex-[1.15]"
@@ -114,6 +143,7 @@ watch(
         <div
             class="flex min-w-0 flex-[1_1_auto] flex-wrap items-center gap-2 px-2"
         >
+            <!-- Estado del reporte, hora de cálculo e indicador de recálculo -->
             <ReportStatusPill
                 v-if="dataset"
                 :report="dataset.meta.report ?? null"
@@ -153,6 +183,7 @@ watch(
             />
         </div>
 
+        <!-- Acciones: procesar conciliación y exportar -->
         <div class="ml-auto flex flex-wrap items-center gap-1.5 px-1">
             <span
                 v-if="can.procesar && !snapshot"

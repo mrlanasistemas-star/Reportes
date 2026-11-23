@@ -1,4 +1,13 @@
 <script setup lang="ts">
+/**
+ * Breadcrumbs — migas de pan de la página actual.
+ *
+ * Lo usan AppSidebarHeader y AppHeader. El último elemento se muestra como
+ * página actual (no navegable); los anteriores son enlaces de Inertia.
+ *
+ * Props:
+ * - breadcrumbs: lista de { title, href } en orden de navegación.
+ */
 import { Link } from '@inertiajs/vue3';
 import {
     Breadcrumb,

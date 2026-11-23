@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Zona desplazable principal de la barra lateral. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

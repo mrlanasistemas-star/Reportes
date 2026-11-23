@@ -1,4 +1,17 @@
 <script setup lang="ts">
+/**
+ * ResultadoEfectividad — cuerpo del resultado del cálculo de efectividad:
+ * avisos, KPIs de la vista filtrada, leyenda, tabla por sucursal/ruta/promotor,
+ * semanas incluidas (modo mensual) y el detalle de notas e incidencias.
+ *
+ * Se usa en pages/EfectividadCobranza/Index, debajo de ResultadoHero.
+ *
+ * Props:
+ * - resultado: resultado completo del cálculo.
+ * - filas: filas a mostrar (ya filtradas por la página).
+ * - filtrado: hay un filtro aplicado (muestra los KPIs de la vista).
+ * - cargando: se está recalculando la vista filtrada (atenúa la tabla).
+ */
 import { AlertTriangle, Info, Loader2 } from 'lucide-vue-next';
 import { computed } from 'vue';
 import DetalleAuditoria from './DetalleAuditoria.vue';
@@ -27,6 +40,7 @@ const total = computed(
     () => props.filas.find((f) => f.tipo === 'gran_total') ?? null,
 );
 
+/** KPIs del GRAN TOTAL de la vista filtrada: sano por cobrar, cobranza, % y mora. */
 const kpisVista = computed(() => {
     const t = total.value;
 
@@ -46,11 +60,13 @@ const kpisVista = computed(() => {
     ];
 });
 
+/** Frases de la leyenda del resultado, separadas para mostrarlas como lista. */
 const leyenda = computed(() => partesLeyenda(props.resultado.leyenda));
 </script>
 
 <template>
     <div class="space-y-5">
+        <!-- Avisos del cálculo -->
         <div v-if="resultado.avisos.length" class="space-y-2">
             <div
                 v-for="a in resultado.avisos"
@@ -66,6 +82,7 @@ const leyenda = computed(() => partesLeyenda(props.resultado.leyenda));
             </div>
         </div>
 
+        <!-- KPIs de la vista filtrada (solo con filtros aplicados) -->
         <Transition
             enter-active-class="transition duration-200 ease-out"
             enter-from-class="opacity-0 -translate-y-1"
@@ -95,6 +112,8 @@ const leyenda = computed(() => partesLeyenda(props.resultado.leyenda));
             </div>
         </Transition>
 
+        <!-- Leyenda del resultado -->
+
         <div
             v-if="leyenda.length"
             class="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-2xl bg-muted/50 px-4 py-2.5 text-xs text-muted-foreground"
@@ -114,6 +133,7 @@ const leyenda = computed(() => partesLeyenda(props.resultado.leyenda));
             </span>
         </div>
 
+        <!-- Tabla de efectividad (o mensaje vacío) con indicador de actualización -->
         <div class="relative">
             <p
                 v-if="!filas.length"
@@ -141,6 +161,7 @@ const leyenda = computed(() => partesLeyenda(props.resultado.leyenda));
             </div>
         </div>
 
+        <!-- Semanas incluidas y su efectividad (modo mensual) -->
         <section
             v-if="resultado.semanas.length"
             class="rounded-2xl border bg-card p-4 shadow-xs"
@@ -172,6 +193,7 @@ const leyenda = computed(() => partesLeyenda(props.resultado.leyenda));
             </ul>
         </section>
 
+        <!-- Notas e incidencias; la key reinicia pestañas y filtro en cada cálculo nuevo -->
         <DetalleAuditoria
             :key="resultado.generado"
             :notas="resultado.notas"

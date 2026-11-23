@@ -1,4 +1,10 @@
 <script setup lang="ts">
+/**
+ * Pantalla "Confirma tu contraseña" (Fortify, FortifyServiceProvider::confirmPasswordView).
+ * Se muestra antes de entrar a secciones protegidas (p. ej. seguridad de la cuenta).
+ * Envía la contraseña con <Form> a la ruta Wayfinder password/confirm (store).
+ * El título y la descripción se pasan al AuthLayout mediante defineOptions.layout.
+ */
 import { Form, Head } from '@inertiajs/vue3';
 import InputError from '@/components/InputError.vue';
 import PasswordInput from '@/components/PasswordInput.vue';
@@ -7,6 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { store } from '@/routes/password/confirm';
 
+/** Props del layout de autenticación (título y descripción de la tarjeta). */
 defineOptions({
     layout: {
         title: 'Confirma tu contraseña',

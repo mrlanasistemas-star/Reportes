@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Encabezado de la barra lateral (logo/título). */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Pie de la tarjeta (shadcn-vue), normalmente para acciones. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Contenido de un grupo de la barra lateral. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

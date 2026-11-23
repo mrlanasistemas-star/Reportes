@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * UploadAttemptsPanel — historial «Intentos de carga» del periodo.
+ *
+ * Se usa en SourcesPanel (sólo con permiso de cargar). Lista cada archivo que
+ * se intentó subir, aunque se rechazara, con su estado; los que tienen errores
+ * se expanden para ver la tabla fila/columna/qué corregir.
+ *
+ * Props:
+ * - url: endpoint JSON que devuelve `{ attempts: UploadAttempt[] }`.
+ * - refreshKey: cambia tras cada recarga del dataset para volver a pedir la lista.
+ */
 import {
     CheckCircle2,
     ChevronDown,
@@ -17,11 +28,15 @@ const props = defineProps<{
     refreshKey: number;
 }>();
 
+/** Intentos devueltos por el servidor. */
 const attempts = ref<UploadAttempt[]>([]);
 const loading = ref(false);
+/** Mensaje de error de la última lectura (null si fue bien). */
 const error = ref<string | null>(null);
+/** Intentos expandidos, por id. */
 const open = reactive<Record<number, boolean>>({});
 
+/** Lee los intentos desde `url` y actualiza el estado de carga/error. */
 async function load(): Promise<void> {
     loading.value = true;
     error.value = null;
@@ -39,9 +54,14 @@ async function load(): Promise<void> {
     }
 }
 
+/** Se lee al montar y cada vez que cambia `refreshKey`. */
 onMounted(load);
 watch(() => props.refreshKey, load);
 
+/**
+ * Indica si el intento terminó en una carga válida (hay upload y sin errores).
+ * @param a intento de carga.
+ */
 const ok = (a: UploadAttempt) => !!a.upload_id && !a.errors_count;
 </script>
 

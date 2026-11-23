@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * UserInfo — avatar e información básica de un usuario.
+ *
+ * Lo usan NavUser y UserMenuContent. Muestra la foto (o las iniciales si no
+ * hay foto), el nombre y, opcionalmente, el correo.
+ *
+ * Props:
+ * - user: usuario a mostrar.
+ * - showEmail: si es true muestra el correo bajo el nombre.
+ */
 import { computed } from 'vue';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useInitials } from '@/composables/useInitials';
@@ -15,7 +25,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { getInitials } = useInitials();
 
-// Compute whether we should show the avatar image
+/** Indica si el usuario tiene foto de avatar para mostrar la imagen en vez de las iniciales. */
 const showAvatar = computed(
     () => props.user.avatar && props.user.avatar !== '',
 );

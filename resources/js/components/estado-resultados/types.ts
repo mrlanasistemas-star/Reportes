@@ -4,19 +4,27 @@
  * la UI sólo da formato — nunca recalcula cifras.
  */
 
+import type { AdjustmentAmortization } from './financialExpenses';
+
+/** Estado de una fuente de datos del periodo (ver STATUS_META para etiqueta y colores). */
 export type SourceStatus =
     | 'pendiente'
     | 'cargado'
     | 'procesado'
     | 'con_incidencias';
 
+/** Renglón de detalle de una sección o categoría del estado de resultados. */
 export interface StatementLine {
     key: string;
     label: string;
     amount: string;
+    /** % sobre los ingresos operativos (texto decimal); null = no aplica. */
     pct: string | null;
+    /** Fuente de la cifra (Radiografía, ERP, Bancos, Ajustes…); se muestra en tooltips. */
     source: string;
+    /** Explicación breve de la línea. */
     hint: string | null;
+    /** Estado especial: 'sin_informacion' (no se asume $0) o 'restringido' (oculto por permisos). */
     state: string | null;
     /** Próximo contrato: detalle oculto por permisos (nómina / DG). */
     redacted?: boolean;
@@ -27,6 +35,7 @@ export interface StatementLine {
 export interface OpexCategory {
     key: string;
     label: string;
+    /** false = la categoría no aplica en este alcance; se muestra `note` en su lugar. */
     applies: boolean;
     note: string | null;
     lines: StatementLine[];
@@ -34,11 +43,13 @@ export interface OpexCategory {
     restricted?: boolean;
 }
 
+/** Sección del estado de resultados (Ingresos, OPEX, D&A, financiero, ISR). */
 export interface StatementSection {
     type: 'section';
     key: string;
     /** Paso 1–9 del modelo de un solo EBITDA (ausente en versiones anteriores). */
     step?: number;
+    /** Número visible del modelo anterior (respaldo cuando no hay `step`). */
     number: string;
     title: string;
     kind: string;
@@ -56,6 +67,7 @@ export interface StatementSection {
     restricted?: boolean;
 }
 
+/** Renglón de resultado (EBITDA, EBIT, EBT, Utilidad neta). */
 export interface StatementResult {
     type: 'result';
     key: string;
@@ -64,20 +76,27 @@ export interface StatementResult {
     /** null = pendiente (p. ej. utilidad neta sin ISR). */
     amount: string | null;
     pct: string | null;
+    /** Fórmula en texto que explica cómo se obtiene. */
     formula: string;
+    /** Nivel del resultado en el modelo (orden en la cascada). */
     level: number;
     note?: string | null;
+    /** false = falta información para darlo por definitivo (ver `missing`). */
     complete: boolean;
+    /** Conceptos que faltan para completar el resultado. */
     missing: string[];
 }
 
+/** Bloque del estado de resultados: sección o resultado (discriminado por `type`). */
 export type StatementBlock = StatementSection | StatementResult;
 
+/** Paso de la cascada Ingresos → Utilidad neta. */
 export interface WaterfallStep {
     key: string;
     label: string;
     /** null = pendiente (nunca $0). */
     amount: string | null;
+    /** total/subtotal parten de 0; delta parte del acumulado anterior. */
     type: 'total' | 'delta' | 'subtotal';
     level: number;
     step?: number;
@@ -86,6 +105,7 @@ export interface WaterfallStep {
     group?: string;
 }
 
+/** Registro del ERP emparejado con un movimiento. */
 export interface ErpMatch {
     fingerprint: string;
     id: number;
@@ -94,28 +114,39 @@ export interface ErpMatch {
     date: string | null;
     date_source: string;
     branch_name: string | null;
+    /** Universo del ERP al que pertenece (p. ej. dentro o fuera de Radiografía). */
     universe: string;
     concept: string | null;
     category: string | null;
+    /** Días de diferencia entre la fecha del banco y la del ERP. */
     delta_days?: number;
 }
 
+/** Clasificación manual que sustituye al tratamiento automático de un movimiento. */
 export interface Override {
     treatment: string;
+    /** Tratamiento que tenía antes de la corrección. */
     previous: string | null;
     notes: string;
     user: string | null;
     at: string | null;
+    /** Número de cambios de clasificación registrados. */
     history_count: number;
 }
 
+/**
+ * Movimiento del periodo (banco, ERP o NOI de corporativo) con su conciliación,
+ * tratamiento contable e impacto en el estado de resultados.
+ */
 export interface Movement {
     fingerprint: string;
     /** banco | erp | noi_corp (NOI de corporativo, fuente propia del ER) */
     source: 'banco' | 'erp' | 'noi_corp';
+    /** Clave de la cuenta bancaria (slot de carga) de la que proviene. */
     account_slot: string;
     account_label: string | null;
     file: string | null;
+    /** Fila del archivo original. */
     source_row: number;
     date: string | null;
     reference: string | null;
@@ -130,16 +161,20 @@ export interface Movement {
     branch_kind: string;
     cargo: string;
     abono: string;
+    /** La fecha cae dentro del periodo consultado. */
     in_period: boolean;
+    /** Registros del ERP emparejados. */
     erp: ErpMatch[];
     reconciliation_status: string;
     reconciliation_message: string | null;
     reconciliation_label: string;
+    /** Tratamiento que asignaron las reglas automáticas. */
     auto_treatment: string;
     suggested_treatment: string | null;
     suggested_label: string | null;
     rule_code: string | null;
     rule_reason: string | null;
+    /** Tratamiento vigente (automático o manual). */
     treatment: string;
     treatment_label: string;
     treatment_group: string;
@@ -151,15 +186,20 @@ export interface Movement {
     /** Concepto del catálogo («Renta de oficinas»); el reporte agrupa por él. */
     concept_label?: string | null;
     override: Override | null;
+    /** Requiere revisión humana (aparece en «Por revisar»). */
     needs_review: boolean;
+    /** Huella del movimiento espejo de una transferencia entre cuentas. */
     transfer_pair: string | null;
+    /** Renglones de detalle del archivo que se agruparon en este movimiento. */
     detail_lines: number;
+    /** Movimientos del banco ligados (para registros del ERP). */
     linked_bank: Array<{
         row: number;
         account: string;
         amount: string;
         date: string;
     }>;
+    /** Efecto en el estado de resultados: si suma, a qué línea, cuánto y explicación. */
     impact: {
         included: boolean;
         line: string | null;
@@ -173,10 +213,13 @@ export interface Movement {
     dates?: MovementDates;
     amounts?: MovementAmounts;
     links?: MovementLink[];
+    /** Importe ya aplicado en emparejamientos. */
     applied?: string;
     match_type?: string | null;
     match_group?: string | null;
+    /** Huella del movimiento que lo revierte (o al que revierte). */
     reversal_pair?: string | null;
+    /** Huella del cargo original del que este movimiento es reembolso. */
     refund_of?: string | null;
     refund_status?: string | null;
     erp_payment?: { amount: string; applied: string; pending: string };
@@ -184,11 +227,13 @@ export interface Movement {
     reconciliation_delta_days?: number | null;
 }
 
+/** Par clave/etiqueta de una dimensión (key null = sin valor). */
 export interface KeyLabel {
     key: string | null;
     label: string;
 }
 
+/** Dimensiones de trazabilidad de un movimiento (importación, conciliación, revisión, reconocimiento…). */
 export interface MovementDimensions {
     import: KeyLabel;
     reconciliation: KeyLabel;
@@ -197,6 +242,7 @@ export interface MovementDimensions {
     review: KeyLabel;
     inclusion: KeyLabel;
     source: KeyLabel;
+    /** Periodo y criterio en que se reconoce el movimiento, y motivo si queda fuera de periodo. */
     recognition: KeyLabel & {
         period_id?: number | null;
         period_code: string | null;
@@ -207,6 +253,7 @@ export interface MovementDimensions {
     };
 }
 
+/** Fechas relevantes de un movimiento según su origen. */
 export interface MovementDates {
     operation: string | null;
     bank: string | null;
@@ -223,9 +270,11 @@ export interface MovementAmounts {
     excluded: string;
     pending: string;
     out_of_period: string;
+    /** Parte que todavía se puede clasificar. */
     classifiable: string;
 }
 
+/** Vínculo de trazabilidad entre un movimiento y otro registro (banco, ERP o NOI). */
 export interface MovementLink {
     kind: string;
     kind_label: string;
@@ -234,34 +283,45 @@ export interface MovementLink {
     target: string | null;
     match_type: string | null;
     group_key?: string | null;
+    /** Importe aplicado en este vínculo. */
     applied: string;
+    /** Saldo pendiente del movimiento tras el vínculo. */
     movement_pending: string;
+    /** Saldo pendiente del registro destino tras el vínculo. */
     target_pending: string;
     delta_days: number | null;
+    /** Evidencia del emparejamiento (estructura libre del backend). */
     evidence: Record<string, unknown> | unknown[];
     redacted?: boolean;
 }
 
+/** Catálogo de tratamientos contables: etiqueta, grupo, línea del ER y si se puede asignar a mano. */
 export interface TreatmentMeta {
     key: string;
     label: string;
     group: string;
+    /** Línea del estado de resultados a la que suma (null = no suma). */
     line: string | null;
     tone: string;
     explain: string;
+    /** Se puede elegir al clasificar manualmente. */
     assignable: boolean;
 }
 
+/** Estado de un ajuste: sin información (pendiente), confirmado en cero o capturado. */
 export type AdjustmentState =
     | 'sin_informacion'
     | 'confirmado_cero'
     | 'capturado';
 
+/** Ajuste contable manual o derivado (D&A, ISR, intereses…) del periodo. */
 export interface Adjustment {
     key: string;
     label: string;
     section: string;
+    /** Texto del efecto en el estado de resultados. */
     effect: string;
+    /** false = sólo informativo (no cambia ningún resultado). */
     affects: boolean;
     state: AdjustmentState;
     amount: string | null;
@@ -271,9 +331,10 @@ export interface Adjustment {
     /** manual = captura en Ajustes · tabla_amortizacion = interés de la tabla del crédito. */
     origin?: 'manual' | 'tabla_amortizacion' | null;
     /** Intereses de crédito: detalle de la tabla de amortización (pagos, capital excluido, diferencia). */
-    amortization?: import('./financialExpenses').AdjustmentAmortization | null;
+    amortization?: AdjustmentAmortization | null;
 }
 
+/** Validación numérica esperado vs real (debe cuadrar en $0.00). */
 export interface Check {
     key: string;
     label: string;
@@ -284,13 +345,16 @@ export interface Check {
     explain: string | null;
 }
 
+/** Indicador financiero o informativo. */
 export interface Indicator {
     key: string;
     label: string;
     value: string | null;
+    /** Unidad: moneda, porcentaje, número o texto libre. */
     unit: 'MXN' | '%' | 'n' | 'txt';
 }
 
+/** Conteo de movimientos y su importe. */
 export interface CountAmount {
     count: number;
     amount: string;
@@ -299,6 +363,7 @@ export interface CountAmount {
 /** Archivo de una cuenta: 1 = obligatorio, 2 = opcional (20-nov-2026). */
 export type AccountFileUpload = NonNullable<AccountSource['upload']>;
 
+/** Estado de uno de los dos archivos de una cuenta bancaria. */
 export interface AccountFilePart {
     part: number;
     label: string;
@@ -308,6 +373,7 @@ export interface AccountFilePart {
     upload: AccountFileUpload | null;
 }
 
+/** Cuenta bancaria cuyo estado de cuenta se sube en Fuentes. */
 export interface AccountSource {
     key: string;
     label: string;
@@ -347,7 +413,9 @@ export interface AccountSource {
         uploaded_by: string | null;
         uploaded_at: string | null;
     };
+    /** Movimientos de esta cuenta pendientes de revisión. */
     pending_review: number;
+    /** Cargas anteriores (vigentes y sustituidas). */
     history: Array<{
         id: number;
         part?: number;
@@ -361,6 +429,7 @@ export interface AccountSource {
     }>;
 }
 
+/** Fuente que se carga en Carga de archivos y el ER sólo lee (Radiografía, ERP, Nómina, Ajustes). */
 export interface SimpleSource {
     label: string;
     status: SourceStatus;
@@ -374,6 +443,7 @@ export interface SimpleSource {
 export interface SourceDiagnosis {
     reason: string;
     module_label?: string;
+    /** Renglones disponibles en las tablas de hechos para el periodo. */
     fact_rows: number;
     uploads: Array<{
         id: number;
@@ -385,12 +455,14 @@ export interface SourceDiagnosis {
         uploaded_by: string | null;
         uploaded_at: string | null;
     }>;
+    /** Última ejecución de carga de registros. */
     run: null | {
         id: number;
         status: string;
         error: string | null;
         at: string | null;
     };
+    /** Cargas del mismo módulo asignadas a otros periodos (posible confusión de periodo). */
     elsewhere: Array<{
         upload_id: number;
         period_id: number;
@@ -400,8 +472,10 @@ export interface SourceDiagnosis {
     }>;
 }
 
+/** Estado de un item de la lista de verificación de fuentes. */
 export type ChecklistState = 'lista' | 'falta' | 'con_problemas';
 
+/** Acción sugerida para resolver un item de la lista de verificación. */
 export interface ChecklistAction {
     /** upload: se sube aquí · carga: Carga de archivos · tab: otra pestaña · process: procesar conciliación */
     kind: 'upload' | 'carga' | 'tab' | 'process';
@@ -416,6 +490,7 @@ export interface ChecklistAction {
 export interface ChecklistItem {
     key: string;
     label: string;
+    /** Dónde se resuelve: aquí en el ER, en Carga de archivos o en otra pestaña del ER. */
     where: 'er' | 'carga' | 'er_tab';
     where_label: string;
     state: ChecklistState;
@@ -423,12 +498,15 @@ export interface ChecklistItem {
     required: boolean;
     message: string;
     fix: string | null;
+    /** Por qué importa (qué cifras afecta). */
     affects: string;
     action: ChecklistAction;
+    /** Código del motivo del estado (uso interno). */
     reason: string | null;
     diagnosis: SourceDiagnosis | null;
 }
 
+/** Lista «Qué necesita este periodo» con su resumen de conteos. */
 export interface SourceChecklist {
     items: ChecklistItem[];
     summary: {
@@ -436,6 +514,7 @@ export interface SourceChecklist {
         lista: number;
         falta: number;
         con_problemas: number;
+        /** Items que no están listos. */
         pendientes: number;
         pendientes_obligatorias: number;
     };
@@ -460,9 +539,13 @@ export interface CorporatePayrollSource {
         uploaded_by: string | null;
         uploaded_at: string | null;
     };
+    /** Importe que suma a la nómina corporativa (sin duplicados). */
     recognized: string;
+    /** Colaboradores que ya estaban en el NOI de sucursales y no se suman otra vez. */
     overlap: CountAmount;
+    /** Nómina corporativa que llega por ERP o bancos (sin este archivo). */
     other_sources_amount: string;
+    /** Explicación de la regla anti-duplicado. */
     rule: string;
     history: Array<{
         id: number;
@@ -475,6 +558,7 @@ export interface CorporatePayrollSource {
     }>;
 }
 
+/** Estado del procesamiento (conciliación) del periodo. */
 export interface ProcessingSource {
     label: string;
     status: SourceStatus;
@@ -486,12 +570,18 @@ export interface ProcessingSource {
         error: string | null;
         rules_version: string;
     };
+    /** El ERP cambió después del último procesamiento. */
     stale_erp: boolean;
     /** El catálogo de conceptos cambió desde el último procesamiento. */
     stale_catalog?: boolean;
+    /** Hay cargas que aún no se procesan. */
     unprocessed: boolean;
 }
 
+/**
+ * Dataset completo del Estado de Resultados para un periodo y alcance, tal
+ * como lo arma el backend (en vivo o desde una versión aprobada).
+ */
 export interface Dataset {
     meta: {
         period: {
@@ -504,8 +594,10 @@ export interface Dataset {
         scope: { key: string; label: string; consolidated: boolean };
         currency: string;
         rules_version: string;
+        /** Días de tolerancia en fecha para conciliar banco ↔ ERP. */
         tolerance_days: number;
         generated_at: string;
+        /** Huella del dataset (cambia si cambia cualquier cifra). */
         dataset_hash: string;
         report?: ReportMeta;
         /** Modelo de un solo EBITDA. Ausente en versiones aprobadas con el modelo anterior. */
@@ -521,10 +613,13 @@ export interface Dataset {
     results: Record<string, string | null>;
     /** Claves del modelo anterior, SÓLO como controles (p. ej. EBITDA sucursales = Radiografía). */
     controls?: Record<string, string | null>;
+    /** Márgenes sobre ingresos (texto decimal); null = sin margen. */
     margins: Record<string, string | null>;
+    /** Por resultado: si está completo y qué le falta. */
     completeness: Record<string, { complete: boolean; missing: string[] }>;
     statement: StatementBlock[];
     waterfall: WaterfallStep[];
+    /** Cuadre del EBITDA de sucursales del ER contra el de la Radiografía. */
     radiography_reconciliation: {
         er_ebitda_sucursales: string;
         radiografia_ebitda: string;
@@ -538,6 +633,7 @@ export interface Dataset {
         components: Array<{ label: string; er: string; radiografia: string }>;
     };
     checks: Check[];
+    /** Resumen de la conciliación del periodo (conteos e importes por estado). */
     conciliation: {
         movimientos_leidos: number;
         movimientos_en_periodo: number;
@@ -572,7 +668,9 @@ export interface Dataset {
         reembolsos_vinculados?: CountAmount;
         erp_saldo_pendiente_pago?: string;
     };
+    /** Movimientos del periodo (ya redactados según permisos). */
     movements: Movement[];
+    /** Lo que pasó por el banco pero no es resultado, y los flujos manuales informativos. */
     outside: {
         groups: Array<{
             key: string;
@@ -610,10 +708,13 @@ export interface Dataset {
             at: string | null;
         }>;
     };
+    /** Catálogo de tratamientos disponibles. */
     treatments: TreatmentMeta[];
+    /** Etiqueta legible de cada estado de conciliación. */
     reconciliation_labels: Record<string, string>;
     /** Opcional: snapshots aprobados antes del 06-nov-2026 no la traen. */
     validation?: Validation;
+    /** Catálogos de valores de las dimensiones de trazabilidad (para filtros). */
     dimensions?: {
         version?: string;
         inclusion?: Array<{ key: string; label: string }>;
@@ -625,6 +726,7 @@ export interface Dataset {
     };
 }
 
+/** Estados del flujo de gobierno de un reporte. */
 export type ReportStatusKey =
     | 'borrador'
     | 'pendiente_conciliacion'
@@ -632,6 +734,7 @@ export type ReportStatusKey =
     | 'aprobado'
     | 'sustituido';
 
+/** Motivo que impide aprobar la versión. */
 export interface ReportBlocker {
     /** pendientes | procesamiento | validaciones | datos_faltantes */
     code: string;
@@ -639,14 +742,17 @@ export interface ReportBlocker {
     scope?: string;
 }
 
+/** Resumen de una versión aprobada o sustituida del reporte. */
 export interface VersionSummary {
     id: number;
     version: number;
     status: string;
     status_label: string;
+    /** La versión está congelada. */
     locked: boolean;
     rules_version: string | null;
     dataset_hash: string | null;
+    /** Sello de aprobación (hash de la foto congelada). */
     snapshot_hash: string | null;
     scopes: string[];
     approved_by: string | null;
@@ -657,9 +763,11 @@ export interface VersionSummary {
     superseded_by_version_id?: number | null;
 }
 
+/** Historial de versiones del periodo con su bitácora. */
 export interface VersionHistory {
     locked: boolean;
     current: VersionSummary | null;
+    /** Número de la versión en preparación (null si no hay). */
     draft_version: number | null;
     versions: VersionSummary[];
     logs: Array<{
@@ -673,31 +781,40 @@ export interface VersionHistory {
     }>;
 }
 
+/** Metadatos de la versión mostrada: estado, bloqueos, aprobación y sello. */
 export interface ReportMeta {
     status: string;
     status_label: string;
     /** en_vivo | snapshot */
     source: string;
     version: number;
+    /** Id de la versión guardada (null en vivo sin versión). */
     version_id: number | null;
     locked: boolean;
+    /** Es la versión vigente del periodo. */
     current: boolean;
+    /** Las cifras aún pueden cambiar (ver `preliminary_reasons`). */
     preliminary: boolean;
     preliminary_reasons: string[];
     blockers: ReportBlocker[];
+    /** No hay bloqueos: se puede aprobar. */
     approvable: boolean;
     approved_by: string | null;
     approved_at: string | null;
     snapshot_hash: string | null;
+    /** Criterio de reconocimiento aplicado. */
     criterion: string;
     rules_version: string;
     generated_at: string;
+    /** Fecha de emisión del reporte. */
     issued_at: string;
     reopened: { at: string; by: string | null; reason: string | null } | null;
+    /** Versión aprobada anterior cuando esta se abrió como nueva. */
     previous_version: VersionSummary | null;
     superseded_at: string | null;
 }
 
+/** Qué se ocultó por permisos (nómina, Dirección General) y cuántos movimientos. */
 export interface Redactions {
     nomina: boolean;
     dg: boolean;
@@ -706,7 +823,9 @@ export interface Redactions {
     message: string | null;
 }
 
+/** Movimiento del banco que no concilió limpio con el ERP. */
 export interface DiffItem {
+    /** Huella del movimiento (null = no se puede abrir). */
     fingerprint: string | null;
     date: string | null;
     folio: string | null;
@@ -714,6 +833,7 @@ export interface DiffItem {
     account_slot: string;
     bank_amount: string;
     erp_amounts: string[];
+    /** Diferencia de importe banco vs ERP (null si no aplica). */
     difference: string | null;
     delta_days: number | null;
     status: string;
@@ -723,12 +843,14 @@ export interface DiffItem {
     redacted?: boolean;
 }
 
+/** Grupo de diferencias de un tipo, con su conteo e importe. */
 export interface DiffGroup {
     count: number;
     amount: string;
     items: DiffItem[];
 }
 
+/** Comprobación de que el total se reparte sin diferencia entre los destinos. */
 export interface PartitionCheck {
     total: string;
     sum_parts: string;
@@ -736,10 +858,12 @@ export interface PartitionCheck {
     ok: boolean;
 }
 
+/** Bloque de la pestaña Validación: totales, particiones, diferencias e integridad. */
 export interface Validation {
     /** ok | con_pendientes | con_diferencias */
     status: string;
     scope_note: string | null;
+    /** Embudo: lo leído del archivo, lo importado y su reparto por destino. */
     totals: {
         source: {
             count: number;
@@ -760,6 +884,7 @@ export interface Validation {
         pending: CountAmount;
         out_of_period: CountAmount;
     };
+    /** Particiones que deben cuadrar en $0.00. */
     partition: {
         bank: PartitionCheck;
         erp: PartitionCheck;
@@ -770,6 +895,7 @@ export interface Validation {
         by_date: DiffGroup;
         by_folio: DiffGroup;
     };
+    /** Cuadre contra la Radiografía. */
     radiography: {
         er: string;
         radiografia: string;
@@ -779,6 +905,7 @@ export interface Validation {
         base_ok?: boolean;
         explained: Array<{ label: string; amount: string }>;
     };
+    /** Integridad de los archivos (control del banco vs leído) y vigencia del procesamiento. */
     integrity: {
         status: string;
         import_matches_source?: boolean;
@@ -797,6 +924,7 @@ export interface Validation {
         rules_version_last_run?: string | null;
         recognition_version_last_run?: string | null;
     };
+    /** Eliminaciones: transferencias internas, reversos y flujos internos. */
     eliminations: {
         transfers: { pairs: number; count: number; amount: string };
         unpaired_transfers: {
@@ -815,6 +943,7 @@ export interface Validation {
         reversals: { pairs: number; count: number; amount: string };
         corporate_allocation?: string;
     };
+    /** Resumen del NOI y lo que queda sin asignar. */
     noi: {
         employees: number;
         total: string;
@@ -823,6 +952,7 @@ export interface Validation {
         linked_payments: CountAmount;
         recognizing_rule: string;
     };
+    /** Partidas sin resolver. */
     unresolved: Array<{
         key: string;
         label: string;
@@ -833,9 +963,11 @@ export interface Validation {
         open_count?: number;
         open_amount?: string;
     }>;
+    /** Validaciones que no cuadran. */
     failed_checks: Array<{ key: string; label: string; difference: string }>;
 }
 
+/** Permisos del usuario en el módulo para el periodo/alcance actual. */
 export interface Permissions {
     cargar: boolean;
     procesar: boolean;
@@ -859,18 +991,21 @@ export interface Permissions {
     motivo_restriccion?: string | null;
 }
 
+/** Reglas de carga: tamaño máximo (MB), extensiones y valor del atributo accept. */
 export interface UploadRules {
     max_mb: number;
     extensions: string[];
     accept: string;
 }
 
+/** Error por fila de una carga rechazada. */
 export interface RowError {
     row: number | null;
     column: string | null;
     message: string;
 }
 
+/** Intento de carga de un archivo (aceptado o rechazado). */
 export interface UploadAttempt {
     id: number;
     slot: string;
@@ -884,6 +1019,7 @@ export interface UploadAttempt {
     errors_count: number;
     errors: RowError[];
     upload_id: number | null;
+    /** Se conservó el archivo original en el servidor. */
     original_kept: boolean;
     user: string | null;
     at: string | null;
@@ -891,11 +1027,17 @@ export interface UploadAttempt {
 
 // ── Formato ────────────────────────────────────────────────────────────
 
+/** Formateador de moneda MXN en es-MX. */
 const currency = new Intl.NumberFormat('es-MX', {
     style: 'currency',
     currency: 'MXN',
 });
 
+/**
+ * Formatea un importe en pesos.
+ * @param v importe (texto o número).
+ * @returns importe formateado, o '—' si está vacío o es nulo.
+ */
 export function mxn(v: string | number | null | undefined): string {
     if (v === null || v === undefined || v === '') {
         return '—';
@@ -904,6 +1046,10 @@ export function mxn(v: string | number | null | undefined): string {
     return currency.format(Number(v));
 }
 
+/**
+ * Formato compacto para ejes y etiquetas: $1.23M, $4.5K o $678 (nulo = $0).
+ * @param v importe.
+ */
 export function compact(v: string | number | null | undefined): string {
     const n = Number(v ?? 0);
     const sign = n < 0 ? '-' : '';
@@ -920,6 +1066,11 @@ export function compact(v: string | number | null | undefined): string {
     return `${sign}$${abs.toFixed(0)}`;
 }
 
+/**
+ * Formatea un porcentaje con 2 decimales.
+ * @param v valor ya en porcentaje (12.5 = 12.50 %).
+ * @returns texto, o '—' si está vacío o es nulo.
+ */
 export function pct(v: string | number | null | undefined): string {
     if (v === null || v === undefined || v === '') {
         return '—';
@@ -928,6 +1079,7 @@ export function pct(v: string | number | null | undefined): string {
     return `${Number(v).toFixed(2)}%`;
 }
 
+/** true si el valor es menor que cero (nulo = 0). */
 export function isNegative(v: string | number | null | undefined): boolean {
     return Number(v ?? 0) < 0;
 }
@@ -939,6 +1091,10 @@ export function num(v: string | number | null | undefined): number {
     return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Escapa caracteres HTML para insertar texto en el html de SweetAlert.
+ * @param s texto sin escapar.
+ */
 export function escapeHtml(s: string): string {
     return s.replace(
         /[&<>"']/g,
@@ -953,10 +1109,12 @@ export function escapeHtml(s: string): string {
     );
 }
 
+/** true si el importe redondea a $0.00 (tolerancia de medio centavo). */
 export function isZero(v: string | number | null | undefined): boolean {
     return Math.abs(Number(v ?? 0)) < 0.005;
 }
 
+/** Etiqueta y clases de la insignia por estado de fuente (StatusBadge). */
 export const STATUS_META: Record<SourceStatus, { label: string; cls: string }> =
     {
         procesado: {
@@ -977,6 +1135,7 @@ export const STATUS_META: Record<SourceStatus, { label: string; cls: string }> =
         },
     };
 
+/** Clases de insignia por tono semántico. */
 export const TONE_CLS: Record<string, string> = {
     success:
         'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300',
@@ -987,12 +1146,14 @@ export const TONE_CLS: Record<string, string> = {
     muted: 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',
 };
 
+/** Estados de conciliación que cuentan como conciliado con el ERP. */
 const CONCILIATED = [
     'conciliado_erp_exacto',
     'conciliado_erp_tolerancia',
     'conciliado_erp_agregado',
     'erp_con_pago_bancario',
 ];
+/** Estados de conciliación que requieren revisión (diferencias de folio, importe o fecha). */
 const REVIEW = [
     'folio_monto_diferente',
     'folio_fecha_diferente',
@@ -1002,12 +1163,21 @@ const REVIEW = [
     'posible_duplicado_erp',
 ];
 
+/**
+ * Indica si un movimiento quedó conciliado con el ERP.
+ * @param m movimiento (sólo se usa su estado de conciliación).
+ */
 export function isConciliated(
     m: Pick<Movement, 'reconciliation_status'>,
 ): boolean {
     return CONCILIATED.includes(m.reconciliation_status);
 }
 
+/**
+ * Clases de insignia para un estado de conciliación: verde conciliado, ámbar
+ * en revisión, cian transferencia y gris el resto.
+ * @param status estado de conciliación.
+ */
 export function reconciliationTone(status: string): string {
     if (CONCILIATED.includes(status)) {
         return TONE_CLS.success;
@@ -1026,6 +1196,7 @@ export function reconciliationTone(status: string): string {
 
 // ── HTTP ───────────────────────────────────────────────────────────────
 
+/** Encabezados para peticiones AJAX a Laravel, con el token XSRF tomado de la cookie. */
 export function xsrfHeaders(): Record<string, string> {
     const match = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
 
@@ -1036,6 +1207,10 @@ export function xsrfHeaders(): Record<string, string> {
     };
 }
 
+/**
+ * Error de una petición al API con mensaje ya legible, detalles, código HTTP y
+ * el cuerpo JSON completo.
+ */
 export class ApiError extends Error {
     constructor(
         message: string,
@@ -1054,6 +1229,7 @@ export class ApiError extends Error {
             : [];
     }
 
+    /** Bloqueos de aprobación que devolvió el servidor. */
     get blockers(): ReportBlocker[] {
         return Array.isArray(this.body.blockers)
             ? (this.body.blockers as ReportBlocker[])
@@ -1107,6 +1283,11 @@ export function friendlyError(status: number, raw?: string | null): string {
     return 'Ocurrió un problema en el servidor. Intenta de nuevo en un momento; si continúa, avisa a Sistemas.';
 }
 
+/**
+ * Convierte una respuesta fallida en ApiError: toma el primer error de
+ * validación de Laravel o el `message`, traducidos con friendlyError.
+ * @param res respuesta HTTP no exitosa.
+ */
 async function parseError(res: Response): Promise<ApiError> {
     try {
         const body = (await res.json()) as {
@@ -1135,6 +1316,13 @@ async function parseError(res: Response): Promise<ApiError> {
 export function isAbortError(e: unknown): boolean {
     return e instanceof DOMException && e.name === 'AbortError';
 }
+/**
+ * fetch JSON con credenciales y XSRF; pone Content-Type JSON salvo en FormData.
+ * @param url dirección a consultar.
+ * @param init opciones de fetch.
+ * @returns el cuerpo JSON tipado.
+ * @throws ApiError ante error HTTP o de conexión; re-lanza las cancelaciones (AbortError).
+ */
 export async function apiJson<T>(
     url: string,
     init: RequestInit = {},
@@ -1169,5 +1357,12 @@ export async function apiJson<T>(
         throw await parseError(res);
     }
 
-    return (await res.json()) as T;
+    // 204 / cuerpo vacío: no hay JSON que leer (res.json() lanzaría).
+    if (res.status === 204) {
+        return undefined as T;
+    }
+
+    const text = await res.text();
+
+    return (text ? JSON.parse(text) : undefined) as T;
 }

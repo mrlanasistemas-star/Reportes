@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Dialog (shadcn-vue): exporta el diálogo modal y sus piezas. */
 export { default as Dialog } from "./Dialog.vue"
 export { default as DialogClose } from "./DialogClose.vue"
 export { default as DialogContent } from "./DialogContent.vue"

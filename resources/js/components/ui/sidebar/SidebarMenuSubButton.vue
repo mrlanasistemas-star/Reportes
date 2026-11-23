@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón/enlace de una subopción del menú lateral. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { Primitive } from "reka-ui"

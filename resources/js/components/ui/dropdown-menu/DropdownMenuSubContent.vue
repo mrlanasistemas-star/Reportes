@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Panel flotante de un submenú anidado. */
 import type { DropdownMenuSubContentEmits, DropdownMenuSubContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

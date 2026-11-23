@@ -1,4 +1,5 @@
 <script lang="ts">
+/** Valores editables de un ajuste manual (estado, importe y notas). */
 interface DraftValues {
     /** AdjustmentState ('sin_informacion' | 'confirmado_cero' | 'capturado'). */
     state: string;
@@ -19,6 +20,32 @@ const STORE: Record<string, Record<string, Draft>> = {};
 </script>
 
 <script setup lang="ts">
+/**
+ * AdjustmentsPanel — pestaña de ajustes manuales del Estado de Resultados
+ * (conceptos que no salen de los archivos: depreciación/amortización,
+ * gastos financieros, ISR y partidas de flujo).
+ *
+ * Lo usa la página EstadoResultados/Index. Agrupa los conceptos por sección
+ * (afecta EBIT, EBT, utilidad neta o flujo); en cada uno se elige el estado
+ * (sin información / confirmado $0 / capturado), el importe y las notas, y se
+ * guarda por separado. Los intereses de crédito indican si vienen de la tabla
+ * de amortización. Los borradores sin guardar se conservan entre pestañas y
+ * se avisa al cerrar la página. Incluye el historial plegable de cambios.
+ *
+ * Props:
+ * - adjustments: conceptos de ajuste con su valor guardado.
+ * - canEdit: si el usuario puede capturar y guardar.
+ * - lockReason: motivo de solo lectura (versión aprobada / histórica).
+ * - savingKey: concepto que se está guardando ahora, o null.
+ * - logs: historial de cambios de ajustes (antes/después, usuario, fecha).
+ * - logsLoading: si el historial se está cargando.
+ * - draftKey: separa los borradores por periodo/alcance (p. ej. "21:CONSOLIDADO").
+ *
+ * Emits:
+ * - save(payload): guardar un concepto (concepto, estado, importe y notas).
+ * - loadLogs(): pedir el historial (al abrirlo y después de cada guardado).
+ * - openFinancial(): ir a la pestaña «Gastos financieros».
+ */
 import { AlertTriangle, History, Loader2, Save } from 'lucide-vue-next';
 import {
     computed,
@@ -73,23 +100,33 @@ const emit = defineEmits<{
 }>();
 
 /** Conceptos de interés de crédito que alimenta la tabla de amortización. */
-const CREDIT_INTEREST = ['intereses_lerom', 'intereses_bbva', 'otros_intereses'];
+const CREDIT_INTEREST = [
+    'intereses_lerom',
+    'intereses_bbva',
+    'otros_intereses',
+];
+/** Verdadero si el importe del concepto viene de la tabla de amortización. */
 const fromTable = (a: Adjustment) => a.origin === 'tabla_amortizacion';
+/** Si se muestra el recuadro de la tabla de amortización para este concepto. */
 const showsTable = (a: Adjustment) =>
     CREDIT_INTEREST.includes(a.key) && (fromTable(a) || !!a.amortization);
 
+/** Borradores del periodo/alcance actual, compartidos con el almacén a nivel módulo. */
 const drafts = reactive<Record<string, Draft>>(
     (STORE[props.draftKey ?? 'default'] ??= {}),
 );
+/** Si el historial de ajustes está desplegado. */
 const showLogs = ref(false);
 /** Concepto cuyo importe se intentó guardar vacío (muestra el error en línea). */
 const touched = reactive<Record<string, boolean>>({});
 
+/** Valores guardados en el servidor de un concepto, en forma de borrador. */
 const serverOf = (a: Adjustment): Draft['base'] => ({
     state: a.state,
     amount: a.state === 'capturado' ? (a.amount ?? '') : '',
     notes: a.notes ?? '',
 });
+/** Compara dos valores de borrador (el importe se compara como número). */
 const sameBase = (x: Draft['base'], y: Draft['base']) =>
     x.state === y.state &&
     Number(x.amount || 0) === Number(y.amount || 0) &&
@@ -110,7 +147,9 @@ function sync(): void {
         }
     }
 }
+/** Sincroniza los borradores cada vez que llega un dataset nuevo. */
 watch(() => props.adjustments, sync, { immediate: true });
+/** Al abrir el historial se pide al padre que lo cargue. */
 watch(showLogs, (v) => {
     if (v) {
         emit('loadLogs');
@@ -126,6 +165,7 @@ watch(
     },
 );
 
+/** Número de conceptos con cambios sin guardar. */
 const pendingCount = computed(
     () => props.adjustments.filter((a) => dirty(a)).length,
 );
@@ -139,6 +179,11 @@ function beforeUnload(e: BeforeUnloadEvent): void {
 onMounted(() => window.addEventListener('beforeunload', beforeUnload));
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 
+/**
+ * Mensaje de error del importe cuando el estado es «Capturado» y el importe
+ * está vacío, no es número o no es mayor a $0; null si es válido.
+ * @param a concepto de ajuste.
+ */
 function amountError(a: Adjustment): string | null {
     const d = drafts[a.key];
 
@@ -153,17 +198,24 @@ function amountError(a: Adjustment): string | null {
         : null;
 }
 
+/** Opciones del selector de estado de un ajuste. */
 const STATES: Array<{ key: AdjustmentState; label: string }> = [
     { key: 'sin_informacion', label: 'Sin información' },
     { key: 'confirmado_cero', label: 'Confirmado $0' },
     { key: 'capturado', label: 'Capturado' },
 ];
+/** Texto visible de cada estado (usado en el historial). */
 const STATE_LABEL: Record<string, string> = {
     sin_informacion: 'Sin información',
     confirmado_cero: 'Confirmado $0',
     capturado: 'Capturado',
 };
 
+/**
+ * Indica si el borrador del concepto difiere de lo guardado (estado, importe
+ * cuando es «Capturado», o notas).
+ * @param a concepto de ajuste.
+ */
 function dirty(a: Adjustment): boolean {
     const d = drafts[a.key];
 
@@ -179,6 +231,11 @@ function dirty(a: Adjustment): boolean {
     );
 }
 
+/**
+ * Valida el importe y emite `save` con el borrador del concepto; si el importe
+ * no es válido, enfoca su campo y no emite.
+ * @param a concepto de ajuste.
+ */
 function save(a: Adjustment): void {
     const d = drafts[a.key];
     touched[a.key] = true;
@@ -197,7 +254,9 @@ function save(a: Adjustment): void {
     });
 }
 
+/** Orden fijo de las secciones conocidas; las desconocidas van al final. */
 const SECTION_ORDER = ['da', 'financiero', 'isr', 'flujo'];
+/** Secciones con sus conceptos, en orden y sin secciones vacías. */
 const sections = computed(() =>
     SECTION_ORDER.concat(
         props.adjustments
@@ -215,6 +274,7 @@ const sections = computed(() =>
         .filter((s) => s.items.length),
 );
 
+/** Título visible de cada sección (indica qué nivel del ER afecta). */
 const SECTION_LABEL: Record<string, string> = {
     da: 'Afecta EBIT',
     financiero: 'Afecta EBT',
@@ -254,6 +314,7 @@ const SECTION_LABEL: Record<string, string> = {
             Captura importes en positivo; la sección define si suma o resta.
         </div>
 
+        <!-- Una sección por nivel del ER con una tarjeta por concepto -->
         <section v-for="sec in sections" :key="sec.key" class="space-y-2">
             <h3 class="flex items-center gap-2 text-sm font-extrabold">
                 {{ sec.label }}
@@ -309,12 +370,17 @@ const SECTION_LABEL: Record<string, string> = {
                         <p v-if="fromTable(a)" class="font-semibold">
                             Viene de la tabla de amortización:
                             {{ a.amortization?.payments ?? 0 }} pago(s), capital
-                            excluido {{ mxn(a.amortization?.principal_excluded) }}.
-                            Si capturas un importe aquí, tu captura gana.
+                            excluido
+                            {{ mxn(a.amortization?.principal_excluded) }}. Si
+                            capturas un importe aquí, tu captura gana.
                         </p>
-                        <p v-else-if="a.amortization?.covered" class="font-semibold">
+                        <p
+                            v-else-if="a.amortization?.covered"
+                            class="font-semibold"
+                        >
                             Captura manual. La tabla de amortización da
-                            {{ mxn(a.amortization.interest) }}<template
+                            {{ mxn(a.amortization.interest)
+                            }}<template
                                 v-if="
                                     a.amortization.difference &&
                                     Number(a.amortization.difference) !== 0
@@ -337,6 +403,7 @@ const SECTION_LABEL: Record<string, string> = {
                         </button>
                     </div>
 
+                    <!-- Selector de estado, importe, notas y botón Guardar -->
                     <template v-if="drafts[a.key]">
                         <div
                             class="inline-flex rounded-xl border bg-muted/40 p-0.5"
@@ -447,6 +514,7 @@ const SECTION_LABEL: Record<string, string> = {
             </div>
         </section>
 
+        <!-- Historial de cambios de ajustes -->
         <Collapsible v-model:open="showLogs">
             <CollapsibleTrigger
                 class="flex items-center gap-1.5 text-sm font-semibold text-emerald-700 hover:underline dark:text-emerald-400"

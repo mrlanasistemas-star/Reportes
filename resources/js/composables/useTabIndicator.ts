@@ -1,6 +1,6 @@
-import { useResizeObserver } from '@vueuse/core'
-import { nextTick, onMounted, ref, watch } from 'vue'
-import type { Ref, WatchSource } from 'vue'
+import { useResizeObserver } from '@vueuse/core';
+import { nextTick, onMounted, ref, watch } from 'vue';
+import type { Ref, WatchSource } from 'vue';
 
 /**
  * Indicador deslizante para una fila de pestañas (27-oct-2026).
@@ -18,35 +18,43 @@ import type { Ref, WatchSource } from 'vue'
  *   <nav ref="tabsRef" class="relative" role="tablist">…
  *       <span class="app-tab-indicator" :style="indicatorStyle" :data-ready="indicatorReady" aria-hidden="true" />
  */
-export function useTabIndicator(container: Ref<HTMLElement | null>, active: WatchSource<unknown>) {
-    const indicatorStyle = ref<Record<string, string>>({ opacity: '0' })
-    const indicatorReady = ref(false)
+export function useTabIndicator(
+    container: Ref<HTMLElement | null>,
+    active: WatchSource<unknown>,
+) {
+    const indicatorStyle = ref<Record<string, string>>({ opacity: '0' });
+    const indicatorReady = ref(false);
 
+    /** Mide la pestaña activa y recalcula transform/opacity del indicador. */
     function update() {
-        const tab = container.value?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+        const tab = container.value?.querySelector<HTMLElement>(
+            '[role="tab"][aria-selected="true"]',
+        );
 
         if (!tab) {
-            indicatorStyle.value = { opacity: '0' }
+            indicatorStyle.value = { opacity: '0' };
 
-            return
+            return;
         }
 
         indicatorStyle.value = {
             opacity: '1',
             transform: `translateX(${tab.offsetLeft}px) scaleX(${tab.offsetWidth})`,
-        }
+        };
     }
 
+    /** Primera medición; la transición se activa en el siguiente frame. */
     onMounted(() => {
-        update()
+        update();
         requestAnimationFrame(() => {
-            indicatorReady.value = true
-        })
-    })
+            indicatorReady.value = true;
+        });
+    });
 
-    useResizeObserver(container, update)
+    useResizeObserver(container, update);
 
-    watch(active, () => nextTick(update))
+    /** Al cambiar la pestaña activa, mide después de que el DOM se actualice. */
+    watch(active, () => nextTick(update));
 
-    return { indicatorStyle, indicatorReady }
+    return { indicatorStyle, indicatorReady };
 }

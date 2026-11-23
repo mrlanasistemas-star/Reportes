@@ -1,4 +1,21 @@
 <script setup lang="ts">
+/**
+ * KpiStrip — cabecera de resultados del Estado de Resultados.
+ *
+ * Se usa en pages/EstadoResultados/Index. Contiene la ecuación Ingresos − OPEX
+ * = EBITDA (EquationTerm), el reparto de cada $100 de ingresos (PerHundredBar),
+ * los márgenes EBITDA, EBIT y neto, y el camino del EBITDA a la utilidad neta
+ * (BottomLine), con variaciones contra el periodo comparado.
+ *
+ * Props:
+ * - dataset: datos del reporte.
+ * - activeStep: paso de la cascada seleccionado (o null).
+ * - comparison: comparativa contra el periodo anterior (puede no estar lista).
+ * - comparisonLoading: la comparativa se está cargando.
+ *
+ * Emits:
+ * - select: se eligió un paso de la cascada (clave del paso).
+ */
 import { Info } from 'lucide-vue-next';
 import { computed } from 'vue';
 import {
@@ -39,15 +56,20 @@ function value(key: string, legacy?: string): string | null {
     return legacy && legacy in r ? (r[legacy] ?? null) : null;
 }
 
+/** Ingresos operativos del periodo. */
 const ingresos = computed(() => value('ingresos_operativos', 'ingresos'));
+/** OPEX total del periodo. */
 const opex = computed(() => value('opex_total'));
+/** EBITDA del periodo. */
 const ebitda = computed(() => value('ebitda', 'ebitda_final'));
 /** Sin ingresos no hay resultado que leer: se dice «Sin datos», no $0. */
 const noIncome = computed(
     () => ingresos.value === null || isZero(ingresos.value),
 );
+/** No hay OPEX (null o cero). */
 const noOpex = computed(() => opex.value === null || isZero(opex.value));
 
+/** Categorías de OPEX de la cascada; si no hay, una sola con el OPEX total. */
 const categories = computed(() => {
     const cats = props.dataset.waterfall
         .filter((w) => w.group === 'opex')
@@ -57,8 +79,10 @@ const categories = computed(() => {
         ? cats
         : [{ key: 'opex_total', label: 'OPEX', amount: opex.value }];
 });
+/** Clave del primer paso de OPEX (el que se fija al hacer clic en OPEX). */
 const firstOpex = computed(() => categories.value[0]?.key ?? 'opex_total');
 
+/** Renglones de la comparativa indexados por clave. */
 const rows = computed(
     () => new Map((props.comparison?.rows ?? []).map((r) => [r.key, r])),
 );
@@ -68,17 +92,21 @@ const comparable = computed(() => {
 
     return c ? (c.level ? c.level !== 'no_comparable' : c.comparable) : false;
 });
+/** Etiqueta del periodo contra el que se compara. */
 const against = computed(
     () => props.comparison?.comparison.period.label ?? null,
 );
+/** Motivo por el que no se puede comparar (para el tooltip). */
 const notComparableWhy = computed(
     () =>
         props.comparison?.comparability.headline ??
         props.comparison?.comparability.reasons[0]?.message ??
         'Los periodos no se pueden comparar.',
 );
+/** La comparativa sigue cargando y aún no hay datos. */
 const loading = computed(() => !!props.comparisonLoading && !props.comparison);
 
+/** Márgenes EBITDA, EBIT y neto con su paso, valor y texto cuando no hay valor. */
 const margins = computed(() => {
     const m = props.dataset.margins;
     const noIsr = props.dataset.results.isr === null;
@@ -110,6 +138,7 @@ const margins = computed(() => {
     ];
 });
 
+/** Explicación de por qué falta un margen según su texto vacío. */
 const marginHint = (empty: string) =>
     empty === 'Sin ingresos'
         ? 'Sin ingresos en el periodo no se puede calcular un margen.'
@@ -117,6 +146,7 @@ const marginHint = (empty: string) =>
           ? 'Se calcula cuando se capture el ISR del periodo.'
           : 'Falta información para calcularlo.';
 
+/** Reenvía al padre el paso seleccionado. */
 const select = (k: string) => emit('select', k);
 </script>
 
@@ -125,6 +155,7 @@ const select = (k: string) => emit('select', k);
         aria-label="Resultado del periodo"
         class="overflow-hidden rounded-2xl border bg-card shadow-soft-xs"
     >
+        <!-- Encabezado: periodo, alcance y contra qué se compara -->
         <header
             class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b px-4 py-2.5 sm:px-5"
         >
@@ -162,6 +193,7 @@ const select = (k: string) => emit('select', k);
         <div
             class="grid lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)] 2xl:grid-cols-[minmax(0,1fr)_420px]"
         >
+            <!-- Columna principal: ecuación, reparto por cada $100 y márgenes -->
             <div class="flex min-w-0 flex-col gap-5 p-3 sm:p-5">
                 <!-- La ecuación del modelo -->
                 <div
@@ -226,6 +258,7 @@ const select = (k: string) => emit('select', k);
                     </div>
                 </div>
 
+                <!-- Reparto de cada $100 de ingresos (o aviso sin ingresos) -->
                 <PerHundredBar
                     v-if="!noIncome"
                     :ingresos="ingresos"
@@ -243,6 +276,7 @@ const select = (k: string) => emit('select', k);
                     cuánto de cada $100 se va en gastos y cuánto queda.
                 </p>
 
+                <!-- Márgenes sobre ingresos -->
                 <div
                     class="mt-auto grid grid-cols-3 gap-1 border-t pt-3 sm:gap-3"
                     role="group"
@@ -268,6 +302,7 @@ const select = (k: string) => emit('select', k);
                 </div>
             </div>
 
+            <!-- Columna derecha: del EBITDA a la utilidad neta -->
             <div
                 class="border-t bg-muted/35 p-3 sm:p-5 lg:border-t-0 lg:border-l"
             >

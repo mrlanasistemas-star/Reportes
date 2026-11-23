@@ -1,4 +1,16 @@
 <script setup lang="ts">
+/**
+ * ControlPanel — pestaña de control técnico del Estado de Resultados.
+ *
+ * La usa la página EstadoResultados/Index. Muestra el hash del dataset (el
+ * mismo que va en el Excel y el PDF), la versión de reglas y la tolerancia de
+ * fechas; la tabla de validaciones matemáticas (esperado, calculado,
+ * diferencia y si cuadra en $0.00); el estado del último procesamiento de la
+ * conciliación y la bitácora de exportaciones.
+ *
+ * Props:
+ * - dataset: dataset del reporte (meta, validaciones y fuentes).
+ */
 import { CheckCircle2, Download, Fingerprint, XCircle } from 'lucide-vue-next';
 import { computed } from 'vue';
 import StatusBadge from './StatusBadge.vue';
@@ -7,7 +19,9 @@ import type { Dataset } from './types';
 
 const props = defineProps<{ dataset: Dataset }>();
 
+/** Número de validaciones que cuadran. */
 const okCount = computed(() => props.dataset.checks.filter((c) => c.ok).length);
+/** Estado del procesamiento de la conciliación del periodo. */
 const proc = computed(() => props.dataset.sources.procesamiento);
 </script>
 
@@ -31,6 +45,7 @@ const proc = computed(() => props.dataset.sources.procesamiento);
             </p>
         </div>
 
+        <!-- Validaciones matemáticas -->
         <div class="overflow-hidden rounded-2xl border bg-card shadow-soft-xs">
             <div class="flex items-center justify-between border-b px-4 py-2.5">
                 <p class="text-sm font-bold">Validaciones matemáticas</p>
@@ -104,6 +119,7 @@ const proc = computed(() => props.dataset.sources.procesamiento);
             </div>
         </div>
 
+        <!-- Procesamiento y exportaciones -->
         <div class="grid gap-3 lg:grid-cols-2">
             <div class="rounded-2xl border bg-card p-4 shadow-soft-xs">
                 <p class="mb-2 text-sm font-bold">Procesamiento</p>
@@ -116,12 +132,9 @@ const proc = computed(() => props.dataset.sources.procesamiento);
                     {{ proc.last_run.user ?? '—' }} · reglas
                     {{ proc.last_run.rules_version }} ·
                     {{ proc.last_run.status }}
-                    <span
-                        v-if="proc.last_run.error"
-                        class="block text-rose-600"
-                        >El último procesamiento no terminó. Vuelve a
-                        procesar la conciliación; si se repite, avisa a
-                        sistemas.</span
+                    <span v-if="proc.last_run.error" class="block text-rose-600"
+                        >El último procesamiento no terminó. Vuelve a procesar
+                        la conciliación; si se repite, avisa a sistemas.</span
                     >
                 </p>
                 <p v-else class="mt-2 text-xs text-muted-foreground">

@@ -1,4 +1,23 @@
 <script setup lang="ts">
+/**
+ * VersionHistorySheet — panel lateral (Sheet) «Versiones del reporte».
+ *
+ * Se usa en pages/EstadoResultados/Index. Lista la versión en preparación (en
+ * vivo), las versiones aprobadas o sustituidas con su sello, notas y
+ * reaperturas, y la bitácora de acciones. Permite elegir cuál consultar.
+ *
+ * Props:
+ * - open: si el panel está abierto (usar con v-model:open).
+ * - history: historial de versiones del periodo (null mientras carga).
+ * - loading: hay una lectura del historial en curso.
+ * - viewing: versión que se consulta (null = la vigente / en vivo).
+ * - report: metadatos de la versión mostrada (para la etiqueta de estado).
+ *
+ * Emits:
+ * - update:open(v): abrir/cerrar el panel.
+ * - view(version|null): consultar una versión; null vuelve a la vigente (la
+ *   versión bloqueada vigente también emite null).
+ */
 import {
     Eye,
     FileClock,
@@ -31,12 +50,14 @@ const emit = defineEmits<{
     view: [version: number | null];
 }>();
 
+/** Icono por tipo de acción de la bitácora. */
 const ACTION_ICON: Record<string, unknown> = {
     aprobado: Stamp,
     nueva_version: LockOpen,
     sustituido: FileClock,
 };
 
+/** Número de la versión en preparación, si existe. */
 const draft = computed(() => props.history?.draft_version ?? null);
 </script>
 

@@ -1,4 +1,20 @@
 <script setup lang="ts">
+/**
+ * ErInlineLoading — indicador de carga dentro de una pestaña.
+ *
+ * Lo usa ComparativesPanel mientras calcula las comparativas.
+ *
+ * Props:
+ * - title: título (por defecto "Calculando las comparativas").
+ * - elapsed: segundos transcurridos; a partir de 30 se considera lento.
+ * - detail: texto libre con lo que se está calculando (opcional).
+ * - cancellable: muestra el botón "Cancelar" (true por defecto).
+ * - background: avisa que se puede ir a otra pestaña (true por defecto).
+ *
+ * Emits:
+ * - cancel: el usuario cancela la consulta.
+ * - retry: el usuario pide intentarlo de nuevo (solo visible cuando tarda).
+ */
 import { LineChart, RefreshCw } from 'lucide-vue-next';
 import { computed } from 'vue';
 import { Button } from '@/components/ui/button';
@@ -29,7 +45,9 @@ const props = withDefaults(
 
 const emit = defineEmits<{ cancel: []; retry: [] }>();
 
+/** La carga lleva 30 s o más. */
 const slow = computed(() => props.elapsed >= 30);
+/** Mensaje según el tiempo transcurrido (normal, primera carga del día o lento). */
 const hint = computed(() =>
     slow.value
         ? 'Está tardando más de lo normal. Puedes seguir esperando, cancelar o intentarlo de nuevo.'
@@ -40,6 +58,7 @@ const hint = computed(() =>
 </script>
 
 <template>
+    <!-- Icono, mensaje y barra indeterminada -->
     <div
         class="flex flex-col items-center gap-4 rounded-2xl border bg-card px-6 py-10 text-center shadow-soft-xs"
         role="status"
@@ -85,6 +104,7 @@ const hint = computed(() =>
                 listo</template
             >
         </p>
+        <!-- Botones de reintento y cancelación -->
         <div
             v-if="cancellable || slow"
             class="flex flex-wrap justify-center gap-2"

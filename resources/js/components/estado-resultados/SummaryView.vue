@@ -1,4 +1,21 @@
 <script setup lang="ts">
+/**
+ * SummaryView — pestaña «Resumen» del Estado de Resultados.
+ *
+ * Se usa en pages/EstadoResultados/Index. Arriba muestra la cascada que lleva
+ * de los ingresos a la utilidad neta (ResultWaterfall) junto al inspector del
+ * paso elegido (StepInspector); abajo, el resumen de conciliación y la
+ * composición del OPEX.
+ *
+ * Props:
+ * - dataset: datos completos del reporte del periodo/alcance actual.
+ *
+ * v-model:selected: clave del paso de la cascada fijado con clic (null = ninguno).
+ *
+ * Emits:
+ * - openStatement(key): abrir el estado de resultados en el bloque indicado.
+ * - openMovements(filterKey): abrir la lista de movimientos con ese filtro.
+ */
 import { computed, ref } from 'vue';
 import ConciliationSummary from './ConciliationSummary.vue';
 import OpexComposition from './OpexComposition.vue';
@@ -15,8 +32,14 @@ const emit = defineEmits<{
     openMovements: [filterKey: string];
 }>();
 
+/** Paso sobre el que está el cursor (vista previa temporal, no fijada). */
 const preview = ref<string | null>(null);
+/** Metadatos explicativos (fórmula, origen) de cada paso de la cascada. */
 const meta = computed(() => buildStepMeta(props.dataset));
+/**
+ * Paso que se explica en el inspector: el de la vista previa, luego el fijado,
+ * luego EBITDA y, si no existe, el último paso.
+ */
 const shownKey = computed(
     () =>
         preview.value ??
@@ -30,6 +53,7 @@ const shownKey = computed(
 
 <template>
     <div class="space-y-4">
+        <!-- Historia: cascada de resultados + inspector del paso -->
         <section
             class="rounded-2xl border bg-card p-4 shadow-soft-xs md:p-5"
             aria-labelledby="er-story-title"
@@ -76,6 +100,7 @@ const shownKey = computed(
             </div>
         </section>
 
+        <!-- Conciliación y composición del OPEX -->
         <div
             class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] [&>*]:min-w-0"
         >

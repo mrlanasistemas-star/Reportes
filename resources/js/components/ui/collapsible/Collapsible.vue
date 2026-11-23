@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Contenedor plegable (reka-ui CollapsibleRoot) que muestra u oculta contenido con v-model:open. */
 import type { CollapsibleRootEmits, CollapsibleRootProps } from "reka-ui"
 import { CollapsibleRoot, useForwardPropsEmits } from "reka-ui"
 

@@ -1,4 +1,17 @@
 <script setup lang="ts">
+/**
+ * ReportStatusPill — píldora con el estado del reporte (Preliminar, Cifras
+ * completas, Cifras aprobadas o Versión sustituida) que abre un popover con el detalle.
+ *
+ * Se usa en ErCommandBar. El popover lista los motivos por los que las cifras
+ * aún pueden cambiar y, si la página lo provee (inject 'er:goFuentes'), un
+ * enlace para ir a Fuentes a resolverlos.
+ *
+ * Props:
+ * - report: metadatos de la versión mostrada (null si aún no hay reporte).
+ * - complete: respaldo cuando no hay `report`: true = todas las fuentes completas.
+ * - blockers: motivos pendientes.
+ */
 import { BadgeCheck, CircleDashed, ShieldAlert } from 'lucide-vue-next';
 import { computed, inject } from 'vue';
 import {
@@ -54,6 +67,7 @@ const view = computed(() => {
 /** Acceso a Fuentes provisto por la página (sin pasar por la barra de comandos). */
 const goFuentes = inject<(() => void) | null>('er:goFuentes', null);
 
+/** Clases de borde/fondo/texto por tono de la píldora. */
 const TONES: Record<string, string> = {
     emerald:
         'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300',
@@ -94,6 +108,7 @@ const TONES: Record<string, string> = {
                 }}</span>
             </button>
         </PopoverTrigger>
+        <!-- Detalle: encabezado, motivos o explicación, y acceso a Fuentes -->
         <PopoverContent class="w-96 rounded-2xl p-0" align="center">
             <div class="border-b px-4 py-3">
                 <p class="flex items-center gap-2 text-sm font-bold">

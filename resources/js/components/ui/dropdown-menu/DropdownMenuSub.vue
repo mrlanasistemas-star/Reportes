@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Raíz de un submenú anidado del menú desplegable. */
 import type { DropdownMenuSubEmits, DropdownMenuSubProps } from "reka-ui"
 import {
   DropdownMenuSub,

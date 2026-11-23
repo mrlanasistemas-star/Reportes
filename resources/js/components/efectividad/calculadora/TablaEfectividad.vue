@@ -1,10 +1,23 @@
 <script setup lang="ts">
+/**
+ * TablaEfectividad — tabla de efectividad de cobranza agrupada por
+ * Sucursal → Ruta → Promotor, con columnas por tramo (Sano, Vigente con
+ * atraso, Vencida), cobranza total, % de efectividad y mora.
+ *
+ * Se usa en ResultadoEfectividad. Encabezados y primera columna fijos al
+ * desplazarse; el GRAN TOTAL queda fijo abajo. Los porcentajes sin base
+ * (Sano por cobrar en cero) se muestran atenuados como "—".
+ *
+ * Props:
+ * - filas: filas de promotores, subtotales y gran total, en el orden del cálculo.
+ */
 import { computed } from 'vue';
 import type { FilaEfectividad } from './types';
 import { colorMora, fmtMoney, fmtPct, semaforo, tienePct } from './types';
 
 const props = defineProps<{ filas: FilaEfectividad[] }>();
 
+/** Campos numéricos de una fila que se pintan como columnas. */
 type CampoNumerico =
     | 'sano_pc'
     | 'sano_cob'
@@ -19,6 +32,7 @@ type CampoNumerico =
     | 'pct_total'
     | 'mora';
 
+/** Definición de una columna: campo, tipo de formato y si inicia grupo. */
 type Columna = {
     campo: CampoNumerico;
     tipo: 'money' | 'pct' | 'efectividad' | 'mora';
@@ -26,6 +40,7 @@ type Columna = {
     inicio?: boolean;
 };
 
+/** Grupos de la primera fila de encabezados, con su ancho (colspan) y color de acento. */
 const GRUPOS = [
     { titulo: 'Sano', span: 3, acento: 'border-b-emerald-500' },
     { titulo: 'Vigente con atraso', span: 3, acento: 'border-b-amber-400' },
@@ -33,6 +48,7 @@ const GRUPOS = [
     { titulo: 'Cobranza total', span: 2, acento: 'border-b-sky-400' },
 ];
 
+/** Segunda fila de encabezados (Mora no aparece: ocupa dos filas). */
 const SUBENCABEZADOS = [
     'Por cobrar',
     'Cobrado',
@@ -47,6 +63,7 @@ const SUBENCABEZADOS = [
     '% Efectividad',
 ];
 
+/** Columnas numéricas en el orden en que se muestran. */
 const COLUMNAS: Columna[] = [
     { campo: 'sano_pc', tipo: 'money', inicio: true },
     { campo: 'sano_cob', tipo: 'money' },
@@ -62,6 +79,7 @@ const COLUMNAS: Columna[] = [
     { campo: 'mora', tipo: 'mora', inicio: true },
 ];
 
+/** Columnas totales de la tabla (numéricas + Ruta / Promotor), para los colspan. */
 const TOTAL_COLUMNAS = COLUMNAS.length + 1;
 
 /** Filas con encabezados intercalados: Sucursal → Ruta → promotores. */
@@ -96,8 +114,10 @@ const renglones = computed(() => {
     return out;
 });
 
+/** Valor crudo de una columna en una fila. */
 const valor = (f: FilaEfectividad, c: Columna) => f[c.campo];
 
+/** Texto de la celda: porcentaje (o "—" sin base) o importe en pesos. */
 function texto(f: FilaEfectividad, c: Columna): string {
     const v = valor(f, c);
 
@@ -106,6 +126,10 @@ function texto(f: FilaEfectividad, c: Columna): string {
         : fmtMoney(v ?? 0);
 }
 
+/**
+ * Clases de una celda: separador de grupo, atenuado sin base, semáforo en la
+ * efectividad, color de mora e importes negativos en rojo (no en el GRAN TOTAL).
+ */
 function claseCelda(f: FilaEfectividad, c: Columna): string {
     const v = valor(f, c);
     const clases: string[] = [];
@@ -140,6 +164,7 @@ function claseCelda(f: FilaEfectividad, c: Columna): string {
     return clases.join(' ');
 }
 
+/** Tooltip de la celda: explica el "—" cuando el porcentaje no tiene base. */
 function titulo(f: FilaEfectividad, c: Columna): string | undefined {
     return (c.tipo === 'pct' || c.tipo === 'efectividad') &&
         !tienePct(valor(f, c))
@@ -147,6 +172,7 @@ function titulo(f: FilaEfectividad, c: Columna): string | undefined {
         : undefined;
 }
 
+/** Fondo y peso de letra de la fila según su tipo (promotor, subtotales, gran total). */
 function claseFila(f: FilaEfectividad): string {
     switch (f.tipo) {
         case 'subtotal':
@@ -185,6 +211,7 @@ function fondoFijo(f: FilaEfectividad): string {
         <table
             class="w-full min-w-[1180px] border-separate border-spacing-0 text-[13px] tabular-nums"
         >
+            <!-- Encabezados en dos niveles: grupos por tramo y subcolumnas -->
             <thead class="text-xs text-white">
                 <tr>
                     <th
@@ -224,6 +251,7 @@ function fondoFijo(f: FilaEfectividad): string {
                     </th>
                 </tr>
             </thead>
+            <!-- Cuerpo: encabezado de sucursal, encabezado de ruta o fila de datos -->
             <tbody>
                 <template v-for="r in renglones" :key="r.k">
                     <tr v-if="r.sucursal !== undefined">

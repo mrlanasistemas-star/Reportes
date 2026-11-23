@@ -1,10 +1,23 @@
 <script setup lang="ts">
-import { FileSpreadsheet, FileText, LoaderCircle } from 'lucide-vue-next'
-import Swal from 'sweetalert2'
-import { ref } from 'vue'
-import { buttonVariants } from '@/components/ui/button'
-import { hideDownloadLoading, showDownloadLoading } from '@/lib/downloadOverlay'
-import { cn } from '@/lib/utils'
+/**
+ * DashboardExportActions — botones "Exportar PDF" y "Exportar Excel" del Dashboard.
+ *
+ * Se usa en pages/Dashboard.
+ *
+ * Props:
+ * - pdfUrl / excelUrl: rutas de exportación.
+ * - scopeLabel: alcance exportado (aparece en títulos y etiquetas accesibles).
+ * - disabled: deshabilita ambos botones.
+ */
+import { FileSpreadsheet, FileText, LoaderCircle } from 'lucide-vue-next';
+import { ref } from 'vue';
+import { appSwal as Swal } from '@/components/feedback/ConfirmDialog';
+import { buttonVariants } from '@/components/ui/button';
+import {
+    hideDownloadLoading,
+    showDownloadLoading,
+} from '@/lib/downloadOverlay';
+import { cn } from '@/lib/utils';
 
 // Botones "Exportar PDF / Excel" del Dashboard (Fase 7.2/7.3/8.5). Descarga vía
 // fetch con spinner en el botón y, desde el 27-oct-2026, también la pantalla de
@@ -12,88 +25,133 @@ import { cn } from '@/lib/utils'
 // del sistema. Muestra el mensaje real del servidor si algo falla (403 de alcance,
 // periodo sin radiografía, referencia de error), en vez de abrir una pestaña con HTML.
 const props = defineProps<{
-    pdfUrl: string
-    excelUrl: string
-    scopeLabel: string
-    disabled?: boolean
-}>()
+    pdfUrl: string;
+    excelUrl: string;
+    scopeLabel: string;
+    disabled?: boolean;
+}>();
 
-type Kind = 'pdf' | 'excel'
-const busy = ref<Kind | null>(null)
+type Kind = 'pdf' | 'excel';
+/** Exportación en curso ('pdf', 'excel') o null si no hay ninguna. */
+const busy = ref<Kind | null>(null);
 
+/**
+ * Obtiene el nombre del archivo desde la cabecera Content-Disposition
+ * (admite filename* en UTF-8).
+ *
+ * @param resp Respuesta del servidor.
+ * @param fallback Nombre a usar si la cabecera no lo trae.
+ */
 function filenameFrom(resp: Response, fallback: string): string {
-    const cd = resp.headers.get('content-disposition') ?? ''
-    const star = /filename\*=UTF-8''([^;]+)/i.exec(cd)
+    const cd = resp.headers.get('content-disposition') ?? '';
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
 
     if (star) {
-        return decodeURIComponent(star[1])
+        return decodeURIComponent(star[1]);
     }
 
-    const plain = /filename="?([^";]+)"?/i.exec(cd)
+    const plain = /filename="?([^";]+)"?/i.exec(cd);
 
-    return plain ? plain[1] : fallback
+    return plain ? plain[1] : fallback;
 }
 
+/**
+ * Extrae el texto plano de una respuesta de error en HTML (máx. 400 caracteres).
+ *
+ * @param html Cuerpo HTML devuelto por el servidor.
+ */
 function messageFromHtml(html: string): string {
-    const text = new DOMParser().parseFromString(html, 'text/html').body.textContent ?? ''
+    const text =
+        new DOMParser().parseFromString(html, 'text/html').body.textContent ??
+        '';
 
-    return text.replace(/\s+/g, ' ').trim().slice(0, 400)
+    return text.replace(/\s+/g, ' ').trim().slice(0, 400);
 }
 
+/**
+ * Descarga el archivo vía fetch mostrando la pantalla de carga; si el servidor
+ * responde con error, muestra su mensaje en un SweetAlert.
+ *
+ * @param kind Tipo de exportación ('pdf' o 'excel').
+ */
 async function download(kind: Kind) {
     if (busy.value) {
-        return
+        return;
     }
 
-    busy.value = kind
-    const url = kind === 'pdf' ? props.pdfUrl : props.excelUrl
-    showDownloadLoading(kind)
+    busy.value = kind;
+    const url = kind === 'pdf' ? props.pdfUrl : props.excelUrl;
+    showDownloadLoading(kind);
 
     try {
-        const resp = await fetch(url, { credentials: 'same-origin', headers: { Accept: kind === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } })
+        const resp = await fetch(url, {
+            credentials: 'same-origin',
+            headers: {
+                Accept:
+                    kind === 'pdf'
+                        ? 'application/pdf'
+                        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            },
+        });
 
         if (!resp.ok) {
-            const body = await resp.text()
-            let message = ''
+            const body = await resp.text();
+            let message = '';
 
             try {
-                message = JSON.parse(body)?.message ?? ''
+                message = JSON.parse(body)?.message ?? '';
             } catch {
-                message = messageFromHtml(body)
+                message = messageFromHtml(body);
             }
 
-            throw new Error(message || `El servidor respondió ${resp.status}.`)
+            throw new Error(message || `El servidor respondió ${resp.status}.`);
         }
 
-        const blob = await resp.blob()
-        const href = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = href
-        a.download = filenameFrom(resp, kind === 'pdf' ? 'dashboard.pdf' : 'dashboard.xlsx')
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-        setTimeout(() => URL.revokeObjectURL(href), 10_000)
+        const blob = await resp.blob();
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = filenameFrom(
+            resp,
+            kind === 'pdf' ? 'dashboard.pdf' : 'dashboard.xlsx',
+        );
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(href), 10_000);
     } catch (e) {
         Swal.fire({
             icon: 'error',
-            title: kind === 'pdf' ? 'No se pudo generar el PDF' : 'No se pudo generar el Excel',
-            text: e instanceof TypeError
-                ? 'Sin conexión con el servidor. Revisa tu red e intenta de nuevo.'
-                : (e as Error)?.message || 'Intenta nuevamente en unos segundos.',
+            title:
+                kind === 'pdf'
+                    ? 'No se pudo generar el PDF'
+                    : 'No se pudo generar el Excel',
+            text:
+                e instanceof TypeError
+                    ? 'Sin conexión con el servidor. Revisa tu red e intenta de nuevo.'
+                    : (e as Error)?.message ||
+                      'Intenta nuevamente en unos segundos.',
             confirmButtonText: 'Entendido',
-        })
+        });
     } finally {
-        hideDownloadLoading()
-        busy.value = null
+        hideDownloadLoading();
+        busy.value = null;
     }
 }
 
-const btn = cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-10 rounded-xl px-3.5 font-bold')
+/** Clases comunes de los dos botones. */
+const btn = cn(
+    buttonVariants({ variant: 'outline', size: 'lg' }),
+    'h-10 rounded-xl px-3.5 font-bold',
+);
 </script>
 
 <template>
-    <div class="flex items-center gap-2" role="group" :aria-label="`Exportar el Dashboard de ${scopeLabel}`">
+    <div
+        class="flex items-center gap-2"
+        role="group"
+        :aria-label="`Exportar el Dashboard de ${scopeLabel}`"
+    >
         <button
             type="button"
             :class="[btn, 'hover:border-danger-border hover:text-danger']"
@@ -102,7 +160,11 @@ const btn = cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-10 rounded
             :title="`PDF ejecutivo — ${scopeLabel}`"
             @click="download('pdf')"
         >
-            <LoaderCircle v-if="busy === 'pdf'" class="size-4 animate-spin" aria-hidden="true" />
+            <LoaderCircle
+                v-if="busy === 'pdf'"
+                class="size-4 animate-spin"
+                aria-hidden="true"
+            />
             <FileText v-else class="size-4" aria-hidden="true" />
             {{ busy === 'pdf' ? 'Generando PDF…' : 'Exportar PDF' }}
         </button>
@@ -114,7 +176,11 @@ const btn = cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-10 rounded
             :title="`Excel con resumen y desglose — ${scopeLabel}`"
             @click="download('excel')"
         >
-            <LoaderCircle v-if="busy === 'excel'" class="size-4 animate-spin" aria-hidden="true" />
+            <LoaderCircle
+                v-if="busy === 'excel'"
+                class="size-4 animate-spin"
+                aria-hidden="true"
+            />
             <FileSpreadsheet v-else class="size-4" aria-hidden="true" />
             {{ busy === 'excel' ? 'Generando Excel…' : 'Exportar Excel' }}
         </button>

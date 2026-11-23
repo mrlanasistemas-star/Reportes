@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Descripción accesible del panel lateral. */
 import type { DialogDescriptionProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

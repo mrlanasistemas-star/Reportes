@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Cuerpo (<tbody>) de la cuadrícula del calendario. */
 import type { CalendarGridBodyProps } from "reka-ui"
 import { CalendarGridBody } from "reka-ui"
 

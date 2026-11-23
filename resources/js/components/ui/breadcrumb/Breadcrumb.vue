@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Contenedor <nav> de migas de pan (shadcn-vue) para indicar la ubicación del usuario. */
 import type { HTMLAttributes } from "vue"
 
 const props = defineProps<{

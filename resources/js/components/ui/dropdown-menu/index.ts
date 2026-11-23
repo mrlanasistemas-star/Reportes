@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de DropdownMenu (shadcn-vue): exporta el menú desplegable y sus piezas. */
 export { default as DropdownMenu } from "./DropdownMenu.vue"
 
 export { default as DropdownMenuCheckboxItem } from "./DropdownMenuCheckboxItem.vue"

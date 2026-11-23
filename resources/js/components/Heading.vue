@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * Heading — encabezado de sección con título y descripción opcional.
+ *
+ * Se usa en secciones de configuración (p. ej. DeleteUser).
+ *
+ * Props:
+ * - title: texto del título.
+ * - description: texto secundario opcional bajo el título.
+ * - variant: 'default' (título grande con margen inferior) o 'small' (compacto).
+ */
 type Props = {
     title: string;
     description?: string;

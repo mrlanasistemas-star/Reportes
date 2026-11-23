@@ -1,4 +1,29 @@
 <script setup lang="ts">
+/**
+ * Pantalla: CALCULADORA DE EFECTIVIDAD DE COBRANZA (/efectividad-cobranza).
+ *
+ * Para qué sirve: flujo único y EFÍMERO (sin base de datos) en 4 pasos:
+ * 1) elegir modalidad (diario, acumulado, semanal, mensual), 2) subir los
+ * Excel de carteras diarias e Ingresos Cobranza de Lendus, 3) elegir el corte
+ * y calcular, 4) ver/filtrar el resultado (sucursal, oficina, promotor) y
+ * exportarlo a PNG, PDF o Excel. Los archivos viven en un espacio temporal del
+ * servidor identificado por un token ligado al usuario y se borran al salir.
+ *
+ * Origen de los datos: `App\Http\Controllers\EfectividadCalculadoraController@index`
+ * renderiza `EfectividadCobranza/Index` solo con `limites` (máx. archivos y MB).
+ * (EfectividadCobranzaController también renderiza este nombre de página, pero
+ * no tiene rutas registradas: es el flujo anterior con base de datos.)
+ * Todo lo demás llega por fetch JSON a las rutas de la calculadora.
+ *
+ * Rutas que usa (prefijo `{base}/efectividad-cobranza/calculadora`):
+ * - POST   /archivos                    subir un archivo (crea el token si no hay)
+ * - DELETE /{token}/archivos/{id}       quitar un archivo
+ * - POST   /{token}/limpiar             borrar temporales (también al salir)
+ * - POST   /{token}/calcular            calcular con { modo, valor }
+ * - GET    /{token}/vista?filtros       filas filtradas
+ * - GET    /{token}/exportar/{pdf|png}  exportar PDF o imagen
+ * - GET    /{token}/exportar-excel      exportar Excel (permiso propio)
+ */
 import { Head, usePage } from '@inertiajs/vue3';
 import {
     Calculator,
@@ -11,7 +36,6 @@ import {
     Loader2,
     RotateCcw,
 } from 'lucide-vue-next';
-import Swal from 'sweetalert2';
 import {
     computed,
     nextTick,
@@ -21,6 +45,7 @@ import {
     watch,
 } from 'vue';
 
+import AppPageHeader from '@/components/app/AppPageHeader.vue';
 import ArchivosDropzone from '@/components/efectividad/calculadora/ArchivosDropzone.vue';
 import ControlTrazabilidad from '@/components/efectividad/calculadora/ControlTrazabilidad.vue';
 import FiltrosResultado from '@/components/efectividad/calculadora/FiltrosResultado.vue';
@@ -42,6 +67,7 @@ import {
     mensajeError,
     xsrfHeaders,
 } from '@/components/efectividad/calculadora/types';
+import { appSwal as Swal } from '@/components/feedback/ConfirmDialog';
 import SelectField from '@/components/forms/SelectField.vue';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -52,10 +78,12 @@ import {
 } from '@/lib/downloadOverlay';
 import { index as efectividadIndex } from '@/routes/efectividad-cobranza';
 
+/** Props de EfectividadCalculadoraController@index: límites de carga (máximo de archivos y MB por archivo). */
 const props = defineProps<{
     limites: { max_archivos: number; max_mb: number };
 }>();
 
+// Migas de pan del layout: la pantalla se presenta como "Efectividad de Cobranza".
 defineOptions({
     layout: {
         breadcrumbs: [
@@ -66,17 +94,22 @@ defineOptions({
 
 const page = usePage();
 
-// Prefijo de instalación de la app: "/reportes/public" cuando Laravel vive en un
-// subdirectorio (WAMP), "" cuando se sirve en la raíz del dominio (producción nginx).
-// Lo expone el servidor (HandleInertiaRequests → props.base = request()->getBaseUrl()).
-// Se antepone a TODAS las URLs del módulo (subir, calcular, vista, exportar, excel)
-// para que fetch/descarga resuelvan bien en ambos casos sin hardcodear ni depender de
-// reiniciar Apache. En producción (base vacía) el resultado es idéntico al anterior.
+/**
+ * Prefijo de instalación de la app: "/reportes/public" cuando Laravel vive en un
+ * subdirectorio (WAMP), "" cuando se sirve en la raíz del dominio (producción nginx).
+ * Lo expone el servidor (HandleInertiaRequests → props.base = request()->getBaseUrl()).
+ * Se antepone a TODAS las URLs del módulo (subir, calcular, vista, exportar, excel)
+ * para que fetch/descarga resuelvan bien en ambos casos sin hardcodear ni depender de
+ * reiniciar Apache. En producción (base vacía) el resultado es idéntico al anterior.
+ */
 const appBase = (page.props as { base?: string }).base ?? '';
+/** URL base de todas las peticiones de la calculadora. */
 const BASE = `${appBase}/efectividad-cobranza/calculadora`;
 
-// El botón de Excel se designa por rol (permiso `efectividad.exportar_excel`); solo se
-// muestra a quien lo tiene. El backend vuelve a exigirlo en la ruta, esto es solo UX.
+/**
+ * El botón de Excel se designa por rol (permiso `efectividad.exportar_excel`); solo se
+ * muestra a quien lo tiene. El backend vuelve a exigirlo en la ruta, esto es solo UX.
+ */
 const canExportarExcel = computed(() => {
     const perms = (page.props as { auth?: { permissions?: string[] } }).auth
         ?.permissions;
@@ -84,45 +117,68 @@ const canExportarExcel = computed(() => {
     return Array.isArray(perms) && perms.includes('efectividad.exportar_excel');
 });
 
+/** Modalidad elegida en el paso 1 (por defecto semanal). */
 const modo = ref<Modo>('SEMANAL');
+/** Token del espacio efímero en el servidor (null hasta subir el primer archivo o tras limpiar/expirar). */
 const token = ref<string | null>(null);
+/** Resumen de fuentes cargadas (carteras, ingresos y cortes disponibles por modalidad). */
 const resumen = ref<Resumen | null>(null);
+/** Archivos rechazados (no Excel, inválidos o con error del servidor) con su motivo. */
 const rechazados = ref<Rechazado[]>([]);
+/** Hay una subida en curso. */
 const subiendo = ref(false);
+/** Progreso de la subida archivo por archivo (null cuando no se sube). */
 const progreso = ref<{ actual: number; total: number; nombre: string } | null>(
     null,
 );
+/** Valor del corte elegido en el paso 3 (día, semana o mes según la modalidad). */
 const corte = ref<string | null>(null);
+/** Hay un cálculo en curso. */
 const calculando = ref(false);
+/** Resultado completo del último cálculo exitoso (null si no hay o se invalidó). */
 const resultado = ref<Resultado | null>(null);
+/** Filas mostradas en la tabla: las del resultado o las de la vista filtrada. */
 const filas = ref<FilaEfectividad[]>([]);
+/** Formato que se está exportando (null = ninguno). */
 const exportando = ref<'pdf' | 'png' | 'xlsx' | null>(null);
+/** Se está pidiendo la vista filtrada al servidor. */
 const cargandoVista = ref(false);
 /** Identifica cada cálculo exitoso: reinicia la animación de entrada del resultado. */
 const calculoId = ref(0);
+/** Duración del último cálculo en milisegundos (se muestra en el hero). */
 const duracionMs = ref<number | null>(null);
+/** Panel "Control y trazabilidad" desplegado. */
 const controlAbierto = ref(false);
 /** Mensaje para lectores de pantalla al terminar el cálculo. */
 const anuncio = ref('');
+// Referencias de plantilla para desplazar la vista al resultado y al control.
 const seccionResultado = ref<HTMLElement | null>(null);
 const seccionControl = ref<HTMLElement | null>(null);
 
+/** Filtros del resultado (sucursal → oficina → promotor) con sus opciones y la query para el servidor. */
 const filtros = useEfectividadFiltros(resultado);
 const { sucursal, oficina, promotor } = filtros;
 
+/** Hay alguna operación en curso (subir, calcular o exportar): bloquea los controles. */
 const ocupado = computed(
     () => subiendo.value || calculando.value || exportando.value !== null,
 );
+/** Hay al menos una cartera o un ingreso cargado. */
 const hayArchivos = computed(
     () =>
         !!resumen.value &&
         resumen.value.carteras.length + resumen.value.ingresos.length > 0,
 );
+/** Cortes disponibles para la modalidad actual, según los archivos cargados. */
 const opcionesCorte = computed(() => resumen.value?.cortes[modo.value] ?? []);
+/** Opción de corte actualmente elegida (null si no existe en la lista). */
 const opcionCorte = computed(
     () => opcionesCorte.value.find((o) => o.valor === corte.value) ?? null,
 );
-// El botón solo se habilita con TODAS las fuentes del corte elegido (carteras e ingresos).
+/**
+ * Qué falta para poder calcular (texto para el usuario) o null si está todo.
+ * El botón solo se habilita con TODAS las fuentes del corte elegido (carteras e ingresos).
+ */
 const faltante = computed(() => {
     if (!resumen.value || !hayArchivos.value) {
         return 'Carga tus archivos de cartera e ingresos.';
@@ -136,9 +192,11 @@ const faltante = computed(() => {
 
     return opcionCorte.value.listo ? null : opcionCorte.value.falta;
 });
+/** Se puede calcular: no falta nada, el corte está listo y no hay otra operación en curso. */
 const puedeCalcular = computed(
     () => !faltante.value && !!opcionCorte.value?.listo && !ocupado.value,
 );
+/** Etiqueta del selector de corte según la modalidad. */
 const etiquetaCorte = computed(
     () =>
         ({
@@ -149,11 +207,13 @@ const etiquetaCorte = computed(
         })[modo.value],
 );
 
+/** Texto legible de cada estado de corte que devuelve el servidor. */
 const ESTADO_CORTE: Record<string, string> = {
     listo: 'listo para calcular',
     faltan_ingresos: 'carteras completas · faltan ingresos',
     faltan_carteras: 'faltan carteras',
 };
+/** Opciones del selector de corte: etiqueta + estado (listo / faltan ingresos / faltan carteras). */
 const opcionesSelectCorte = computed(() =>
     opcionesCorte.value.map((o) => ({
         value: o.valor,
@@ -161,9 +221,11 @@ const opcionesSelectCorte = computed(() =>
     })),
 );
 
+/** Estado visual del paso 2 (completo cuando ya hay archivos). */
 const estadoPasoArchivos = computed(() =>
     hayArchivos.value ? 'completo' : 'activo',
 );
+/** Estado visual del paso 3: completo con resultado, activo con archivos, pendiente sin ellos. */
 const estadoPasoCalcular = computed(() => {
     if (resultado.value) {
         return 'completo';
@@ -172,8 +234,11 @@ const estadoPasoCalcular = computed(() => {
     return hayArchivos.value ? 'activo' : 'pendiente';
 });
 
-// Al cambiar de modalidad o de archivos se conserva lo cargado y se elige el corte
-// listo más reciente (o el más reciente si ninguno está listo).
+/**
+ * Al cambiar de modalidad o de archivos se conserva lo cargado y se elige el corte
+ * listo más reciente (o el más reciente si ninguno está listo). Solo cambia la
+ * selección si la actual ya no existe, o si no está lista habiendo otra lista.
+ */
 watch(
     opcionesCorte,
     (ops) => {
@@ -186,8 +251,15 @@ watch(
     { immediate: true },
 );
 
+/** Cada cambio de filtro (sucursal, oficina, promotor) recarga la vista filtrada. */
 watch([sucursal, oficina, promotor], () => void cargarVista());
 
+/**
+ * Sube los archivos elegidos, UNO por petición (progreso real y sin chocar con
+ * el límite de tamaño del servidor). Descarta los que no son .xlsx/.xlsm,
+ * invalida el resultado anterior, conserva el token devuelto y acumula los
+ * rechazos. Si el servidor responde que la sesión expiró, descarta token y resumen.
+ */
 async function subir(archivos: File[]) {
     const excel = archivos.filter((f) => /\.xls[xm]$/i.test(f.name));
     const ignorados: Rechazado[] = archivos
@@ -202,57 +274,63 @@ async function subir(archivos: File[]) {
 
     try {
         // Un archivo por petición: progreso real y sin chocar con el límite de tamaño del servidor.
+        // Cada archivo tiene su propio try/catch: si uno falla (red, respuesta no JSON),
+        // se registra como rechazado y se sigue con los demás en lugar de cortar el lote.
         for (const [i, archivo] of excel.entries()) {
             progreso.value = {
                 actual: i + 1,
                 total: excel.length,
                 nombre: archivo.name,
             };
-            const fd = new FormData();
-            fd.append('archivos[]', archivo);
 
-            if (token.value) {
-                fd.append('token', token.value);
-            }
+            try {
+                const fd = new FormData();
+                fd.append('archivos[]', archivo);
 
-            const res = await fetch(`${BASE}/archivos`, {
-                method: 'POST',
-                headers: xsrfHeaders(),
-                body: fd,
-            });
-
-            if (!res.ok) {
-                const msg = await mensajeError(res);
-
-                if (res.status === 422 && msg.includes('expiró')) {
-                    token.value = null;
-                    resumen.value = null;
+                if (token.value) {
+                    fd.append('token', token.value);
                 }
 
-                rechazados.value.push({ nombre: archivo.name, error: msg });
-                continue;
-            }
+                const res = await fetch(`${BASE}/archivos`, {
+                    method: 'POST',
+                    headers: xsrfHeaders(),
+                    body: fd,
+                });
 
-            const body = (await res.json()) as {
-                token: string;
-                rechazados: Rechazado[];
-                resumen: Resumen;
-            };
-            token.value = body.token;
-            resumen.value = body.resumen;
-            rechazados.value.push(...body.rechazados);
+                if (!res.ok) {
+                    const msg = await mensajeError(res);
+
+                    if (res.status === 422 && msg.includes('expiró')) {
+                        token.value = null;
+                        resumen.value = null;
+                    }
+
+                    rechazados.value.push({ nombre: archivo.name, error: msg });
+                    continue;
+                }
+
+                const body = (await res.json()) as {
+                    token: string;
+                    rechazados: Rechazado[];
+                    resumen: Resumen;
+                };
+                token.value = body.token;
+                resumen.value = body.resumen;
+                rechazados.value.push(...body.rechazados);
+            } catch {
+                rechazados.value.push({
+                    nombre: archivo.name,
+                    error: 'Se perdió la conexión con el servidor mientras se subía este archivo.',
+                });
+            }
         }
-    } catch {
-        rechazados.value.push({
-            nombre: '—',
-            error: 'Se perdió la conexión con el servidor mientras se subían los archivos.',
-        });
     } finally {
         subiendo.value = false;
         progreso.value = null;
     }
 }
 
+/** Quita un archivo del espacio efímero, actualiza el resumen e invalida el resultado. */
 async function quitar(id: string) {
     if (!token.value) {
         return;
@@ -277,6 +355,10 @@ async function quitar(id: string) {
     resultado.value = null;
 }
 
+/**
+ * Borra en el servidor los archivos y el resultado (POST /limpiar) y reinicia
+ * el estado local. Por defecto pide confirmación; los errores de red se ignoran.
+ */
 async function limpiar(confirmar = true) {
     if (confirmar) {
         const r = await Swal.fire({
@@ -319,6 +401,7 @@ function esResultadoValido(r: unknown): r is Resultado {
     );
 }
 
+/** El usuario pidió reducir animaciones (prefers-reduced-motion): el desplazamiento será instantáneo. */
 function prefiereMenosMovimiento(): boolean {
     return (
         typeof window !== 'undefined' &&
@@ -342,6 +425,12 @@ async function mostrarResultado() {
     el.focus({ preventScroll: true });
 }
 
+/**
+ * Calcula la efectividad del corte elegido (POST /calcular). Valida que la
+ * respuesta esté completa antes de anunciar éxito; al terminar limpia filtros,
+ * mide la duración, cierra el panel de control, reinicia la animación,
+ * prepara el anuncio accesible y lleva la vista al resultado.
+ */
 async function calcular() {
     if (!token.value || !corte.value) {
         return;
@@ -407,9 +496,13 @@ async function calcular() {
     }
 }
 
-// Cada cambio de filtro pide su vista; solo se aplica la respuesta más reciente.
+/** Secuencia de peticiones de vista: cada cambio de filtro pide su vista y solo se aplica la respuesta más reciente. */
 let vistaSeq = 0;
 
+/**
+ * Obtiene las filas filtradas (GET /vista). Sin filtros usa directamente las
+ * filas del resultado sin ir al servidor. Descarta respuestas obsoletas.
+ */
 async function cargarVista() {
     if (!token.value || !resultado.value) {
         return;
@@ -466,6 +559,7 @@ async function cargarVista() {
     }
 }
 
+/** Abre el panel "Control y trazabilidad" y desplaza la vista hasta él. */
 async function verControl() {
     controlAbierto.value = true;
     await nextTick();
@@ -475,6 +569,11 @@ async function verControl() {
     });
 }
 
+/**
+ * Descarga el resultado (con los filtros vigentes) en PDF, PNG o Excel: pide
+ * el archivo por fetch, toma el nombre de Content-Disposition y lo descarga
+ * con un enlace temporal. Muestra el overlay de descarga mientras tanto.
+ */
 async function exportar(formato: 'pdf' | 'png' | 'xlsx') {
     if (!token.value) {
         return;
@@ -511,13 +610,20 @@ async function exportar(formato: 'pdf' | 'png' | 'xlsx') {
         a.download = nombre;
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch {
+        // Fallo de red o al leer el archivo: antes se tragaba en silencio.
+        void Swal.fire({
+            icon: 'error',
+            title: 'No se pudo generar el archivo',
+            text: 'Se perdió la conexión con el servidor durante la descarga. Intenta de nuevo.',
+        });
     } finally {
         hideDownloadLoading();
         exportando.value = null;
     }
 }
 
-// Abandono de la página: se borran los temporales del servidor (el TTL cubre cierres bruscos).
+/** Abandono de la página: borra los temporales del servidor con keepalive (el TTL cubre cierres bruscos). */
 function alSalir() {
     if (token.value) {
         void fetch(`${BASE}/${token.value}/limpiar`, {
@@ -528,6 +634,7 @@ function alSalir() {
     }
 }
 
+// Limpia temporales al cerrar/recargar la pestaña (pagehide) y al salir de la pantalla (desmontaje).
 onMounted(() => window.addEventListener('pagehide', alSalir));
 onBeforeUnmount(() => {
     window.removeEventListener('pagehide', alSalir);
@@ -539,21 +646,12 @@ onBeforeUnmount(() => {
     <Head title="Efectividad de Cobranza" />
 
     <div class="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6">
-        <header class="space-y-1">
-            <p
-                class="text-xs font-semibold tracking-widest text-primary uppercase"
-            >
-                Calculadora
-            </p>
-            <h1 class="text-2xl font-semibold tracking-tight md:text-3xl">
-                Efectividad de Cobranza
-            </h1>
-            <p class="max-w-3xl text-sm text-muted-foreground">
-                Calcula la efectividad diaria, semanal o mensual con tus
-                archivos de cartera e ingresos de Lendus. Los archivos no se
-                guardan: se usan para este cálculo y se eliminan.
-            </p>
-        </header>
+        <!-- Encabezado de la calculadora -->
+        <AppPageHeader
+            kicker="Calculadora"
+            title="Efectividad de Cobranza"
+            subtitle="Calcula la efectividad diaria, semanal o mensual con tus archivos de cartera e ingresos de Lendus. Los archivos no se guardan: se usan para este cálculo y se eliminan."
+        />
 
         <!-- Paso 1. Modalidad -->
         <PasoCalculadora
@@ -684,6 +782,7 @@ onBeforeUnmount(() => {
             </div>
         </PasoCalculadora>
 
+        <!-- Anuncio para lectores de pantalla -->
         <p class="sr-only" role="status" aria-live="polite">{{ anuncio }}</p>
 
         <!-- Espera del primer cálculo -->
@@ -728,6 +827,7 @@ onBeforeUnmount(() => {
                 />
             </Transition>
 
+            <!-- Control y trazabilidad del cálculo -->
             <div
                 v-if="resultado.auditoria"
                 ref="seccionControl"
@@ -741,6 +841,7 @@ onBeforeUnmount(() => {
                 />
             </div>
 
+            <!-- Filtros del resultado y botones de exportación -->
             <FiltrosResultado
                 v-model:sucursal="sucursal"
                 v-model:oficina="oficina"
@@ -790,6 +891,7 @@ onBeforeUnmount(() => {
                 </template>
             </FiltrosResultado>
 
+            <!-- Tabla de efectividad -->
             <ResultadoEfectividad
                 :resultado="resultado"
                 :filas="filas"

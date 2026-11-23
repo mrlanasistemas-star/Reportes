@@ -1,4 +1,22 @@
 <script setup lang="ts">
+/**
+ * CloseRoute — «Ruta de cierre» del periodo: los cinco pasos para cerrar el
+ * Estado de Resultados, con su avance.
+ *
+ * La usa la página EstadoResultados/Index (los pasos los arma el composable
+ * useCloseRoute). Cada paso muestra su número o palomita, su detalle, una
+ * barra de progreso si está pendiente y, en el paso actual, la acción
+ * sugerida. Si no llegó nada del banco, «revisar» y «validar» se muestran en
+ * gris («Sin datos todavía») aunque vengan como listos.
+ *
+ * Props:
+ * - steps: pasos de la ruta de cierre.
+ * - doneCount: pasos listos según el composable (la vista recalcula los suyos).
+ * - noData: no llegó nada del banco.
+ *
+ * Emits:
+ * - go(step): el usuario eligió un paso (ir a su pestaña/acción).
+ */
 import { ArrowRight, Check, Minus } from 'lucide-vue-next';
 import { computed } from 'vue';
 import type { CloseStep } from '@/composables/estado-resultados/useCloseRoute';
@@ -13,6 +31,7 @@ defineEmits<{ go: [step: CloseStep] }>();
 
 /** Pasos que «pasan» sólo porque no hay datos: se muestran en gris, sin palomita. */
 const EMPTY_OK = ['revisar', 'validar'];
+/** Pasos para la vista: marca los «vacíos» y no los cuenta como listos. */
 const view = computed(() =>
     props.steps.map((s) => {
         const empty = !!props.noData && s.done && EMPTY_OK.includes(s.key);
@@ -25,6 +44,7 @@ const view = computed(() =>
         };
     }),
 );
+/** Pasos listos que se muestran (sin contar los que pasan sólo por falta de datos). */
 const shownDone = computed(() => view.value.filter((s) => s.done).length);
 </script>
 

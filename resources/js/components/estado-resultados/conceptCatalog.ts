@@ -1,8 +1,15 @@
 /** Catálogo de conceptos del Estado de Resultados (contrato del backend ConceptCatalogService). */
 
+/** Cómo se compara el texto de la regla: contiene, empieza con o exacto. */
 export type MatchMode = 'contiene' | 'empieza' | 'exacto';
+/** A qué movimientos aplica la regla: cualquiera, sólo cargos o sólo abonos. */
 export type RuleDirection = 'cualquiera' | 'cargo' | 'abono';
 
+/**
+ * Regla guardada del catálogo de conceptos: texto a buscar, campos donde
+ * buscarlo, cuenta y dirección a las que aplica, tratamiento que asigna,
+ * prioridad, si está activa y su bitácora (quién y cuándo).
+ */
 export interface ConceptRule {
     id: number;
     name: string;
@@ -28,11 +35,13 @@ export interface ConceptRule {
     updated_at: string | null;
 }
 
+/** Opción de un selector (clave y texto visible). */
 export interface Option {
     key: string;
     label: string;
 }
 
+/** Opciones del formulario de reglas que manda el backend (modos, campos, direcciones, cuentas y largo mínimo del texto). */
 export interface CatalogOptions {
     modes: Option[];
     fields: Option[];
@@ -56,6 +65,11 @@ export interface RuleDraft {
     notes: string;
 }
 
+/**
+ * Movimiento de la vista previa de una regla: datos del movimiento, su
+ * tratamiento actual, si la regla le aplicaría y, si no, por qué está
+ * bloqueado; `redacted` indica datos ocultos por permisos.
+ */
 export interface PreviewItem {
     fingerprint: string;
     date: string | null;
@@ -71,6 +85,7 @@ export interface PreviewItem {
     redacted: boolean;
 }
 
+/** Resultado de la vista previa: coincidencias, cuántas aplican o están bloqueadas, importe y muestra (posiblemente truncada). */
 export interface PreviewResult {
     total: number;
     applies: number;
@@ -80,8 +95,13 @@ export interface PreviewResult {
     truncated: boolean;
 }
 
+/** Campos del movimiento donde se busca el texto por defecto: concepto y observaciones. */
 export const DEFAULT_FIELDS = ['concept', 'observations'];
 
+/**
+ * Borrador vacío de regla con los valores por defecto.
+ * @param over valores que reemplazan a los de por defecto.
+ */
 export function emptyDraft(over: Partial<RuleDraft> = {}): RuleDraft {
     return {
         name: '',
@@ -98,6 +118,10 @@ export function emptyDraft(over: Partial<RuleDraft> = {}): RuleDraft {
     };
 }
 
+/**
+ * Convierte una regla guardada en borrador editable (null pasa a cadena vacía).
+ * @param r regla del catálogo.
+ */
 export function draftFromRule(r: ConceptRule): RuleDraft {
     return {
         name: r.name,
@@ -113,7 +137,11 @@ export function draftFromRule(r: ConceptRule): RuleDraft {
     };
 }
 
-/** Misma normalización que el backend: mayúsculas, sin acentos, espacios simples. */
+/**
+ * Misma normalización que el backend: mayúsculas, sin acentos, espacios simples.
+ *
+ * @param v texto a normalizar.
+ */
 export function normalizeText(v: string): string {
     return v
         .normalize('NFD')
@@ -123,7 +151,14 @@ export function normalizeText(v: string): string {
         .replace(/\s+/g, ' ');
 }
 
-/** Alta precargada desde el detalle de un movimiento («Crear regla de catálogo con este texto»). */
+/**
+ * Alta precargada desde el detalle de un movimiento («Crear regla de catálogo con este texto»).
+ * Toma el concepto (u observaciones) como texto, la dirección según si es
+ * cargo o abono y, como tratamiento, el actual o el sugerido si es asignable
+ * y no es «pendiente».
+ * @param m movimiento de origen.
+ * @param assignable claves de tratamientos asignables.
+ */
 export function draftFromMovement(
     m: {
         concept: string | null;

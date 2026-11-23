@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Opción seleccionable del select con indicador de marcado. */
 import type { SelectItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Pie de la barra lateral (p. ej. menú de usuario). */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

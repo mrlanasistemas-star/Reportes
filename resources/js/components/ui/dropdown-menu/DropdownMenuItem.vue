@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Opción individual del menú desplegable; admite variante destructive e indentado (inset). */
 import type { DropdownMenuItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Enlace navegable dentro de las migas de pan (shadcn-vue); admite as/as-child para usar <Link> de Inertia. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { Primitive } from "reka-ui"

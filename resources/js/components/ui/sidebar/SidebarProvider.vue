@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Proveedor de contexto de la barra lateral: guarda el estado abierto/colapsado (cookie), modo móvil y atajo de teclado. */
 import type { HTMLAttributes, Ref } from "vue"
 import { defaultDocument, useEventListener, useMediaQuery, useVModel } from "@vueuse/core"
 import { TooltipProvider } from "reka-ui"
@@ -30,7 +31,7 @@ const open = useVModel(props, "open", emits, {
 function setOpen(value: boolean) {
   open.value = value // emits('update:open', value)
 
-  // This sets the cookie to keep the sidebar state.
+  // Guarda una cookie para conservar el estado de la barra lateral.
   document.cookie = `${SIDEBAR_COOKIE_NAME}=${open.value}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
 }
 
@@ -38,7 +39,7 @@ function setOpenMobile(value: boolean) {
   openMobile.value = value
 }
 
-// Helper to toggle the sidebar.
+// Utilidad para alternar la barra lateral (escritorio o móvil).
 function toggleSidebar() {
   return isMobile.value ? setOpenMobile(!openMobile.value) : setOpen(!open.value)
 }
@@ -50,8 +51,8 @@ useEventListener("keydown", (event: KeyboardEvent) => {
   }
 })
 
-// We add a state so that we can do data-state="expanded" or "collapsed".
-// This makes it easier to style the sidebar with Tailwind classes.
+// Se agrega un estado para poder usar data-state="expanded" o "collapsed".
+// Esto facilita estilizar la barra lateral con clases de Tailwind.
 const state = computed(() => open.value ? "expanded" : "collapsed")
 
 provideSidebarContext({

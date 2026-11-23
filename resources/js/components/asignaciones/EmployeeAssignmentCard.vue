@@ -1,18 +1,38 @@
 <script setup lang="ts">
-import { ArrowRightLeft, Briefcase, Building2, ClipboardList, PenSquare } from 'lucide-vue-next'
-import Swal from 'sweetalert2'
-import { computed } from 'vue'
-import type { Assignment } from '@/types/asignaciones'
+/**
+ * EmployeeAssignmentCard — tarjeta de un colaborador con su sucursal asignada,
+ * puesto, tipo y confianza del match, explicación y notas.
+ *
+ * Se usa en pages/AsignacionSucursal/Index (listado de asignaciones).
+ *
+ * Props:
+ * - item: asignación del colaborador (estado del match, sucursal, puesto, alias).
+ *
+ * Emits:
+ * - assign: se pidió abrir el modal para asignar sucursal.
+ * - update-position: nuevo puesto capturado (texto ya recortado).
+ */
+import {
+    ArrowRightLeft,
+    Briefcase,
+    Building2,
+    ClipboardList,
+    PenSquare,
+} from 'lucide-vue-next';
+import { computed } from 'vue';
+import { appSwal as Swal } from '@/components/feedback/ConfirmDialog';
+import type { Assignment } from '@/types/asignaciones';
 
 const props = defineProps<{
-    item: Assignment
-}>()
+    item: Assignment;
+}>();
 
-const emit = defineEmits<{ assign: []; 'update-position': [value: string] }>()
+const emit = defineEmits<{ assign: []; 'update-position': [value: string] }>();
 
 // 7 del cierre OKR (04-oct-2026): puesto/cargo no existe en ninguna fuente
 // real del proyecto — se captura aquí, mínimo y persistente, y desde ahí la
 // Carta Compromiso lo precarga sin volver a pedirlo.
+/** Pide el puesto en un diálogo SweetAlert2 y, si se confirma, emite `update-position`. */
 async function editPosition() {
     const { value, isConfirmed } = await Swal.fire({
         title: 'Puesto del colaborador',
@@ -23,24 +43,29 @@ async function editPosition() {
         showCancelButton: true,
         confirmButtonText: 'Guardar',
         cancelButtonText: 'Cancelar',
-    })
+    });
 
     if (isConfirmed) {
-        emit('update-position', (value ?? '').trim())
+        emit('update-position', (value ?? '').trim());
     }
 }
 
+/** Iniciales del nombre (máx. 2 letras) para el avatar; '?' si no hay nombre. */
 const initials = computed(() => {
-    const parts = props.item.employee_name.trim().split(/\s+/).filter(Boolean)
+    const parts = props.item.employee_name.trim().split(/\s+/).filter(Boolean);
 
     if (!parts.length) {
-return '?'
-}
+        return '?';
+    }
 
-    return (parts[0][0] + (parts[1]?.[0] ?? '')).toUpperCase()
-})
+    return (parts[0][0] + (parts[1]?.[0] ?? '')).toUpperCase();
+});
 
-const statusTone: Record<Assignment['ui_status'], { badge: string; bar: string; avatar: string }> = {
+/** Colores de insignia, barra lateral y avatar por estado del match. */
+const statusTone: Record<
+    Assignment['ui_status'],
+    { badge: string; bar: string; avatar: string }
+> = {
     matched: {
         badge: 'border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300',
         bar: 'bg-emerald-400',
@@ -61,23 +86,31 @@ const statusTone: Record<Assignment['ui_status'], { badge: string; bar: string; 
         bar: 'bg-amber-400',
         avatar: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
     },
-}
+};
 
+/** Texto visible de cada estado del match. */
 const statusLabel: Record<Assignment['ui_status'], string> = {
     matched: 'Match correcto',
     manual: 'Manual',
     unmatched: 'Sin match',
     pending: 'Pendiente',
-}
+};
 
-const tone = computed(() => statusTone[props.item.ui_status] ?? statusTone.pending)
+/** Colores del estado actual (pendiente si el estado es desconocido). */
+const tone = computed(
+    () => statusTone[props.item.ui_status] ?? statusTone.pending,
+);
 
+/**
+ * Formatea la confianza del match como porcentaje entero.
+ * @param value fracción entre 0 y 1; '—' si no hay valor
+ */
 function formatConfidence(value?: number | null) {
     if (value === null || value === undefined) {
-return '—'
-}
+        return '—';
+    }
 
-    return `${Math.round(value * 100)}%`
+    return `${Math.round(value * 100)}%`;
 }
 </script>
 
@@ -85,12 +118,20 @@ return '—'
     <article
         class="group relative overflow-hidden rounded-[28px] border border-border/70 bg-background px-4 py-4 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-lg"
     >
-        <span class="absolute inset-y-0 left-0 w-1 rounded-r-full opacity-0 transition-opacity duration-200 group-hover:opacity-100" :class="tone.bar" />
+        <span
+            class="absolute inset-y-0 left-0 w-1 rounded-r-full opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+            :class="tone.bar"
+        />
 
-        <!-- Header row -->
+        <!-- Encabezado: avatar, nombre, alias y estado del match -->
         <div class="flex items-start justify-between gap-3">
             <div class="flex min-w-0 items-center gap-3">
-                <div :class="['flex size-10 shrink-0 items-center justify-center rounded-2xl text-sm font-black', tone.avatar]">
+                <div
+                    :class="[
+                        'flex size-10 shrink-0 items-center justify-center rounded-2xl text-sm font-black',
+                        tone.avatar,
+                    ]"
+                >
                     {{ initials }}
                 </div>
                 <div class="min-w-0">
@@ -102,16 +143,25 @@ return '—'
                         class="mt-0.5 truncate text-xs text-amber-600 dark:text-amber-400"
                         :title="`Variantes fusionadas: ${item.aliases.map((a) => a.employee_name).join(', ')}`"
                     >
-                        También: {{ item.aliases.map((a) => a.employee_name).join(' · ') }}
+                        También:
+                        {{
+                            item.aliases.map((a) => a.employee_name).join(' · ')
+                        }}
                     </p>
-                    <p v-else class="mt-0.5 truncate text-xs text-muted-foreground">
+                    <p
+                        v-else
+                        class="mt-0.5 truncate text-xs text-muted-foreground"
+                    >
                         {{ item.normalized_name || 'Sin nombre normalizado' }}
                     </p>
                 </div>
             </div>
 
             <div class="flex shrink-0 flex-col items-end gap-1.5">
-                <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold" :class="tone.badge">
+                <span
+                    class="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold"
+                    :class="tone.badge"
+                >
                     {{ statusLabel[item.ui_status] }}
                 </span>
                 <span
@@ -123,16 +173,25 @@ return '—'
             </div>
         </div>
 
-        <!-- Details -->
+        <!-- Detalle: sucursal, puesto, match, explicación y notas -->
         <div class="mt-4 space-y-2.5">
             <div class="flex items-center gap-2 text-sm">
                 <Building2 class="size-4 shrink-0 text-muted-foreground" />
-                <span class="font-medium">{{ item.branch_name || 'Sin sucursal asignada' }}</span>
+                <span class="font-medium">{{
+                    item.branch_name || 'Sin sucursal asignada'
+                }}</span>
             </div>
 
             <div class="flex items-center gap-2 text-sm">
                 <Briefcase class="size-4 shrink-0 text-muted-foreground" />
-                <span :class="item.position ? 'font-medium' : 'text-muted-foreground italic'">{{ item.position || 'Sin puesto registrado' }}</span>
+                <span
+                    :class="
+                        item.position
+                            ? 'font-medium'
+                            : 'text-muted-foreground italic'
+                    "
+                    >{{ item.position || 'Sin puesto registrado' }}</span
+                >
                 <button
                     type="button"
                     class="ml-auto text-xs font-semibold text-sky-600 hover:underline dark:text-sky-400"
@@ -146,7 +205,9 @@ return '—'
                 <ArrowRightLeft class="size-4 shrink-0 text-muted-foreground" />
                 <span>{{ item.match_label || 'Pendiente' }}</span>
                 <span class="text-muted-foreground">·</span>
-                <span class="text-muted-foreground">{{ formatConfidence(item.confidence) }}</span>
+                <span class="text-muted-foreground">{{
+                    formatConfidence(item.confidence)
+                }}</span>
             </div>
 
             <div class="flex items-center gap-2 text-sm text-muted-foreground">
@@ -162,9 +223,11 @@ return '—'
             </div>
         </div>
 
-        <!-- Footer -->
+        <!-- Pie: última actualización y botón para asignar sucursal -->
         <div class="mt-4 flex items-center justify-between border-t pt-4">
-            <p class="text-xs text-muted-foreground">{{ item.updated_at ?? '—' }}</p>
+            <p class="text-xs text-muted-foreground">
+                {{ item.updated_at ?? '—' }}
+            </p>
             <button
                 type="button"
                 class="inline-flex h-9 items-center gap-1.5 rounded-2xl bg-sky-500 px-4 text-xs font-bold text-white transition duration-200 hover:-translate-y-0.5 hover:bg-sky-400 hover:shadow-md active:translate-y-0"

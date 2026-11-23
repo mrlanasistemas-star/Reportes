@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * AppHeader — barra de navegación superior para el layout de tipo "header".
+ *
+ * La usa AppHeaderLayout (alternativa al layout con menú lateral). Incluye:
+ * menú móvil en un Sheet lateral, logo, menú horizontal de escritorio, avatar
+ * con el menú de usuario (UserMenuContent) y, si hay más de una miga, una
+ * segunda barra con Breadcrumbs.
+ *
+ * Props:
+ * - breadcrumbs: migas de pan de la página actual (vacío por defecto).
+ */
 import { Link, usePage } from '@inertiajs/vue3';
 import { LayoutGrid, Menu } from 'lucide-vue-next';
 import { computed } from 'vue';
@@ -40,12 +51,15 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const page = usePage();
+/** Datos de autenticación compartidos por Inertia (usuario y permisos). */
 const auth = computed(() => page.props.auth);
 const { isCurrentUrl, whenCurrentUrl } = useCurrentUrl();
 
+/** Clases aplicadas al enlace de la página actual. */
 const activeItemStyles =
     'text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100';
 
+/** Enlaces del menú superior (este layout solo expone el Dashboard). */
 const mainNavItems: NavItem[] = [
     {
         title: 'Dashboard',
@@ -59,7 +73,7 @@ const mainNavItems: NavItem[] = [
     <div>
         <div class="border-b border-sidebar-border/80">
             <div class="mx-auto flex h-16 items-center px-4 md:max-w-7xl">
-                <!-- Mobile Menu -->
+                <!-- Menú móvil (Sheet lateral), visible por debajo de lg -->
                 <div class="lg:hidden">
                     <Sheet>
                         <SheetTrigger :as-child="true">
@@ -103,7 +117,8 @@ const mainNavItems: NavItem[] = [
                                         />
                                         {{ item.title }}
                                     </Link>
-                                </nav>                            </div>
+                                </nav>
+                            </div>
                         </SheetContent>
                     </Sheet>
                 </div>
@@ -112,7 +127,7 @@ const mainNavItems: NavItem[] = [
                     <AppLogo />
                 </Link>
 
-                <!-- Desktop Menu -->
+                <!-- Menú de escritorio (horizontal), visible desde lg -->
                 <div class="hidden h-full lg:flex lg:flex-1">
                     <NavigationMenu class="ml-10 flex h-full items-stretch">
                         <NavigationMenuList
@@ -150,6 +165,7 @@ const mainNavItems: NavItem[] = [
                     </NavigationMenu>
                 </div>
 
+                <!-- Avatar con el menú de usuario -->
                 <div class="ml-auto flex items-center">
                     <DropdownMenu>
                         <DropdownMenuTrigger :as-child="true">
@@ -182,6 +198,7 @@ const mainNavItems: NavItem[] = [
             </div>
         </div>
 
+        <!-- Segunda barra con migas de pan (solo si hay más de una) -->
         <div
             v-if="props.breadcrumbs.length > 1"
             class="flex w-full border-b border-sidebar-border/70"

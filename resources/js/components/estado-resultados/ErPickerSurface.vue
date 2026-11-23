@@ -1,4 +1,26 @@
 <script setup lang="ts">
+/**
+ * ErPickerSurface — contenedor adaptable para los selectores del reporte.
+ *
+ * Lo usan ErPeriodPicker y ErScopePicker. En pantallas de 640 px o más usa un
+ * popover; en teléfonos, una hoja inferior (diálogo).
+ *
+ * Props:
+ * - title: título accesible de la superficie.
+ * - description: descripción accesible (en teléfono; por defecto el título).
+ * - align: alineación del popover ('start' por defecto, 'center' o 'end').
+ * - contentClass: clases extra para el contenido del popover.
+ *
+ * v-model:
+ * - open: si la superficie está abierta.
+ *
+ * Emits:
+ * - openFocus: al abrir (evento de autoenfoque); el contenido puede prevenirlo y enfocar otra cosa.
+ *
+ * Slots:
+ * - trigger: el disparador; recibe `toggle` y `open`.
+ * - default: el contenido del selector.
+ */
 import { useMediaQuery } from '@vueuse/core';
 import {
     DialogContent,
@@ -35,14 +57,24 @@ withDefaults(
 
 const open = defineModel<boolean>('open', { default: false });
 const emit = defineEmits<{ openFocus: [e: Event] }>();
+/** Pantalla mediana o grande (popover en lugar de hoja inferior). */
 const desktop = useMediaQuery('(min-width: 640px)');
 
+/** Elemento que abrió la superficie; recibe el foco al cerrar. */
 let returnTo: HTMLElement | null = null;
 
+/**
+ * Guarda el elemento disparador para devolverle el foco al cerrar.
+ * @param e evento del disparador.
+ */
 function rememberTrigger(e: Event): void {
     returnTo = (e.currentTarget as HTMLElement | null) ?? null;
 }
 
+/**
+ * Abre o cierra la hoja en teléfono (en escritorio lo hace el popover).
+ * @param e evento del disparador.
+ */
 function toggle(e: Event): void {
     rememberTrigger(e);
 
@@ -51,6 +83,10 @@ function toggle(e: Event): void {
     }
 }
 
+/**
+ * Al cerrar, devuelve el foco al disparador guardado en lugar del comportamiento por defecto.
+ * @param e evento de autoenfoque al cerrar.
+ */
 function onCloseFocus(e: Event): void {
     if (returnTo) {
         e.preventDefault();
@@ -64,6 +100,7 @@ function onCloseFocus(e: Event): void {
         <PopoverTrigger as-child>
             <slot name="trigger" :toggle="toggle" :open="open" />
         </PopoverTrigger>
+        <!-- Escritorio: popover anclado al disparador -->
         <PopoverPortal>
             <PopoverContent
                 :align="align"
@@ -86,6 +123,7 @@ function onCloseFocus(e: Event): void {
 
     <template v-else>
         <slot name="trigger" :toggle="toggle" :open="open" />
+        <!-- Teléfono: hoja inferior -->
         <DialogRoot v-model:open="open">
             <DialogPortal>
                 <DialogOverlay

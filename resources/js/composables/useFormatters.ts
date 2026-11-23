@@ -1,43 +1,50 @@
-import { format } from 'date-fns'
-import { es } from 'date-fns/locale'
+import { format } from 'date-fns';
+import { es } from 'date-fns/locale';
 
+/** Formateadores de fecha, moneda y número en es-MX ('—' para valores vacíos). */
 export function useFormatters() {
-  const date = (value?: string | null, pattern = 'dd/MM/yyyy') => {
-    if (!value) {
-return '—'
-}
+    /**
+     * Formatea una fecha 'YYYY-MM-DD' (sin zona horaria, para no correr un día).
+     * Si no se puede interpretar, devuelve el texto original.
+     */
+    const date = (value?: string | null, pattern = 'dd/MM/yyyy') => {
+        if (!value) {
+            return '—';
+        }
 
-    const [year, month, day] = value.split('-').map(Number)
+        const [year, month, day] = value.split('-').map(Number);
 
-    if (!year || !month || !day) {
-return value
-}
+        if (!year || !month || !day) {
+            return value;
+        }
 
-    return format(new Date(year, month - 1, day), pattern, { locale: es })
-  }
+        return format(new Date(year, month - 1, day), pattern, { locale: es });
+    };
 
-  const money = (value?: number | string | null, currency = 'MXN') => {
-    if (value === null || value === undefined || value === '') {
-return '—'
-}
+    /** Formatea como moneda (MXN por defecto). */
+    const money = (value?: number | string | null, currency = 'MXN') => {
+        if (value === null || value === undefined || value === '') {
+            return '—';
+        }
 
-    return new Intl.NumberFormat('es-MX', {
-      style: 'currency',
-      currency,
-    }).format(Number(value))
-  }
+        return new Intl.NumberFormat('es-MX', {
+            style: 'currency',
+            currency,
+        }).format(Number(value));
+    };
 
-  const number = (value?: number | string | null) => {
-    if (value === null || value === undefined || value === '') {
-return '—'
-}
+    /** Formatea un número con separadores de miles es-MX. */
+    const number = (value?: number | string | null) => {
+        if (value === null || value === undefined || value === '') {
+            return '—';
+        }
 
-    return new Intl.NumberFormat('es-MX').format(Number(value))
-  }
+        return new Intl.NumberFormat('es-MX').format(Number(value));
+    };
 
-  return {
-    date,
-    money,
-    number,
-  }
+    return {
+        date,
+        money,
+        number,
+    };
 }

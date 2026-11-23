@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * TextLink — enlace de texto subrayado basado en <Link> de Inertia.
+ *
+ * Se usa en las páginas de autenticación (Login, ForgotPassword, VerifyEmail).
+ *
+ * Props:
+ * - href: destino del enlace.
+ * - tabindex: orden de tabulación opcional.
+ * - method: método HTTP de Inertia (p. ej. 'post' para cerrar sesión).
+ * - as: etiqueta a renderizar (p. ej. 'button').
+ */
 import type { LinkComponentBaseProps, Method } from '@inertiajs/core';
 import { Link } from '@inertiajs/vue3';
 

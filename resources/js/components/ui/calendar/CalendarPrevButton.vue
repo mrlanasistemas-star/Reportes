@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Botón para retroceder al mes anterior en el calendario. */
 import type { CalendarPrevProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

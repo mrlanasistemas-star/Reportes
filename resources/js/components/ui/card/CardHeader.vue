@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Encabezado de la tarjeta que agrupa título, descripción y acción. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

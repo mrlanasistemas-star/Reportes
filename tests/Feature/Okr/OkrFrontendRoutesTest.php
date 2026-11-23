@@ -21,12 +21,12 @@ function okrFrontendFiles(): array
 {
     $base = resource_path('js');
     $files = array_merge(
-        File::allFiles($base . '/pages/Okr'),
-        File::allFiles($base . '/components/okr'),
+        File::allFiles($base.'/pages/Okr'),
+        File::allFiles($base.'/components/okr'),
     );
     foreach (['lib/okrHttp.ts', 'lib/okrFormat.ts', 'composables/useOkrBaselinePreview.ts'] as $extra) {
-        if (is_file($base . '/' . $extra)) {
-            $files[] = new SplFileInfo($base . '/' . $extra);
+        if (is_file($base.'/'.$extra)) {
+            $files[] = new SplFileInfo($base.'/'.$extra);
         }
     }
 
@@ -40,10 +40,10 @@ function okrFrontendCalls(): array
     foreach (okrFrontendFiles() as $file) {
         $lines = preg_split('/\R/', File::get($file->getPathname()));
         foreach ($lines as $i => $line) {
-            if (!preg_match_all('/[`\'"](\/okr(?:[\/?][^`\'"]*)?)[`\'"]/', $line, $m)) {
+            if (! preg_match_all('/[`\'"](\/okr(?:[\/?][^`\'"]*)?)[`\'"]/', $line, $m)) {
                 continue;
             }
-            $context = $line . ' ' . ($lines[$i + 1] ?? '') . ' ' . ($lines[$i + 2] ?? '');
+            $context = $line.' '.($lines[$i + 1] ?? '').' '.($lines[$i + 2] ?? '');
             foreach ($m[1] as $raw) {
                 $method = 'GET';
                 if (preg_match('/(?:router|form|useForm\([^)]*\))\.(post|put|patch|delete)\s*\(/i', $line, $mm)) {
@@ -52,8 +52,11 @@ function okrFrontendCalls(): array
                     $method = strtoupper($mm[1]);
                 } elseif (preg_match('/\.(post|put|patch|delete)\(\s*[`\'"]?$/i', trim(explode($raw, $line)[0] ?? ''), $mm)) {
                     $method = strtoupper($mm[1]);
+                } elseif ($i > 0 && preg_match('/\.(post|put|patch|delete)\(\s*$/i', trim($lines[$i - 1]), $mm)) {
+                    // Llamada partida en varias líneas por Prettier: `router.post(` arriba y la URL abajo.
+                    $method = strtoupper($mm[1]);
                 }
-                $calls[] = ['file' => str_replace(base_path() . DIRECTORY_SEPARATOR, '', $file->getPathname()), 'line' => $i + 1, 'url' => $raw, 'method' => $method];
+                $calls[] = ['file' => str_replace(base_path().DIRECTORY_SEPARATOR, '', $file->getPathname()), 'line' => $i + 1, 'url' => $raw, 'method' => $method];
             }
         }
     }
@@ -75,7 +78,7 @@ function okrRouteMatches(string $normalized, string $method): bool
     $segments = explode('/', $normalized);
     /** @var LaravelRoute $route */
     foreach (Route::getRoutes() as $route) {
-        if (!in_array($method, $route->methods(), true)) {
+        if (! in_array($method, $route->methods(), true)) {
             continue;
         }
         $routeSegments = explode('/', trim($route->uri(), '/'));
@@ -85,7 +88,7 @@ function okrRouteMatches(string $normalized, string $method): bool
         $ok = true;
         foreach ($routeSegments as $k => $seg) {
             $isParam = str_starts_with($seg, '{');
-            if ($segments[$k] === '{p}' ? !$isParam : ($isParam ? false : $seg !== $segments[$k])) {
+            if ($segments[$k] === '{p}' ? ! $isParam : ($isParam ? false : $seg !== $segments[$k])) {
                 // Un literal del frontend nunca debe caer en un {param} (p. ej. '/okr/history'
                 // contra '/okr/{objective}'): eso sería otra ruta distinta a la intención.
                 $ok = false;
@@ -111,7 +114,7 @@ it('every /okr URL used by resources/js exists as a registered route with the sa
     $missing = [];
     foreach (okrFrontendCalls() as $call) {
         $normalized = okrNormalizeUrl($call['url']);
-        if (!okrRouteMatches($normalized, $call['method'])) {
+        if (! okrRouteMatches($normalized, $call['method'])) {
             $missing[] = "{$call['method']} /{$normalized}  ← {$call['file']}:{$call['line']}";
         }
     }
@@ -121,7 +124,7 @@ it('every /okr URL used by resources/js exists as a registered route with the sa
 
 it('the generated Wayfinder actions for OKR point to existing routes', function () {
     $dir = resource_path('js/actions/App/Http/Controllers/Okr');
-    if (!is_dir($dir)) {
+    if (! is_dir($dir)) {
         $this->markTestSkipped('Sin acciones Wayfinder generadas.');
     }
     $missing = [];
@@ -132,7 +135,7 @@ it('the generated Wayfinder actions for OKR point to existing routes', function 
             $method = strtoupper(trim(explode(',', $methods)[0], " \"'"));
             $normalized = trim(preg_replace('/\{[^}]+\}/', '{p}', $uri), '/');
             $checked++;
-            if (!okrRouteMatches($normalized, $method)) {
+            if (! okrRouteMatches($normalized, $method)) {
                 $missing[] = "{$method} {$uri} ← {$file->getFilename()}";
             }
         }

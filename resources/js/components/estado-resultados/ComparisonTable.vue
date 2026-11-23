@@ -1,4 +1,20 @@
 <script setup lang="ts">
+/**
+ * ComparisonTable — tabla comparativa de dos periodos del Estado de
+ * Resultados (actual contra comparación).
+ *
+ * La usa ComparativesPanel (modos anterior, año anterior, personalizado y
+ * acumulado). Muestra el aviso de comparabilidad (qué fuente falta y dónde
+ * cargarla), advertencias, la tabla de conceptos con valor actual, anterior,
+ * variación, variación % y lectura (favorable / desfavorable, «con reservas»)
+ * y el desglose plegable del OPEX por categoría. Un valor null se muestra
+ * como «Sin datos» o «Pendiente», nunca como $0.
+ *
+ * Props:
+ * - pair: comparación de los dos periodos (renglones, comparabilidad, OPEX por categoría).
+ * - currentLabel: etiqueta del periodo actual (p. ej. "Acumulado 2026 · parcial 4 de 12").
+ * - comparisonLabel: etiqueta del periodo de comparación.
+ */
 import {
     AlertTriangle,
     ChevronDown,
@@ -24,6 +40,7 @@ const props = defineProps<{
     comparisonLabel?: string;
 }>();
 
+/** Si el desglose de OPEX por categoría está desplegado. */
 const showCats = ref(false);
 
 /** Respuestas anteriores sin `level`: no comparable ⇒ se trata como «con reservas». */
@@ -32,6 +49,7 @@ const level = computed(
         props.pair.comparability.level ??
         (props.pair.comparability.comparable ? 'comparable' : 'con_reservas'),
 );
+/** Fuentes que faltan para que los periodos sean comparables. */
 const missing = computed(() => props.pair.comparability.missing ?? []);
 /** La cobertura distinta ya se explica con la lista exacta de lo que falta. */
 const otherReasons = computed(() =>
@@ -40,7 +58,14 @@ const otherReasons = computed(() =>
     ),
 );
 
-/** "Sin datos" (no hay periodo) y "Pendiente" (concepto sin información) son distintos de $0. */
+/**
+ * "Sin datos" (no hay periodo) y "Pendiente" (concepto sin información) son distintos de $0.
+ * Un margen sin valor se muestra como "Sin margen".
+ *
+ * @param r renglón de la comparativa.
+ * @param side lado a evaluar ('current' o 'previous').
+ * @returns texto a mostrar en lugar del valor, o null si hay valor.
+ */
 function empty(r: CompRow, side: 'current' | 'previous'): string | null {
     const v = side === 'current' ? r.current : r.previous;
 
@@ -59,15 +84,23 @@ function empty(r: CompRow, side: 'current' | 'previous'): string | null {
         return 'Sin margen';
     }
 
+    // Pendiente / incompleto = concepto sin información; cualquier otro motivo
+    // (sin_datos_*, no_comparable…) = no hay cifra en ese lado.
     return code.startsWith('pendiente') || code === 'incompleto'
         ? 'Pendiente'
-        : 'Pendiente';
+        : 'Sin datos';
 }
 
+/**
+ * Formatea un valor como moneda o porcentaje (vacío si es null).
+ * @param v valor crudo.
+ * @param unit 'MXN' o '%'.
+ */
 function fmt(v: string | null, unit: 'MXN' | '%'): string {
     return v === null ? '' : unit === '%' ? pct(v) : mxn(v);
 }
 
+/** Clases de color de la etiqueta de lectura (favorable, desfavorable, neutral). */
 const ASSESS: Record<string, string> = {
     favorable:
         'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300',
@@ -197,6 +230,7 @@ const ASSESS: Record<string, string> = {
             </li>
         </ul>
 
+        <!-- Tabla de conceptos: actual, comparación, variación y lectura -->
         <div class="overflow-x-auto p-2">
             <table
                 class="w-full min-w-[760px] border-separate border-spacing-0 text-sm"
@@ -321,6 +355,7 @@ const ASSESS: Record<string, string> = {
             </table>
         </div>
 
+        <!-- Desglose plegable del OPEX por categoría -->
         <div v-if="pair.opex_categories.length" class="border-t">
             <button
                 type="button"

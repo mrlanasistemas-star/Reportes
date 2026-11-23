@@ -1,3 +1,5 @@
+/** Tipos de autenticación compartidos por Inertia (page.props.auth). */
+/** Usuario autenticado. */
 export type User = {
     id: number;
     name: string;
@@ -10,6 +12,7 @@ export type User = {
     [key: string]: unknown;
 };
 
+/** Bloque `auth` de las props compartidas (HandleInertiaRequests). */
 export type Auth = {
     user: User;
     /** Módulos que el rol del usuario puede ver (ver ModuleAccessService). */
@@ -18,6 +21,10 @@ export type Auth = {
     dataScope?: DataScope | null;
 };
 
+/**
+ * Alcance de datos del usuario: admin/todo, solo ciertas sucursales o modo
+ * heredado. `label` es el texto para mostrar. Solo UX: el backend decide.
+ */
 export type DataScope = {
     mode: 'admin' | 'all' | 'branches' | 'legacy';
     general: boolean;
@@ -25,6 +32,7 @@ export type DataScope = {
     label: string;
 };
 
+/** Textos de la pantalla de verificación en dos pasos según el modo. */
 export type TwoFactorConfigContent = {
     title: string;
     description: string;

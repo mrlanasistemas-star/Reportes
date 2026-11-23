@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Opción tipo radio dentro de un DropdownMenuRadioGroup. */
 import type { DropdownMenuRadioItemEmits, DropdownMenuRadioItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

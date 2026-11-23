@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Texto secundario/descripción bajo el título de la tarjeta. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

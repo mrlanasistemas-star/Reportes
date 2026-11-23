@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Etiqueta/insignia pequeña (shadcn-vue) para estados o conteos; usa las variantes de badgeVariants. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import type { BadgeVariants } from "."

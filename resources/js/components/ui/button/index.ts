@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Button (shadcn-vue): exporta el componente y buttonVariants (variantes cva de estilo y tamaño). */
 import type { VariantProps } from "class-variance-authority"
 import { cva } from "class-variance-authority"
 

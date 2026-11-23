@@ -1,4 +1,8 @@
 <script setup lang="ts">
+/**
+ * Layout con sidebar lateral, encabezado con migas de pan, contenido de la
+ * página y barra de navegación inferior en móvil. Usado por AppLayout.
+ */
 import { usePage } from '@inertiajs/vue3';
 import AppContent from '@/components/AppContent.vue';
 import AppShell from '@/components/AppShell.vue';
@@ -7,6 +11,7 @@ import AppSidebarHeader from '@/components/AppSidebarHeader.vue';
 import MobileBottomNav from '@/components/MobileBottomNav.vue';
 import type { BreadcrumbItem } from '@/types';
 
+/** Props: migas de pan que recibe AppSidebarHeader. */
 type Props = {
     breadcrumbs?: BreadcrumbItem[];
 };
@@ -26,13 +31,18 @@ const page = usePage();
 
 <template>
     <AppShell variant="sidebar">
+        <!-- Menú lateral -->
         <AppSidebar />
+        <!-- Contenido: encabezado + página (con transición de entrada) -->
         <AppContent
             variant="sidebar"
-            class="min-h-screen overflow-x-hidden overflow-y-auto scrollbar-gutter-stable pb-24 md:pb-0"
+            class="scrollbar-gutter-stable min-h-screen overflow-x-hidden overflow-y-auto pb-24 md:pb-0"
         >
             <AppSidebarHeader :breadcrumbs="breadcrumbs" />
-            <div :key="page.component" class="app-page-enter flex min-w-0 flex-1 flex-col">
+            <div
+                :key="page.component"
+                class="app-page-enter flex min-w-0 flex-1 flex-col"
+            >
                 <slot />
             </div>
         </AppContent>

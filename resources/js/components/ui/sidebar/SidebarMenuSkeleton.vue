@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Marcador de carga (skeleton) para una opción del menú lateral. */
 import type { HTMLAttributes } from "vue"
 import { computed } from "vue"
 import { cn } from "@/lib/utils"

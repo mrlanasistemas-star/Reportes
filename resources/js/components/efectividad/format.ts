@@ -1,5 +1,11 @@
 import type { DisplayState } from './types';
 
+/**
+ * Utilidades de formato y textos del módulo de Efectividad de Cobranza
+ * (estados de ejecución, fechas, duraciones, números y errores HTTP).
+ *
+ * BadgeVariant: variantes del componente Badge usadas por cada estado.
+ */
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'outline';
 
 /** Estados visibles — mismos textos que EfectividadCobranzaRunHealthService::label(). */
@@ -64,6 +70,7 @@ export const STATE_META: Record<
     },
 };
 
+/** Opciones del filtro de estado en el historial de reportes. */
 export const STATUS_FILTER_OPTIONS = [
     { value: '', label: 'Todos los estados' },
     { value: 'queued', label: 'En cola' },
@@ -75,6 +82,7 @@ export const STATUS_FILTER_OPTIONS = [
     { value: 'cancelled', label: 'Cancelado' },
 ];
 
+/** Textos en español para cada tipo de falla reportado por el servidor. */
 export const FAILURE_KIND_LABELS: Record<string, string> = {
     technical: 'Error técnico',
     missing_data: 'Datos faltantes',
@@ -87,30 +95,43 @@ export const FAILURE_KIND_LABELS: Record<string, string> = {
     timeout: 'Tiempo máximo excedido',
 };
 
+/** Estados que indican que la ejecución sigue en curso. */
 export const ACTIVE_STATUSES = ['queued', 'running', 'retrying'];
 
+/**
+ * Indica si un estado corresponde a una ejecución en curso.
+ * @param status estado recibido del servidor
+ */
 export function isActiveStatus(status: string | null | undefined): boolean {
     return !!status && ACTIVE_STATUSES.includes(status);
 }
 
+/** Formateador de fecha y hora (es-MX, fecha media y hora corta). */
 const dateTimeFmt = new Intl.DateTimeFormat('es-MX', {
     dateStyle: 'medium',
     timeStyle: 'short',
 });
+/** Formateador de hora con segundos (es-MX). */
 const timeFmt = new Intl.DateTimeFormat('es-MX', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
 });
 
+/** Formatea una fecha ISO como fecha y hora; '—' si no hay valor. */
 export function formatDateTime(iso: string | null | undefined): string {
     return iso ? dateTimeFmt.format(new Date(iso)) : '—';
 }
 
+/** Formatea una fecha ISO solo como hora; '—' si no hay valor. */
 export function formatTime(iso: string | null | undefined): string {
     return iso ? timeFmt.format(new Date(iso)) : '—';
 }
 
+/**
+ * Convierte segundos a texto legible ("1 h 5 min", "3 min 07 s", "12 s").
+ * @param seconds duración en segundos; '—' si no hay valor
+ */
 export function formatDuration(seconds: number | null | undefined): string {
     if (seconds === null || seconds === undefined) {
         return '—';
@@ -132,6 +153,11 @@ export function formatDuration(seconds: number | null | undefined): string {
     return `${sec} s`;
 }
 
+/**
+ * Segundos transcurridos desde una fecha ISO hasta `now` (nunca negativo).
+ * @param iso fecha de referencia
+ * @param now instante actual en milisegundos
+ */
 export function secondsSince(
     iso: string | null | undefined,
     now: number,
@@ -141,12 +167,14 @@ export function secondsSince(
         : null;
 }
 
+/** Formatea un número con separadores es-MX; '—' si no hay valor. */
 export function formatNumber(value: number | null | undefined): string {
     return value === null || value === undefined
         ? '—'
         : new Intl.NumberFormat('es-MX').format(value);
 }
 
+/** Formatea un importe en pesos (MXN) sin decimales; '—' si no hay valor. */
 export function formatMoney(value: number | null | undefined): string {
     if (value === null || value === undefined) {
         return '—';
@@ -159,6 +187,7 @@ export function formatMoney(value: number | null | undefined): string {
     }).format(value);
 }
 
+/** Formatea una fracción (0.25) como porcentaje con un decimal; '—' si no hay valor. */
 export function formatPct(value: number | null | undefined): string {
     if (value === null || value === undefined) {
         return '—';

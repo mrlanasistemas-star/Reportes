@@ -1,4 +1,26 @@
 <script setup lang="ts">
+/**
+ * ComparativesPanel — pestaña «Comparativas» del Estado de Resultados.
+ *
+ * La usa la página EstadoResultados/Index. Permite elegir el tipo de
+ * comparación (periodo anterior, mismo mes del año anterior, últimos 6 meses,
+ * acumulado anual, personalizado o sucursales), pide los datos al servidor
+ * con useErComparatives (con caché, cancelación y reintento) y muestra
+ * ComparisonTable, TrendCharts o BranchComparison según el modo.
+ *
+ * Props:
+ * - periodId: periodo seleccionado.
+ * - scope: alcance (consolidado o sucursal).
+ * - periods: periodos disponibles para el modo personalizado.
+ * - rev: revisión de los datos del periodo; al cambiar, se recalcula.
+ *
+ * v-model:
+ * - mode: tipo de comparación (por defecto 'anterior').
+ * - contra: periodo B del modo personalizado, o null.
+ *
+ * Expone:
+ * - refresh(): vuelve a pedir las comparativas sin caché.
+ */
 import { usePage } from '@inertiajs/vue3';
 import {
     AlertTriangle,
@@ -35,12 +57,16 @@ const props = defineProps<{
 const mode = defineModel<CompMode>('mode', { default: 'anterior' });
 const contra = defineModel<number | null>('contra', { default: null });
 
+/** Página de Inertia (de ahí sale la URL base de la API). */
 const page = usePage();
+/** URL base para las peticiones de comparativas. */
 const base = ref((page.props as { base?: string }).base ?? '');
+/** Estado y acciones de la consulta de comparativas (datos, carga, error, cancelar). */
 const comp = useErComparatives(base, { notifyWhenReady: true });
 /** Para que el orquestador (o un botón «Actualizar») pida de nuevo sin caché. */
 defineExpose({ refresh: comp.refresh });
 
+/** Botones de tipo de comparación con su icono y ayuda. */
 const MODES: Array<{
     key: CompMode;
     label: string;
@@ -87,11 +113,17 @@ const MODES: Array<{
 
 /** Periodo A del modo personalizado (por defecto, el periodo seleccionado arriba). */
 const periodA = ref<number>(props.periodId);
+/** Si cambia el periodo de arriba, el periodo A del modo personalizado lo sigue. */
 watch(
     () => props.periodId,
     (v) => (periodA.value = v),
 );
 
+/**
+ * Consulta a realizar: en modo personalizado sólo con dos periodos distintos
+ * (null si falta el B o son iguales); en los demás modos, la consulta única
+ * de la pestaña.
+ */
 const request = computed<CompRequest | null>(() => {
     if (mode.value === 'personalizado') {
         return contra.value && contra.value !== periodA.value
@@ -111,6 +143,7 @@ const request = computed<CompRequest | null>(() => {
     return tabRequest(props.periodId, props.scope, props.rev);
 });
 
+/** Lanza la consulta cada vez que cambia (y al montar). */
 watch(
     request,
     (r) => {
@@ -121,7 +154,9 @@ watch(
     { immediate: true },
 );
 
+/** Respuesta de comparativas cargada, o null. */
 const d = computed(() => comp.data.value);
+/** Comparación de dos periodos del modo actual (anterior, año anterior o personalizado). */
 const pairFor = computed(() => {
     const m = d.value?.modes;
 
@@ -137,6 +172,7 @@ const pairFor = computed(() => {
             ? m.personalizado
             : null;
 });
+/** Modo personalizado con el mismo periodo en A y B. */
 const samePeriods = computed(
     () =>
         mode.value === 'personalizado' &&
@@ -147,6 +183,7 @@ const samePeriods = computed(
 
 <template>
     <div class="space-y-4">
+        <!-- Selector de tipo de comparación y botón Actualizar -->
         <nav class="flex flex-wrap gap-1.5" aria-label="Tipo de comparación">
             <button
                 v-for="m in MODES"

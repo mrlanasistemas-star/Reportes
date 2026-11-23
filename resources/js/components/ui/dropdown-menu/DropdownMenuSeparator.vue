@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Línea divisoria entre secciones del menú desplegable. */
 import type { DropdownMenuSeparatorProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Lista que agrupa los elementos del menú de navegación. */
 import type { NavigationMenuListProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

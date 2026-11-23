@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Texto de atajo de teclado alineado a la derecha de una opción. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

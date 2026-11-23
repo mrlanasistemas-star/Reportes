@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Sidebar (shadcn-vue): exporta los componentes y las variantes cva del botón de menú. */
 import type { VariantProps } from "class-variance-authority"
 import type { HTMLAttributes } from "vue"
 import { cva } from "class-variance-authority"

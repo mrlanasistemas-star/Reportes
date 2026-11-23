@@ -1,4 +1,19 @@
 <script setup lang="ts">
+/**
+ * ControlTrazabilidad — panel desplegable "Control y trazabilidad" del cálculo
+ * de efectividad: indicadores de ajustes, metas inferidas, diferencias al
+ * cierre y contratos que desaparecieron sin soporte.
+ *
+ * Se usa en pages/EfectividadCobranza/Index. Resalta en ámbar los indicadores
+ * de riesgo distintos de cero y cuenta cuántos hay por revisar.
+ *
+ * Props:
+ * - auditoria: cifras de control devueltas por el cálculo.
+ * - metodologia: nombre de la metodología aplicada (opcional, pie del panel).
+ * - engineVersion: versión del motor de cálculo (opcional, pie del panel).
+ *
+ * v-model:abierto: si el panel está desplegado (por defecto cerrado).
+ */
 import { ChevronDown, ListChecks } from 'lucide-vue-next';
 import { computed } from 'vue';
 import EstadoReporteBadge from './EstadoReporteBadge.vue';
@@ -13,6 +28,7 @@ const props = defineProps<{
 
 const abierto = defineModel<boolean>('abierto', { default: false });
 
+/** Indicador mostrado en la cuadrícula del panel. */
 type Renglon = {
     clave: string;
     titulo: string;
@@ -22,15 +38,19 @@ type Renglon = {
     revisar: boolean;
 };
 
+/** Formatea un conteo con separadores es-MX; '—' si no es un número válido. */
 const n = (v: number | null | undefined) =>
     typeof v === 'number' && Number.isFinite(v)
         ? v.toLocaleString('es-MX')
         : '—';
+/** Formatea un importe en pesos; '—' si no es un número válido. */
 const m = (v: number | null | undefined) =>
     typeof v === 'number' && Number.isFinite(v) ? fmtMoney(v) : '—';
+/** true si el valor es un número válido distinto de cero (indicador por revisar). */
 const distinto = (v: number | null | undefined) =>
     typeof v === 'number' && Number.isFinite(v) && v !== 0;
 
+/** Lista de indicadores con su valor formateado y si conviene revisarlo. */
 const renglones = computed<Renglon[]>(() => {
     const a = props.auditoria;
 
@@ -99,10 +119,12 @@ const renglones = computed<Renglon[]>(() => {
     ];
 });
 
+/** Cantidad de indicadores marcados para revisión. */
 const pendientes = computed(
     () => renglones.value.filter((r) => r.revisar).length,
 );
 
+/** Sincroniza el v-model con el estado nativo del <details> al abrir o cerrar. */
 function alAlternar(e: Event) {
     abierto.value = (e.target as HTMLDetailsElement).open;
 }
@@ -114,6 +136,7 @@ function alAlternar(e: Event) {
         :open="abierto"
         @toggle="alAlternar"
     >
+        <!-- Encabezado clicable: título, estado preliminar/conciliado e insignia -->
         <summary
             class="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 rounded-2xl px-5 py-4 focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none [&::-webkit-details-marker]:hidden"
         >
@@ -154,6 +177,7 @@ function alAlternar(e: Event) {
             </span>
         </summary>
 
+        <!-- Contenido: texto del estado, cuadrícula de indicadores y metodología -->
         <div class="space-y-4 border-t px-5 py-4">
             <p
                 v-if="auditoria.estado_texto"

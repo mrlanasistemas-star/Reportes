@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Implementación interna del botón del menú lateral (variantes y estado activo); la usa SidebarMenuButton. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import type { SidebarMenuButtonVariants } from "."

@@ -8,6 +8,7 @@
  */
 import type { Movement, Validation } from './types';
 
+/** Estado de control de un movimiento: completado, pendiente, duplicado, fuera del periodo o no guardado. */
 export type ControlStatus =
     | 'completado'
     | 'pendiente'
@@ -18,6 +19,7 @@ export type ControlStatus =
 /** Filtro de la lista: un estado, «revisar concepto» o todos. */
 export type ControlFilter = ControlStatus | 'revisar' | 'todos';
 
+/** Señal de revisión sobre un movimiento (p. ej. concepto a revisar) con su severidad. */
 export interface ControlFlag {
     key: string;
     label: string;
@@ -25,6 +27,7 @@ export interface ControlFlag {
     severity: string;
 }
 
+/** Control de un movimiento: estado, etiqueta, subtítulo, explicación y señales. */
 export interface ItemControl {
     status: ControlStatus;
     label: string;
@@ -33,6 +36,7 @@ export interface ItemControl {
     flags: ControlFlag[];
 }
 
+/** Fila original de la que un movimiento es duplicado (archivo, fila, periodo, cuenta y fecha). */
 export interface DuplicateOf {
     upload_id: number;
     file: string | null;
@@ -43,6 +47,7 @@ export interface DuplicateOf {
     date: string | null;
 }
 
+/** Movimiento con los datos de control (estado, archivo de origen, ubicación y duplicado). */
 export type ControlledMovement = Movement & {
     control?: ItemControl;
     upload_id?: number;
@@ -52,6 +57,7 @@ export type ControlledMovement = Movement & {
     duplicate_of?: DuplicateOf | null;
 };
 
+/** Conteo con totales de cargos, abonos y suma. */
 export interface Triple {
     count: number;
     cargos: string;
@@ -59,6 +65,7 @@ export interface Triple {
     total: string;
 }
 
+/** Parte de la partición de un archivo: a dónde fue cada peso, con conteo, montos y choques con otros archivos. */
 export interface FilePart {
     /** entra | otro_periodo | duplicado | sin_periodo | periodo_cerrado | periodo_existente | fuera_periodo | no_guardado */
     key: string;
@@ -79,6 +86,11 @@ export interface FilePart {
     }>;
 }
 
+/**
+ * Control de un archivo cargado: cuenta, periodo de carga, total leído, control
+ * del banco y su diferencia, totales guardados/aquí/en otro periodo/no
+ * guardados y su partición.
+ */
 export interface FileControlUpload {
     upload_id: number;
     slot: string;
@@ -101,6 +113,7 @@ export interface FileControlUpload {
     parts: FilePart[];
 }
 
+/** Control de todos los archivos que aportan al periodo, con totales y la regla de la partición. */
 export interface FileControl {
     uploads: FileControlUpload[];
     totals: {
@@ -112,12 +125,14 @@ export interface FileControl {
     };
 }
 
+/** Referencia a un movimiento (huella y monto) dentro de un pendiente o una validación fallida. */
 export interface ControlRef {
     fingerprint: string | null;
     amount: string;
     redacted?: boolean;
 }
 
+/** Archivo relacionado con un pendiente o una validación fallida (conteo y monto). */
 export interface ControlFileRef {
     upload_id: number;
     file: string;
@@ -125,6 +140,7 @@ export interface ControlFileRef {
     amount: string;
 }
 
+/** Pendiente de la validación con movimientos, archivos y nota opcionales. */
 export type ControlUnresolved = Validation['unresolved'][number] & {
     items?: ControlRef[];
     open_items?: ControlRef[] | null;
@@ -132,12 +148,14 @@ export type ControlUnresolved = Validation['unresolved'][number] & {
     note?: string | null;
 };
 
+/** Validación fallida con movimientos, archivos y nota opcionales. */
 export type ControlFailedCheck = Validation['failed_checks'][number] & {
     items?: ControlRef[];
     files?: ControlFileRef[];
     note?: string | null;
 };
 
+/** Validación del periodo con pendientes y fallas enriquecidos y el control por archivo. */
 export type ControlValidation = Omit<
     Validation,
     'unresolved' | 'failed_checks'
@@ -173,6 +191,7 @@ export interface OutsideRow {
     redacted?: boolean;
 }
 
+/** Página del endpoint de control de movimientos, con el resumen por archivo. */
 export interface OutsidePage {
     data: OutsideRow[];
     total: number;
@@ -188,6 +207,7 @@ export interface OutsidePage {
     }>;
 }
 
+/** Etiqueta y clases (insignia y punto) de cada estado de control. */
 export const STATUS_META: Record<
     ControlStatus,
     { label: string; cls: string; dot: string }
@@ -219,6 +239,7 @@ export const STATUS_META: Record<
     },
 };
 
+/** Filtros disponibles en la lista de control, en el orden en que se muestran. */
 export const FILTERS: Array<{ key: ControlFilter; label: string }> = [
     { key: 'todos', label: 'Todos' },
     { key: 'completado', label: 'Completados' },
@@ -253,6 +274,11 @@ export function controlOf(m: ControlledMovement): ItemControl {
     };
 }
 
+/**
+ * Indica si un movimiento pasa el filtro (todos, revisar = tiene señales, o un estado).
+ * @param m movimiento.
+ * @param filter filtro elegido.
+ */
 export function matchesFilter(
     m: ControlledMovement,
     filter: ControlFilter,
@@ -270,10 +296,19 @@ export function matchesFilter(
     return c.status === filter;
 }
 
+/**
+ * Monto bruto de una fila: cargo + abono (vacíos o inválidos cuentan como 0).
+ * @param x fila con cargo y abono.
+ */
 export function grossOf(x: { cargo: string; abono: string }): number {
     return (Number(x.cargo) || 0) + (Number(x.abono) || 0);
 }
 
+/**
+ * Texto en minúsculas con los campos buscables del movimiento (concepto, referencia,
+ * folio, archivo, cuenta, beneficiario, tratamiento, fecha y fila).
+ * @param m movimiento.
+ */
 export function searchText(m: ControlledMovement): string {
     return [
         m.concept,

@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Calendar (shadcn-vue): exporta el calendario y todas sus piezas. */
 export { default as Calendar } from "./Calendar.vue"
 export { default as CalendarCell } from "./CalendarCell.vue"
 export { default as CalendarCellTrigger } from "./CalendarCellTrigger.vue"

@@ -1,11 +1,17 @@
 <script setup lang="ts">
+/**
+ * Variante de layout de autenticación a dos columnas (panel oscuro con el
+ * nombre de la app + formulario). No se usa por defecto.
+ */
 import { Link, usePage } from '@inertiajs/vue3';
 import AppLogoIcon from '@/components/AppLogoIcon.vue';
 import { home } from '@/routes';
 
 const page = usePage();
+/** Nombre de la app compartido por Inertia (page.props.name). */
 const name = page.props.name;
 
+/** Props: título y descripción del formulario. */
 defineProps<{
     title?: string;
     description?: string;

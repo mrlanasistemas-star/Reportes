@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * AmortizationScheduleTable — tabla de los pagos de un crédito con fecha
+ * dentro del periodo (número, fecha, pago, capital, interés, IVA y saldo).
+ *
+ * La usa FinancialExpensesPanel. El capital aparece tachado porque no entra
+ * al Estado de Resultados; el interés es lo que pasa de EBIT a EBT. Si no hay
+ * renglones, explica si la tabla cubre el periodo (interés $0) o no.
+ *
+ * Props:
+ * - credit: datos del crédito en el periodo (renglones, totales y cobertura).
+ */
 import { dmy } from './financialExpenses';
 import type { CreditPeriod } from './financialExpenses';
 import { mxn } from './types';

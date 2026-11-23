@@ -1,4 +1,17 @@
 <script setup lang="ts">
+/**
+ * OpexComposition — tarjeta «Composición del OPEX» con una barra por categoría.
+ *
+ * Se usa en SummaryView. Cada categoría muestra importe, % sobre ingresos y un
+ * candado si está restringida; al hacer clic se abre su bloque en el estado de
+ * resultados.
+ *
+ * Props:
+ * - dataset: datos del reporte; se toma la sección `opex` del statement.
+ *
+ * Emits:
+ * - open(blockKey): clave del bloque a abrir, con formato `opex:<categoría>`.
+ */
 import { Lock } from 'lucide-vue-next';
 import { computed } from 'vue';
 import { opexTone } from './palette';
@@ -17,6 +30,10 @@ const opex = computed(() => {
     return s && s.type === 'section' ? s : null;
 });
 
+/**
+ * Categorías con su color (por lugar según importe, igual que PerHundredBar)
+ * y el ancho relativo de su barra respecto a la mayor.
+ */
 const items = computed(() => {
     const cats = opex.value?.categories ?? [];
     const max = Math.max(1, ...cats.map((c) => Math.abs(num(c.total.amount))));

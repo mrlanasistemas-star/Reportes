@@ -1,4 +1,21 @@
 <script setup lang="ts">
+/**
+ * PerHundredBar — barra apilada «de cada $100 que ingresaron…».
+ *
+ * Se usa en KpiStrip. Cada segmento es una categoría de OPEX (de mayor a menor)
+ * y, si sobra, un segmento final de EBITDA en cian. Si el OPEX supera a los
+ * ingresos, la barra se escala al gasto y una línea vertical marca hasta dónde
+ * alcanzaron los ingresos. No se dibuja si los ingresos no son positivos.
+ *
+ * Props:
+ * - ingresos: ingresos operativos del periodo (texto decimal o null).
+ * - ebitda: EBITDA del periodo (texto decimal o null).
+ * - categories: categorías de OPEX con clave, etiqueta e importe.
+ * - active: clave del segmento resaltado desde fuera (null = ninguno).
+ *
+ * Emits:
+ * - select(key): clic en un segmento o en su leyenda (clave de categoría o 'ebitda').
+ */
 import { computed, onMounted, ref } from 'vue';
 import { opexTone } from './palette';
 import { mxn, num } from './types';
@@ -17,11 +34,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: [key: string] }>();
 
+/** Segmento bajo el cursor o con foco. */
 const hovered = ref<string | null>(null);
+/** Pasa a true tras el primer cuadro para animar el crecimiento de la barra. */
 const grown = ref(false);
 /** El escalonado sólo aplica a la entrada; después los cambios son inmediatos. */
 const settled = ref(false);
 
+/** Dispara la animación de entrada y, 1.2 s después, desactiva el escalonado. */
 onMounted(() =>
     requestAnimationFrame(() => {
         grown.value = true;
@@ -29,17 +49,30 @@ onMounted(() =>
     }),
 );
 
+/** Ingresos como número. */
 const inc = computed(() => num(props.ingresos));
+/** Suma absoluta de todas las categorías de OPEX. */
 const opexTotal = computed(() =>
     props.categories.reduce((s, c) => s + Math.abs(num(c.amount)), 0),
 );
 /** Si los gastos superan a los ingresos, la barra mide el gasto y marca dónde llegaron los ingresos. */
 const overspent = computed(() => opexTotal.value > inc.value);
+/** Referencia del 100 % de la barra: el mayor entre ingresos y OPEX (mínimo 1). */
 const base = computed(() => Math.max(inc.value, opexTotal.value) || 1);
 
+/**
+ * Convierte un importe en «$X.XX de cada $100 de ingresos».
+ * @param v importe (se usa su valor absoluto).
+ * @returns texto con 2 decimales, o '—' si no hay ingresos.
+ */
 const per100 = (v: number) =>
     inc.value > 0 ? `$${((Math.abs(v) / inc.value) * 100).toFixed(2)}` : '—';
 
+/**
+ * Segmentos de la barra: categorías con importe > 0 ordenadas de mayor a menor
+ * (con su tono de palette) y, si no hay sobregasto y el EBITDA es positivo,
+ * el segmento de EBITDA al final.
+ */
 const segments = computed(() => {
     const cats = props.categories
         .map((c) => ({ ...c, value: Math.abs(num(c.amount)) }))
@@ -69,11 +102,14 @@ const segments = computed(() => {
     return cats;
 });
 
+/** Clave enfocada: la del cursor tiene prioridad sobre la prop `active`. */
 const focusKey = computed(() => hovered.value ?? props.active);
+/** Segmento enfocado (o null). */
 const focusSeg = computed(
     () => segments.value.find((s) => s.key === focusKey.value) ?? null,
 );
 
+/** Texto explicativo bajo la barra según el segmento enfocado o el reparto general. */
 const caption = computed(() => {
     const s = focusSeg.value;
 
@@ -90,6 +126,7 @@ const caption = computed(() => {
     return `De cada $100 que ingresaron, ${per100(opexTotal.value)} se fueron en gastos operativos y quedaron ${per100(num(props.ebitda))} de EBITDA.`;
 });
 
+/** Posición (%) de la marca «hasta aquí alcanzaron los ingresos»; sólo con sobregasto. */
 const incomeMark = computed(() =>
     overspent.value ? (inc.value / base.value) * 100 : null,
 );
@@ -141,6 +178,7 @@ const incomeMark = computed(() =>
         >
             {{ caption }}
         </p>
+        <!-- Leyenda (oculta a lectores de pantalla; la barra ya es accesible) -->
         <ul class="flex flex-wrap gap-x-1 gap-y-1 text-xs" aria-hidden="true">
             <li v-for="s in segments" :key="s.key">
                 <button

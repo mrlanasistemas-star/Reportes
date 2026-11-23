@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Barra superior del calendario que contiene el título del mes y los botones anterior/siguiente. */
 import type { CalendarHeaderProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

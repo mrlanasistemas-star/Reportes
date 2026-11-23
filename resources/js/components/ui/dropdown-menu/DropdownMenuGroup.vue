@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Agrupador lógico de opciones del menú desplegable. */
 import type { DropdownMenuGroupProps } from "reka-ui"
 import { DropdownMenuGroup } from "reka-ui"
 

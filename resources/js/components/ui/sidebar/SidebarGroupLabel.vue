@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Etiqueta/título de un grupo de la barra lateral; se oculta en modo icono. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { Primitive } from "reka-ui"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Bloque animado de marcador de carga (skeleton) mientras llega el contenido. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Riel delgado en el borde de la barra lateral para expandir/colapsar haciendo clic. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 import { useSidebar } from "./utils"

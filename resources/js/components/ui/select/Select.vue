@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Raíz del select personalizado (shadcn-vue sobre reka-ui SelectRoot) con v-model. */
 import type { SelectRootEmits, SelectRootProps } from "reka-ui"
 import { SelectRoot, useForwardPropsEmits } from "reka-ui"
 

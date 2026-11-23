@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Lista ordenada (<ol>) que agrupa los elementos de las migas de pan (shadcn-vue). */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

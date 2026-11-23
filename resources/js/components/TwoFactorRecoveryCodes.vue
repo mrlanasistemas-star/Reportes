@@ -1,4 +1,12 @@
 <script setup lang="ts">
+/**
+ * TwoFactorRecoveryCodes — tarjeta de códigos de recuperación de la verificación en dos pasos.
+ *
+ * Se usa en pages/settings/Security cuando la verificación en dos pasos está
+ * activa. Permite mostrar/ocultar los códigos y regenerarlos (POST a
+ * regenerateRecoveryCodes). Los códigos se obtienen con useTwoFactorAuth.
+ * Sin props ni emits.
+ */
 import { Form } from '@inertiajs/vue3';
 import { Eye, EyeOff, LockKeyhole, RefreshCw } from 'lucide-vue-next';
 import { nextTick, onMounted, ref, useTemplateRef } from 'vue';
@@ -15,9 +23,15 @@ import { useTwoFactorAuth } from '@/composables/useTwoFactorAuth';
 import { regenerateRecoveryCodes } from '@/routes/two-factor';
 
 const { recoveryCodesList, fetchRecoveryCodes, errors } = useTwoFactorAuth();
+/** true = la lista de códigos está visible. */
 const isRecoveryCodesVisible = ref<boolean>(false);
+/** Sección con los códigos; se desplaza a la vista al mostrarlos. */
 const recoveryCodeSectionRef = useTemplateRef('recoveryCodeSectionRef');
 
+/**
+ * Muestra u oculta los códigos. Si aún no se han descargado, los pide antes de
+ * mostrarlos y luego desplaza la vista hasta ellos.
+ */
 const toggleRecoveryCodesVisibility = async () => {
     if (!isRecoveryCodesVisible.value && !recoveryCodesList.value.length) {
         await fetchRecoveryCodes();
@@ -31,6 +45,7 @@ const toggleRecoveryCodesVisibility = async () => {
     }
 };
 
+/** Al montar, descarga los códigos si todavía no están en memoria. */
 onMounted(async () => {
     if (!recoveryCodesList.value.length) {
         await fetchRecoveryCodes();
@@ -45,20 +60,28 @@ onMounted(async () => {
                 <LockKeyhole class="size-4" />Códigos de recuperación
             </CardTitle>
             <CardDescription>
-                Te permiten entrar si pierdes o cambias tu teléfono. Guárdalos en un lugar
-                seguro (por ejemplo, un gestor de contraseñas).
+                Te permiten entrar si pierdes o cambias tu teléfono. Guárdalos
+                en un lugar seguro (por ejemplo, un gestor de contraseñas).
             </CardDescription>
         </CardHeader>
         <CardContent>
             <div
                 class="flex flex-col gap-3 select-none sm:flex-row sm:items-center sm:justify-between"
             >
-                <Button variant="outline" @click="toggleRecoveryCodesVisibility" class="w-fit">
+                <Button
+                    variant="outline"
+                    @click="toggleRecoveryCodesVisibility"
+                    class="w-fit"
+                >
                     <component
                         :is="isRecoveryCodesVisible ? EyeOff : Eye"
                         class="size-4"
                     />
-                    {{ isRecoveryCodesVisible ? 'Ocultar códigos' : 'Ver códigos' }}
+                    {{
+                        isRecoveryCodesVisible
+                            ? 'Ocultar códigos'
+                            : 'Ver códigos'
+                    }}
                 </Button>
 
                 <Form
@@ -98,7 +121,7 @@ onMounted(async () => {
                             <div
                                 v-for="n in 8"
                                 :key="n"
-                                class="h-4 app-skeleton rounded bg-muted-foreground/20"
+                                class="app-skeleton h-4 rounded bg-muted-foreground/20"
                             ></div>
                         </div>
                         <div
@@ -110,8 +133,9 @@ onMounted(async () => {
                         </div>
                     </div>
                     <p class="text-xs text-muted-foreground select-none">
-                        Cada código sirve una sola vez y se elimina al usarlo. Si se te
-                        acaban, pulsa <span class="font-bold">Generar códigos nuevos</span>
+                        Cada código sirve una sola vez y se elimina al usarlo.
+                        Si se te acaban, pulsa
+                        <span class="font-bold">Generar códigos nuevos</span>
                         (los anteriores dejarán de funcionar).
                     </p>
                 </div>

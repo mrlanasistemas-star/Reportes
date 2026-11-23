@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Burbuja flotante del tooltip con flecha (portal y animaciones). */
 import type { TooltipContentEmits, TooltipContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

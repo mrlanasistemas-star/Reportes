@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Etiqueta no interactiva para titular un grupo de opciones del select. */
 import type { SelectLabelProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { SelectLabel } from "reka-ui"

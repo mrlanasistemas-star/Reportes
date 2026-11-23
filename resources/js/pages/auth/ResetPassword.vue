@@ -1,4 +1,9 @@
 <script setup lang="ts">
+/**
+ * Pantalla "Crea tu nueva contraseña" (Fortify, resetPasswordView).
+ * Se abre desde el enlace del correo de recuperación; recibe el token y el correo
+ * y envía la nueva contraseña a la ruta Wayfinder password.update.
+ */
 import { Form, Head } from '@inertiajs/vue3';
 import { ref } from 'vue';
 import InputError from '@/components/InputError.vue';
@@ -9,18 +14,22 @@ import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import { update } from '@/routes/password';
 
+/** Props del layout de autenticación (título y descripción de la tarjeta). */
 defineOptions({
     layout: {
         title: 'Crea tu nueva contraseña',
-        description: 'Escribe una contraseña nueva para tu cuenta. Al guardarla podrás iniciar sesión con ella.',
+        description:
+            'Escribe una contraseña nueva para tu cuenta. Al guardarla podrás iniciar sesión con ella.',
     },
 });
 
+/** Props desde Fortify: token de restablecimiento y correo de la cuenta. */
 const props = defineProps<{
     token: string;
     email: string;
 }>();
 
+/** Copia local del correo para enlazar el campo del formulario. */
 const inputEmail = ref(props.email);
 </script>
 

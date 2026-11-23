@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Panel de contenido que se despliega al activar un elemento del menú de navegación. */
 import type { NavigationMenuContentEmits, NavigationMenuContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

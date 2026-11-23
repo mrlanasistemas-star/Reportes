@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Opción del menú desplegable con casilla marcable. */
 import type { DropdownMenuCheckboxItemEmits, DropdownMenuCheckboxItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

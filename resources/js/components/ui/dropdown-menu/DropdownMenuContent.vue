@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Panel flotante del menú desplegable (portal, posicionamiento y animaciones). */
 import type { DropdownMenuContentEmits, DropdownMenuContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

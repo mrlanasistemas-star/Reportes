@@ -1,4 +1,17 @@
 <script setup lang="ts">
+/**
+ * FileLifecycle — etapas del ciclo de vida de un archivo de estado de cuenta.
+ *
+ * Lo usan AccountFilePart y ApprovalChecklist. Si el archivo está rechazado,
+ * duplicado o reemplazado muestra una sola etiqueta; si está en
+ * recibido/validado/procesado/conciliado muestra los cuatro pasos con los ya
+ * cumplidos marcados. Con otro valor no muestra nada.
+ *
+ * Props:
+ * - lifecycle: clave de la etapa actual.
+ * - label: texto para el caso "duplicado" (por defecto "Ya estaba cargado").
+ * - compact: oculta visualmente el texto de los pasos que no son el actual.
+ */
 import { Check, Copy, XCircle } from 'lucide-vue-next';
 import { computed } from 'vue';
 
@@ -9,6 +22,7 @@ const props = defineProps<{
     compact?: boolean;
 }>();
 
+/** Pasos del ciclo en orden. */
 const STEPS = [
     { key: 'recibido', label: 'Recibido' },
     { key: 'validado', label: 'Validado' },
@@ -16,7 +30,9 @@ const STEPS = [
     { key: 'conciliado', label: 'Conciliado' },
 ];
 
+/** Posición de la etapa actual en STEPS (-1 si no es una de ellas). */
 const index = computed(() => STEPS.findIndex((s) => s.key === props.lifecycle));
+/** Etiqueta para los estados finales (rechazado, duplicado, reemplazado); null en los demás. */
 const terminal = computed(() =>
     props.lifecycle === 'rechazado'
         ? { label: 'Rechazado', cls: 'bg-rose-600 text-white', icon: XCircle }

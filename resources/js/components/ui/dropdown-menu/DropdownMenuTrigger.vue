@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Elemento que abre el menú desplegable. */
 import type { DropdownMenuTriggerProps } from "reka-ui"
 import { DropdownMenuTrigger, useForwardProps } from "reka-ui"
 

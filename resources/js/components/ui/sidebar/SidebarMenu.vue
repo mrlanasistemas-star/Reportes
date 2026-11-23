@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Lista de opciones de menú de la barra lateral. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

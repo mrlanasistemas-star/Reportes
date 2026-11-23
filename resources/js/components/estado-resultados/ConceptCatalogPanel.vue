@@ -1,4 +1,28 @@
 <script setup lang="ts">
+/**
+ * ConceptCatalogPanel — pestaña «Catálogo de conceptos» del Estado de
+ * Resultados.
+ *
+ * La usa la página EstadoResultados/Index. Lista las reglas que dicen qué
+ * texto del estado de cuenta va a qué concepto del reporte (valen para todos
+ * los periodos y se aplican al procesar la conciliación), con buscador y
+ * acciones de editar, activar/desactivar y borrar. Abre ConceptRuleDialog
+ * para crear o editar una regla, con vista previa sobre el periodo. Los
+ * datos y acciones vienen de useConceptCatalog.
+ *
+ * Props:
+ * - periodId: periodo para la vista previa y el reproceso.
+ * - periodLabel: nombre del periodo (se muestra en el diálogo).
+ * - treatments: catálogo de tratamientos financieros.
+ * - canEdit: permiso «catálogo» (y acceso general).
+ * - canProcess: si puede procesar la conciliación del periodo mostrado.
+ * - lockReason: motivo de solo lectura del periodo, o null.
+ * - prefill: alta precargada desde el detalle de un movimiento, o null.
+ * - process: función que reprocesa la conciliación tras guardar.
+ *
+ * Emits:
+ * - prefillUsed(): ya se abrió el diálogo con la precarga (el padre la limpia).
+ */
 import {
     BookMarked,
     Loader2,
@@ -35,6 +59,7 @@ const props = defineProps<{
 const emit = defineEmits<{ prefillUsed: [] }>();
 
 // ── Estado (antes de cualquier watch) ─────────────────────────────────
+/** Estado y acciones del catálogo (cargar, guardar, activar, borrar, vista previa). */
 const catalog = useConceptCatalog({
     periodId: toRef(props, 'periodId'),
     canProcess: () => props.canProcess,
@@ -42,11 +67,16 @@ const catalog = useConceptCatalog({
     process: () => props.process(),
 });
 const { rules, options, loading, loadError, saving, busyId } = catalog;
+/** Texto del buscador. */
 const search = ref('');
+/** Si el diálogo de regla está abierto. */
 const dialogOpen = ref(false);
+/** Regla que se edita, o null si es alta. */
 const editing = ref<ConceptRule | null>(null);
+/** Valores precargados para una regla nueva, o null. */
 const initial = ref<Partial<RuleDraft> | null>(null);
 
+/** Reglas que coinciden con el buscador (nombre, texto, destino o notas, sin acentos). */
 const filtered = computed(() => {
     const q = normalizeText(search.value);
 
@@ -60,34 +90,59 @@ const filtered = computed(() => {
         ).includes(q),
     );
 });
+/** Número de reglas activas. */
 const activeCount = computed(() => rules.value.filter((r) => r.active).length);
 
+/**
+ * Abre el diálogo para una regla nueva.
+ * @param over valores precargados opcionales.
+ */
 function openNew(over: Partial<RuleDraft> | null = null): void {
     editing.value = null;
     initial.value = over;
     dialogOpen.value = true;
 }
 
+/**
+ * Abre el diálogo para editar una regla existente.
+ * @param r regla a editar.
+ */
 function openEdit(r: ConceptRule): void {
     editing.value = r;
     initial.value = null;
     dialogOpen.value = true;
 }
 
+/**
+ * Guarda la regla (alta o edición) y cierra el diálogo si se guardó.
+ * @param draft valores capturados.
+ * @param id id de la regla editada, o null si es alta.
+ */
 async function submit(draft: RuleDraft, id: number | null): Promise<void> {
     if (await catalog.save(draft, id)) {
         dialogOpen.value = false;
     }
 }
 
+/** Carga el catálogo al montar. */
 onMounted(() => catalog.load());
+/**
+ * Si llega una precarga y se puede editar, abre el alta y avisa que se usó.
+ * Sin permiso de edición la precarga se descarta (también avisa), para que no
+ * quede pendiente y abra el alta por sorpresa si el permiso cambia después.
+ */
 watch(
     () => props.prefill,
     (p) => {
-        if (p && props.canEdit) {
-            openNew(p);
-            emit('prefillUsed');
+        if (!p) {
+            return;
         }
+
+        if (props.canEdit) {
+            openNew(p);
+        }
+
+        emit('prefillUsed');
     },
     { immediate: true },
 );
@@ -124,6 +179,7 @@ watch(
             </Button>
         </header>
 
+        <!-- Buscador de reglas -->
         <div class="relative max-w-sm">
             <Search
                 class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
@@ -136,6 +192,7 @@ watch(
             />
         </div>
 
+        <!-- Estados: cargando, error, sin reglas, sin coincidencias o tabla de reglas -->
         <div
             v-if="loading && !rules.length"
             class="flex items-center gap-2 rounded-2xl border bg-card p-6 text-sm text-muted-foreground"
@@ -303,6 +360,7 @@ watch(
             </table>
         </div>
 
+        <!-- Diálogo de alta/edición de regla con vista previa -->
         <ConceptRuleDialog
             v-model:open="dialogOpen"
             :rule="editing"

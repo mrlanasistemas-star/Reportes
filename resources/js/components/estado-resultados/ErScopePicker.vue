@@ -1,4 +1,19 @@
 <script setup lang="ts">
+/**
+ * ErScopePicker — selector de alcance (Consolidado o una sucursal/área).
+ *
+ * Lo usa ErCommandBar. Con un solo alcance permitido lo muestra fijo (con
+ * candado); con varios abre un listbox (ErPickerSurface) con el Consolidado
+ * destacado arriba y las demás opciones agrupadas en Sucursales, Corporativo y
+ * Dirección general. Con más de 6 opciones agrega búsqueda (sin acentos ni
+ * mayúsculas) y se navega con el teclado.
+ *
+ * Props:
+ * - scopes: alcances permitidos (clave y etiqueta).
+ * - loading: marca el disparador como ocupado (aria-busy).
+ *
+ * v-model: clave del alcance seleccionado.
+ */
 import { useMediaQuery } from '@vueuse/core';
 import {
     Building2,
@@ -12,6 +27,7 @@ import {
 import { computed, nextTick, ref, useId, watch } from 'vue';
 import ErPickerSurface from './ErPickerSurface.vue';
 
+/** Alcance que se puede elegir: clave (p. ej. CONSOLIDADO) y etiqueta. */
 export interface ScopeOptionItem {
     key: string;
     label: string;
@@ -28,23 +44,37 @@ const props = withDefaults(
 
 const scope = defineModel<string>({ required: true });
 
+/** Clave del alcance consolidado. */
 const CONSOLIDADO = 'CONSOLIDADO';
+/** Palabras que van en minúscula al formatear nombres (salvo al inicio). */
 const LOWER = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'el']);
+/** Prefijo único para los ids de las opciones y de la lista. */
 const uid = useId();
+/** Pantalla mediana o grande. */
 const desktop = useMediaQuery('(min-width: 640px)');
 
+/** Grupo al que pertenece un alcance. */
 type Group = 'consolidado' | 'sucursal' | 'corporativo' | 'direccion';
 
+/** Títulos visibles de cada grupo de la lista. */
 const GROUP_TITLE: Record<Exclude<Group, 'consolidado'>, string> = {
     sucursal: 'Sucursales',
     corporativo: 'Corporativo',
     direccion: 'Dirección general',
 };
 
+/**
+ * Quita acentos, pasa a minúsculas y recorta espacios (para comparar y buscar).
+ * @param s texto.
+ */
 function normalize(s: string): string {
     return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
+/**
+ * Clasifica una clave de alcance en consolidado, corporativo, dirección general o sucursal.
+ * @param key clave del alcance.
+ */
 function groupOf(key: string): Group {
     const k = normalize(key);
 
@@ -63,6 +93,10 @@ function groupOf(key: string): Group {
     return 'sucursal';
 }
 
+/**
+ * Convierte un texto a mayúscula inicial por palabra, salvo artículos y preposiciones.
+ * @param s texto.
+ */
 function titleCase(s: string): string {
     return s
         .toLowerCase()
@@ -84,6 +118,10 @@ function displayName(s: ScopeOptionItem): string {
     return name === name.toUpperCase() ? titleCase(name) : name;
 }
 
+/**
+ * Iniciales para el avatar (dos letras), ignorando artículos y preposiciones.
+ * @param s alcance.
+ */
 function initials(s: ScopeOptionItem): string {
     const words = displayName(s)
         .split(/\s+/)
@@ -97,6 +135,7 @@ function initials(s: ScopeOptionItem): string {
     );
 }
 
+/** Opción ya preparada para la lista: id del DOM, nombre visible, grupo e iniciales. */
 interface Item extends ScopeOptionItem {
     id: string;
     name: string;
@@ -104,6 +143,7 @@ interface Item extends ScopeOptionItem {
     initials: string;
 }
 
+/** Todas las opciones preparadas. */
 const items = computed<Item[]>(() =>
     props.scopes.map((s, i) => ({
         ...s,
@@ -113,15 +153,23 @@ const items = computed<Item[]>(() =>
         initials: initials(s),
     })),
 );
+/** Número de sucursales disponibles. */
 const branchCount = computed(
     () => items.value.filter((i) => i.group === 'sucursal').length,
 );
+/** Opción seleccionada (null si la clave no está en la lista). */
 const selected = computed(
     () => items.value.find((i) => i.key === scope.value) ?? null,
 );
+/** Hay más de una opción, así que se puede elegir. */
 const interactive = computed(() => items.value.length > 1);
+/** Se muestra la búsqueda (más de 6 opciones). */
 const searchable = computed(() => items.value.length > 6);
 
+/**
+ * Segunda línea bajo el nombre: número de sucursales del consolidado o el tipo de alcance.
+ * @param i opción.
+ */
 function subline(i: Item | null): string {
     if (!i) {
         return 'Sin alcance';
@@ -137,12 +185,18 @@ function subline(i: Item | null): string {
 }
 
 /* ---------- Búsqueda y navegación ---------- */
+/** Selector abierto. */
 const open = ref(false);
+/** Texto de búsqueda. */
 const query = ref('');
+/** Clave de la opción activa (resaltada por teclado o ratón). */
 const activeKey = ref<string | null>(null);
+/** Campo de búsqueda. */
 const inputEl = ref<HTMLInputElement | null>(null);
+/** Contenedor del listbox. */
 const listEl = ref<HTMLElement | null>(null);
 
+/** Opciones que coinciden con la búsqueda por nombre o clave. */
 const filtered = computed(() => {
     const q = normalize(query.value);
 
@@ -153,9 +207,11 @@ const filtered = computed(() => {
           )
         : items.value;
 });
+/** Opción Consolidado (si sigue en el filtro); se muestra destacada arriba. */
 const hero = computed(
     () => filtered.value.find((i) => i.group === 'consolidado') ?? null,
 );
+/** Grupos no vacíos con sus opciones filtradas. */
 const groups = computed(() =>
     (['sucursal', 'corporativo', 'direccion'] as const)
         .map((g) => ({
@@ -170,22 +226,30 @@ const ordered = computed(() => [
     ...(hero.value ? [hero.value] : []),
     ...groups.value.flatMap((g) => g.items),
 ]);
+/** Id del DOM de la opción activa (para aria-activedescendant). */
 const activeId = computed(
     () => ordered.value.find((i) => i.key === activeKey.value)?.id,
 );
 
+// Al abrir: limpia la búsqueda y activa la opción seleccionada.
 watch(open, (on) => {
     if (on) {
         query.value = '';
         activeKey.value = scope.value;
     }
 });
+// Si la opción activa desaparece del filtro, se activa la primera visible.
 watch(filtered, (list) => {
     if (!list.some((i) => i.key === activeKey.value)) {
         activeKey.value = ordered.value[0]?.key ?? null;
     }
 });
 
+/**
+ * Al abrir, evita el autoenfoque por defecto: enfoca la búsqueda (escritorio) o la lista,
+ * y desplaza hasta la opción activa.
+ * @param e evento de autoenfoque.
+ */
 function onOpenFocus(e: Event): void {
     e.preventDefault();
     void nextTick(() => {
@@ -200,6 +264,10 @@ function onOpenFocus(e: Event): void {
     });
 }
 
+/**
+ * Desplaza la lista para que se vea la opción activa.
+ * @param block posición del desplazamiento.
+ */
 function scrollActive(block: ScrollLogicalPosition = 'nearest'): void {
     void nextTick(() => {
         const el = activeId.value
@@ -209,6 +277,10 @@ function scrollActive(block: ScrollLogicalPosition = 'nearest'): void {
     });
 }
 
+/**
+ * Mueve la opción activa un número de posiciones o al primero/último.
+ * @param delta desplazamiento, 'first' o 'last'.
+ */
 function move(delta: number | 'first' | 'last'): void {
     const list = ordered.value;
 
@@ -230,6 +302,10 @@ function move(delta: number | 'first' | 'last'): void {
     scrollActive();
 }
 
+/**
+ * Selecciona el alcance y cierra el selector.
+ * @param key clave elegida; si es null no hace nada.
+ */
 function choose(key: string | null): void {
     if (!key) {
         return;
@@ -239,6 +315,10 @@ function choose(key: string | null): void {
     open.value = false;
 }
 
+/**
+ * Teclado de la lista: flechas, RePág/AvPág, Enter y, fuera del buscador, Inicio/Fin y espacio.
+ * @param e evento de teclado.
+ */
 function onKey(e: KeyboardEvent): void {
     const map: Record<string, () => void> = {
         ArrowDown: () => move(1),
@@ -263,6 +343,7 @@ function onKey(e: KeyboardEvent): void {
     }
 }
 
+/** Clases del avatar de una opción según si está seleccionada y su grupo. */
 const avatarCls = (i: Item, isSelected: boolean) =>
     isSelected
         ? 'bg-cyan-700 text-white dark:bg-cyan-400 dark:text-cyan-950'
@@ -351,7 +432,9 @@ const avatarCls = (i: Item, isSelected: boolean) =>
             </button>
         </template>
 
+        <!-- Varios alcances: contenido del selector (búsqueda, lista y ayuda) -->
         <div class="flex max-h-[min(32rem,75dvh)] flex-col" @keydown="onKey">
+            <!-- Búsqueda -->
             <div v-if="searchable" class="border-b p-2.5">
                 <label class="relative block">
                     <span class="sr-only">Buscar sucursal</span>
@@ -385,6 +468,7 @@ const avatarCls = (i: Item, isSelected: boolean) =>
                 </label>
             </div>
 
+            <!-- Lista de opciones -->
             <div
                 :id="`${uid}-list`"
                 ref="listEl"
@@ -432,6 +516,7 @@ const avatarCls = (i: Item, isSelected: boolean) =>
                     />
                 </div>
 
+                <!-- Grupos: sucursales, corporativo y dirección -->
                 <div
                     v-for="g in groups"
                     :key="g.key"
@@ -490,6 +575,7 @@ const avatarCls = (i: Item, isSelected: boolean) =>
                 </p>
             </div>
 
+            <!-- Ayuda de teclado -->
             <p
                 class="hidden border-t bg-muted/40 px-3 py-2 text-[0.6875rem] text-muted-foreground sm:block dark:bg-white/[0.02]"
                 aria-hidden="true"

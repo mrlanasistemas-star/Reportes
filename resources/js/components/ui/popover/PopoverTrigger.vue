@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Elemento que abre/cierra el popover. */
 import type { PopoverTriggerProps } from "reka-ui"
 import { PopoverTrigger } from "reka-ui"
 

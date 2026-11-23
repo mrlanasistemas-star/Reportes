@@ -1,5 +1,5 @@
 :root {
-    /* Fase 8.1 (15-oct-2026): radio base 1rem (antes 1.25rem). Ver docs/ui-sistema-visual.md */
+    /* Fase 8.1 (15-oct-2026): radio base 1rem (antes 1.25rem). Ver docs/MANUAL-DESARROLLADOR.md */
     --radius: 1rem;
 
     --background: #f8fafc;
@@ -33,11 +33,22 @@
     --input: #e2e8f0;
     --ring: #10b981;
 
-    --chart-1: #10b981;
-    --chart-2: #0ea5e9;
-    --chart-3: #f59e0b;
-    --chart-4: #8b5cf6;
-    --chart-5: #ef4444;
+    /* Paleta de gráficas (lib/chart-theme.ts → themedChartOptions). En claro es
+       la misma paleta del Excel/PDF de la radiografía (categoryPalette); en
+       oscuro, los mismos tonos aclarados para que se lean sobre fondo negro. */
+    --chart-1: #106a59;
+    --chart-2: #5b9bd5;
+    --chart-3: #1dc1a2;
+    --chart-4: #d97706;
+    --chart-5: #94a3b8;
+    --chart-6: #0ea5e9;
+    --chart-7: #7c3aed;
+    --chart-8: #dc2626;
+    /* Texto, rejilla y pista de las gráficas */
+    --chart-text: #64748b;
+    --chart-text-strong: #334155;
+    --chart-grid: #eef2f7;
+    --chart-track: #eef2f7;
 
     /* compatibilidad con starter kit */
     --sidebar-background: #f8fafc;
@@ -69,8 +80,10 @@
     /* Sombras suaves */
     --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.05);
     --shadow-sm: 0 1px 3px rgb(15 23 42 / 0.06), 0 1px 2px rgb(15 23 42 / 0.04);
-    --shadow-md: 0 8px 24px -12px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.05);
-    --shadow-lg: 0 24px 48px -20px rgb(15 23 42 / 0.25), 0 6px 16px rgb(15 23 42 / 0.06);
+    --shadow-md:
+        0 8px 24px -12px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.05);
+    --shadow-lg:
+        0 24px 48px -20px rgb(15 23 42 / 0.25), 0 6px 16px rgb(15 23 42 / 0.06);
 }
 
 .dark {
@@ -105,11 +118,18 @@
     --input: rgba(255, 255, 255, 0.1);
     --ring: #34d399;
 
-    --chart-1: #34d399;
-    --chart-2: #38bdf8;
-    --chart-3: #fbbf24;
-    --chart-4: #a78bfa;
-    --chart-5: #fb7185;
+    --chart-1: #3fb59c;
+    --chart-2: #7cb4e8;
+    --chart-3: #2dd4bf;
+    --chart-4: #f59e0b;
+    --chart-5: #a1a1aa;
+    --chart-6: #38bdf8;
+    --chart-7: #a78bfa;
+    --chart-8: #f87171;
+    --chart-text: #a1a1aa;
+    --chart-text-strong: #e4e4e7;
+    --chart-grid: rgba(255, 255, 255, 0.08);
+    --chart-track: rgba(255, 255, 255, 0.1);
 
     /* compatibilidad con starter kit */
     --sidebar-background: #050505;

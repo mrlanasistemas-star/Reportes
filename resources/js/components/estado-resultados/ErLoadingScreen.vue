@@ -1,4 +1,23 @@
 <script setup lang="ts">
+/**
+ * ErLoadingScreen — pantalla de carga o error de la primera carga del reporte.
+ *
+ * Se usa en pages/EstadoResultados/Index. Tiene tres estados: antes de `delay`
+ * solo reserva espacio; con `error` muestra el aviso con "Intentar de nuevo";
+ * si no, la ilustración, los pasos del cálculo (resaltado decorativo en bucle),
+ * una barra indeterminada y el tiempo transcurrido.
+ *
+ * Props:
+ * - context: qué se está cargando (periodo · alcance).
+ * - since: marca de tiempo (ms) de inicio de la carga.
+ * - error: mensaje de error de la carga.
+ * - cancellable: muestra "Cancelar".
+ * - delay: milisegundos antes de mostrarse (600 por defecto).
+ *
+ * Emits:
+ * - retry: volver a intentar la carga.
+ * - cancel: dejar de esperar la carga.
+ */
 import {
     AlertTriangle,
     Building2,
@@ -41,6 +60,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ retry: []; cancel: [] }>();
 
+/** Pasos que se listan como contenido del cálculo (no reflejan avance real). */
 const STEPS = [
     { icon: FileSpreadsheet, label: 'Leyendo los estados de cuenta del banco' },
     { icon: Scale, label: 'Conciliando pagos con el ERP' },
@@ -48,25 +68,35 @@ const STEPS = [
     { icon: Sigma, label: 'Calculando EBITDA y el resultado del mes' },
 ];
 
-const start = props.since ?? Date.now();
+/** Momento en que se creó el componente (respaldo si no llega `since`). */
+const createdAt = Date.now();
+/** Inicio de la espera: `since` (reactivo: sigue a la prop) o el momento de crear el componente. */
+const start = computed(() => props.since ?? createdAt);
+/** Hora actual; se actualiza cada 500 ms para recalcular lo transcurrido. */
 const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | undefined;
 
+// Arranca el reloj al montar y lo detiene al desmontar.
 onMounted(() => {
     now.value = Date.now();
     timer = setInterval(() => (now.value = Date.now()), 500);
 });
 onBeforeUnmount(() => clearInterval(timer));
 
-const ms = computed(() => Math.max(0, now.value - start));
+/** Milisegundos transcurridos desde el inicio. */
+const ms = computed(() => Math.max(0, now.value - start.value));
+/** Se muestra si hay error o si ya pasó el umbral `delay`. */
 const visible = computed(() => !!props.error || ms.value >= props.delay);
+/** Segundos transcurridos (enteros). */
 const seconds = computed(() => Math.floor(ms.value / 1000));
 /** Paso resaltado: recorre la lista en bucle (decorativo, no es avance real). */
 const highlighted = computed(() => Math.floor(ms.value / 1800) % STEPS.length);
 
+/** Fase de la espera: normal (menos de 4 s), primera consulta (4 a 29 s) o lenta (30 s o más). */
 const phase = computed<'normal' | 'first' | 'slow'>(() =>
     seconds.value >= 30 ? 'slow' : seconds.value >= 4 ? 'first' : 'normal',
 );
+/** Mensaje de ayuda según la fase. */
 const hint = computed(() =>
     phase.value === 'slow'
         ? 'Está tardando más de lo normal. Puedes seguir esperando o intentarlo de nuevo.'
@@ -74,6 +104,7 @@ const hint = computed(() =>
           ? 'La primera consulta del día tarda unos segundos más porque calculamos todo desde cero. Después será casi inmediato.'
           : 'Esto suele tomar sólo unos segundos.',
 );
+/** Tiempo transcurrido legible ("12 s" o "1 min 5 s"). */
 const elapsedLabel = computed(() =>
     seconds.value < 60
         ? `${seconds.value} s`
@@ -95,6 +126,7 @@ const elapsedLabel = computed(() =>
         role="alert"
         class="flex min-h-[420px] flex-col items-center justify-center gap-4 rounded-2xl border border-rose-200 bg-card px-6 py-12 text-center shadow-soft-xs dark:border-rose-900/60"
     >
+        <!-- Estado de error: icono, mensaje y reintento -->
         <span
             class="grid size-12 place-items-center rounded-2xl bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
         >
@@ -150,6 +182,7 @@ const elapsedLabel = computed(() =>
             />
         </div>
 
+        <!-- Texto, pasos del cálculo, barra y acciones -->
         <div class="flex flex-col justify-center gap-5 p-6 md:p-8">
             <div class="space-y-1">
                 <p
@@ -222,6 +255,7 @@ const elapsedLabel = computed(() =>
                 </div>
             </div>
 
+            <!-- Botones de reintento (si tarda) y cancelación -->
             <div
                 v-if="phase === 'slow' || cancellable"
                 class="flex flex-wrap gap-2"

@@ -1,12 +1,27 @@
 <script setup lang="ts">
+/**
+ * ValidationDifferences — tabla «Diferencias banco ↔ ERP» de la pestaña Validación.
+ *
+ * Se usa en ValidationPanel. Tres pestañas (por importe, por fecha, por folio)
+ * con el conteo de cada tipo; cada renglón es un movimiento del banco que no
+ * concilió limpio y, si tiene huella, se abre con clic o Enter. Muestra 50
+ * renglones y «Mostrar más» agrega de 100 en 100.
+ *
+ * Props:
+ * - differences: grupos by_amount / by_date / by_folio de la validación.
+ *
+ * Emits:
+ * - open(fingerprint): abrir el detalle del movimiento.
+ */
 import { ArrowUpRight, CheckCircle2, Lock } from 'lucide-vue-next';
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { mxn, num } from './types';
 import type { DiffGroup, DiffItem, Validation } from './types';
 
 const props = defineProps<{ differences: Validation['differences'] }>();
 const emit = defineEmits<{ open: [fingerprint: string] }>();
 
+/** Pestañas con su explicación de qué significa cada tipo de diferencia. */
 const TABS: Array<{
     key: keyof Validation['differences'];
     label: string;
@@ -32,18 +47,37 @@ const TABS: Array<{
     },
 ];
 
-const tab = ref<keyof Validation['differences']>(
-    TABS.find((t) => props.differences[t.key].count)?.key ?? 'by_amount',
-);
+/** Primera pestaña con diferencias (si no hay ninguna, «Por importe»). */
+const firstWithDifferences = (): keyof Validation['differences'] =>
+    TABS.find((t) => props.differences[t.key].count)?.key ?? 'by_amount';
+/** Pestaña activa: la primera con diferencias (si no, «Por importe»). */
+const tab = ref<keyof Validation['differences']>(firstWithDifferences());
+/** Grupo de diferencias de la pestaña activa. */
 const group = computed<DiffGroup>(() => props.differences[tab.value]);
+/** Cantidad de renglones visibles. */
 const limit = ref(50);
+/** Renglones visibles (recortados a `limit`). */
 const rows = computed<DiffItem[]>(() =>
     group.value.items.slice(0, limit.value),
+);
+
+// Al llegar una validación nueva (otro periodo, recálculo), vuelve a elegir la
+// pestaña con diferencias si la actual quedó vacía y reinicia el recorte.
+watch(
+    () => props.differences,
+    () => {
+        if (!props.differences[tab.value].count) {
+            tab.value = firstWithDifferences();
+        }
+
+        limit.value = 50;
+    },
 );
 </script>
 
 <template>
     <section class="rounded-2xl border bg-card shadow-soft-xs">
+        <!-- Encabezado y pestañas -->
         <header
             class="flex flex-wrap items-end justify-between gap-3 border-b px-5 pt-4"
         >
@@ -92,6 +126,7 @@ const rows = computed<DiffItem[]>(() =>
             </div>
         </header>
 
+        <!-- Explicación y total de la pestaña -->
         <p class="px-5 pt-3 text-xs text-muted-foreground">
             {{ TABS.find((t) => t.key === tab)?.explain }}
             <template v-if="group.count">

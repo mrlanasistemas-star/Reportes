@@ -1,8 +1,31 @@
 <script setup lang="ts">
+/**
+ * FiltrosResultado — barra de filtros del resultado de efectividad en cascada
+ * Sucursal → Ruta → Promotor, con chips de los filtros activos.
+ *
+ * Se usa en pages/EfectividadCobranza/Index. Las opciones de cada selector y
+ * la lista de filtros activos las calcula la página.
+ *
+ * Props:
+ * - opcionesSucursal / opcionesOficina / opcionesPromotor: opciones de cada selector.
+ * - activos: filtros aplicados (clave, título y valor) para mostrar como chips.
+ * - disabled: deshabilita selectores y chips (p. ej. mientras se recalcula).
+ *
+ * v-model: sucursal, oficina (ruta) y promotor.
+ *
+ * Emits:
+ * - quitar: se pidió quitar un filtro concreto (clave).
+ * - limpiar: se pidió quitar todos los filtros.
+ *
+ * Slots:
+ * - acciones: botones a la derecha de los selectores (opcional).
+ */
 import { Filter, X } from 'lucide-vue-next';
 import SelectField from '@/components/forms/SelectField.vue';
 
+/** Opción de un selector. */
 type Opcion = { value: string; label: string };
+/** Nivel de filtro. */
 type Clave = 'sucursal' | 'oficina' | 'promotor';
 
 defineProps<{
@@ -15,8 +38,11 @@ defineProps<{
 
 defineEmits<{ quitar: [Clave]; limpiar: [] }>();
 
+/** Sucursal seleccionada ('' = todas). */
 const sucursal = defineModel<string>('sucursal', { required: true });
+/** Ruta (oficina de Lendus) seleccionada ('' = todas). */
 const oficina = defineModel<string>('oficina', { required: true });
+/** Promotor seleccionado ('' = todos). */
 const promotor = defineModel<string>('promotor', { required: true });
 </script>
 
@@ -25,6 +51,7 @@ const promotor = defineModel<string>('promotor', { required: true });
         <div
             class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between"
         >
+            <!-- Selectores en cascada -->
             <div class="min-w-0 flex-1 space-y-3">
                 <p class="flex items-center gap-2 text-sm font-semibold">
                     <Filter
@@ -57,11 +84,13 @@ const promotor = defineModel<string>('promotor', { required: true });
                     />
                 </div>
             </div>
+            <!-- Acciones opcionales del slot -->
             <div v-if="$slots.acciones" class="flex flex-wrap gap-2">
                 <slot name="acciones" />
             </div>
         </div>
 
+        <!-- Chips de filtros activos y botón para quitarlos -->
         <div
             v-if="activos.length"
             class="mt-4 flex flex-wrap items-center gap-2 border-t pt-3"

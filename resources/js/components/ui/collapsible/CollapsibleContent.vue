@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Contenido que se muestra/oculta dentro de <Collapsible>. */
 import type { CollapsibleContentProps } from "reka-ui"
 import { CollapsibleContent } from "reka-ui"
 

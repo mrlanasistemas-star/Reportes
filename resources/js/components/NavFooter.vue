@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * NavFooter — grupo de enlaces externos al pie del menú lateral.
+ *
+ * Plantilla del starter kit; actualmente no se importa en ningún componente.
+ * Cada enlace abre en una pestaña nueva.
+ *
+ * Props:
+ * - items: enlaces a mostrar (título, href e icono).
+ * - class: clases extra para el grupo.
+ */
 import {
     SidebarGroup,
     SidebarGroupContent,

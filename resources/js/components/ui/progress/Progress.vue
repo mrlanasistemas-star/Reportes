@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Barra de progreso (shadcn-vue sobre reka-ui ProgressRoot); determinada con porcentaje o indeterminada si modelValue es null. */
 import type { ProgressRootProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

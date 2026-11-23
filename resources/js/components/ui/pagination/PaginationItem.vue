@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón de un número de página concreto. */
 import type { PaginationListItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import type { ButtonVariants } from '@/components/ui/button'

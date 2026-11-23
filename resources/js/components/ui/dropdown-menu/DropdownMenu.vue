@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Raíz del menú desplegable (shadcn-vue sobre reka-ui DropdownMenuRoot). */
 import type { DropdownMenuRootEmits, DropdownMenuRootProps } from "reka-ui"
 import { DropdownMenuRoot, useForwardPropsEmits } from "reka-ui"
 

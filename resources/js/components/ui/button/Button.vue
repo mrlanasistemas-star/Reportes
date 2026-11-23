@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón base (shadcn-vue sobre reka-ui Primitive) con variantes de estilo y tamaño (buttonVariants); admite as/as-child. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import type { ButtonVariants } from "."

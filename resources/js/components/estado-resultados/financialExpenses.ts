@@ -4,6 +4,11 @@
  * (FinancialExpenseService::panel).
  */
 
+/**
+ * Archivo de tabla de amortización cargado para un crédito: estado (vigente o
+ * sustituida), filas, rango de fechas, totales de pago/capital/interés, columnas
+ * detectadas, advertencias y quién/cuándo lo subió o sustituyó.
+ */
 export interface AmortizationUpload {
     id: number;
     name: string;
@@ -22,6 +27,10 @@ export interface AmortizationUpload {
     superseded_at: string | null;
 }
 
+/**
+ * Renglón de la tabla de amortización: número de pago, fecha, pago, capital,
+ * interés, IVA del interés, saldo y origen (archivo o captura manual).
+ */
 export interface AmortizationRow {
     id: number;
     number: number | null;
@@ -35,6 +44,10 @@ export interface AmortizationRow {
     source_row: number | null;
 }
 
+/**
+ * Pago esperado según la tabla y si se encontró en el estado de cuenta; `match`
+ * trae el movimiento bancario emparejado (fecha, monto, días y diferencia).
+ */
 export interface BankExpected {
     row_id: number;
     number: number | null;
@@ -51,6 +64,10 @@ export interface BankExpected {
     } | null;
 }
 
+/**
+ * Evidencia bancaria del crédito: patrón de búsqueda, tolerancias de días y
+ * monto, pagos esperados, cargos del banco sin emparejar y totales del cotejo.
+ */
 export interface BankEvidence {
     pattern: string | null;
     tolerance_days: number;
@@ -72,6 +89,12 @@ export interface BankEvidence {
     };
 }
 
+/**
+ * Situación de un crédito en el periodo: datos del crédito, tabla vigente, si
+ * cubre el periodo, renglones y totales del periodo, evidencia bancaria, ajuste
+ * de interés aplicado, valor congelado de la versión aprobada e historial de
+ * archivos.
+ */
 export interface CreditPeriod {
     credit: {
         id: number;
@@ -116,6 +139,10 @@ export interface CreditPeriod {
     history: AmortizationUpload[];
 }
 
+/**
+ * Respuesta completa del panel de gastos financieros: periodo, versión
+ * bloqueada (si la hay), créditos, totales y reglas de carga del archivo.
+ */
 export interface FinancialExpensesPayload {
     period: { id: number; label: string; start: string; end: string };
     locked: { version: number } | null;
@@ -145,18 +172,28 @@ export interface AdjustmentAmortization {
     applied: boolean;
 }
 
+/** Texto de la periodicidad de pagos de un crédito. */
 export const PERIODICITY_LABEL: Record<string, string> = {
     semanal: 'Pagos semanales',
     mensual: 'Pagos mensuales',
 };
 
-/** dd/mm/aaaa a partir de aaaa-mm-dd. */
+/**
+ * dd/mm/aaaa a partir de aaaa-mm-dd. Tolera fechas con hora
+ * ("aaaa-mm-dd hh:mm:ss" o ISO "aaaa-mm-ddThh:mm:ss…"): se descarta la hora.
+ */
 export function dmy(d: string | null | undefined): string {
     if (!d) {
         return '—';
     }
 
-    const [y, m, day] = d.split('-');
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(d.trim());
+
+    if (!match) {
+        return d;
+    }
+
+    const [, y, m, day] = match;
 
     return `${day}/${m}/${y}`;
 }

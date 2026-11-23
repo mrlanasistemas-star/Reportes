@@ -1,4 +1,23 @@
 <script setup lang="ts">
+/**
+ * ResultWaterfall — gráfica de cascada de Ingresos a Utilidad neta.
+ *
+ * Se usa en SummaryView. En escritorio dibuja barras flotantes (deltas desde el
+ * acumulado, subtotales desde 0) agrupadas en Ingresos / OPEX / del EBITDA a la
+ * utilidad, con tooltip de fórmula, fuente e importe exacto y navegación con
+ * ← →; un paso pendiente se dibuja como hueco punteado, nunca como $0. En móvil
+ * es una lista con barras proporcionales.
+ *
+ * Props:
+ * - steps: pasos de la cascada del dataset.
+ * - meta: StepMeta por clave de paso (fórmula, fuentes).
+ * - selected: paso fijado con clic.
+ * - preview: paso en vista previa (hover/foco).
+ *
+ * Emits:
+ * - select(key): clic o flecha sobre un paso.
+ * - preview(key|null): el cursor o foco entra/sale de un paso.
+ */
 import { computed } from 'vue';
 import { CONCEPT_HELP } from './conceptHelp';
 import { STEP_GROUPS, groupOf } from './storyline';
@@ -36,6 +55,7 @@ const SHORT_LABEL: Record<string, string> = {
     utilidad_neta: 'Utilidad neta',
 };
 
+/** Paso resaltado: la vista previa manda sobre el fijado. */
 const focusKey = computed(() => props.preview ?? props.selected);
 
 /**
@@ -91,6 +111,7 @@ const bars = computed(() => {
     });
 });
 
+/** Grupos consecutivos de barras con su etiqueta y cuántos pasos abarcan (encabezado). */
 const groups = computed(() => {
     const out: Array<{ id: number; label: string; count: number }> = [];
 
@@ -111,10 +132,16 @@ const groups = computed(() => {
     return out;
 });
 
+/** Mayor importe absoluto (para la vista móvil). */
 const maxAbs = computed(() =>
     Math.max(1, ...bars.value.map((b) => Math.abs(b.value))),
 );
 
+/**
+ * Clases de color de la barra: subtotales en sólido (EBITDA cian, positivo
+ * verde, negativo rosa) y deltas con rayado verde/rosa según el signo.
+ * @param b barra con tipo, valor y clave.
+ */
 function barTone(b: { type: string; value: number; key: string }): string {
     const neg = b.value < 0;
 
@@ -132,6 +159,10 @@ function barTone(b: { type: string; value: number; key: string }): string {
 }
 
 /** Etiqueta del importe: fuera de la barra, o dentro si chocaría con el borde o el eje. */
+/**
+ * @param b barra con valor, base y alto (en % del área).
+ * @returns si la etiqueta va dentro de la barra y su posición `bottom`.
+ */
 function labelPos(b: { value: number; bottom: number; height: number }) {
     const top = b.bottom + b.height;
 
@@ -152,6 +183,11 @@ function labelPos(b: { value: number; bottom: number; height: number }) {
         : { inside: false, style: { bottom: `calc(${b.bottom}% - 16px)` } };
 }
 
+/**
+ * Flechas izquierda/derecha: selecciona el paso vecino y le pasa el foco.
+ * @param e evento de teclado.
+ * @param i índice de la barra actual.
+ */
 function onKey(e: KeyboardEvent, i: number): void {
     const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
 
@@ -179,6 +215,7 @@ function onKey(e: KeyboardEvent, i: number): void {
             role="group"
             aria-label="Cascada de resultados"
         >
+            <!-- Encabezados de grupo -->
             <div class="flex">
                 <div
                     v-for="g in groups"
@@ -205,6 +242,7 @@ function onKey(e: KeyboardEvent, i: number): void {
                 </div>
             </div>
 
+            <!-- Barras (botones) con líneas de unión y tooltip -->
             <div class="relative mt-3 flex" @mouseleave="emit('preview', null)">
                 <button
                     v-for="b in bars"
@@ -352,6 +390,7 @@ function onKey(e: KeyboardEvent, i: number): void {
                     >
                 </button>
             </div>
+            <!-- Leyenda -->
             <div
                 class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground"
             >

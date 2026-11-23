@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón que alterna (abre/colapsa) la barra lateral. */
 import type { HTMLAttributes } from "vue"
 import { PanelLeftClose, PanelLeftOpen } from "lucide-vue-next"
 import { cn } from "@/lib/utils"

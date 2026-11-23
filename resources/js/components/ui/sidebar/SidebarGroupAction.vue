@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón de acción ubicado en el encabezado de un grupo de la barra lateral. */
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { Primitive } from "reka-ui"

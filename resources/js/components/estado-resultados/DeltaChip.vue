@@ -1,4 +1,19 @@
 <script setup lang="ts">
+/**
+ * DeltaChip — etiqueta pequeña con la variación de una cifra contra el
+ * periodo de comparación (flecha, importe compacto y %).
+ *
+ * La usan BottomLine y EquationTerm. Mientras carga muestra un esqueleto.
+ *
+ * Props:
+ * - row: renglón de comparativa del concepto, o null.
+ * - comparable: si los periodos son comparables (si no, no se pinta nada).
+ * - loading: si la comparativa se está cargando.
+ * - against: nombre corto del periodo contra el que se compara.
+ *
+ * Expone:
+ * - spoken: texto completo de la variación (para lectores de pantalla).
+ */
 import { ArrowDownRight, ArrowUpRight, Minus } from 'lucide-vue-next';
 import { computed } from 'vue';
 import { signed, signedCompact } from './comparativas';
@@ -20,6 +35,7 @@ const props = defineProps<{
     against?: string | null;
 }>();
 
+/** Dirección de la flecha según el signo de la variación (null si es 0 o no hay). */
 const trend = computed(() => {
     const v = props.row?.variation;
 

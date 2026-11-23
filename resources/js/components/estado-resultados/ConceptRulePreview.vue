@@ -1,4 +1,20 @@
 <script setup lang="ts">
+/**
+ * ConceptRulePreview — vista previa de una regla del catálogo de conceptos
+ * sobre los movimientos del periodo, antes de guardarla.
+ *
+ * La usa ConceptRuleDialog. Indica cuántos movimientos coinciden, cuántos se
+ * clasificarían (y por qué importe) y cuántos se quedan como están; lista cada
+ * movimiento con su concepto, importe, fecha, tratamiento actual y, si no se
+ * aplicaría, el motivo.
+ *
+ * Props:
+ * - preview: resultado de la vista previa, o null.
+ * - loading: si se está buscando.
+ * - error: mensaje de error de la vista previa, o null.
+ * - periodLabel: periodo sobre el que se busca.
+ * - waiting: el texto todavía es muy corto para buscar.
+ */
 import { CheckCircle2, CircleSlash, Loader2, SearchX } from 'lucide-vue-next';
 import type { PreviewResult } from './conceptCatalog';
 import { mxn } from './types';

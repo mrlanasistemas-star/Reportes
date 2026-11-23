@@ -1,4 +1,31 @@
 <script setup lang="ts">
+/**
+ * SourcesPanel — pestaña «Fuentes» del Estado de Resultados.
+ *
+ * Se usa en pages/EstadoResultados/Index. Muestra, en orden: la lista de
+ * verificación de fuentes (SourceChecklist), las tarjetas para subir aquí los
+ * estados de cuenta por cuenta y el NOI de corporativo, las fuentes que se
+ * cargan en Carga de archivos (Radiografía, ERP, Nómina) sólo como lectura y,
+ * con permiso, el historial de intentos de carga.
+ *
+ * Props:
+ * - sources: bloque `sources` del dataset.
+ * - canUpload: el usuario puede subir archivos.
+ * - uploadingSlot: clave de la cuenta/fuente que se está subiendo (null = ninguna).
+ * - uploadingPart: archivo 1 o 2 de ese slot en proceso.
+ * - uploadRules: reglas de tamaño/extensión para validar antes de subir.
+ * - lockReason: motivo por el que la carga está bloqueada (p. ej. versión aprobada).
+ * - attemptsUrl: URL de intentos de carga; sin ella no se muestra el historial.
+ * - refreshKey: contador para refrescar el historial.
+ * - periodId / periodLabel: periodo actual (para enlaces y textos).
+ * - canProcess: el usuario puede lanzar el procesamiento.
+ *
+ * Emits:
+ * - upload(slot, file, part?): subir un archivo a una cuenta o al NOI.
+ * - removePart(slot, part): quitar el archivo 1 o 2 de una cuenta.
+ * - tab(tab): cambiar a otra pestaña del módulo.
+ * - process(): procesar las fuentes del periodo.
+ */
 import { Activity, Database, ExternalLink, Users } from 'lucide-vue-next';
 import { computed, nextTick } from 'vue';
 import AccountUploadCard from './AccountUploadCard.vue';
@@ -32,6 +59,7 @@ const emit = defineEmits<{
     process: [];
 }>();
 
+/** Fuentes que se cargan en Carga de archivos, con su icono y qué alimentan. */
 const simple = computed<
     Array<{ src: SimpleSource; icon: typeof Database; feeds: string }>
 >(() => [
@@ -64,10 +92,18 @@ const PLAIN: Array<[RegExp, string]> = [
     ],
     [/\bnivel 1\b/gi, 'resultado de sucursales'],
 ];
+/**
+ * Aplica las sustituciones de PLAIN al texto de detalle de una fuente.
+ * @param text texto técnico (nulo = cadena vacía).
+ */
 const plain = (text: string | null | undefined) =>
     PLAIN.reduce((t, [re, to]) => t.replace(re, to), text ?? '');
 
 /** «Súbelo aquí»: lleva a la tarjeta y abre el selector de archivo. */
+/**
+ * @param slot clave de la cuenta (id `er-slot-<slot>`).
+ * @param part archivo 1 o 2; con 2 se abre el input del segundo archivo.
+ */
 async function goUpload(slot: string, part?: number): Promise<void> {
     await nextTick();
     document
@@ -98,6 +134,7 @@ async function goUpload(slot: string, part?: number): Promise<void> {
             @process="emit('process')"
         />
 
+        <!-- Tarjetas de carga directa: cuentas bancarias y NOI de corporativo -->
         <section aria-labelledby="er-uploads-title" class="space-y-3">
             <div>
                 <h3 id="er-uploads-title" class="text-base font-extrabold">
@@ -139,6 +176,7 @@ async function goUpload(slot: string, part?: number): Promise<void> {
             </div>
         </section>
 
+        <!-- Fuentes de sólo lectura que vienen de Carga de archivos -->
         <section class="rounded-2xl border bg-card shadow-soft-xs">
             <header
                 class="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4"
@@ -189,6 +227,7 @@ async function goUpload(slot: string, part?: number): Promise<void> {
             </ul>
         </section>
 
+        <!-- Historial de intentos de carga -->
         <UploadAttemptsPanel
             v-if="attemptsUrl"
             :url="attemptsUrl"

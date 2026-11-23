@@ -1,4 +1,20 @@
 <script setup lang="ts">
+/**
+ * ErPeriodPicker — selector de periodo mensual del Estado de Resultados.
+ *
+ * Lo usa ErCommandBar. Muestra flechas para ir al periodo anterior/siguiente
+ * y un disparador con el mes, el año y el rango de fechas. Al abrirlo
+ * (ErPickerSurface) presenta una cuadrícula de 12 meses por año, navegable con
+ * teclado, con un punto de color por estado del reporte (aprobado, preliminar
+ * u otro) y el botón "Mes más reciente".
+ *
+ * Props:
+ * - periods: periodos mensuales, el más reciente primero.
+ * - statuses: estado del reporte por id de periodo (solo los ya vistos).
+ * - loading: marca el grupo como ocupado (aria-busy).
+ *
+ * v-model: id del periodo seleccionado.
+ */
 import {
     CalendarDays,
     ChevronDown,
@@ -14,6 +30,7 @@ import {
 } from '@/components/ui/tooltip';
 import ErPickerSurface from './ErPickerSurface.vue';
 
+/** Periodo que se puede elegir (id, código M-AAAA-MM, etiqueta y fechas ISO opcionales). */
 export interface PeriodOption {
     id: number;
     code: string;
@@ -41,6 +58,7 @@ const props = withDefaults(
 
 const periodId = defineModel<number>({ required: true });
 
+/** Nombres completos de los meses. */
 const MONTHS = [
     'Enero',
     'Febrero',
@@ -55,6 +73,7 @@ const MONTHS = [
     'Noviembre',
     'Diciembre',
 ];
+/** Abreviaturas de los meses para el rango de fechas. */
 const SHORT = [
     'ene',
     'feb',
@@ -70,11 +89,17 @@ const SHORT = [
     'dic',
 ];
 
+/** Mes contable identificado por año y mes. */
 interface Slot {
     year: number;
     month: number; // 0-11
 }
 
+/**
+ * Convierte una fecha ISO (AAAA-MM-DD...) en Date local, sin desfase de zona horaria.
+ * @param iso fecha ISO.
+ * @returns la fecha o null si no es válida.
+ */
 function parseDate(iso?: string): Date | null {
     const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})/);
 
@@ -94,8 +119,10 @@ function slotOf(p: PeriodOption): Slot | null {
     return end ? { year: end.getFullYear(), month: end.getMonth() } : null;
 }
 
+/** Clave "año-mes" de un mes contable para usar en mapas. */
 const keyOf = (s: Slot) => `${s.year}-${s.month}`;
 
+/** Periodo por mes contable; si se repite el mes, se queda el primero (el más reciente). */
 const bySlot = computed(() => {
     const map = new Map<string, PeriodOption>();
 
@@ -109,6 +136,7 @@ const bySlot = computed(() => {
 
     return map;
 });
+/** Rango de años con periodos (año actual si no hay ninguno). */
 const years = computed(() => {
     const ys = props.periods
         .map((p) => slotOf(p)?.year)
@@ -119,20 +147,31 @@ const years = computed(() => {
         : { min: new Date().getFullYear(), max: new Date().getFullYear() };
 });
 
+/** Posición del periodo seleccionado en la lista. */
 const index = computed(() =>
     props.periods.findIndex((p) => p.id === periodId.value),
 );
+/** Periodo seleccionado (null si no está en la lista). */
 const current = computed(() => props.periods[index.value] ?? null);
+/** Mes contable del periodo seleccionado. */
 const currentSlot = computed(() =>
     current.value ? slotOf(current.value) : null,
 );
+/** Periodo más reciente. */
 const latest = computed(() => props.periods[0] ?? null);
 /** Lista: el más reciente primero → "anterior" es el siguiente índice. */
 const older = computed(() => props.periods[index.value + 1] ?? null);
+/** Periodo siguiente (más nuevo) al seleccionado. */
 const newer = computed(() =>
     index.value > 0 ? props.periods[index.value - 1] : null,
 );
 
+/**
+ * Texto del rango de fechas del periodo.
+ * @param p periodo.
+ * @param long formato largo ("Del 1 de junio al 30 de junio de 2026") o corto ("1 jun – 30 jun").
+ * @returns el texto, o vacío si faltan fechas.
+ */
 function rangeText(p: PeriodOption | null, long = false): string {
     const a = parseDate(p?.start);
     const b = parseDate(p?.end);
@@ -151,6 +190,10 @@ function rangeText(p: PeriodOption | null, long = false): string {
     return `${a.getDate()} ${SHORT[a.getMonth()]} – ${b.getDate()} ${SHORT[b.getMonth()]}`;
 }
 
+/**
+ * Separa el periodo en nombre de mes y año para el disparador.
+ * @param p periodo.
+ */
 function splitLabel(p: PeriodOption | null): { month: string; year: string } {
     const s = p ? slotOf(p) : null;
 
@@ -161,8 +204,13 @@ function splitLabel(p: PeriodOption | null): { month: string; year: string } {
     return { month: MONTHS[s.month], year: String(s.year) };
 }
 
+/** Mes y año que muestra el disparador. */
 const triggerLabel = computed(() => splitLabel(current.value));
 
+/**
+ * Selecciona el periodo indicado (flechas anterior/siguiente).
+ * @param target periodo destino; si es null no hace nada.
+ */
 function step(target: PeriodOption | null): void {
     if (target) {
         periodId.value = target.id;
@@ -170,12 +218,18 @@ function step(target: PeriodOption | null): void {
 }
 
 /* ---------- Popover ---------- */
+/** Popover u hoja abierta. */
 const open = ref(false);
+/** Año que muestra la cuadrícula. */
 const viewYear = ref(currentSlot.value?.year ?? years.value.max);
+/** Mes (0-11) con foco en la cuadrícula. */
 const focusMonth = ref(currentSlot.value?.month ?? 0);
+/** Dirección de la animación al cambiar de año. */
 const slideDir = ref<'next' | 'prev'>('next');
+/** Contenedor de la cuadrícula, para buscar la celda a enfocar. */
 const gridEl = ref<HTMLElement | null>(null);
 
+// Al abrir, la cuadrícula se coloca en el año y mes del periodo seleccionado.
 watch(open, (on) => {
     if (on) {
         viewYear.value = currentSlot.value?.year ?? years.value.max;
@@ -183,6 +237,7 @@ watch(open, (on) => {
     }
 });
 
+/** Celdas de los 12 meses del año visible con su periodo, selección, "reciente" y estado. */
 const cells = computed(() =>
     MONTHS.map((name, month) => {
         const slot = { year: viewYear.value, month };
@@ -200,6 +255,7 @@ const cells = computed(() =>
         };
     }),
 );
+/** Celdas agrupadas en 4 filas de 3 meses. */
 const rows = computed(() =>
     [0, 1, 2, 3].map((r) => cells.value.slice(r * 3, r * 3 + 3)),
 );
@@ -216,6 +272,10 @@ const legend = computed(() => {
     return [...seen].map(([cls, label]) => ({ cls, label }));
 });
 
+/**
+ * Texto de la leyenda para un estado: Aprobado, Preliminar o la etiqueta del estado.
+ * @param s estado del periodo.
+ */
 function legendLabel(s: PeriodStatus): string {
     return s.status === 'aprobado'
         ? 'Aprobado'
@@ -224,6 +284,10 @@ function legendLabel(s: PeriodStatus): string {
           : s.label;
 }
 
+/**
+ * Clase de color del punto de estado (verde aprobado, ámbar preliminar, azul otro).
+ * @param s estado del periodo.
+ */
 function dotCls(s?: PeriodStatus): string {
     if (!s) {
         return '';
@@ -236,6 +300,10 @@ function dotCls(s?: PeriodStatus): string {
           : 'bg-sky-500';
 }
 
+/**
+ * Cambia el año visible si está dentro del rango y fija la dirección de la animación.
+ * @param y año destino.
+ */
 function setYear(y: number): void {
     if (y < years.value.min || y > years.value.max || y === viewYear.value) {
         return;
@@ -245,6 +313,7 @@ function setYear(y: number): void {
     viewYear.value = y;
 }
 
+/** Tras el siguiente render, pide enfocar la celda activa. */
 async function focusCell(): Promise<void> {
     await nextTick();
     pendingFocus = true;
@@ -254,6 +323,7 @@ async function focusCell(): Promise<void> {
 /** Enfoca la celda activa en cuanto existe (tras la transición de año, si la hay). */
 let pendingFocus = false;
 
+/** Enfoca la celda del mes activo si hay un foco pendiente y la celda ya existe. */
 function afterYearEnter(): void {
     if (!pendingFocus) {
         return;
@@ -269,11 +339,20 @@ function afterYearEnter(): void {
     }
 }
 
+/**
+ * Al abrir, evita el autoenfoque por defecto y enfoca la celda del mes activo.
+ * @param e evento de autoenfoque.
+ */
 function onOpenFocus(e: Event): void {
     e.preventDefault();
     void focusCell();
 }
 
+/**
+ * Mueve el foco a un mes, ajustando el año si el mes se sale de 0-11.
+ * @param year año.
+ * @param month mes (puede ser negativo o mayor que 11).
+ */
 function moveTo(year: number, month: number): void {
     let y = year;
     let m = month;
@@ -297,6 +376,10 @@ function moveTo(year: number, month: number): void {
     void focusCell();
 }
 
+/**
+ * Selecciona el periodo de la celda y cierra; las celdas sin periodo no hacen nada.
+ * @param c celda elegida.
+ */
 function choose(c: (typeof cells.value)[number]): void {
     if (!c.period) {
         return;
@@ -306,6 +389,10 @@ function choose(c: (typeof cells.value)[number]): void {
     open.value = false;
 }
 
+/**
+ * Navegación con teclado en la cuadrícula: flechas, Inicio/Fin y RePág/AvPág (año).
+ * @param e evento de teclado.
+ */
 function onGridKey(e: KeyboardEvent): void {
     const y = viewYear.value;
     const m = focusMonth.value;
@@ -327,6 +414,7 @@ function onGridKey(e: KeyboardEvent): void {
     }
 }
 
+/** Selecciona el periodo más reciente y cierra. */
 function goLatest(): void {
     if (latest.value) {
         periodId.value = latest.value.id;
@@ -335,10 +423,12 @@ function goLatest(): void {
     open.value = false;
 }
 
+/** Estado del periodo seleccionado (si ya se consultó). */
 const currentStatus = computed(() =>
     current.value ? props.statuses[current.value.id] : undefined,
 );
 
+/** Clases comunes de las flechas anterior/siguiente. */
 const arrowCls =
     'grid w-9 shrink-0 place-items-center text-muted-foreground transition hover:bg-background hover:text-foreground focus-visible:z-10 focus-visible:ring-3 focus-visible:ring-emerald-500/30 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-30 dark:hover:bg-white/5';
 </script>
@@ -350,6 +440,7 @@ const arrowCls =
         class="flex h-12 min-w-0 items-stretch overflow-hidden rounded-xl bg-muted/55 ring-1 ring-border/70 ring-inset dark:bg-white/[0.035]"
         :aria-busy="loading || undefined"
     >
+        <!-- Flecha: periodo anterior -->
         <Tooltip>
             <TooltipTrigger as-child>
                 <button
@@ -369,6 +460,7 @@ const arrowCls =
             <TooltipContent v-if="older">{{ older.label }}</TooltipContent>
         </Tooltip>
 
+        <!-- Disparador y cuadrícula de meses -->
         <ErPickerSurface
             v-model:open="open"
             title="Elegir periodo"
@@ -424,6 +516,7 @@ const arrowCls =
 
             <!-- Contenido -->
             <div class="flex flex-col">
+                <!-- Cambio de año -->
                 <div class="flex items-center justify-between px-3 pt-3 pb-2">
                     <button
                         type="button"
@@ -451,6 +544,7 @@ const arrowCls =
                     </button>
                 </div>
 
+                <!-- Cuadrícula de meses con transición por año -->
                 <div ref="gridEl" class="relative overflow-hidden px-3 pb-3">
                     <Transition
                         :name="`er-year-${slideDir}`"
@@ -530,6 +624,7 @@ const arrowCls =
                     </Transition>
                 </div>
 
+                <!-- Pie: periodo seleccionado, rango, leyenda y "Mes más reciente" -->
                 <div
                     class="flex items-end justify-between gap-3 border-t bg-muted/40 px-4 py-3 dark:bg-white/[0.02]"
                 >
@@ -570,6 +665,7 @@ const arrowCls =
             </div>
         </ErPickerSurface>
 
+        <!-- Flecha: periodo siguiente -->
         <Tooltip>
             <TooltipTrigger as-child>
                 <button

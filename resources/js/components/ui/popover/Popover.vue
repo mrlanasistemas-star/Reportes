@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Raíz del popover (shadcn-vue sobre reka-ui PopoverRoot): panel flotante anclado a un disparador. */
 import type { PopoverRootEmits, PopoverRootProps } from "reka-ui"
 import { PopoverRoot, useForwardPropsEmits } from "reka-ui"
 

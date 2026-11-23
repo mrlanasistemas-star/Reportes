@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Enlace dentro del menú de navegación. */
 import type { NavigationMenuLinkEmits, NavigationMenuLinkProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

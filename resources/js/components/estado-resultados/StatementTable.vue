@@ -1,4 +1,22 @@
 <script setup lang="ts">
+/**
+ * StatementTable — tabla del Estado de Resultados (pestaña «Estado de resultados»).
+ *
+ * Se usa en pages/EstadoResultados/Index. Recorre los bloques en orden: las
+ * secciones (Ingresos, OPEX con sus categorías, D&A, financiero, ISR) son
+ * colapsables y muestran líneas, total, subtotales y cuántos movimientos del
+ * banco suman ahí; los resultados (EBITDA, EBIT, EBT, Utilidad neta) son
+ * renglones oscuros con fórmula y aviso «Preliminar» si les falta información.
+ * Cada renglón trae la barra de peso sobre ingresos (ShareBar).
+ *
+ * Props:
+ * - blocks: bloques del statement (secciones y resultados).
+ * - movements: movimientos del dataset, para contar los que suman a cada línea.
+ * - highlight: bloque a revelar y resaltar al cambiar ('ebitda', 'da', 'opex:<categoría>'…).
+ *
+ * Emits:
+ * - openMovements(filterKey): abrir movimientos con filtro `line:<clave>`.
+ */
 import {
     ChevronDown,
     ChevronsDownUp,
@@ -26,10 +44,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{ openMovements: [filterKey: string] }>();
 
+/** Estado colapsado por clave de sección o `opex:<categoría>`. */
 const collapsed = reactive<Record<string, boolean>>({});
+/** Contenedor de la tabla (para buscar el bloque a resaltar). */
 const root = ref<HTMLElement | null>(null);
+/** Bloque que parpadea tras revelarlo (null = ninguno). */
 const flash = ref<string | null>(null);
 
+/** Movimientos incluidos en el resultado por clave de línea/sección. */
 const movementCount = computed(() => {
     const map: Record<string, number> = {};
 
@@ -50,17 +72,25 @@ const collapsible = computed(() =>
             : [],
     ),
 );
+/** true si todas las secciones y categorías están contraídas. */
 const allCollapsed = computed(() =>
     collapsible.value.every((k) => collapsed[k]),
 );
 
+/** Contrae todo o expande todo según el estado actual. */
 function toggleAll(): void {
     const v = !allCollapsed.value;
     collapsible.value.forEach((k) => (collapsed[k] = v));
 }
 
+/** Temporizador que apaga el resaltado. */
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
 
+/**
+ * Expande el bloque (y el OPEX si es una categoría), lo desplaza a la vista y
+ * lo resalta 1.8 s.
+ * @param key clave del bloque (null = nada).
+ */
 async function reveal(key: string | null): Promise<void> {
     if (!key) {
         return;
@@ -87,10 +117,16 @@ async function reveal(key: string | null): Promise<void> {
     flashTimer = setTimeout(() => (flash.value = null), 1800);
 }
 
+/** Revela el bloque cada vez que cambia `highlight` (también al montar). */
 watch(() => props.highlight, reveal, { immediate: true });
 
+/**
+ * Indica si la línea está restringida para el usuario (redactada o «restringido»).
+ * @param l línea del estado.
+ */
 const restrictedLine = (l: StatementLine) =>
     l.redacted || l.state === 'restringido';
+/** Colores de fondo por renglón de resultado; los demás usan pizarra. */
 const RESULT_TONE: Record<string, string> = {
     ebitda: 'bg-cyan-800 text-white dark:bg-cyan-950',
     utilidad_neta: 'bg-emerald-900 text-white dark:bg-emerald-950',
@@ -102,6 +138,7 @@ const RESULT_TONE: Record<string, string> = {
         ref="root"
         class="overflow-clip rounded-2xl border bg-card shadow-soft-xs"
     >
+        <!-- Encabezado fijo de columnas con «Expandir / Contraer todo» -->
         <div
             class="sticky top-[3.75rem] z-10 grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-b bg-card/95 px-4 py-2.5 text-xs font-semibold text-muted-foreground backdrop-blur sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
         >
@@ -392,6 +429,7 @@ const RESULT_TONE: Record<string, string> = {
                     </template>
                 </div>
 
+                <!-- Total de la sección y subtotales -->
                 <div
                     class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 border-t border-dashed px-4 py-2 text-sm font-bold sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
                 >

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Etiqueta no interactiva para titular una sección del menú. */
 import type { DropdownMenuLabelProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

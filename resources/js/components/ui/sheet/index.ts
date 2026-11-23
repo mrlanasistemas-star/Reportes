@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Sheet (shadcn-vue): exporta el panel lateral y sus piezas. */
 export { default as Sheet } from "./Sheet.vue"
 export { default as SheetClose } from "./SheetClose.vue"
 export { default as SheetContent } from "./SheetContent.vue"

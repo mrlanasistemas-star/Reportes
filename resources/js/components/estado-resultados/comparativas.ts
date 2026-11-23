@@ -4,6 +4,7 @@
  * null = "Sin datos" o "Pendiente" (nunca $0.00).
  */
 
+/** Modo de comparativa: periodo anterior, mismo mes del año anterior, evolución, acumulado, sucursales o personalizado. */
 export type CompMode =
     | 'anterior'
     | 'anio_anterior'
@@ -12,11 +13,13 @@ export type CompMode =
     | 'sucursales'
     | 'personalizado';
 
+/** Motivo con código y mensaje en español (no disponible, reserva, advertencia). */
 export interface Reason {
     code: string;
     message: string;
 }
 
+/** Fuente que falta para que dos periodos sean comparables, y dónde se carga. */
 export interface CompMissing {
     side: 'actual' | 'comparacion';
     period_id: number | null;
@@ -29,6 +32,7 @@ export interface CompMissing {
     message: string;
 }
 
+/** Resultado de comparabilidad entre dos periodos (nivel, motivos, advertencias y faltantes). */
 export interface Comparability {
     /** true sólo si level = comparable. */
     comparable: boolean;
@@ -44,6 +48,7 @@ export interface Comparability {
     unaffected?: string[];
 }
 
+/** Periodo de la comparativa (id, código, etiqueta, fechas, días, año y mes). */
 export interface CompPeriod {
     id: number | null;
     code: string | null;
@@ -55,6 +60,7 @@ export interface CompPeriod {
     month: number | null;
 }
 
+/** Un lado de la comparativa: periodo, disponibilidad, estado y fuente del reporte. */
 export interface CompRef {
     period: CompPeriod;
     available: boolean;
@@ -66,6 +72,10 @@ export interface CompRef {
     report?: Record<string, unknown> | null;
 }
 
+/**
+ * Renglón de comparativa de un concepto: valor actual y anterior, variación
+ * (en MXN o puntos porcentuales) y si es favorable o desfavorable.
+ */
 export interface CompRow {
     key: string;
     label: string;
@@ -86,6 +96,7 @@ export interface CompRow {
     centralized?: boolean;
 }
 
+/** Comparación de dos periodos con sus renglones y las categorías de OPEX. */
 export interface CompPair {
     key: string;
     label: string;
@@ -98,12 +109,14 @@ export interface CompPair {
     opex_categories: CompRow[];
 }
 
+/** Serie de una gráfica: clave, etiqueta y un valor por mes (null = sin datos). */
 export interface Series {
     key: string;
     label: string;
     data: Array<string | null>;
 }
 
+/** Modo «evolución»: series mensuales de los últimos N meses. */
 export interface CompEvolution {
     key: 'evolucion';
     label: string;
@@ -116,6 +129,7 @@ export interface CompEvolution {
     note: string;
 }
 
+/** Modo «acumulado» del año contra el mismo acumulado del año anterior. */
 export interface CompYtd {
     key: 'acumulado';
     label: string;
@@ -129,6 +143,7 @@ export interface CompYtd {
     comparison: CompPair;
 }
 
+/** Renglón de una sucursal: ingresos, OPEX, EBITDA, margen, participación y variaciones. */
 export interface BranchRow {
     key: string;
     label: string;
@@ -157,6 +172,7 @@ export interface BranchRow {
     >;
 }
 
+/** Modo «sucursales»: renglones, totales, gastos centralizados y conciliación al consolidado. */
 export interface CompBranches {
     key: 'sucursales';
     label: string;
@@ -201,6 +217,7 @@ export interface CompBranches {
     note: string;
 }
 
+/** Escalón de la gráfica de cascada (total, subtotal o delta) con su inicio y fin. */
 export interface CascadeStep {
     key: string;
     label: string;
@@ -211,6 +228,7 @@ export interface CascadeStep {
     pending: boolean;
 }
 
+/** Datos de las gráficas de comparativas (todas opcionales según el modo y el acceso). */
 export interface CompCharts {
     evolucion_resultados?: {
         title: string;
@@ -271,6 +289,7 @@ export interface CompCharts {
     };
 }
 
+/** Respuesta completa del endpoint de comparativas (contrato `er-comparativas/1`). */
 export interface ComparativasPayload {
     contract_version: string;
     generated_at: string;
@@ -304,7 +323,12 @@ export interface ComparativasPayload {
     diagnostics?: { ms: number };
 }
 
-/** Variación en pesos o puntos porcentuales con signo explícito. */
+/**
+ * Variación en pesos o puntos porcentuales con signo explícito.
+ *
+ * @param v variación cruda (texto decimal) o null («—»).
+ * @param unit 'MXN' para moneda; 'pp' o '%' para porcentajes con 2 decimales.
+ */
 export function signed(v: string | null, unit: 'MXN' | 'pp' | '%'): string {
     if (v === null) {
         return '—';
@@ -321,7 +345,12 @@ export function signed(v: string | null, unit: 'MXN' | 'pp' | '%'): string {
     return `${sign}${abs.toFixed(2)} ${unit === 'pp' ? 'pp' : '%'}`;
 }
 
-/** Variación compacta para tarjetas: +$82.5K, −6.74 pp. */
+/**
+ * Variación compacta para tarjetas: +$82.5K, −6.74 pp.
+ *
+ * @param v variación cruda (texto decimal) o null («—»).
+ * @param unit 'MXN' se abrevia en K/M; otras unidades usan `signed`.
+ */
 export function signedCompact(
     v: string | null,
     unit: 'MXN' | 'pp' | '%',

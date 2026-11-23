@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Ancla alternativa sobre la que se posiciona el popover. */
 import type { PopoverAnchorProps } from "reka-ui"
 import { PopoverAnchor } from "reka-ui"
 

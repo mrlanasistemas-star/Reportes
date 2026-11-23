@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Raíz del panel lateral deslizable (shadcn-vue sobre reka-ui DialogRoot). */
 import type { DialogRootEmits, DialogRootProps } from "reka-ui"
 import { DialogRoot, useForwardPropsEmits } from "reka-ui"
 

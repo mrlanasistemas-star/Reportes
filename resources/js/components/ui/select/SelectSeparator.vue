@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Línea divisoria entre grupos de opciones del select. */
 import type { SelectSeparatorProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

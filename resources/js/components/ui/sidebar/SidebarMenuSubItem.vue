@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Elemento (<li>) de una subopción del menú lateral. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

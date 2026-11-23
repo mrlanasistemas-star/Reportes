@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Raíz del tooltip (shadcn-vue sobre reka-ui TooltipRoot): texto de ayuda flotante al pasar el cursor. */
 import type { TooltipRootEmits, TooltipRootProps } from "reka-ui"
 import { TooltipRoot, useForwardPropsEmits } from "reka-ui"
 

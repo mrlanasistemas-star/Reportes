@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Elemento que cierra el panel lateral. */
 import type { DialogCloseProps } from "reka-ui"
 import { DialogClose } from "reka-ui"
 

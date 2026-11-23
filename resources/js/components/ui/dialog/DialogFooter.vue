@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Pie del diálogo para los botones de acción. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

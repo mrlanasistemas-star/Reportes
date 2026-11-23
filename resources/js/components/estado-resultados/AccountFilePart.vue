@@ -1,4 +1,29 @@
 <script setup lang="ts">
+/**
+ * AccountFilePart — zona de carga de uno de los dos archivos de una cuenta
+ * bancaria del Estado de Resultados.
+ *
+ * La usa AccountUploadCard (una instancia por archivo). Muestra el estado del
+ * archivo (cargado / falta / opcional), sus totales de cargos y abonos, si
+ * cuadran con el control del banco, avisos de la importación, movimientos por
+ * revisar y la zona de arrastrar/elegir el Excel. El archivo 1 sólo se
+ * sustituye; el archivo 2 (opcional) también se puede quitar.
+ *
+ * Props:
+ * - slotKey: clave de la cuenta (arma el id del input de archivo).
+ * - accountLabel: nombre visible de la cuenta (para los mensajes de confirmación).
+ * - file: datos de la zona (número de archivo, etiqueta, si es obligatorio y la carga vigente).
+ * - canUpload: si el usuario puede subir archivos.
+ * - uploading: si esta zona se está cargando o quitando ahora.
+ * - busy: otra operación de la misma cuenta en curso (deshabilita esta zona).
+ * - uploadRules: extensiones y tamaño máximo permitidos.
+ * - lockReason: motivo de solo lectura; si viene, se oculta la zona de carga.
+ * - pendingReview: movimientos de la cuenta por revisar.
+ *
+ * Emits:
+ * - upload(file): el usuario eligió (y confirmó, si sustituye) un archivo.
+ * - remove(): el usuario confirmó quitar el archivo 2.
+ */
 import {
     AlertTriangle,
     CheckCircle2,
@@ -33,15 +58,21 @@ const props = defineProps<{
 
 const emit = defineEmits<{ upload: [file: File]; remove: [] }>();
 
+/** Verdadero mientras se arrastra un archivo sobre la zona. */
 const dragging = ref(false);
+/** Referencia al input de archivo oculto (se limpia tras cada elección). */
 const input = ref<HTMLInputElement | null>(null);
+/** Verdadero si esta zona es opcional (archivo 2). */
 const optional = computed(() => !props.file.required);
+/** Carga vigente de esta zona, o null si aún no hay archivo. */
 const upload = computed(() => props.file.upload);
+/** Id único del input: el archivo 1 conserva el id histórico sin sufijo. */
 const inputId = computed(() =>
     props.file.part === 1
         ? `er-slot-input-${props.slotKey}`
         : `er-slot-input-${props.slotKey}-${props.file.part}`,
 );
+/** Zona deshabilitada mientras ella u otra parte de la cuenta trabaja. */
 const disabled = computed(() => props.uploading || !!props.busy);
 
 /** Si ya hay archivo en esta zona, se confirma antes de sustituirlo (clic o arrastre). */
@@ -65,6 +96,11 @@ async function confirmReplace(file: File): Promise<boolean> {
     return r.isConfirmed;
 }
 
+/**
+ * Toma el primer archivo elegido, limpia el input (para poder volver a elegir
+ * el mismo) y, si se confirma la sustitución, emite `upload`.
+ * @param files lista de archivos del input o del arrastre.
+ */
 async function pick(files: FileList | null | undefined): Promise<void> {
     const file = files?.[0];
 
@@ -77,6 +113,11 @@ async function pick(files: FileList | null | undefined): Promise<void> {
     }
 }
 
+/**
+ * Maneja el archivo soltado en la zona; sólo lo procesa si se permite cargar,
+ * no hay bloqueo y la zona no está ocupada.
+ * @param e evento de soltar.
+ */
 function onDrop(e: DragEvent): void {
     dragging.value = false;
 
@@ -85,6 +126,7 @@ function onDrop(e: DragEvent): void {
     }
 }
 
+/** Pide confirmación para quitar el archivo 2 y, si se acepta, emite `remove`. */
 async function askRemove(): Promise<void> {
     const current = upload.value;
 

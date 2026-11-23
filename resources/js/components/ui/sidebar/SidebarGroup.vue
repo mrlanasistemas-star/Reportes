@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Grupo/sección dentro de la barra lateral. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

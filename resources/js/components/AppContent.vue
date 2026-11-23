@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * AppContent — contenedor del contenido principal de la aplicación.
+ *
+ * Lo usan los layouts AppSidebarLayout y AppHeaderLayout. Con la variante
+ * "sidebar" envuelve el contenido en SidebarInset (junto al menú lateral);
+ * con cualquier otra variante usa un <main> centrado de ancho máximo 7xl.
+ *
+ * Props:
+ * - variant: tipo de layout ('sidebar' por defecto o 'header').
+ * - class: clases extra para el contenedor.
+ */
 import { computed } from 'vue';
 import { SidebarInset } from '@/components/ui/sidebar';
 import type { AppVariant } from '@/types';
@@ -11,6 +22,7 @@ type Props = {
 const props = withDefaults(defineProps<Props>(), {
     variant: 'sidebar',
 });
+/** Clases adicionales recibidas por prop, reenviadas al contenedor. */
 const className = computed(() => props.class);
 </script>
 

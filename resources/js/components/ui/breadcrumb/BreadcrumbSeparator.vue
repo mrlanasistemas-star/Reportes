@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Separador visual entre migas de pan (shadcn-vue); por defecto un chevrón. */
 import type { HTMLAttributes } from "vue"
 import { ChevronRight } from "lucide-vue-next"
 import { cn } from "@/lib/utils"

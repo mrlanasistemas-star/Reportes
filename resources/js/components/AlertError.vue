@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * AlertError — alerta roja (variante destructive) con una lista de errores.
+ *
+ * Se usa en TwoFactorSetupModal y TwoFactorRecoveryCodes para mostrar los
+ * errores devueltos por el servidor.
+ *
+ * Props:
+ * - errors: mensajes de error a listar (se eliminan los duplicados).
+ * - title: encabezado de la alerta (por defecto "No se pudo completar la acción.").
+ */
 import { AlertCircle } from 'lucide-vue-next';
 import { computed } from 'vue';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -12,6 +22,7 @@ const props = withDefaults(defineProps<Props>(), {
     title: 'No se pudo completar la acción.',
 });
 
+/** Errores sin duplicados, en el orden en que llegaron. */
 const uniqueErrors = computed(() => Array.from(new Set(props.errors)));
 </script>
 

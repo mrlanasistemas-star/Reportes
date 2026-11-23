@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón de opción del menú lateral; muestra tooltip cuando la barra está colapsada. */
 import type { Component } from "vue"
 import type { SidebarMenuButtonProps } from "./SidebarMenuButtonChild.vue"
 import { reactiveOmit } from "@vueuse/core"

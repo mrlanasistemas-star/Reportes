@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Tarjeta contenedora (shadcn-vue) con borde, fondo y sombra para agrupar contenido. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

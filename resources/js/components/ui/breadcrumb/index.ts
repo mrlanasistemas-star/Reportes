@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Breadcrumb (shadcn-vue): exporta todos los subcomponentes de migas de pan. */
 export { default as Breadcrumb } from "./Breadcrumb.vue"
 export { default as BreadcrumbEllipsis } from "./BreadcrumbEllipsis.vue"
 export { default as BreadcrumbItem } from "./BreadcrumbItem.vue"

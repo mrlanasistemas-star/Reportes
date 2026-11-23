@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón para ir a la página anterior. */
 import type { PaginationPrevProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import type { ButtonVariants } from '@/components/ui/button'

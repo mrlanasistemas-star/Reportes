@@ -1,10 +1,26 @@
 <script setup lang="ts">
+/**
+ * IndicatorsPanel — pestaña de indicadores del Estado de Resultados.
+ *
+ * Se usa en pages/EstadoResultados/Index. Muestra los indicadores financieros
+ * (porcentajes con barra; "Sólo consolidado" si no hay valor) y los operativos,
+ * que son informativos y no entran en la fórmula del resultado.
+ *
+ * Props:
+ * - financial: indicadores financieros (márgenes en %).
+ * - informative: indicadores operativos (cartera, mora, colocación, etc.).
+ */
 import { Info } from 'lucide-vue-next';
 import { isNegative, mxn, pct } from './types';
 import type { Indicator } from './types';
 
 defineProps<{ financial: Indicator[]; informative: Indicator[] }>();
 
+/**
+ * Formatea el valor de un indicador según su unidad (MXN, %, número o texto tal cual).
+ * @param i indicador.
+ * @returns el valor formateado o "Sin información".
+ */
 function show(i: Indicator): string {
     if (i.value === null) {
         return 'Sin información';
@@ -22,6 +38,7 @@ function show(i: Indicator): string {
 
 <template>
     <div class="space-y-5">
+        <!-- Indicadores financieros -->
         <div>
             <p class="mb-2 text-xs font-bold text-muted-foreground">
                 Indicadores financieros
@@ -64,6 +81,7 @@ function show(i: Indicator): string {
                 </div>
             </div>
         </div>
+        <!-- Indicadores operativos (informativos) -->
         <div>
             <p
                 class="mb-2 flex items-center gap-1.5 text-xs font-bold text-muted-foreground"

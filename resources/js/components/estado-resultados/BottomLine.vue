@@ -1,4 +1,24 @@
 <script setup lang="ts">
+/**
+ * BottomLine — bloque «Utilidad neta» del resumen del Estado de Resultados.
+ *
+ * Lo usa KpiStrip. Muestra la utilidad neta en grande (con animación de
+ * conteo y su variación contra la comparativa) y, debajo, la cascada del
+ * EBITDA a la utilidad neta. Cada línea se puede seleccionar para ver su
+ * detalle. Un importe sin información se muestra como «Pendiente» (nunca
+ * $0) y se marca qué falta capturar en Ajustes.
+ *
+ * Props:
+ * - dataset: dataset del reporte (resultados y completitud).
+ * - active: clave de la línea seleccionada, o null.
+ * - rows: renglones de la comparativa por clave (para la variación).
+ * - comparable: si hay contra qué comparar.
+ * - loading: si la comparativa se está cargando.
+ * - against: nombre del periodo contra el que se compara.
+ *
+ * Emits:
+ * - select(key): se eligió una línea (o la utilidad neta).
+ */
 import { CircleHelp } from 'lucide-vue-next';
 import { computed } from 'vue';
 import {
@@ -29,15 +49,21 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: [key: string] }>();
 
+/** Resultados calculados del periodo. */
 const r = computed(() => props.dataset.results);
+/** Utilidad neta, o null si falta información. */
 const neta = computed(() => r.value.utilidad_neta ?? null);
+/** Utilidad neta animada (conteo progresivo) para la cifra grande. */
 const shown = useCountUp(() => num(neta.value));
+/** Conceptos que faltan para calcular la utilidad neta. */
 const missing = computed(
     () => props.dataset.completeness.utilidad_neta?.missing ?? [],
 );
+/** Conceptos que faltan para el EBIT (se marcan en Depreciación y amortización). */
 const ebitMissing = computed(
     () => props.dataset.completeness.ebit?.missing ?? [],
 );
+/** Conceptos que faltan para el EBT y que no faltaban ya en el EBIT. */
 const ebtMissing = computed(() =>
     (props.dataset.completeness.ebt?.missing ?? []).filter(
         (m) => !ebitMissing.value.includes(m),
@@ -57,6 +83,7 @@ const pendingWhy = computed(() => {
         : 'Falta información.';
 });
 
+/** Líneas de la cascada EBITDA → ISR con su signo, importe y lo que falta. */
 const lines = computed(() => [
     {
         key: 'ebitda',
@@ -109,6 +136,7 @@ const lines = computed(() => [
     },
 ]);
 
+/** Renglón de comparativa de la utilidad neta (para DeltaChip). */
 const netaRow = computed(() => props.rows.get('utilidad_neta') ?? null);
 </script>
 
@@ -171,6 +199,7 @@ const netaRow = computed(() => props.rows.get('utilidad_neta') ?? null);
             </p>
         </div>
 
+        <!-- Cascada del EBITDA a la utilidad neta -->
         <ol
             class="mt-auto divide-y divide-dashed divide-border rounded-xl border bg-card/80 text-sm"
             aria-label="Del EBITDA a la utilidad neta"

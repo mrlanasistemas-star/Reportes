@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * ErRefreshIndicator — aviso flotante "Actualizando…" durante una recarga.
+ *
+ * Se usa en pages/EstadoResultados/Index.
+ *
+ * Props:
+ * - active: hay una recarga en curso.
+ * - label: qué se actualiza (se muestra "Actualizando <label>…").
+ * - delay: milisegundos de espera antes de mostrarse (250 por defecto).
+ */
 import { Loader2 } from 'lucide-vue-next';
 import { onBeforeUnmount, ref, watch } from 'vue';
 
@@ -12,9 +22,11 @@ const props = withDefaults(
     { label: null, delay: 250 },
 );
 
+/** El aviso está visible. */
 const shown = ref(false);
 let timer: ReturnType<typeof setTimeout> | undefined;
 
+// Muestra el aviso tras `delay` ms de recarga activa; lo oculta al terminar.
 watch(
     () => props.active,
     (on) => {

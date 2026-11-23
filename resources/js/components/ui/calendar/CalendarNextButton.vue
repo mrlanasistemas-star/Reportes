@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Botón para avanzar al mes siguiente en el calendario. */
 import type { CalendarNextProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

@@ -1,8 +1,15 @@
+/**
+ * Estado y llamadas para configurar la verificación en dos pasos (Fortify):
+ * obtiene el QR, la llave manual y los códigos de recuperación desde las rutas
+ * Wayfinder two-factor.*. El estado es global (de módulo) para compartirlo entre
+ * la página de Seguridad, el modal de configuración y la lista de códigos.
+ */
 import { useHttp } from '@inertiajs/vue3';
 import type { ComputedRef, Ref } from 'vue';
 import { computed, ref } from 'vue';
 import { qrCode, recoveryCodes, secretKey } from '@/routes/two-factor';
 
+/** Valor que devuelve useTwoFactorAuth(). */
 export type UseTwoFactorAuthReturn = {
     qrCodeSvg: Ref<string | null>;
     manualSetupKey: Ref<string | null>;
@@ -18,18 +25,22 @@ export type UseTwoFactorAuthReturn = {
     fetchRecoveryCodes: () => Promise<void>;
 };
 
+/** Errores acumulados de las peticiones 2FA. */
 const errors = ref<string[]>([]);
 const manualSetupKey = ref<string | null>(null);
 const qrCodeSvg = ref<string | null>(null);
 const recoveryCodesList = ref<string[]>([]);
 
+/** true cuando ya se tienen QR y llave manual para mostrar la configuración. */
 const hasSetupData = computed<boolean>(
     () => qrCodeSvg.value !== null && manualSetupKey.value !== null,
 );
 
+/** Composable con el estado 2FA compartido y sus acciones. */
 export const useTwoFactorAuth = (): UseTwoFactorAuthReturn => {
     const http = useHttp();
 
+    /** Obtiene el SVG del código QR para la app de autenticación. */
     const fetchQrCode = async (): Promise<void> => {
         try {
             const { svg } = (await http.submit(qrCode())) as {
@@ -39,11 +50,12 @@ export const useTwoFactorAuth = (): UseTwoFactorAuthReturn => {
 
             qrCodeSvg.value = svg;
         } catch {
-            errors.value.push('Failed to fetch QR code');
+            errors.value.push('No se pudo obtener el código QR.');
             qrCodeSvg.value = null;
         }
     };
 
+    /** Obtiene la llave secreta para captura manual en la app. */
     const fetchSetupKey = async (): Promise<void> => {
         try {
             const { secretKey: key } = (await http.submit(secretKey())) as {
@@ -52,27 +64,31 @@ export const useTwoFactorAuth = (): UseTwoFactorAuthReturn => {
 
             manualSetupKey.value = key;
         } catch {
-            errors.value.push('Failed to fetch a setup key');
+            errors.value.push('No se pudo obtener la clave de configuración.');
             manualSetupKey.value = null;
         }
     };
 
+    /** Borra QR, llave y errores. */
     const clearSetupData = (): void => {
         manualSetupKey.value = null;
         qrCodeSvg.value = null;
         clearErrors();
     };
 
+    /** Borra los errores acumulados. */
     const clearErrors = (): void => {
         errors.value = [];
     };
 
+    /** Borra todo el estado 2FA en memoria (QR, llave, errores y códigos). */
     const clearTwoFactorAuthData = (): void => {
         clearSetupData();
         clearErrors();
         recoveryCodesList.value = [];
     };
 
+    /** Obtiene la lista de códigos de recuperación vigentes. */
     const fetchRecoveryCodes = async (): Promise<void> => {
         try {
             clearErrors();
@@ -80,11 +96,14 @@ export const useTwoFactorAuth = (): UseTwoFactorAuthReturn => {
                 recoveryCodes(),
             )) as string[];
         } catch {
-            errors.value.push('Failed to fetch recovery codes');
+            errors.value.push(
+                'No se pudieron obtener los códigos de recuperación.',
+            );
             recoveryCodesList.value = [];
         }
     };
 
+    /** Obtiene QR y llave manual en paralelo. */
     const fetchSetupData = async (): Promise<void> => {
         try {
             clearErrors();

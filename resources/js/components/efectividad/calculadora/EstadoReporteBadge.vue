@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * EstadoReporteBadge — insignia "Reporte conciliado" (verde) o "Reporte
+ * preliminar" (ámbar) según el estado de la auditoría del cálculo.
+ *
+ * Se usa en ControlTrazabilidad y ResultadoHero. Al pasar el cursor muestra
+ * el texto explicativo del estado.
+ *
+ * Props:
+ * - auditoria: control del cálculo (se usan `estado` y `estado_texto`).
+ */
 import { ShieldAlert, ShieldCheck } from 'lucide-vue-next';
 import type { Auditoria } from './types';
 

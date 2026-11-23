@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de la primitiva Alert (shadcn-vue): exporta los componentes y las variantes cva de estilo. */
 import type { VariantProps } from "class-variance-authority"
 import { cva } from "class-variance-authority"
 

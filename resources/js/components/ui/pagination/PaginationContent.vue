@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Lista que contiene los botones de la paginación. */
 import type { PaginationListProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

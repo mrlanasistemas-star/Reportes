@@ -1,4 +1,22 @@
 <script setup lang="ts">
+/**
+ * PayrollUploadCard — tarjeta de carga del «NOI de corporativo».
+ *
+ * Se usa en SourcesPanel. Muestra el archivo vigente (colaboradores,
+ * percepciones, lo que suma a nómina corporativa y los colaboradores que ya
+ * estaban en el NOI de sucursales), la regla anti-duplicado, la zona para
+ * arrastrar o elegir el Excel y el historial de cargas.
+ *
+ * Props:
+ * - source: estado de la fuente NOI de corporativo.
+ * - canUpload: el usuario puede subir archivos.
+ * - uploading: hay una carga de este NOI en curso.
+ * - uploadRules: extensiones/accept permitidos (si no, .xlsx/.xls/.xlsm).
+ * - lockReason: motivo por el que no se puede cargar (oculta la zona de carga).
+ *
+ * Emits:
+ * - upload(slot, file): siempre con slot 'noi_corporativo'.
+ */
 import {
     AlertTriangle,
     ChevronDown,
@@ -34,11 +52,20 @@ const props = defineProps<{
 
 const emit = defineEmits<{ upload: [slot: string, file: File] }>();
 
+/** Hay un archivo arrastrándose encima de la zona de carga. */
 const dragging = ref(false);
+/** Input de archivo oculto (se limpia tras cada selección). */
 const input = ref<HTMLInputElement | null>(null);
+/** Historial de cargas desplegado. */
 const showHistory = ref(false);
+/** Explicación «cómo se evita contarla dos veces» desplegada. */
 const showRule = ref(false);
 
+/**
+ * Toma el primer archivo elegido o soltado; si ya hay un NOI vigente pide
+ * confirmar la sustitución y luego emite `upload`.
+ * @param files lista de archivos del input o del drop.
+ */
 async function pick(files: FileList | null | undefined): Promise<void> {
     const file = files?.[0];
 
@@ -71,6 +98,10 @@ async function pick(files: FileList | null | undefined): Promise<void> {
     emit('upload', 'noi_corporativo', file);
 }
 
+/**
+ * Manejador del drop: sólo carga si hay permiso, no hay bloqueo ni carga en curso.
+ * @param e evento de arrastre.
+ */
 function onDrop(e: DragEvent): void {
     dragging.value = false;
 
@@ -111,6 +142,7 @@ function onDrop(e: DragEvent): void {
                 <StatusBadge :status="source.status" />
             </div>
 
+            <!-- Datos del archivo vigente -->
             <div v-if="source.upload" class="space-y-2 text-xs">
                 <p class="truncate font-medium" :title="source.upload.name">
                     {{ source.upload.name }}
@@ -169,6 +201,7 @@ function onDrop(e: DragEvent): void {
                 Usa el mismo reporte de nómina del NOI que el de sucursales.
             </p>
 
+            <!-- Regla para no duplicar con el NOI de sucursales -->
             <Collapsible v-model:open="showRule">
                 <CollapsibleTrigger
                     class="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
@@ -182,6 +215,7 @@ function onDrop(e: DragEvent): void {
                 </CollapsibleContent>
             </Collapsible>
 
+            <!-- Zona de carga: bloqueada o arrastrar/elegir -->
             <p
                 v-if="canUpload && lockReason"
                 class="mt-auto flex items-start gap-2 rounded-xl border border-dashed p-3 text-xs text-muted-foreground"
@@ -243,6 +277,7 @@ function onDrop(e: DragEvent): void {
                 />
             </label>
 
+            <!-- Historial de cargas -->
             <Collapsible
                 v-if="source.history.length"
                 v-model:open="showHistory"

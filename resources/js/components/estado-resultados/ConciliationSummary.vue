@@ -1,4 +1,25 @@
 <script setup lang="ts">
+/**
+ * ConciliationSummary — bloque «Del banco al resultado»: a dónde fueron los
+ * movimientos bancarios del periodo.
+ *
+ * Lo usan SummaryView y la página EstadoResultados/Index. Muestra los
+ * totales de cargos y abonos, el % clasificado (anillo de avance), una barra
+ * apilada por importe (suman al ER, conciliados con ERP, transferencias,
+ * fuera del ER y pendientes) y su leyenda; cada tramo filtra la tabla de
+ * movimientos. Sin modo compacto añade los casos especiales (emparejamientos,
+ * parciales, reversos, reembolsos, saldo ERP sin pago) y lo incorporado del
+ * ERP fuera de Radiografía.
+ *
+ * Props:
+ * - c: resumen de conciliación del dataset.
+ * - movements: movimientos (para contar los que suman al ER).
+ * - activeFilter: filtro de segmento activo en la tabla, o null.
+ * - compact: versión reducida (sin ayudas ni casos especiales).
+ *
+ * Emits:
+ * - filter(key): se eligió un segmento para filtrar la tabla.
+ */
 import { ArrowDownToLine, Landmark } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { SEGMENT_FILTERS } from './movementFilters';
@@ -14,6 +35,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ filter: [key: string] }>();
 
+/** Color o patrón de cada segmento de la barra. */
 const SWATCH: Record<string, string> = {
     reconocidos: 'bg-emerald-600 dark:bg-emerald-500',
     conciliados: 'bg-cyan-500',
@@ -66,6 +88,7 @@ const segments = computed(() => {
     }));
 });
 
+/** Segmento bajo el cursor o con foco (muestra su tarjeta flotante). */
 const hovered = ref<string | null>(null);
 
 /** Casos especiales que trae el dataset (sólo se muestran si existen). */

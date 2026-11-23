@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Botón clicable de un día del calendario; aplica estilos de hoy, seleccionado, deshabilitado y fuera de mes. */
 import type { CalendarCellTriggerProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
@@ -22,13 +23,13 @@ const forwardedProps = useForwardProps(delegatedProps)
       buttonVariants({ variant: 'ghost' }),
       'size-8 p-0 font-normal aria-selected:opacity-100 cursor-default',
       '[&[data-today]:not([data-selected])]:bg-accent [&[data-today]:not([data-selected])]:text-accent-foreground',
-      // Selected
+      // Seleccionado
       'data-[selected]:bg-primary data-[selected]:text-primary-foreground data-[selected]:opacity-100 data-[selected]:hover:bg-primary data-[selected]:hover:text-primary-foreground data-[selected]:focus:bg-primary data-[selected]:focus:text-primary-foreground',
-      // Disabled
+      // Deshabilitado
       'data-[disabled]:text-muted-foreground data-[disabled]:opacity-50',
-      // Unavailable
+      // No disponible
       'data-[unavailable]:text-destructive-foreground data-[unavailable]:line-through',
-      // Outside months
+      // Días fuera del mes visible
       'data-[outside-view]:text-muted-foreground',
       props.class,
     )"

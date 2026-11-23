@@ -1,4 +1,20 @@
 <script setup lang="ts">
+/**
+ * EvidenceChain — cadena de evidencia de un movimiento.
+ *
+ * La usa MovementDetailSheet. Muestra el movimiento actual y, debajo, cada
+ * vínculo con el que se emparejó (estado de cuenta, ERP o NOI): tipo de
+ * vínculo, monto aplicado, días de diferencia, lo que quedó sin aplicar y el
+ * registro destino. También lista reembolsos y pares de reverso. Los vínculos
+ * restringidos por permisos se muestran con candado.
+ *
+ * Props:
+ * - movement: movimiento del que se muestra la cadena.
+ * - lookup: busca un movimiento visible del dataset por huella.
+ *
+ * Emits:
+ * - open: abrir el movimiento destino (vínculo o gasto original de un reembolso).
+ */
 import {
     ArrowDown,
     ArrowUpRight,
@@ -20,17 +36,20 @@ const props = defineProps<{
 
 const emit = defineEmits<{ open: [m: Movement] }>();
 
+/** Icono por tipo de fuente (banco, ERP, NOI). */
 const ICON: Record<string, unknown> = {
     banco: Landmark,
     erp: Database,
     noi: Users,
 };
+/** Nombre legible de cada tipo de fuente. */
 const TYPE_LABEL: Record<string, string> = {
     banco: 'Estado de cuenta',
     erp: 'ERP de gastos',
     noi: 'Nómina NOI',
 };
 
+/** Datos del propio movimiento: título (requisición o cuenta y fila), concepto, monto y fecha. */
 const self = computed(() => ({
     type: props.movement.source,
     title:
@@ -44,6 +63,10 @@ const self = computed(() => ({
     date: props.movement.date,
 }));
 
+/**
+ * Convierte un valor a texto; null si está vacío o no existe.
+ * @param v valor de la evidencia.
+ */
 function str(v: unknown): string | null {
     return v === null || v === undefined || v === '' ? null : String(v);
 }
@@ -106,6 +129,7 @@ const nodes = computed(() =>
     }),
 );
 
+/** Relaciones adicionales: reembolso de un gasto y par de reverso. */
 const extra = computed(() => {
     const m = props.movement;
     const out: Array<{ label: string; target: Movement | null }> = [];
@@ -127,6 +151,7 @@ const extra = computed(() => {
 
 <template>
     <div>
+        <!-- Encabezado -->
         <p class="text-sm font-extrabold">Cadena de evidencia</p>
         <p class="mt-0.5 text-xs text-muted-foreground">
             Con qué otros registros se emparejó este movimiento y cuánto se
@@ -168,6 +193,7 @@ const extra = computed(() => {
                 </span>
             </li>
 
+            <!-- Cada vínculo: datos del emparejamiento y registro destino -->
             <template v-for="(n, i) in nodes" :key="i">
                 <li class="flex items-center gap-2 py-1 pl-5 text-[11px]">
                     <ArrowDown
@@ -257,6 +283,7 @@ const extra = computed(() => {
                 </li>
             </template>
 
+            <!-- Reembolsos y reversos -->
             <li
                 v-for="(x, i) in extra"
                 :key="`x${i}`"

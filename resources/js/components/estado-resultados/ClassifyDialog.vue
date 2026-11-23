@@ -1,4 +1,24 @@
 <script setup lang="ts">
+/**
+ * ClassifyDialog — diálogo para clasificar uno o varios movimientos
+ * bancarios con un tratamiento financiero.
+ *
+ * Lo usa la página EstadoResultados/Index. Muestra el importe involucrado,
+ * advierte si algún movimiento ya está conciliado con el ERP (y si el
+ * tratamiento elegido duplicaría el gasto), ofrece los tratamientos agrupados
+ * (afectan el ER / fuera del ER / pendiente) con su explicación y exige un
+ * motivo de al menos 3 caracteres. El dato original nunca se modifica.
+ *
+ * Props:
+ * - open: si el diálogo está abierto (v-model:open).
+ * - items: movimientos seleccionados.
+ * - treatments: catálogo de tratamientos (sólo se ofrecen los asignables).
+ * - saving: si se está guardando (bloquea cerrar).
+ *
+ * Emits:
+ * - update:open(v): abrir o cerrar el diálogo.
+ * - submit(payload): guardar con el tratamiento y el motivo.
+ */
 import { AlertOctagon, Loader2 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
@@ -25,9 +45,15 @@ const emit = defineEmits<{
     submit: [payload: { treatment: string; notes: string }];
 }>();
 
+/** Tratamiento elegido. */
 const treatment = ref('');
+/** Motivo capturado. */
 const notes = ref('');
 
+/**
+ * Al abrir, propone el tratamiento sugerido (sólo con un movimiento) y
+ * limpia el motivo.
+ */
 watch(
     () => props.open,
     (open) => {
@@ -42,7 +68,9 @@ watch(
     },
 );
 
+/** Tratamientos que el usuario puede asignar. */
 const assignable = computed(() => props.treatments.filter((t) => t.assignable));
+/** Tratamientos agrupados para el selector. */
 const groups = computed(() => [
     {
         label: 'Afectan el Estado de Resultados',
@@ -57,20 +85,25 @@ const groups = computed(() => [
         items: assignable.value.filter((t) => t.group === 'pendiente'),
     },
 ]);
+/** Metadatos del tratamiento elegido, o null. */
 const chosen = computed(
     () => assignable.value.find((t) => t.key === treatment.value) ?? null,
 );
+/** Importe involucrado (suma de cargos y abonos de los movimientos). */
 const total = computed(() =>
     props.items.reduce((s, m) => s + Number(m.cargo) + Number(m.abono), 0),
 );
+/** Movimientos que ya están conciliados con el ERP. */
 const riskyDup = computed(() =>
     props.items.filter(
         (m) => m.treatment === 'conciliado_erp' || isConciliated(m),
     ),
 );
+/** Si el tratamiento elegido sumaría al ER movimientos ya conciliados (duplicaría). */
 const riskyAddsToEr = computed(
     () => riskyDup.value.length > 0 && chosen.value?.group === 'er',
 );
+/** Se puede guardar: hay tratamiento y motivo de al menos 3 caracteres. */
 const valid = computed(
     () => !!treatment.value && notes.value.trim().length >= 3,
 );

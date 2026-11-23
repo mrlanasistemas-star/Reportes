@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * ShareBar — barrita horizontal con el peso de una línea sobre los ingresos.
+ *
+ * Se usa en StatementTable, en la columna de % de cada renglón (sólo visible en xl+).
+ *
+ * Props:
+ * - pct: porcentaje sobre ingresos (texto o número); nulo = no se dibuja.
+ * - tone: color según el tipo de línea: cost, income, result o muted (por defecto).
+ * - strong: si es true la barra es más gruesa (renglones de total).
+ */
 import { computed } from 'vue';
 import { num } from './types';
 
@@ -9,7 +19,9 @@ const props = defineProps<{
     strong?: boolean;
 }>();
 
+/** Ancho de la barra en % (valor absoluto, tope 100). */
 const width = computed(() => Math.min(100, Math.abs(num(props.pct))));
+/** Clases de color por tono. */
 const TONES: Record<string, string> = {
     cost: 'bg-rose-400/70 dark:bg-rose-400/60',
     income: 'bg-emerald-500/70 dark:bg-emerald-400/60',

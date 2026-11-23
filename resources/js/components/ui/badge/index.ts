@@ -1,3 +1,4 @@
+/** Primitiva UI: Punto de entrada de Badge (shadcn-vue): exporta el componente y las variantes cva de estilo. */
 import type { VariantProps } from "class-variance-authority"
 import { cva } from "class-variance-authority"
 

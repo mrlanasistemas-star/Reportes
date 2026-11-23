@@ -1,4 +1,22 @@
 <script setup lang="ts">
+/**
+ * StepInspector — panel lateral que explica el paso elegido de la cascada.
+ *
+ * Se usa en SummaryView, junto a ResultWaterfall. Muestra tipo de paso,
+ * importe (o «Pendiente»), % sobre ingresos, cómo se obtiene (fórmula y, para
+ * resultados, la ecuación con los pasos anteriores), qué información falta, las
+ * líneas que lo forman y botones para ir al estado de resultados o a los
+ * movimientos del banco que suman ahí.
+ *
+ * Props:
+ * - meta: StepMeta del paso a explicar (null = invita a elegir uno).
+ * - steps: todos los pasos de la cascada (para armar la ecuación).
+ * - pinned: false cuando se muestra una vista previa (hover) y no el paso fijado.
+ *
+ * Emits:
+ * - openStatement(sectionKey): abrir el bloque del estado de resultados.
+ * - openMovements(filterKey): abrir movimientos con filtro `line:<clave>`.
+ */
 import {
     ArrowUpRight,
     CircleAlert,
@@ -73,6 +91,7 @@ const source = computed(() => {
         : null;
 });
 
+/** Líneas con el ancho relativo de su barra (vacío si la sección no aplica). */
 const lines = computed(() => {
     const s = source.value;
 
@@ -88,6 +107,7 @@ const lines = computed(() => {
     }));
 });
 
+/** El paso no tiene importe todavía. */
 const pending = computed(
     () =>
         !!props.meta &&
@@ -106,6 +126,7 @@ const lineKey = computed(() =>
         class="flex min-h-full flex-col rounded-2xl border bg-background/60 p-4 dark:bg-white/[0.02]"
         aria-live="polite"
     >
+        <!-- Sin paso elegido -->
         <div
             v-if="!meta"
             class="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-center text-sm text-muted-foreground"
@@ -209,9 +230,9 @@ const lineKey = computed(() =>
                         :key="s.key"
                         class="flex justify-between gap-2"
                     >
-                        <span class="truncate">{{
-                            s.type === 'delta' ? `− ${s.label}` : s.label
-                        }}</span>
+                        <!-- El importe de un delta ya trae su signo (resta = negativo):
+                             no se antepone «−» para no mostrar un doble negativo. -->
+                        <span class="truncate">{{ s.label }}</span>
                         <span
                             :class="
                                 isNegative(s.amount)
@@ -316,6 +337,7 @@ const lineKey = computed(() =>
                 </ul>
             </div>
 
+            <!-- Acciones -->
             <div class="mt-4 flex flex-wrap gap-2 border-t pt-3">
                 <button
                     v-if="meta.section || meta.result"

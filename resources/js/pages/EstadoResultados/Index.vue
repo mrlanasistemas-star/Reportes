@@ -1,4 +1,27 @@
 <script setup lang="ts">
+/**
+ * Pantalla: Estado de Resultados (ruta GET /estado-resultados, módulo `estado_resultados`).
+ *
+ * Para qué sirve: muestra el Estado de Resultados mensual (Ingresos − OPEX = EBITDA →
+ * EBIT → EBT → Utilidad) de un periodo y alcance (consolidado o sucursal), y guía el
+ * cierre: carga de fuentes, conciliación banco vs. ERP, revisión/clasificación de
+ * movimientos, ajustes contables, gastos financieros, validaciones, comparativas,
+ * catálogo de conceptos, aprobación/versiones y exportación a Excel/PDF.
+ *
+ * De dónde vienen los datos:
+ * - Props: EstadoResultadosController::index (periodos mensuales, periodo/alcance
+ *   iniciales, aviso de periodo inexistente, slots de carga, tratamientos, estados de
+ *   ajuste, permisos `can`, estados del reporte, reglas de carga, tolerancia y alcance
+ *   por sucursal del usuario).
+ * - Dataset: lo pide useErDataset vía AJAX a GET /estado-resultados/{periodo}/dataset.
+ *
+ * Rutas a las que llama (a través de los composables de estado-resultados):
+ * /{periodo}/dataset, /procesar, /tareas, /cargas, /cargas/noi-corporativo,
+ * /cargas/{slot}/archivo/{part}, /cargas/intentos, /clasificar, /aceptar-sugerencias,
+ * /ajustes, /ajustes/historial, /historial-clasificacion, /exportar/{excel|pdf},
+ * /versiones, /aprobar, /nueva-version, /comparativas, /gastos-financieros,
+ * /control-movimientos y el catálogo de conceptos (ver routes/web.php).
+ */
 import { Head, usePage } from '@inertiajs/vue3';
 import {
     AlertTriangle,
@@ -72,6 +95,7 @@ import { useErGovernance } from '@/composables/estado-resultados/useErGovernance
 import { useErNavigation } from '@/composables/estado-resultados/useErNavigation';
 import { useToast } from '@/composables/useToast';
 
+/** Layout de la app con la miga de pan del módulo. */
 defineOptions({
     layout: {
         breadcrumbs: [
@@ -80,7 +104,9 @@ defineOptions({
     },
 });
 
+/** Props de Inertia entregados por EstadoResultadosController::index. */
 const props = defineProps<{
+    /** Periodos mensuales (sin TEST-*), del más reciente al más antiguo. */
     periods: Array<{
         id: number;
         code: string;
@@ -88,16 +114,25 @@ const props = defineProps<{
         start: string;
         end: string;
     }>;
+    /** Periodo con que abre la pantalla (`?periodo=` válido o el más reciente). */
     initialPeriodId: number;
     /** Aviso si el periodo del enlace ya no existe (se abrió el más reciente). */
     periodNotice?: string | null;
+    /** Alcance inicial (consolidado o sucursal). */
     initialScope: string;
+    /** Ranuras de carga de fuentes (EstadoResultadosUploadService::SLOTS). */
     slots: Array<{ key: string; label: string }>;
+    /** Catálogo de tratamientos de movimientos (clave, etiqueta, tono, asignable). */
     treatments: TreatmentMeta[];
+    /** Estados posibles de un ajuste contable. */
     adjustmentStates: string[];
+    /** Permisos del usuario en el módulo (cargar, procesar, clasificar, ajustes, aprobar…). */
     can: Permissions;
+    /** Días de tolerancia del cruce banco vs. ERP. */
     toleranceDays: number;
+    /** Catálogo de estados del reporte. */
     reportStatuses?: Array<{ key: string; label: string }>;
+    /** Tamaño máximo y extensiones permitidas para cargas. */
     uploadRules?: UploadRules;
     /** Alcance de datos por sucursal del usuario (general = puede ver el consolidado). */
     branchScope?: {
@@ -108,6 +143,10 @@ const props = defineProps<{
     } | null;
 }>();
 
+/**
+ * Versión a consultar tomada de `?version=` en la URL (entero > 0), o null para
+ * la vigente. En SSR no hay `window` y se usa null.
+ */
 const initialVersion = (() => {
     if (typeof window === 'undefined') {
         return null;
@@ -121,12 +160,14 @@ const initialVersion = (() => {
 })();
 
 // ── Estado (refs y computeds antes de cualquier watch) ───────────────────
+/** Dataset del periodo/alcance/versión mostrados (fuente única de cifras de la pantalla). */
 const data = useErDataset({
     periodId: props.initialPeriodId,
     scope: props.initialScope,
     version: initialVersion,
 });
 const { periodId, scope, scopes, dataset, loading, loadError, version } = data;
+/** Gobierno del reporte: versión consultada, historial, aprobación y bloqueo de solo lectura. */
 const gov = useErGovernance({
     url: data.url,
     dataset,
@@ -139,7 +180,11 @@ const report = gov.report;
 const lockReason = gov.lockReason;
 /** Versión congelada (aprobada o sustituida): sus cifras ya no son preliminares ni tienen pendientes. */
 const isSnapshot = computed(() => report.value?.source === 'snapshot');
-/** Motivos de "preliminar" según el backend (o la ruta de cierre si no llega). */
+/**
+ * Motivos de "preliminar" según el backend (o la ruta de cierre si no llega).
+ * Una versión congelada nunca es preliminar. Usa `route`, declarado más abajo:
+ * es válido porque el computed se evalúa de forma perezosa.
+ */
 const preliminaryReasons = computed<string[]>(() =>
     isSnapshot.value
         ? []
@@ -160,6 +205,7 @@ const noBankData = computed(() => {
         d.sources.cuentas.every((c) => !c.upload)
     );
 });
+/** Panel lateral del historial de versiones abierto. */
 const historyOpen = ref(false);
 /** Versión aprobada con el modelo anterior (sin meta.model): se avisa y se muestra tal cual. */
 const legacyModel = computed(
@@ -167,8 +213,14 @@ const legacyModel = computed(
 );
 
 // Variación de las tarjetas: comparativa contra el periodo anterior (consulta ligera aparte).
+/** Prefijo de la app (props compartidos de Inertia) para armar URLs. */
 const base = ref((usePage().props as { base?: string }).base ?? '');
+/** Comparativa ligera (sólo «anterior», sin gráficas) para la variación de las tarjetas KPI. */
 const kpiComp = useErComparatives(base);
+/**
+ * Revisión de los datos mostrados: huella del dataset + estado y versión del reporte.
+ * Entra en la clave de caché de comparativas y gastos financieros para invalidarlas.
+ */
 const compRev = computed(() => {
     const m = dataset.value?.meta;
 
@@ -184,16 +236,21 @@ const loadingContext = computed(() => {
     return [p?.label, s?.label].filter(Boolean).join(' · ') || null;
 });
 const toast = useToast();
+/** Al montar, avisa si el periodo del enlace ya no existía y se abrió otro. */
 onMounted(() => {
     if (props.periodNotice) {
         toast.info(props.periodNotice);
     }
 });
+/** Par actual vs. periodo anterior para las tarjetas KPI (null mientras carga). */
 const kpiPair = computed(() => kpiComp.data.value?.modes.anterior ?? null);
+/** Ruta de cierre: pasos y bloqueos derivados del dataset. */
 const route = useCloseRoute(dataset);
+/** Navegación entre pestañas (sincronizada con la URL). */
 const nav = useErNavigation();
 // «Ver qué falta» desde el estado del reporte (ReportStatusPill) sin pasar por la barra de comandos.
 provide('er:goFuentes', () => nav.go('fuentes'));
+/** Acciones de escritura (cargar, procesar, clasificar, ajustes, exportar). */
 const actions = useErActions({
     url: data.url,
     scope,
@@ -212,6 +269,7 @@ const canWrite = computed(() => ({
     clasificar: props.can.clasificar && !lockReason.value,
     ajustes: props.can.ajustes && !lockReason.value,
 }));
+/** Nota para la tabla de movimientos con cuántos movimientos de nómina/DG se ocultaron por permisos. */
 const hiddenNote = computed(() => {
     const r = dataset.value?.meta.redactions;
 
@@ -225,36 +283,53 @@ const hiddenNote = computed(() => {
         ? `${n} movimiento(s) de ${[r.nomina ? 'nómina' : null, r.dg ? 'DG' : null].filter(Boolean).join(' y ')} ocultos por permisos`
         : null;
 });
+/** Índice de movimientos del dataset por huella (fingerprint). */
 const movementByFp = computed(
     () =>
         new Map(
             (dataset.value?.movements ?? []).map((m) => [m.fingerprint, m]),
         ),
 );
+/** Busca un movimiento por huella (null si no está en este alcance o está oculto). */
 const lookup = (fp: string) => movementByFp.value.get(fp) ?? null;
 
+/** Referencia a la tabla de movimientos (para limpiar su selección). */
 const table = ref<InstanceType<typeof MovementsTable> | null>(null);
+/** Hoja de detalle de movimiento abierta y su movimiento. */
 const detailOpen = ref(false);
 const detailMovement = ref<Movement | null>(null);
+/** Diálogo de clasificación abierto y los movimientos a clasificar. */
 const classifyOpen = ref(false);
 const classifyItems = ref<Movement[]>([]);
 /** Alta de regla del catálogo precargada desde el detalle de un movimiento. */
 const catalogPrefill = ref<Partial<RuleDraft> | null>(null);
 
+/**
+ * Clases de color (Tailwind) del tono de un tratamiento.
+ * @param t Clave del tratamiento.
+ * @returns Clases de TONE_CLS; «muted» si no se conoce.
+ */
 const toneOf = (t: string) => {
     const meta = props.treatments.find((x) => x.key === t);
 
     return TONE_CLS[meta?.tone ?? 'muted'] ?? TONE_CLS.muted;
 };
 
+/** Título (en minúsculas) de una sección del estado de resultados; si no es sección, la clave. */
 const sectionTitle = (key: string) => {
     const b = dataset.value?.statement.find((x) => x.key === key);
 
     return b?.type === 'section' ? b.title.toLowerCase() : key;
 };
+/** Traduce una clave de filtro de movimientos a su definición (etiqueta + predicado). */
 const resolve = (key: string) =>
     resolveFilter(key, { treatments: props.treatments, sectionTitle });
 
+/**
+ * Pestañas del módulo, agrupadas en «análisis» y «cierre», con insignias de
+ * pendientes (fuentes, por revisar, ajustes sin información, diferencias,
+ * controles que no cuadran). En versiones congeladas no se muestran insignias.
+ */
 const tabs = computed<ErTab[]>(() => {
     const d = dataset.value;
     // En una versión aprobada o sustituida no hay pendientes que atender: sin insignias.
@@ -364,7 +439,7 @@ const tabs = computed<ErTab[]>(() => {
     ];
 });
 
-// Al recalcular, el detalle abierto se refresca con la versión nueva del movimiento.
+/** Al recalcular, el detalle abierto se refresca con la versión nueva del movimiento. */
 watch(version, () => {
     const fp = detailMovement.value?.fingerprint;
 
@@ -373,9 +448,11 @@ watch(version, () => {
             dataset.value?.movements.find((m) => m.fingerprint === fp) ?? null;
     }
 });
-// Las tarjetas comparan contra el periodo anterior (sólo cifras en vivo del periodo vigente).
-// La revisión (huella + estado del reporte) entra en la clave de caché: tras clasificar,
-// ajustar, procesar o aprobar, tarjetas y comparativas se recalculan solas.
+/**
+ * Las tarjetas comparan contra el periodo anterior (sólo cifras en vivo del periodo vigente).
+ * La revisión (huella + estado del reporte) entra en la clave de caché: tras clasificar,
+ * ajustar, procesar o aprobar, tarjetas y comparativas se recalculan solas.
+ */
 watch(
     () =>
         [
@@ -397,6 +474,7 @@ watch(
         }
     },
 );
+/** Al cambiar de periodo se limpian selección de tabla, paso fijado y filtro de movimientos. */
 watch(periodId, () => {
     table.value?.clearSelection();
     nav.selectedStep.value = null;
@@ -404,15 +482,21 @@ watch(periodId, () => {
 });
 
 // ── Interacciones ────────────────────────────────────────────────────────
+/** Botón de un paso de la ruta de cierre: va a su pestaña (y filtro, si lo trae). */
 function onRouteStep(s: CloseStep): void {
     nav.go(s.go.tab, s.go.filter);
 }
 
+/** Abre la hoja de detalle de un movimiento. */
 function openDetail(m: Movement): void {
     detailMovement.value = m;
     detailOpen.value = true;
 }
 
+/**
+ * Abre el diálogo de clasificación con los movimientos de esas huellas (cierra el
+ * detalle). Si ninguna huella está en el dataset, no abre nada.
+ */
 function openClassify(fingerprints: string[]): void {
     const set = new Set(fingerprints);
     classifyItems.value = (dataset.value?.movements ?? []).filter((m) =>
@@ -425,6 +509,7 @@ function openClassify(fingerprints: string[]): void {
     }
 }
 
+/** Envía la clasificación del diálogo; si se guardó, lo cierra y limpia la selección. */
 async function submitClassify(payload: {
     treatment: string;
     notes: string;
@@ -440,6 +525,7 @@ async function submitClassify(payload: {
     }
 }
 
+/** Precarga una regla del catálogo a partir de un movimiento y abre la pestaña Catálogo. */
 function createRuleFrom(m: Movement): void {
     detailOpen.value = false;
     catalogPrefill.value = draftFromMovement(
@@ -449,12 +535,17 @@ function createRuleFrom(m: Movement): void {
     nav.go('catalogo');
 }
 
+/**
+ * Acepta las sugerencias de esos movimientos; si se aplicaron, limpia la selección.
+ * @param ask false sólo desde la cola guiada / detalle (acción explícita de un movimiento).
+ */
 async function accept(fingerprints: string[], ask: boolean): Promise<void> {
     if (await actions.acceptSuggestions(fingerprints, ask)) {
         table.value?.clearSelection();
     }
 }
 
+/** Abre el detalle de un movimiento por huella (desde Validación); si no está visible, lo explica. */
 function openByFingerprint(fp: string): void {
     const m = lookup(fp);
 
@@ -471,20 +562,24 @@ function openByFingerprint(fp: string): void {
     }
 }
 
+/** Abre el historial de versiones y lo carga del servidor. */
 async function openHistory(): Promise<void> {
     historyOpen.value = true;
     await gov.loadHistory();
 }
 
+/** Elige una versión en el historial (null = vigente) y cierra el panel. */
 function onVersionPick(v: number | null): void {
     historyOpen.value = false;
     gov.viewVersion(v);
 }
 
+/** URL de la bitácora de intentos de carga (sólo para quien puede cargar). */
 const attemptsUrl = computed(() =>
     props.can.cargar ? data.url('/cargas/intentos') : null,
 );
 
+/** URL del historial de clasificación de un movimiento. */
 const historyUrl = (fp: string) =>
     data.url(`/historial-clasificacion?fingerprint=${encodeURIComponent(fp)}`);
 </script>
@@ -493,6 +588,7 @@ const historyUrl = (fp: string) =>
     <Head title="Estado de Resultados" />
     <TooltipProvider :delay-duration="150">
         <div class="space-y-4 p-4 md:p-6">
+            <!-- Encabezado de la página -->
             <AppPageHeader
                 kicker="Análisis financiero"
                 title="Estado de Resultados"
@@ -503,6 +599,7 @@ const historyUrl = (fp: string) =>
                 </template>
             </AppPageHeader>
 
+            <!-- Barra de comandos: periodo, alcance, procesar y exportar -->
             <ErCommandBar
                 v-if="periods.length"
                 v-model:period-id="periodId"
@@ -521,6 +618,7 @@ const historyUrl = (fp: string) =>
                 @export="actions.exportFile"
             />
 
+            <!-- Aviso de fuentes faltantes (oculto en versiones congeladas y en la pestaña Fuentes) -->
             <MissingSourcesBanner
                 v-if="
                     periods.length &&
@@ -532,6 +630,7 @@ const historyUrl = (fp: string) =>
                 @go="nav.go('fuentes')"
             />
 
+            <!-- Sin periodos mensuales: estado vacío; si hay, el contenido del reporte -->
             <div
                 v-if="!periods.length"
                 class="flex flex-col items-center gap-2 rounded-2xl border border-dashed bg-card py-20 text-center"
@@ -545,6 +644,7 @@ const historyUrl = (fp: string) =>
             </div>
 
             <template v-else>
+                <!-- Error al recargar con un dataset ya mostrado: se conserva lo último y se ofrece reintentar -->
                 <div
                     v-if="loadError && dataset"
                     role="alert"
@@ -571,6 +671,7 @@ const historyUrl = (fp: string) =>
                     </div>
                 </div>
 
+                <!-- Pantalla de carga (o de error) mientras no hay dataset que mostrar -->
                 <ErLoadingScreen
                     v-if="!dataset && (loading || loadError)"
                     :key="`${periodId}|${scope}`"
@@ -582,6 +683,7 @@ const historyUrl = (fp: string) =>
                     @cancel="data.abort()"
                 />
 
+                <!-- Contenido del reporte (se re-monta al cambiar periodo o alcance) -->
                 <Transition name="er-fade" mode="out-in">
                     <div
                         v-if="dataset"
@@ -590,6 +692,7 @@ const historyUrl = (fp: string) =>
                         :class="loading ? 'pointer-events-none opacity-60' : ''"
                         :aria-busy="loading"
                     >
+                        <!-- Indicador de actualización y notas informativas (modelo anterior, acceso por sucursal, datos ocultos) -->
                         <ErRefreshIndicator
                             :active="loading"
                             :label="loadingContext"
@@ -633,6 +736,7 @@ const historyUrl = (fp: string) =>
                             >
                         </p>
 
+                        <!-- Tarjetas KPI con variación contra el periodo anterior -->
                         <KpiStrip
                             :dataset="dataset"
                             :comparison="dataset.meta.model ? kpiPair : null"
@@ -666,9 +770,11 @@ const historyUrl = (fp: string) =>
                             />
                         </div>
 
+                        <!-- Ancla de desplazamiento y pestañas -->
                         <span id="er-tabs-anchor" class="block scroll-mt-2" />
                         <ErTabs v-model="nav.tab.value" :tabs="tabs" />
 
+                        <!-- Panel de la pestaña activa (una sección por pestaña; «control» es el caso por defecto) -->
                         <Transition name="er-fade" mode="out-in">
                             <section
                                 v-if="nav.tab.value === 'resumen'"
@@ -809,12 +915,16 @@ const historyUrl = (fp: string) =>
                                     :logs-loading="actions.logsLoading.value"
                                     @save="actions.saveAdjustment"
                                     @load-logs="actions.loadLogs"
-                                    @open-financial="nav.go('gastos_financieros')"
+                                    @open-financial="
+                                        nav.go('gastos_financieros')
+                                    "
                                 />
                             </section>
 
                             <section
-                                v-else-if="nav.tab.value === 'gastos_financieros'"
+                                v-else-if="
+                                    nav.tab.value === 'gastos_financieros'
+                                "
                                 id="er-panel-gastos_financieros"
                                 key="gastos_financieros"
                                 role="tabpanel"
@@ -823,7 +933,9 @@ const historyUrl = (fp: string) =>
                                 <FinancialExpensesPanel
                                     :base="base"
                                     :period-id="dataset.meta.period.id"
-                                    :consolidated="dataset.meta.scope.consolidated"
+                                    :consolidated="
+                                        dataset.meta.scope.consolidated
+                                    "
                                     :can-upload="can.ajustes"
                                     :rev="compRev"
                                     :reload-dataset="data.loadDataset"
@@ -940,6 +1052,7 @@ const historyUrl = (fp: string) =>
                     </div>
                 </Transition>
 
+                <!-- Estado vacío: sin dataset, sin carga y sin error -->
                 <div
                     v-if="!dataset && !loading && !loadError"
                     class="flex flex-col items-center gap-2 rounded-2xl border border-dashed bg-card py-16 text-center"
@@ -950,6 +1063,7 @@ const historyUrl = (fp: string) =>
             </template>
         </div>
 
+        <!-- Hojas y diálogos globales: detalle de movimiento, clasificación e historial de versiones -->
         <MovementDetailSheet
             v-model:open="detailOpen"
             :movement="detailMovement"

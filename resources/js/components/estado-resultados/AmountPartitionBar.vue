@@ -1,10 +1,21 @@
 <script setup lang="ts">
+/**
+ * AmountPartitionBar — barra «¿A dónde va cada peso?» de un movimiento.
+ *
+ * La usa MovementDetailSheet. Reparte el importe bruto del movimiento en
+ * conciliado con ERP, reconocido en el ER, excluido, pendiente y fuera del
+ * periodo, con una barra proporcional y su leyenda con importes.
+ *
+ * Props:
+ * - amounts: importes del movimiento por destino (incluye el bruto).
+ */
 import { computed } from 'vue';
 import { mxn, num } from './types';
 import type { MovementAmounts } from './types';
 
 const props = defineProps<{ amounts: MovementAmounts }>();
 
+/** Destinos posibles del importe, con su texto, ayuda y color de la barra. */
 const PARTS: Array<{
     key: keyof MovementAmounts;
     label: string;

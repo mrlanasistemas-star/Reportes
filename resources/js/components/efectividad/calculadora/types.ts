@@ -1,5 +1,13 @@
+/**
+ * Tipos y utilidades de la calculadora de Efectividad de Cobranza (cálculo
+ * efímero, sin guardar en BD). Los comparten la página EfectividadCobranza/Index
+ * y los componentes de esta carpeta.
+ *
+ * Modo: modalidad del cálculo (diario, acumulado, semanal o mensual).
+ */
 export type Modo = 'DIARIO' | 'ACUMULADO' | 'SEMANAL' | 'MENSUAL';
 
+/** Archivo leído en la sesión (cartera «Saldos por Cliente» o «Ingresos Cobranza») con su resumen. */
 export type ArchivoCargado = {
     id: string;
     nombre: string;
@@ -15,6 +23,7 @@ export type ArchivoCargado = {
     };
 };
 
+/** Requisito de un corte: una cartera, unos ingresos o una semana, y si ya está disponible. */
 export type RequisitoCorte = {
     tipo: 'cartera' | 'ingresos' | 'semana';
     etiqueta: string;
@@ -39,6 +48,10 @@ export type OpcionCorte = {
     semanas?: number;
 };
 
+/**
+ * Estado de las fuentes cargadas: carteras, ingresos, cortes calculables por
+ * modalidad, sucursales detectadas y minutos antes de que expire la sesión.
+ */
 export type ResumenFuentes = {
     carteras: ArchivoCargado[];
     ingresos: ArchivoCargado[];
@@ -51,8 +64,10 @@ export type ResumenFuentes = {
     expira_minutos: number;
 };
 
+/** Archivo rechazado al subir, con el motivo. */
 export type Rechazado = { nombre: string; error: string };
 
+/** Fila de la tabla de efectividad: promotor, subtotal de ruta, subtotal de sucursal o gran total. */
 export type FilaEfectividad = {
     tipo: 'promotor' | 'subtotal' | 'subtotal_sucursal' | 'gran_total';
     /** Sucursal (catálogo de rutas); null en el GRAN TOTAL. */
@@ -78,6 +93,7 @@ export type FilaEfectividad = {
     mora: number;
 };
 
+/** Estado del control: PRELIMINAR (hay pendientes) o CONCILIADO. */
 export type EstadoAuditoria = 'PRELIMINAR' | 'CONCILIADO';
 
 /** Control y trazabilidad del cálculo (opcional: resultados anteriores no lo traen). */
@@ -94,6 +110,7 @@ export type Auditoria = {
     cierres_refi_comprobados: number;
 };
 
+/** Incidencia detectada durante el cálculo (contrato, referencia, fecha, importe). */
 export type Incidencia = {
     id: string;
     codigo: string;
@@ -104,6 +121,10 @@ export type Incidencia = {
     descripcion: string;
 };
 
+/**
+ * Resultado completo de un cálculo: parámetros de la ventana, filas, incidencias,
+ * notas, avisos, totales por semana, catálogo de rutas y control de trazabilidad.
+ */
 export type Resultado = {
     modo: Modo;
     titulo: string;
@@ -135,6 +156,7 @@ export type Resultado = {
     auditoria?: Auditoria | null;
 };
 
+/** Encabezados JSON para fetch con el token XSRF leído de la cookie de Laravel. */
 export function xsrfHeaders(): Record<string, string> {
     const match = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
 
@@ -145,6 +167,11 @@ export function xsrfHeaders(): Record<string, string> {
     };
 }
 
+/**
+ * Extrae un mensaje legible de una respuesta fallida (primer error de validación,
+ * `message` o código HTTP; 413 = archivo demasiado grande).
+ * @param res respuesta HTTP no exitosa
+ */
 export async function mensajeError(res: Response): Promise<string> {
     try {
         const body = (await res.json()) as {
@@ -177,12 +204,14 @@ export const partesLeyenda = (leyenda: string | null | undefined): string[] =>
         .map((s) => s.trim())
         .filter(Boolean);
 
+/** Formateador de pesos (MXN) con dos decimales. */
 const money = new Intl.NumberFormat('es-MX', {
     style: 'currency',
     currency: 'MXN',
     minimumFractionDigits: 2,
 });
 
+/** Formatea un importe en pesos con dos decimales. */
 export const fmtMoney = (v: number) => money.format(v);
 
 /** Hay base para el porcentaje (no null, no NaN, no Infinity). */
@@ -194,6 +223,7 @@ export const fmtPct = (v: number | null | undefined) =>
     tienePct(v)
         ? `${(v * 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
         : '—';
+/** Convierte 'AAAA-MM-DD' a 'DD/MM/AAAA'; '—' si no hay fecha. */
 export const fmtFecha = (ymd: string | null) =>
     ymd ? ymd.split('-').reverse().join('/') : '—';
 

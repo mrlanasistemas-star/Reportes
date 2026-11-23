@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Avatar circular (shadcn-vue sobre reka-ui AvatarRoot) para mostrar foto o iniciales de un usuario. */
 import type { HTMLAttributes } from "vue"
 import { AvatarRoot } from "reka-ui"
 import { cn } from "@/lib/utils"

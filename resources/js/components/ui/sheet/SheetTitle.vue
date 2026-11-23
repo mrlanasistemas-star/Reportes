@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Título accesible del panel lateral. */
 import type { DialogTitleProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

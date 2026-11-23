@@ -1,4 +1,18 @@
 <script setup lang="ts">
+/**
+ * FileControlTable — control por archivo de estado de cuenta (pestaña Validación).
+ *
+ * La usa ValidationPanel. Por cada archivo que aporta al periodo muestra el
+ * total leído, el control del banco (TOTAL EXCEL) con su diferencia, cada
+ * parte de la partición (entra aquí, otros periodos, repetido, no guardado...)
+ * con conteo y monto, y si todas las filas quedaron guardadas.
+ *
+ * Props:
+ * - control: control de archivos del periodo (totales y archivos con sus partes).
+ *
+ * Emits:
+ * - drill: abrir la lista de movimientos de una parte (uploadId, filtro y título).
+ */
 import {
     CheckCircle2,
     ChevronRight,
@@ -20,6 +34,7 @@ const emit = defineEmits<{
     ];
 }>();
 
+/** Filtro de la lista de movimientos que corresponde a cada parte de la partición. */
 const PART_FILTER: Record<string, ControlFilter> = {
     entra: 'todos',
     otro_periodo: 'fuera',
@@ -31,6 +46,7 @@ const PART_FILTER: Record<string, ControlFilter> = {
     no_guardado: 'no_guardado',
 };
 
+/** Color del punto de cada parte (gris si no está aquí). */
 const PART_DOT: Record<string, string> = {
     entra: 'bg-emerald-500',
     otro_periodo: 'bg-sky-500',
@@ -38,6 +54,12 @@ const PART_DOT: Record<string, string> = {
     no_guardado: 'bg-rose-500',
 };
 
+/**
+ * Pide abrir los movimientos de una parte de un archivo.
+ * @param uploadId id del archivo cargado.
+ * @param file nombre del archivo (para el título).
+ * @param p parte de la partición.
+ */
 function drill(uploadId: number, file: string, p: FilePart): void {
     emit('drill', {
         uploadId,
@@ -53,6 +75,7 @@ function drill(uploadId: number, file: string, p: FilePart): void {
         class="rounded-2xl border bg-card p-5 shadow-soft-xs"
         aria-label="Qué pasó con cada peso de cada archivo"
     >
+        <!-- Encabezado y regla de la partición -->
         <div class="flex flex-wrap items-baseline justify-between gap-2">
             <h3 class="text-base font-extrabold">
                 Qué pasó con cada peso de cada archivo
@@ -74,6 +97,7 @@ function drill(uploadId: number, file: string, p: FilePart): void {
             Ningún estado de cuenta aporta movimientos a este periodo.
         </p>
 
+        <!-- Una tarjeta por archivo -->
         <ul class="mt-4 grid gap-3 xl:grid-cols-2">
             <li
                 v-for="u in control.uploads"
@@ -112,6 +136,7 @@ function drill(uploadId: number, file: string, p: FilePart): void {
                     · {{ u.movements.toLocaleString('es-MX') }} filas leídas
                 </p>
 
+                <!-- Total leído, control del banco y partes de la partición -->
                 <table class="mt-2 w-full text-xs tabular-nums">
                     <tbody>
                         <tr class="border-b font-semibold">
@@ -189,6 +214,7 @@ function drill(uploadId: number, file: string, p: FilePart): void {
                     </tbody>
                 </table>
 
+                <!-- Resultado del guardado -->
                 <p
                     class="mt-2 flex items-center gap-1.5 text-xs font-semibold"
                     :class="

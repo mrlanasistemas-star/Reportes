@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Opción que abre un submenú anidado (con chevrón). */
 import type { DropdownMenuSubTriggerProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

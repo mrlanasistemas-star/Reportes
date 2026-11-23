@@ -1,4 +1,27 @@
 <script setup lang="ts">
+/**
+ * ReportStatusBar — barra de estado y versión del reporte (gobierno de versiones).
+ *
+ * Se usa en pages/EstadoResultados/Index. Muestra la banda de solo lectura de
+ * una versión aprobada o sustituida, el número de versión con su sello, el
+ * avance Borrador → Pendiente de conciliación → Listo para revisión → Aprobado,
+ * las acciones (aprobar, abrir nueva versión, ver versiones), el aviso de la
+ * versión anterior reabierta y el desplegable de lo que falta para aprobar.
+ *
+ * Props:
+ * - report: metadatos de la versión mostrada (estado, bloqueos, sello, etc.).
+ * - dataset: datos del reporte para la lista de revisión previa (ApprovalChecklist).
+ * - canApprove: el usuario tiene permiso de aprobar / reabrir.
+ * - approving / reopening: hay una aprobación o reapertura en curso.
+ * - viewingHistoric: se consulta una versión anterior (?version=N).
+ *
+ * Emits:
+ * - approve(): aprobar la versión actual (sólo si es aprobable).
+ * - reopen(): abrir una nueva versión sobre la aprobada.
+ * - history(): abrir el historial de versiones.
+ * - backToCurrent(): volver a la versión vigente.
+ * - go(tab): ir a la pestaña donde se resuelve un pendiente.
+ */
 import {
     ArrowLeft,
     BadgeCheck,
@@ -41,6 +64,7 @@ const emit = defineEmits<{
     go: [tab: string];
 }>();
 
+/** Pasos del flujo de aprobación, con la explicación de cada uno. */
 const STEPS = [
     {
         key: 'borrador',
@@ -64,6 +88,7 @@ const STEPS = [
     },
 ];
 
+/** Índice del paso actual en STEPS (una versión sustituida cuenta como aprobada). */
 const currentIndex = computed(() => {
     const s =
         props.report.status === 'sustituido' ? 'aprobado' : props.report.status;
@@ -74,7 +99,9 @@ const currentIndex = computed(() => {
     );
 });
 
+/** La versión mostrada es una foto congelada (aprobada o sustituida). */
 const isSnapshot = computed(() => props.report.source === 'snapshot');
+/** La versión fue sustituida por una posterior. */
 const superseded = computed(() => props.report.status === 'sustituido');
 
 /** Bloqueos agrupados por tipo, en el orden en que conviene resolverlos. */
@@ -106,8 +133,14 @@ const groups = computed(() => {
         }));
 });
 
+/** Desplegable «Antes de aprobar» abierto. */
 const showBlockers = ref(false);
+/** Contenedor de la lista de bloqueos (para desplazarse y enfocarlo). */
 const blockersEl = ref<HTMLElement | null>(null);
+/**
+ * Primeros 12 caracteres del sello de aprobación.
+ * @param h hash completo o null.
+ */
 const shortHash = (h: string | null) => (h ? h.slice(0, 12) : '—');
 
 /** Aprobar; si aún no se puede, abre y muestra la lista de lo que falta. */

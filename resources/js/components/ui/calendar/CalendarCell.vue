@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Celda (<td>) de un día en la cuadrícula del calendario (shadcn-vue). */
 import type { CalendarCellProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

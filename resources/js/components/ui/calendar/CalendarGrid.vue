@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Tabla de la cuadrícula mensual del calendario (shadcn-vue). */
 import type { CalendarGridProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

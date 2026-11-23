@@ -1,15 +1,17 @@
-import type { RosterMovementStatus } from '@/types/asignaciones'
+import type { RosterMovementStatus } from '@/types/asignaciones';
 
 // Tonos por categoría de movimiento laboral (ver App\Services\Roster\RosterMovementStatus).
 // Rojo SOLO para baja confirmada; ámbar = pendiente de conciliación; gris = informativo.
 const TONES: Record<string, string> = {
     rose: 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300',
     amber: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
-    emerald: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
+    emerald:
+        'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
     sky: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300',
     slate: 'bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-300',
-}
+};
 
+/** Tono asignado a cada estado de movimiento del roster. */
 const STATUS_TONE: Record<RosterMovementStatus, keyof typeof TONES> = {
     alta_confirmada: 'emerald',
     reingreso: 'emerald',
@@ -26,10 +28,17 @@ const STATUS_TONE: Record<RosterMovementStatus, keyof typeof TONES> = {
     registro_duplicado: 'amber',
     contradiccion_fuentes: 'amber',
     sin_clasificar: 'amber',
-}
+};
 
+/**
+ * Clases Tailwind de la etiqueta de un estado de movimiento laboral.
+ * Lo usan RosterMovementCard y los paneles de movimientos y pendientes.
+ * @param status estado del movimiento; si falta o es desconocido se usa gris (slate)
+ */
 export function statusClasses(status?: string | null): string {
-    const tone = status ? STATUS_TONE[status as RosterMovementStatus] : undefined
+    const tone = status
+        ? STATUS_TONE[status as RosterMovementStatus]
+        : undefined;
 
-    return TONES[tone ?? 'slate']
+    return TONES[tone ?? 'slate'];
 }

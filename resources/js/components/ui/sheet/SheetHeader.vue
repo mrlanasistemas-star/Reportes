@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Encabezado del panel lateral (título y descripción). */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

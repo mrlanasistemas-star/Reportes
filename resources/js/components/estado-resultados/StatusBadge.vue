@@ -1,4 +1,15 @@
 <script setup lang="ts">
+/**
+ * StatusBadge — insignia redonda con icono y texto del estado de una fuente.
+ *
+ * Se usa en AccountUploadCard, ControlPanel, PayrollUploadCard, SourcesPanel y
+ * en Histórico general (AutomaticPeriodDetail / AutomaticPeriodInfo).
+ *
+ * Props:
+ * - status: estado de la fuente (procesado, cargado, con_incidencias, pendiente).
+ *   Etiqueta y colores salen de STATUS_META; un estado desconocido se muestra
+ *   como «pendiente».
+ */
 import {
     CheckCircle2,
     CircleDashed,
@@ -11,7 +22,9 @@ import type { SourceStatus } from './types';
 
 const props = defineProps<{ status: SourceStatus }>();
 
+/** Etiqueta y clases del estado (con respaldo a «pendiente»). */
 const meta = computed(() => STATUS_META[props.status] ?? STATUS_META.pendiente);
+/** Icono lucide que corresponde a cada estado. */
 const icon = computed(
     () =>
         ({

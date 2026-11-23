@@ -1,27 +1,36 @@
 <script setup lang="ts">
-import { Form, Head } from '@inertiajs/vue3'
-import { Mail } from 'lucide-vue-next'
-import AuthAsidePanel from '@/components/auth/AuthAsidePanel.vue'
-import AuthFormPanel from '@/components/auth/AuthFormPanel.vue'
-import InputError from '@/components/InputError.vue'
-import TextLink from '@/components/TextLink.vue'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Spinner } from '@/components/ui/spinner'
-import { login } from '@/routes'
-import { email } from '@/routes/password'
+/**
+ * Pantalla "Recuperar contraseña" (Fortify, requestPasswordResetLinkView).
+ * Trae su propio layout a pantalla completa (app.ts no la envuelve): panel lateral
+ * de marca + formulario. Envía el correo a la ruta Wayfinder password.email para
+ * que Laravel mande el enlace de restablecimiento.
+ */
+import { Form, Head } from '@inertiajs/vue3';
+import { Mail } from 'lucide-vue-next';
+import AuthAsidePanel from '@/components/auth/AuthAsidePanel.vue';
+import AuthFormPanel from '@/components/auth/AuthFormPanel.vue';
+import InputError from '@/components/InputError.vue';
+import TextLink from '@/components/TextLink.vue';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Spinner } from '@/components/ui/spinner';
+import { login } from '@/routes';
+import { email } from '@/routes/password';
 
+/** Props: status = mensaje de éxito que devuelve Fortify tras enviar el enlace. */
 defineProps<{
-    status?: string
-}>()
+    status?: string;
+}>();
 </script>
 
 <template>
     <Head title="Recuperar contraseña" />
 
     <div class="grid min-h-svh lg:grid-cols-2">
+        <!-- Panel lateral de marca (solo escritorio) -->
         <AuthAsidePanel />
+        <!-- Panel con el formulario para solicitar el enlace -->
 
         <AuthFormPanel
             mobile-title="Recuperar contraseña"
@@ -30,7 +39,12 @@ defineProps<{
             desktop-subtitle="Ingresa tu correo y te enviaremos un enlace para restablecer tu acceso."
             :status="status"
         >
-            <Form v-bind="email.form()" v-slot="{ errors, processing }" class="app-stagger space-y-5" style="--stagger-offset: 120ms">
+            <Form
+                v-bind="email.form()"
+                v-slot="{ errors, processing }"
+                class="app-stagger space-y-5"
+                style="--stagger-offset: 120ms"
+            >
                 <div class="space-y-2">
                     <Label for="email">Correo electrónico</Label>
                     <div class="group relative">
@@ -60,14 +74,21 @@ defineProps<{
                     class="h-11 w-full rounded-xl text-[0.95rem] font-semibold shadow-md shadow-primary/20 hover:-translate-y-px"
                 >
                     <Spinner v-if="processing" class="size-4" />
-                    <span>{{ processing ? 'Enviando enlace…' : 'Enviar enlace de recuperación' }}</span>
+                    <span>{{
+                        processing
+                            ? 'Enviando enlace…'
+                            : 'Enviar enlace de recuperación'
+                    }}</span>
                 </Button>
             </Form>
 
             <template #footer>
                 <p class="mt-6 text-center text-sm text-muted-foreground">
                     ¿Recordaste tu contraseña?
-                    <TextLink :href="login()" class="font-semibold text-primary underline-offset-4 hover:underline">
+                    <TextLink
+                        :href="login()"
+                        class="font-semibold text-primary underline-offset-4 hover:underline"
+                    >
                         Volver a iniciar sesión
                     </TextLink>
                 </p>

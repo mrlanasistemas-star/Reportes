@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Encabezado (<thead>) de la cuadrícula del calendario con los días de la semana. */
 import type { CalendarGridHeadProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { CalendarGridHead } from "reka-ui"

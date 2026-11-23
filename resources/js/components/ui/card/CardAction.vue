@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Zona de acciones (botones) alineada a la derecha del encabezado de la tarjeta. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

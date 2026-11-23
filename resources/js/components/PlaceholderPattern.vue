@@ -1,6 +1,11 @@
 <script setup lang="ts">
+/**
+ * PlaceholderPattern — patrón SVG de rayas diagonales usado como relleno de
+ * marcador de posición. Plantilla del starter kit; actualmente sin uso.
+ */
 import { useId } from 'vue';
 
+/** Id único del <pattern> para que varias instancias no choquen entre sí. */
 const patternId = `pattern-${useId()}`;
 </script>
 

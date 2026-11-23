@@ -1,4 +1,23 @@
 <script setup lang="ts">
+/**
+ * AmortizationUploadCard — tarjeta de carga de la tabla de amortización de
+ * un crédito (LEROM, BBVA, etc.).
+ *
+ * La usa FinancialExpensesPanel. Muestra el crédito, su periodicidad y el
+ * concepto de ajuste que alimenta, los datos de la tabla vigente (pagos,
+ * vigencia, quién la subió, interés total), sus avisos y la bitácora de
+ * cargas. Ofrece descargar la plantilla y subir o sustituir la tabla.
+ *
+ * Props:
+ * - credit: datos del crédito en el periodo (tabla vigente e historial).
+ * - accept: extensiones aceptadas por el input de archivo.
+ * - canUpload: si el usuario puede subir la tabla.
+ * - uploading: si la tabla se está subiendo ahora.
+ *
+ * Emits:
+ * - upload(file): el usuario eligió un archivo de tabla.
+ * - template(): descargar la plantilla de la tabla.
+ */
 import {
     AlertTriangle,
     Download,
@@ -30,13 +49,21 @@ const emit = defineEmits<{
     template: [];
 }>();
 
+/** Referencia al input de archivo oculto. */
 const input = ref<HTMLInputElement | null>(null);
+/** Si la bitácora de cargas está desplegada. */
 const showHistory = ref(false);
 
+/** Abre el selector de archivos del input oculto. */
 function pick(): void {
     input.value?.click();
 }
 
+/**
+ * Emite `upload` con el archivo elegido y limpia el input para poder volver
+ * a elegir el mismo archivo.
+ * @param e evento change del input.
+ */
 function onFile(e: Event): void {
     const el = e.target as HTMLInputElement;
     const file = el.files?.[0];
@@ -48,6 +75,7 @@ function onFile(e: Event): void {
     el.value = '';
 }
 
+/** Carga vigente de la tabla de amortización, o null si aún no hay. */
 const up = () => props.credit.upload;
 </script>
 

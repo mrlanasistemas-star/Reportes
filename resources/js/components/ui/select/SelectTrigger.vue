@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón visible del select que muestra el valor actual y abre la lista; admite tamaño sm/default. */
 import type { SelectTriggerProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

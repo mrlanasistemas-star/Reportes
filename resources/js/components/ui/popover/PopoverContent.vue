@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Panel flotante del popover (portal, posicionamiento y animaciones). */
 import type { PopoverContentEmits, PopoverContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

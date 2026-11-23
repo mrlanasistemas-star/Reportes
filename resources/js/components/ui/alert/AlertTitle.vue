@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Título de la alerta (shadcn-vue); va dentro de <Alert>. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

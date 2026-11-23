@@ -2,6 +2,7 @@
 <!-- @strictTemplates true -->
 
 <script setup lang="ts">
+/** Primitiva UI: Opción <option> estilizada para NativeSelect. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

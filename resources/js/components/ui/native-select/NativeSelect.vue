@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Select HTML nativo con estilos shadcn y v-model; útil en móviles y formularios simples. */
 import type { AcceptableValue } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit, useVModel } from "@vueuse/core"

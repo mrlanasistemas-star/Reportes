@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Imagen del avatar (reka-ui AvatarImage); se oculta automáticamente si no carga. */
 import type { AvatarImageProps } from "reka-ui"
 import { AvatarImage } from "reka-ui"
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Casilla de verificación (shadcn-vue sobre reka-ui CheckboxRoot) con v-model booleano o indeterminado. */
 import type { CheckboxRootEmits, CheckboxRootProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

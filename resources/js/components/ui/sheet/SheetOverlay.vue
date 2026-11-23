@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Capa oscura de fondo detrás del panel lateral. */
 import type { DialogOverlayProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

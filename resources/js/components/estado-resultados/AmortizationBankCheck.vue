@@ -1,4 +1,16 @@
 <script setup lang="ts">
+/**
+ * AmortizationBankCheck — cruce de los pagos de la tabla de amortización de
+ * un crédito contra los cargos del banco del periodo.
+ *
+ * Lo usa FinancialExpensesPanel. Muestra cuántos pagos esperados se
+ * encontraron en el banco (con su tolerancia de días e importe), los totales
+ * esperado / encontrado / diferencia, el detalle de cada pago y los cargos del
+ * banco que no corresponden a la tabla. Es sólo evidencia: no cambia el ER.
+ *
+ * Props:
+ * - credit: datos del crédito en el periodo, incluido el resultado del cruce (`bank`).
+ */
 import { CheckCircle2, CircleAlert, Landmark } from 'lucide-vue-next';
 import { computed } from 'vue';
 import { dmy } from './financialExpenses';
@@ -7,7 +19,9 @@ import { mxn } from './types';
 
 const props = defineProps<{ credit: CreditPeriod }>();
 
+/** Resultado del cruce contra el banco del crédito. */
 const bank = computed(() => props.credit.bank);
+/** Verdadero si se encontraron todos los pagos y no sobran cargos del banco. */
 const ok = computed(
     () =>
         bank.value.totals.expected_count === bank.value.totals.matched_count &&

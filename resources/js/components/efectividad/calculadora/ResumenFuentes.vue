@@ -1,4 +1,20 @@
 <script setup lang="ts">
+/**
+ * ResumenFuentes — resumen de los archivos cargados en la calculadora:
+ * archivos rechazados, cobertura del historial de ingresos, sucursales y rutas
+ * detectadas, y la tabla de archivos con botón para quitar cada uno.
+ *
+ * Se usa en pages/EfectividadCobranza/Index.
+ *
+ * Props:
+ * - resumen: carteras, ingresos y sucursales detectadas en la sesión.
+ * - rechazados: archivos que no se pudieron usar, con el motivo.
+ * - ocupado: hay una operación en curso (deshabilita los botones de quitar).
+ * - inicioPeriodo: primer día del periodo del corte elegido.
+ *
+ * Emits:
+ * - quitar: se pidió quitar un archivo (id del archivo).
+ */
 import { History, Receipt, Trash2, XCircle } from 'lucide-vue-next';
 import { computed } from 'vue';
 import { Button } from '@/components/ui/button';
@@ -16,7 +32,7 @@ const props = defineProps<{
 defineEmits<{ quitar: [string] }>();
 
 /**
- * Cobertura de ingresos. La macro reconoce anticipos y registra NO-CARTERA desde su
+ * Cobertura de ingresos. El motor de cálculo reconoce anticipos y registra NO-CARTERA desde su
  * historial acumulado (_HIST_INGRESOS); aquí ese historial es la suma de los Excel de
  * Ingresos Cobranza cargados (una fecha la aporta un solo archivo: el más reciente).
  */
@@ -42,12 +58,14 @@ const historial = computed(() => {
     };
 });
 
+/** Formatea un conteo con separadores es-MX; '—' si no hay valor. */
 const n = (v: number | null | undefined) =>
     v === null || v === undefined ? '—' : v.toLocaleString('es-MX');
 </script>
 
 <template>
     <div class="space-y-4">
+        <!-- Archivos rechazados -->
         <div
             v-if="rechazados.length"
             class="rounded-2xl border border-destructive/30 bg-destructive/5 p-4"
@@ -71,6 +89,7 @@ const n = (v: number | null | undefined) =>
             </ul>
         </div>
 
+        <!-- Cobertura del historial de ingresos (verde si incluye semanas previas) -->
         <div
             v-if="historial"
             class="flex gap-3 rounded-2xl border p-4 text-sm"
@@ -86,6 +105,7 @@ const n = (v: number | null | undefined) =>
                     historial.previo ? 'text-emerald-600' : 'text-amber-600'
                 "
             />
+            <!-- Rango de fechas cargado y qué implica para el cálculo -->
             <div>
                 <p class="font-medium">
                     Ingresos cargados: del {{ fmtFecha(historial.desde) }} al
@@ -112,6 +132,7 @@ const n = (v: number | null | undefined) =>
             </div>
         </div>
 
+        <!-- Sucursales y rutas detectadas (ámbar si no están en el catálogo) -->
         <div
             v-if="resumen.sucursales?.length"
             class="flex flex-wrap gap-2 text-sm"
@@ -141,6 +162,7 @@ const n = (v: number | null | undefined) =>
             </div>
         </div>
 
+        <!-- Tabla de archivos cargados -->
         <div class="overflow-hidden rounded-2xl border">
             <table class="w-full text-sm">
                 <thead

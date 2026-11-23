@@ -1,4 +1,9 @@
 <script setup lang="ts">
+/**
+ * Pantalla "Verifica tu correo" (Fortify, verifyEmailView).
+ * Permite reenviar el enlace de verificación (ruta Wayfinder verification.send)
+ * o cerrar sesión (logout).
+ */
 import { Form, Head } from '@inertiajs/vue3';
 import TextLink from '@/components/TextLink.vue';
 import { Button } from '@/components/ui/button';
@@ -6,6 +11,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { logout } from '@/routes';
 import { send } from '@/routes/verification';
 
+/** Props del layout de autenticación (título y descripción de la tarjeta). */
 defineOptions({
     layout: {
         title: 'Verifica tu correo',
@@ -14,6 +20,7 @@ defineOptions({
     },
 });
 
+/** Props: status = 'verification-link-sent' cuando se reenvió el enlace. */
 defineProps<{
     status?: string;
 }>();
@@ -27,7 +34,8 @@ defineProps<{
         role="status"
         class="app-banner app-banner-success mb-4"
     >
-        Te enviamos un nuevo enlace de verificación. Revisa también la carpeta de spam.
+        Te enviamos un nuevo enlace de verificación. Revisa también la carpeta
+        de spam.
     </div>
 
     <Form

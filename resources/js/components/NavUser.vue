@@ -1,4 +1,11 @@
 <script setup lang="ts">
+/**
+ * NavUser — botón del usuario al pie del menú lateral.
+ *
+ * Lo usa AppSidebar. Muestra avatar y nombre (UserInfo) y abre un menú
+ * desplegable con UserMenuContent; el menú se abre hacia la izquierda cuando
+ * la barra está colapsada en escritorio. Sin props ni emits.
+ */
 import { usePage } from '@inertiajs/vue3';
 import { ChevronsUpDown } from 'lucide-vue-next';
 import { computed } from 'vue';
@@ -17,6 +24,7 @@ import UserInfo from '@/components/UserInfo.vue';
 import UserMenuContent from '@/components/UserMenuContent.vue';
 
 const page = usePage();
+/** Usuario autenticado compartido por Inertia. */
 const user = computed(() => page.props.auth.user);
 const { isMobile, state } = useSidebar();
 </script>

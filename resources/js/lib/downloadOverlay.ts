@@ -1,4 +1,4 @@
-import Swal from 'sweetalert2';
+import { appSwal as Swal } from '@/components/feedback/ConfirmDialog';
 
 // Pantalla de carga para descargas de PDF/Excel (27-oct-2026 — "coloca una
 // pantalla de carga cuando se descargue el pdf o el excel"). Antes un
@@ -14,28 +14,39 @@ import Swal from 'sweetalert2';
 // Reutiliza la tarjeta y estilos de #fv-route-loading (app.css). Un <a> con
 // `data-no-download-overlay` o `target="_blank"` (sin atributo download) no se
 // intercepta: "Ver" en otra pestaña no es una descarga.
+/** Id del overlay en el DOM. */
 const OVERLAY_ID = 'fv-download-loading';
+/** Retraso antes de mostrarlo (descargas instantáneas no parpadean). */
 const SHOW_DELAY_MS = 150;
+/** A partir de aquí se muestra el aviso de "sigue generando" con segundos. */
 const SLOW_NOTICE_MS = 12_000;
 
+/** Patrones de ruta que se consideran descarga (extensión o sufijo /excel, /pdf, /exportar/x…). */
 const DOWNLOAD_PATH_PATTERNS: RegExp[] = [
     /\.(xlsx|xlsm|xls|csv|pdf|zip|docx)$/i,
     /\/(excel|pdf|xlsx|csv|descargar|download|credenciales)$/i,
     /\/exportar\/[^/]+$/i,
 ];
 
+/** Tipo de archivo, solo para el texto del overlay. */
 type Kind = 'pdf' | 'excel' | 'archivo';
 
+/** Estado de módulo: elemento del overlay, timers, contador de descargas activas y AbortController de la actual. */
 let overlayEl: HTMLDivElement | null = null;
 let showTimer: ReturnType<typeof setTimeout> | undefined;
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 let refCount = 0;
 let currentAbort: AbortController | null = null;
 
+/** true si la URL es del mismo origen y su ruta coincide con algún patrón de descarga. */
 export function isDownloadUrl(url: URL): boolean {
-    return url.origin === window.location.origin && DOWNLOAD_PATH_PATTERNS.some((p) => p.test(url.pathname));
+    return (
+        url.origin === window.location.origin &&
+        DOWNLOAD_PATH_PATTERNS.some((p) => p.test(url.pathname))
+    );
 }
 
+/** Deduce si la descarga es PDF, Excel o archivo genérico a partir de la ruta. */
 function kindOf(url: string): Kind {
     const path = new URL(url, window.location.href).pathname.toLowerCase();
 
@@ -50,8 +61,14 @@ function kindOf(url: string): Kind {
     return 'archivo';
 }
 
-const KIND_LABEL: Record<Kind, string> = { pdf: 'el PDF', excel: 'el Excel', archivo: 'el archivo' };
+/** Texto con artículo para cada tipo ("Generando el PDF…"). */
+const KIND_LABEL: Record<Kind, string> = {
+    pdf: 'el PDF',
+    excel: 'el Excel',
+    archivo: 'el archivo',
+};
 
+/** Crea (una sola vez) el overlay en <body> con su botón de cancelar y lo devuelve. */
 function ensureOverlay(): HTMLDivElement {
     if (overlayEl) {
         return overlayEl;
@@ -72,15 +89,19 @@ function ensureOverlay(): HTMLDivElement {
             <button type="button" class="fv-route-loading-action">Cancelar descarga</button>
         </div>
     `;
-    el.querySelector('.fv-route-loading-action')?.addEventListener('click', () => {
-        currentAbort?.abort();
-    });
+    el.querySelector('.fv-route-loading-action')?.addEventListener(
+        'click',
+        () => {
+            currentAbort?.abort();
+        },
+    );
     document.body.appendChild(el);
     overlayEl = el;
 
     return el;
 }
 
+/** Actualiza título y texto del overlay según el tipo y el tiempo transcurrido. */
 function setTexts(kind: Kind, elapsedMs: number): void {
     const el = ensureOverlay();
     const title = el.querySelector<HTMLElement>('.fv-route-loading-title');
@@ -92,7 +113,8 @@ function setTexts(kind: Kind, elapsedMs: number): void {
         }
 
         if (text) {
-            text.textContent = 'Estamos preparando la información. La descarga empieza sola en cuanto esté listo.';
+            text.textContent =
+                'Estamos preparando la información. La descarga empieza sola en cuanto esté listo.';
         }
 
         return;
@@ -103,15 +125,27 @@ function setTexts(kind: Kind, elapsedMs: number): void {
     }
 
     if (text) {
-        text.textContent = 'Este archivo reúne mucha información y puede tardar un poco más. No cierres ni recargues la ventana.';
+        text.textContent =
+            'Este archivo reúne mucha información y puede tardar un poco más. No cierres ni recargues la ventana.';
     }
 }
 
-export function showDownloadLoading(kind: Kind = 'archivo', cancelable = false): void {
+/**
+ * Muestra el overlay de descarga (tras SHOW_DELAY_MS) y arranca el contador de segundos.
+ * @param kind tipo de archivo para el texto.
+ * @param cancelable si se muestra el botón "Cancelar descarga".
+ */
+export function showDownloadLoading(
+    kind: Kind = 'archivo',
+    cancelable = false,
+): void {
     refCount += 1;
     const el = ensureOverlay();
     const startedAt = Date.now();
-    el.querySelector<HTMLElement>('.fv-route-loading-action')?.toggleAttribute('hidden', !cancelable);
+    el.querySelector<HTMLElement>('.fv-route-loading-action')?.toggleAttribute(
+        'hidden',
+        !cancelable,
+    );
     setTexts(kind, 0);
     clearInterval(tickTimer);
     tickTimer = setInterval(() => setTexts(kind, Date.now() - startedAt), 1000);
@@ -119,6 +153,7 @@ export function showDownloadLoading(kind: Kind = 'archivo', cancelable = false):
     showTimer = setTimeout(() => el.classList.add('is-visible'), SHOW_DELAY_MS);
 }
 
+/** Oculta el overlay cuando ya no queda ninguna descarga activa (refCount = 0). */
 export function hideDownloadLoading(): void {
     refCount = Math.max(0, refCount - 1);
 
@@ -131,6 +166,7 @@ export function hideDownloadLoading(): void {
     overlayEl?.classList.remove('is-visible');
 }
 
+/** Nombre del archivo desde Content-Disposition (filename* o filename) o, si no, el último segmento de la URL. */
 function filenameFrom(resp: Response, url: string): string {
     const header = resp.headers.get('Content-Disposition') ?? '';
     const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header)?.[1];
@@ -145,9 +181,16 @@ function filenameFrom(resp: Response, url: string): string {
 
     const plain = /filename="?([^";]+)"?/i.exec(header)?.[1];
 
-    return plain?.trim() || decodeURIComponent(new URL(url, window.location.href).pathname.split('/').pop() || 'descarga');
+    return (
+        plain?.trim() ||
+        decodeURIComponent(
+            new URL(url, window.location.href).pathname.split('/').pop() ||
+                'descarga',
+        )
+    );
 }
 
+/** Mensaje legible de una respuesta de error: `message` JSON, texto por estado (403/404) o el texto plano del HTML. */
 async function errorMessage(resp: Response): Promise<string> {
     const body = await resp.text().catch(() => '');
 
@@ -161,7 +204,12 @@ async function errorMessage(resp: Response): Promise<string> {
         // no es JSON
     }
 
-    const text = (new DOMParser().parseFromString(body, 'text/html').body.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const text = (
+        new DOMParser().parseFromString(body, 'text/html').body.textContent ??
+        ''
+    )
+        .replace(/\s+/g, ' ')
+        .trim();
 
     if (resp.status === 403) {
         return 'Tu rol no tiene permiso para descargar este archivo.';
@@ -171,9 +219,12 @@ async function errorMessage(resp: Response): Promise<string> {
         return 'El archivo ya no está disponible.';
     }
 
-    return text && text.length < 300 ? text : `El servidor respondió ${resp.status}. Intenta nuevamente en unos segundos.`;
+    return text && text.length < 300
+        ? text
+        : `El servidor respondió ${resp.status}. Intenta nuevamente en unos segundos.`;
 }
 
+/** Dispara la descarga de un Blob con un <a download> temporal y libera la URL después. */
 function saveBlob(blob: Blob, filename: string): void {
     const href = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -188,7 +239,8 @@ function saveBlob(blob: Blob, filename: string): void {
 /**
  * Descarga por fetch con la pantalla de carga. Si el servidor redirige (p. ej.
  * "ya se descargó" o falta un dato, con mensaje flash) o responde HTML, se navega
- * a la URL de forma normal para que la página muestre ese mensaje.
+ * a la URL de forma normal para que la página muestre ese mensaje. 419 recarga.
+ * @returns true si el archivo se guardó; false en cualquier otro caso.
  */
 export async function downloadFile(url: string): Promise<boolean> {
     const kind = kindOf(url);
@@ -197,7 +249,12 @@ export async function downloadFile(url: string): Promise<boolean> {
     showDownloadLoading(kind, true);
 
     try {
-        const resp = await fetch(url, { credentials: 'same-origin', redirect: 'manual', signal: abort.signal, headers: { Accept: '*/*' } });
+        const resp = await fetch(url, {
+            credentials: 'same-origin',
+            redirect: 'manual',
+            signal: abort.signal,
+            headers: { Accept: '*/*' },
+        });
 
         if (resp.type === 'opaqueredirect' || resp.status === 0) {
             window.location.href = url;
@@ -212,8 +269,13 @@ export async function downloadFile(url: string): Promise<boolean> {
         }
 
         if (!resp.ok) {
-            hideDownloadLoading();
-            void Swal.fire({ icon: 'error', title: `No se pudo descargar ${KIND_LABEL[kind]}`, text: await errorMessage(resp), confirmButtonColor: '#047857' });
+            // El overlay se oculta una sola vez en el `finally` (ocultarlo aquí también
+            // descontaba dos veces el contador y escondía otra descarga simultánea).
+            void Swal.fire({
+                icon: 'error',
+                title: `No se pudo descargar ${KIND_LABEL[kind]}`,
+                text: await errorMessage(resp),
+            });
 
             return false;
         }
@@ -232,8 +294,11 @@ export async function downloadFile(url: string): Promise<boolean> {
             void Swal.fire({
                 icon: 'error',
                 title: `No se pudo descargar ${KIND_LABEL[kind]}`,
-                text: e instanceof TypeError ? 'Sin conexión con el servidor. Revisa tu red e intenta de nuevo.' : (e as Error)?.message || 'Intenta nuevamente en unos segundos.',
-                confirmButtonColor: '#047857',
+                text:
+                    e instanceof TypeError
+                        ? 'Sin conexión con el servidor. Revisa tu red e intenta de nuevo.'
+                        : (e as Error)?.message ||
+                          'Intenta nuevamente en unos segundos.',
             });
         }
 
@@ -247,13 +312,26 @@ export async function downloadFile(url: string): Promise<boolean> {
     }
 }
 
+/**
+ * Escucha (en captura normal del documento) los clics izquierdos sin modificadores
+ * en enlaces de descarga y los convierte en downloadFile(). Se llama una vez desde app.ts.
+ */
 export function attachDownloadInterceptor(): void {
     document.addEventListener('click', (event) => {
-        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        if (
+            event.defaultPrevented ||
+            event.button !== 0 ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.altKey
+        ) {
             return;
         }
 
-        const anchor = (event.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+        const anchor = (event.target as Element | null)?.closest?.(
+            'a[href]',
+        ) as HTMLAnchorElement | null;
 
         if (!anchor || anchor.hasAttribute('data-no-download-overlay')) {
             return;
@@ -265,7 +343,12 @@ export function attachDownloadInterceptor(): void {
 
         const raw = anchor.getAttribute('href') ?? '';
 
-        if (raw === '' || raw.startsWith('#') || raw.startsWith('blob:') || raw.startsWith('javascript:')) {
+        if (
+            raw === '' ||
+            raw.startsWith('#') ||
+            raw.startsWith('blob:') ||
+            raw.startsWith('javascript:')
+        ) {
             return;
         }
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Insignia (conteo) a la derecha de una opción del menú lateral. */
 import type { HTMLAttributes } from "vue"
 import { cn } from "@/lib/utils"
 

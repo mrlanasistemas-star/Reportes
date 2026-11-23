@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Proveedor que configura retardos compartidos de los tooltips. */
 import type { TooltipProviderProps } from "reka-ui"
 import { TooltipProvider } from "reka-ui"
 

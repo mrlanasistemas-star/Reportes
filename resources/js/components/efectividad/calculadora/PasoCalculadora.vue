@@ -1,4 +1,20 @@
 <script setup lang="ts">
+/**
+ * PasoCalculadora — tarjeta numerada de un paso del asistente de la calculadora
+ * de efectividad (círculo con número o palomita, título y descripción).
+ *
+ * Se usa en pages/EfectividadCobranza/Index para cada paso del flujo.
+ *
+ * Props:
+ * - numero: número del paso (también forma el id del título para accesibilidad).
+ * - titulo: título del paso.
+ * - descripcion: texto de apoyo bajo el título (opcional).
+ * - estado: completo, activo (resaltado) o pendiente.
+ *
+ * Slots:
+ * - default: contenido del paso.
+ * - acciones: botones a la derecha del encabezado (opcional).
+ */
 import { Check } from 'lucide-vue-next';
 
 defineProps<{
@@ -16,6 +32,7 @@ defineProps<{
         :class="estado === 'activo' ? 'shadow-md ring-1 ring-primary/20' : ''"
         :aria-labelledby="`paso-${numero}`"
     >
+        <!-- Encabezado: indicador del paso, título, descripción y acciones -->
         <header
             class="flex flex-wrap items-start justify-between gap-3 px-5 pt-5 md:px-6"
         >
@@ -52,6 +69,7 @@ defineProps<{
                 <slot name="acciones" />
             </div>
         </header>
+        <!-- Contenido del paso -->
         <div class="space-y-4 px-5 pt-4 pb-5 md:px-6 md:pb-6">
             <slot />
         </div>

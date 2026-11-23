@@ -1,4 +1,10 @@
 <script setup lang="ts">
+/**
+ * Pantalla de verificación en dos pasos (Fortify, twoFactorChallengeView).
+ * Pide el código de 6 dígitos de la app de autenticación o, alternativamente,
+ * un código de recuperación. Envía a la ruta Wayfinder two-factor/login (store).
+ * El título/descripción del layout cambian según el modo con setLayoutProps.
+ */
 import { Form, Head, setLayoutProps } from '@inertiajs/vue3';
 import { computed, ref, watchEffect } from 'vue';
 import InputError from '@/components/InputError.vue';
@@ -12,6 +18,10 @@ import {
 import { store } from '@/routes/two-factor/login';
 import type { TwoFactorConfigContent } from '@/types';
 
+/** true = se está capturando un código de recuperación en lugar del OTP. */
+const showRecoveryInput = ref<boolean>(false);
+
+/** Textos (título, descripción y botón de alternar) según el modo activo: código OTP o de recuperación. */
 const authConfigContent = computed<TwoFactorConfigContent>(() => {
     if (showRecoveryInput.value) {
         return {
@@ -30,6 +40,7 @@ const authConfigContent = computed<TwoFactorConfigContent>(() => {
     };
 });
 
+/** Mantiene sincronizados el título y la descripción del AuthLayout con el modo activo. */
 watchEffect(() => {
     setLayoutProps({
         title: authConfigContent.value.title,
@@ -37,14 +48,18 @@ watchEffect(() => {
     });
 });
 
-const showRecoveryInput = ref<boolean>(false);
-
+/**
+ * Cambia entre modo OTP y modo código de recuperación, limpiando errores del
+ * formulario y el código capturado para no enviar datos del modo anterior.
+ * @param clearErrors función del slot de <Form> que borra los errores visibles.
+ */
 const toggleRecoveryMode = (clearErrors: () => void): void => {
     showRecoveryInput.value = !showRecoveryInput.value;
     clearErrors();
     code.value = '';
 };
 
+/** Código OTP de 6 dígitos capturado en los recuadros. */
 const code = ref<string>('');
 </script>
 
@@ -53,6 +68,7 @@ const code = ref<string>('');
 
     <div class="space-y-6">
         <template v-if="!showRecoveryInput">
+            <!-- Modo código OTP de la app de autenticación -->
             <Form
                 v-bind="store.form()"
                 class="space-y-4"
@@ -68,6 +84,7 @@ const code = ref<string>('');
                         <InputOTP
                             id="otp"
                             v-model="code"
+                            aria-label="Código de 6 dígitos de tu app de autenticación"
                             :maxlength="6"
                             :disabled="processing"
                             autofocus
@@ -83,9 +100,9 @@ const code = ref<string>('');
                     </div>
                     <InputError :message="errors.code" />
                 </div>
-                <Button type="submit" class="w-full" :disabled="processing"
-                    >{{ processing ? 'Verificando…' : 'Continuar' }}</Button
-                >
+                <Button type="submit" class="w-full" :disabled="processing">{{
+                    processing ? 'Verificando…' : 'Continuar'
+                }}</Button>
                 <div class="text-center text-sm text-muted-foreground">
                     <span>o bien, </span>
                     <button
@@ -100,6 +117,7 @@ const code = ref<string>('');
         </template>
 
         <template v-else>
+            <!-- Modo código de recuperación -->
             <Form
                 v-bind="store.form()"
                 class="space-y-4"
@@ -111,13 +129,16 @@ const code = ref<string>('');
                     type="text"
                     placeholder="Código de recuperación"
                     aria-label="Código de recuperación"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck="false"
                     :autofocus="showRecoveryInput"
                     required
                 />
                 <InputError :message="errors.recovery_code" />
-                <Button type="submit" class="w-full" :disabled="processing"
-                    >{{ processing ? 'Verificando…' : 'Continuar' }}</Button
-                >
+                <Button type="submit" class="w-full" :disabled="processing">{{
+                    processing ? 'Verificando…' : 'Continuar'
+                }}</Button>
 
                 <div class="text-center text-sm text-muted-foreground">
                     <span>o bien, </span>

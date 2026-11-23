@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Campo de código de un solo uso (OTP) basado en vue-input-otp; se usa en la verificación de dos factores. */
 import type { HTMLAttributes } from "vue"
 import type { OTPInputEmits, OTPInputProps } from "vue-input-otp"
 import { reactiveOmit } from "@vueuse/core"

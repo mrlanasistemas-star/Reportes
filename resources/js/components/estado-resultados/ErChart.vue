@@ -1,4 +1,19 @@
 <script setup lang="ts">
+/**
+ * ErChart — envoltura de AsyncApexChart con el tema del Estado de Resultados.
+ *
+ * La usa TrendCharts. Combina las opciones recibidas con valores por defecto
+ * (sin barra de herramientas, colores de ejes y cuadrícula, leyenda arriba a
+ * la izquierda, tooltip y tema según el modo claro/oscuro) y vuelve a montar la
+ * gráfica cuando cambia el modo.
+ *
+ * Props:
+ * - type: 'line', 'bar' o 'donut'.
+ * - height: alto en píxeles (300 por defecto).
+ * - options: opciones de ApexCharts; tienen prioridad sobre los valores por defecto.
+ * - series: series de datos.
+ * - label: etiqueta accesible de la gráfica.
+ */
 import { useMutationObserver } from '@vueuse/core';
 import { computed, onMounted, ref } from 'vue';
 import AsyncApexChart from '@/components/charts/AsyncApexChart.vue';
@@ -16,16 +31,20 @@ const props = defineProps<{
     label: string;
 }>();
 
+/** Modo oscuro activo (clase `dark` en <html>). */
 const dark = ref(false);
+/** Lee si el documento está en modo oscuro. */
 const read = () =>
     (dark.value = document.documentElement.classList.contains('dark'));
 onMounted(read);
+// Observa cambios de clase en <html> para seguir el cambio de tema.
 useMutationObserver(
     typeof document !== 'undefined' ? document.documentElement : null,
     read,
     { attributes: true, attributeFilter: ['class'] },
 );
 
+/** Opciones finales: valores por defecto del tema más las opciones recibidas. */
 const merged = computed(() => {
     const ink = dark.value ? '#cbd5e1' : '#475569';
     const grid = dark.value ? 'rgba(255,255,255,0.08)' : '#eef2f7';

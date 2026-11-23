@@ -1,4 +1,16 @@
 <script setup lang="ts">
+/**
+ * OkrNumberInput — campo numérico del módulo OKR. Se usa en OkrGoalsTable y
+ * OkrKrEditor (y en tests/okrNumberInput.test.ts). Los atributos extra se
+ * reenvían al Input.
+ *
+ * Props / v-model:
+ * - modelValue: valor como texto ('' = vacío).
+ * - decimals: decimales a los que se redondea al salir del campo (por defecto 2).
+ *
+ * Emits:
+ * - update:modelValue(value): nuevo valor como texto.
+ */
 // Campo numérico del módulo OKR (19-oct-2026) sobre el Input de shadcn con UN
 // solo enlace: modelValue ↔ update:modelValue.
 //
@@ -12,79 +24,124 @@
 //   reformatea mientras se edita (30000.50, "12500." a medias, -5000).
 // · Solo se emiten números finitos; NaN, Infinity o texto incompleto → ''.
 // · Al salir del campo se redondea a `decimals` y se limpia texto inválido.
-import { nextTick, ref, watch } from 'vue'
-import { Input } from '@/components/ui/input'
-import { roundTo } from './wizard/okrWizard'
+import { nextTick, ref, watch } from 'vue';
+import { Input } from '@/components/ui/input';
+import { roundTo } from './wizard/okrWizard';
 
-defineOptions({ inheritAttrs: false })
+defineOptions({ inheritAttrs: false });
 
-const props = withDefaults(defineProps<{ modelValue: string; decimals?: number }>(), { decimals: 2 })
-const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
+const props = withDefaults(
+    defineProps<{ modelValue: string; decimals?: number }>(),
+    { decimals: 2 },
+);
+const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 
-type Draft = number | ''
+/** Valor interno: número finito o '' cuando está vacío o incompleto. */
+type Draft = number | '';
 
+/**
+ * Convierte el modelo (o lo que entrega el input) a Draft.
+ * @param v valor de entrada.
+ * @returns número finito o ''.
+ */
 function toDraft(v: string | number | null | undefined): Draft {
     if (v === '' || v === null || v === undefined) {
-        return ''
+        return '';
     }
 
-    const n = Number(v)
+    const n = Number(v);
 
-    return Number.isFinite(n) ? n : ''
+    return Number.isFinite(n) ? n : '';
 }
 
 // Valor tal como lo entrega el <input type="number"> del Input (número o '').
 // Se le devuelve en el mismo tipo para que su v-model nunca reescriba el texto.
-const draft = ref<Draft>(toDraft(props.modelValue))
+const draft = ref<Draft>(toDraft(props.modelValue));
 
 // Refleja el modelo SOLO si no equivale a lo escrito: un cambio externo (meta
 // recalculada, base sugerida, reapertura) entra; "30000.5" no pisa "30000.50".
+/** Copia el modelo al campo solo si representa un número distinto. */
 function syncFromModel() {
-    const next = toDraft(props.modelValue)
+    const next = toDraft(props.modelValue);
 
     if (next !== draft.value) {
-        draft.value = next
+        draft.value = next;
     }
 }
 
-watch(() => props.modelValue, syncFromModel)
+watch(() => props.modelValue, syncFromModel);
 
+/**
+ * Guarda el valor en el campo y lo emite si cambió respecto al modelo.
+ * @param value nuevo valor.
+ */
 function commit(value: Draft) {
-    draft.value = value
-    const text = value === '' ? '' : String(value)
+    draft.value = value;
+    const text = value === '' ? '' : String(value);
 
     if (text !== props.modelValue) {
-        emit('update:modelValue', text)
+        emit('update:modelValue', text);
         // Si el controlador ajustó o rechazó el valor (p. ej. tope de peso) y el
         // modelo no cambió, el campo vuelve a mostrar el valor vigente.
-        nextTick(syncFromModel)
+        nextTick(syncFromModel);
     }
 }
 
+/**
+ * Recibe cada cambio del Input.
+ * @param value valor tal como lo entrega el Input.
+ */
 function onUpdate(value: string | number) {
-    commit(toDraft(value))
+    commit(toDraft(value));
 }
 
+/**
+ * Quita el foco al girar la rueda del mouse sobre el campo enfocado (evita
+ * cambiar el número sin querer).
+ * @param e evento wheel.
+ */
+function onWheel(e: WheelEvent) {
+    const el = e.target as HTMLInputElement;
+
+    if (document.activeElement === el) {
+        el.blur();
+    }
+}
+
+/**
+ * Al salir del campo redondea a `decimals` o limpia texto inválido.
+ * @param e evento blur.
+ */
 function onBlur(e: FocusEvent) {
-    const el = e.target as HTMLInputElement
+    const el = e.target as HTMLInputElement;
 
     if (draft.value === '') {
         // Texto que el navegador no considera número ("-", "1e"): se limpia.
         if (el.validity?.badInput) {
-            el.value = ''
+            el.value = '';
         }
 
-        return
+        return;
     }
 
-    const rounded = roundTo(draft.value, props.decimals)
+    const rounded = roundTo(draft.value, props.decimals);
 
     if (rounded !== draft.value) {
-        commit(rounded)
+        commit(rounded);
     }
 }
 </script>
 
 <template>
-    <Input v-bind="$attrs" type="number" :model-value="draft" @update:model-value="onUpdate" @blur="onBlur" />
+    <!-- inputmode: teclado numérico en móvil. La rueda del mouse sobre un campo
+         enfocado cambiaba la meta sin querer: se suelta el foco al girarla. -->
+    <Input
+        v-bind="$attrs"
+        type="number"
+        inputmode="decimal"
+        :model-value="draft"
+        @update:model-value="onUpdate"
+        @blur="onBlur"
+        @wheel.passive="onWheel"
+    />
 </template>

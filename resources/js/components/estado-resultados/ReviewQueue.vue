@@ -1,4 +1,28 @@
 <script setup lang="ts">
+/**
+ * ReviewQueue — pestaña «Por revisar»: cola de movimientos pendientes de clasificar.
+ *
+ * Se usa en pages/EstadoResultados/Index. A la izquierda, el movimiento en
+ * turno (de mayor a menor importe) con la sugerencia del sistema, botones y
+ * atajos de teclado (A aceptar, C clasificar, S/→ saltar, D detalle) y los que
+ * siguen; a la derecha, los pendientes agrupados por sugerencia para resolver
+ * en bloque. Si no llegó nada del banco muestra un estado vacío neutral con
+ * acceso a Fuentes; si no hay pendientes, un mensaje de «todo clasificado».
+ *
+ * Props:
+ * - movements: todos los movimientos del dataset (se filtran los pendientes).
+ * - c: bloque de conciliación (conteos y montos pendientes).
+ * - canClassify: el usuario puede aceptar o clasificar.
+ * - accepting: hay una aceptación en curso.
+ * - lockReason: motivo por el que no se puede clasificar (texto de ayuda).
+ *
+ * Emits:
+ * - accept(fingerprints, ask): aceptar la sugerencia; ask = pedir confirmación.
+ * - classify(fingerprints): abrir el diálogo para clasificar.
+ * - open(m): abrir el detalle de un movimiento.
+ * - showAll(): ver todos los pendientes en la tabla de movimientos.
+ * - goSources(): ir a Fuentes cuando no hay estados de cuenta.
+ */
 import {
     CheckCheck,
     FolderInput,
@@ -42,16 +66,20 @@ const pending = computed(() =>
         ),
 );
 
+/** Huellas de los movimientos saltados en esta vuelta. */
 const skipped = ref<Set<string>>(new Set());
+/** Movimiento en turno: el primer pendiente no saltado (o el primero si todos lo están). */
 const current = computed(
     () =>
         pending.value.find((m) => !skipped.value.has(m.fingerprint)) ??
         pending.value[0] ??
         null,
 );
+/** Posición (1-based) del movimiento en turno dentro de los pendientes. */
 const position = computed(() =>
     current.value ? pending.value.indexOf(current.value) + 1 : 0,
 );
+/** Los siguientes 4 pendientes no saltados. */
 const upcoming = computed(() =>
     pending.value
         .filter((m) => m !== current.value && !skipped.value.has(m.fingerprint))
@@ -102,6 +130,7 @@ const groups = computed(() => {
     return list.map((g) => ({ ...g, width: (g.items.length / max) * 100 }));
 });
 
+/** Salta el movimiento en turno; al saltarlos todos se reinicia la vuelta. */
 function skip(): void {
     if (!current.value) {
         return;
@@ -125,14 +154,19 @@ function accept(ask = false): void {
     }
 }
 
+/** Pide clasificar el movimiento en turno. */
 function classify(): void {
     if (current.value) {
         emit('classify', [current.value.fingerprint]);
     }
 }
 
-// Atajos de la cola: sólo con el foco DENTRO de la tarjeta (no en toda la ventana).
-// A acepta (con confirmación), C clasifica, S o → salta, D abre el detalle.
+/**
+ * Atajos de la cola: sólo con el foco DENTRO de la tarjeta (no en toda la ventana).
+ * A acepta (con confirmación), C clasifica, S o → salta, D abre el detalle.
+ * Se ignoran con Ctrl/Meta/Alt o si el foco está en un campo o en una lista de pestañas.
+ * @param e evento de teclado de la tarjeta.
+ */
 function onKey(e: KeyboardEvent): void {
     const t = e.target as HTMLElement | null;
 

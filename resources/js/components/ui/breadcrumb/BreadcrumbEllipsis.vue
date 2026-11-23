@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Puntos suspensivos de las migas de pan (shadcn-vue) para indicar niveles ocultos. */
 import type { HTMLAttributes } from "vue"
 import { MoreHorizontal } from "lucide-vue-next"
 import { cn } from "@/lib/utils"

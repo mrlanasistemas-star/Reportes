@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Botón para desplazar hacia abajo la lista del select cuando no cabe. */
 import type { SelectScrollDownButtonProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

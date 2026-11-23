@@ -1,4 +1,23 @@
 <script setup lang="ts">
+/**
+ * SourceChecklist — lista «Qué necesita este periodo» al inicio de Fuentes.
+ *
+ * Se usa en SourcesPanel. Por cada fuente indica si está lista, falta o tiene
+ * problemas, qué hacer, por qué importa y un botón de acción: subir aquí,
+ * ir a Carga de archivos, cambiar de pestaña o procesar.
+ *
+ * Props:
+ * - checklist: items y resumen (listas / faltan / con problemas) del backend.
+ * - periodId: periodo actual, para el enlace a Carga de archivos.
+ * - periodLabel: nombre del periodo para el título.
+ * - canUpload / canProcess: permisos para las acciones de subir y procesar.
+ * - lockReason: motivo de bloqueo; deshabilita subir y procesar.
+ *
+ * Emits:
+ * - upload(slot, part?): ir a la tarjeta de esa cuenta y abrir su selector.
+ * - tab(tab): cambiar de pestaña.
+ * - process(): procesar el periodo.
+ */
 import {
     AlertTriangle,
     ArrowRight,
@@ -39,8 +58,10 @@ const ordered = computed(() => {
     );
 });
 
+/** Resumen de conteos (lista, falta, con_problemas, total). */
 const s = computed(() => props.checklist.summary);
 
+/** Clases de borde, insignia e icono por estado del item. */
 const TONE: Record<string, { row: string; badge: string; icon: string }> = {
     falta: {
         row: 'border-l-rose-500',
@@ -59,6 +80,10 @@ const TONE: Record<string, { row: string; badge: string; icon: string }> = {
     },
 };
 
+/**
+ * Icono según el estado del item.
+ * @param i item de la lista.
+ */
 const iconFor = (i: ChecklistItem) =>
     i.state === 'lista'
         ? CheckCircle2
@@ -66,6 +91,10 @@ const iconFor = (i: ChecklistItem) =>
           ? CircleDashed
           : AlertTriangle;
 
+/**
+ * Indica si la acción del item está permitida (permiso y sin bloqueo).
+ * @param i item de la lista.
+ */
 function canAct(i: ChecklistItem): boolean {
     if (i.action.kind === 'upload') {
         return props.canUpload && !props.lockReason;
@@ -78,6 +107,10 @@ function canAct(i: ChecklistItem): boolean {
     return true;
 }
 
+/**
+ * Ejecuta la acción del item emitiendo upload, tab o process.
+ * @param i item de la lista.
+ */
 function act(i: ChecklistItem): void {
     if (i.action.kind === 'upload' && i.action.slot) {
         emit('upload', i.action.slot, i.action.part);
@@ -94,6 +127,7 @@ function act(i: ChecklistItem): void {
         class="rounded-2xl border bg-card shadow-soft-xs"
         aria-labelledby="er-checklist-title"
     >
+        <!-- Encabezado con contadores -->
         <header
             class="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4"
         >
@@ -125,6 +159,7 @@ function act(i: ChecklistItem): void {
             </div>
         </header>
 
+        <!-- Un renglón por fuente, ordenado por urgencia -->
         <ul class="divide-y">
             <li
                 v-for="i in ordered"
@@ -177,6 +212,7 @@ function act(i: ChecklistItem): void {
                         Por qué importa: {{ i.affects }}
                     </p>
                 </div>
+                <!-- Acción: enlace a Carga de archivos o botón (subir / pestaña / procesar) -->
                 <div class="shrink-0 md:pt-0.5">
                     <Button
                         v-if="i.action.kind === 'carga'"

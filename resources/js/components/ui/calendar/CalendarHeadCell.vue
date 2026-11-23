@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+/** Primitiva UI: Celda de encabezado con el nombre corto del día de la semana. */
 import type { CalendarHeadCellProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

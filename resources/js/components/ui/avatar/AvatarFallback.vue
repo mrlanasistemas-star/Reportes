@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Contenido de respaldo del avatar (iniciales/icono) que se muestra mientras la imagen carga o si falla. */
 import type { AvatarFallbackProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

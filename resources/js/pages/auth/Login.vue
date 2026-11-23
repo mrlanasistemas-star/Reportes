@@ -1,24 +1,36 @@
 <script setup lang="ts">
-import { Form, Head } from '@inertiajs/vue3'
-import { CircleAlert, Eye, EyeOff, Lock, Mail } from 'lucide-vue-next'
-import { ref } from 'vue'
-import AuthAsidePanel from '@/components/auth/AuthAsidePanel.vue'
-import AuthFormPanel from '@/components/auth/AuthFormPanel.vue'
-import InputError from '@/components/InputError.vue'
-import TextLink from '@/components/TextLink.vue'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Spinner } from '@/components/ui/spinner'
-import { store } from '@/routes/login'
-import { request } from '@/routes/password'
+/**
+ * Pantalla de inicio de sesión (Fortify, FortifyServiceProvider::loginView).
+ * Trae su propio layout a pantalla completa (app.ts no la envuelve): panel lateral
+ * de marca + formulario de correo/contraseña. Envía a la ruta Wayfinder login.store
+ * y enlaza a la recuperación de contraseña (password.request) si está habilitada.
+ */
+import { Form, Head } from '@inertiajs/vue3';
+import { CircleAlert, Eye, EyeOff, Lock, Mail } from 'lucide-vue-next';
+import { ref } from 'vue';
+import AuthAsidePanel from '@/components/auth/AuthAsidePanel.vue';
+import AuthFormPanel from '@/components/auth/AuthFormPanel.vue';
+import InputError from '@/components/InputError.vue';
+import TextLink from '@/components/TextLink.vue';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Spinner } from '@/components/ui/spinner';
+import { store } from '@/routes/login';
+import { request } from '@/routes/password';
 
+/**
+ * Props desde Fortify:
+ * - status: mensaje informativo (p. ej. tras restablecer la contraseña).
+ * - canResetPassword: si existe la ruta de recuperación (muestra el enlace).
+ */
 defineProps<{
-    status?: string
-    canResetPassword: boolean
-}>()
+    status?: string;
+    canResetPassword: boolean;
+}>();
 
-const showPassword = ref(false)
+/** Alterna entre mostrar u ocultar la contraseña escrita (botón del ojo). */
+const showPassword = ref(false);
 </script>
 
 <template>
@@ -28,7 +40,9 @@ const showPassword = ref(false)
     <Head title="Reportes Mr Lana — Iniciar sesión" />
 
     <div class="grid min-h-svh lg:grid-cols-2">
+        <!-- Panel lateral de marca (solo escritorio) -->
         <AuthAsidePanel />
+        <!-- Panel del formulario de acceso -->
 
         <AuthFormPanel
             mobile-title="Iniciar sesión"
@@ -36,9 +50,20 @@ const showPassword = ref(false)
             desktop-subtitle="Entra a Reportes Mr Lana con el correo y la contraseña que te asignó tu administrador."
             :status="status"
         >
-            <Form v-bind="store.form()" :reset-on-success="['password']" v-slot="{ errors, processing }" class="app-stagger space-y-5" style="--stagger-offset: 120ms" novalidate>
+            <Form
+                v-bind="store.form()"
+                :reset-on-success="['password']"
+                v-slot="{ errors, processing }"
+                class="app-stagger space-y-5"
+                style="--stagger-offset: 120ms"
+                novalidate
+            >
                 <!-- Resumen del error de acceso (credenciales, cuenta bloqueada, demasiados intentos) -->
-                <div v-if="errors.email" role="alert" class="app-banner app-banner-danger">
+                <div
+                    v-if="errors.email"
+                    role="alert"
+                    class="app-banner app-banner-danger"
+                >
                     <CircleAlert aria-hidden="true" />
                     <p>{{ errors.email }}</p>
                 </div>
@@ -92,12 +117,22 @@ const showPassword = ref(false)
                         />
                         <button
                             type="button"
-                            class="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-muted-foreground transition-colors hover:text-foreground"
-                            :aria-label="showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+                            class="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                            :aria-label="
+                                showPassword
+                                    ? 'Ocultar contraseña'
+                                    : 'Mostrar contraseña'
+                            "
+                            :aria-pressed="showPassword ? 'true' : 'false'"
+                            aria-controls="password"
                             @click="showPassword = !showPassword"
                         >
-                            <EyeOff v-if="showPassword" class="size-4" />
-                            <Eye v-else class="size-4" />
+                            <EyeOff
+                                v-if="showPassword"
+                                class="size-4"
+                                aria-hidden="true"
+                            />
+                            <Eye v-else class="size-4" aria-hidden="true" />
                         </button>
                     </div>
                     <InputError :message="errors.password" />

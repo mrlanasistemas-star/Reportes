@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Área donde se renderiza el contenido desplegado del menú de navegación. */
 import type { NavigationMenuViewportProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/** Primitiva UI: Línea separadora horizontal o vertical (shadcn-vue sobre reka-ui Separator). */
 import type { SeparatorProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"

@@ -1,4 +1,24 @@
 <script setup lang="ts">
+/**
+ * MovementControlList — lista de control total de movimientos (pestaña Validación).
+ *
+ * La usa ValidationPanel. Muestra filtros por estado con conteos, búsqueda,
+ * filtro por archivo, la tabla de movimientos del periodo (con selección
+ * múltiple para clasificar) y, aparte, las filas de los mismos archivos que
+ * quedaron en otros periodos o que se leyeron y no se guardaron (paginadas
+ * desde el servidor). Permite exportar a Excel.
+ *
+ * Props:
+ * - control: estado y acciones de la lista (composable useMovementControl).
+ * - canClassify: permiso para clasificar movimientos.
+ * - canExport: permiso para exportar a Excel.
+ * - lockReason: motivo por el que no se puede clasificar (p. ej. periodo aprobado).
+ * - notSavedCount: filas leídas y no guardadas (conteo del filtro "No guardados").
+ *
+ * Emits:
+ * - open: abrir el detalle de un movimiento (huella).
+ * - classify: clasificar los movimientos seleccionados (huellas).
+ */
 import {
     AlertTriangle,
     Download,
@@ -33,18 +53,37 @@ const emit = defineEmits<{
     classify: [fingerprints: string[]];
 }>();
 
-const c = props.control;
+/**
+ * Atajo reactivo al objeto de control recibido: si el padre cambia la prop
+ * `control`, la lista sigue al objeto nuevo (en la plantilla se desenvuelve solo).
+ */
+const c = computed(() => props.control);
+/** Huellas de los movimientos seleccionados. */
 const selected = ref<Set<string>>(new Set());
+/** Se puede clasificar: hay permiso y el periodo no está bloqueado. */
 const canAct = computed(() => props.canClassify && !props.lockReason);
 
+/** Un movimiento se puede seleccionar si no está restringido, no es NOI de corporativo y tiene huella. */
 const selectable = (m: ControlledMovement) =>
     canAct.value && !m.redacted && m.source !== 'noi_corp' && !!m.fingerprint;
 
+// Limpia la selección al cambiar el objeto de control, el filtro, la búsqueda,
+// el foco o el archivo: así nunca se clasifican movimientos que ya no se ven.
 watch(
-    () => [c.filter.value, c.focus.value, c.uploadId.value],
+    () => [
+        c.value,
+        c.value.filter.value,
+        c.value.search.value,
+        c.value.focus.value,
+        c.value.uploadId.value,
+    ],
     () => (selected.value = new Set()),
 );
 
+/**
+ * Marca o desmarca un movimiento.
+ * @param fp huella del movimiento.
+ */
 function toggle(fp: string): void {
     const next = new Set(selected.value);
 
@@ -57,35 +96,42 @@ function toggle(fp: string): void {
     selected.value = next;
 }
 
+/** Todos los movimientos visibles seleccionables están marcados. */
 const allVisibleSelected = computed(() => {
-    const list = c.visible.value.filter(selectable);
+    const list = c.value.visible.value.filter(selectable);
 
     return (
         list.length > 0 && list.every((m) => selected.value.has(m.fingerprint))
     );
 });
 
+/** Marca todos los visibles seleccionables, o desmarca todo si ya estaban marcados. */
 function toggleAll(): void {
-    const list = c.visible.value.filter(selectable).map((m) => m.fingerprint);
+    const list = c.value.visible.value
+        .filter(selectable)
+        .map((m) => m.fingerprint);
     selected.value = allVisibleSelected.value ? new Set() : new Set(list);
 }
 
+/** Color del texto de cada señal según su severidad. */
 const SEVERITY_CLS: Record<string, string> = {
     alta: 'text-rose-700 dark:text-rose-400',
     media: 'text-amber-700 dark:text-amber-400',
     baja: 'text-muted-foreground',
 };
 
+/** Mostrar la sección de filas de otros periodos/no guardadas (cargando, con datos o con error). */
 const showRemote = computed(
     () =>
-        c.remoteVista.value !== null &&
-        (c.remoteLoading.value ||
-            c.remote.value.length > 0 ||
-            c.remoteFiles.value.length > 0 ||
-            !!c.remoteError.value),
+        c.value.remoteVista.value !== null &&
+        (c.value.remoteLoading.value ||
+            c.value.remote.value.length > 0 ||
+            c.value.remoteFiles.value.length > 0 ||
+            !!c.value.remoteError.value),
 );
 
-onMounted(() => void c.loadRemote(1));
+// Al montar se pide la primera página de filas fuera del periodo.
+onMounted(() => void c.value.loadRemote(1));
 </script>
 
 <template>
@@ -95,6 +141,7 @@ onMounted(() => void c.loadRemote(1));
         aria-label="Control de movimientos"
     >
         <header class="space-y-3 border-b px-5 py-4">
+            <!-- Título y exportación -->
             <div class="flex flex-wrap items-center justify-between gap-2">
                 <div class="min-w-0">
                     <h3 class="text-base font-extrabold">
@@ -115,6 +162,7 @@ onMounted(() => void c.loadRemote(1));
                 </button>
             </div>
 
+            <!-- Partida o archivo enfocado, con "Ver todo" -->
             <div
                 v-if="c.focus.value || c.uploadId.value !== null"
                 class="flex items-start gap-2 rounded-xl bg-sky-50 p-2.5 text-xs text-sky-900 dark:bg-sky-950/30 dark:text-sky-200"
@@ -151,6 +199,7 @@ onMounted(() => void c.loadRemote(1));
                 </button>
             </div>
 
+            <!-- Filtros por estado con su conteo -->
             <div class="flex flex-wrap gap-1.5" role="tablist">
                 <button
                     v-for="f in FILTERS"
@@ -177,6 +226,7 @@ onMounted(() => void c.loadRemote(1));
                 </button>
             </div>
 
+            <!-- Búsqueda, archivo y clasificar seleccionados -->
             <div class="flex flex-wrap items-center gap-2">
                 <label class="relative min-w-48 flex-1">
                     <Search
@@ -333,6 +383,7 @@ onMounted(() => void c.loadRemote(1));
             >
                 No hay movimientos de este periodo con este filtro.
             </p>
+            <!-- Totales del filtro y "Mostrar más" -->
             <div
                 class="flex flex-wrap items-center justify-between gap-2 border-t px-5 py-2.5 text-xs text-muted-foreground"
             >
@@ -385,6 +436,7 @@ onMounted(() => void c.loadRemote(1));
             >
                 {{ c.remoteError.value }}
             </p>
+            <!-- Resumen por archivo -->
             <ul
                 v-if="c.remoteFiles.value.length"
                 class="mx-5 mt-2 space-y-1 text-xs"
@@ -403,6 +455,7 @@ onMounted(() => void c.loadRemote(1));
                     >
                 </li>
             </ul>
+            <!-- Tabla de filas fuera del periodo o no guardadas -->
             <div class="max-h-[420px] overflow-auto">
                 <table class="w-full text-xs">
                     <tbody class="divide-y">
@@ -482,6 +535,7 @@ onMounted(() => void c.loadRemote(1));
             >
                 Sin filas con este filtro.
             </p>
+            <!-- Paginación -->
             <div
                 v-if="c.remotePage.value < c.remoteLastPage.value"
                 class="border-t px-5 py-2.5 text-right"
