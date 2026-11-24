@@ -535,6 +535,12 @@ function createRuleFrom(m: Movement): void {
     nav.go('catalogo');
 }
 
+/** Abre el alta del catálogo con una regla precargada (desde «Clasificar grupo»). */
+function openCatalogWith(draft: Partial<RuleDraft>): void {
+    catalogPrefill.value = draft;
+    nav.go('catalogo');
+}
+
 /**
  * Acepta las sugerencias de esos movimientos; si se aplicaron, limpia la selección.
  * @param ask false sólo desde la cola guiada / detalle (acción explícita de un movimiento).
@@ -1006,8 +1012,17 @@ const historyUrl = (fp: string) =>
                                     :lock-reason="lockReason"
                                     :url="data.url"
                                     :scope-query="data.scopeQuery"
+                                    :groups="{
+                                        treatments,
+                                        canCatalog: !!can.catalogo,
+                                        periodId,
+                                        canProcess: can.procesar,
+                                        process: () => actions.process(false),
+                                    }"
                                     @open="openByFingerprint"
                                     @classify="openClassify"
+                                    @reload="data.loadDataset()"
+                                    @open-catalog="openCatalogWith"
                                 />
                                 <p
                                     v-else

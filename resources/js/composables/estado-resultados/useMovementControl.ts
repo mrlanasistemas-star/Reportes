@@ -9,8 +9,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import {
-    FILTERS,
-    controlOf,
+    countByFilter,
     grossOf,
     matchesFilter,
     searchText,
@@ -96,32 +95,10 @@ export function useMovementControl(ctx: Ctx) {
     });
 
     /**
-     * Conteo e importe bruto por filtro sobre `base`. «revisar» suma los movimientos
-     * con alguna bandera, además de contarlos en su estado.
+     * Conteo e importe bruto por filtro sobre `base`, con el MISMO criterio que la lista
+     * (countByFilter usa matchesFilter): el número del chip = filas que muestra ese filtro.
      */
-    const counts = computed(() => {
-        const out: Record<string, { count: number; amount: number }> = {};
-
-        for (const f of FILTERS) {
-            out[f.key] = { count: 0, amount: 0 };
-        }
-
-        for (const m of base.value) {
-            const c = controlOf(m);
-            const g = grossOf(m);
-            out.todos.count++;
-            out.todos.amount += g;
-            out[c.status].count++;
-            out[c.status].amount += g;
-
-            if (c.flags.length) {
-                out.revisar.count++;
-                out.revisar.amount += g;
-            }
-        }
-
-        return out;
-    });
+    const counts = computed(() => countByFilter(base.value));
 
     /** `base` filtrado por estado y por el texto de búsqueda. */
     const filtered = computed(() => {

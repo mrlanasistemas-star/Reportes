@@ -16,8 +16,29 @@ export type ControlStatus =
     | 'fuera'
     | 'no_guardado';
 
-/** Filtro de la lista: un estado, «revisar concepto» o todos. */
-export type ControlFilter = ControlStatus | 'revisar' | 'todos';
+/** Filtro de la lista: un estado, «revisar concepto», «aportaciones a créditos» o todos. */
+export type ControlFilter =
+    | ControlStatus
+    | 'revisar'
+    | 'aportaciones'
+    | 'todos';
+
+/**
+ * Reglas del clasificador que marcan aportaciones de sucursales a un crédito (mismo listado
+ * que MovementControlService::CREDIT_CONTRIBUTION_RULES).
+ */
+export const CREDIT_CONTRIBUTION_RULES = [
+    'aportacion_credito',
+    'aportacion_credito_sugerida',
+    'fondeo_servicio_deuda',
+];
+
+/**
+ * ¿El movimiento es una aportación a un crédito?
+ * @param m movimiento (sólo se lee su regla).
+ */
+export const isCreditContribution = (m: { rule_code: string | null }) =>
+    CREDIT_CONTRIBUTION_RULES.includes(m.rule_code ?? '');
 
 /** Señal de revisión sobre un movimiento (p. ej. concepto a revisar) con su severidad. */
 export interface ControlFlag {
@@ -248,6 +269,7 @@ export const FILTERS: Array<{ key: ControlFilter; label: string }> = [
     { key: 'fuera', label: 'Fuera de este periodo' },
     { key: 'no_guardado', label: 'No guardados' },
     { key: 'revisar', label: 'Revisar concepto' },
+    { key: 'aportaciones', label: 'Aportaciones a créditos' },
 ];
 
 /** Estado de control (snapshots aprobados antes del 20-nov no traen `control`). */
@@ -293,7 +315,120 @@ export function matchesFilter(
         return c.flags.length > 0;
     }
 
+    if (filter === 'aportaciones') {
+        return isCreditContribution(m);
+    }
+
     return c.status === filter;
+}
+
+/** Conteo e importe bruto de un filtro. */
+export interface FilterCount {
+    count: number;
+    amount: number;
+}
+
+/**
+ * Conteo e importe por filtro con EXACTAMENTE el mismo criterio que `matchesFilter`
+ * (así el número del chip es el número de filas que muestra). «no_guardado» viene del
+ * servidor (filas fuera del dataset): aquí siempre queda en 0.
+ * @param movements movimientos sobre los que se cuenta.
+ */
+export function countByFilter(
+    movements: ControlledMovement[],
+): Record<ControlFilter, FilterCount> {
+    const out = Object.fromEntries(
+        FILTERS.map((f) => [f.key, { count: 0, amount: 0 }]),
+    ) as Record<ControlFilter, FilterCount>;
+
+    for (const m of movements) {
+        const g = grossOf(m);
+
+        for (const f of FILTERS) {
+            if (f.key !== 'no_guardado' && matchesFilter(m, f.key)) {
+                out[f.key].count++;
+                out[f.key].amount += g;
+            }
+        }
+    }
+
+    return out;
+}
+
+// ── Pendientes agrupados por concepto (GET /control-movimientos/grupos) ──
+
+/** Nombre + conteo (sucursal o cuenta de origen dentro de un grupo). */
+export interface NamedCount {
+    name: string;
+    count: number;
+}
+
+/** Grupo de pendientes con el mismo concepto normalizado y sentido. */
+export interface PendingGroup {
+    key: string;
+    label: string;
+    direction: 'cargo' | 'abono';
+    count: number;
+    total: string;
+    typical_amount: string;
+    typical_count: number;
+    sample_concept: string;
+    variants: number;
+    branches: NamedCount[];
+    accounts: NamedCount[];
+    suggested: { treatment: string; label: string; count: number } | null;
+    rule_codes: Array<{ code: string; count: number }>;
+    credit_contribution: boolean;
+    date_from: string | null;
+    date_to: string | null;
+    fingerprints: string[];
+    /** Texto para una regla «contiene» del catálogo que atrapa al grupo. */
+    rule_text: string;
+    /** Cuántos del grupo atrapa ese texto. */
+    rule_covers: number;
+    rule_name: string;
+}
+
+/** Respuesta del endpoint de grupos. */
+export interface PendingGroupsResponse {
+    groups: PendingGroup[];
+    total_groups: number;
+    total_pending: number;
+    pending_amount: string;
+    redacted: number;
+    truncated: boolean;
+}
+
+/** Motivo de exclusión de una operación masiva con su conteo e importe. */
+export interface BulkReason {
+    key: string;
+    label: string;
+    count: number;
+    amount: string;
+}
+
+/** Vista previa de la clasificación manual masiva. */
+export interface BulkPreview {
+    treatment: string;
+    treatment_label: string;
+    locked: boolean;
+    requested: number;
+    applies: number;
+    excluded: number;
+    amount: string;
+    reasons: BulkReason[];
+    warnings: string[];
+    items: Array<{
+        fingerprint: string;
+        applies: boolean;
+        reason_key: string | null;
+        reason: string | null;
+        date: string | null;
+        concept: string | null;
+        amount: string;
+        current_label: string | null;
+    }>;
+    truncated: boolean;
 }
 
 /**

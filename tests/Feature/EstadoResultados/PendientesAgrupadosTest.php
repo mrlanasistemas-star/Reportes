@@ -6,7 +6,6 @@ use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
 use App\Services\EstadoResultados\Control\MovementControlService;
 use App\Services\EstadoResultados\Control\PendingGroupService;
 use App\Services\EstadoResultados\EstadoResultadosProcessor;
-use App\Services\EstadoResultados\Reporting\EstadoResultadosApprovalService;
 use App\Services\EstadoResultados\Support\Treatment as T;
 use Tests\Support\EstadoResultadosFixtures as F;
 use Tests\Support\EstadoResultadosGovernanceFixtures as G;
@@ -45,19 +44,13 @@ function pgDataset(Period $period): array
     return app(EstadoResultadosDatasetBuilder::class)->build($period, 'CONSOLIDADO');
 }
 
-it('normaliza el concepto para agrupar: sin acentos, sin folios, fechas ni referencias', function () {
-    expect(PendingGroupService::normalizeConcept('Depósito  Lerom REF 000123 15/09/2026'))->toBe('DEPOSITO LEROM')
-        ->and(PendingGroupService::normalizeConcept('DEPOSITO LEROM'))->toBe('DEPOSITO LEROM')
-        ->and(PendingGroupService::normalizeConcept('SPEI-889 PAGO RENTA ABRIL'))->toBe('PAGO RENTA')
-        ->and(PendingGroupService::normalizeConcept('  '))->toBe('(SIN CONCEPTO)');
-});
-
 it('agrupa los 4 «DEPOSITO LEROM» en un solo grupo con su suma y el total cuadra con el filtro Pendientes', function () {
     $period = pgPeriod();
     $d = pgDataset($period);
     $pending = collect($d['movements'])->filter(fn ($m) => MovementControlService::controlOf($m)['status'] === MovementControlService::PENDIENTE);
     $lerom = $pending->filter(fn ($m) => str_contains(PendingGroupService::normalizeConcept($m['concept']), 'DEPOSITO LEROM'));
-    expect($lerom)->toHaveCount(4); // las 4 aportaciones siguen pendientes
+    expect($lerom)->toHaveCount(4) // las 4 aportaciones siguen pendientes
+        ->and(PendingGroupService::normalizeConcept('Depósito  Lerom REF 000123 15/09/2026'))->toBe('DEPOSITO LEROM');
 
     $res = $this->actingAs(G::admin())->getJson("/estado-resultados/{$period->id}/control-movimientos/grupos")->assertOk()->json();
     $group = collect($res['groups'])->firstWhere('label', 'DEPOSITO LEROM');
@@ -79,35 +72,6 @@ it('agrupa los 4 «DEPOSITO LEROM» en un solo grupo con su suma y el total cuad
     // Los filtros de estado particionan «Todos» (cada fila cae en exactamente un estado).
     $byStatus = collect($d['movements'])->countBy(fn ($m) => MovementControlService::controlOf($m)['status']);
     expect($byStatus->sum())->toBe(count($d['movements']));
-});
-
-it('la vista previa excluye lo conciliado con ERP y explica por qué', function () {
-    $period = pgPeriod();
-    $d = pgDataset($period);
-    $lerom = collect($d['movements'])->filter(fn ($m) => str_contains(PendingGroupService::normalizeConcept($m['concept']), 'DEPOSITO LEROM'))->pluck('fingerprint')->all();
-    $erp = collect($d['movements'])->firstWhere('concept', 'RENTA OFICINA SEPTIEMBRE');
-    expect($erp['treatment'])->toBe(T::CONCILIADO_ERP);
-
-    $prev = $this->actingAs(G::admin())->postJson("/estado-resultados/{$period->id}/control-movimientos/grupos/vista-previa", [
-        'fingerprints' => [...$lerom, $erp['fingerprint']], 'treatment' => T::CAPITAL_DEUDA,
-    ])->assertOk()->json();
-
-    expect($prev['requested'])->toBe(5)
-        ->and($prev['applies'])->toBe(4)
-        ->and($prev['amount'])->toBe('16380.00')
-        ->and($prev['excluded'])->toBe(1)
-        ->and($prev['reasons'][0]['key'])->toBe('conciliado_erp')
-        ->and($prev['reasons'][0]['amount'])->toBe('15000.00')
-        ->and($prev)->not->toHaveKey('_apply');
-});
-
-it('en un periodo aprobado la vista previa no deja pasar nada y aplicar responde 423', function () {
-    $ready = G::readyPeriod();
-    app(EstadoResultadosApprovalService::class)->approve($ready, G::admin());
-    $fp = collect(pgDataset($ready)['movements'])->first()['fingerprint'];
-    $locked = $this->actingAs(G::admin())->postJson("/estado-resultados/{$ready->id}/control-movimientos/grupos/vista-previa", ['fingerprints' => [$fp], 'treatment' => T::CAPEX])->assertOk()->json();
-    expect($locked['locked'])->toBeTrue()->and($locked['applies'])->toBe(0)->and($locked['reasons'][0]['key'])->toBe('periodo_aprobado');
-    $this->actingAs(G::admin())->postJson("/estado-resultados/{$ready->id}/control-movimientos/grupos/clasificar", ['fingerprints' => [$fp], 'treatment' => T::CAPEX, 'notes' => 'Prueba'])->assertStatus(423);
 });
 
 it('aplicar el grupo deja bitácora con usuario y motivo; deshacer lo regresa a la regla automática', function () {

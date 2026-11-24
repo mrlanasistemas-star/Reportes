@@ -34,6 +34,7 @@ import {
 } from 'lucide-vue-next';
 import { computed, nextTick } from 'vue';
 import { useMovementControl } from '@/composables/estado-resultados/useMovementControl';
+import type { RuleDraft } from './conceptCatalog';
 import FileControlTable from './FileControlTable.vue';
 import type {
     ControlFileRef,
@@ -44,7 +45,12 @@ import type {
 } from './movementControl';
 import MovementControlList from './MovementControlList.vue';
 import { isZero, mxn, num } from './types';
-import type { Movement, PartitionCheck, Validation } from './types';
+import type {
+    Movement,
+    PartitionCheck,
+    TreatmentMeta,
+    Validation,
+} from './types';
 import UnresolvedList from './UnresolvedList.vue';
 import ValidationDifferences from './ValidationDifferences.vue';
 
@@ -59,6 +65,14 @@ const props = withDefaults(
         /** `/estado-resultados/{periodo}` + path, y la consulta de alcance/versión. */
         url?: (path: string) => string;
         scopeQuery?: () => string;
+        /** Vista «Agrupados» de pendientes: catálogo de tratamientos, permisos y procesar. */
+        groups?: {
+            treatments: TreatmentMeta[];
+            canCatalog: boolean;
+            periodId: number;
+            canProcess: boolean;
+            process: () => Promise<void>;
+        } | null;
     }>(),
     {
         movements: () => [],
@@ -67,12 +81,27 @@ const props = withDefaults(
         lockReason: null,
         url: undefined,
         scopeQuery: () => '',
+        groups: null,
     },
 );
 const emit = defineEmits<{
     open: [fingerprint: string];
     classify: [fingerprints: string[]];
+    reload: [];
+    'open-catalog': [draft: Partial<RuleDraft>];
 }>();
+
+/** Datos de la vista «Agrupados» (null si el padre no la habilita). */
+const groupsCtx = computed(() =>
+    props.groups && props.url
+        ? {
+              ...props.groups,
+              movements: props.movements as ControlledMovement[],
+              url: props.url,
+              scopeQuery: props.scopeQuery,
+          }
+        : null,
+);
 
 /** La validación vista con el tipo extendido de control total. */
 const v = computed(() => props.validation as unknown as ControlValidation);
@@ -412,8 +441,11 @@ const importOk = computed(
             :can-export="canExport"
             :lock-reason="lockReason"
             :not-saved-count="fileControl?.totals.not_saved.count ?? 0"
+            :groups="groupsCtx"
             @open="(fp) => emit('open', fp)"
             @classify="(fps) => emit('classify', fps)"
+            @reload="emit('reload')"
+            @open-catalog="(d) => emit('open-catalog', d)"
         />
 
         <!-- Diferencias banco ↔ ERP -->

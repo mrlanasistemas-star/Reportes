@@ -22,6 +22,8 @@
 import {
     AlertTriangle,
     Download,
+    Layers,
+    List,
     FileX2,
     Loader2,
     Lock,
@@ -31,9 +33,12 @@ import {
 } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 import type { MovementControl } from '@/composables/estado-resultados/useMovementControl';
+import type { RuleDraft } from './conceptCatalog';
 import { FILTERS, STATUS_META, controlOf } from './movementControl';
 import type { ControlledMovement } from './movementControl';
+import PendingGroupsView from './PendingGroupsView.vue';
 import { mxn, num } from './types';
+import type { TreatmentMeta } from './types';
 
 /**
  * Lista de CONTROL TOTAL: cada movimiento con su estado (completado, pendiente, repetido,
@@ -47,11 +52,34 @@ const props = defineProps<{
     lockReason?: string | null;
     /** Filas leídas y no guardadas en los archivos que aportan (file_control). */
     notSavedCount?: number;
+    /** Vista «Agrupados» de pendientes (si falta `groups`, no se ofrece). */
+    groups?: {
+        movements: ControlledMovement[];
+        url: (path: string) => string;
+        scopeQuery: () => string;
+        treatments: TreatmentMeta[];
+        canCatalog: boolean;
+        periodId: number;
+        canProcess: boolean;
+        process: () => Promise<void>;
+    } | null;
 }>();
 const emit = defineEmits<{
     open: [fingerprint: string];
     classify: [fingerprints: string[]];
+    reload: [];
+    'open-catalog': [draft: Partial<RuleDraft>];
 }>();
+
+/** Pendientes como lista o agrupados por concepto. */
+const view = ref<'lista' | 'grupos'>('lista');
+/** La vista agrupada sólo aplica al filtro «Pendientes». */
+const showGroups = computed(
+    () =>
+        !!props.groups &&
+        view.value === 'grupos' &&
+        props.control.filter.value === 'pendiente',
+);
 
 /**
  * Atajo reactivo al objeto de control recibido: si el padre cambia la prop
@@ -226,6 +254,34 @@ onMounted(() => void c.value.loadRemote(1));
                 </button>
             </div>
 
+            <!-- Pendientes: lista o agrupados por concepto -->
+            <div
+                v-if="groups && c.filter.value === 'pendiente'"
+                class="inline-flex rounded-xl border p-0.5 text-xs font-semibold"
+                role="tablist"
+                aria-label="Vista de pendientes"
+            >
+                <button
+                    v-for="o in [
+                        { k: 'lista', l: 'Lista', i: List },
+                        { k: 'grupos', l: 'Agrupados', i: Layers },
+                    ] as const"
+                    :key="o.k"
+                    type="button"
+                    role="tab"
+                    :aria-selected="view === o.k"
+                    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 transition"
+                    :class="
+                        view === o.k
+                            ? 'bg-foreground text-background'
+                            : 'hover:bg-muted'
+                    "
+                    @click="view = o.k"
+                >
+                    <component :is="o.i" class="size-3.5" /> {{ o.l }}
+                </button>
+            </div>
+
             <!-- Búsqueda, archivo y clasificar seleccionados -->
             <div class="flex flex-wrap items-center gap-2">
                 <label class="relative min-w-48 flex-1">
@@ -264,9 +320,27 @@ onMounted(() => void c.value.loadRemote(1));
             </div>
         </header>
 
+        <!-- Pendientes agrupados por concepto -->
+        <PendingGroupsView
+            v-if="showGroups && groups"
+            :movements="groups.movements"
+            :url="groups.url"
+            :scope-query="groups.scopeQuery"
+            :treatments="groups.treatments"
+            :can-classify="canClassify"
+            :can-catalog="groups.canCatalog"
+            :lock-reason="lockReason"
+            :period-id="groups.periodId"
+            :can-process="groups.canProcess"
+            :process="groups.process"
+            @open="(fp) => emit('open', fp)"
+            @reload="emit('reload')"
+            @open-catalog="(d) => emit('open-catalog', d)"
+        />
+
         <!-- Movimientos de este periodo (dataset) -->
         <div
-            v-if="c.filter.value !== 'no_guardado'"
+            v-else-if="c.filter.value !== 'no_guardado'"
             class="max-h-[560px] overflow-auto"
         >
             <table class="w-full text-xs">
