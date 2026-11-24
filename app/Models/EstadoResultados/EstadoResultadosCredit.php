@@ -13,10 +13,12 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * Columnas clave:
  *  - `key`: identificador único (lerom | bbva | …).
  *  - `name` / `creditor`: nombre visible y acreedor.
- *  - `periodicity`: semanal | mensual (frecuencia de pago de la tabla de amortización).
+ *  - `periodicity`: diaria | semanal | mensual (frecuencia de pago de la tabla de amortización).
  *  - `adjustment_concept`: concepto de ajuste del ER donde se refleja el interés
  *    (intereses_lerom | intereses_bbva | otros_intereses).
  *  - `bank_pattern`: regex del concepto bancario con el que se identifica el pago.
+ *  - `commission_concept`: concepto de ajuste donde se refleja la COMISIÓN financiera de la tabla
+ *    (LEROM ⇒ comisiones_financieras; null = el crédito no tiene comisiones).
  *  - `active`: si el crédito participa en el cálculo.
  */
 class EstadoResultadosCredit extends Model
@@ -26,6 +28,9 @@ class EstadoResultadosCredit extends Model
     protected $guarded = ['id'];
 
     protected $casts = ['active' => 'boolean'];
+
+    /** Crédito con pagos diarios en días hábiles (LEROM, 24-nov-2026). */
+    public const DIARIA = 'diaria';
 
     /** Crédito con pagos semanales. */
     public const SEMANAL = 'semanal';

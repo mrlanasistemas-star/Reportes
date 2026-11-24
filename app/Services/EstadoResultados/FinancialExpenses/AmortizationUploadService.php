@@ -10,6 +10,7 @@ use App\Services\EstadoResultados\Import\EstadoResultadosUploadService;
 use App\Services\EstadoResultados\Support\Money;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -29,8 +30,28 @@ class AmortizationUploadService
     /** Extensiones permitidas (incluye CSV). */
     public const EXTENSIONS = ['xlsx', 'xlsm', 'xls', 'csv'];
 
-    /** Disco de Storage donde se guarda el original. */
+    /** Disco de Storage donde se guarda el original (privado: storage/app/private, sin URL pública). */
     public const DISK = 'local';
+
+    /** Documento del acreedor: simulación NO vinculante (default) o tabla definitiva. */
+    public const SIMULACION = 'simulacion';
+
+    public const DEFINITIVO = 'definitivo';
+
+    public const DOCUMENT_KINDS = [self::SIMULACION, self::DEFINITIVO];
+
+    /**
+     * ¿Ya corrió la migración de comisiones / tipo de documento (2026_11_24_000101)?
+     */
+    public static function hasDocumentKind(): bool
+    {
+        static $ok = null;
+        if (app()->runningUnitTests()) {
+            return Schema::hasColumn('estado_resultados_amortization_uploads', 'document_kind');
+        }
+
+        return $ok ??= Schema::hasColumn('estado_resultados_amortization_uploads', 'document_kind');
+    }
 
     /** @param  AmortizationScheduleParser  $parser  lector de la tabla */
     public function __construct(private readonly AmortizationScheduleParser $parser) {}
@@ -44,9 +65,9 @@ class AmortizationUploadService
      * @param  string|null  $notes  notas de la carga
      * @return array{upload: EstadoResultadosAmortizationUpload, idempotent: bool, replaced: ?EstadoResultadosAmortizationUpload}
      */
-    public function upload(EstadoResultadosCredit $credit, UploadedFile $file, ?int $userId, ?string $notes = null): array
+    public function upload(EstadoResultadosCredit $credit, UploadedFile $file, ?int $userId, ?string $notes = null, ?string $documentKind = null): array
     {
-        return $this->importPath($credit, (string) $file->getRealPath(), $file->getClientOriginalName(), $userId, $notes, $file->getSize() ?: null);
+        return $this->importPath($credit, (string) $file->getRealPath(), $file->getClientOriginalName(), $userId, $notes, $file->getSize() ?: null, $documentKind);
     }
 
     /**
@@ -61,19 +82,27 @@ class AmortizationUploadService
      * @param  int|null  $userId  usuario
      * @param  string|null  $notes  notas
      * @param  int|null  $reportedSize  tamaño reportado
-     * @return array{upload: EstadoResultadosAmortizationUpload, idempotent: bool, replaced: ?EstadoResultadosAmortizationUpload}
+     * @param  string|null  $documentKind  simulacion (default) | definitivo — se elige al subir
+     * @return array{upload: EstadoResultadosAmortizationUpload, idempotent: bool, replaced: ?EstadoResultadosAmortizationUpload, kind_changed?: bool}
      *
      * @throws EstadoResultadosImportException archivo inválido o tabla con errores
      */
-    public function importPath(EstadoResultadosCredit $credit, string $absolutePath, string $originalName, ?int $userId, ?string $notes = null, ?int $reportedSize = null): array
+    public function importPath(EstadoResultadosCredit $credit, string $absolutePath, string $originalName, ?int $userId, ?string $notes = null, ?int $reportedSize = null, ?string $documentKind = null): array
     {
         $this->validateFile($absolutePath, $originalName, $reportedSize);
+        $kind = in_array($documentKind, self::DOCUMENT_KINDS, true) ? $documentKind : self::SIMULACION;
         $ext = mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
         $hash = hash_file('sha256', $absolutePath) ?: '';
 
         $current = $credit->currentUpload()->first();
         if ($current && $current->file_hash === $hash) {
-            return ['upload' => $current, 'idempotent' => true, 'replaced' => null];
+            // Mismo archivo: no se recargan renglones; sólo puede cambiar simulación ⇄ definitivo.
+            $changed = $documentKind !== null && self::hasDocumentKind() && $current->document_kind !== $kind;
+            if ($changed) {
+                $current->update(['document_kind' => $kind]);
+            }
+
+            return ['upload' => $current, 'idempotent' => true, 'replaced' => null, 'kind_changed' => $changed];
         }
 
         $parsed = $this->parser->parse($absolutePath, $ext);
@@ -85,14 +114,20 @@ class AmortizationUploadService
         $dates = array_column($rows, 'payment_date');
         sort($dates);
 
-        $upload = DB::transaction(function () use ($credit, $originalName, $hash, $absolutePath, $storedPath, $rows, $dates, $parsed, $userId, $notes, $reportedSize) {
+        $withCommission = self::hasDocumentKind();
+        $upload = DB::transaction(function () use ($credit, $originalName, $hash, $absolutePath, $storedPath, $rows, $dates, $parsed, $userId, $notes, $reportedSize, $kind, $withCommission) {
             // Bloquea el crédito: dos sustituciones simultáneas no dejan dos tablas vigentes.
             EstadoResultadosCredit::query()->whereKey($credit->id)->lockForUpdate()->first();
             $previous = EstadoResultadosAmortizationUpload::query()
                 ->where('credit_id', $credit->id)->where('status', EstadoResultadosAmortizationUpload::VIGENTE)
                 ->lockForUpdate()->get();
 
-            $upload = EstadoResultadosAmortizationUpload::query()->create([
+            $extra = $withCommission ? [
+                'document_kind' => $kind,
+                'total_commission' => Money::str2(Money::sum(array_map(fn ($r) => $r['commission'] ?? 0, $rows))),
+                'total_commission_vat' => Money::str2(Money::sum(array_map(fn ($r) => $r['commission_vat'] ?? 0, $rows))),
+            ] : [];
+            $upload = EstadoResultadosAmortizationUpload::query()->create($extra + [
                 'credit_id' => $credit->id,
                 'original_name' => mb_substr($originalName, 0, 250),
                 'file_hash' => $hash,
@@ -114,7 +149,10 @@ class AmortizationUploadService
 
             $now = now();
             foreach (array_chunk($rows, 500) as $chunk) {
-                EstadoResultadosAmortizationRow::query()->insert(array_map(fn ($r) => [
+                EstadoResultadosAmortizationRow::query()->insert(array_map(fn ($r) => ($withCommission ? [
+                    'commission' => $r['commission'] ?? null,
+                    'commission_vat' => $r['commission_vat'] ?? null,
+                ] : []) + [
                     'credit_id' => $credit->id,
                     'upload_id' => $upload->id,
                     'payment_number' => $r['payment_number'],
@@ -153,6 +191,18 @@ class AmortizationUploadService
     public function validateFile(string $absolutePath, string $originalName, ?int $reportedSize = null): void
     {
         $ext = mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        if ($ext === 'pdf') {
+            // Los PDF de LEROM/BBVA son simuladores ESCANEADOS (imagen, sin texto): no se hace OCR
+            // porque un dígito mal leído cambiaría el gasto financiero sin que nadie lo note.
+            throw new EstadoResultadosImportException(
+                'No se aceptan tablas de amortización en PDF.',
+                [
+                    'Los PDF del acreedor suelen ser escaneos (imagen): no se pueden leer sin riesgo de errores.',
+                    'Captura la tabla en Excel (.xlsx) o CSV con las columnas del documento (puedes partir de la plantilla descargable) y súbela.',
+                    'Conserva el PDF original como respaldo; aquí sólo se carga la tabla estructurada.',
+                ],
+            );
+        }
         if (! in_array($ext, self::EXTENSIONS, true)) {
             throw new EstadoResultadosImportException(
                 'Formato no permitido'.($ext !== '' ? ' (.'.$ext.')' : '').'. Sube la tabla de amortización en Excel (.xlsx, .xls) o CSV.'

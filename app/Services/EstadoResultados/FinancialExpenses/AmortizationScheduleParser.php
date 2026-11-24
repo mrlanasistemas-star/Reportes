@@ -21,13 +21,17 @@ use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
  *    (bombas ZIP, macros, vínculos externos) y se lee en modo SÓLO DATOS con límites de
  *    filas/columnas. Las fórmulas internas se toman con su valor calculado.
  *  - Encabezados: se busca en las primeras 30 filas de cada hoja la fila que mejor coincide
- *    con los sinónimos de AmortizationColumnMap (fecha + interés obligatorios).
- *  - Renglones: se ignoran filas vacías y de totales. Falta de fecha o de interés (o importes
- *    no numéricos / negativos) ⇒ error POR FILA y se rechaza el archivo completo (nunca
- *    queda una tabla a medias). Interés + capital (+ IVA) ≠ pago ⇒ AVISO por fila.
- *  - Capital ausente: se deduce como pago − interés − IVA. Pago ausente: capital + interés + IVA.
- *
- * El formato real de LEROM/BBVA aún no llega: los sinónimos se ajustan en AmortizationColumnMap.
+ *    con los sinónimos de AmortizationColumnMap (fecha + interés o comisión + capital o pago).
+ *  - Renglones: se ignoran filas vacías y de totales. Falta de fecha, de interés o de comisión
+ *    (cuando la tabla trae esa columna), o importes no numéricos / negativos ⇒ error POR FILA y
+ *    se rechaza el archivo completo (nunca queda una tabla a medias).
+ *  - Avisos (no bloquean): capital + interés + comisión (+ IVAs) ≠ pago por más de la tolerancia
+ *    (`gastos_financieros.tolerancia_cuadre`, $0.05 por defecto: absorbe el redondeo a centavos
+ *    de cada columna; una tabla con importes redondeados a pesos, como el simulador BBVA, avisa
+ *    en varias filas y se usa tal cual), celda vacía de IVA/capital tomada como $0, números de
+ *    pago no consecutivos, fechas que retroceden o repetidas.
+ *  - Capital ausente: se deduce como pago − interés − comisión − IVAs. Pago ausente: la suma.
+ *  - La comisión (LEROM) se guarda APARTE del interés; el IVA (de interés o comisión) nunca es gasto.
  */
 class AmortizationScheduleParser
 {
@@ -51,7 +55,7 @@ class AmortizationScheduleParser
      * @param  string  $extension  extensión (xlsx, xlsm, xls, csv)
      * @return array{
      *   sheet:string, header_row:int, columns:array<string,string>,
-     *   rows:list<array{source_row:int, payment_number:?int, payment_date:string, payment_total:string, principal:string, interest:string, interest_vat:?string, balance:?string}>,
+     *   rows:list<array{source_row:int, payment_number:?int, payment_date:string, payment_total:string, principal:string, interest:string, interest_vat:?string, commission:?string, commission_vat:?string, balance:?string}>,
      *   warnings:list<array{code:string,severity:string,message:string}>
      * }
      *
@@ -105,7 +109,7 @@ class AmortizationScheduleParser
             $values = $sheet->toArray(null, true, false, false);
             foreach (array_slice($values, 0, self::HEADER_SCAN_ROWS, true) as $rowIdx => $row) {
                 $map = AmortizationColumnMap::map((array) $row);
-                if (array_diff(AmortizationColumnMap::REQUIRED, array_keys($map)) !== []) {
+                if (! AmortizationColumnMap::recognized($map)) {
                     continue;
                 }
                 if ($best === null || count($map) > count($best['map'])) {
@@ -123,8 +127,8 @@ class AmortizationScheduleParser
             throw new EstadoResultadosImportException(
                 'No se encontró la fila de encabezados de la tabla de amortización.',
                 [
-                    'Se necesitan al menos las columnas de FECHA DE PAGO e INTERÉS (también se leen: No. de pago, Pago total, Capital, IVA de interés y Saldo).',
-                    'Nombres aceptados, por ejemplo: «Fecha», «Fecha de pago», «Vencimiento»; «Interés», «Intereses», «Interés ordinario».',
+                    'Se necesitan al menos: FECHA DE PAGO, INTERÉS o COMISIÓN, y CAPITAL o PAGO TOTAL (también se leen: No. de pago, IVA de interés, IVA de comisión y Saldo).',
+                    'Nombres aceptados, por ejemplo: «Fecha», «Vencimiento»; «Interés del Periodo», «Intereses»; «Importe Comisión»; «Amortización Capital», «Pago a Capital»; «Pago Total», «Pago Mensual Total».',
                     'Descarga la plantilla de ejemplo si tu archivo usa otros nombres.',
                 ],
             );
@@ -139,10 +143,13 @@ class AmortizationScheduleParser
         }
         $columns = [];
         foreach ($map as $field => $col) {
+            if (in_array($field, AmortizationColumnMap::INFORMATIVE, true)) {
+                continue; // p. ej. «Pago fijo sin IVA»: sólo se reconoce para no confundirlo con el pago
+            }
             $columns[$field] = Coordinate::stringFromColumnIndex($col + 1).' · '.trim((string) ($best['header'][$col] ?? ''));
         }
 
-        [$rows, $errors, $mismatch] = $this->readRows($best['values'], $best['header_row'], $map);
+        [$rows, $errors, $mismatch, $blanks] = $this->readRows($best['values'], $best['header_row'], $map);
 
         if ($errors !== []) {
             throw new EstadoResultadosImportException(
@@ -156,12 +163,22 @@ class AmortizationScheduleParser
         }
         if ($mismatch !== []) {
             $warnings[] = ['code' => 'pago_no_cuadra', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
-                'message' => count($mismatch).' renglón(es) donde interés + capital (+ IVA) no suma el pago total (diferencia mayor a $'.self::tolerance().'): '
-                    .implode('; ', array_slice($mismatch, 0, 8)).(count($mismatch) > 8 ? '…' : '').'. Se usó el interés de la tabla tal cual.'];
+                'message' => count($mismatch).' renglón(es) donde capital + interés + comisión (+ IVA) no suma el pago total (diferencia mayor a $'.self::tolerance().'): '
+                    .implode('; ', array_slice($mismatch, 0, 8)).(count($mismatch) > 8 ? '…' : '').'. Se usaron el interés y la comisión de la tabla tal cual.'];
         }
+        foreach ($blanks as $field => $excelRows) {
+            $warnings[] = ['code' => 'importe_vacio', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
+                'message' => count($excelRows).' renglón(es) sin '.mb_strtolower(AmortizationColumnMap::LABELS[$field]).' (filas '.implode(', ', array_slice($excelRows, 0, 10)).(count($excelRows) > 10 ? '…' : '')
+                    .'): se tomó como $0.00. Revisa que la celda vacía realmente signifique cero.'];
+        }
+        if (! isset($map['interes'])) {
+            $warnings[] = ['code' => 'sin_interes', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
+                'message' => 'La tabla no trae columna de interés: el costo financiero es sólo la comisión («'.trim((string) ($best['header'][$map['comision']] ?? 'Comisión')).'»), que se registra aparte del interés.'];
+        }
+        $warnings = array_merge($warnings, self::sequenceWarnings($rows));
         if (! isset($map['capital'])) {
             $warnings[] = ['code' => 'capital_deducido', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
-                'message' => 'La tabla no trae columna de capital: se calculó como pago − interés − IVA.'];
+                'message' => 'La tabla no trae columna de capital: se calculó como pago − interés − comisión − IVA.'];
         }
         $dates = array_column($rows, 'payment_date');
         if (count($dates) !== count(array_unique($dates))) {
@@ -172,27 +189,65 @@ class AmortizationScheduleParser
         return ['sheet' => $best['sheet'], 'header_row' => $best['header_row'] + 1, 'columns' => $columns, 'rows' => $rows, 'warnings' => $warnings];
     }
 
-    /** Tolerancia del cuadre interés + capital (+ IVA) = pago, en pesos (config). */
+    /**
+     * Avisos de secuencia: números de pago no consecutivos y fechas que retroceden.
+     *
+     * @param  list<array<string,mixed>>  $rows  renglones leídos (en orden del archivo)
+     * @return list<array{code:string,severity:string,message:string}>
+     */
+    private static function sequenceWarnings(array $rows): array
+    {
+        $out = [];
+        $numbers = array_values(array_filter(array_column($rows, 'payment_number'), fn ($n) => $n !== null));
+        if (count($numbers) === count($rows) && count($numbers) > 1) {
+            $gaps = [];
+            for ($i = 1, $n = count($numbers); $i < $n; $i++) {
+                if ($numbers[$i] !== $numbers[$i - 1] + 1) {
+                    $gaps[] = $numbers[$i - 1].' a '.$numbers[$i];
+                }
+            }
+            if ($gaps !== []) {
+                $out[] = ['code' => 'numeros_no_consecutivos', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
+                    'message' => 'Los números de pago no son consecutivos (salto de '.implode(', ', array_slice($gaps, 0, 8)).(count($gaps) > 8 ? '…' : '').'). Revisa que no falten renglones.'];
+            }
+        }
+        $breaks = [];
+        for ($i = 1, $n = count($rows); $i < $n; $i++) {
+            if ($rows[$i]['payment_date'] < $rows[$i - 1]['payment_date']) {
+                $breaks[] = 'fila '.$rows[$i]['source_row'];
+            }
+        }
+        if ($breaks !== []) {
+            $out[] = ['code' => 'fechas_no_crecientes', 'severity' => SpreadsheetSafetyInspector::SEVERITY_INFO,
+                'message' => 'Hay fechas de pago anteriores a la del renglón previo ('.implode(', ', array_slice($breaks, 0, 8)).'). Revisa el orden de la tabla.'];
+        }
+
+        return $out;
+    }
+
+    /** Tolerancia del cuadre capital + interés + comisión (+ IVAs) = pago, en pesos (config). */
     public static function tolerance(): string
     {
         return Money::str2(config('estado_resultados.gastos_financieros.tolerancia_cuadre', '0.05'));
     }
 
     /**
-     * Lee los renglones bajo el encabezado: ignora vacíos y totales; exige fecha e interés
-     * válidos (importes no negativos); deduce capital o pago si faltan; marca descuadres
-     * interés + capital (+ IVA) ≠ pago mayores a la tolerancia.
+     * Lee los renglones bajo el encabezado: ignora vacíos y totales; exige fecha válida y, si la
+     * tabla trae esas columnas, interés y comisión (importes no negativos); deduce capital o pago
+     * si faltan; marca descuadres capital + interés + comisión (+ IVAs) ≠ pago mayores a la
+     * tolerancia y devuelve las celdas de IVA vacías (para avisar: nunca $0 en silencio).
      *
      * @param  array  $values  valores de la hoja
      * @param  int  $headerRow  índice de la fila de encabezado
      * @param  array<string,int>  $map  campo ⇒ índice de columna
-     * @return array{0:list<array<string,mixed>>, 1:list<array{row:int,column:?string,message:string}>, 2:list<string>} [renglones, errores, descuadres]
+     * @return array{0:list<array<string,mixed>>, 1:list<array{row:int,column:?string,message:string}>, 2:list<string>, 3:array<string,list<int>>} [renglones, errores, descuadres, filas vacías por campo]
      */
     private function readRows(array $values, int $headerRow, array $map): array
     {
         $rows = [];
         $errors = [];
         $mismatch = [];
+        $blanks = [];
         $tol = Money::of(self::tolerance());
         $letter = fn (string $f) => isset($map[$f]) ? Coordinate::stringFromColumnIndex($map[$f] + 1) : null;
         $blank = fn ($v) => $v === null || trim((string) $v) === '';
@@ -214,7 +269,7 @@ class AmortizationScheduleParser
             if ($blank($rawDate) && (str_contains($text, 'TOTAL') || str_contains($text, 'SUMA'))) {
                 continue;
             }
-            if ($blank($rawDate) && $blank($cell('interes')) && $blank($cell('pago')) && $blank($cell('capital'))) {
+            if ($blank($rawDate) && $blank($cell('interes')) && $blank($cell('comision')) && $blank($cell('pago')) && $blank($cell('capital'))) {
                 continue; // texto suelto (notas) sin importes
             }
 
@@ -247,10 +302,13 @@ class AmortizationScheduleParser
 
                 return $v->toScale(2, RoundingMode::HALF_UP);
             };
-            $interest = $amount('interes', true);
+            // Columna presente ⇒ importe obligatorio (interés / comisión nunca se asumen $0 en silencio).
+            $interest = $amount('interes', isset($map['interes']));
+            $commission = $amount('comision', isset($map['comision']));
             $pago = $amount('pago', false);
             $capital = $amount('capital', false);
             $iva = $amount('iva', false);
+            $commissionVat = $amount('iva_comision', false);
             $saldo = $amount('saldo', false);
 
             if ($rowErrors !== []) {
@@ -258,21 +316,29 @@ class AmortizationScheduleParser
 
                 continue;
             }
-            $ivaZ = $iva ?? BigDecimal::zero();
+            // Celdas vacías en columnas presentes: se toman como $0 pero SE AVISA (nunca en silencio).
+            foreach (['iva' => $iva, 'iva_comision' => $commissionVat] as $f => $v) {
+                if ($v === null && isset($map[$f])) {
+                    $blanks[$f][] = $excelRow;
+                }
+            }
+            $interestZ = $interest ?? BigDecimal::zero();
+            $cost = $interestZ->plus($commission ?? BigDecimal::zero());
+            $ivaZ = ($iva ?? BigDecimal::zero())->plus($commissionVat ?? BigDecimal::zero());
             if ($capital === null) {
-                $capital = $pago === null ? BigDecimal::zero() : $pago->minus($interest)->minus($ivaZ);
+                $capital = $pago === null ? BigDecimal::zero() : $pago->minus($cost)->minus($ivaZ);
                 if ($capital->isNegative()) {
-                    $errors[] = ['row' => $excelRow, 'column' => $letter('pago'), 'message' => "Fila {$excelRow}: el interés (".Money::str2($interest).') es mayor que el pago ('.Money::str2($pago).') y no hay columna de capital.'];
+                    $errors[] = ['row' => $excelRow, 'column' => $letter('pago'), 'message' => "Fila {$excelRow}: el interés + comisión (".Money::str2($cost).') es mayor que el pago ('.Money::str2($pago).') y no hay columna de capital.'];
 
                     continue;
                 }
             }
             if ($pago === null) {
-                $pago = $capital->plus($interest)->plus($ivaZ);
+                $pago = $capital->plus($cost)->plus($ivaZ);
             } else {
                 // Se acepta el pago con IVA incluido o sin él (algunas tablas muestran el IVA aparte).
-                $withVat = $capital->plus($interest)->plus($ivaZ);
-                $withoutVat = $capital->plus($interest);
+                $withVat = $capital->plus($cost)->plus($ivaZ);
+                $withoutVat = $capital->plus($cost);
                 if ($withVat->minus($pago)->abs()->isGreaterThan($tol) && $withoutVat->minus($pago)->abs()->isGreaterThan($tol)) {
                     $mismatch[] = "fila {$excelRow} (".Money::str2($withVat).' vs '.Money::str2($pago).')';
                 }
@@ -284,13 +350,15 @@ class AmortizationScheduleParser
                 'payment_date' => $date,
                 'payment_total' => Money::str2($pago),
                 'principal' => Money::str2($capital),
-                'interest' => Money::str2($interest),
+                'interest' => Money::str2($interestZ),
                 'interest_vat' => $iva === null ? null : Money::str2($iva),
+                'commission' => $commission === null ? null : Money::str2($commission),
+                'commission_vat' => $commissionVat === null ? null : Money::str2($commissionVat),
                 'balance' => $saldo === null ? null : Money::str2($saldo),
             ];
         }
 
-        return [$rows, $errors, $mismatch];
+        return [$rows, $errors, $mismatch, $blanks];
     }
 
     /**

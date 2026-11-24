@@ -16,6 +16,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * Columnas clave: `payment_number`, `payment_date`, `payment_total` (pago completo),
  * `principal` (capital), `interest` (interés), `interest_vat` (IVA del interés),
  * `balance` (saldo insoluto), `origin` (archivo | captura) y `source_row` (fila del archivo).
+ * `commission` / `commission_vat` (24-nov-2026): comisión financiera del pago (LEROM: comisión por
+ * apertura prorrateada; NO es interés) y su IVA (nunca es gasto).
  */
 class EstadoResultadosAmortizationRow extends Model
 {
@@ -36,6 +38,8 @@ class EstadoResultadosAmortizationRow extends Model
         'principal' => 'decimal:2',
         'interest' => 'decimal:2',
         'interest_vat' => 'decimal:2',
+        'commission' => 'decimal:2',
+        'commission_vat' => 'decimal:2',
         'balance' => 'decimal:2',
     ];
 

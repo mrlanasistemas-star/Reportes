@@ -51,7 +51,8 @@ class EstadoResultadosFinancialExpensesController extends Controller
      * la carga vigente anterior queda sustituida. Si el mismo archivo ya era el vigente responde
      * idempotente sin cambiar nada.
      *
-     * @param  Request  $request  `file` (obligatorio) y `notes` (opcional, máx. 2000).
+     * @param  Request  $request  `file` (obligatorio; .pdf ⇒ 422 pidiendo Excel/CSV), `notes` (opcional, máx. 2000)
+     *                            y `document_kind` (simulacion | definitivo; default simulacion).
      * @param  string  $credit  Llave del crédito (`key`, p.ej. lerom | bbva); 404 si no existe o está inactivo.
      * @param  AmortizationUploadService  $service  Lee y persiste la tabla.
      * @return JsonResponse Mensaje en español, bandera `idempotent`, carga `replaced` (o null) y la nueva `upload`;
@@ -65,13 +66,15 @@ class EstadoResultadosFinancialExpensesController extends Controller
         $data = $request->validate([
             'file' => ['required', 'file'],
             'notes' => ['nullable', 'string', 'max:2000'],
+            'document_kind' => ['nullable', 'in:'.implode(',', AmortizationUploadService::DOCUMENT_KINDS)],
         ], [
             'file.required' => 'Selecciona el archivo de la tabla de amortización.',
             'file.file' => 'No se recibió el archivo completo. Vuelve a intentarlo.',
+            'document_kind.in' => 'Indica si el documento es una simulación o la tabla definitiva.',
         ]);
 
         try {
-            $res = $service->upload($model, $data['file'], $request->user()?->id, $data['notes'] ?? null);
+            $res = $service->upload($model, $data['file'], $request->user()?->id, $data['notes'] ?? null, $data['document_kind'] ?? null);
         } catch (EstadoResultadosImportException $e) {
             return response()->json(['message' => $e->getMessage(), 'details' => $e->details(), 'errors' => $e->errors()], $e->status());
         }
@@ -79,7 +82,9 @@ class EstadoResultadosFinancialExpensesController extends Controller
 
         return response()->json([
             'message' => $res['idempotent']
-                ? 'Esa tabla de amortización ya estaba cargada como vigente para '.$model->name.'. No se cambió nada.'
+                ? (($res['kind_changed'] ?? false)
+                    ? 'Esa tabla ya estaba vigente para '.$model->name.'; sólo se marcó como '.($upload->document_kind === AmortizationUploadService::DEFINITIVO ? 'tabla DEFINITIVA' : 'SIMULACIÓN').'.'
+                    : 'Esa tabla de amortización ya estaba cargada como vigente para '.$model->name.'. No se cambió nada.')
                 : ($res['replaced'] ? 'Tabla de amortización sustituida' : 'Tabla de amortización cargada').' para '.$model->name.': '.$upload->rows_count.' pago(s) del '
                     .$upload->first_payment_date?->format('d/m/Y').' al '.$upload->last_payment_date?->format('d/m/Y').'.',
             'idempotent' => $res['idempotent'],

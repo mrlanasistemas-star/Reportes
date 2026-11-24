@@ -18,6 +18,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * Columnas clave: `file_hash` (sha256 del archivo), `rows_count`, rango de fechas de pago
  * (`first_payment_date`/`last_payment_date`), totales de pago/capital/interés/IVA,
  * `column_map` (encabezado detectado por cada campo) y `warnings` (avisos de lectura).
+ * `document_kind` (24-nov-2026): simulacion (default; documento no vinculante) | definitivo, y
+ * totales `total_commission` / `total_commission_vat`.
  */
 class EstadoResultadosAmortizationUpload extends Model
 {
@@ -41,6 +43,8 @@ class EstadoResultadosAmortizationUpload extends Model
         'total_principal' => 'decimal:2',
         'total_interest' => 'decimal:2',
         'total_interest_vat' => 'decimal:2',
+        'total_commission' => 'decimal:2',
+        'total_commission_vat' => 'decimal:2',
         'superseded_at' => 'datetime',
     ];
 
