@@ -260,6 +260,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
             // fuera de su dataset (otro periodo, repetidas, sin periodo, no guardadas) + Excel de la lista.
             Route::get('/{period}/control-movimientos', [EstadoResultadosControlController::class, 'movements'])->whereNumber('period')->middleware('throttle:60,1')->name('control-movements');
             Route::get('/{period}/control-movimientos/exportar', [EstadoResultadosControlController::class, 'export'])->whereNumber('period')->middleware(['throttle:20,1', 'permission:estado_resultados,exportar'])->name('control-movements-export');
+            // 24-nov-2026 — pendientes agrupados por concepto + clasificación masiva segura (vista previa → confirmar) y deshacer.
+            Route::get('/{period}/control-movimientos/grupos', [EstadoResultadosControlController::class, 'groups'])->whereNumber('period')->middleware('throttle:60,1')->name('control-groups');
+            Route::post('/{period}/control-movimientos/grupos/vista-previa', [EstadoResultadosControlController::class, 'groupPreview'])->whereNumber('period')->middleware(['throttle:60,1', 'permission:estado_resultados,clasificar'])->name('control-groups-preview');
+            Route::post('/{period}/control-movimientos/grupos/clasificar', [EstadoResultadosControlController::class, 'groupClassify'])->whereNumber('period')->middleware(['throttle:30,1', 'permission:estado_resultados,clasificar'])->name('control-groups-classify');
+            Route::post('/{period}/control-movimientos/deshacer', [EstadoResultadosControlController::class, 'revert'])->whereNumber('period')->middleware(['throttle:30,1', 'permission:estado_resultados,clasificar'])->name('control-revert');
             // 20-nov-2026 — catálogo de conceptos (GLOBAL): texto del estado de cuenta → concepto del reporte.
             // Lectura con el módulo; escritura y vista previa con estado_resultados,catalogo. Se aplica al procesar.
             Route::get('/catalogo-conceptos', [EstadoResultadosConceptCatalogController::class, 'index'])->name('concept-catalog.index');

@@ -77,6 +77,12 @@ class MovementControlService
         'poliza_puente', 'retenciones_terceros', 'servicio_deuda', 'nomina_sucursal_noi',
     ];
 
+    /**
+     * Reglas del clasificador que marcan APORTACIONES A CRÉDITOS (sucursales que fondean el
+     * pago de un crédito). Filtro «Aportaciones a créditos» de la lista de control.
+     */
+    public const CREDIT_CONTRIBUTION_RULES = ['aportacion_credito', 'aportacion_credito_sugerida', 'fondeo_servicio_deuda'];
+
     /** Tope de referencias por validación (evita respuestas gigantes). */
     private const MAX_REFS = 5000;
 
@@ -341,6 +347,29 @@ class MovementControlService
         }
 
         return ['status' => $status, 'label' => self::STATUS_LABELS[$status], 'sub' => $sub, 'explain' => trim($explain), 'flags' => $flags];
+    }
+
+    /**
+     * Estado de control de un movimiento YA presentado en dataset.movements (los snapshots
+     * aprobados antes del 20-nov no traen `control`: se deduce igual que en el front).
+     * Orden: duplicado (placement) → fuera (no in_period) → pendiente → completado.
+     *
+     * @param  array<string,mixed>  $m  movimiento del dataset
+     * @return array{status:string,label:string,explain:string,flags:array}
+     */
+    public static function controlOf(array $m): array
+    {
+        if (isset($m['control']['status'])) {
+            return $m['control'] + ['flags' => []];
+        }
+        $status = match (true) {
+            ($m['placement'] ?? null) === A::DUPLICADO => self::DUPLICADO,
+            ! ($m['in_period'] ?? true) => self::FUERA,
+            ($m['treatment'] ?? null) === T::PENDIENTE => self::PENDIENTE,
+            default => self::COMPLETADO,
+        };
+
+        return ['status' => $status, 'label' => self::STATUS_LABELS[$status], 'explain' => (string) ($m['rule_reason'] ?? ''), 'flags' => []];
     }
 
     /**

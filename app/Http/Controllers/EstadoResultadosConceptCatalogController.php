@@ -8,6 +8,7 @@ use App\Services\Access\DataScopeService;
 use App\Services\EstadoResultados\Classification\ConceptCatalogService;
 use App\Services\EstadoResultados\Reporting\EstadoResultadosAbilities;
 use App\Services\EstadoResultados\Reporting\EstadoResultadosRedactor;
+use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
 use App\Services\EstadoResultados\Support\Treatment;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -158,7 +159,9 @@ class EstadoResultadosConceptCatalogController extends Controller
         $hidden = ($canNomina && $canDg) ? null
             : fn (array $m) => (! $canNomina && EstadoResultadosRedactor::isPayroll($m)) || (! $canDg && EstadoResultadosRedactor::isDg($m));
 
-        return response()->json($this->catalog->preview($period, $data, isset($data['rule_id']) ? (int) $data['rule_id'] : null, 200, $hidden));
+        // Periodo aprobado: la regla se guarda (es global) pero aquí no se aplica hasta abrir una nueva versión.
+        return response()->json($this->catalog->preview($period, $data, isset($data['rule_id']) ? (int) $data['rule_id'] : null, 200, $hidden)
+            + ['period_locked' => app(PeriodLockGuard::class)->isLocked($period)]);
     }
 
     /**

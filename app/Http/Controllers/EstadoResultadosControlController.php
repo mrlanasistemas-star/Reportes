@@ -6,9 +6,12 @@ use App\Models\Period;
 use App\Services\Access\DataScopeService;
 use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
 use App\Services\EstadoResultados\Control\MovementControlService;
+use App\Services\EstadoResultados\Control\PendingGroupService;
 use App\Services\EstadoResultados\Reporting\EstadoResultadosAbilities;
+use App\Services\EstadoResultados\Reporting\EstadoResultadosRedactor;
 use App\Services\EstadoResultados\Reporting\EstadoResultadosReportResolver;
-use App\Services\EstadoResultados\Support\Treatment as T;
+use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
+use App\Services\EstadoResultados\Support\Treatment;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -43,7 +46,90 @@ class EstadoResultadosControlController extends Controller
         private readonly EstadoResultadosAbilities $abilities,
         private readonly DataScopeService $dataScope,
         private readonly EstadoResultadosReportResolver $resolver,
+        private readonly PendingGroupService $groups,
+        private readonly PeriodLockGuard $lock,
     ) {}
+
+    /**
+     * GET /estado-resultados/{period}/control-movimientos/grupos?alcance=&limite=
+     *
+     * Pendientes del periodo agrupados por concepto normalizado + sentido (ver
+     * PendingGroupService::normalizeConcept). Sale del MISMO dataset que pinta la lista (ya
+     * redactado para el usuario), así el total de los grupos cuadra con el contador
+     * «Pendientes». Lectura: módulo + alcance (igual que movements()).
+     *
+     * @return JsonResponse {groups, total_groups, total_pending, pending_amount, redacted, truncated}
+     */
+    public function groups(Request $request, Period $period): JsonResponse
+    {
+        abort_unless($period->type === 'monthly', 422, 'El Estado de Resultados se genera sobre periodos mensuales.');
+        $scope = $this->authorizeScope($request);
+        try {
+            $dataset = $this->resolver->resolve($period, $scope, $request->user());
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        return response()->json($this->groups->groups($dataset['movements'] ?? [], (int) $request->query('limite', 60)));
+    }
+
+    /**
+     * POST /estado-resultados/{period}/control-movimientos/grupos/vista-previa {fingerprints[], treatment}
+     *
+     * Paso 2 de «Clasificar grupo» (a mano): cuántos cambian, cuáles se excluyen y por qué,
+     * importe y advertencias. Sólo lectura. Ruta con permiso `clasificar`; aquí además alcance
+     * general (lee el consolidado sin redactar, como POST /clasificar).
+     */
+    public function groupPreview(Request $request, Period $period): JsonResponse
+    {
+        abort_unless($period->type === 'monthly', 422, 'El Estado de Resultados se genera sobre periodos mensuales.');
+        $this->dataScope->requireGeneral($request->user(), 'La clasificación de movimientos');
+        $data = $this->validateBulk($request, withNotes: false);
+        $preview = $this->groups->preview($this->allMovements($period), $data['fingerprints'], $data['treatment'], $this->lock->isLocked($period), $this->canSee($request));
+        unset($preview['_apply']);
+
+        return response()->json($preview);
+    }
+
+    /**
+     * POST /estado-resultados/{period}/control-movimientos/grupos/clasificar {fingerprints[], treatment, notes}
+     *
+     * Paso 3: clasifica a mano SÓLO lo que la vista previa (recalculada aquí) deja pasar. Bitácora
+     * por movimiento con usuario, fecha y motivo. Periodo aprobado ⇒ 423.
+     */
+    public function groupClassify(Request $request, Period $period): JsonResponse
+    {
+        abort_unless($period->type === 'monthly', 422, 'El Estado de Resultados se genera sobre periodos mensuales.');
+        $this->dataScope->requireGeneral($request->user(), 'La clasificación de movimientos');
+        $this->lock->assertUnlocked($period);
+        $data = $this->validateBulk($request, withNotes: true);
+        $res = $this->groups->apply($period, $this->allMovements($period), $data['fingerprints'], $data['treatment'], $data['notes'], $request->user()?->id, $this->canSee($request));
+
+        return response()->json($res + [
+            'message' => $res['count'].' movimiento(s) clasificados como «'.Treatment::label($data['treatment']).'».'.($res['excluded'] ? ' '.$res['excluded'].' se dejaron fuera (protegidos).' : ''),
+        ]);
+    }
+
+    /**
+     * POST /estado-resultados/{period}/control-movimientos/deshacer {fingerprints[], notes}
+     *
+     * Deshace la clasificación manual (vuelve al tratamiento de la regla automática) dejando
+     * constancia en la bitácora. Permiso `clasificar`, alcance general, periodo abierto.
+     */
+    public function revert(Request $request, Period $period): JsonResponse
+    {
+        abort_unless($period->type === 'monthly', 422, 'El Estado de Resultados se genera sobre periodos mensuales.');
+        $this->dataScope->requireGeneral($request->user(), 'La clasificación de movimientos');
+        $this->lock->assertUnlocked($period);
+        $data = $request->validate([
+            'fingerprints' => ['required', 'array', 'min:1', 'max:'.PendingGroupService::MAX_ITEMS],
+            'fingerprints.*' => ['string', 'max:80'],
+            'notes' => ['required', 'string', 'min:3', 'max:2000'],
+        ], ['notes.required' => 'Escribe el motivo para deshacer.', 'notes.min' => 'Escribe el motivo para deshacer.']);
+        $res = $this->groups->revert($period, $this->allMovements($period), $data['fingerprints'], $data['notes'], $request->user()?->id, $this->canSee($request));
+
+        return response()->json($res + ['message' => $res['count'].' clasificación(es) manual(es) deshechas.'.($res['skipped'] ? ' '.$res['skipped'].' sin cambio.' : '')]);
+    }
 
     /**
      * GET /estado-resultados/{period}/control-movimientos?vista=fuera|no_guardado&archivo=&ubicacion=&page=
@@ -94,7 +180,7 @@ class EstadoResultadosControlController extends Controller
      * borra tras enviarse; si falla la escritura registra el error en el log con una referencia
      * ER-CTRL-… que se muestra al usuario (500).
      *
-     * @param  Request  $request  Query: estado (todos|completado|pendiente|duplicado|fuera|no_guardado|revisar),
+     * @param  Request  $request  Query: estado (todos|completado|pendiente|duplicado|fuera|no_guardado|revisar|aportaciones),
      *                            archivo, huellas[], alcance.
      * @param  Period  $period  Debe ser mensual.
      * @return BinaryFileResponse|JsonResponse Descarga del Excel o error JSON.
@@ -105,7 +191,7 @@ class EstadoResultadosControlController extends Controller
         abort_unless($period->type === 'monthly', 422, 'El Estado de Resultados se genera sobre periodos mensuales.');
         $scope = $this->authorizeScope($request);
         $estado = (string) $request->query('estado', 'todos');
-        abort_unless(in_array($estado, ['todos', 'completado', 'pendiente', 'duplicado', 'fuera', 'no_guardado', 'revisar'], true), 422, 'Estado no válido.');
+        abort_unless(in_array($estado, ['todos', 'completado', 'pendiente', 'duplicado', 'fuera', 'no_guardado', 'revisar', 'aportaciones'], true), 422, 'Estado no válido.');
         $upload = $request->query('archivo');
         $uploadId = $upload !== null && $upload !== '' && ctype_digit((string) $upload) ? (int) $upload : null;
         $fps = array_values(array_filter(array_map('strval', (array) $request->query('huellas', []))));
@@ -129,7 +215,13 @@ class EstadoResultadosControlController extends Controller
                 if ($uploadId !== null && (int) ($m['upload_id'] ?? 0) !== $uploadId) {
                     continue;
                 }
-                if ($estado === 'revisar' ? $c['flags'] === [] : ($estado !== 'todos' && $c['status'] !== $estado)) {
+                $skip = match ($estado) {
+                    'todos' => false,
+                    'revisar' => $c['flags'] === [],
+                    'aportaciones' => ! in_array($m['rule_code'] ?? null, MovementControlService::CREDIT_CONTRIBUTION_RULES, true),
+                    default => $c['status'] !== $estado,
+                };
+                if ($skip) {
                     continue;
                 }
                 $rows[] = [
@@ -194,17 +286,7 @@ class EstadoResultadosControlController extends Controller
      */
     public static function controlOf(array $m): array
     {
-        if (isset($m['control']['status'])) {
-            return $m['control'] + ['flags' => []];
-        }
-        $status = match (true) {
-            ($m['placement'] ?? null) === 'duplicado' => MovementControlService::DUPLICADO,
-            ! ($m['in_period'] ?? true) => MovementControlService::FUERA,
-            ($m['treatment'] ?? null) === T::PENDIENTE => MovementControlService::PENDIENTE,
-            default => MovementControlService::COMPLETADO,
-        };
-
-        return ['status' => $status, 'label' => MovementControlService::STATUS_LABELS[$status], 'explain' => (string) ($m['rule_reason'] ?? ''), 'flags' => []];
+        return MovementControlService::controlOf($m);
     }
 
     /**
@@ -249,6 +331,41 @@ class EstadoResultadosControlController extends Controller
         $sheet->setAutoFilter('A3:O'.max(3, $r - 1));
         $sheet->freezePane('A4');
         (new Xlsx($book))->save($path);
+    }
+
+    /**
+     * Valida huellas + tratamiento (+ motivo) de una operación masiva.
+     *
+     * @return array{fingerprints:list<string>, treatment:string, notes?:string}
+     */
+    private function validateBulk(Request $request, bool $withNotes): array
+    {
+        return $request->validate([
+            'fingerprints' => ['required', 'array', 'min:1', 'max:'.PendingGroupService::MAX_ITEMS],
+            'fingerprints.*' => ['string', 'max:80'],
+            'treatment' => ['required', 'string', 'in:'.implode(',', Treatment::ASSIGNABLE)],
+        ] + ($withNotes ? ['notes' => ['required', 'string', 'min:3', 'max:2000']] : []), [
+            'treatment.required' => 'Elige a dónde van los movimientos.',
+            'treatment.in' => 'Ese destino no se puede asignar a mano.',
+            'notes.required' => 'Escribe el motivo de la clasificación.',
+            'notes.min' => 'Escribe el motivo de la clasificación.',
+            'fingerprints.max' => 'Máximo '.PendingGroupService::MAX_ITEMS.' movimientos por operación.',
+        ]);
+    }
+
+    /** Movimientos del consolidado SIN redactar (la redacción se decide por movimiento con canSee()). */
+    private function allMovements(Period $period): array
+    {
+        return $this->resolver->unredacted($period, EstadoResultadosDatasetBuilder::CONSOLIDADO)['movements'] ?? [];
+    }
+
+    /** ¿El usuario puede ver/clasificar ese movimiento? (nómina ⇒ ver_nomina; DG ⇒ ver_dg). */
+    private function canSee(Request $request): \Closure
+    {
+        $nomina = $this->abilities->can($request->user(), 'ver_nomina');
+        $dg = $this->abilities->can($request->user(), 'ver_dg');
+
+        return fn (array $m) => ! ((! $nomina && EstadoResultadosRedactor::isPayroll($m)) || (! $dg && EstadoResultadosRedactor::isDg($m)));
     }
 
     /**
