@@ -104,6 +104,7 @@ const CREDIT_INTEREST = [
     'intereses_lerom',
     'intereses_bbva',
     'otros_intereses',
+    'comisiones_financieras',
 ];
 /** Verdadero si el importe del concepto viene de la tabla de amortización. */
 const fromTable = (a: Adjustment) => a.origin === 'tabla_amortizacion';

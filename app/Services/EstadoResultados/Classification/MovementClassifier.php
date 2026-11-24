@@ -2,6 +2,7 @@
 
 namespace App\Services\EstadoResultados\Classification;
 
+use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
 use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\Treatment as T;
@@ -27,6 +28,37 @@ class MovementClassifier
      * @var list<array<string,mixed>>
      */
     private array $catalog = [];
+
+    /**
+     * Palabras que indican que un ABONO es una aportación de sucursal (sobre texto normalizado).
+     */
+    public const CONTRIBUTION_KEYWORDS = '/\b(DEPOSITO|DEP|APORTACION|APORTE|TRANSFERENCIA|TRANSF|SPEI|PAGO)\b/';
+
+    /**
+     * Créditos registrados (FinancialExpenseService::classifierCredits()) con sus regex ya
+     * compiladas: `pay` = cargo de pago al acreedor, `contrib` = abono de aportación. Se cargan una
+     * vez por corrida (useCredits); sin créditos sólo aplican las reglas legacy.
+     *
+     * @var list<array{key:string, name:string, pay:?string, contrib:?string}>
+     */
+    private array $credits = [];
+
+    /**
+     * Carga los créditos para la corrida en curso (una consulta por corrida, no por movimiento).
+     *
+     * @param  list<array<string,mixed>>  $credits  FinancialExpenseService::classifierCredits()
+     */
+    public function useCredits(array $credits): static
+    {
+        $this->credits = array_values(array_map(fn (array $c) => [
+            'key' => (string) $c['key'],
+            'name' => (string) ($c['creditor'] ?? $c['name'] ?? $c['key']),
+            'pay' => FinancialExpenseService::compilePattern($c['bank_pattern'] ?? null),
+            'contrib' => FinancialExpenseService::compilePattern($c['contribution_pattern'] ?? null),
+        ], $credits));
+
+        return $this;
+    }
 
     /**
      * Carga las reglas activas del catálogo para la corrida en curso.
@@ -76,7 +108,7 @@ class MovementClassifier
         }
 
         if (! $isCargo) {
-            return $this->fromCatalog($m) ?? $this->classifyAbono($concept, $text);
+            return $this->fromCatalog($m) ?? $this->classifyAbono($concept, $text, trim($text.' '.$ref), $m, $kind);
         }
 
         // ── Cargos: primero el resultado de conciliación contra ERP ──────
@@ -111,9 +143,12 @@ class MovementClassifier
      *
      * @param  string  $concept  concepto normalizado
      * @param  string  $text  concepto + observaciones normalizados
+     * @param  string  $full  concepto + observaciones + referencia normalizados
+     * @param  array  $m  movimiento
+     * @param  string  $kind  tipo de sucursal
      * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}
      */
-    private function classifyAbono(string $concept, string $text): array
+    private function classifyAbono(string $concept, string $text, string $full = '', array $m = [], string $kind = 'vacia'): array
     {
         $noIngreso = ' Un abono bancario nunca se registra como ingreso operativo en automático.';
 
@@ -123,6 +158,10 @@ class MovementClassifier
         if (str_contains($concept, 'PROVISION IMSS') || str_contains($concept, 'PROVISION')) {
             return $this->out(T::TRANSFERENCIA_INTERNA, null, 'provision_sucursal', 'Provisión depositada por la sucursal (IMSS). Flujo interno; el IMSS patronal ya está en Nómina y Capital Humano de sucursales.');
         }
+        if ($this->credits !== [] && ($hit = $this->creditContribution($full !== '' ? $full : $text, $m, $kind))) {
+            return $hit;
+        }
+        // Legacy (sin créditos cargados, o «CREDITO LEROM» sin palabra de aportación).
         if (preg_match('/DEPOSITO.*CREDITO|CREDITO (LEROM|BBVA)/', $concept)) {
             return $this->out(T::TRANSFERENCIA_INTERNA, null, 'fondeo_servicio_deuda', 'Depósito de sucursal para cubrir el servicio de deuda (LEROM/BBVA). Flujo interno, no ingreso.');
         }
@@ -141,6 +180,65 @@ class MovementClassifier
         }
 
         return $this->out(T::PENDIENTE, null, 'abono_sin_regla', 'Abono sin regla de clasificación.'.$noIngreso, true);
+    }
+
+    /**
+     * Aportación de sucursal para el servicio de deuda (ABONO). Requiere palabra de aportación
+     * (DEPÓSITO, APORTACIÓN, TRANSFERENCIA, PAGO…) + el acreedor de UN crédito registrado
+     * (contribution_pattern) + sucursal operativa/agrupada identificada ⇒ aportacion_credito
+     * (transferencia interna). Acreedor sin sucursal, dos acreedores o «DEPÓSITO CRÉDITO» sin
+     * acreedor ⇒ pendiente con sugerencia (aportacion_credito_sugerida). null = no aplica.
+     *
+     * @param  string  $full  texto normalizado (concepto + observaciones + referencia)
+     * @param  array  $m  movimiento
+     * @param  string  $kind  tipo de sucursal
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}|null
+     */
+    private function creditContribution(string $full, array $m, string $kind): ?array
+    {
+        if (! preg_match(self::CONTRIBUTION_KEYWORDS, $full)) {
+            return null;
+        }
+        $matched = array_values(array_filter($this->credits, fn ($c) => $c['contrib'] !== null && preg_match($c['contrib'], $full) === 1));
+        $flow = ' Flujo interno: no es ingreso ni gasto; sirve para el prorrateo gerencial del costo financiero.';
+        if ($matched === []) {
+            if (preg_match('/\b(DEPOSITO|APORTACION)\b.*\bCREDITO\b/', $full)) {
+                return $this->out(T::PENDIENTE, T::TRANSFERENCIA_INTERNA, FinancialExpenseService::RULE_APORTACION_SUGERIDA,
+                    'Parece una aportación para un crédito, pero no menciona a qué acreedor (LEROM, BBVA…). Confirma el crédito.'.$flow, true);
+            }
+
+            return null;
+        }
+        $branch = trim((string) ($m['branch_name'] ?? ''));
+        if (count($matched) > 1) {
+            return $this->out(T::PENDIENTE, T::TRANSFERENCIA_INTERNA, FinancialExpenseService::RULE_APORTACION_SUGERIDA,
+                'Aportación que menciona más de un acreedor ('.implode(', ', array_column($matched, 'name')).'). Confirma a qué crédito corresponde.'.$flow, true);
+        }
+        $credit = $matched[0]['name'];
+        if ($branch === '' || ! in_array($kind, ['operativa', 'agrupado'], true)) {
+            return $this->out(T::PENDIENTE, T::TRANSFERENCIA_INTERNA, FinancialExpenseService::RULE_APORTACION_SUGERIDA,
+                'Aportación para el crédito '.$credit.' sin sucursal identificada ('.(($m['sucursal_raw'] ?? '') ?: 'vacía').'). Indica qué sucursal aportó.'.$flow, true);
+        }
+
+        return $this->out(T::TRANSFERENCIA_INTERNA, null, FinancialExpenseService::RULE_APORTACION,
+            'Aportación de '.$branch.' para el crédito '.$credit.'.'.$flow);
+    }
+
+    /**
+     * ¿El texto es un pago a un acreedor registrado (bank_pattern de un crédito)?
+     *
+     * @param  string  $text  texto normalizado
+     * @return string|null nombre del acreedor o null
+     */
+    private function creditorPayment(string $text): ?string
+    {
+        foreach ($this->credits as $c) {
+            if ($c['pay'] !== null && preg_match($c['pay'], $text) === 1) {
+                return $c['name'];
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -170,7 +268,8 @@ class MovementClassifier
             return $this->out(T::BALANCE, null, 'retenciones_terceros', 'Entero de retenciones o descuentos de terceros (SAT/FONACOT/pensión/Infonavit). Es un pasivo que se liquida, no un gasto.');
         }
         // Servicio de deuda bancaria: el pago completo NO es gasto financiero.
-        if (preg_match('/CREDITO (LEROM|BBVA)|PAGO \d+ CREDITO|AMORTIZACION (DE )?CREDITO/', $concept)) {
+        if (preg_match('/CREDITO (LEROM|BBVA)|PAGO \d+ CREDITO|AMORTIZACION (DE )?CREDITO/', $concept)
+            || (! str_contains($text, 'DEPOSITO') && $this->creditorPayment($text) !== null)) {
             return $this->out(T::CAPITAL_DEUDA, null, 'servicio_deuda', 'Pago a acreedor ('.($m['concept'] ?? '').'). El capital no es gasto; sólo los intereses entran entre EBIT y EBT, tomados de la tabla de amortización del crédito (pestaña «Gastos financieros»); el pago completo nunca se registra como gasto financiero.');
         }
         // Pólizas cobradas por cuenta de terceros.

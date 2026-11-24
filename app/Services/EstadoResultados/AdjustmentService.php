@@ -48,6 +48,8 @@ class AdjustmentService
         'intereses_bbva' => ['label' => 'Intereses bancarios BBVA', 'section' => 'financiero', 'effect' => 'Disminuye EBT', 'affects' => true],
         'intereses_lerom' => ['label' => 'Intereses LEROM', 'section' => 'financiero', 'effect' => 'Disminuye EBT', 'affects' => true],
         'otros_intereses' => ['label' => 'Otros intereses', 'section' => 'financiero', 'effect' => 'Disminuye EBT', 'affects' => true],
+        // 24-nov-2026: comisión financiera de la tabla (LEROM). Criterio pendiente de confirmar por Finanzas.
+        'comisiones_financieras' => ['label' => 'Comisiones financieras', 'section' => 'financiero', 'effect' => 'Disminuye EBT', 'affects' => true],
         'otros_gastos_financieros' => ['label' => 'Otros gastos financieros / no operativos', 'section' => 'financiero', 'effect' => 'Disminuye EBT', 'affects' => true],
         'ingresos_financieros' => ['label' => 'Ingresos financieros / no operativos', 'section' => 'financiero', 'effect' => 'Aumenta EBT', 'affects' => true],
         'isr' => ['label' => 'ISR causado del periodo', 'section' => 'isr', 'effect' => 'Disminuye utilidad neta', 'affects' => true],

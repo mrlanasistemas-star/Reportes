@@ -363,6 +363,8 @@ class EstadoResultadosDatasetBuilder
             $this->adjLine($adj['intereses_bbva']),
             $this->adjLine($adj['intereses_lerom']),
             $this->adjLine($adj['otros_intereses']),
+            // Comisiones financieras (LEROM): línea separada; criterio pendiente de Finanzas (config).
+            ...(config('estado_resultados.gastos_financieros.comisiones_en_resultado_financiero', true) ? [$this->adjLine($adj['comisiones_financieras'])] : []),
             $this->adjLine($adj['otros_gastos_financieros']),
             $this->line('fin_bancos', 'Gastos financieros clasificados desde bancos', $finBancos, 'Estados de cuenta · clasificación'),
         ];
@@ -1141,7 +1143,7 @@ class EstadoResultadosDatasetBuilder
         if ($fromTable) {
             $hint = (string) ($adj['notes'] ?? 'Interés según la tabla de amortización.');
         } elseif (isset($adj['amortization']['difference']) && $adj['amortization']['difference'] !== null && ! Money::isZeroCents($adj['amortization']['difference'])) {
-            $hint .= ' · Difiere de la tabla de amortización en $'.number_format((float) $adj['amortization']['difference'], 2).' (tabla: $'.number_format((float) $adj['amortization']['interest'], 2).').';
+            $hint .= ' · Difiere de la tabla de amortización en $'.number_format((float) $adj['amortization']['difference'], 2).' (tabla: $'.number_format((float) ($adj['amortization']['amount'] ?? $adj['amortization']['interest']), 2).').';
         }
 
         return $this->line('adj_'.$adj['key'], $prefix.$adj['label'], $amount, $fromTable ? 'Tabla de amortización' : 'Ajuste contable', $hint, $adj['state']);

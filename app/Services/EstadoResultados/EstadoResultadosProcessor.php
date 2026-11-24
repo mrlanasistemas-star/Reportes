@@ -9,6 +9,7 @@ use App\Models\EstadoResultados\EstadoResultadosUpload;
 use App\Models\Period;
 use App\Services\EstadoResultados\Classification\ConceptCatalogService;
 use App\Services\EstadoResultados\Classification\MovementClassifier;
+use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use App\Services\EstadoResultados\Import\MovementPeriodAllocator;
 use App\Services\EstadoResultados\Reconciliation\ErpExpenseRepository;
 use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconciler as R;
@@ -204,6 +205,8 @@ class EstadoResultadosProcessor
         $catalogRules = $catalog->activeRules();
         $catalogSignature = $catalog->signature($catalogRules);
         $this->classifier->useCatalog($catalogRules);
+        // Créditos (LEROM/BBVA…): patrones de pago al acreedor y de aportaciones, una vez por corrida.
+        $this->classifier->useCredits(app(FinancialExpenseService::class)->classifierCredits());
         $hasConceptColumns = Schema::hasColumn('estado_resultados_movements', 'concept_rule_id');
         $catalogHits = ['movimientos' => 0, 'conflictos' => 0];
         $now = now();
