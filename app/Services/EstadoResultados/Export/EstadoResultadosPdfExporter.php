@@ -16,10 +16,12 @@ class EstadoResultadosPdfExporter
     /**
      * @param  BrowsershotPdfRenderer  $renderer  motor de PDF (Chrome headless)
      * @param  EstadoResultadosExportContext  $context  contexto de presentación compartido con Excel
+     * @param  ErFinancingSection  $financing  sección de financiamientos (FinancialExpenseService)
      */
     public function __construct(
         private readonly BrowsershotPdfRenderer $renderer,
         private readonly EstadoResultadosExportContext $context,
+        private readonly ErFinancingSection $financing,
     ) {}
 
     /**
@@ -34,7 +36,7 @@ class EstadoResultadosPdfExporter
     {
         $x = $this->context->make($dataset, $comparisons, $comparisonsError);
 
-        return view('estado-resultados.pdf', ['x' => $x, 'pages' => $pages] + $this->charts($x))->render();
+        return view('estado-resultados.pdf', ['x' => $x, 'pages' => $pages] + $this->charts($x) + $this->financing($dataset))->render();
     }
 
     /**
@@ -47,7 +49,7 @@ class EstadoResultadosPdfExporter
     public function export(array $dataset, string $outputPath, ?array $comparisons = null, ?string $comparisonsError = null): string
     {
         $x = $this->context->make($dataset, $comparisons, $comparisonsError);
-        $charts = $this->charts($x);
+        $charts = $this->charts($x) + $this->financing($dataset);
         $rep = $x['report'];
         $options = [
             'format' => 'Letter',
@@ -80,6 +82,25 @@ class EstadoResultadosPdfExporter
         }
 
         return $outputPath;
+    }
+
+    /**
+     * Sección «Gastos financieros» (sólo consolidado) y su gráfica SVG de distribución por sucursal.
+     *
+     * @return array{fin: ?array, finSvg: ?string}
+     */
+    private function financing(array $dataset): array
+    {
+        $fin = $this->financing->build($dataset);
+        $svg = $fin && ! isset($fin['error'])
+            ? ErSvgCharts::hbars(array_map(fn ($b) => [
+                'label' => $b['label'].($b['share'] !== null ? ' · '.ErFormat::pct($b['share']) : ''),
+                'value' => $b['value'],
+                'color' => $b['unassigned'] ? '#94A3B8' : '#0F766E',
+            ], $fin['bars']), 'MXN', 'Sin costo financiero reconocido en el periodo.')
+            : null;
+
+        return ['fin' => $fin, 'finSvg' => $svg];
     }
 
     /** SVG de cada gráfica a partir de charts.* del contrato er-comparativas/1 (o del dataset si no hay comparativas). */

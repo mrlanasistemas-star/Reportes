@@ -53,6 +53,12 @@ $toc = [
 if ($hasBranches) {
     $toc[] = ['id' => 'sucursales', 'n' => '05', 'title' => 'Sucursales', 'desc' => 'Resultado por sucursal y conciliación al consolidado', 'subs' => []];
 }
+// Gastos financieros (sólo consolidado): payload de ErFinancingSection (FinancialExpenseService).
+$fin = $fin ?? null;
+$finSvg = $finSvg ?? null;
+if ($m['scope']['consolidated'] && $fin) {
+    $toc[] = ['id' => 'financiamientos', 'n' => sprintf('%02d', count($toc) + 1), 'title' => 'Gastos financieros', 'desc' => 'Créditos, pagos al acreedor, intereses, comisiones y distribución gerencial', 'subs' => []];
+}
 $toc[] = ['id' => 'conciliacion', 'n' => sprintf('%02d', count($toc) + 1), 'title' => 'Conciliación y fuentes', 'desc' => 'Validaciones, fuentes del periodo y trazabilidad', 'subs' => []];
 $num = collect($toc)->pluck('n', 'id');
 @endphp
@@ -181,6 +187,15 @@ $num = collect($toc)->pluck('n', 'id');
     .secnum { display: inline-block; min-width: 26px; padding: 2px 6px; margin-right: 3px; border-radius: 7px; background: linear-gradient(135deg, #10b981, #0f766e); color: #fff; font-size: 10pt; text-align: center; vertical-align: 2px; }
     .head .meta a { color: #0f766e; text-decoration: none; font-weight: 700; }
     h4.ct { margin: 0 0 2px; }
+    /* Gastos financieros */
+    .fin-kpis { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; break-inside: avoid; }
+    .fin-kpis .kpi { flex: 0 0 calc((100% - 12px) / 3); }
+    .fin-kpis .kpi .v { font-size: 11.5pt; color: #0f172a; }
+    .fin-kpis .kpi.main .v { color: #b91c1c; }
+    .fin-kpis .kpi.info { background: #f8fafc; }
+    .fin-kpis .kpi.info .v { color: #475569; }
+    .fin-table td .sub { display: block; font-size: 6.3pt; color: #64748b; }
+    .fin-note { border-left: 3px solid #0f766e; background: #f0fdfa; padding: 5px 8px; border-radius: 0 7px 7px 0; font-size: 7.2pt; color: #0f172a; margin-top: 6px; break-inside: avoid; }
     .watermark { position: fixed; top: 40%; left: 0; right: 0; text-align: center; font-size: 92pt; font-weight: 800; color: #b91c1c; opacity: .07; transform: rotate(-28deg); z-index: 0; pointer-events: none; }
 </style>
 </head>
@@ -464,6 +479,71 @@ $head = function () use ($logo, $m, $rep, $period) {
             </tbody>
         </table>
         <p class="note">{{ $k['note'] }}</p>
+    @endif
+</section>
+@endif
+
+{{-- ═══════════════ GASTOS FINANCIEROS (consolidado) ═══════════════ --}}
+@if($m['scope']['consolidated'] && $fin)
+<section class="page-break" id="financiamientos">
+    {!! $head() !!}
+    <h2><span class="secnum">{{ $num['financiamientos'] }}</span> <span class="g">Gastos financieros</span> <span class="muted" style="font-size:8pt;font-weight:500">créditos del consolidado · entre EBIT y EBT</span></h2>
+    @if(isset($fin['error']))
+        <p class="warnnote">{{ $fin['error'] }}</p>
+    @else
+        @php $fs = $fin['summary']; @endphp
+        @if($fin['notice'])<div class="legacy">{{ $fin['notice'] }}</div>@endif
+        <div class="fin-kpis">
+            <div class="kpi small info"><div class="l">Pago observado al acreedor</div><div class="v">{{ $money($fs['observed_payment']) }}</div><div class="s">Cargos en bancos · no es gasto</div></div>
+            <div class="kpi small info"><div class="l">Capital (informativo)</div><div class="v">{{ $money($fs['principal_informative']) }}</div><div class="s">Flujo de financiamiento · fuera del ER</div></div>
+            <div class="kpi small info"><div class="l">IVA separado</div><div class="v">{{ $money($fs['vat_separated']) }}</div><div class="s">De intereses y comisiones · no suma</div></div>
+            <div class="kpi small"><div class="l">Intereses</div><div class="v">{{ $money($fs['interest_recognized']) }}</div><div class="s">Reconocidos en el ER</div></div>
+            <div class="kpi small"><div class="l">Comisiones financieras</div><div class="v">{{ $money($fs['commission_recognized']) }}</div><div class="s"><span class="badge warn">Criterio por confirmar</span>@if(! $fin['commissions_in_result']) · no reducen el EBT @endif</div></div>
+            <div class="kpi small main"><div class="l">Efecto en EBT</div><div class="v">{{ $money($fs['ebt_effect']) }}</div><div class="s">Interés + comisión · una sola vez</div></div>
+        </div>
+
+        <h3>Por crédito <span class="hint">pagos previstos según la tabla de amortización vs. cargos bancarios conciliados</span></h3>
+        <table class="fin-table">
+            <thead><tr><th>Crédito</th><th class="n">Pagos prev. / concil.</th><th class="n">Pagado</th><th class="n">Capital</th><th class="n">Interés</th><th class="n">Comisión</th><th class="n">IVA</th><th class="n">Diferencia</th><th>Estado</th></tr></thead>
+            <tbody>
+            @foreach($fin['credits'] as $c)
+                @php $pt = $c['payments']['totals']; @endphp
+                <tr>
+                    <td><b>{{ $c['name'] }}</b><span class="sub">{{ $c['creditor'] }} · tabla: {{ $c['coverage_label'] }}</span></td>
+                    <td class="n">{{ $pt['expected_count'] }} / {{ $pt['reconciled_count'] }}</td>
+                    <td class="n">{{ $money($pt['detected']) }}</td>
+                    <td class="n">{{ $c['covered'] ? $money($c['totals']['principal']) : '—' }}</td>
+                    <td class="n">{{ $money($c['recognized']['interest']) }}</td>
+                    <td class="n">{{ $money($c['recognized']['commission']) }}@if($c['recognized']['commission_informative'] !== null)<span class="sub">informativa {{ $money($c['recognized']['commission_informative']) }}</span>@endif</td>
+                    <td class="n">{{ $money($c['vat']) }}</td>
+                    <td class="n {{ $neg($pt['difference']) }}">{{ $money($pt['difference']) }}</td>
+                    <td><span class="badge {{ $c['status_tone'] }}">{{ $c['status_label'] }}</span></td>
+                </tr>
+            @endforeach
+            <tr class="tot">
+                <td>Total</td><td></td>
+                <td class="n">{{ $money($fs['observed_payment']) }}</td>
+                <td class="n">{{ $money($fs['principal_informative']) }}</td>
+                <td class="n">{{ $money($fs['interest_recognized']) }}</td>
+                <td class="n">{{ $money($fs['commission_recognized']) }}</td>
+                <td class="n">{{ $money($fs['vat_separated']) }}</td>
+                <td></td><td></td>
+            </tr>
+            </tbody>
+        </table>
+        @if($fs['unreconciled']['count'] > 0)
+            <p class="note">Pagos por conciliar: {{ $fs['unreconciled']['count'] }} · {{ $money($fs['unreconciled']['amount']) }} (diferencia = pagado − previsto; no cambia el gasto del ER).</p>
+        @endif
+
+        <div class="chart" style="margin-top:8px">
+            <h4 class="ct">Distribución gerencial del costo financiero por sucursal</h4>
+            <div class="cs">Asignado por participación en las aportaciones de cada sucursal al crédito · total reconocido {{ $money($fin['allocation']['recognized'] ?? null) }} · sin asignar {{ $money($fin['allocation']['unassigned'] ?? null) }}@if(! $fin['allocation_ok']) · <b style="color:#b91c1c">el reparto no cuadra: revisar</b>@endif</div>
+            {!! $finSvg !!}
+            @foreach(collect($fin['credits'])->filter(fn ($c) => $c['allocation'] && (float) $c['allocation']['unassigned']['amount'] > 0) as $c)
+                <p class="note">{{ $c['name'] }}: {{ $money($c['allocation']['unassigned']['amount']) }} sin asignar. {{ $c['allocation']['unassigned']['reason'] }}</p>
+            @endforeach
+        </div>
+        <div class="fin-note"><b>Nota:</b> {{ $fin['note'] }}</div>
     @endif
 </section>
 @endif

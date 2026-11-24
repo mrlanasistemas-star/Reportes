@@ -228,9 +228,10 @@ final class ErSvgCharts
     /**
      * Barras horizontales divergentes (EBITDA por sucursal).
      *
-     * @param  list<array{label:string,value:?string}>  $rows
+     * @param  list<array{label:string,value:?string,color?:string}>  $rows  color opcional por barra
+     * @param  string|null  $zeroText  mensaje cuando todas las barras valen $0.00
      */
-    public static function hbars(array $rows, string $unit = 'MXN'): string
+    public static function hbars(array $rows, string $unit = 'MXN', ?string $zeroText = null): string
     {
         $rows = array_values($rows);
         $vals = array_map(fn ($r) => (float) $r['value'], array_filter($rows, fn ($r) => $r['value'] !== null));
@@ -240,7 +241,7 @@ final class ErSvgCharts
             return self::empty('Sin datos por sucursal.', 80);
         }
         if (max(array_map('abs', $vals)) < 0.005) {
-            return self::empty('Todas las sucursales tienen EBITDA de $0.00 en el periodo.', 80);
+            return self::empty($zeroText ?? 'Todas las sucursales tienen EBITDA de $0.00 en el periodo.', 80);
         }
         [$l, $r, $t] = [150, 70, 18];
         $pw = self::W - $l - $r;
@@ -263,7 +264,7 @@ final class ErSvgCharts
             }
             $v = (float) $row['value'];
             $vx = $x($v);
-            $out .= '<rect x="'.round(min($zero, $vx), 1).'" y="'.$cy.'" width="'.round(max(0.8, abs($vx - $zero)), 1).'" height="'.($rowH - 5).'" rx="2" fill="'.($v < 0 ? '#EF4444' : '#0F766E').'"/>';
+            $out .= '<rect x="'.round(min($zero, $vx), 1).'" y="'.$cy.'" width="'.round(max(0.8, abs($vx - $zero)), 1).'" height="'.($rowH - 5).'" rx="2" fill="'.($row['color'] ?? ($v < 0 ? '#EF4444' : '#0F766E')).'"/>';
             $out .= '<text x="'.round(max($zero, $vx) + 4, 1).'" y="'.($cy + 8).'" font-size="7.8" font-weight="700" fill="#0F172A">'.e(ErFormat::money($v)).'</text>';
         }
 

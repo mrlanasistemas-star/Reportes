@@ -6,6 +6,7 @@ use Carbon\Carbon;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Chart\DataSeries;
+use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Border;
@@ -57,6 +58,9 @@ class EstadoResultadosExcelExporter
         'ajustes' => ['Anexo Ajustes', 'Depreciación, intereses e ISR'],
         'fuera' => ['Anexo Fuera del ER', 'Movimientos que no afectan el resultado'],
     ];
+
+    /** Hoja de financiamientos (sólo consolidado con créditos registrados). */
+    public const FINANCING_SHEET = 'Financiamientos';
 
     /** Descripción breve de cada hoja principal (índice). */
     private const DESCRIPTIONS = [
@@ -147,8 +151,17 @@ class EstadoResultadosExcelExporter
     /** Fila (en «Estado de Resultados») de cada paso, también en el modelo anterior: key => 12. */
     private array $erRows = [];
 
-    /** @param  EstadoResultadosExportContext  $context  contexto de presentación compartido con el PDF */
-    public function __construct(private readonly EstadoResultadosExportContext $context) {}
+    /** Sección de financiamientos (ErFinancingSection::build) de la exportación en curso, o null. */
+    private ?array $fin = null;
+
+    /**
+     * @param  EstadoResultadosExportContext  $context  contexto de presentación compartido con el PDF
+     * @param  ErFinancingSection  $financing  sección de financiamientos (FinancialExpenseService)
+     */
+    public function __construct(
+        private readonly EstadoResultadosExportContext $context,
+        private readonly ErFinancingSection $financing,
+    ) {}
 
     /**
      * Genera el libro completo (hojas principales, anexos e índice) y lo guarda en disco.
@@ -195,6 +208,10 @@ class EstadoResultadosExcelExporter
         $this->sheetMovements($a('movimientos'));
         $this->sheetAdjustments($a('ajustes'));
         $this->sheetOutside($a('fuera'));
+        $this->fin = $this->financing->build($dataset);
+        if ($this->fin !== null) {
+            $this->sheetFinancing($book->createSheet()->setTitle(self::FINANCING_SHEET));
+        }
 
         $this->sheetIndex($ws['indice']);
         foreach ($book->getWorksheetIterator() as $sheet) {
@@ -290,6 +307,9 @@ class EstadoResultadosExcelExporter
         $row++;
         foreach (self::ANNEXES as [$title, $desc]) {
             $this->tocRow($ws, $row++, '·', preg_replace('/^Anexo /', '', $title), $desc, false, $title);
+        }
+        if ($this->fin !== null) {
+            $this->tocRow($ws, $row++, '·', self::FINANCING_SHEET, 'Créditos, pagos al acreedor, aportaciones y distribución gerencial', false);
         }
         $row++;
         $this->put($ws, "B{$row}", 'Cifras en MXN. «Pendiente» nunca equivale a $0.00. Generado '.$this->x['meta']['generated_at'].'.');
@@ -1753,6 +1773,214 @@ class EstadoResultadosExcelExporter
             $ws->getStyle("P{$r}")->applyFromArray(['font' => ['bold' => true, 'color' => ['rgb' => $color]]]);
             $r++;
         }
+    }
+
+    // ── Financiamientos (gastos financieros) ───────────────────────────
+
+    /**
+     * Hoja «Financiamientos» (sólo consolidado): resumen por crédito, calendario previsto del
+     * periodo, pagos bancarios detectados, aportaciones de sucursales, distribución gerencial y
+     * diferencias. TODAS las cifras vienen de FinancialExpenseService (vía ErFinancingSection);
+     * aquí sólo se escriben. Gráfica nativa de barras con la distribución por sucursal.
+     *
+     * @param  Worksheet  $ws  hoja
+     */
+    private function sheetFinancing(Worksheet $ws): void
+    {
+        $this->setup($ws, ['A' => 2, 'B' => 24, 'C' => 20, 'D' => 16, 'E' => 16, 'F' => 16, 'G' => 16, 'H' => 16, 'I' => 16, 'J' => 16, 'K' => 16, 'L' => 15, 'M' => 16, 'N' => 20, 'O' => 60]);
+        $this->banner($ws, 'Financiamientos · Gastos financieros', 'O');
+        $fin = $this->fin;
+        if (isset($fin['error'])) {
+            $this->flag($ws, 'B6', $fin['error']);
+            $ws->freezePane('A5');
+
+            return;
+        }
+        $s = $fin['summary'];
+        $this->note($ws, 'B5', $fin['notice'] ?? ErFinancingSection::NOTE, $fin['notice'] ? self::AMBER : self::MUTED);
+
+        // Tarjetas del resumen (fila 6 rótulo, fila 7 importe).
+        $tiles = [
+            'B' => ['PAGO OBSERVADO', $s['observed_payment']], 'C' => ['CAPITAL (INFORMATIVO)', $s['principal_informative']],
+            'D' => ['INTERESES', $s['interest_recognized']], 'E' => ['COMISIONES *', $s['commission_recognized']],
+            'F' => ['IVA SEPARADO', $s['vat_separated']], 'G' => ['EFECTO EN EBT', $s['ebt_effect']],
+        ];
+        foreach ($tiles as $col => [$label, $value]) {
+            $this->put($ws, "{$col}6", $label);
+            $this->money($ws, "{$col}7", $value);
+        }
+        $ws->getStyle('B6:G6')->applyFromArray(['font' => ['bold' => true, 'size' => 8, 'color' => ['rgb' => self::MUTED]],
+            'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::CARD]]]);
+        $ws->getStyle('B7:G7')->applyFromArray(['font' => ['bold' => true, 'size' => 12, 'color' => ['rgb' => self::INK]],
+            'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::CARD]]]);
+        $ws->getStyle('G6:G7')->applyFromArray(['fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::SOFT]]]);
+        $ws->getRowDimension(7)->setRowHeight(24);
+        $this->note($ws, 'H7', '* Comisión como gasto financiero: criterio por confirmar por Finanzas.'.($fin['commissions_in_result'] ? '' : ' Hoy no reduce el EBT.'));
+
+        // 1 · Resumen por crédito (encabezados congelados + autofiltro).
+        $hdr = 9;
+        $headers = ['B' => 'CRÉDITO', 'C' => 'ACREEDOR', 'D' => 'COBERTURA TABLA', 'E' => 'PAGOS PREVISTOS', 'F' => 'PAGOS CONCILIADOS', 'G' => 'PREVISTO',
+            'H' => 'PAGADO (BANCO)', 'I' => 'CAPITAL (INFO.)', 'J' => 'INTERÉS', 'K' => 'COMISIÓN', 'L' => 'IVA', 'M' => 'DIFERENCIA', 'N' => 'ESTADO', 'O' => 'MOTIVO'];
+        foreach ($headers as $c => $t) {
+            $this->put($ws, "{$c}{$hdr}", $t);
+        }
+        $this->headerRow($ws, "B{$hdr}:O{$hdr}", true);
+        $ws->freezePane('C'.($hdr + 1));
+        $ws->getPageSetup()->setRowsToRepeatAtTopByStartAndEnd($hdr, $hdr);
+        $r = $hdr + 1;
+        foreach ($fin['credits'] as $c) {
+            $pt = $c['payments']['totals'];
+            $this->put($ws, "B{$r}", $c['name']);
+            $this->put($ws, "C{$r}", (string) $c['creditor']);
+            $this->put($ws, "D{$r}", $c['coverage_label']);
+            $this->put($ws, "E{$r}", (int) $pt['expected_count']);
+            $this->put($ws, "F{$r}", (int) $pt['reconciled_count']);
+            $this->money($ws, "G{$r}", $pt['expected']);
+            $this->money($ws, "H{$r}", $pt['detected']);
+            $c['covered'] ? $this->money($ws, "I{$r}", $c['totals']['principal']) : $this->put($ws, "I{$r}", '—');
+            $this->money($ws, "J{$r}", $c['recognized']['interest']);
+            $this->money($ws, "K{$r}", $c['recognized']['commission']);
+            $this->money($ws, "L{$r}", $c['vat']);
+            $this->money($ws, "M{$r}", $pt['difference']);
+            $this->put($ws, "N{$r}", $c['status_label']);
+            $this->pill($ws, "N{$r}", match ($c['status_tone']) {
+                'ok' => 'ECFDF5', 'bad' => 'FEF2F2', default => 'FFFBEB'
+            }, match ($c['status_tone']) {
+                'ok' => '065F46', 'bad' => '991B1B', default => '92400E'
+            });
+            $this->put($ws, "O{$r}", $c['status_reason']);
+            $this->rowLine($ws, "B{$r}:O{$r}");
+            $r++;
+        }
+        $ws->setAutoFilter("B{$hdr}:O".($r - 1));
+        $this->put($ws, "B{$r}", 'Total');
+        foreach (['H' => $s['observed_payment'], 'I' => $s['principal_informative'], 'J' => $s['interest_recognized'], 'K' => $s['commission_recognized'], 'L' => $s['vat_separated']] as $col => $v) {
+            $this->money($ws, "{$col}{$r}", $v);
+        }
+        $ws->getStyle("B{$r}:O{$r}")->applyFromArray(['font' => ['bold' => true], 'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::SOFT]]]);
+        $this->edge($ws, "B{$r}:O{$r}", 'top', Border::BORDER_THIN, self::TEAL);
+        $r += 2;
+
+        // 2 · Calendario previsto del periodo (tabla de amortización vs. banco).
+        $r = $this->finTable($ws, $r, 'CALENDARIO PREVISTO DEL PERIODO', ['CRÉDITO', 'NÚM.', 'FECHA PREVISTA', 'PAGO PREVISTO', 'CAPITAL', 'INTERÉS', 'COMISIÓN', 'IVA', 'FECHA BANCO', 'PAGADO', 'DIFERENCIA', 'ESTADO', 'ETAPA'],
+            collect($fin['credits'])->flatMap(fn ($c) => array_map(fn ($p) => [
+                $c['name'], (int) $p['number'], ['date', $p['scheduled_date']], ['money', $p['expected_payment']], ['money', $p['principal']], ['money', $p['interest']],
+                ['money', $p['commission']], ['money', $p['vat']], ['date', $p['bank_date']], ['money', $p['detected_payment']], ['money', $p['difference']],
+                ErFinancingSection::PAYMENT_STATUS[$p['status']] ?? $p['status'], ucfirst((string) $p['stage']),
+            ], $c['payments']['rows']))->all(), 'Sin pagos previstos en el periodo.');
+
+        // 3 · Pagos bancarios detectados (cargos al acreedor; cuentas y conceptos enmascarados).
+        $bankRow = fn (string $credit, array $m, ?int $number, string $status) => [
+            $credit, ['date', $m['date']], ['money', $m['amount']], ErFormat::mask((string) ($m['account'] ?? '')), ErFormat::mask((string) ($m['concept'] ?? '')), $number, $status,
+        ];
+        $r = $this->finTable($ws, $r, 'PAGOS BANCARIOS DETECTADOS', ['CRÉDITO', 'FECHA', 'IMPORTE', 'CUENTA', 'CONCEPTO', 'PAGO NÚM.', 'ESTADO'],
+            collect($fin['credits'])->flatMap(fn ($c) => array_merge(
+                collect($c['payments']['rows'])->flatMap(fn ($p) => array_map(fn ($m) => $bankRow($c['name'], $m, (int) $p['number'], ErFinancingSection::PAYMENT_STATUS[$p['status']] ?? $p['status']), $p['movements']))->all(),
+                array_map(fn ($m) => $bankRow($c['name'], $m, null, ErFinancingSection::PAYMENT_STATUS['no_previsto']), $c['payments']['unscheduled']),
+            ))->all(), 'No se detectaron cargos al acreedor en los estados de cuenta del periodo.');
+
+        // 4 · Aportaciones de sucursales (abonos a los créditos).
+        $contribRow = fn (string $credit, array $e) => [
+            $credit, ['date', $e['date']], (string) ($e['branch'] ?? 'Sin sucursal'), ErFormat::mask((string) ($e['account'] ?? '')), ErFormat::mask((string) ($e['concept'] ?? '')),
+            ['money', $e['amount']], $e['status'] === 'identificada' ? 'Identificada' : 'Pendiente', (string) ($e['reason'] ?? ''),
+        ];
+        $r = $this->finTable($ws, $r, 'APORTACIONES DE SUCURSALES', ['CRÉDITO', 'FECHA', 'SUCURSAL', 'CUENTA', 'CONCEPTO', 'IMPORTE', 'ESTADO', 'MOTIVO'],
+            array_merge(
+                collect($fin['credits'])->flatMap(fn ($c) => array_map(fn ($e) => $contribRow($c['name'], $e), $c['contributions']['items']))->all(),
+                array_map(fn ($e) => $contribRow('Sin crédito identificado', $e), $fin['unassigned_contributions']),
+            ), 'Sin aportaciones de sucursales a créditos en el periodo.');
+
+        // 5 · Distribución gerencial por sucursal (no duplica el gasto consolidado).
+        $r = $this->finTable($ws, $r, 'DISTRIBUCIÓN GERENCIAL POR SUCURSAL', ['CRÉDITO', 'SUCURSAL', 'APORTADO', 'PARTICIPACIÓN', 'INTERÉS', 'COMISIÓN', 'ASIGNADO', 'CAPITAL (INFO.)', 'MOTIVO'],
+            collect($fin['allocation']['credits'] ?? [])->flatMap(fn ($a) => array_merge(
+                array_map(fn ($b) => [$a['credit_name'], $b['branch'], ['money', $b['contributed']], ['share', $b['share']], ['money', $b['interest']],
+                    ['money', $b['commission']], ['money', $b['assigned']], ['money', $b['principal_informative']], ''], $a['branches']),
+                [[$a['credit_name'], 'Sin asignar', null, null, ['money', $a['unassigned']['interest']], ['money', $a['unassigned']['commission']],
+                    ['money', $a['unassigned']['amount']], ['money', $a['unassigned']['principal_informative']], (string) ($a['unassigned']['reason'] ?? '')]],
+            ))->all(), 'Sin costo financiero que distribuir.');
+        $this->note($ws, 'B'.($r - 1), trim(($fin['allocation']['note'] ?? '').' '.ErFinancingSection::NOTE));
+        $r++;
+
+        // 6 · Diferencias (pagos vs. tabla, captura del ER vs. tabla y cuadre del reparto).
+        $allocBy = collect($fin['allocation']['credits'] ?? [])->keyBy('credit_key');
+        $r = $this->finTable($ws, $r, 'DIFERENCIAS', ['CRÉDITO', 'PREVISTO', 'PAGADO', 'PAGADO − PREVISTO', 'POR CONCILIAR (#)', 'POR CONCILIAR ($)', 'ER − TABLA (INTERÉS)', 'ER − TABLA (COMISIÓN)', 'REPARTO CUADRA'],
+            array_map(fn ($c) => [
+                $c['name'], ['money', $c['payments']['totals']['expected']], ['money', $c['payments']['totals']['detected']], ['money', $c['payments']['totals']['difference']],
+                (int) $c['payments']['totals']['unreconciled_count'], ['money', $c['payments']['totals']['unreconciled_amount']],
+                ['money', $c['adjustment']['difference'] ?? null], ['money', $c['commission_adjustment']['difference'] ?? null],
+                isset($allocBy[$c['key']]) ? (($allocBy[$c['key']]['check']['ok'] ?? false) ? '✓ Sí' : '✗ No') : '—',
+            ], $fin['credits']), 'Sin créditos.');
+
+        // Gráfica nativa: asignado por sucursal + «Sin asignar» (datos en columnas Q:R agrupadas y ocultas).
+        $this->put($ws, 'Q9', 'Sucursal');
+        $this->put($ws, 'R9', 'Asignado');
+        $this->headerRow($ws, 'Q9:R9');
+        foreach (array_values($fin['bars']) as $i => $bar) {
+            $this->put($ws, 'Q'.(10 + $i), $bar['label']);
+            $this->money($ws, 'R'.(10 + $i), $bar['value']);
+        }
+        $dLast = 9 + count($fin['bars']);
+        $this->label($ws, "B{$r}", 'GRÁFICA · DISTRIBUCIÓN GERENCIAL POR SUCURSAL');
+        $top = $r + 1;
+        $bottom = $top + max(14, count($fin['bars']) + 6);
+        ErExcelCharts::add($ws, DataSeries::TYPE_BARCHART, 'Costo financiero asignado por sucursal', 'Q', 9, 10, $dLast, [['col' => 'R', 'color' => self::TEAL]],
+            "B{$top}", "H{$bottom}", '"$"#,##0', DataSeries::GROUPING_CLUSTERED, true);
+        ErExcelCharts::hideColumns($ws, 'P', 'R');
+        $ws->getPageSetup()->setPrintArea("A1:O{$bottom}");
+    }
+
+    /**
+     * Bloque de tabla de la hoja «Financiamientos»: rótulo, encabezados y renglones. Cada celda
+     * es texto, entero, null o [tipo, valor] con tipo money | date (Y-m-d → fecha de Excel) |
+     * share (fracción 0–1 → porcentaje). Devuelve la fila libre siguiente (deja una de aire).
+     *
+     * @param  list<string>  $headers
+     * @param  list<list<mixed>>  $rows
+     */
+    private function finTable(Worksheet $ws, int $r, string $title, array $headers, array $rows, string $empty): int
+    {
+        $this->label($ws, "B{$r}", $title);
+        $ws->getRowDimension($r)->setRowHeight(22);
+        $ws->getStyle("B{$r}")->getAlignment()->setVertical(Alignment::VERTICAL_BOTTOM);
+        $r++;
+        $last = Coordinate::stringFromColumnIndex(1 + count($headers));
+        foreach ($headers as $i => $h) {
+            $this->put($ws, Coordinate::stringFromColumnIndex(2 + $i).$r, $h);
+        }
+        $this->headerRow($ws, "B{$r}:{$last}{$r}", true);
+        $r++;
+        if ($rows === []) {
+            $this->note($ws, "B{$r}", $empty);
+
+            return $r + 2;
+        }
+        foreach ($rows as $row) {
+            foreach (array_values($row) as $i => $v) {
+                $cell = Coordinate::stringFromColumnIndex(2 + $i).$r;
+                if (! is_array($v)) {
+                    $this->put($ws, $cell, $v);
+
+                    continue;
+                }
+                [$type, $val] = $v;
+                if ($val === null || $val === '') {
+                    continue;
+                }
+                if ($type === 'money') {
+                    $this->money($ws, $cell, $val);
+                } elseif ($type === 'share') {
+                    $this->put($ws, $cell, round((float) $val, 6));
+                    $ws->getStyle($cell)->getNumberFormat()->setFormatCode(self::PCT);
+                } elseif ($type === 'date') {
+                    $this->put($ws, $cell, (float) ExcelDate::PHPToExcel(Carbon::parse($val)->startOfDay()));
+                    $ws->getStyle($cell)->getNumberFormat()->setFormatCode('dd/mm/yyyy');
+                }
+            }
+            $this->rowLine($ws, "B{$r}:{$last}{$r}");
+            $r++;
+        }
+
+        return $r + 1;
     }
 
     /**
