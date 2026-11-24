@@ -1,12 +1,11 @@
 <script setup lang="ts">
 /**
- * AmortizationUploadCard — tarjeta de carga de la tabla de amortización de
- * un crédito (LEROM, BBVA, etc.).
+ * AmortizationUploadCard — carga de la tabla de amortización de un crédito.
  *
- * La usa FinancialExpensesPanel. Muestra el crédito, su periodicidad y el
- * concepto de ajuste que alimenta, los datos de la tabla vigente (pagos,
- * vigencia, quién la subió, interés total), sus avisos y la bitácora de
- * cargas. Ofrece descargar la plantilla y subir o sustituir la tabla.
+ * La usa CreditStatusCard (sección «Archivo»). Muestra la tabla vigente (nombre,
+ * pagos, vigencia, quién la subió), sus avisos y la bitácora; permite elegir si el
+ * documento es «Simulación» o «Definitivo», descargar la plantilla y subir o
+ * sustituir la tabla.
  *
  * Props:
  * - credit: datos del crédito en el periodo (tabla vigente e historial).
@@ -15,7 +14,7 @@
  * - uploading: si la tabla se está subiendo ahora.
  *
  * Emits:
- * - upload(file): el usuario eligió un archivo de tabla.
+ * - upload(file, kind): el usuario eligió un archivo de tabla y su tipo de documento.
  * - template(): descargar la plantilla de la tabla.
  */
 import {
@@ -26,16 +25,16 @@ import {
     Loader2,
     Upload,
 } from 'lucide-vue-next';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
+import { dmy } from './financialExpenses';
+import type { CreditPeriod, DocumentKind } from './financialExpenses';
+import FinInfoTip from './FinInfoTip.vue';
 import { Button } from '@/components/ui/button';
 import {
     Collapsible,
     CollapsibleContent,
     CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { PERIODICITY_LABEL, dmy } from './financialExpenses';
-import type { CreditPeriod } from './financialExpenses';
-import { mxn } from './types';
 
 const props = defineProps<{
     credit: CreditPeriod;
@@ -45,7 +44,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-    upload: [file: File];
+    upload: [file: File, kind: DocumentKind];
     template: [];
 }>();
 
@@ -53,6 +52,15 @@ const emit = defineEmits<{
 const input = ref<HTMLInputElement | null>(null);
 /** Si la bitácora de cargas está desplegada. */
 const showHistory = ref(false);
+/** Carga vigente de la tabla, o null si aún no hay. */
+const up = computed(() => props.credit.upload);
+/** Tipo de documento que se enviará con la próxima carga. */
+const kind = ref<DocumentKind>(up.value?.document_kind ?? 'simulacion');
+
+const KINDS: Array<{ key: DocumentKind; label: string }> = [
+    { key: 'simulacion', label: 'Simulación' },
+    { key: 'definitivo', label: 'Definitivo' },
+];
 
 /** Abre el selector de archivos del input oculto. */
 function pick(): void {
@@ -60,8 +68,8 @@ function pick(): void {
 }
 
 /**
- * Emite `upload` con el archivo elegido y limpia el input para poder volver
- * a elegir el mismo archivo.
+ * Emite `upload` con el archivo elegido y el tipo de documento; limpia el input
+ * para poder volver a elegir el mismo archivo.
  * @param e evento change del input.
  */
 function onFile(e: Event): void {
@@ -69,35 +77,82 @@ function onFile(e: Event): void {
     const file = el.files?.[0];
 
     if (file) {
-        emit('upload', file);
+        emit('upload', file, kind.value);
     }
 
     el.value = '';
 }
-
-/** Carga vigente de la tabla de amortización, o null si aún no hay. */
-const up = () => props.credit.upload;
 </script>
 
 <template>
-    <div class="space-y-3 rounded-2xl border bg-card p-4 shadow-soft-xs">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-            <div class="min-w-0">
-                <p class="flex items-center gap-2 text-sm font-extrabold">
-                    <FileSpreadsheet
-                        class="size-4 text-emerald-600 dark:text-emerald-400"
-                    />
-                    {{ credit.credit.name }}
+    <div class="space-y-3 pt-1">
+        <div
+            v-if="up"
+            class="flex min-w-0 items-center gap-2 rounded-xl bg-muted/40 p-2.5 text-xs"
+        >
+            <FileSpreadsheet
+                class="size-5 shrink-0 text-emerald-600 dark:text-emerald-400"
+            />
+            <div class="min-w-0 flex-1">
+                <p class="truncate font-semibold" :title="up.name">
+                    {{ up.name }}
                 </p>
-                <p class="text-xs text-muted-foreground">
-                    {{
-                        PERIODICITY_LABEL[credit.credit.periodicity] ??
-                        credit.credit.periodicity
-                    }}
-                    · alimenta «{{ credit.credit.concept_label }}»
+                <p class="text-[11px] text-muted-foreground tabular-nums">
+                    {{ up.rows }} pagos · {{ dmy(up.first_date) }} –
+                    {{ dmy(up.last_date) }}
                 </p>
             </div>
-            <div class="flex flex-wrap gap-2">
+            <FinInfoTip
+                :text="`Subida por ${up.uploaded_by ?? '—'} · ${up.uploaded_at ?? ''}\nHuella ${up.hash}`"
+                label="Datos de la carga"
+            />
+        </div>
+        <p v-else class="flex items-center gap-2 text-xs text-muted-foreground">
+            <FileSpreadsheet class="size-4" /> Aún no hay tabla cargada.
+        </p>
+
+        <p
+            v-if="up?.warnings.length"
+            class="flex items-start gap-1.5 text-[11px] font-medium text-amber-800 dark:text-amber-300"
+        >
+            <AlertTriangle class="mt-px size-3.5 shrink-0" />
+            <span class="line-clamp-2" :title="up.warnings.join(' ')">{{
+                up.warnings.join(' ')
+            }}</span>
+        </p>
+
+        <div class="flex flex-wrap items-center gap-2">
+            <div
+                v-if="canUpload"
+                role="radiogroup"
+                aria-label="Tipo de documento"
+                class="inline-flex rounded-lg border p-0.5"
+            >
+                <button
+                    v-for="k in KINDS"
+                    :key="k.key"
+                    type="button"
+                    role="radio"
+                    :aria-checked="kind === k.key"
+                    class="rounded-md px-2.5 py-1 text-[11px] font-semibold transition"
+                    :class="
+                        kind === k.key
+                            ? k.key === 'simulacion'
+                                ? 'bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300'
+                                : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                            : 'text-muted-foreground hover:text-foreground'
+                    "
+                    @click="kind = k.key"
+                >
+                    {{ k.label }}
+                </button>
+            </div>
+            <FinInfoTip
+                v-if="canUpload"
+                :text="'Simulación: documento no vinculante del acreedor.\nDefinitivo: tabla confirmada.'"
+                label="Simulación o definitivo"
+            />
+            <div class="ml-auto flex gap-2">
                 <Button
                     size="sm"
                     variant="outline"
@@ -115,73 +170,27 @@ const up = () => props.credit.upload;
                 >
                     <Loader2 v-if="uploading" class="size-3.5 animate-spin" />
                     <Upload v-else class="size-3.5" />
-                    {{ up() ? 'Sustituir tabla' : 'Subir tabla' }}
+                    {{ up ? 'Sustituir' : 'Subir tabla' }}
                 </Button>
-                <input
-                    ref="input"
-                    type="file"
-                    class="hidden"
-                    :accept="accept"
-                    :aria-label="`Tabla de amortización de ${credit.credit.name}`"
-                    @change="onFile"
-                />
             </div>
+            <input
+                ref="input"
+                type="file"
+                class="hidden"
+                :accept="accept"
+                :aria-label="`Tabla de amortización de ${credit.credit.name}`"
+                @change="onFile"
+            />
         </div>
-
-        <div
-            v-if="!up()"
-            class="rounded-xl border border-dashed border-amber-300 bg-amber-50/60 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
-        >
-            Aún no hay tabla de amortización. Mientras no la subas (o captures
-            el interés en Ajustes), el interés queda <b>sin información</b>: no
-            se asume $0.
-        </div>
-        <dl
-            v-else
-            class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4"
-        >
-            <div class="col-span-2">
-                <dt class="text-muted-foreground">Tabla vigente</dt>
-                <dd class="truncate font-semibold" :title="up()!.name">
-                    {{ up()!.name }}
-                </dd>
-            </div>
-            <div>
-                <dt class="text-muted-foreground">Pagos</dt>
-                <dd class="font-semibold tabular-nums">{{ up()!.rows }}</dd>
-            </div>
-            <div>
-                <dt class="text-muted-foreground">Vigencia</dt>
-                <dd class="font-semibold tabular-nums">
-                    {{ dmy(up()!.first_date) }} – {{ dmy(up()!.last_date) }}
-                </dd>
-            </div>
-            <div class="col-span-2 sm:col-span-4">
-                <dt class="sr-only">Carga</dt>
-                <dd class="text-[11px] text-muted-foreground">
-                    Subida por {{ up()!.uploaded_by ?? '—' }} ·
-                    {{ up()!.uploaded_at }} · huella {{ up()!.hash }} · interés
-                    total de la tabla {{ mxn(up()!.total_interest) }}
-                </dd>
-            </div>
-        </dl>
-
-        <p
-            v-if="up()?.warnings.length"
-            class="flex items-start gap-1.5 text-[11px] font-medium text-amber-800 dark:text-amber-300"
-        >
-            <AlertTriangle class="mt-px size-3.5 shrink-0" />
-            {{ up()!.warnings.join(' ') }}
-        </p>
 
         <Collapsible
             v-if="credit.history.length > 1"
             v-model:open="showHistory"
         >
             <CollapsibleTrigger
-                class="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400"
+                class="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 hover:underline dark:text-emerald-400"
             >
-                <History class="size-3.5" /> Bitácora de cargas ({{
+                <History class="size-3.5" /> Bitácora ({{
                     credit.history.length
                 }})
             </CollapsibleTrigger>
@@ -190,25 +199,26 @@ const up = () => props.credit.upload;
                     <li
                         v-for="h in credit.history"
                         :key="h.id"
-                        class="flex flex-wrap gap-x-2 rounded-lg bg-muted/40 px-2 py-1"
+                        class="flex items-center gap-2 rounded-lg bg-muted/40 px-2 py-1"
                     >
-                        <span class="font-semibold">{{ h.name }}</span>
-                        <span>{{ h.rows }} pagos</span>
                         <span
-                            >{{ h.uploaded_by ?? '—' }} ·
-                            {{ h.uploaded_at }}</span
-                        >
-                        <span
+                            class="size-2 shrink-0 rounded-full"
                             :class="
                                 h.status === 'vigente'
-                                    ? 'font-bold text-emerald-700 dark:text-emerald-400'
-                                    : 'text-muted-foreground'
+                                    ? 'bg-emerald-500'
+                                    : 'bg-slate-400'
                             "
-                            >{{
+                            :title="
                                 h.status === 'vigente'
                                     ? 'Vigente'
                                     : `Sustituida ${h.superseded_at ?? ''}`
-                            }}</span
+                            "
+                        />
+                        <span class="min-w-0 flex-1 truncate font-semibold">{{
+                            h.name
+                        }}</span>
+                        <span class="shrink-0 text-muted-foreground"
+                            >{{ h.rows }} pagos · {{ h.uploaded_at }}</span
                         >
                     </li>
                 </ul>

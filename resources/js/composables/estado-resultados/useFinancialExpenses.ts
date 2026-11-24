@@ -9,15 +9,16 @@
  */
 import { ref } from 'vue';
 import type { Ref } from 'vue';
+import { busy, htmlList, showError, swal } from './erSwal';
 import type {
     AmortizationUpload,
     CreditPeriod,
+    DocumentKind,
     FinancialExpensesPayload,
 } from '@/components/estado-resultados/financialExpenses';
 import { apiJson, escapeHtml, mxn } from '@/components/estado-resultados/types';
 import { useConfirm } from '@/composables/useConfirm';
 import { downloadFile } from '@/lib/downloadOverlay';
-import { busy, htmlList, showError, swal } from './erSwal';
 
 /** Contexto que la pantalla del ER inyecta a la pestaña. */
 interface Ctx {
@@ -86,8 +87,13 @@ export function useFinancialExpenses(ctx: Ctx) {
      * muestra interés/capital del periodo y las columnas leídas.
      * @param credit Crédito del periodo al que pertenece la tabla.
      * @param file Archivo elegido.
+     * @param kind Tipo de documento: simulación (no vinculante) o definitivo.
      */
-    async function upload(credit: CreditPeriod, file: File): Promise<void> {
+    async function upload(
+        credit: CreditPeriod,
+        file: File,
+        kind: DocumentKind = 'simulacion',
+    ): Promise<void> {
         const rules = data.value?.rules;
         const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
 
@@ -102,10 +108,13 @@ export function useFinancialExpenses(ctx: Ctx) {
             return;
         }
 
+        const kindLabel =
+            kind === 'definitivo' ? 'tabla DEFINITIVA' : 'SIMULACIÓN';
+
         if (credit.upload) {
             const ok = await confirm({
                 title: `¿Sustituir la tabla de ${credit.credit.name}?`,
-                text: `La tabla vigente («${credit.upload.name}», ${credit.upload.rows} pagos) quedará como sustituida en la bitácora y los intereses de los periodos abiertos se recalcularán con la nueva. Los periodos aprobados conservan su versión.`,
+                text: `Se cargará como ${kindLabel}. La tabla vigente («${credit.upload.name}», ${credit.upload.rows} pagos) quedará como sustituida en la bitácora y los intereses de los periodos abiertos se recalcularán con la nueva. Los periodos aprobados conservan su versión.`,
                 icon: 'question',
                 confirmText: 'Sustituir tabla',
             });
@@ -124,6 +133,7 @@ export function useFinancialExpenses(ctx: Ctx) {
         try {
             const form = new FormData();
             form.append('file', file);
+            form.append('document_kind', kind);
             const res = await apiJson<{
                 message: string;
                 idempotent: boolean;
