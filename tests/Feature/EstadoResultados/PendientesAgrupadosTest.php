@@ -12,7 +12,7 @@ use Tests\Support\EstadoResultadosGovernanceFixtures as G;
 
 /**
  * Pendientes agrupados por concepto y clasificación masiva segura (24-nov-2026): los
- * «DEPOSITO LEROM» repetidos se ven como UN grupo, la vista previa dice qué se excluye y por
+ * «DEPOSITO RENTA LOCAL» repetidos se ven como UN grupo, la vista previa dice qué se excluye y por
  * qué, aplicar deja bitácora con usuario y sin permiso no se puede.
  */
 beforeEach(function () {
@@ -27,10 +27,10 @@ function pgPeriod(): Period
     $period = F::period();
     F::erp($period, 'CORPORATIVO', 'REQ-77', '15000.00', '2026-09-03', 'Rentas', 'RENTA OFICINA');
     G::import($period, F::adminXlsx([
-        ['2026-09-02', null, 4095.00, 'S/R', 'DEPOSITO LEROM', 'CORDOBA'],
-        ['2026-09-09', null, 4095.00, 'S/R', 'DEPOSITO LEROM', 'ORIZABA'],
-        ['2026-09-16', null, 4095.00, 'S/R', 'DEPOSITO LEROM', 'CORDOBA'],
-        ['2026-09-23', null, 4095.00, 'S/R', 'DEPÓSITO  LEROM', 'CORDOBA'],
+        ['2026-09-02', null, 4095.00, 'S/R', 'DEPOSITO RENTA LOCAL', 'CORDOBA'],
+        ['2026-09-09', null, 4095.00, 'S/R', 'DEPOSITO RENTA LOCAL', 'ORIZABA'],
+        ['2026-09-16', null, 4095.00, 'S/R', 'DEPOSITO RENTA LOCAL', 'CORDOBA'],
+        ['2026-09-23', null, 4095.00, 'S/R', 'DEPÓSITO  RENTA LOCAL', 'CORDOBA'],
         ['2026-09-03', 15000.00, null, 'REQ-77', 'RENTA OFICINA SEPTIEMBRE', 'CORPORATIVO'],
         ['2026-09-04', 800.00, null, 'S/R', 'PAPELERIA', 'CORPORATIVO'],
     ]));
@@ -44,16 +44,16 @@ function pgDataset(Period $period): array
     return app(EstadoResultadosDatasetBuilder::class)->build($period, 'CONSOLIDADO');
 }
 
-it('agrupa los 4 «DEPOSITO LEROM» en un solo grupo con su suma y el total cuadra con el filtro Pendientes', function () {
+it('agrupa los 4 «DEPOSITO RENTA LOCAL» en un solo grupo con su suma y el total cuadra con el filtro Pendientes', function () {
     $period = pgPeriod();
     $d = pgDataset($period);
     $pending = collect($d['movements'])->filter(fn ($m) => MovementControlService::controlOf($m)['status'] === MovementControlService::PENDIENTE);
-    $lerom = $pending->filter(fn ($m) => str_contains(PendingGroupService::normalizeConcept($m['concept']), 'DEPOSITO LEROM'));
+    $lerom = $pending->filter(fn ($m) => str_contains(PendingGroupService::normalizeConcept($m['concept']), 'DEPOSITO RENTA LOCAL'));
     expect($lerom)->toHaveCount(4) // las 4 aportaciones siguen pendientes
-        ->and(PendingGroupService::normalizeConcept('Depósito  Lerom REF 000123 15/09/2026'))->toBe('DEPOSITO LEROM');
+        ->and(PendingGroupService::normalizeConcept('Depósito  Renta Local REF 000123 15/09/2026'))->toBe('DEPOSITO RENTA LOCAL');
 
     $res = $this->actingAs(G::admin())->getJson("/estado-resultados/{$period->id}/control-movimientos/grupos")->assertOk()->json();
-    $group = collect($res['groups'])->firstWhere('label', 'DEPOSITO LEROM');
+    $group = collect($res['groups'])->firstWhere('label', 'DEPOSITO RENTA LOCAL');
 
     expect($group)->not->toBeNull()
         ->and($group['direction'])->toBe('abono')
@@ -61,10 +61,10 @@ it('agrupa los 4 «DEPOSITO LEROM» en un solo grupo con su suma y el total cuad
         ->and($group['total'])->toBe('16380.00')
         ->and($group['typical_amount'])->toBe('4095.00')
         ->and($group['typical_count'])->toBe(4)
-        ->and($group['rule_text'])->toBe('DEPOSITO LEROM')
+        ->and($group['rule_text'])->toBe('DEPOSITO RENTA LOCAL')
         ->and($group['rule_covers'])->toBe(4)
         ->and(collect($group['branches'])->pluck('count', 'name')->all())->toBe(['CORDOBA' => 3, 'ORIZABA' => 1])
-        ->and($res['groups'][0]['label'])->toBe('DEPOSITO LEROM') // el más repetido primero
+        ->and($res['groups'][0]['label'])->toBe('DEPOSITO RENTA LOCAL') // el más repetido primero
         // Conteos: la suma de los grupos = contador «Pendientes» = filas que muestra ese filtro.
         ->and($res['total_pending'])->toBe($pending->count())
         ->and(collect($res['groups'])->sum('count') + $res['redacted'])->toBe($pending->count());
@@ -77,12 +77,12 @@ it('agrupa los 4 «DEPOSITO LEROM» en un solo grupo con su suma y el total cuad
 it('aplicar el grupo deja bitácora con usuario y motivo; deshacer lo regresa a la regla automática', function () {
     $period = pgPeriod();
     $d = pgDataset($period);
-    $lerom = collect($d['movements'])->filter(fn ($m) => str_contains(PendingGroupService::normalizeConcept($m['concept']), 'DEPOSITO LEROM'))->pluck('fingerprint')->all();
+    $lerom = collect($d['movements'])->filter(fn ($m) => str_contains(PendingGroupService::normalizeConcept($m['concept']), 'DEPOSITO RENTA LOCAL'))->pluck('fingerprint')->all();
     $erp = collect($d['movements'])->firstWhere('concept', 'RENTA OFICINA SEPTIEMBRE')['fingerprint'];
     $admin = G::admin();
 
     $this->actingAs($admin)->postJson("/estado-resultados/{$period->id}/control-movimientos/grupos/clasificar", [
-        'fingerprints' => [...$lerom, $erp], 'treatment' => T::CAPITAL_DEUDA, 'notes' => 'Aportaciones de sucursales al crédito LEROM',
+        'fingerprints' => [...$lerom, $erp], 'treatment' => T::CAPITAL_DEUDA, 'notes' => 'Depósitos de renta del local',
     ])->assertOk()->assertJsonPath('count', 4)->assertJsonPath('excluded', 1);
 
     $rows = EstadoResultadosClassification::query()->where('period_id', $period->id)->get();
