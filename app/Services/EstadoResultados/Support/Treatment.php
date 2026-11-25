@@ -49,6 +49,16 @@ final class Treatment
     // NOI de corporativo (fuente propia del ER): el pago bancario/ERP es el MISMO costo ya reconocido desde el NOI.
     public const CUBIERTO_NOI_CORPORATIVO = 'cubierto_noi_corporativo';
 
+    // 25-nov-2026: sale en el estado de cuenta pero YA está tomado en cuenta en otro periodo u otra fuente.
+    public const YA_CONSIDERADO = 'ya_considerado';
+
+    /** Motivos de «Ya considerado» (el de Radiografía usa CUBIERTO_RADIOGRAFIA). */
+    public const CONSIDERED_REASONS = [
+        'radiografia' => 'En Radiografía de sucursales',
+        'otro_periodo' => 'Ya reconocido en otro periodo',
+        'otra_fuente' => 'Ya registrado en otra cuenta/fuente',
+    ];
+
     // ── Estados de sistema (no seleccionables manualmente) ─────────────────
     public const CONCILIADO_ERP = 'conciliado_erp';
 
@@ -222,6 +232,13 @@ final class Treatment
             'tone' => 'muted',
             'explain' => 'Es el pago de una nómina que ya se reconoce desde el NOI de corporativo (cargado en Fuentes). Sumarlo otra vez la duplicaría.',
         ],
+        self::YA_CONSIDERADO => [
+            'label' => 'Ya considerado (otro periodo / otra fuente)',
+            'line' => null,
+            'group' => 'fuera',
+            'tone' => 'muted',
+            'explain' => 'Sale en el estado de cuenta pero ya se tomó en cuenta: se reconoció en otro periodo o ya está registrado en otra cuenta o fuente. Sumarlo otra vez lo duplicaría.',
+        ],
         self::CONCILIADO_ERP => [
             'label' => 'Conciliado con ERP',
             'line' => null,
@@ -281,6 +298,7 @@ final class Treatment
         self::PUENTE_TERCEROS,
         self::CUBIERTO_RADIOGRAFIA,
         self::CUBIERTO_NOI_CORPORATIVO,
+        self::YA_CONSIDERADO,
         self::PENDIENTE,
     ];
 
@@ -391,7 +409,7 @@ final class Treatment
             self::DG_OPERATIVO, self::DG_REMUNERACION, self::PERSONAL_SOCIOS => 'retiro_dg_socios',
             self::GASTO_FINANCIERO => 'gasto_financiero',
             self::INGRESO_NO_OPERATIVO => 'ingreso_no_operativo',
-            self::CONCILIADO_ERP, self::CUBIERTO_RADIOGRAFIA, self::CUBIERTO_NOI_CORPORATIVO => 'reconocido_en_otra_fuente',
+            self::CONCILIADO_ERP, self::CUBIERTO_RADIOGRAFIA, self::CUBIERTO_NOI_CORPORATIVO, self::YA_CONSIDERADO => 'reconocido_en_otra_fuente',
             self::CAPEX => 'inversion',
             self::CAPITAL_DEUDA => 'pasivo',
             self::TRANSFERENCIA_INTERNA => 'eliminacion_interna',
@@ -413,6 +431,17 @@ final class Treatment
     public static function tone(string $treatment): string
     {
         return self::META[$treatment]['tone'] ?? 'muted';
+    }
+
+    /**
+     * Tratamiento de la parte «Ya considerada» según su motivo: Radiografía ⇒ «Ya incluido en
+     * Radiografía»; otro periodo u otra fuente ⇒ «Ya considerado».
+     *
+     * @param  string|null  $reason  clave de CONSIDERED_REASONS
+     */
+    public static function consideredTreatment(?string $reason): string
+    {
+        return $reason === 'radiografia' ? self::CUBIERTO_RADIOGRAFIA : self::YA_CONSIDERADO;
     }
 
     /** Catálogo serializable para la UI (mismo texto que Excel/PDF). */

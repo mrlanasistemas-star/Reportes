@@ -27,6 +27,7 @@ use App\Services\EstadoResultados\Reporting\EstadoResultadosReportResolver;
 use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
 use App\Services\EstadoResultados\Reporting\ReportStatus;
 use App\Services\EstadoResultados\RulesRefreshService;
+use App\Services\EstadoResultados\Support\Money;
 use App\Services\EstadoResultados\Support\ProcessingLockedException;
 use App\Services\EstadoResultados\Support\Treatment;
 use App\Services\Pdf\PdfRenderException;
@@ -443,15 +444,80 @@ class EstadoResultadosController extends Controller
             'fingerprints.*' => ['string', 'max:64'],
             'treatment' => ['required', 'string', 'in:'.implode(',', Treatment::ASSIGNABLE)],
             'notes' => ['required', 'string', 'min:3', 'max:2000'],
-        ], ['notes.required' => 'Escribe el motivo de la clasificación.', 'notes.min' => 'Escribe el motivo de la clasificación.']);
+            // «Ya considerado» (25-nov-2026): motivo y, en modo parcial, el importe ya considerado.
+            'considered_reason' => ['nullable', 'string', 'in:'.implode(',', array_keys(Treatment::CONSIDERED_REASONS))],
+            'considered_amount' => ['nullable', 'regex:/^\d{1,13}(\.\d{1,2})?$/'],
+        ], [
+            'notes.required' => 'Escribe el motivo de la clasificación.', 'notes.min' => 'Escribe el motivo de la clasificación.',
+            'considered_reason.in' => 'Elige el motivo de «Ya considerado».',
+            'considered_amount.regex' => 'Captura el importe ya considerado con hasta 2 decimales (p. ej. 1250.50).',
+        ]);
 
         $items = $this->itemsByFingerprint($request, $period, $data['fingerprints']);
         if ($items === []) {
             return response()->json(['message' => 'No se encontraron los movimientos seleccionados.'], 422);
         }
-        $count = $service->classify($period, $items, $data['treatment'], $data['notes'], $request->user()?->id);
+        $considered = null;
+        if (! empty($data['considered_reason']) || ! empty($data['considered_amount'])) {
+            $considered = $this->consideredSplit($items, $data);
+            if (is_string($considered)) {
+                return response()->json(['message' => $considered, 'errors' => ['considered_amount' => [$considered]]], 422);
+            }
+        }
+        try {
+            $count = $service->classify($period, $items, $data['treatment'], $data['notes'], $request->user()?->id, $considered);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+        $message = $considered !== null && $considered['amount'] !== null
+            ? 'Ya considerado $'.number_format((float) $considered['amount'], 2).' ('.Treatment::CONSIDERED_REASONS[$considered['reason']].'); el resto se clasificó como "'.Treatment::label($data['treatment']).'".'
+            : $count.' movimiento(s) clasificados como "'.Treatment::label($data['treatment']).'".';
 
-        return response()->json(['message' => $count.' movimiento(s) clasificados como "'.Treatment::label($data['treatment']).'".', 'count' => $count]);
+        return response()->json(['message' => $message, 'count' => $count]);
+    }
+
+    /**
+     * Valida el reparto «Ya considerado» de /clasificar. Total (sin importe): el tratamiento debe ser
+     * el del motivo (Radiografía ⇒ «Ya incluido en Radiografía»; otro ⇒ «Ya considerado»). Parcial:
+     * un solo movimiento del periodo, importe > 0 y MENOR que lo clasificable (bruto − conciliado con
+     * ERP) al centavo, y el resto con un tratamiento distinto al de la parte ya considerada.
+     *
+     * @param  list<array<string,mixed>>  $items  movimientos (itemsByFingerprint)
+     * @param  array<string,mixed>  $data  datos validados
+     * @return array{reason:string, amount:?string}|string reparto o mensaje de error
+     */
+    private function consideredSplit(array $items, array $data): array|string
+    {
+        $reason = (string) ($data['considered_reason'] ?? '');
+        if ($reason === '') {
+            return 'Elige el motivo de «Ya considerado».';
+        }
+        $consideredTreatment = Treatment::consideredTreatment($reason);
+        $amount = $data['considered_amount'] ?? null;
+        if ($amount === null || $amount === '') {
+            return $data['treatment'] === $consideredTreatment ? ['reason' => $reason, 'amount' => null]
+                : 'Para marcar todo el importe como ya considerado usa «'.Treatment::label($consideredTreatment).'».';
+        }
+        if (count($items) !== 1) {
+            return 'El importe ya considerado se captura de un movimiento a la vez.';
+        }
+        $item = $items[0];
+        if (! ($item['in_period'] ?? true) || ($item['source'] ?? '') === 'noi_corp') {
+            return 'Este movimiento no admite un importe parcial ya considerado.';
+        }
+        if ($data['treatment'] === $consideredTreatment) {
+            return 'Elige a qué tratamiento va el resto (distinto de «'.Treatment::label($consideredTreatment).'»).';
+        }
+        $value = Money::of($amount);
+        $max = Money::of($item['classifiable_total'] ?? '0');
+        if (! $value->isPositive()) {
+            return 'El importe ya considerado debe ser mayor a $0.00.';
+        }
+        if (! $value->isLessThan($max)) {
+            return 'El importe ya considerado debe ser menor que lo clasificable del movimiento ($'.number_format((float) Money::str2($max), 2).'). Para todo el importe usa el modo «Total».';
+        }
+
+        return ['reason' => $reason, 'amount' => Money::str2($value)];
     }
 
     /**
@@ -873,7 +939,11 @@ class EstadoResultadosController extends Controller
         foreach ($dataset['movements'] as $m) {
             if (isset($wanted[$m['fingerprint']])) {
                 $this->ensureCanSeeMovement($request, $m);
-                $out[] = ['fingerprint' => $m['fingerprint'], 'source' => $m['source'], 'current' => $m['treatment']]
+                $out[] = ['fingerprint' => $m['fingerprint'], 'source' => $m['source'], 'current' => $m['treatment'],
+                    'considered' => $m['override']['considered_amount'] ?? null, 'considered_reason' => $m['override']['considered_reason'] ?? null,
+                    'in_period' => (bool) ($m['in_period'] ?? true),
+                    // Lo que se puede repartir: bruto − parte conciliada con ERP (la ya considerada se vuelve a capturar).
+                    'classifiable_total' => Money::str2(Money::of($m['amounts']['gross'] ?? Money::of($m['cargo'])->plus(Money::of($m['abono'])))->minus(Money::of($m['amounts']['conciliated'] ?? '0')))]
                     + ($withSuggestion ? ['suggested' => $m['suggested_treatment']] : []);
             }
         }

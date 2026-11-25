@@ -1978,7 +1978,9 @@ class EstadoResultadosExcelExporter
                 $this->put($ws, "M{$r}", (string) ($erp['date'] ?? ''));
             }
             $this->put($ws, "N{$r}", $m['reconciliation_label'] ?? '');
-            $this->put($ws, "O{$r}", ($m['treatment_label'] ?? '').(($m['treatment_source'] ?? null) === 'manual' ? ' (manual)' : ''));
+            // «Ya considerado» parcial: esa parte no suma (el impacto ya viene sin ella).
+            $considered = (float) ($m['amounts']['considered'] ?? 0) > 0 ? ' · ya considerado '.ErFormat::money($m['amounts']['considered']) : '';
+            $this->put($ws, "O{$r}", ($m['treatment_label'] ?? '').(($m['treatment_source'] ?? null) === 'manual' ? ' (manual)' : '').$considered);
             $included = (bool) ($m['impact']['included'] ?? false);
             $this->put($ws, "P{$r}", $included ? '✓ Suma '.ErFormat::money($m['impact']['amount'] ?? 0) : 'No suma');
             $reason = ! empty($m['override']) ? ('Manual: '.$m['override']['notes'].' — '.$m['override']['user'].' '.$m['override']['at'].' (antes: '.$m['override']['previous'].')') : ($m['rule_reason'] ?? '');

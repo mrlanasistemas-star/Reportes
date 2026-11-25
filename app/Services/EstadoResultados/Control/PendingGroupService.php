@@ -165,7 +165,7 @@ class PendingGroupService
             $reason = $this->exclusion($m, $treatment, $locked, $canSee);
             $gross = $m ? Money::of($m['cargo'] ?? 0)->plus(Money::of($m['abono'] ?? 0)) : Money::of(0);
             if ($reason === null) {
-                $applies[] = ['fingerprint' => $fp, 'source' => (string) $m['source'], 'current' => (string) $m['treatment']];
+                $applies[] = ['fingerprint' => $fp, 'source' => (string) $m['source'], 'current' => (string) $m['treatment'], 'considered' => $m['override']['considered_amount'] ?? null];
                 $amount = $amount->plus($gross);
                 if (($m['suggested_treatment'] ?? null) && $m['suggested_treatment'] !== $treatment) {
                     $warnSuggested++;
@@ -259,12 +259,15 @@ class PendingGroupService
             }
             unset($wanted[$m['fingerprint']]);
             $auto = (string) ($m['auto_treatment'] ?? '');
-            if (($m['override'] ?? null) === null || ! $canSee($m) || ! T::isAssignable($auto) || $auto === $m['treatment']) {
+            // Un «Ya considerado» parcial con el mismo tratamiento que la regla también se deshace (quita el reparto).
+            $split = ($m['override']['considered_amount'] ?? null) !== null;
+            if (($m['override'] ?? null) === null || ! $canSee($m) || ! T::isAssignable($auto) || ($auto === $m['treatment'] && ! $split)) {
                 $skipped++;
 
                 continue;
             }
-            $byTarget[$auto][] = ['fingerprint' => $m['fingerprint'], 'source' => (string) $m['source'], 'current' => (string) $m['treatment']];
+            $byTarget[$auto][] = ['fingerprint' => $m['fingerprint'], 'source' => (string) $m['source'], 'current' => (string) $m['treatment'],
+                'considered' => $m['override']['considered_amount'] ?? null, 'considered_reason' => $m['override']['considered_reason'] ?? null];
         }
         $skipped += count($wanted);
 

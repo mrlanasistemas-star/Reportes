@@ -346,6 +346,10 @@ class MovementControlService
                     : 'Regla '.($i['rule_code'] ?? '—').': '.($i['rule_reason'] ?? ''));
         }
 
+        if (! Money::isZeroCents($i['considered'] ?? '0')) {
+            $explain .= ' Ya considerado $'.number_format((float) $i['considered'], 2).' ('.(T::CONSIDERED_REASONS[$i['considered_reason'] ?? ''] ?? T::label((string) $i['considered_treatment'])).'): esa parte no suma.';
+        }
+
         return ['status' => $status, 'label' => self::STATUS_LABELS[$status], 'sub' => $sub, 'explain' => trim($explain), 'flags' => $flags];
     }
 
@@ -409,6 +413,10 @@ class MovementControlService
         if ($ov === null && in_array($i['rule_code'] ?? null, self::KEYWORD_RULES, true)) {
             $flags[] = ['key' => 'regla_por_palabra', 'severity' => 'baja',
                 'label' => 'Clasificado sólo por palabras del concepto (regla '.$i['rule_code'].'), sin folio ni ERP como evidencia: confirma que el concepto corresponde.'];
+        }
+        if ($i['considered_capped'] ?? false) {
+            $flags[] = ['key' => 'ya_considerado_topado', 'severity' => 'media',
+                'label' => 'El importe «ya considerado» capturado es mayor que lo que hoy queda por clasificar (cambió la conciliación): se tomó sólo $'.number_format((float) ($i['considered'] ?? 0), 2).'. Revisa el reparto.'];
         }
         if (T::affectsStatement($i['treatment']) && in_array($i['branch_kind'] ?? null, ['desconocida', 'vacia'], true) && $i['source'] === 'banco') {
             $flags[] = ['key' => 'sin_sucursal', 'severity' => 'media',

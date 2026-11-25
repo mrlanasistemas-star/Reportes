@@ -376,6 +376,7 @@ class EstadoResultadosApprovalService
             ->map(fn ($c) => [
                 'id' => $c->id, 'fingerprint' => $c->item_fingerprint, 'source' => $c->item_source, 'treatment' => $c->treatment,
                 'previous' => $c->previous_treatment, 'notes' => $c->notes, 'user_id' => $c->user_id, 'at' => $c->created_at?->toIso8601String(),
+                'considered_amount' => $c->considered_amount, 'considered_reason' => $c->considered_reason,
             ])->all();
         $adjustments = EstadoResultadosAdjustment::query()->where('period_id', $period->id)->orderBy('scope_key')->orderBy('concept')->get()
             ->map(fn ($a) => [

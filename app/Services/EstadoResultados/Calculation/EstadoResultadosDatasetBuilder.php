@@ -245,6 +245,7 @@ class EstadoResultadosDatasetBuilder
         $ctx['period'] = $period;
         $ctx['public_items'] = array_map(fn ($i) => $this->publicItem($i), $ctx['items']);
         $ctx['conciliation'] = $this->conciliationSummary($ctx['items']);
+        $ctx['cuadre'] = $this->cuadre($ctx['items']);
         $ctx['sources_shared'] = $this->sourcesShared($period, $base, $ctx['current_erp_signature']);
 
         return $ctx;
@@ -460,6 +461,8 @@ class EstadoResultadosDatasetBuilder
             'radiography_reconciliation' => $reconciliation,
             'checks' => $checks,
             'conciliation' => $conciliation,
+            // 25-nov-2026: cuadre de gastos e ingresos (cada peso en un destino, sin repetir ni omitir).
+            'cuadre' => $ctx['cuadre'],
             'movements' => $ctx['public_items'],
             'outside' => $this->outside($items, $adj),
             'indicators' => $this->indicators($row, $base, $results, $controls, $consolidated, $scope),
@@ -780,8 +783,11 @@ class EstadoResultadosDatasetBuilder
         unset($i);
 
         foreach ($items as &$i) {
+            // «Ya considerado» parcial (25-nov-2026): esa parte queda fuera del ER y el resto toma el tratamiento.
+            $this->applyConsidered($i);
             $i['impact'] = $this->impact($i);
             $i['amounts'] = $this->allocation($i);
+            $i['parts'] = $this->parts($i);
             $i['dimensions_raw'] = Dimensions::derive([
                 'source' => $i['source'],
                 'in_period' => $i['in_period'],
@@ -949,17 +955,200 @@ class EstadoResultadosDatasetBuilder
         ];
     }
 
-    /** Porción de cargo que NO quedó cubierta por la conciliación con ERP (lo único clasificable). */
-    private function classifiableCargo(array $item): BigDecimal
+    /**
+     * «Ya considerado» parcial: toma el importe de la clasificación manual vigente y lo deja en el
+     * item (considered, del lado del cargo si lo hay; si no, del abono). Nunca más que lo
+     * clasificable (bruto − conciliado con ERP): si una conciliación posterior lo redujo, se topa y
+     * se marca considered_capped (el resto nunca queda negativo ni se pierde un centavo).
+     *
+     * @param  array  $i  item interno (por referencia)
+     */
+    private function applyConsidered(array &$i): void
     {
-        return Money::of($item['cargo'])->minus(Money::of($item['applied'] ?? '0'));
+        $ov = $i['override'] ?? null;
+        $i['considered'] = '0.00';
+        $i['considered_reason'] = $ov['considered_reason'] ?? null;
+        $i['considered_treatment'] = null;
+        $i['considered_capped'] = false;
+        if ($ov === null || ($ov['considered_amount'] ?? null) === null || ! $i['in_period'] || $i['source'] === 'noi_corp') {
+            return;
+        }
+        $max = Money::of($i['cargo'])->plus(Money::of($i['abono']))->minus(Money::of($i['applied'] ?? '0'));
+        $amount = Money::of($ov['considered_amount']);
+        if ($amount->isGreaterThan($max)) {
+            $amount = $max->isNegative() ? BigDecimal::zero() : $max;
+            $i['considered_capped'] = true;
+        }
+        if (! $amount->isPositive()) {
+            return;
+        }
+        $i['considered'] = Money::str2($amount);
+        $i['considered_treatment'] = T::consideredTreatment($i['considered_reason']);
     }
 
-    /** Importe con el que un item afecta su línea (gasto: cargo − abono; ingreso: abono − cargo), sin la parte conciliada. */
+    /**
+     * Destinos del importe BRUTO de un item para el cuadre (Σ partes = bruto, al centavo):
+     *  - fuera de periodo: todo a «Fuera del periodo»;
+     *  - parte conciliada con un ERP que TAMBIÉN está en el dataset (fuera de Radiografía): es el
+     *    mismo gasto que ya cuenta desde la fila ERP ⇒ overlap (el cuadre la descuenta: no se repite);
+     *  - resto conciliado (ERP de Radiografía) ⇒ «Conciliado con ERP»;
+     *  - «Ya considerado» parcial ⇒ su tratamiento; reconocido / pendiente / excluido ⇒ el tratamiento vigente.
+     *
+     * @param  array  $i  item interno con amounts
+     * @return list<array{key:string, amount:string, side:string, overlap?:bool}>
+     */
+    private function parts(array $i): array
+    {
+        $a = $i['amounts'];
+        $side = Money::of($i['cargo'])->isPositive() ? 'cargo' : 'abono';
+        if (! $i['in_period']) {
+            return [['key' => T::FUERA_PERIODO, 'amount' => $a['gross'], 'side' => $side]];
+        }
+        $out = [];
+        $push = function (string $key, BigDecimal|string $amount, bool $overlap = false) use (&$out, $side) {
+            if (Money::of($amount)->isPositive()) {
+                $out[] = ['key' => $key, 'amount' => Money::str2($amount), 'side' => $side] + ($overlap ? ['overlap' => true] : []);
+            }
+        };
+        $conciliated = Money::of($a['conciliated']);
+        if ($conciliated->isPositive()) {
+            $outsideErp = Money::sum(array_map(fn ($l) => $l['applied'], array_filter((array) ($i['links'] ?? []),
+                fn ($l) => ($l['kind'] ?? null) === 'conciliacion' && ($l['evidence']['erp_universe'] ?? null) !== 'radiografia')));
+            $overlap = $outsideErp->isGreaterThan($conciliated) ? $conciliated : $outsideErp;
+            $push(T::CONCILIADO_ERP, $overlap, true);
+            $push(T::CONCILIADO_ERP, $conciliated->minus($overlap));
+        }
+        if (($i['considered_treatment'] ?? null) !== null) {
+            $push($i['considered_treatment'], $a['considered']);
+        }
+        $push($i['treatment'], $a['recognized']);
+        $push(T::PENDIENTE, $a['pending']);
+        $push($i['treatment'], Money::of($a['excluded'])->minus(Money::of($a['considered'] ?? '0')));
+
+        return $out;
+    }
+
+    /** Subgrupo de «Fuera del ER» para el cuadre. */
+    public const CUADRE_OUTSIDE = [
+        'ya_considerado' => ['label' => 'Ya considerado', 'treatments' => [T::CUBIERTO_RADIOGRAFIA, T::CUBIERTO_NOI_CORPORATIVO, T::YA_CONSIDERADO, T::CONCILIADO_ERP]],
+        'internos' => ['label' => 'Internos', 'treatments' => [T::TRANSFERENCIA_INTERNA, T::REVERSO, T::DUPLICADO]],
+        'capital' => ['label' => 'Capital e inversión', 'treatments' => [T::CAPEX, T::CAPITAL_DEUDA]],
+        'balance' => ['label' => 'Balance y terceros', 'treatments' => [T::BALANCE, T::RECUPERABLE, T::PUENTE_TERCEROS]],
+        'periodo' => ['label' => 'Otro periodo', 'treatments' => [T::FUERA_PERIODO]],
+    ];
+
+    /**
+     * Cuadre de gastos e ingresos del periodo (todos los items: banco + ERP fuera de Radiografía +
+     * NOI de corporativo). Universo = Σ bruto − pagos del banco que son el mismo gasto de una fila
+     * ERP del dataset (se cuentan una vez). Cada peso del universo cae en UNA categoría
+     * (tratamiento); la diferencia Σ categorías − universo debe ser \.00.
+     *
+     * @param  array  $items  items internos con parts
+     * @return array<string, mixed>
+     */
+    private function cuadre(array $items): array
+    {
+        $imported = BigDecimal::zero();
+        $overlap = BigDecimal::zero();
+        $cats = [];
+        $sides = ['cargo' => BigDecimal::zero(), 'abono' => BigDecimal::zero()];
+        foreach ($items as $i) {
+            $imported = $imported->plus(Money::of($i['amounts']['gross']));
+            $seen = [];
+            foreach ($i['parts'] as $p) {
+                $amount = Money::of($p['amount']);
+                if ($p['overlap'] ?? false) {
+                    $overlap = $overlap->plus($amount);
+
+                    continue;
+                }
+                $k = $p['key'];
+                $cats[$k] ??= ['key' => $k, 'count' => 0, 'cargos' => BigDecimal::zero(), 'abonos' => BigDecimal::zero()];
+                if (! isset($seen[$k])) {
+                    $cats[$k]['count']++;
+                    $seen[$k] = true;
+                }
+                $cats[$k][$p['side'] === 'cargo' ? 'cargos' : 'abonos'] = $cats[$k][$p['side'] === 'cargo' ? 'cargos' : 'abonos']->plus($amount);
+                $sides[$p['side']] = $sides[$p['side']]->plus($amount);
+            }
+        }
+        $kindOf = fn (string $t) => match (true) {
+            $t === T::PENDIENTE => 'pendiente',
+            in_array($t, T::WITHDRAWALS, true) => 'retiros',
+            T::group($t) === 'er' => 'er',
+            default => 'fuera',
+        };
+        $outsideOf = function (string $t): ?string {
+            foreach (self::CUADRE_OUTSIDE as $key => $g) {
+                if (in_array($t, $g['treatments'], true)) {
+                    return $key;
+                }
+            }
+
+            return T::group($t) === 'fuera' ? 'balance' : null;
+        };
+        $byKind = ['er' => BigDecimal::zero(), 'retiros' => BigDecimal::zero(), 'fuera' => BigDecimal::zero(), 'pendiente' => BigDecimal::zero()];
+        $outside = array_map(fn ($g) => BigDecimal::zero(), self::CUADRE_OUTSIDE);
+        $categories = [];
+        foreach ($cats as $k => $cat) {
+            $total = $cat['cargos']->plus($cat['abonos']);
+            $kind = $kindOf($k);
+            $byKind[$kind] = $byKind[$kind]->plus($total);
+            $sub = $kind === 'fuera' ? $outsideOf($k) : null;
+            if ($sub !== null) {
+                $outside[$sub] = $outside[$sub]->plus($total);
+            }
+            $categories[] = [
+                'key' => $k, 'label' => T::label($k), 'kind' => $kind, 'outside' => $sub, 'line' => T::line($k),
+                'assignable' => T::isAssignable($k), 'count' => $cat['count'],
+                'cargos' => Money::str2($cat['cargos']), 'abonos' => Money::str2($cat['abonos']), 'total' => Money::str2($total),
+            ];
+        }
+        $universe = $imported->minus($overlap);
+        $sum = Money::sum(array_column($categories, 'total'));
+        $diff = $sum->minus($universe);
+
+        return [
+            'imported' => Money::str2($imported),
+            'overlap' => Money::str2($overlap),
+            'universe' => Money::str2($universe),
+            'ingresos' => Money::str2($sides['abono']),
+            'gastos' => Money::str2($sides['cargo']),
+            'by_kind' => array_map(fn ($v) => Money::str2($v), $byKind),
+            'outside' => array_map(fn ($k) => ['key' => $k, 'label' => self::CUADRE_OUTSIDE[$k]['label'], 'amount' => Money::str2($outside[$k])], array_keys(self::CUADRE_OUTSIDE)),
+            'sum_categories' => Money::str2($sum),
+            'difference' => Money::str2($diff),
+            'ok' => Money::isZeroCents($diff),
+            'categories' => $categories,
+        ];
+    }
+
+    /** Parte «ya considerada» del lado del cargo (si el movimiento tiene cargo) o del abono. */
+    private function consideredSide(array $item, string $side): BigDecimal
+    {
+        $amount = Money::of($item['considered'] ?? '0');
+        $onCargo = Money::of($item['cargo'])->isPositive();
+
+        return ($side === 'cargo') === $onCargo ? $amount : BigDecimal::zero();
+    }
+
+    /** Porción de cargo que NO quedó cubierta por la conciliación con ERP ni «ya considerada» (lo único clasificable). */
+    private function classifiableCargo(array $item): BigDecimal
+    {
+        return Money::of($item['cargo'])->minus(Money::of($item['applied'] ?? '0'))->minus($this->consideredSide($item, 'cargo'));
+    }
+
+    /** Porción de abono que no quedó «ya considerada». */
+    private function classifiableAbono(array $item): BigDecimal
+    {
+        return Money::of($item['abono'])->minus($this->consideredSide($item, 'abono'));
+    }
+
+    /** Importe con el que un item afecta su línea (gasto: cargo − abono; ingreso: abono − cargo), sin la parte conciliada ni la ya considerada. */
     private function signedAmount(array $item): BigDecimal
     {
         $cargo = $this->classifiableCargo($item);
-        $abono = Money::of($item['abono']);
+        $abono = $this->classifiableAbono($item);
 
         return $item['treatment'] === T::INGRESO_NO_OPERATIVO ? $abono->minus($cargo) : $cargo->minus($abono);
     }
@@ -976,7 +1165,7 @@ class EstadoResultadosDatasetBuilder
     {
         $t = $item['treatment'];
         $line = T::line($t);
-        $classifiable = $this->classifiableCargo($item)->plus(Money::of($item['abono']));
+        $classifiable = $this->classifiableCargo($item)->plus($this->classifiableAbono($item));
         if ($line !== null && $item['in_period'] && ! Money::isZeroCents($classifiable)) {
             return [
                 'included' => true,
@@ -1005,11 +1194,15 @@ class EstadoResultadosDatasetBuilder
     {
         $gross = Money::of($item['cargo'])->plus(Money::of($item['abono']));
         $parts = ['conciliated' => BigDecimal::zero(), 'recognized' => BigDecimal::zero(), 'excluded' => BigDecimal::zero(), 'pending' => BigDecimal::zero(), 'out_of_period' => BigDecimal::zero()];
-        $classifiable = $gross->minus(Money::of($item['applied'] ?? '0'));
+        $considered = Money::of($item['considered'] ?? '0');
+        $classifiable = $gross->minus(Money::of($item['applied'] ?? '0'))->minus($considered);
         if (! $item['in_period']) {
             $parts['out_of_period'] = $gross;
+            $considered = BigDecimal::zero();
         } else {
             $parts['conciliated'] = Money::of($item['applied'] ?? '0');
+            // La parte «ya considerada» queda fuera del ER (excluida con justificación).
+            $parts['excluded'] = $considered;
             $dest = match (true) {
                 $item['impact']['included'] => 'recognized',
                 $item['treatment'] === T::PENDIENTE => 'pending',
@@ -1018,7 +1211,8 @@ class EstadoResultadosDatasetBuilder
             $parts[$dest] = $parts[$dest]->plus($classifiable);
         }
 
-        return ['gross' => Money::str2($gross)] + array_map(fn ($v) => Money::str2($v), $parts) + ['classifiable' => Money::str2($classifiable)];
+        return ['gross' => Money::str2($gross)] + array_map(fn ($v) => Money::str2($v), $parts)
+            + ['classifiable' => Money::str2($classifiable), 'considered' => Money::str2($considered)];
     }
 
     /**
@@ -1559,10 +1753,15 @@ class EstadoResultadosDatasetBuilder
             } else {
                 $key = $i['treatment'];
             }
-            $byTreatment[$key] ??= ['key' => $key, 'label' => T::label($key), 'group' => T::group($key), 'count' => 0, 'cargos' => BigDecimal::zero(), 'abonos' => BigDecimal::zero()];
-            $byTreatment[$key]['count']++;
-            $byTreatment[$key]['cargos'] = $byTreatment[$key]['cargos']->plus(Money::of($i['cargo']));
-            $byTreatment[$key]['abonos'] = $byTreatment[$key]['abonos']->plus(Money::of($i['abono']));
+            $consCargo = $this->consideredSide($i, 'cargo');
+            $consAbono = $this->consideredSide($i, 'abono');
+            foreach (array_filter([[$key, Money::of($i['cargo'])->minus($consCargo), Money::of($i['abono'])->minus($consAbono)],
+                ($i['considered_treatment'] ?? null) !== null ? [$i['considered_treatment'], $consCargo, $consAbono] : null]) as [$k, $cargo, $abono]) {
+                $byTreatment[$k] ??= ['key' => $k, 'label' => T::label($k), 'group' => T::group($k), 'count' => 0, 'cargos' => BigDecimal::zero(), 'abonos' => BigDecimal::zero()];
+                $byTreatment[$k]['count']++;
+                $byTreatment[$k]['cargos'] = $byTreatment[$k]['cargos']->plus($cargo);
+                $byTreatment[$k]['abonos'] = $byTreatment[$k]['abonos']->plus($abono);
+            }
         }
         $byTreatment = array_values(array_map(fn ($t) => ['cargos' => Money::str2($t['cargos']), 'abonos' => Money::str2($t['abonos'])] + $t, $byTreatment));
         usort($byTreatment, fn ($a, $b) => [$a['group'], $a['label']] <=> [$b['group'], $b['label']]);
@@ -1679,7 +1878,8 @@ class EstadoResultadosDatasetBuilder
         // Complementarios incorporados = Σ porción NO conciliada de los movimientos incluidos (la parte conciliada la reconoce el ERP).
         $bankIncluded = array_filter($scoped, fn ($i) => $i['source'] === 'banco' && $i['impact']['included']);
         $fromAllocation = function (array $i): BigDecimal {
-            $abono = Money::of($i['abono']);
+            // Abono sin la parte «ya considerada» (si el movimiento es un abono): classifiable ya la descuenta.
+            $abono = Money::of($i['abono'])->minus(Money::of($i['cargo'])->isPositive() ? BigDecimal::zero() : Money::of($i['amounts']['considered'] ?? '0'));
             $cargoNoConciliado = Money::of($i['amounts']['classifiable'])->minus($abono);
 
             return $i['treatment'] === T::INGRESO_NO_OPERATIVO ? $abono->minus($cargoNoConciliado) : $cargoNoConciliado->minus($abono);
@@ -1887,6 +2087,8 @@ class EstadoResultadosDatasetBuilder
                 'conciliated' => $bucket($items, 'conciliated'),
                 'recognized' => $bucket($items, 'recognized'),
                 'excluded_justified' => $bucket($items, 'excluded'),
+                // Parte de «excluido» que es «Ya considerado» parcial (informativo: ya está dentro de excluded_justified).
+                'considered' => $bucket($items, 'considered'),
                 'pending' => $bucket($items, 'pending'),
                 'out_of_period' => $bucket($items, 'out_of_period'),
             ],
@@ -1943,17 +2145,26 @@ class EstadoResultadosDatasetBuilder
     private function outside(array $items, array $adj): array
     {
         $groups = [];
+        $add = function (string $t, BigDecimal $cargo, BigDecimal $abono) use (&$groups) {
+            $groups[$t] ??= ['key' => $t, 'label' => T::label($t), 'explain' => T::explain($t), 'count' => 0, 'cargos' => BigDecimal::zero(), 'abonos' => BigDecimal::zero()];
+            $groups[$t]['count']++;
+            $groups[$t]['cargos'] = $groups[$t]['cargos']->plus($cargo);
+            $groups[$t]['abonos'] = $groups[$t]['abonos']->plus($abono);
+        };
         foreach ($items as $i) {
             $t = (! $i['in_period']) ? T::FUERA_PERIODO : $i['treatment'];
+            // «Ya considerado» parcial: esa parte va a su grupo y el resto sigue a su tratamiento.
+            $consCargo = $this->consideredSide($i, 'cargo');
+            $consAbono = $this->consideredSide($i, 'abono');
+            if ($i['in_period'] && ($i['considered_treatment'] ?? null) !== null) {
+                $add($i['considered_treatment'], $consCargo, $consAbono);
+            }
             if (T::group($t) !== 'fuera' && $t !== T::PENDIENTE) {
                 continue;
             }
-            $groups[$t] ??= ['key' => $t, 'label' => T::label($t), 'explain' => T::explain($t), 'count' => 0, 'cargos' => BigDecimal::zero(), 'abonos' => BigDecimal::zero()];
-            $groups[$t]['count']++;
-            $groups[$t]['cargos'] = $groups[$t]['cargos']->plus(Money::of($i['cargo']));
-            $groups[$t]['abonos'] = $groups[$t]['abonos']->plus(Money::of($i['abono']));
+            $add($t, Money::of($i['cargo'])->minus($consCargo), Money::of($i['abono'])->minus($consAbono));
         }
-        $order = [T::CAPEX, T::CAPITAL_DEUDA, T::TRANSFERENCIA_INTERNA, T::RECUPERABLE, T::BALANCE, T::PUENTE_TERCEROS, T::CUBIERTO_RADIOGRAFIA, T::CONCILIADO_ERP, T::DUPLICADO, T::FUERA_PERIODO, T::PENDIENTE];
+        $order = [T::CAPEX, T::CAPITAL_DEUDA, T::TRANSFERENCIA_INTERNA, T::RECUPERABLE, T::BALANCE, T::PUENTE_TERCEROS, T::CUBIERTO_RADIOGRAFIA, T::CUBIERTO_NOI_CORPORATIVO, T::YA_CONSIDERADO, T::CONCILIADO_ERP, T::DUPLICADO, T::REVERSO, T::FUERA_PERIODO, T::PENDIENTE];
         $out = [];
         foreach ($order as $k) {
             if (isset($groups[$k])) {
