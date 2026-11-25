@@ -142,7 +142,7 @@ function dateRange(rows: ControlRowView[]): string {
                             v-if="s.group.dg"
                             class="inline-flex items-center gap-1 rounded-full bg-violet-600 px-2.5 py-0.5 text-xs font-bold text-white"
                         >
-                            <Crown class="size-3.5" /> DG
+                            <Crown class="size-3.5" /> DG y socios
                         </span>
                         <span
                             v-else-if="s.group.status"

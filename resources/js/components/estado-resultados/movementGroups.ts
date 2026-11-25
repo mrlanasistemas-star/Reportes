@@ -5,8 +5,8 @@
  * lo clasifique…»), los movimientos se agrupan por MOTIVO (estado + regla/destino): el motivo
  * se explica una sola vez en el encabezado del grupo, con su conteo y su suma. Dentro de cada
  * motivo, los movimientos del mismo concepto (p. ej. 30 «DEPOSITO LEROM») se juntan en un
- * grupo plegable con su total. Los conceptos de Dirección General («DG» como palabra) van al
- * final, en su propio grupo. Funciones puras: no cambian ni recalculan importes del backend,
+ * grupo plegable con su total. Dirección General y socios (concepto con «DG» como palabra, regla
+ * de retiro DG/socios o ERP de DG, o tratamiento «personal_socios») van al final, en su propio grupo. Funciones puras: no cambian ni recalculan importes del backend,
  * sólo suman lo que ya viene en cada fila para los encabezados.
  */
 import { controlOf } from './movementControl';
@@ -41,6 +41,8 @@ export interface ControlRowView {
     selectable: boolean;
     /** Se puede abrir el detalle. */
     openable: boolean;
+    /** Es de Dirección General o socios por regla o tratamiento (además del concepto con «DG»). */
+    dgPartner?: boolean;
 }
 
 /** Movimientos del mismo concepto (y sentido) dentro de un motivo. */
@@ -116,6 +118,21 @@ export function isDgConcept(concept: string | null | undefined): boolean {
         !!concept &&
         /(?:^|[^\p{L}\p{N}])DG(?:[^\p{L}\p{N}]|$)/u.test(concept.toUpperCase())
     );
+}
+
+/** Reglas de clasificación de retiros de Dirección General y socios. */
+const DG_PARTNER_RULES = new Set(['retiro_dg', 'retiro_socios', 'erp_dg']);
+
+/** Tratamiento de retiro de DG / socios. */
+const PARTNER_TREATMENT = 'personal_socios';
+
+/**
+ * ¿La fila va al grupo «Dirección General y socios»? Concepto con «DG», regla de retiro
+ * DG/socios (o ERP de DG) o tratamiento automático/vigente «personal_socios».
+ * @param r fila de la lista.
+ */
+export function isDgPartnerRow(r: ControlRowView): boolean {
+    return !!r.dgPartner || isDgConcept(r.concept);
 }
 
 /**
@@ -209,6 +226,10 @@ export function rowFromMovement(
         selectable:
             canAct && !m.redacted && m.source !== 'noi_corp' && !!m.fingerprint,
         openable: !m.redacted && !!m.fingerprint,
+        dgPartner:
+            DG_PARTNER_RULES.has(m.rule_code ?? '') ||
+            m.treatment === PARTNER_TREATMENT ||
+            m.auto_treatment === PARTNER_TREATMENT,
     };
 }
 
@@ -243,11 +264,12 @@ export function rowFromOutside(r: OutsideRow): ControlRowView {
         redacted: !!r.redacted,
         selectable: false,
         openable: false,
+        dgPartner: DG_PARTNER_RULES.has(r.rule_code ?? ''),
     };
 }
 
 /**
- * Agrupa las filas por motivo y, dentro, por concepto. Dirección General va al final.
+ * Agrupa las filas por motivo y, dentro, por concepto. Dirección General y socios van al final.
  * @param rows filas ya filtradas (en el orden del dataset).
  */
 export function groupRows(rows: ControlRowView[]): ReasonGroup[] {
@@ -255,9 +277,9 @@ export function groupRows(rows: ControlRowView[]): ReasonGroup[] {
     const dg: ReasonGroup = {
         key: 'dg',
         status: null,
-        title: 'Dirección General',
+        title: 'Dirección General y socios',
         explain:
-            'Conceptos de Dirección General (DG): se muestran aparte, al final de la lista. Cada fila indica su estado.',
+            'Movimientos de Dirección General (DG) y retiros de socios: se muestran aparte, al final de la lista. Cada fila indica su estado.',
         dg: true,
         rows: [],
         cargos: 0,
@@ -266,7 +288,7 @@ export function groupRows(rows: ControlRowView[]): ReasonGroup[] {
     };
 
     for (const r of rows) {
-        let g: ReasonGroup | undefined = isDgConcept(r.concept)
+        let g: ReasonGroup | undefined = isDgPartnerRow(r)
             ? dg
             : groups.get(r.reasonKey);
 
