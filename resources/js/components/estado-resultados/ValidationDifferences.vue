@@ -1,11 +1,13 @@
 <script setup lang="ts">
 /**
- * ValidationDifferences — tabla «Diferencias banco ↔ ERP» de la pestaña Validación.
+ * ValidationDifferences — «Diferencias banco ↔ ERP» de la pestaña Validación.
  *
- * Se usa en ValidationPanel. Tres pestañas (por importe, por fecha, por folio)
- * con el conteo de cada tipo; cada renglón es un movimiento del banco que no
- * concilió limpio y, si tiene huella, se abre con clic o Enter. Muestra 50
- * renglones y «Mostrar más» agrega de 100 en 100.
+ * Vive dentro del modal de ValidationPanel. Barra fija con tres pestañas (por importe,
+ * por fecha, por folio) con su conteo, la explicación del tipo (una sola vez), el total y
+ * una búsqueda. Debajo, con desplazamiento interno, una fila limpia por movimiento del
+ * banco que no concilió limpio (fecha, concepto, cuenta, banco, ERP, diferencia y chip de
+ * lo que pasó; el mensaje largo va en el tooltip). Se abre con clic o Enter si tiene
+ * huella. Muestra 50 y «Mostrar más» agrega de 100 en 100.
  *
  * Props:
  * - differences: grupos by_amount / by_date / by_folio de la validación.
@@ -13,7 +15,7 @@
  * Emits:
  * - open(fingerprint): abrir el detalle del movimiento.
  */
-import { ArrowUpRight, CheckCircle2, Lock } from 'lucide-vue-next';
+import { ArrowUpRight, CheckCircle2, Lock, Search } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
 import { mxn, num } from './types';
 import type { DiffGroup, DiffItem, Validation } from './types';
@@ -54,12 +56,35 @@ const firstWithDifferences = (): keyof Validation['differences'] =>
 const tab = ref<keyof Validation['differences']>(firstWithDifferences());
 /** Grupo de diferencias de la pestaña activa. */
 const group = computed<DiffGroup>(() => props.differences[tab.value]);
+/** Texto de búsqueda (concepto, folio, cuenta o fecha). */
+const search = ref('');
 /** Cantidad de renglones visibles. */
 const limit = ref(50);
+/** Renglones de la pestaña que pasan la búsqueda. */
+const matching = computed<DiffItem[]>(() => {
+    const q = search.value.trim().toLowerCase();
+
+    return q
+        ? group.value.items.filter((r) =>
+              [r.concept, r.folio, r.account_slot, r.date, r.status_label]
+                  .filter(Boolean)
+                  .join(' ')
+                  .toLowerCase()
+                  .includes(q),
+          )
+        : group.value.items;
+});
 /** Renglones visibles (recortados a `limit`). */
-const rows = computed<DiffItem[]>(() =>
-    group.value.items.slice(0, limit.value),
-);
+const rows = computed<DiffItem[]>(() => matching.value.slice(0, limit.value));
+
+/**
+ * Cambia de pestaña y reinicia el recorte.
+ * @param key pestaña elegida.
+ */
+function pick(key: keyof Validation['differences']): void {
+    tab.value = key;
+    limit.value = 50;
+}
 
 // Al llegar una validación nueva (otro periodo, recálculo), vuelve a elegir la
 // pestaña con diferencias si la actual quedó vacía y reinicia el recorte.
@@ -73,189 +98,203 @@ watch(
         limit.value = 50;
     },
 );
+watch(search, () => (limit.value = 50));
 </script>
 
 <template>
-    <section class="rounded-2xl border bg-card shadow-soft-xs">
-        <!-- Encabezado y pestañas -->
-        <header
-            class="flex flex-wrap items-end justify-between gap-3 border-b px-5 pt-4"
-        >
-            <div class="pb-3">
-                <h3 class="text-base font-extrabold">
-                    Diferencias banco ↔ ERP
-                </h3>
-                <p class="mt-0.5 text-xs text-muted-foreground">
-                    Cada renglón es un movimiento del banco que no concilió
-                    limpio. Haz clic para abrirlo y decidir qué hacer.
-                </p>
-            </div>
-            <div
-                class="flex gap-1"
-                role="tablist"
-                aria-label="Tipo de diferencia"
-            >
-                <button
-                    v-for="t in TABS"
-                    :key="t.key"
-                    type="button"
-                    role="tab"
-                    :aria-selected="tab === t.key"
-                    class="-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-semibold transition"
-                    :class="
-                        tab === t.key
-                            ? 'border-rose-500 text-foreground'
-                            : 'border-transparent text-muted-foreground hover:text-foreground'
-                    "
-                    @click="
-                        tab = t.key;
-                        limit = 50;
-                    "
+    <div class="flex min-h-0 flex-1 flex-col">
+        <!-- Barra fija: pestañas, explicación y búsqueda -->
+        <div class="shrink-0 space-y-3 border-b bg-muted/25 px-5 py-3 sm:px-6">
+            <div class="flex flex-wrap items-center gap-2">
+                <div
+                    class="inline-flex rounded-2xl border bg-background p-1"
+                    role="tablist"
+                    aria-label="Tipo de diferencia"
                 >
-                    {{ t.label }}
-                    <span
-                        class="rounded-full px-1.5 text-[10px] font-bold tabular-nums"
+                    <button
+                        v-for="t in TABS"
+                        :key="t.key"
+                        type="button"
+                        role="tab"
+                        :aria-selected="tab === t.key"
+                        class="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-sm font-semibold transition focus-visible:ring-2 focus-visible:ring-rose-400 focus-visible:outline-none"
                         :class="
-                            differences[t.key].count
-                                ? 'bg-rose-500 text-white'
-                                : 'bg-muted text-muted-foreground'
+                            tab === t.key
+                                ? 'bg-foreground text-background shadow-sm'
+                                : 'text-muted-foreground hover:text-foreground'
                         "
-                        >{{ differences[t.key].count }}</span
+                        @click="pick(t.key)"
                     >
-                </button>
-            </div>
-        </header>
-
-        <!-- Explicación y total de la pestaña -->
-        <p class="px-5 pt-3 text-xs text-muted-foreground">
-            {{ TABS.find((t) => t.key === tab)?.explain }}
-            <template v-if="group.count">
-                Total en banco:
-                <b class="text-rose-700 tabular-nums dark:text-rose-400">{{
-                    mxn(group.amount)
-                }}</b>
-            </template>
-        </p>
-
-        <div
-            v-if="!group.count"
-            class="flex items-center gap-2 px-5 py-8 text-sm text-emerald-700 dark:text-emerald-400"
-        >
-            <CheckCircle2 class="size-5" /> Sin diferencias de este tipo.
-        </div>
-        <div v-else class="max-h-[60vh] overflow-auto p-2">
-            <table
-                class="w-full min-w-[920px] border-separate border-spacing-0 text-xs"
-            >
-                <thead
-                    class="sticky top-0 z-10 bg-card text-left text-[11px] text-muted-foreground"
-                >
-                    <tr
-                        class="[&>th]:border-b [&>th]:px-2.5 [&>th]:py-2 [&>th]:font-semibold"
-                    >
-                        <th>Fecha</th>
-                        <th>Folio</th>
-                        <th>Concepto</th>
-                        <th class="text-right">Banco</th>
-                        <th class="text-right">ERP</th>
-                        <th class="text-right">Diferencia</th>
-                        <th>Qué pasó</th>
-                        <th><span class="sr-only">Abrir</span></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr
-                        v-for="(r, i) in rows"
-                        :key="r.fingerprint ?? i"
-                        :tabindex="r.fingerprint ? 0 : -1"
-                        class="group [&>td]:border-b [&>td]:border-border/60 [&>td]:px-2.5 [&>td]:py-2"
-                        :class="
-                            r.fingerprint
-                                ? 'cursor-pointer transition-colors hover:bg-rose-50/60 focus-visible:bg-rose-50 focus-visible:outline-none dark:hover:bg-rose-950/20'
-                                : ''
-                        "
-                        @click="r.fingerprint && emit('open', r.fingerprint)"
-                        @keydown.enter="
-                            r.fingerprint && emit('open', r.fingerprint)
-                        "
-                    >
-                        <td class="whitespace-nowrap tabular-nums">
-                            {{ r.date }}
-                        </td>
-                        <td
-                            class="font-semibold whitespace-nowrap tabular-nums"
-                        >
-                            {{ r.folio ?? '—' }}
-                        </td>
-                        <td class="max-w-[280px]">
-                            <span class="flex items-center gap-1 truncate">
-                                <Lock
-                                    v-if="r.redacted"
-                                    class="size-3 shrink-0"
-                                />
-                                {{ r.concept ?? '—' }}
-                            </span>
-                            <span class="text-[10.5px] text-muted-foreground">{{
-                                r.account_slot
-                            }}</span>
-                        </td>
-                        <td
-                            class="text-right font-semibold whitespace-nowrap tabular-nums"
-                        >
-                            {{ mxn(r.bank_amount) }}
-                        </td>
-                        <td class="text-right whitespace-nowrap tabular-nums">
-                            {{
-                                r.erp_amounts.length
-                                    ? r.erp_amounts
-                                          .map((a) => mxn(a))
-                                          .join(' + ')
-                                    : '—'
-                            }}
-                        </td>
-                        <td
-                            class="text-right font-bold whitespace-nowrap tabular-nums"
+                        {{ t.label }}
+                        <span
+                            class="rounded-full px-1.5 text-xs font-bold tabular-nums"
                             :class="
-                                r.difference && num(r.difference)
-                                    ? 'text-rose-600 dark:text-rose-400'
-                                    : 'text-muted-foreground'
+                                differences[t.key].count
+                                    ? 'bg-rose-500 text-white'
+                                    : 'bg-muted text-muted-foreground'
                             "
+                            >{{ differences[t.key].count }}</span
                         >
-                            {{ r.difference ? mxn(r.difference) : '—' }}
-                            <span
-                                v-if="r.delta_days !== null"
-                                class="block text-[10.5px] font-semibold"
-                                >{{ r.delta_days }} día(s)</span
+                    </button>
+                </div>
+                <label class="relative min-w-52 flex-1">
+                    <span class="sr-only">Buscar diferencias</span>
+                    <Search
+                        class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                    />
+                    <input
+                        v-model="search"
+                        type="search"
+                        placeholder="Buscar concepto, folio, cuenta…"
+                        class="h-10 w-full rounded-xl border bg-background pr-3 pl-9 text-sm shadow-xs outline-none focus-visible:border-rose-400 focus-visible:ring-2 focus-visible:ring-rose-400/30"
+                    />
+                </label>
+            </div>
+            <p class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                <span class="text-muted-foreground">{{
+                    TABS.find((t) => t.key === tab)?.explain
+                }}</span>
+                <span v-if="group.count" class="font-semibold">
+                    Total en banco:
+                    <b class="text-rose-700 tabular-nums dark:text-rose-400">{{
+                        mxn(group.amount)
+                    }}</b>
+                </span>
+            </p>
+        </div>
+
+        <!-- Lista con desplazamiento interno -->
+        <div
+            class="min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-smooth px-4 py-4 sm:px-6"
+        >
+            <div
+                v-if="!group.count"
+                class="flex items-center justify-center gap-2 rounded-2xl border border-dashed border-emerald-300 bg-emerald-50/60 p-8 text-[15px] font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-300"
+            >
+                <CheckCircle2 class="size-5" /> Sin diferencias de este tipo.
+            </div>
+            <p
+                v-else-if="!matching.length"
+                class="rounded-2xl border border-dashed p-8 text-center text-[15px] text-muted-foreground"
+            >
+                Ninguna diferencia coincide con la búsqueda.
+            </p>
+            <ul
+                v-else
+                class="divide-y divide-border/70 overflow-hidden rounded-2xl border bg-card shadow-soft-xs"
+            >
+                <!-- Encabezado de columnas (pantallas anchas) -->
+                <li
+                    class="hidden grid-cols-[6.5rem_minmax(0,1fr)_8.5rem_8.5rem_8rem_1.25rem] gap-3 bg-muted/40 px-4 py-2 text-xs font-semibold text-muted-foreground md:grid"
+                    aria-hidden="true"
+                >
+                    <span>Fecha</span>
+                    <span>Concepto · qué pasó</span>
+                    <span class="text-right">Banco</span>
+                    <span class="text-right">ERP</span>
+                    <span class="text-right">Diferencia</span>
+                    <span />
+                </li>
+                <li
+                    v-for="(r, i) in rows"
+                    :key="r.fingerprint ?? i"
+                    :tabindex="r.fingerprint ? 0 : -1"
+                    :role="r.fingerprint ? 'button' : undefined"
+                    class="group grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 px-4 py-3 md:grid-cols-[6.5rem_minmax(0,1fr)_8.5rem_8.5rem_8rem_1.25rem] md:items-center"
+                    :class="
+                        r.fingerprint
+                            ? 'cursor-pointer transition-colors hover:bg-rose-50/60 focus-visible:bg-rose-50 focus-visible:outline-none dark:hover:bg-rose-950/20 dark:focus-visible:bg-rose-950/30'
+                            : ''
+                    "
+                    @click="r.fingerprint && emit('open', r.fingerprint)"
+                    @keydown.enter="
+                        r.fingerprint && emit('open', r.fingerprint)
+                    "
+                >
+                    <span
+                        class="hidden text-sm text-muted-foreground tabular-nums md:block"
+                        >{{ r.date }}</span
+                    >
+                    <span class="min-w-0">
+                        <span
+                            class="flex items-center gap-1.5 text-[15px] font-semibold"
+                        >
+                            <Lock
+                                v-if="r.redacted"
+                                class="size-3.5 shrink-0 text-muted-foreground"
+                            />
+                            <span class="truncate" :title="r.concept ?? ''">{{
+                                r.concept ?? '—'
+                            }}</span>
+                        </span>
+                        <span
+                            class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
+                        >
+                            <span class="tabular-nums md:hidden">{{
+                                r.date
+                            }}</span>
+                            <span>{{ r.account_slot }}</span>
+                            <span v-if="r.folio" class="font-mono"
+                                >Folio {{ r.folio }}</span
                             >
-                        </td>
-                        <td class="max-w-[300px]">
                             <span
-                                class="inline-block rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10.5px] font-semibold text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300"
+                                class="inline-block max-w-full truncate rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
+                                :title="r.message ?? r.status_label"
                                 >{{ r.status_label }}</span
                             >
-                            <span
-                                v-if="r.message"
-                                class="mt-0.5 line-clamp-2 block text-[10.5px] text-muted-foreground"
-                                >{{ r.message }}</span
-                            >
-                        </td>
-                        <td class="text-right">
-                            <ArrowUpRight
-                                v-if="r.fingerprint"
-                                class="inline size-4 text-muted-foreground transition group-hover:text-rose-600"
-                            />
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
+                        </span>
+                    </span>
+                    <span
+                        class="text-right text-[15px] font-bold whitespace-nowrap tabular-nums"
+                    >
+                        {{ mxn(r.bank_amount) }}
+                        <span
+                            class="block text-xs font-normal text-muted-foreground md:hidden"
+                            >banco</span
+                        >
+                    </span>
+                    <span
+                        class="col-span-2 text-sm whitespace-nowrap text-muted-foreground tabular-nums md:col-span-1 md:text-right"
+                    >
+                        <span class="md:hidden">ERP </span>
+                        {{
+                            r.erp_amounts.length
+                                ? r.erp_amounts.map((a) => mxn(a)).join(' + ')
+                                : '—'
+                        }}
+                    </span>
+                    <span
+                        class="col-span-2 text-sm font-bold whitespace-nowrap tabular-nums md:col-span-1 md:text-right"
+                        :class="
+                            r.difference && num(r.difference)
+                                ? 'text-rose-600 dark:text-rose-400'
+                                : 'text-muted-foreground'
+                        "
+                    >
+                        <span class="font-normal md:hidden">Diferencia </span>
+                        {{ r.difference ? mxn(r.difference) : '—' }}
+                        <span
+                            v-if="r.delta_days !== null"
+                            class="text-xs font-semibold md:block"
+                            >{{ r.delta_days }} día(s)</span
+                        >
+                    </span>
+                    <span class="hidden text-right md:block">
+                        <ArrowUpRight
+                            v-if="r.fingerprint"
+                            class="inline size-4 text-muted-foreground transition group-hover:text-rose-600"
+                        />
+                    </span>
+                </li>
+            </ul>
             <button
-                v-if="group.items.length > limit"
+                v-if="matching.length > limit"
                 type="button"
-                class="mt-2 w-full rounded-xl border border-dashed py-2 text-xs font-semibold text-muted-foreground hover:text-foreground"
+                class="mt-4 w-full rounded-2xl border border-dashed py-3 text-sm font-semibold text-muted-foreground transition hover:border-rose-300 hover:text-foreground"
                 @click="limit += 100"
             >
-                Mostrar más ({{ group.items.length - limit }} restantes)
+                Mostrar más ({{ matching.length - limit }} restantes)
             </button>
         </div>
-    </section>
+    </div>
 </template>
