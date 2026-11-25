@@ -325,11 +325,11 @@ class EstadoResultadosDatasetBuilder
         // Se concilia contra Radiografía a $0.00 en las validaciones.
         $ebitdaSuc = $ingresos->minus($opexSuc)->minus($nominaSuc);
 
-        // ── 02 OPEX: Corporativo y Dirección General son CATEGORÍAS de OPEX (sólo consolidado;
-        //    nunca se asignan a una sucursal) ─────────────────────────────────────────────
+        // ── 02 OPEX: Corporativo es CATEGORÍA de OPEX (sólo consolidado; nunca se asigna a una
+        //    sucursal). Dirección General y socios YA NO son OPEX (25-nov-2026): lo que toman se
+        //    resta al final, debajo de la Utilidad neta (withdrawals()).
         $corpLines = [];
         $nomCorpLines = [];
-        $dgLines = [];
         if ($consolidated) {
             foreach ($this->groupBySourceCategory($scoped, [T::OPEX_CORPORATIVO]) as $key => [$label, $amount, $source]) {
                 $corpLines[] = $this->line('corp_'.md5($key), $label, $amount, $source);
@@ -337,13 +337,12 @@ class EstadoResultadosDatasetBuilder
             foreach ($this->groupBySourceCategory($scoped, [T::NOMINA_CORPORATIVA]) as $key => [$label, $amount, $source]) {
                 $nomCorpLines[] = $this->line('nomcorp_'.md5($key), $label, $amount, $source);
             }
-            $dgLines[] = $this->line('dg_operativo', 'Gastos operativos de Dirección General', $this->sumTreatment($scoped, [T::DG_OPERATIVO]), 'Clasificación DG');
-            $dgLines[] = $this->line('dg_remuneracion', 'Remuneración laboral de Dirección General', $this->sumTreatment($scoped, [T::DG_REMUNERACION]), 'Clasificación DG');
         }
         $opexCorp = $this->sumLines($corpLines);
         $nominaCorp = $this->sumLines($nomCorpLines);
-        $dg = $this->sumLines($dgLines);
-        $opexTotal = $opexSuc->plus($nominaSuc)->plus($opexCorp)->plus($nominaCorp)->plus($dg);
+        $withdrawals = $this->withdrawals($scoped, $consolidated);
+        $dg = $withdrawals['total_raw'];
+        $opexTotal = $opexSuc->plus($nominaSuc)->plus($opexCorp)->plus($nominaCorp);
 
         // ── 03 EBITDA (único) ──────────────────────────────────────────
         $ebitda = $ingresos->minus($opexTotal);
@@ -366,7 +365,7 @@ class EstadoResultadosDatasetBuilder
             // Comisiones financieras (LEROM): línea separada; criterio pendiente de Finanzas (config).
             ...(config('estado_resultados.gastos_financieros.comisiones_en_resultado_financiero', false) ? [$this->adjLine($adj['comisiones_financieras'])] : []),
             $this->adjLine($adj['otros_gastos_financieros']),
-            $this->line('fin_bancos', 'Gastos financieros clasificados desde bancos', $finBancos, 'Estados de cuenta · clasificación'),
+            $this->line('fin_bancos', 'Otros gastos financieros desde bancos (comisiones bancarias)', $finBancos, 'Estados de cuenta · clasificación'),
         ];
         $finIncome = [
             $this->adjLine($adj['ingresos_financieros']),
@@ -385,17 +384,25 @@ class EstadoResultadosDatasetBuilder
 
         $completeness = $this->completeness($adj);
 
+        // ── 10 Retiros DG y socios · 11 Resultado después de retiros (sólo consolidado). Con ISR
+        //    pendiente se calcula sobre el EBT y se etiqueta «antes de ISR». ──────────────────
+        $afterBase = $utilidad ?? $ebt;
+        $afterRetiros = $consolidated ? $afterBase->minus($dg) : null;
+        $withdrawals = $this->withdrawalsSummary($withdrawals, $consolidated, $isrPending, $afterBase, $afterRetiros);
+
         $results = [
             'ingresos_operativos' => $ingresos, 'opex_total' => $opexTotal, 'ebitda' => $ebitda,
             'depreciacion_amortizacion' => $da, 'ebit' => $ebit, 'resultado_financiero_neto' => $finNeto,
             'ebt' => $ebt, 'isr' => $isr, 'utilidad_neta' => $utilidad,
+            'retiros_dg_socios' => $consolidated ? $dg : null, 'resultado_despues_retiros' => $afterRetiros,
         ];
         // Claves del modelo anterior (3 EBITDA) SÓLO como controles/compatibilidad: no son niveles del ER.
         $ebitdaCorp = $ebitdaSuc->minus($opexCorp)->minus($nominaCorp);
         $controls = [
             'ingresos' => $ingresos, 'opex_sucursales' => $opexSuc, 'nomina_sucursales' => $nominaSuc,
             'ebitda_sucursales' => $ebitdaSuc, 'opex_corporativo' => $opexCorp, 'nomina_corporativa' => $nominaCorp,
-            'ebitda_corporativo' => $ebitdaCorp, 'dg' => $dg, 'ebitda_final' => $ebitdaCorp->minus($dg),
+            // 25-nov-2026: «dg» = retiros de DG y socios (fuera del EBITDA); ebitda_final ya no los resta.
+            'ebitda_corporativo' => $ebitdaCorp, 'dg' => $dg, 'ebitda_final' => $ebitdaCorp, 'retiros_dg_socios' => $dg,
             'gastos_financieros' => $finGastos, 'ingresos_financieros' => $finIngresos,
             'resultado_financiero_neto_gasto' => $finGastos->minus($finIngresos),
         ];
@@ -403,7 +410,7 @@ class EstadoResultadosDatasetBuilder
         // Importe que cada categoría financiera EXCLUSIVA recibe desde movimientos (banco/ERP).
         $categoryTotals = [
             'opex_sucursales' => $opexComp, 'nomina_sucursales' => $nominaComp, 'opex_corporativo' => $opexCorp,
-            'nomina_corporativa' => $nominaCorp, 'opex_dg' => $dg, 'financiero' => $finBancos->plus($ingNoOpBancos),
+            'nomina_corporativa' => $nominaCorp, 'retiros_dg' => $dg, 'financiero' => $finBancos->plus($ingNoOpBancos),
         ];
 
         $opexCategories = [
@@ -411,9 +418,8 @@ class EstadoResultadosDatasetBuilder
             ['key' => 'nomina_sucursales', 'label' => 'Nómina y capital humano de sucursales', 'lines' => $nominaLines, 'total' => $nominaSuc, 'applies' => true],
             ['key' => 'opex_corporativo', 'label' => 'Gastos corporativos', 'lines' => $corpLines, 'total' => $opexCorp, 'applies' => $consolidated],
             ['key' => 'nomina_corporativa', 'label' => 'Nómina corporativa', 'lines' => $nomCorpLines, 'total' => $nominaCorp, 'applies' => $consolidated],
-            ['key' => 'dg', 'label' => 'Dirección General (gastos operativos y remuneración)', 'lines' => $dgLines, 'total' => $dg, 'applies' => $consolidated],
         ];
-        $statement = $this->statement($consolidated, $incomeLines, $opexCategories, $daLines, $finExpense, $finIncome, $isrLines, $results, $completeness);
+        $statement = $this->statement($consolidated, $incomeLines, $opexCategories, $daLines, $finExpense, $finIncome, $isrLines, $results, $completeness, $withdrawals);
 
         $radiografiaEbitda = Money::of(Radio::ebitdaFinalFor($row));
         $reconciliation = $this->radiographyReconciliation($row, $base, $consolidated, $ingresos, $opexRadio, $nominaRadio, $opexComp, $nominaComp, $ebitdaSuc, $radiografiaEbitda);
@@ -449,6 +455,8 @@ class EstadoResultadosDatasetBuilder
             'completeness' => $completeness,
             'statement' => $statement,
             'waterfall' => $this->waterfall($results, $controls, $consolidated),
+            // 25-nov-2026: retiros de Dirección General y socios (debajo de la Utilidad neta).
+            'withdrawals' => $withdrawals,
             'radiography_reconciliation' => $reconciliation,
             'checks' => $checks,
             'conciliation' => $conciliation,
@@ -1193,7 +1201,7 @@ class EstadoResultadosDatasetBuilder
      * Cada bloque lleva `step` (1-9). La sección `opex` trae `categories[]` (cada una con
      * sus líneas y total) y, como `lines`, un renglón por categoría (Σ lines = total).
      */
-    private function statement(bool $consolidated, array $income, array $opexCategories, array $da, array $finExp, array $finInc, array $isr, array $r, array $completeness): array
+    private function statement(bool $consolidated, array $income, array $opexCategories, array $da, array $finExp, array $finInc, array $isr, array $r, array $completeness, array $withdrawals = []): array
     {
         $base = $r['ingresos_operativos'];
         $str = fn (?BigDecimal $v) => $v === null ? null : Money::str2($v);
@@ -1249,7 +1257,7 @@ class EstadoResultadosDatasetBuilder
 
         $isrPending = $r['isr'] === null;
 
-        return [
+        $blocks = [
             $section('ingresos', 1, '01', 'INGRESOS OPERATIVOS', 'income', $income, 'TOTAL INGRESOS OPERATIVOS', $r['ingresos_operativos']),
             $opex,
             $result('ebitda', 3, 'EBITDA', $r['ebitda'], 'Ingresos operativos − OPEX'),
@@ -1261,6 +1269,136 @@ class EstadoResultadosDatasetBuilder
                 $isrPending ? 'ISR PENDIENTE: sin información no se asume $0. Captúralo o confírmalo en $0 en Ajustes.' : null, $isrPending ? 'pendiente' : null),
             $result('utilidad_neta', 9, 'UTILIDAD NETA', $r['utilidad_neta'], 'EBT − ISR', $completeness['utilidad_neta'],
                 $isrPending ? 'Pendiente: falta el ISR del periodo.' : null),
+        ];
+        if (! $consolidated || ($withdrawals['applies'] ?? false) !== true) {
+            return $blocks; // sucursal: DG y socios nunca se asignan a una sucursal
+        }
+
+        // ── 10 Retiros DG y socios (después de la utilidad) · 11 Resultado después de retiros ──
+        $wLines = array_map(fn ($g) => $this->line('retiro_'.md5($g['key']), $g['label'], Money::of($g['amount']), 'Retiros DG y socios',
+            $g['count'].' movimiento(s)'), $withdrawals['by_concept']);
+        $retiros = $section('retiros', 10, '10', 'RETIROS DE DIRECCIÓN GENERAL Y SOCIOS', 'expense', $wLines, 'TOTAL RETIROS DG Y SOCIOS', $r['retiros_dg_socios'],
+            'Dinero que Dirección General y los socios tomaron del flujo. No es OPEX: no cambia el EBITDA.');
+        $retiros['withdrawal'] = true;
+        $blocks[] = $retiros;
+        $after = $result('resultado_despues_retiros', 11, $withdrawals['result_label'], $r['resultado_despues_retiros'], $withdrawals['formula'], null, $withdrawals['explain']);
+        $after['negative'] = $withdrawals['negative'];
+        $after['base'] = $withdrawals['base'];
+        $blocks[] = $after;
+
+        return $blocks;
+    }
+
+    /**
+     * Retiros de Dirección General y socios del alcance (25-nov-2026): movimientos en periodo con
+     * tratamiento de retiro (T::WITHDRAWALS) que suman al ER (bancos sin la parte conciliada + ERP de
+     * DG). Sucursal: no aplica (DG y socios nunca se asignan a una sucursal).
+     *
+     * @param  array  $scoped  items del alcance
+     * @param  bool  $consolidated  alcance consolidado
+     * @return array{total_raw:BigDecimal, items:list<array<string,mixed>>, by_concept:list<array<string,mixed>>}
+     */
+    private function withdrawals(array $scoped, bool $consolidated): array
+    {
+        $rows = [];
+        $groups = [];
+        $total = BigDecimal::zero();
+        if ($consolidated) {
+            foreach ($scoped as $i) {
+                if (! $i['in_period'] || ! in_array($i['treatment'], T::WITHDRAWALS, true) || ! ($i['impact']['included'] ?? false)) {
+                    continue;
+                }
+                $amount = $this->signedAmount($i);
+                $total = $total->plus($amount);
+                $key = self::withdrawalGroup((string) $i['concept']);
+                $groups[$key] ??= ['key' => $key, 'label' => $key, 'count' => 0, 'amount' => BigDecimal::zero()];
+                $groups[$key]['count']++;
+                $groups[$key]['amount'] = $groups[$key]['amount']->plus($amount);
+                $concept = ConceptCatalogService::normalize((string) $i['concept'].' '.(string) ($i['observations'] ?? ''));
+                $rows[] = [
+                    'fingerprint' => $i['fingerprint'],
+                    'source' => $i['source'],
+                    'date' => $i['date'],
+                    'concept' => $i['concept'],
+                    'group' => $key,
+                    'account_slot' => $i['account_slot'],
+                    'account_label' => $i['account_label'],
+                    'folio' => $i['folio'],
+                    'branch_name' => $i['branch_name'],
+                    'beneficiary' => $i['beneficiary'],
+                    // Quién se lo llevó: el beneficiario del banco; si no viene, DG (concepto con «DG») o socios.
+                    'who' => trim((string) $i['beneficiary']) !== '' ? (string) $i['beneficiary']
+                        : (preg_match('/\bDG\b|DIRECCION GENERAL/', $concept) ? 'Dirección General' : 'Socios'),
+                    'cargo' => $i['cargo'],
+                    'abono' => $i['abono'],
+                    'amount' => Money::str2($amount),
+                    'treatment' => $i['treatment'],
+                    'treatment_label' => T::label($i['treatment']),
+                    'rule_code' => $i['rule_code'],
+                    'reason' => $i['override']['reason'] ?? $i['rule_reason'] ?? null,
+                    'manual' => $i['override'] !== null,
+                ];
+            }
+        }
+        usort($rows, fn ($a, $b) => [$a['date'], $a['concept']] <=> [$b['date'], $b['concept']]);
+        uasort($groups, fn ($a, $b) => $b['amount']->compareTo($a['amount']));
+
+        return [
+            'total_raw' => $total,
+            'items' => $rows,
+            'by_concept' => array_values(array_map(fn ($g) => ['amount' => Money::str2($g['amount']), 'pct' => Money::pct($g['amount'], $total)] + $g, $groups)),
+        ];
+    }
+
+    /**
+     * Concepto agrupado de un retiro: normalizado, sin fechas, números ni folios
+     * («GASTOS DG 12/04/2026» → «GASTOS DG»).
+     *
+     * @param  string  $concept  concepto del movimiento
+     */
+    public static function withdrawalGroup(string $concept): string
+    {
+        $c = ConceptCatalogService::normalize($concept);
+        $c = preg_replace('/\b\d{1,4}([\/.\-]\d{1,4}){1,2}\b|\b\d+\b|#|\bNO\.?\s*$/', ' ', $c) ?? $c;
+        $c = trim(preg_replace('/\s+/', ' ', $c) ?? $c, ' -.,/');
+
+        return $c !== '' ? $c : 'SIN CONCEPTO';
+    }
+
+    /**
+     * Bloque público `withdrawals` del dataset: total, efecto en el resultado, agrupado por concepto
+     * y la lista completa de movimientos.
+     *
+     * @param  array  $w  resultado de withdrawals()
+     * @param  bool  $consolidated  alcance consolidado
+     * @param  bool  $isrPending  ISR sin información (el resultado se calcula sobre el EBT)
+     * @param  BigDecimal  $base  Utilidad neta (o EBT con ISR pendiente)
+     * @param  BigDecimal|null  $after  resultado después de retiros (null en sucursal)
+     * @return array<string, mixed>
+     */
+    private function withdrawalsSummary(array $w, bool $consolidated, bool $isrPending, BigDecimal $base, ?BigDecimal $after): array
+    {
+        $negative = $after !== null && $after->isNegative();
+        $baseLabel = $isrPending ? 'EBT (utilidad antes de impuestos)' : 'Utilidad neta';
+
+        return [
+            'applies' => $consolidated,
+            'note' => $consolidated ? null : 'Los retiros de Dirección General y socios sólo se presentan en el consolidado.',
+            'total' => Money::str2($w['total_raw']),
+            'count' => count($w['items']),
+            'base' => $isrPending ? 'ebt' : 'utilidad_neta',
+            'base_label' => $baseLabel,
+            'base_amount' => Money::str2($base),
+            'result' => $after === null ? null : Money::str2($after),
+            'result_label' => $isrPending ? 'RESULTADO DESPUÉS DE RETIROS (ANTES DE ISR)' : 'RESULTADO DESPUÉS DE RETIROS',
+            'formula' => ($isrPending ? 'EBT' : 'Utilidad neta').' − Retiros DG y socios',
+            'negative' => $negative,
+            'explain' => $negative
+                ? 'En rojo: Dirección General y los socios tomaron más de lo que dejó el periodo (tomaron dinero del flujo siguiente).'
+                : ($isrPending ? 'Calculado sobre el EBT porque el ISR está pendiente.' : null),
+            'rule' => 'Lo que toman Dirección General y los socios no es OPEX: no cambia el EBITDA; se resta al final, después de la Utilidad neta.',
+            'by_concept' => $w['by_concept'],
+            'items' => $w['items'],
         ];
     }
 
@@ -1275,7 +1413,8 @@ class EstadoResultadosDatasetBuilder
         $base = $r['ingresos_operativos'];
         $m = fn (?BigDecimal $v) => $v === null ? null : Money::pct($v, $base);
 
-        return ['ebitda' => $m($r['ebitda']), 'ebit' => $m($r['ebit']), 'ebt' => $m($r['ebt']), 'neto' => $m($r['utilidad_neta'])];
+        return ['ebitda' => $m($r['ebitda']), 'ebit' => $m($r['ebit']), 'ebt' => $m($r['ebt']), 'neto' => $m($r['utilidad_neta']),
+            'despues_retiros' => $m($r['resultado_despues_retiros'] ?? null)];
     }
 
     /**
@@ -1299,7 +1438,6 @@ class EstadoResultadosDatasetBuilder
         if ($consolidated) {
             $steps[] = ['key' => 'opex_corporativo', 'label' => 'Gastos corporativos', 'amount' => $neg($c['opex_corporativo']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'];
             $steps[] = ['key' => 'nomina_corporativa', 'label' => 'Nómina corporativa', 'amount' => $neg($c['nomina_corporativa']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'];
-            $steps[] = ['key' => 'dg', 'label' => 'Dirección General', 'amount' => $neg($c['dg']), 'type' => 'delta', 'step' => 2, 'group' => 'opex'];
         }
         $steps[] = ['key' => 'ebitda', 'label' => 'EBITDA', 'amount' => $r['ebitda'], 'type' => 'subtotal', 'step' => 3];
         $steps[] = ['key' => 'depreciacion_amortizacion', 'label' => 'Depreciación y amortización', 'amount' => $neg($r['depreciacion_amortizacion']), 'type' => 'delta', 'step' => 4];
@@ -1308,6 +1446,12 @@ class EstadoResultadosDatasetBuilder
         $steps[] = ['key' => 'ebt', 'label' => 'EBT', 'amount' => $r['ebt'], 'type' => 'subtotal', 'step' => 7];
         $steps[] = ['key' => 'isr', 'label' => 'ISR', 'amount' => $neg($r['isr']), 'type' => 'delta', 'step' => 8];
         $steps[] = ['key' => 'utilidad_neta', 'label' => 'Utilidad neta', 'amount' => $r['utilidad_neta'], 'type' => 'total', 'step' => 9];
+        if ($consolidated) {
+            // 25-nov-2026: los retiros de DG y socios van DESPUÉS de la utilidad (con ISR pendiente, sobre el EBT).
+            $steps[] = ['key' => 'retiros_dg_socios', 'label' => 'Retiros DG y socios', 'amount' => $neg($r['retiros_dg_socios']), 'type' => 'delta', 'step' => 10, 'group' => 'retiros'];
+            $steps[] = ['key' => 'resultado_despues_retiros', 'label' => $r['isr'] === null ? 'Resultado después de retiros (antes de ISR)' : 'Resultado después de retiros',
+                'amount' => $r['resultado_despues_retiros'], 'type' => 'total', 'step' => 11, 'base' => $r['isr'] === null ? 'ebt' : 'utilidad_neta'];
+        }
 
         return array_map(fn ($s) => ['amount' => $s['amount'] === null ? null : Money::str2($s['amount']), 'level' => $s['step'], 'pending' => $s['amount'] === null] + $s, $steps);
     }
@@ -1508,13 +1652,18 @@ class EstadoResultadosDatasetBuilder
         $add('ebitda_sucursales_radiografia', 'Control: Ingresos − OPEX y nómina de sucursales (base Radiografía) = EBITDA de Radiografía',
             $radiografiaEbitda, $ingresos->minus($opexRadio)->minus($nominaRadio),
             'Control de conciliación con Radiografía. Lo clasificado manualmente desde bancos se explica aparte en la conciliación.');
-        $add('opex_total_formula', 'OPEX total = Σ categorías de OPEX (sucursales, nómina, corporativo, nómina corporativa, Dirección General)',
-            Money::sum([$c['opex_sucursales'], $c['nomina_sucursales'], $c['opex_corporativo'], $c['nomina_corporativa'], $c['dg']]), $r['opex_total']);
+        $add('opex_total_formula', 'OPEX total = Σ categorías de OPEX (sucursales, nómina, corporativo, nómina corporativa)',
+            Money::sum([$c['opex_sucursales'], $c['nomina_sucursales'], $c['opex_corporativo'], $c['nomina_corporativa']]), $r['opex_total']);
         $add('ebitda_formula', 'EBITDA = Ingresos operativos − OPEX', $r['ingresos_operativos']->minus($r['opex_total']), $r['ebitda']);
         $add('ebit_formula', 'EBIT = EBITDA − Depreciación y amortización', $r['ebitda']->minus($r['depreciacion_amortizacion']), $r['ebit']);
         $add('ebt_formula', 'EBT = EBIT + Resultado financiero neto (con signo)', $r['ebit']->plus($r['resultado_financiero_neto']), $r['ebt']);
         if ($r['isr'] !== null) {
             $add('utilidad_formula', 'Utilidad neta = EBT − ISR', $r['ebt']->minus($r['isr']), $r['utilidad_neta']);
+        }
+        if ($r['resultado_despues_retiros'] !== null) {
+            $add('retiros_formula', 'Resultado después de retiros = '.($r['isr'] === null ? 'EBT' : 'Utilidad neta').' − Retiros DG y socios',
+                ($r['utilidad_neta'] ?? $r['ebt'])->minus($r['retiros_dg_socios']), $r['resultado_despues_retiros'],
+                'Los retiros de Dirección General y socios no tocan el EBITDA.');
         }
 
         foreach ($statement as $block) {
@@ -1804,7 +1953,7 @@ class EstadoResultadosDatasetBuilder
             $groups[$t]['cargos'] = $groups[$t]['cargos']->plus(Money::of($i['cargo']));
             $groups[$t]['abonos'] = $groups[$t]['abonos']->plus(Money::of($i['abono']));
         }
-        $order = [T::CAPEX, T::CAPITAL_DEUDA, T::TRANSFERENCIA_INTERNA, T::PERSONAL_SOCIOS, T::RECUPERABLE, T::BALANCE, T::PUENTE_TERCEROS, T::CUBIERTO_RADIOGRAFIA, T::CONCILIADO_ERP, T::DUPLICADO, T::FUERA_PERIODO, T::PENDIENTE];
+        $order = [T::CAPEX, T::CAPITAL_DEUDA, T::TRANSFERENCIA_INTERNA, T::RECUPERABLE, T::BALANCE, T::PUENTE_TERCEROS, T::CUBIERTO_RADIOGRAFIA, T::CONCILIADO_ERP, T::DUPLICADO, T::FUERA_PERIODO, T::PENDIENTE];
         $out = [];
         foreach ($order as $k) {
             if (isset($groups[$k])) {
@@ -1856,7 +2005,7 @@ class EstadoResultadosDatasetBuilder
                 ['key' => 'opex_ingreso', 'label' => 'OPEX / ingreso', 'value' => $pct($r['opex_total']), 'unit' => '%'],
                 ['key' => 'nomina_ingreso', 'label' => 'Nómina / ingreso', 'value' => $pct($nominaTotal), 'unit' => '%'],
                 ['key' => 'corporativo_ingreso', 'label' => 'Corporativo / ingreso', 'value' => $consolidated ? $pct($c['opex_corporativo']->plus($c['nomina_corporativa'])) : null, 'unit' => '%'],
-                ['key' => 'dg_ingreso', 'label' => 'Dirección General / ingreso', 'value' => $consolidated ? $pct($c['dg']) : null, 'unit' => '%'],
+                ['key' => 'dg_ingreso', 'label' => 'Retiros DG y socios / ingreso', 'value' => $consolidated ? $pct($c['dg']) : null, 'unit' => '%'],
             ],
             // Informativos: NO entran a la fórmula del Estado de Resultados.
             'informative' => [

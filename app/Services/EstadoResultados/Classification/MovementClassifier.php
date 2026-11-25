@@ -20,6 +20,23 @@ use App\Services\EstadoResultados\Support\Treatment as T;
 class MovementClassifier
 {
     /**
+     * Versión de las reglas automáticas. Se guarda en cada corrida (estado_resultados_runs.rules_version,
+     * vía config estado_resultados.rules_version): si un periodo NO aprobado se procesó con otra
+     * versión, RulesRefreshService lo reprocesa solo (al desplegar y al abrir el ER).
+     * Súbala cada vez que cambie una regla de esta clase o de ErpOutsideClassifier.
+     */
+    public const RULES_VERSION = '2026-11-25.1';
+
+    /** Rule codes de los retiros de Dirección General / socios (debajo de la Utilidad neta). */
+    public const DG_RULES = ['retiro_dg', 'retiro_socios', 'retiro_dg_devolucion', 'erp_dg'];
+
+    /** Servicios recurrentes de Corporativo que son OPEX corporativo (contables, auditor, redes, trámites, pipas). */
+    public const CORPORATE_OPEX_PATTERN = '/SERV(ICIOS?)? CONTABLES|\bAUDITOR(IA)?\b|PAUTAS Y GENERACION DE CONTENIDO|CONTENIDO EN REDES|\bPAGO TRAMITES?\b|PIPAS? DE AGUA/';
+
+    /** Conceptos personales de DG/socios (sin «DG» en el texto) que también son retiros. */
+    public const PERSONAL_PATTERN = '/COLEGIATURA|ESCUELA|PASEADOR|VETERINARIO|JARDINERO|ALBERCA|LAVANDERIA|\bFAMILIA\b|ENTRENADOR|EQUITACION|JIUJITSU|CASA DG|RETORNO (DE )?INVERSION/';
+
+    /**
      * Reglas activas del catálogo de conceptos (ConceptCatalogService::activeRules()). El
      * procesador las carga una vez por corrida. Ganan sobre las reglas automáticas por texto,
      * nunca sobre: fuera de periodo/duplicado, traspaso entre cuentas propias, conciliación con
@@ -129,6 +146,12 @@ class MovementClassifier
             return $this->out(T::PENDIENTE, $this->suggestForCargo($concept, $kind, $m), $status, (string) $rec['message'], true);
         }
 
+        // Dirección General y socios: lo que toman es un RETIRO (debajo de la Utilidad neta), nunca
+        // OPEX. Gana sobre el catálogo salvo que la regla del catálogo nombre a DG explícitamente.
+        if (($withdrawal = $this->withdrawal($concept, $kind, $m)) !== null && ! $this->catalogMentionsDg($m)) {
+            return $withdrawal;
+        }
+
         if ($catalog = $this->fromCatalog($m)) {
             return $catalog;
         }
@@ -164,6 +187,21 @@ class MovementClassifier
         // Legacy (sin créditos cargados, o «CREDITO LEROM» sin palabra de aportación).
         if (preg_match('/DEPOSITO.*CREDITO|CREDITO (LEROM|BBVA)/', $concept)) {
             return $this->out(T::TRANSFERENCIA_INTERNA, null, 'fondeo_servicio_deuda', 'Depósito de sucursal para cubrir el servicio de deuda (LEROM/BBVA). Flujo interno, no ingreso.');
+        }
+        if ($this->hasDg($concept)) {
+            return $this->out(T::PERSONAL_SOCIOS, null, 'retiro_dg_devolucion', 'Dinero que regresa Dirección General: reduce los retiros de DG y socios (no es ingreso).');
+        }
+        if (preg_match('/^PRUEBA SPEI\b/', $concept)) {
+            return $this->out(T::BALANCE, null, 'prueba_spei', 'Prueba SPEI (centavos): validación de cuenta, fuera del ER.');
+        }
+        if (preg_match('/DEPOSITO ERRONEO|ERROR EN (EL )?DEPOSITO/', $text)) {
+            return $this->out(T::BALANCE, null, 'error_bancario', 'Depósito erróneo o su devolución: error bancario que se revierte, fuera del ER.');
+        }
+        if (preg_match('/\bPRESTAMOS?\b/', $concept) && ! preg_match('/^DESC|LEROM|BBVA|CREDITO/', $concept)) {
+            return $this->out(T::RECUPERABLE, null, 'prestamo', 'Préstamo o su devolución: cuenta por cobrar/pagar (balance), fuera del ER.');
+        }
+        if (preg_match('/^DISPERSION\b/', $concept) && ! in_array($kind, ['operativa', 'agrupado'], true)) {
+            return $this->out(T::BALANCE, null, 'dispersion_creditos', 'Dispersión de créditos (colocación): movimiento de cartera/balance, fuera del ER.');
         }
         if (preg_match('/^DESC(UENTO)?\b|DESC PRESTAMO|DESC VENTA/', $concept)) {
             return $this->out(T::RECUPERABLE, null, 'descuento_recuperado', 'Recuperación de préstamo/venta a colaborador vía descuento. Es cobro de una cuenta por cobrar, no ingreso.');
@@ -278,6 +316,23 @@ class MovementClassifier
             return $this->out(T::PUENTE_TERCEROS, null, 'poliza_puente', 'Pago de pólizas cobradas a clientes (puente a aseguradora). Mismo criterio que Radiografía: no es OPEX.');
         }
 
+        // Movimientos de balance y financieros recurrentes (25-nov-2026): nunca son OPEX.
+        if (preg_match('/^PRUEBA SPEI\b/', $concept)) {
+            return $this->out(T::BALANCE, null, 'prueba_spei', 'Prueba SPEI (centavos): validación de cuenta, fuera del ER.');
+        }
+        if (preg_match('/DEPOSITO ERRONEO|ERROR EN (EL )?DEPOSITO/', $text)) {
+            return $this->out(T::BALANCE, null, 'error_bancario', 'Devolución de un depósito erróneo: error bancario que se revierte, fuera del ER.');
+        }
+        if (preg_match('/\bPRESTAMOS?\b/', $concept)) {
+            return $this->out(T::RECUPERABLE, null, 'prestamo', 'Préstamo (o su pago/devolución): cuenta por cobrar, fuera del ER. No es nómina ni gasto.');
+        }
+        if (preg_match('/^DISPERSION\b/', $concept) && ! $isNomina && ! in_array($kind, ['operativa', 'agrupado'], true)) {
+            return $this->out(T::BALANCE, null, 'dispersion_creditos', 'Dispersión de créditos a clientes (colocación): es cartera/balance, fuera del ER.');
+        }
+        if (preg_match('/COMISION(ES)? BANCARIA/', $concept)) {
+            return $this->out(T::GASTO_FINANCIERO, null, 'comisiones_bancarias', 'Comisiones bancarias: otros gastos financieros (resultado financiero, no OPEX).');
+        }
+
         if ($kind === 'operativa' || $kind === 'agrupado') {
             if ($isNomina) {
                 return $this->out(T::CUBIERTO_RADIOGRAFIA, null, 'nomina_sucursal_noi', 'Dispersión de nómina de sucursal: el costo ya está en Nómina y Capital Humano (NOI) de Radiografía. Sumarlo otra vez lo duplicaría.');
@@ -291,8 +346,8 @@ class MovementClassifier
         }
 
         if ($kind === 'corporativo') {
-            if ($this->hasDg($concept)) {
-                return $this->out(T::PENDIENTE, $suggested, 'dg_requiere_revision', 'Movimiento de Dirección General: puede ser gasto empresarial, remuneración, CAPEX o un gasto personal. Requiere clasificación explícita.', true);
+            if (preg_match(self::CORPORATE_OPEX_PATTERN, $concept)) {
+                return $this->out(T::OPEX_CORPORATIVO, null, 'opex_corporativo_recurrente', 'Servicio recurrente de Corporativo ('.($m['concept'] ?? '').'): OPEX corporativo.');
             }
             if ($isNomina || preg_match('/\bFINIQUITO\b/', $concept)) {
                 return $this->out(T::NOMINA_CORPORATIVA, null, 'nomina_corporativa', 'Pago de nómina/finiquito del personal de Corporativo (no está en el NOI de sucursales). Reduce el EBITDA corporativo.');
@@ -317,7 +372,7 @@ class MovementClassifier
      */
     private function suggestForCargo(string $concept, string $kind, array $m): ?string
     {
-        if (preg_match('/COLEGIATURA|ESCUELA|PASEADOR|VETERINARIO|JARDINERO|LAVANDERIA|FAMILIA|ENTRENADOR|EQUITACION|JIUJITSU|CASA DG/', $concept)) {
+        if (preg_match(self::PERSONAL_PATTERN, $concept) || $this->hasDg($concept)) {
             return T::PERSONAL_SOCIOS;
         }
         if (preg_match('/COMPUTADORA|EQ(UIPO)? (DE )?COMPUTO|LAPTOP|ROUTER|MOBILIARIO|\bBYD\b|FIRMA CAR|VEHICULO|AUTOMOVIL/', $concept)) {
@@ -330,9 +385,6 @@ class MovementClassifier
             return preg_match('/FINIQUITO|\bNOM/', $concept) ? T::NOMINA_SUCURSAL : T::OPEX_SUCURSAL;
         }
         if ($kind === 'corporativo') {
-            if ($this->hasDg($concept)) {
-                return T::DG_OPERATIVO;
-            }
             if (preg_match('/COMISION/', $concept)) {
                 return T::NOMINA_CORPORATIVA;
             }
@@ -344,6 +396,44 @@ class MovementClassifier
         }
 
         return null;
+    }
+
+    /**
+     * Retiro de Dirección General / socios (CARGO no conciliado): cualquier concepto con «DG» o un
+     * gasto personal de socios (colegiatura, jardinero, alberca, familia, retorno de inversión…).
+     * En sucursal operativa, un gasto personal SIN «DG» queda en revisión. null = no aplica.
+     *
+     * @param  string  $concept  concepto normalizado
+     * @param  string  $kind  tipo de sucursal
+     * @param  array  $m  movimiento
+     * @return array{treatment:string, suggested:?string, rule:string, reason:string, review:bool}|null
+     */
+    private function withdrawal(string $concept, string $kind, array $m): ?array
+    {
+        if ($this->hasDg($concept)) {
+            return $this->out(T::PERSONAL_SOCIOS, null, 'retiro_dg', 'Dinero que toma Dirección General: no es OPEX; se resta después de la Utilidad neta.');
+        }
+        if (preg_match(self::PERSONAL_PATTERN, $concept) && ! in_array($kind, ['operativa', 'agrupado'], true)) {
+            return $this->out(T::PERSONAL_SOCIOS, null, 'retiro_socios', 'Gasto personal de socios: no es OPEX; se resta después de la Utilidad neta.');
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿La regla del catálogo que gana para el movimiento nombra a Dirección General? Entonces manda
+     * el catálogo: el usuario lo decidió explícitamente para ese concepto DG.
+     *
+     * @param  array  $m  movimiento
+     */
+    private function catalogMentionsDg(array $m): bool
+    {
+        if ($this->catalog === []) {
+            return false;
+        }
+        $hit = ConceptCatalogService::match($m, $this->catalog)['rule'];
+
+        return $hit !== null && $this->hasDg((string) ($hit['norm'] ?? ''));
     }
 
     /**

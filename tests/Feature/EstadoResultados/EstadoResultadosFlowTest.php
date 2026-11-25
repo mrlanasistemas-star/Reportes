@@ -162,11 +162,13 @@ it('CAPEX, capital de deuda y movimientos personales no reducen EBITDA; los inte
 
     expect(erMovement($d, 'PAGO 24 CREDITO LEROM')['treatment'])->toBe(T::CAPITAL_DEUDA)
         ->and($d['controls']['ebitda_corporativo'])->toBe('50000.00')
-        ->and($d['controls']['dg'])->toBe('6000.00')
-        ->and($d['controls']['ebitda_final'])->toBe('44000.00')     // sólo el DG operativo
+        // 25-nov-2026: DG y socios (colegiatura + viáticos DG) son retiros: no tocan el EBITDA.
+        ->and($d['controls']['dg'])->toBe('16339.46')
+        ->and($d['controls']['ebitda_final'])->toBe('50000.00')
+        ->and($d['results']['retiros_dg_socios'])->toBe('16339.46')
         ->and($d['results']['resultado_financiero_neto'])->toBe('-4045.00')   // con signo: gasto financiero neto
-        ->and($d['results']['ebt'])->toBe('39955.00')             // capital de deuda NO reduce EBT
-        ->and(collect($d['outside']['groups'])->pluck('key')->all())->toContain(T::CAPEX, T::CAPITAL_DEUDA, T::PERSONAL_SOCIOS);
+        ->and($d['results']['ebt'])->toBe('45955.00')             // capital de deuda NO reduce EBT; DG ya no está en el EBITDA
+        ->and(collect($d['outside']['groups'])->pluck('key')->all())->toContain(T::CAPEX, T::CAPITAL_DEUDA)->not->toContain(T::PERSONAL_SOCIOS);
 });
 
 it('un campo sin información no se asume cero: el resultado se marca preliminar; confirmar $0 lo completa', function () {

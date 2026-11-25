@@ -21,7 +21,7 @@ use App\Services\EstadoResultados\Reconciliation\EstadoResultadosExpenseReconcil
  */
 final class Dimensions
 {
-    public const VERSION = '2026-11-06.1';
+    public const VERSION = '2026-11-25.1';
 
     public const IMPORT = [
         'importado' => 'Importado y validado contra total de control',

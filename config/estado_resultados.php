@@ -1,5 +1,7 @@
 <?php
 
+use App\Services\EstadoResultados\Classification\MovementClassifier;
+
 return [
     /*
     | Importación de estados de cuenta: tamaño máximo del archivo en MB.
@@ -95,9 +97,11 @@ return [
 
     /*
     | Versión de las reglas de clasificación automática. Se guarda en cada
-    | procesamiento para saber con qué reglas se clasificó un periodo.
+    | procesamiento para saber con qué reglas se clasificó un periodo. Sale de
+    | MovementClassifier::RULES_VERSION: si un periodo no aprobado se procesó con
+    | otra versión, se reprocesa solo (RulesRefreshService).
     */
-    'rules_version' => '2026-11-06.1',
+    'rules_version' => MovementClassifier::RULES_VERSION,
 
     /*
     | Rendimiento (06-nov-2026). La base de Radiografía (lo costoso: ~3 s por periodo) se guarda

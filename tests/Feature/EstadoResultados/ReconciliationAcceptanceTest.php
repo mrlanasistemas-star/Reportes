@@ -217,7 +217,8 @@ it('gasto DG registrado en ERP de Corporativo se reclasifica (no se descuenta do
     raImport($period, F::adminXlsx([['2026-09-06', 6000.00, null, 'REQ-D1', 'REQ VIATICOS DG', 'CORPORATIVO']]));
     raProcess($period);
     $d = raBuild($period);
-    expect(raMov($d, 'VIATICOS DG', 'erp')['treatment'])->toBe(T::PENDIENTE)
+    // 25-nov-2026: el ERP de DG ya es retiro en automático.
+    expect(raMov($d, 'VIATICOS DG', 'erp')['treatment'])->toBe(T::PERSONAL_SOCIOS)
         ->and(raMov($d, 'REQ VIATICOS DG')['treatment'])->toBe(T::CONCILIADO_ERP);
 
     raClassify($period, raMov($d, 'VIATICOS DG', 'erp'), T::DG_OPERATIVO);
@@ -227,8 +228,8 @@ it('gasto DG registrado en ERP de Corporativo se reclasifica (no se descuenta do
 
     expect($d['controls']['dg'])->toBe('6000.00')
         ->and($d['controls']['opex_corporativo'])->toBe('0.00')
-        ->and($d['controls']['ebitda_final'])->toBe('44000.00')
-        ->and(raMov($d, 'VIATICOS DG', 'erp')['dimensions']['category']['key'])->toBe('opex_dg')
+        ->and($d['controls']['ebitda_final'])->toBe('50000.00')
+        ->and(raMov($d, 'VIATICOS DG', 'erp')['dimensions']['category']['key'])->toBe('retiros_dg')
         ->and(raMov($d, 'REQ VIATICOS DG')['impact']['included'])->toBeFalse()
         ->and(raFailedChecks($d))->toBe(['conciliados_reclasificados: 6000.00']);
 });

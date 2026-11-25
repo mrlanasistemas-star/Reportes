@@ -69,10 +69,11 @@ final class Treatment
         'nomina_sucursales' => 'Nómina sucursales',
         'opex_corporativo' => 'OPEX Corporativo',
         'nomina_corporativa' => 'Nómina Corporativo',
-        'opex_dg' => 'OPEX Dirección General',
         'da' => 'Depreciación y amortización',
         'financiero' => 'Financiero / no operativo',
         'isr' => 'ISR',
+        // 25-nov-2026: lo que DG y los socios toman NO es OPEX; se resta DESPUÉS de la utilidad neta.
+        'retiros_dg' => 'Retiros de Dirección General y socios',
     ];
 
     /** Tratamiento contable (dimensión independiente de la conciliación y de la línea del ER). */
@@ -85,6 +86,7 @@ final class Treatment
         'pasivo' => 'Pago de pasivo (capital de deuda)',
         'eliminacion_interna' => 'Movimiento interno (se elimina en consolidación)',
         'patrimonial' => 'Movimiento patrimonial / socios',
+        'retiro_dg_socios' => 'Retiro de Dirección General / socios (después de la utilidad)',
         'cuenta_por_cobrar' => 'Cuenta por cobrar / reintegro',
         'pasivo_terceros' => 'Pasivo de terceros (retenciones)',
         'puente_terceros' => 'Puente de terceros',
@@ -127,19 +129,21 @@ final class Treatment
             'tone' => 'success',
             'explain' => 'Remuneración del personal de Corporativo: categoría de OPEX (nómina), reduce el EBITDA.',
         ],
+        // 25-nov-2026: Dirección General y socios NO afectan el EBITDA. Lo que toman se resta al
+        // final, debajo de la Utilidad neta («Retiros de Dirección General y socios»).
         self::DG_OPERATIVO => [
-            'label' => 'Gasto DG operativo',
-            'line' => 'dg',
+            'label' => 'Retiro DG (gasto de Dirección General)',
+            'line' => 'retiros',
             'group' => 'er',
-            'tone' => 'success',
-            'explain' => 'Gasto empresarial legítimo de Dirección General: categoría de OPEX, reduce el EBITDA. Los gastos personales de socios/DG van fuera del ER.',
+            'tone' => 'danger',
+            'explain' => 'Gasto de Dirección General. No es OPEX ni toca el EBITDA: se resta al final, después de la Utilidad neta, en «Retiros de Dirección General y socios».',
         ],
         self::DG_REMUNERACION => [
-            'label' => 'Remuneración DG',
-            'line' => 'dg',
+            'label' => 'Retiro DG (remuneración)',
+            'line' => 'retiros',
             'group' => 'er',
-            'tone' => 'success',
-            'explain' => 'Remuneración laboral real de Dirección General: OPEX (nómina), reduce el EBITDA.',
+            'tone' => 'danger',
+            'explain' => 'Remuneración de Dirección General. No toca el EBITDA: se resta al final, después de la Utilidad neta, en «Retiros de Dirección General y socios».',
         ],
         self::GASTO_FINANCIERO => [
             'label' => 'Gasto financiero (intereses/comisiones)',
@@ -177,11 +181,11 @@ final class Treatment
             'explain' => 'Flujo entre cuentas o entre sucursales y Corporativo de la misma organización. No es ingreso ni gasto.',
         ],
         self::PERSONAL_SOCIOS => [
-            'label' => 'Personal / socios / CEO',
-            'line' => null,
-            'group' => 'fuera',
+            'label' => 'Retiro DG / socios',
+            'line' => 'retiros',
+            'group' => 'er',
             'tone' => 'danger',
-            'explain' => 'Movimiento personal, patrimonial o societario. No es OPEX; se controla fuera del resultado.',
+            'explain' => 'Dinero que Dirección General o los socios toman del flujo (gastos DG, personales, retorno de inversión). No es OPEX ni toca el EBITDA: se resta al final, después de la Utilidad neta.',
         ],
         self::RECUPERABLE => [
             'label' => 'Recuperable / reintegro',
@@ -195,7 +199,7 @@ final class Treatment
             'line' => null,
             'group' => 'fuera',
             'tone' => 'muted',
-            'explain' => 'Entero de retenciones o pasivos de terceros (SAT retenciones, FONACOT, pensión alimenticia). No es gasto de la empresa.',
+            'explain' => 'Movimiento de balance: retenciones o pasivos de terceros (SAT, FONACOT, pensión alimenticia), dispersión de créditos, pruebas SPEI o errores bancarios. No es ingreso ni gasto de la empresa.',
         ],
         self::PUENTE_TERCEROS => [
             'label' => 'Puente de terceros (seguros)',
@@ -255,10 +259,14 @@ final class Treatment
         ],
     ];
 
+    /** Tratamientos que son retiros de Dirección General / socios (debajo de la Utilidad neta). */
+    public const WITHDRAWALS = [self::PERSONAL_SOCIOS, self::DG_OPERATIVO, self::DG_REMUNERACION];
+
     /** Tratamientos que un usuario puede asignar manualmente. */
     public const ASSIGNABLE = [
         self::OPEX_CORPORATIVO,
         self::NOMINA_CORPORATIVA,
+        self::PERSONAL_SOCIOS,
         self::DG_OPERATIVO,
         self::DG_REMUNERACION,
         self::OPEX_SUCURSAL,
@@ -268,7 +276,6 @@ final class Treatment
         self::CAPEX,
         self::CAPITAL_DEUDA,
         self::TRANSFERENCIA_INTERNA,
-        self::PERSONAL_SOCIOS,
         self::RECUPERABLE,
         self::BALANCE,
         self::PUENTE_TERCEROS,
@@ -365,8 +372,8 @@ final class Treatment
             'nomina_sucursales' => 'nomina_sucursales',
             'opex_corporativo' => 'opex_corporativo',
             'nomina_corporativa' => 'nomina_corporativa',
-            'dg' => 'opex_dg',
             'financiero' => 'financiero',
+            'retiros' => 'retiros_dg',
             default => null,
         };
     }
@@ -380,15 +387,14 @@ final class Treatment
     public static function accounting(string $treatment): string
     {
         return match ($treatment) {
-            self::OPEX_SUCURSAL, self::NOMINA_SUCURSAL, self::OPEX_CORPORATIVO, self::NOMINA_CORPORATIVA,
-            self::DG_OPERATIVO, self::DG_REMUNERACION => 'gasto_operativo',
+            self::OPEX_SUCURSAL, self::NOMINA_SUCURSAL, self::OPEX_CORPORATIVO, self::NOMINA_CORPORATIVA => 'gasto_operativo',
+            self::DG_OPERATIVO, self::DG_REMUNERACION, self::PERSONAL_SOCIOS => 'retiro_dg_socios',
             self::GASTO_FINANCIERO => 'gasto_financiero',
             self::INGRESO_NO_OPERATIVO => 'ingreso_no_operativo',
             self::CONCILIADO_ERP, self::CUBIERTO_RADIOGRAFIA, self::CUBIERTO_NOI_CORPORATIVO => 'reconocido_en_otra_fuente',
             self::CAPEX => 'inversion',
             self::CAPITAL_DEUDA => 'pasivo',
             self::TRANSFERENCIA_INTERNA => 'eliminacion_interna',
-            self::PERSONAL_SOCIOS => 'patrimonial',
             self::RECUPERABLE => 'cuenta_por_cobrar',
             self::BALANCE => 'pasivo_terceros',
             self::PUENTE_TERCEROS => 'puente_terceros',

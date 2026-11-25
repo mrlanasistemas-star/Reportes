@@ -26,6 +26,7 @@ use App\Services\EstadoResultados\Reporting\EstadoResultadosRedactor;
 use App\Services\EstadoResultados\Reporting\EstadoResultadosReportResolver;
 use App\Services\EstadoResultados\Reporting\PeriodLockGuard;
 use App\Services\EstadoResultados\Reporting\ReportStatus;
+use App\Services\EstadoResultados\RulesRefreshService;
 use App\Services\EstadoResultados\Support\ProcessingLockedException;
 use App\Services\EstadoResultados\Support\Treatment;
 use App\Services\Pdf\PdfRenderException;
@@ -143,11 +144,17 @@ class EstadoResultadosController extends Controller
 
         try {
             $t0 = microtime(true);
+            // Reglas nuevas (25-nov-2026): si el periodo se clasificó con otra versión de reglas o
+            // de catálogo, se encola su reproceso sin acción del usuario (nunca lanza; con cola
+            // sync ya terminó y el dataset de abajo sale actualizado).
+            $autoTask = $version === null ? app(RulesRefreshService::class)->refreshIfStale($period) : null;
             // Una sola foto de Radiografía para alcances + dataset de esta petición
             // (RadiographyBaseProvider es #[Scoped]: el builder del resolver comparte la sesión).
             $response = $this->builder->session(fn () => response()->json([
                 'dataset' => $this->resolver->resolve($period, $scope, $request->user(), $version),
                 'scopes' => $this->visibleScopes($request, $this->resolver->scopes($period, $version)),
+                // Reproceso automático en curso: la pantalla espera la tarea y recarga sola.
+                'auto_refresh' => $autoTask && ! $autoTask->isFinished() ? $autoTask->toStatusArray() : null,
             ]));
             // Deja calentando en segundo plano las comparativas que la pantalla pedirá enseguida.
             if ($version === null) {

@@ -56,6 +56,9 @@ it('ejemplo de referencia: 1,000,000 − 600,000 = EBITDA 400,000 → EBIT 370,0
         'ebt' => '340000.00',                         // EBIT + resultado financiero neto
         'isr' => '100000.00',
         'utilidad_neta' => '240000.00',
+        // 25-nov-2026: retiros DG y socios debajo de la utilidad (aquí no hay).
+        'retiros_dg_socios' => '0.00',
+        'resultado_despues_retiros' => '240000.00',
     ])
         ->and($d['margins'])->toMatchArray(['ebitda' => '40.0000', 'ebit' => '37.0000', 'ebt' => '34.0000', 'neto' => '24.0000'])
         ->and($d['meta']['model']['version'])->toBe(EstadoResultadosDatasetBuilder::MODEL['version'])
@@ -63,12 +66,12 @@ it('ejemplo de referencia: 1,000,000 − 600,000 = EBITDA 400,000 → EBIT 370,0
 
     // Statement en 9 pasos, en orden; OPEX con categorías reales y sin duplicar.
     $steps = collect($d['statement'])->map(fn ($b) => [$b['step'], $b['key']])->all();
-    expect($steps)->toBe([[1, 'ingresos'], [2, 'opex'], [3, 'ebitda'], [4, 'da'], [5, 'ebit'], [6, 'financiero'], [7, 'ebt'], [8, 'isr'], [9, 'utilidad_neta']]);
+    expect($steps)->toBe([[1, 'ingresos'], [2, 'opex'], [3, 'ebitda'], [4, 'da'], [5, 'ebit'], [6, 'financiero'], [7, 'ebt'], [8, 'isr'], [9, 'utilidad_neta'], [10, 'retiros'], [11, 'resultado_despues_retiros']]);
     $opex = collect($d['statement'])->firstWhere('key', 'opex');
-    expect(collect($opex['categories'])->pluck('key')->all())->toBe(['opex_sucursales', 'nomina_sucursales', 'opex_corporativo', 'nomina_corporativa', 'dg'])
+    expect(collect($opex['categories'])->pluck('key')->all())->toBe(['opex_sucursales', 'nomina_sucursales', 'opex_corporativo', 'nomina_corporativa'])
         ->and($opex['total']['amount'])->toBe('600000.00')
         ->and(Money::str2(Money::sum(collect($opex['categories'])->pluck('total.amount')->all())))->toBe('600000.00')
-        ->and(collect($d['statement'])->where('type', 'result')->pluck('key')->all())->toBe(['ebitda', 'ebit', 'ebt', 'utilidad_neta']);
+        ->and(collect($d['statement'])->where('type', 'result')->pluck('key')->all())->toBe(['ebitda', 'ebit', 'ebt', 'utilidad_neta', 'resultado_despues_retiros']);
 
     // Resultado financiero con signo: Σ líneas = neto.
     $fin = collect($d['statement'])->firstWhere('key', 'financiero');

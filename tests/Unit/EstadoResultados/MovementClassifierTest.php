@@ -37,12 +37,15 @@ it('el pago de un crédito bancario va a capital de deuda (fuera del ER), no a g
         ->and($c['reason'])->toContain('intereses');
 });
 
-it('movimientos de Dirección General nunca se suman en automático: requieren revisión con sugerencia', function () {
+it('lo que toman Dirección General y los socios es retiro automático (debajo de la utilidad, no OPEX)', function () {
     $personal = erClassify(['concept' => 'COLEGIATURA DEBORA DG', 'cargo' => '10339.46']);
     $operativo = erClassify(['concept' => 'REQ VIATICOS DG', 'cargo' => '5000']);
+    $socios = erClassify(['concept' => 'PAGO JARDINERO', 'cargo' => '1500']);
 
-    expect($personal['treatment'])->toBe(T::PENDIENTE)->and($personal['suggested'])->toBe(T::PERSONAL_SOCIOS)
-        ->and($operativo['treatment'])->toBe(T::PENDIENTE)->and($operativo['suggested'])->toBe(T::DG_OPERATIVO);
+    expect($personal)->toMatchArray(['treatment' => T::PERSONAL_SOCIOS, 'rule' => 'retiro_dg', 'review' => false])
+        ->and($operativo['treatment'])->toBe(T::PERSONAL_SOCIOS)
+        ->and($socios['rule'])->toBe('retiro_socios')
+        ->and(T::line(T::PERSONAL_SOCIOS))->toBe('retiros');
 });
 
 it('nómina de sucursal ya está en Radiografía (NOI) y la corporativa sí suma; los préstamos nunca son nómina', function () {
@@ -52,8 +55,8 @@ it('nómina de sucursal ya está en Radiografía (NOI) y la corporativa sí suma
 
     expect($suc['treatment'])->toBe(T::CUBIERTO_RADIOGRAFIA)
         ->and($corp['treatment'])->toBe(T::NOMINA_CORPORATIVA)
-        ->and($prestamo['treatment'])->toBe(T::PENDIENTE)
-        ->and($prestamo['suggested'])->toBe(T::RECUPERABLE);
+        ->and($prestamo['treatment'])->toBe(T::RECUPERABLE)
+        ->and($prestamo['rule'])->toBe('prestamo');
 });
 
 it('un cargo conciliado con ERP no se vuelve a sumar y uno con folio y monto distinto queda en revisión', function () {
@@ -87,7 +90,7 @@ it('movimiento fuera del periodo no se clasifica en este periodo', function () {
     expect(erClassify(['in_period' => false, 'concept' => 'REQ RENTA', 'cargo' => '1000'])['treatment'])->toBe(T::FUERA_PERIODO);
 });
 
-it('ERP de Corporativo: requisición normal es OPEX corporativo; mobiliario, pólizas y DG van a revisión', function () {
+it('ERP de Corporativo: requisición normal es OPEX corporativo; mobiliario y pólizas van a revisión; DG es retiro', function () {
     $base = ['universe' => 'corporativo', 'observations' => null, 'sucursal_raw' => 'Corporativo'];
     $cls = new ErpOutsideClassifier;
 
@@ -95,6 +98,6 @@ it('ERP de Corporativo: requisición normal es OPEX corporativo; mobiliario, pó
         ->and($cls->classify($base + ['category' => 'Nómina y Capital Humano', 'concept' => 'FINIQUITO'])['treatment'])->toBe(T::NOMINA_CORPORATIVA)
         ->and($cls->classify($base + ['category' => 'Mobiliario y Equipo', 'concept' => 'EQUIPO DE COMPUTO'])['suggested'])->toBe(T::CAPEX)
         ->and($cls->classify($base + ['category' => 'Pólizas', 'concept' => 'SEGURO'])['treatment'])->toBe(T::PENDIENTE)
-        ->and($cls->classify($base + ['category' => 'Viáticos', 'concept' => 'VIATICOS DG'])['treatment'])->toBe(T::PENDIENTE)
+        ->and($cls->classify($base + ['category' => 'Viáticos', 'concept' => 'VIATICOS DG'])['treatment'])->toBe(T::PERSONAL_SOCIOS)
         ->and($cls->classify(['universe' => 'sin_sucursal', 'category' => 'Luz', 'concept' => 'X', 'observations' => null, 'sucursal_raw' => null])['treatment'])->toBe(T::PENDIENTE);
 });

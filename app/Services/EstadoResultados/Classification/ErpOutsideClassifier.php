@@ -18,8 +18,8 @@ use Illuminate\Support\Str;
 class ErpOutsideClassifier
 {
     /**
-     * Clasifica una fila ERP excluida por Radiografía. Orden: sin sucursal operativa (pendiente)
-     * → Dirección General (pendiente) → nómina (nómina corporativa) → pólizas (pendiente) →
+     * Clasifica una fila ERP excluida por Radiografía. Orden: Dirección General o gasto personal de
+     * socios (retiro, aun sin sucursal) → sin sucursal operativa (pendiente) → nómina (nómina corporativa) → pólizas (pendiente) →
      * mobiliario/equipo (posible CAPEX, pendiente) → OPEX Corporativo por defecto.
      *
      * @param  array  $erp  fila ERP (category, concept, observations, universe, sucursal_raw)
@@ -30,13 +30,14 @@ class ErpOutsideClassifier
         $category = mb_strtoupper(Str::ascii((string) $erp['category']));
         $concept = mb_strtoupper(Str::ascii((string) $erp['concept'].' '.(string) $erp['observations']));
 
+        if (preg_match('/\bDG\b|DIRECCION GENERAL/', $concept) || preg_match(MovementClassifier::PERSONAL_PATTERN, $concept)) {
+            // 25-nov-2026: lo que toman DG o los socios es un retiro (debajo de la Utilidad neta), no OPEX.
+            return $this->out(T::PERSONAL_SOCIOS, null, 'erp_dg',
+                'Requisición ERP de Dirección General / socios: retiro (no es OPEX; se resta después de la Utilidad neta).');
+        }
         if ($erp['universe'] !== 'corporativo') {
             return $this->out(T::PENDIENTE, T::OPEX_CORPORATIVO, 'erp_sin_sucursal_operativa',
                 'Registro ERP sin sucursal operativa ('.($erp['sucursal_raw'] ?: 'vacía').'). Radiografía lo excluye; confirme a qué nivel pertenece.', true);
-        }
-        if (preg_match('/\bDG\b|DIRECCION GENERAL/', $concept)) {
-            return $this->out(T::PENDIENTE, T::DG_OPERATIVO, 'erp_dg',
-                'Requisición ERP de Dirección General: confirme si es gasto empresarial, remuneración o gasto personal.', true);
         }
         if (str_contains($category, 'NOMINA')) {
             return $this->out(T::NOMINA_CORPORATIVA, null, 'erp_corporativo_nomina',

@@ -24,16 +24,16 @@ class EstadoResultadosRedactor
     public const NOMINA_SECTIONS = ['nomina_sucursales', 'nomina_corporativa'];
 
     /** Claves de sección/categoría con detalle de Dirección General. */
-    public const DG_SECTIONS = ['dg'];
+    public const DG_SECTIONS = ['dg', 'retiros'];
 
     /** Tratamientos que identifican un movimiento de nómina. */
     private const NOMINA_TREATMENTS = [T::NOMINA_SUCURSAL, T::NOMINA_CORPORATIVA];
 
     /** Tratamientos que identifican un movimiento de Dirección General. */
-    private const DG_TREATMENTS = [T::DG_OPERATIVO, T::DG_REMUNERACION];
+    private const DG_TREATMENTS = [T::DG_OPERATIVO, T::DG_REMUNERACION, T::PERSONAL_SOCIOS];
 
     /** Reglas de clasificación que identifican un movimiento de Dirección General. */
-    private const DG_RULES = ['dg_requiere_revision', 'erp_dg'];
+    private const DG_RULES = ['dg_requiere_revision', 'erp_dg', 'retiro_dg', 'retiro_socios', 'retiro_dg_devolucion'];
 
     /**
      * Aplica la redacción a un dataset según los permisos del usuario: colapsa secciones y
@@ -91,6 +91,13 @@ class EstadoResultadosRedactor
                 $kept[] = $m;
             }
             $d['movements'] = $kept;
+
+            // Retiros de DG y socios: sin `ver_dg` sólo quedan los totales (ni conceptos ni movimientos).
+            if (! $canDg && isset($d['withdrawals']) && is_array($d['withdrawals'])) {
+                $d['withdrawals']['by_concept'] = [];
+                $d['withdrawals']['items'] = [];
+                $d['withdrawals']['restricted'] = true;
+            }
 
             // Todo lo demás (validation.*, conciliation.*, outside.*, vínculos y evidencia de los
             // movimientos visibles, claves futuras del builder): se recorre completo. Conteos e
@@ -162,7 +169,7 @@ class EstadoResultadosRedactor
             return true;
         }
 
-        if (($m['dimensions']['category']['key'] ?? null) === 'opex_dg') {
+        if (in_array($m['dimensions']['category']['key'] ?? null, ['opex_dg', 'retiros_dg'], true)) {
             return true;
         }
 

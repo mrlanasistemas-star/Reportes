@@ -372,7 +372,7 @@ it('redacción: sin ver_nomina / ver_dg conserva los totales pero no el detalle'
         ->and($cats['nomina_sucursales']['amount'])->toBe('200000.00')
         ->and($cats['nomina_sucursales']['restricted'])->toBeTrue()
         ->and($cats['nomina_sucursales']['lines'])->toBe([])
-        ->and($cats['dg']['restricted'])->toBeTrue()
+        ->and($cats->has('dg'))->toBeFalse() // 25-nov-2026: DG y socios ya no son categoría de OPEX
         ->and($cats['opex_sucursales']['lines'])->not->toBe([])
         ->and($res['current']['values']['opex_total'])->toBe('600000.00');
 
