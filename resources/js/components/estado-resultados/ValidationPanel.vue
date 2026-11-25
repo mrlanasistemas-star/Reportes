@@ -171,12 +171,12 @@ function showList(opts: {
     }
 }
 
-/** Abre la lista completa de control (sin enfoque). */
+/**
+ * Abre la lista completa de control: sin enfoque, sin archivo y en «Todos» (antes conservaba el
+ * último filtro, p. ej. «Pendientes», y la lista completa parecía tener sólo pendientes).
+ */
 function openControl(): void {
-    if (control.focus.value || control.uploadId.value !== null) {
-        control.clearFocus();
-    }
-
+    control.clearFocus();
     active.value = 'control';
 }
 
@@ -292,7 +292,8 @@ const integrityCounts = computed(() => {
     };
 });
 /** Conteos de la lista de control (los mismos de los chips del modal). */
-const counts = computed(() => control.counts.value);
+/** Conteos de la tarjeta: siempre de TODO el periodo (no dependen del último enfoque abierto). */
+const counts = computed(() => control.allCounts.value);
 </script>
 
 <template>

@@ -99,6 +99,8 @@ export function useMovementControl(ctx: Ctx) {
      * (countByFilter usa matchesFilter): el número del chip = filas que muestra ese filtro.
      */
     const counts = computed(() => countByFilter(base.value));
+    /** Conteo por filtro de TODOS los movimientos del periodo (sin enfoque ni archivo): tarjeta de Validación. */
+    const allCounts = computed(() => countByFilter(ctx.movements()));
 
     /** `base` filtrado por estado y por el texto de búsqueda. */
     const filtered = computed(() => {
@@ -228,8 +230,17 @@ export function useMovementControl(ctx: Ctx) {
         void loadRemote(1);
     });
 
-    /** Cambia el filtro por estado. */
+    /**
+     * Cambia el filtro por estado. «Todos» muestra TODO el periodo: quita el enfoque (partida,
+     * validación o archivo con que se abrió la lista); antes se quedaba sólo con el enfoque y,
+     * abierto desde «Sin resolver → Ver movimientos», parecía que todo seguía «Pendiente».
+     */
     function setFilter(f: ControlFilter): void {
+        if (f === 'todos') {
+            focus.value = null;
+            uploadId.value = null;
+        }
+
         filter.value = f;
     }
 
@@ -332,6 +343,7 @@ export function useMovementControl(ctx: Ctx) {
         limit,
         focus,
         counts,
+        allCounts,
         filtered,
         visible,
         filteredAmount,
