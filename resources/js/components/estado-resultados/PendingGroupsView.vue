@@ -93,7 +93,7 @@ watch(
 
 <template>
     <div class="space-y-3 p-4">
-        <div class="flex flex-wrap items-center gap-2 text-xs">
+        <div class="flex flex-wrap items-center gap-2 text-sm">
             <span
                 class="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 font-bold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
             >
@@ -121,7 +121,7 @@ watch(
 
         <p
             v-if="pending.error.value"
-            class="rounded-lg bg-rose-50 p-2 text-xs text-rose-800 dark:bg-rose-950/30 dark:text-rose-300"
+            class="rounded-lg bg-rose-50 p-2 text-sm text-rose-800 dark:bg-rose-950/30 dark:text-rose-300"
         >
             {{ pending.error.value }}
         </p>
@@ -158,7 +158,7 @@ watch(
                             {{ g.label }}
                         </p>
                         <p
-                            class="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground"
+                            class="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground"
                         >
                             <span class="inline-flex items-center gap-0.5">
                                 <component
@@ -211,7 +211,7 @@ watch(
                     <span
                         v-for="b in g.branches.slice(0, 5)"
                         :key="b.name"
-                        class="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
+                        class="rounded-full border px-2 py-0.5 text-xs font-semibold"
                     >
                         {{ b.name }}
                         <span class="tabular-nums opacity-70">{{
@@ -220,14 +220,14 @@ watch(
                     </span>
                     <span
                         v-if="g.branches.length > 5"
-                        class="rounded-full px-2 py-0.5 text-[11px] text-muted-foreground"
+                        class="rounded-full px-2 py-0.5 text-xs text-muted-foreground"
                         >+{{ g.branches.length - 5 }}</span
                     >
                 </div>
 
                 <p
                     v-if="g.suggested"
-                    class="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 dark:text-violet-300"
+                    class="inline-flex items-center gap-1 text-xs font-semibold text-violet-700 dark:text-violet-300"
                 >
                     <Sparkles class="size-3" /> {{ g.suggested.label }}
                     <span class="opacity-70">({{ g.suggested.count }})</span>
@@ -236,7 +236,7 @@ watch(
                 <div class="mt-auto flex flex-wrap gap-2">
                     <button
                         type="button"
-                        class="inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold hover:bg-muted"
+                        class="inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-sm font-semibold hover:bg-muted"
                         :aria-expanded="expanded === g.key"
                         @click="expanded = expanded === g.key ? null : g.key"
                     >
@@ -249,7 +249,7 @@ watch(
                     <button
                         v-if="canAct"
                         type="button"
-                        class="inline-flex items-center gap-1 rounded-xl bg-foreground px-2.5 py-1.5 text-xs font-semibold text-background"
+                        class="inline-flex items-center gap-1 rounded-xl bg-foreground px-2.5 py-1.5 text-sm font-semibold text-background"
                         @click="classify(g)"
                     >
                         <Tags class="size-3.5" /> Clasificar grupo
@@ -258,7 +258,7 @@ watch(
 
                 <ul
                     v-if="expanded === g.key"
-                    class="divide-y rounded-xl border text-xs"
+                    class="divide-y rounded-xl border text-sm"
                 >
                     <li
                         v-for="m in rowsOf(g)"
