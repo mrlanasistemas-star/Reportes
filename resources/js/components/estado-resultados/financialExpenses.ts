@@ -367,6 +367,8 @@ export interface CreditContributions {
 export interface CreditStatus {
     status:
         | 'vigente'
+        /** Antes del primer pago de la tabla (first_payment; document_balance = monto del crédito). */
+        | 'por_iniciar'
         | 'sin_pagos_programados'
         | 'pago_no_localizado'
         | 'pago_incompleto'
@@ -374,6 +376,12 @@ export interface CreditStatus {
     reason: string;
     last_scheduled: { number: number | null; date: string } | null;
     next_payment: {
+        number: number | null;
+        date: string;
+        payment: string;
+    } | null;
+    /** Primer pago de la tabla (para «Aún no inicia»). */
+    first_payment?: {
         number: number | null;
         date: string;
         payment: string;
@@ -431,6 +439,11 @@ export interface AllocationCredit {
         contributed: string;
         /** Participación 0..1 (6 decimales). */
         share: string;
+        /** Le toca: debía pagar del periodo × participación (al centavo). */
+        due: string;
+        /** Aportó − le toca (negativo = debe). */
+        difference: string;
+        standing: BranchStanding;
         interest: string;
         commission: string;
         assigned: string;
@@ -442,7 +455,18 @@ export interface AllocationCredit {
         interest: string;
         commission: string;
         principal_informative: string;
+        /** Servicio de deuda sin sucursal (aportaciones pendientes o todo si no hubo aportaciones). */
+        due: string;
+        contributed: string;
+        difference: string;
         reason: string | null;
+    };
+    /** Servicio de deuda del periodo: Σ due + unassigned.due = expected (ok). */
+    debt_service: {
+        expected: string;
+        contributed: string;
+        difference: string;
+        ok: boolean;
     };
     check: {
         assigned_plus_unassigned: string;
@@ -457,10 +481,26 @@ export interface FinancialAllocation {
     analytic: true;
     note: string;
     credits: AllocationCredit[];
-    by_branch: Array<{ branch: string; assigned: string }>;
+    by_branch: Array<{
+        branch: string;
+        assigned: string;
+        interest: string;
+        due: string;
+        contributed: string;
+        difference: string;
+        standing: BranchStanding;
+    }>;
     unassigned: string;
+    unassigned_due: string;
+    unassigned_contributed: string;
     recognized: string;
+    /** Σ debía pagar / aportado de todos los créditos. */
+    expected: string;
+    contributed: string;
 }
+
+/** Situación de una sucursal frente a lo que le toca. */
+export type BranchStanding = 'cubierto' | 'a_favor' | 'debe';
 
 /** Detalle que el backend agrega a los ajustes de interés (AdjustmentService::forPeriod). */
 export interface AdjustmentAmortization {

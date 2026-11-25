@@ -21,6 +21,7 @@ final class ErFinancingSection
     /** Rótulos del estado derivado de cada crédito. */
     public const CREDIT_STATUS = [
         'vigente' => 'Vigente',
+        'por_iniciar' => 'Aún no inicia',
         'pago_no_localizado' => 'Pago no localizado',
         'pago_incompleto' => 'Faltan pagos por cubrir',
         'sin_pagos_programados' => 'Sin pagos programados',
@@ -56,6 +57,20 @@ final class ErFinancingSection
     ];
 
     public const NOTE = 'Capital fuera del ER; distribución por sucursal es gerencial y no duplica el gasto consolidado.';
+
+    /** Regla del reparto por sucursal (mismo texto en web, PDF, Excel y comando). */
+    public const BRANCH_NOTE = 'A cada sucursal le toca lo que se debía pagar en el periodo × su participación en las aportaciones (al centavo). Diferencia = aportó − le toca: negativo, debe; positivo, a favor.';
+
+    /** Rótulo de la situación de una sucursal frente a lo que le toca. */
+    public static function standingLabel(?string $standing): string
+    {
+        return match ($standing) {
+            'debe' => 'Debe',
+            'a_favor' => 'A favor',
+            'cubierto' => 'Cubierto',
+            default => '—',
+        };
+    }
 
     public function __construct(private readonly FinancialExpenseService $service) {}
 
@@ -101,7 +116,7 @@ final class ErFinancingSection
                 'creditor' => $c['credit']['creditor'],
                 'periodicity' => $c['credit']['periodicity'],
                 'coverage' => $c['coverage']['status'],
-                'coverage_label' => self::COVERAGE[$c['coverage']['status']] ?? $c['coverage']['status'],
+                'coverage_label' => $c['status']['status'] === 'por_iniciar' ? 'Aún no inicia' : (self::COVERAGE[$c['coverage']['status']] ?? $c['coverage']['status']),
                 'coverage_reason' => $c['coverage']['reason'],
                 'covered' => (bool) $c['covered'],
                 'totals' => $c['totals'],
@@ -115,10 +130,12 @@ final class ErFinancingSection
                 'status_reason' => $c['status']['reason'],
                 'status_tone' => match ($c['status']['status']) {
                     'vigente' => 'ok',
+                    'por_iniciar' => 'mute',
                     'pago_no_localizado', 'pago_incompleto', 'posible_liquidacion' => 'bad',
                     default => 'warn',
                 },
                 'next_payment' => $c['status']['next_payment'],
+                'first_payment' => $c['status']['first_payment'] ?? null,
                 'document_balance' => $c['status']['document_balance'],
                 'adjustment' => $c['adjustment'],
                 'commission_adjustment' => $c['commission_adjustment'],
@@ -126,14 +143,23 @@ final class ErFinancingSection
             ];
         }
 
-        // Barras por sucursal: asignado por sucursal (allocation.by_branch) y «Sin asignar».
-        $bars = array_map(fn ($b) => ['label' => $b['branch'], 'value' => $b['assigned'], 'unassigned' => false], array_values($allocation['by_branch'] ?? []));
-        usort($bars, fn ($a, $b) => (float) $b['value'] <=> (float) $a['value']);
-        $bars[] = ['label' => 'Sin asignar', 'value' => (string) ($allocation['unassigned'] ?? '0.00'), 'unassigned' => true];
-        $recognized = (float) ($allocation['recognized'] ?? 0);
+        // Barras por sucursal del SERVICIO DE DEUDA: le toca / aportó / diferencia (allocation.by_branch)
+        // y «Sin asignar» (aportaciones sin sucursal, o todo si no hubo aportaciones). value = diferencia.
+        $bars = array_map(fn ($b) => [
+            'label' => $b['branch'], 'value' => $b['difference'], 'due' => $b['due'], 'contributed' => $b['contributed'],
+            'interest' => $b['interest'], 'assigned' => $b['assigned'], 'standing' => $b['standing'], 'unassigned' => false,
+        ], array_values($allocation['by_branch'] ?? []));
+        usort($bars, fn ($a, $b) => [(float) $a['value'], $a['label']] <=> [(float) $b['value'], $b['label']]);
+        $unDue = (string) ($allocation['unassigned_due'] ?? '0.00');
+        $unContrib = (string) ($allocation['unassigned_contributed'] ?? '0.00');
+        if ((float) $unDue !== 0.0 || (float) $unContrib !== 0.0 || (float) ($allocation['unassigned'] ?? 0) !== 0.0) {
+            $bars[] = ['label' => 'Sin asignar', 'value' => bcsub($unContrib, $unDue, 2), 'due' => $unDue, 'contributed' => $unContrib,
+                'interest' => null, 'assigned' => (string) ($allocation['unassigned'] ?? '0.00'), 'standing' => null, 'unassigned' => true];
+        }
+        $expected = (float) ($allocation['expected'] ?? 0);
         foreach ($bars as &$bar) {
-            // Participación del total reconocido (presentación del mismo dato; no es otro cálculo de negocio).
-            $bar['share'] = $recognized > 0 ? round((float) $bar['value'] / $recognized * 100, 2) : null;
+            // Parte de lo que se debía pagar (presentación del mismo dato; no es otro cálculo de negocio).
+            $bar['share'] = $expected > 0 ? round((float) $bar['due'] / $expected * 100, 2) : null;
         }
         unset($bar);
 
@@ -145,7 +171,7 @@ final class ErFinancingSection
             'unassigned_contributions' => $panel['contributions_unassigned'],
             'allocation' => $allocation,
             'bars' => $bars,
-            'allocation_ok' => collect($allocation['credits'] ?? [])->every(fn ($c) => (bool) ($c['check']['ok'] ?? false)),
+            'allocation_ok' => collect($allocation['credits'] ?? [])->every(fn ($c) => (bool) ($c['check']['ok'] ?? false) && (bool) ($c['debt_service']['ok'] ?? true)),
             'commissions_in_result' => (bool) $panel['summary']['commissions_in_financial_result'],
             'locked' => $panel['locked'],
             'informative' => $snapshot,

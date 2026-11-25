@@ -62,6 +62,10 @@ const STATUS: Record<string, { label: string; cls: string }> = {
         label: 'Vigente',
         cls: 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-900',
     },
+    por_iniciar: {
+        label: 'Aún no inicia',
+        cls: 'bg-sky-100 text-sky-800 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-900',
+    },
     sin_pagos_programados: {
         label: 'Sin pagos programados',
         cls: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700',
@@ -84,6 +88,8 @@ const status = computed(() => props.credit.status ?? null);
 const statusMeta = computed(() =>
     status.value ? (STATUS[status.value.status] ?? null) : null,
 );
+/** Antes del primer pago de la tabla. */
+const notStarted = computed(() => status.value?.status === 'por_iniciar');
 const isSimulation = computed(
     () =>
         (status.value?.document_kind ?? props.credit.upload?.document_kind) ===
@@ -94,7 +100,7 @@ const isSimulation = computed(
 const coverageChip = computed(() => {
     const c = props.credit.coverage;
 
-    if (!c || c.status === 'completo') {
+    if (!c || c.status === 'completo' || notStarted.value) {
         return null;
     }
 
@@ -198,7 +204,12 @@ const sections = computed(() => {
         badge?: string;
     }> = [];
 
-    if (props.credit.creditor_payments) {
+    const cp = props.credit.creditor_payments;
+
+    if (
+        cp &&
+        !(notStarted.value && !cp.rows.length && !cp.unscheduled.length)
+    ) {
         list.push({
             key: 'pagos',
             label: 'Pagos del periodo',
@@ -286,6 +297,48 @@ const sections = computed(() => {
                 @click="open.archivo = true"
                 >Subir</Button
             >
+        </div>
+
+        <!-- Aún no inicia: primer pago y monto del crédito según la tabla -->
+        <div
+            v-else-if="notStarted && status"
+            class="flex flex-wrap items-center gap-3 rounded-xl border border-sky-200 bg-sky-50/70 p-3 dark:border-sky-900 dark:bg-sky-950/30"
+        >
+            <CalendarClock
+                class="size-7 shrink-0 text-sky-600 dark:text-sky-400"
+            />
+            <div class="min-w-0 flex-1">
+                <p
+                    class="text-sm font-extrabold text-sky-900 dark:text-sky-200"
+                >
+                    Aún no inicia
+                </p>
+                <p
+                    v-if="status.first_payment"
+                    class="text-xs text-sky-900/80 tabular-nums dark:text-sky-200/80"
+                >
+                    Primer pago <b>{{ dmy(status.first_payment.date) }}</b> ·
+                    <b>{{ mxn(status.first_payment.payment) }}</b>
+                </p>
+            </div>
+            <div class="text-right">
+                <p
+                    class="flex items-center justify-end gap-1 text-[11px] text-muted-foreground"
+                >
+                    Saldo según tabla
+                    <FinInfoTip
+                        :text="status.document_balance_note"
+                        label="No es saldo bancario"
+                    />
+                </p>
+                <p class="text-base font-extrabold tabular-nums">
+                    {{
+                        status.document_balance
+                            ? mxn(status.document_balance)
+                            : '—'
+                    }}
+                </p>
+            </div>
         </div>
 
         <!-- Indicadores -->

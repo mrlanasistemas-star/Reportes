@@ -41,6 +41,7 @@ class CuadreCreditosCommand extends Command
         $panel = $service->panel($period);
         $only = $this->option('credito');
         $money = fn ($v) => '$'.number_format((float) $v, 2);
+        $signed = fn ($v) => ((float) $v < 0 ? '-' : '').'$'.number_format(abs((float) $v), 2);
 
         $this->info('Periodo '.$period->id.' · '.($period->name ?? '').' · '.$period->start_date->format('d/m/Y').' – '.$period->end_date->format('d/m/Y'));
 
@@ -54,6 +55,13 @@ class CuadreCreditosCommand extends Command
 
             if (! ($c['has_table'] ?? false)) {
                 $this->warn('  Sin tabla de amortización cargada.');
+
+                continue;
+            }
+            if ($c['status']['status'] === 'por_iniciar' && (float) ($c['contributions']['total'] ?? 0) === 0.0) {
+                $fp = $c['status']['first_payment'];
+                $this->line('  Aún no inicia · primer pago '.CarbonImmutable::parse($fp['date'])->format('d/m/Y').' · '.$money($fp['payment'])
+                    .' · monto del crédito según la tabla '.($c['status']['document_balance'] !== null ? $money($c['status']['document_balance']) : '—'));
 
                 continue;
             }
@@ -88,14 +96,28 @@ class CuadreCreditosCommand extends Command
                 ], $cp['rows']));
             }
 
-            $branches = collect($contrib['by_branch'] ?? [])->map(fn ($b) => [$b['branch'], $money($b['amount'])])->all();
-            if ($branches !== []) {
-                $this->line('  Aportaciones por sucursal (identificadas):');
-                $this->table(['Sucursal', 'Importe'], $branches);
+            $al = collect($panel['allocation']['credits'] ?? [])->firstWhere('credit_key', $key);
+            if ($al && ((float) $al['debt_service']['expected'] > 0 || (float) $al['debt_service']['contributed'] > 0)) {
+                $withInt = (float) $al['recognized']['interest'] > 0;
+                $rows = array_map(fn ($b) => array_merge([
+                    $b['branch'], number_format((float) $b['share'] * 100, 1).'%', $money($b['due']), $money($b['contributed']), $signed($b['difference']),
+                    ErFinancingSection::standingLabel($b['standing']),
+                ], $withInt ? [$money($b['interest'])] : []), $al['branches']);
+                $u = $al['unassigned'];
+                if ((float) $u['due'] > 0 || (float) $u['contributed'] > 0) {
+                    $rows[] = array_merge(['Sin asignar', '', $money($u['due']), $money($u['contributed']), $signed($u['difference']), 'Sin sucursal'], $withInt ? [$money($u['interest'])] : []);
+                }
+                $this->line('  Por sucursal (le toca = debía pagar × participación en aportaciones):');
+                $this->table(array_merge(['Sucursal', 'Particip.', 'Le toca', 'Aportó', 'Diferencia', 'Situación'], $withInt ? ['Interés'] : []), $rows);
+                $this->line('  Total: le toca '.$money($al['debt_service']['expected']).' · aportó '.$money($al['debt_service']['contributed']).' · diferencia '.$signed($al['debt_service']['difference']).($al['debt_service']['ok'] ? ' · cuadra al centavo' : ' · NO CUADRA'));
+                if ($u['reason']) {
+                    $this->line('  '.$u['reason']);
+                }
             }
         }
         $this->newLine();
         $this->line(ErFinancingSection::APPLIED_NOTE);
+        $this->line(ErFinancingSection::BRANCH_NOTE);
 
         return self::SUCCESS;
     }

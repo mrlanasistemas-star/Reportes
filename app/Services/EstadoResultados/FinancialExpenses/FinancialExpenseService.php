@@ -213,7 +213,7 @@ class FinancialExpenseService
         }
         if ($first > $end) {
             return ['status' => self::FUERA_CALENDARIO, 'position' => 'antes',
-                'reason' => 'Sin pagos programados todavía: el primer pago de la tabla es el '.$fmt($first).'.'];
+                'reason' => 'Aún no inicia: el primer pago de la tabla es el '.$fmt($first).'.'];
         }
         if ($first <= $start && $last >= $end) {
             return ['status' => self::COBERTURA_COMPLETA, 'position' => null, 'reason' => 'La tabla cubre todo el periodo.'];
@@ -515,6 +515,11 @@ class FinancialExpenseService
      * «sin asignar» al final). La parte de aportaciones pendientes, o todo si no hubo aportaciones,
      * queda en `sin_asignar` con motivo. Nunca partes iguales. Invariante: Σ asignado + sin_asignar
      * = reconocido. El capital se atribuye con la misma participación sólo como dato INFORMATIVO.
+     *
+     * SERVICIO DE DEUDA (25-nov-2026): con la misma participación se reparte lo que se DEBÍA
+     * PAGAR en el periodo (application.expected) ⇒ por sucursal `due` («le toca»), `contributed`
+     * («aportó»), `difference` = aportó − le toca y `standing` (cubierto · a_favor · debe). Sin
+     * aportaciones con sucursal, todo queda en «sin asignar». Σ due + unassigned.due = expected.
      *
      * @return array<string,mixed>
      */
@@ -1082,7 +1087,8 @@ class FinancialExpenseService
     }
 
     /**
-     * Estado DERIVADO del crédito en el periodo (no se guarda): vigente · sin_pagos_programados
+     * Estado DERIVADO del crédito en el periodo (no se guarda): vigente · por_iniciar (antes del primer\r
+     * pago: primer pago y monto del crédito según la tabla) · sin_pagos_programados
      * (fuera de calendario) · posible_liquidacion (ya pasó el último pago previsto y no hay cargos
      * al acreedor; NO es «liquidado», que sólo lo confirma un usuario) · pago_no_localizado (pagos
      * vencidos y NADA aplicado: ni aportaciones ni cargos al acreedor) · pago_incompleto (hubo
@@ -1097,15 +1103,20 @@ class FinancialExpenseService
         $end = $period->end_date->format('Y-m-d');
         $upload = $credit->currentUpload;
         $all = $upload ? EstadoResultadosAmortizationRow::query()->where('upload_id', $upload->id)->orderBy('payment_date')->orderBy('id')
-            ->get(['payment_number', 'payment_date', 'payment_total', 'balance']) : collect();
+            ->get(['payment_number', 'payment_date', 'payment_total', 'principal', 'balance']) : collect();
+        $first = $all->first();
         $last = $all->last();
         $next = $all->first(fn ($r) => $r->payment_date->format('Y-m-d') > $end);
         $atEnd = $all->filter(fn ($r) => $r->payment_date->format('Y-m-d') <= $end)->last();
         $hasCargos = (float) $payments['totals']['detected'] > 0;
         $dueShort = Money::of($application['due_shortfall'])->isPositive();
         $coverage = $calc['coverage'];
+        $notStarted = $coverage['status'] === self::FUERA_CALENDARIO && $coverage['position'] === 'antes' && $first !== null;
+        // Antes del primer pago: el saldo es el monto del crédito (saldo de la fila 1 + su capital).
+        $opening = $notStarted && $first->balance !== null ? Money::of($first->balance)->plus(Money::of($first->principal ?? 0)) : null;
 
         [$status, $reason] = match (true) {
+            $notStarted => ['por_iniciar', 'Aún no inicia: primer pago el '.$first->payment_date->format('d/m/Y').' por '.self::fmt(Money::str2($first->payment_total ?? 0)).'.'],
             $coverage['status'] === self::FUERA_CALENDARIO && $coverage['position'] === 'despues' && ! $hasCargos => ['posible_liquidacion', 'Ya pasó el último pago previsto ('.$last?->payment_date->format('d/m/Y').') y no hay cargos al acreedor en el periodo. Confirma con el acreedor antes de darlo por liquidado.'],
             $coverage['status'] === self::FUERA_CALENDARIO && $coverage['position'] === 'despues' => ['sin_pagos_programados', 'La tabla ya no tiene pagos programados, pero hay cargos al acreedor en el periodo: revisa si la tabla está completa.'],
             $coverage['status'] === self::FUERA_CALENDARIO => ['sin_pagos_programados', $coverage['reason']],
@@ -1120,9 +1131,12 @@ class FinancialExpenseService
             'reason' => $reason,
             'last_scheduled' => $last ? ['number' => $last->payment_number, 'date' => $last->payment_date->format('Y-m-d')] : null,
             'next_payment' => $next ? ['number' => $next->payment_number, 'date' => $next->payment_date->format('Y-m-d'), 'payment' => Money::str2($next->payment_total ?? 0)] : null,
+            'first_payment' => $first ? ['number' => $first->payment_number, 'date' => $first->payment_date->format('Y-m-d'), 'payment' => Money::str2($first->payment_total ?? 0)] : null,
             'remaining_payments' => $all->filter(fn ($r) => $r->payment_date->format('Y-m-d') > $end)->count(),
-            'document_balance' => $atEnd?->balance === null ? null : Money::str2($atEnd->balance),
-            'document_balance_note' => 'Saldo según la tabla del acreedor al cierre del periodo (no es saldo bancario; en LEROM incluye comisión e IVA por pagar).',
+            'document_balance' => $opening !== null ? Money::str2($opening) : ($atEnd?->balance === null ? null : Money::str2($atEnd->balance)),
+            'document_balance_note' => $opening !== null
+                ? 'Monto del crédito según la tabla (aún no hay pagos; no es saldo bancario).'
+                : 'Saldo según la tabla del acreedor al cierre del periodo (no es saldo bancario; en LEROM incluye comisión e IVA por pagar).',
             'document_kind' => $calc['upload']['document_kind'] ?? null,
         ];
     }
@@ -1140,7 +1154,11 @@ class FinancialExpenseService
         $credits = [];
         $byBranch = [];
         $unassignedTotal = 0;
+        $unassignedDue = 0;
+        $unassignedContributed = 0;
         $recognizedTotal = 0;
+        $dueTotal = 0;
+        $contributedTotal = 0;
         foreach ($items as $item) {
             $key = $item['model']->key;
             $rec = $item['recognized'];
@@ -1167,6 +1185,9 @@ class FinancialExpenseService
             $cost = self::largestRemainder($recCents, $w);
             $interest = self::largestRemainder($intCents, $w);
             $capital = self::largestRemainder($capCents, $w);
+            // Servicio de deuda del periodo («debía pagar» de la tabla) repartido con la MISMA participación.
+            $dueCents = Money::cents($item['application']['expected'] ?? '0.00');
+            $due = self::largestRemainder($dueCents, $w);
             $sumW = array_sum($w);
 
             $rows = [];
@@ -1175,28 +1196,49 @@ class FinancialExpenseService
                     'branch' => $branch,
                     'contributed' => Money::str2(BigDecimal::ofUnscaledValue($cents, 2)),
                     'share' => (string) BigDecimal::of($cents)->dividedBy($sumW, 6, RoundingMode::HALF_UP),
+                    'due' => self::c2($due[$branch]),
+                    'difference' => self::c2($cents - $due[$branch]),
+                    'standing' => self::standing($cents - $due[$branch]),
                     'interest' => self::c2($interest[$branch]),
                     'commission' => self::c2($cost[$branch] - $interest[$branch]),
                     'assigned' => self::c2($cost[$branch]),
                     'principal_informative' => self::c2($capital[$branch]),
                 ];
-                $byBranch[$branch] = ($byBranch[$branch] ?? 0) + $cost[$branch];
+                $byBranch[$branch]['assigned'] = ($byBranch[$branch]['assigned'] ?? 0) + $cost[$branch];
+                $byBranch[$branch]['interest'] = ($byBranch[$branch]['interest'] ?? 0) + $interest[$branch];
+                $byBranch[$branch]['due'] = ($byBranch[$branch]['due'] ?? 0) + $due[$branch];
+                $byBranch[$branch]['contributed'] = ($byBranch[$branch]['contributed'] ?? 0) + $cents;
             }
             $un = $cost[self::SIN_ASIGNAR] ?? 0;
+            $unDue = $due[self::SIN_ASIGNAR] ?? 0;
             $unassignedTotal += $un;
+            $unassignedDue += $unDue;
+            $unassignedContributed += $pendingCents;
             $recognizedTotal += $recCents;
+            $dueTotal += $dueCents;
+            $contributedTotal += Money::cents($contrib['total']);
             $credits[] = [
                 'credit_key' => $key,
                 'credit_name' => $item['model']->name,
                 'recognized' => ['interest' => $rec['interest'], 'commission' => $rec['commission'], 'total' => $rec['total']],
                 'principal_informative' => self::c2($capCents),
                 'contributions' => ['identified' => $contrib['identified'], 'pending' => $contrib['pending'], 'total' => $contrib['total']],
+                // Servicio de deuda: lo que le toca pagar a cada sucursal vs. lo que aportó.
+                'debt_service' => [
+                    'expected' => self::c2($dueCents),
+                    'contributed' => $contrib['total'],
+                    'difference' => self::c2(Money::cents($contrib['total']) - $dueCents),
+                    'ok' => array_sum($due) === $dueCents,
+                ],
                 'branches' => $rows,
                 'unassigned' => [
                     'amount' => self::c2($un),
                     'interest' => self::c2($interest[self::SIN_ASIGNAR] ?? 0),
                     'commission' => self::c2($un - ($interest[self::SIN_ASIGNAR] ?? 0)),
                     'principal_informative' => self::c2($capital[self::SIN_ASIGNAR] ?? 0),
+                    'due' => self::c2($unDue),
+                    'contributed' => self::c2($pendingCents),
+                    'difference' => self::c2($pendingCents - $unDue),
                     'reason' => $reason,
                 ],
                 'check' => ['assigned_plus_unassigned' => self::c2(array_sum($cost)), 'recognized' => $rec['total'], 'ok' => array_sum($cost) === $recCents],
@@ -1207,12 +1249,30 @@ class FinancialExpenseService
         return [
             'method' => $method,
             'analytic' => true,
-            'note' => 'Prorrateo gerencial: no crea ajustes ni modifica el Estado de Resultados consolidado ni Radiografía. El capital atribuido es sólo informativo.',
+            'note' => 'Reparto gerencial por participación en las aportaciones: a cada sucursal le toca esa parte de lo que se debía pagar en el periodo (y del interés, si lo hay). No crea ajustes ni modifica el Estado de Resultados consolidado ni Radiografía.',
             'credits' => $credits,
-            'by_branch' => array_map(fn ($b, $c) => ['branch' => $b, 'assigned' => self::c2($c)], array_keys($byBranch), array_values($byBranch)),
+            'by_branch' => array_map(fn ($b, $c) => [
+                'branch' => $b, 'assigned' => self::c2($c['assigned']), 'interest' => self::c2($c['interest']),
+                'due' => self::c2($c['due']), 'contributed' => self::c2($c['contributed']),
+                'difference' => self::c2($c['contributed'] - $c['due']), 'standing' => self::standing($c['contributed'] - $c['due']),
+            ], array_keys($byBranch), array_values($byBranch)),
             'unassigned' => self::c2($unassignedTotal),
+            'unassigned_due' => self::c2($unassignedDue),
+            'unassigned_contributed' => self::c2($unassignedContributed),
             'recognized' => self::c2($recognizedTotal),
+            'expected' => self::c2($dueTotal),
+            'contributed' => self::c2($contributedTotal),
         ];
+    }
+
+    /** Situación de una sucursal frente a lo que le toca: cubierto (exacto) · a_favor · debe. */
+    private static function standing(int $diffCents): string
+    {
+        return match (true) {
+            $diffCents < 0 => 'debe',
+            $diffCents > 0 => 'a_favor',
+            default => 'cubierto',
+        };
     }
 
     /**

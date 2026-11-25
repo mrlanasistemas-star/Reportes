@@ -569,13 +569,27 @@ $head = function () use ($logo, $m, $rep, $period) {
         <p class="note">{{ \App\Services\EstadoResultados\Export\ErFinancingSection::APPLIED_NOTE }}</p>
 
         <div class="chart" style="margin-top:8px">
-            <h4 class="ct">Distribución gerencial del costo financiero por sucursal</h4>
-            <div class="cs">Asignado por participación en las aportaciones de cada sucursal al crédito · total reconocido {{ $money($fin['allocation']['recognized'] ?? null) }} · sin asignar {{ $money($fin['allocation']['unassigned'] ?? null) }}@if(! $fin['allocation_ok']) · <b style="color:#b91c1c">el reparto no cuadra: revisar</b>@endif</div>
+            <h4 class="ct">Distribución por sucursal · servicio de deuda del periodo</h4>
+            <div class="cs">Diferencia = aportó − le toca (rojo: debe · verde: a favor) · debía pagar {{ $money($fin['allocation']['expected'] ?? null) }} · aportado {{ $money($fin['allocation']['contributed'] ?? null) }}@if(! $fin['allocation_ok']) · <b style="color:#b91c1c">el reparto no cuadra: revisar</b>@endif</div>
             {!! $finSvg !!}
-            @foreach(collect($fin['credits'])->filter(fn ($c) => $c['allocation'] && (float) $c['allocation']['unassigned']['amount'] > 0) as $c)
-                <p class="note">{{ $c['name'] }}: {{ $money($c['allocation']['unassigned']['amount']) }} sin asignar. {{ $c['allocation']['unassigned']['reason'] }}</p>
-            @endforeach
         </div>
+        @foreach(collect($fin['credits'])->filter(fn ($c) => $c['allocation'] && ((float) $c['allocation']['debt_service']['expected'] > 0 || (float) $c['allocation']['debt_service']['contributed'] > 0)) as $c)
+            @php $al = $c['allocation']; $withInt = (float) $al['recognized']['interest'] > 0; @endphp
+            <h3>{{ $c['name'] }} por sucursal <span class="hint">debía pagar {{ $money($al['debt_service']['expected']) }} · aportado {{ $money($al['debt_service']['contributed']) }}</span></h3>
+            <table class="fin-table">
+                <thead><tr><th>Sucursal</th><th class="n">Participación</th><th class="n">Le toca</th><th class="n">Aportó</th><th class="n">Diferencia</th><th>Situación</th>@if($withInt)<th class="n">Interés</th>@endif</tr></thead>
+                <tbody>
+                @foreach($al['branches'] as $b)
+                    <tr><td>{{ $b['branch'] }}</td><td class="n">{{ \App\Services\EstadoResultados\Export\ErFormat::pct((float) $b['share'] * 100) }}</td><td class="n">{{ $money($b['due']) }}</td><td class="n">{{ $money($b['contributed']) }}</td><td class="n {{ $neg($b['difference']) }}">{{ $money($b['difference']) }}</td><td><span class="badge {{ $b['standing'] === 'debe' ? 'bad' : 'ok' }}">{{ \App\Services\EstadoResultados\Export\ErFinancingSection::standingLabel($b['standing']) }}</span></td>@if($withInt)<td class="n">{{ $money($b['interest']) }}</td>@endif</tr>
+                @endforeach
+                @if((float) $al['unassigned']['due'] > 0 || (float) $al['unassigned']['contributed'] > 0)
+                    <tr><td>Sin asignar</td><td></td><td class="n">{{ $money($al['unassigned']['due']) }}</td><td class="n">{{ $money($al['unassigned']['contributed']) }}</td><td class="n {{ $neg($al['unassigned']['difference']) }}">{{ $money($al['unassigned']['difference']) }}</td><td><span class="badge mute">Sin sucursal</span></td>@if($withInt)<td class="n">{{ $money($al['unassigned']['interest']) }}</td>@endif</tr>
+                @endif
+                </tbody>
+            </table>
+            @if($al['unassigned']['reason'])<p class="note">{{ $al['unassigned']['reason'] }}</p>@endif
+        @endforeach
+        <p class="note">{{ \App\Services\EstadoResultados\Export\ErFinancingSection::BRANCH_NOTE }}</p>
         <div class="fin-note"><b>Nota:</b> {{ $fin['note'] }}</div>
     @endif
 </section>

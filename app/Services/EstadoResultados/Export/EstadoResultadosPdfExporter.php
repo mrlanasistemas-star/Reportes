@@ -93,11 +93,12 @@ class EstadoResultadosPdfExporter
     {
         $fin = $this->financing->build($dataset);
         $svg = $fin && ! isset($fin['error'])
+            // Diferencia por sucursal (aportó − le toca): verde a favor / cubierto, rojo debe, gris sin asignar.
             ? ErSvgCharts::hbars(array_map(fn ($b) => [
                 'label' => $b['label'].($b['share'] !== null ? ' · '.ErFormat::pct($b['share']) : ''),
                 'value' => $b['value'],
-                'color' => $b['unassigned'] ? '#94A3B8' : '#0F766E',
-            ], $fin['bars']), 'MXN', 'Sin costo financiero reconocido en el periodo.')
+                'color' => $b['unassigned'] ? '#94A3B8' : ((float) $b['value'] < 0 ? '#DC2626' : '#059669'),
+            ], $fin['bars']), 'MXN', 'Cada sucursal aportó exactamente lo que le toca.')
             : null;
 
         return ['fin' => $fin, 'finSvg' => $svg];

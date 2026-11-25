@@ -2064,9 +2064,9 @@ class EstadoResultadosExcelExporter
             $this->money($ws, "M{$r}", $c['application']['difference']);
             $this->put($ws, "N{$r}", $c['status_label']);
             $this->pill($ws, "N{$r}", match ($c['status_tone']) {
-                'ok' => 'ECFDF5', 'bad' => 'FEF2F2', default => 'FFFBEB'
+                'ok' => 'ECFDF5', 'bad' => 'FEF2F2', 'mute' => 'F1F5F9', default => 'FFFBEB'
             }, match ($c['status_tone']) {
-                'ok' => '065F46', 'bad' => '991B1B', default => '92400E'
+                'ok' => '065F46', 'bad' => '991B1B', 'mute' => '475569', default => '92400E'
             });
             $this->put($ws, "O{$r}", $c['status_reason']);
             $this->rowLine($ws, "B{$r}:O{$r}");
@@ -2113,14 +2113,16 @@ class EstadoResultadosExcelExporter
             ), 'Sin aportaciones de sucursales a créditos en el periodo.');
 
         // 5 · Distribución gerencial por sucursal (no duplica el gasto consolidado).
-        $r = $this->finTable($ws, $r, 'DISTRIBUCIÓN GERENCIAL POR SUCURSAL', ['CRÉDITO', 'SUCURSAL', 'APORTADO', 'PARTICIPACIÓN', 'INTERÉS', 'COMISIÓN', 'ASIGNADO', 'CAPITAL (INFO.)', 'MOTIVO'],
+        $r = $this->finTable($ws, $r, 'DISTRIBUCIÓN POR SUCURSAL (SERVICIO DE DEUDA)', ['CRÉDITO', 'SUCURSAL', 'PARTICIPACIÓN', 'LE TOCA', 'APORTÓ', 'DIFERENCIA', 'SITUACIÓN', 'INTERÉS', 'COMISIÓN', 'CAPITAL (INFO.)', 'MOTIVO'],
             collect($fin['allocation']['credits'] ?? [])->flatMap(fn ($a) => array_merge(
-                array_map(fn ($b) => [$a['credit_name'], $b['branch'], ['money', $b['contributed']], ['share', $b['share']], ['money', $b['interest']],
-                    ['money', $b['commission']], ['money', $b['assigned']], ['money', $b['principal_informative']], ''], $a['branches']),
-                [[$a['credit_name'], 'Sin asignar', null, null, ['money', $a['unassigned']['interest']], ['money', $a['unassigned']['commission']],
-                    ['money', $a['unassigned']['amount']], ['money', $a['unassigned']['principal_informative']], (string) ($a['unassigned']['reason'] ?? '')]],
-            ))->all(), 'Sin costo financiero que distribuir.');
-        $this->note($ws, 'B'.($r - 1), trim(($fin['allocation']['note'] ?? '').' '.ErFinancingSection::NOTE));
+                array_map(fn ($b) => [$a['credit_name'], $b['branch'], ['share', $b['share']], ['money', $b['due']], ['money', $b['contributed']], ['money', $b['difference']],
+                    ErFinancingSection::standingLabel($b['standing']), ['money', $b['interest']], ['money', $b['commission']], ['money', $b['principal_informative']], ''], $a['branches']),
+                (float) $a['unassigned']['due'] > 0 || (float) $a['unassigned']['contributed'] > 0 || (float) $a['unassigned']['amount'] > 0
+                    ? [[$a['credit_name'], 'Sin asignar', null, ['money', $a['unassigned']['due']], ['money', $a['unassigned']['contributed']], ['money', $a['unassigned']['difference']],
+                        'Sin sucursal', ['money', $a['unassigned']['interest']], ['money', $a['unassigned']['commission']], ['money', $a['unassigned']['principal_informative']], (string) ($a['unassigned']['reason'] ?? '')]]
+                    : [],
+            ))->all(), 'Sin pagos ni aportaciones que distribuir en el periodo.');
+        $this->note($ws, 'B'.($r - 1), trim(ErFinancingSection::BRANCH_NOTE.' '.ErFinancingSection::NOTE));
         $r++;
 
         // 6 · Diferencias (pagos vs. tabla, captura del ER vs. tabla y cuadre del reparto).
@@ -2133,21 +2135,24 @@ class EstadoResultadosExcelExporter
                 isset($allocBy[$c['key']]) ? (($allocBy[$c['key']]['check']['ok'] ?? false) ? '✓ Sí' : '✗ No') : '—',
             ], $fin['credits']), 'Sin créditos.');
 
-        // Gráfica nativa: asignado por sucursal + «Sin asignar» (datos en columnas Q:R agrupadas y ocultas).
+        // Gráfica nativa: le toca vs. aportó por sucursal + «Sin asignar» (datos en Q:S agrupadas y ocultas).
         $this->put($ws, 'Q9', 'Sucursal');
-        $this->put($ws, 'R9', 'Asignado');
-        $this->headerRow($ws, 'Q9:R9');
+        $this->put($ws, 'R9', 'Le toca');
+        $this->put($ws, 'S9', 'Aportó');
+        $this->headerRow($ws, 'Q9:S9');
         foreach (array_values($fin['bars']) as $i => $bar) {
             $this->put($ws, 'Q'.(10 + $i), $bar['label']);
-            $this->money($ws, 'R'.(10 + $i), $bar['value']);
+            $this->money($ws, 'R'.(10 + $i), $bar['due']);
+            $this->money($ws, 'S'.(10 + $i), $bar['contributed']);
         }
-        $dLast = 9 + count($fin['bars']);
-        $this->label($ws, "B{$r}", 'GRÁFICA · DISTRIBUCIÓN GERENCIAL POR SUCURSAL');
+        $dLast = max(10, 9 + count($fin['bars']));
+        $this->label($ws, "B{$r}", 'GRÁFICA · LE TOCA VS. APORTÓ POR SUCURSAL');
         $top = $r + 1;
         $bottom = $top + max(14, count($fin['bars']) + 6);
-        ErExcelCharts::add($ws, DataSeries::TYPE_BARCHART, 'Costo financiero asignado por sucursal', 'Q', 9, 10, $dLast, [['col' => 'R', 'color' => self::TEAL]],
+        ErExcelCharts::add($ws, DataSeries::TYPE_BARCHART, 'Servicio de deuda por sucursal: le toca vs. aportó', 'Q', 9, 10, $dLast,
+            [['col' => 'R', 'color' => 'F59E0B'], ['col' => 'S', 'color' => '059669']],
             "B{$top}", "H{$bottom}", '"$"#,##0', DataSeries::GROUPING_CLUSTERED, true);
-        ErExcelCharts::hideColumns($ws, 'P', 'R');
+        ErExcelCharts::hideColumns($ws, 'P', 'S');
         $ws->getPageSetup()->setPrintArea("A1:O{$bottom}");
     }
 

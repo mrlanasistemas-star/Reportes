@@ -7,6 +7,7 @@ use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
 use App\Services\EstadoResultados\Classification\MovementClassifier;
 use App\Services\EstadoResultados\EstadoResultadosProcessor;
 use App\Services\EstadoResultados\Export\ErFinancingSection;
+use App\Services\EstadoResultados\Export\EstadoResultadosPdfExporter;
 use App\Services\EstadoResultados\FinancialExpenses\AmortizationUploadService;
 use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use App\Services\EstadoResultados\Import\EstadoResultadosImportException;
@@ -47,7 +48,7 @@ function gfcImport(string $key, string $path, string $name = 'tabla.csv', ?strin
 }
 
 /** Periodo de 4 semanas (ingresos 1,000,000 · OPEX 600,000); ajustes en $0 salvo los de LEROM. */
-function gfcPeriod(string $start = '2026-09-01', string $end = '2026-09-28'): Period
+function gfcPeriod(string $start = '2026-09-01', string $end = '2026-09-28', array $open = ['intereses_lerom', 'comisiones_financieras']): Period
 {
     $p = F::period($start, $end);
     F::fakeRadiographyByPeriod([$p->id => ['CORDOBA' => [
@@ -56,7 +57,7 @@ function gfcPeriod(string $start = '2026-09-01', string $end = '2026-09-28'): Pe
         'nomina_total' => 200000.00,
     ]]]);
     foreach (array_keys(AdjustmentService::CONCEPTS) as $concept) {
-        if (! in_array($concept, ['intereses_lerom', 'comisiones_financieras'], true)) {
+        if (! in_array($concept, $open, true)) {
             app(AdjustmentService::class)->save($p, 'CONSOLIDADO', $concept, AdjustmentService::CONFIRMADO_CERO, null, 'prueba', null);
         }
     }
@@ -203,7 +204,7 @@ function gfcLeromAbrilCsv(): string
 
 it('aplicado = máx(aportaciones, pagos al acreedor) en FIFO: abril cubre 12 pagos, 1,111.56 del 13.º y faltan 103,345.03; el ER no cambia', function () {
     config(['estado_resultados.gastos_financieros.comisiones_en_resultado_financiero' => false]);
-    $branches = ['CORDOBA', 'ATLIXCO', 'TULANCINGO', 'PUEBLA', 'OAXACA', 'XALAPA', 'ORIZABA', 'TEHUACAN', 'HUAUCHINANGO', 'MORELIA', 'VERACRUZ'];
+    $branches = ['CORDOBA', 'ATLIXCO', 'ATLACOMULCO', 'CUERNAVACA', 'HUAMANTLA', 'IXTLAHUACA', 'MIACATLAN', 'ORIZABA', 'SAN LUIS POTOSI', 'TLAXCALA', 'TULA'];
     foreach ($branches as $b) {
         F::branch($b);
     }
@@ -240,6 +241,18 @@ it('aplicado = máx(aportaciones, pagos al acreedor) en FIFO: abril cubre 12 pag
         ->and($panel['summary'])->toMatchArray(['applied_payment' => '180180.00', 'expected_payment' => '283525.03', 'shortfall' => '103345.03',
             'financial_cost' => '0.00', 'ebt_effect' => '0.00', 'unreconciled' => ['count' => 7, 'amount' => '103345.03']]);
 
+    // Reparto automático del SERVICIO DE DEUDA: 11 × 1/11 de $283,525.03 ⇒ $25,775.00 (los 3
+    // centavos sobrantes a las 3 primeras por orden); aportó $16,380 ⇒ debe ≈ $9,395. Cuadra exacto.
+    $alloc = collect($panel['allocation']['credits'])->firstWhere('credit_key', 'lerom');
+    $by = collect($alloc['branches'])->keyBy('branch');
+    expect($alloc['debt_service'])->toMatchArray(['expected' => '283525.03', 'contributed' => '180180.00', 'difference' => '-103345.03', 'ok' => true])
+        ->and($alloc['recognized']['total'])->toBe('0.00') // sin interés: el costo financiero es $0, pero el reparto sí aplica
+        ->and(collect($alloc['branches'])->reduce(fn ($s, $b) => bcadd($s, $b['due'], 2), '0'))->toBe('283525.03')
+        ->and($by['ATLIXCO'])->toMatchArray(['due' => '25775.01', 'contributed' => '16380.00', 'difference' => '-9395.01', 'standing' => 'debe', 'interest' => '0.00'])
+        ->and($by['ORIZABA'])->toMatchArray(['due' => '25775.00', 'contributed' => '16380.00', 'difference' => '-9395.00', 'standing' => 'debe'])
+        ->and($alloc['unassigned'])->toMatchArray(['due' => '0.00', 'contributed' => '0.00'])
+        ->and(collect($panel['allocation']['by_branch'])->firstWhere('branch', 'ORIZABA'))->toMatchArray(['due' => '25775.00', 'difference' => '-9395.00']);
+
     // Sin aportaciones, el aplicado son los pagos al acreedor (no se suman ambos).
     [, $onlyPaid] = FinancialExpenseService::applyFunds($pays, ['total' => '0.00']);
     expect($onlyPaid)->toMatchArray(['basis' => 'pagos_acreedor', 'applied' => '45045.00', 'covered_count' => 3, 'partial_count' => 1]);
@@ -247,15 +260,106 @@ it('aplicado = máx(aportaciones, pagos al acreedor) en FIFO: abril cubre 12 pag
     // Exportación: mismas cifras.
     $fin = app(ErFinancingSection::class)->build(['meta' => ['scope' => ['consolidated' => true], 'period' => ['id' => $p->id]]]);
     $c = collect($fin['credits'])->firstWhere('key', 'lerom');
-    expect($c['application']['applied'])->toBe('180180.00')->and($c['status_label'])->toBe('Faltan pagos por cubrir');
+    expect($c['application']['applied'])->toBe('180180.00')->and($c['status_label'])->toBe('Faltan pagos por cubrir')
+        ->and($c['allocation']['debt_service']['expected'])->toBe('283525.03')
+        ->and($fin['allocation_ok'])->toBeTrue()
+        ->and(collect($fin['bars'])->firstWhere('label', 'ORIZABA'))->toMatchArray(['due' => '25775.00', 'contributed' => '16380.00', 'value' => '-9395.00'])
+        ->and(collect($fin['bars'])->pluck('label'))->not->toContain('Sin asignar');
 
     // Comando por fecha: elige el periodo de 4 semanas sobre el semanal y lista candidatos.
     $this->artisan('estado-resultados:cuadre-creditos', ['periodo' => '2026-04-15', '--credito' => 'lerom'])
         ->expectsOutputToContain('Periodo '.$p->id)
+        ->expectsOutputToContain('cuadra al centavo')
         ->expectsOutputToContain('Varios periodos contienen el 15/04/2026')
         ->expectsOutputToContain('$180,180.00')
         ->expectsOutputToContain('$103,345.03')
         ->expectsOutputToContain('Cubierto con aportaciones')
+        ->expectsOutputToContain('Le toca')
+        ->expectsOutputToContain('$25,775.00')
+        ->expectsOutputToContain('-$9,395.01') // línea de ATLACOMULCO (la de $25,775.00 ya la consume la expectativa anterior)
         ->assertSuccessful();
     $this->artisan('estado-resultados:cuadre-creditos', ['periodo' => (string) $weekly->id])->assertSuccessful();
+});
+
+/** Tabla BBVA sintética: primer pago 02/06/2026 (interés 7,724), monto 1,860,000 (saldo de la fila 1). */
+function gfcBbvaCsv(): string
+{
+    $dir = storage_path('framework/testing/er');
+    is_dir($dir) || mkdir($dir, 0775, true);
+    $path = $dir.'/'.uniqid('bbva_', true).'.csv';
+    file_put_contents($path, "Periodo,Fecha,Pago a Capital,Interés del Periodo,IVA,Pago fijo sin IVA,Pago Mensual Total,Saldo Insoluto\n"
+        ."1,02/06/2026,0,7724,1235.84,7724,8959.84,1860000\n2,02/07/2026,42916,23173,3707.68,66089,69796.68,1817084\n");
+
+    return $path;
+}
+
+it('BBVA antes del primer pago: «Aún no inicia», primer pago y monto del crédito según la tabla', function () {
+    config(['estado_resultados.gastos_financieros.comisiones_en_resultado_financiero' => false]);
+    $p = gfcPeriod('2026-03-30', '2026-04-26', ['intereses_lerom', 'intereses_bbva', 'comisiones_financieras']);
+    gfcImport('bbva', gfcBbvaCsv(), 'bbva.csv', 'definitivo');
+
+    $panel = app(FinancialExpenseService::class)->panel($p);
+    $bbva = collect($panel['credits'])->firstWhere('credit.key', 'bbva');
+    expect($bbva['status'])->toMatchArray(['status' => 'por_iniciar', 'document_balance' => '1860000.00',
+        'first_payment' => ['number' => 1, 'date' => '2026-06-02', 'payment' => '8959.84']])
+        ->and($bbva['status']['reason'])->toContain('Aún no inicia')->toContain('02/06/2026')->toContain('$8,959.84')
+        ->and($bbva['coverage']['reason'])->toContain('Aún no inicia')
+        ->and($bbva['recognized']['interest'])->toBe('0.00');
+
+    $fin = app(ErFinancingSection::class)->build(['meta' => ['scope' => ['consolidated' => true], 'period' => ['id' => $p->id]]]);
+    expect(collect($fin['credits'])->firstWhere('key', 'bbva'))->toMatchArray(['status_label' => 'Aún no inicia', 'coverage_label' => 'Aún no inicia', 'status_tone' => 'mute']);
+
+    $this->artisan('estado-resultados:cuadre-creditos', ['periodo' => (string) $p->id, '--credito' => 'bbva'])
+        ->expectsOutputToContain('Aún no inicia · primer pago 02/06/2026 · $8,959.84 · monto del crédito según la tabla $1,860,000.00')
+        ->assertSuccessful();
+});
+
+it('BBVA usa la misma lógica automática que LEROM: cargo y aportaciones se aplican solos y el interés de la tabla entra al EBT', function () {
+    config(['estado_resultados.gastos_financieros.comisiones_en_resultado_financiero' => false]);
+    $p = gfcPeriod('2026-05-25', '2026-06-21', ['intereses_lerom', 'intereses_bbva', 'comisiones_financieras']);
+    G::import($p, F::adminXlsx([
+        ['2026-06-02', 8959.84, null, 'S/R', 'PAGO CREDITO BBVA', 'CORPORATIVO'],
+        ['2026-05-29', null, 3000.00, null, 'DEPOSITO CREDITO BBVA', 'CORDOBA'],
+        ['2026-05-29', null, 2000.00, null, 'DEPOSITO CREDITO BBVA', 'ATLIXCO'],
+    ]));
+    app(EstadoResultadosProcessor::class)->process($p);
+    $before = app(EstadoResultadosDatasetBuilder::class)->build($p);
+    gfcImport('bbva', gfcBbvaCsv(), 'bbva.csv', 'definitivo');
+
+    // Interés de la tabla ⇒ ajuste del ER sin captura manual; sólo baja el EBT (no EBITDA ni EBIT).
+    $d = app(EstadoResultadosDatasetBuilder::class)->build($p);
+    expect(gfcAdj($d, 'intereses_bbva'))->toMatchArray(['state' => 'capturado', 'amount' => '7724.00', 'origin' => 'tabla_amortizacion'])
+        ->and($d['results']['ebitda'])->toBe($before['results']['ebitda'])
+        ->and($d['results']['ebit'])->toBe($before['results']['ebit'])
+        ->and(bcsub($before['results']['ebt'], $d['results']['ebt'], 2))->toBe('7724.00');
+
+    $panel = app(FinancialExpenseService::class)->panel($p);
+    $bbva = collect($panel['credits'])->firstWhere('credit.key', 'bbva');
+    expect($bbva['coverage']['status'])->toBe('parcial') // la tabla inicia dentro del periodo
+        ->and($bbva['creditor_payments']['rows'][0])->toMatchArray(['number' => 1, 'status' => 'conciliado', 'coverage' => 'cubierto', 'applied' => '8959.84'])
+        ->and($bbva['contributions'])->toMatchArray(['identified' => '5000.00', 'pending' => '0.00'])
+        ->and($bbva['application'])->toMatchArray(['expected' => '8959.84', 'contributed' => '5000.00', 'paid_to_creditor' => '8959.84',
+            'applied' => '8959.84', 'basis' => 'pagos_acreedor', 'covered_count' => 1, 'shortfall' => '0.00'])
+        ->and($bbva['status']['status'])->toBe('vigente')
+        ->and($bbva['recognized']['interest'])->toBe('7724.00')
+        ->and($panel['summary'])->toMatchArray(['interest_recognized' => '7724.00', 'financial_cost' => '7724.00', 'ebt_effect' => '-7724.00']);
+
+    // Mismo reparto por sucursal que LEROM (60 / 40): le toca, aportó, diferencia e interés.
+    $alloc = collect($panel['allocation']['credits'])->firstWhere('credit_key', 'bbva');
+    expect(collect($alloc['branches'])->keyBy('branch')->map(fn ($b) => [$b['due'], $b['contributed'], $b['difference'], $b['standing'], $b['interest']])->all())
+        ->toBe(['ATLIXCO' => ['3583.94', '2000.00', '-1583.94', 'debe', '3089.60'], 'CORDOBA' => ['5375.90', '3000.00', '-2375.90', 'debe', '4634.40']])
+        ->and($alloc['debt_service']['ok'])->toBeTrue()
+        ->and($alloc['check']['ok'])->toBeTrue();
+
+    // PDF: misma tabla por sucursal (le toca / aportó / diferencia / interés).
+    $html = app(EstadoResultadosPdfExporter::class)->html(app(EstadoResultadosDatasetBuilder::class)->build($p));
+    expect($html)->toContain('BBVA por sucursal')->toContain('Le toca')->toContain('5,375.90')->toContain('4,634.40');
+
+    // Solo con aportaciones (sin cargo) el pago queda parcial; sin nada, sin cubrir.
+    $noCargo = $bbva['creditor_payments'];
+    $noCargo['totals']['detected'] = '0.00';
+    [$partial] = FinancialExpenseService::applyFunds($noCargo, ['total' => '5000.00']);
+    [$none] = FinancialExpenseService::applyFunds($noCargo, ['total' => '0.00']);
+    expect($partial['rows'][0])->toMatchArray(['coverage' => 'parcial', 'applied' => '5000.00', 'shortfall' => '3959.84'])
+        ->and($none['rows'][0]['coverage'])->toBe('sin_cubrir');
 });
