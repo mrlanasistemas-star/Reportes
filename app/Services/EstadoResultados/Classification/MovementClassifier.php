@@ -216,8 +216,9 @@ class MovementClassifier
         }
         $credit = $matched[0]['name'];
         if ($branch === '' || ! in_array($kind, ['operativa', 'agrupado'], true)) {
-            return $this->out(T::PENDIENTE, T::TRANSFERENCIA_INTERNA, FinancialExpenseService::RULE_APORTACION_SUGERIDA,
-                'Aportación para el crédito '.$credit.' sin sucursal identificada ('.(($m['sucursal_raw'] ?? '') ?: 'vacía').'). Indica qué sucursal aportó.'.$flow, true);
+            // Se clasifica solo (nunca queda pendiente): sin sucursal cuenta en «Sin asignar» del prorrateo.
+            return $this->out(T::TRANSFERENCIA_INTERNA, null, FinancialExpenseService::RULE_APORTACION,
+                'Aportación para el crédito '.$credit.' sin sucursal identificada; cuenta como «Sin asignar» en el prorrateo.'.$flow);
         }
 
         return $this->out(T::TRANSFERENCIA_INTERNA, null, FinancialExpenseService::RULE_APORTACION,

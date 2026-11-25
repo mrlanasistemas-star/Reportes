@@ -55,7 +55,7 @@ const showHistory = ref(false);
 /** Carga vigente de la tabla, o null si aún no hay. */
 const up = computed(() => props.credit.upload);
 /** Tipo de documento que se enviará con la próxima carga. */
-const kind = ref<DocumentKind>(up.value?.document_kind ?? 'simulacion');
+const kind = ref<DocumentKind>(up.value?.document_kind ?? 'definitivo');
 
 const KINDS: Array<{ key: DocumentKind; label: string }> = [
     { key: 'simulacion', label: 'Simulación' },

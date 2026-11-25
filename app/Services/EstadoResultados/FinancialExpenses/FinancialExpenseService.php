@@ -1190,10 +1190,10 @@ class FinancialExpenseService
         return max(0, (int) config('estado_resultados.gastos_financieros.ventana_dias_atraso', 10));
     }
 
-    /** ¿La comisión financiera reduce el EBT? (criterio pendiente de confirmar por Finanzas). */
+    /** ¿La comisión financiera reduce el EBT? (no: solo intereses, criterio definido 25-nov-2026). */
     public static function commissionsInResult(): bool
     {
-        return (bool) config('estado_resultados.gastos_financieros.comisiones_en_resultado_financiero', true);
+        return (bool) config('estado_resultados.gastos_financieros.comisiones_en_resultado_financiero', false);
     }
 
     private static function allocationMethod(): string

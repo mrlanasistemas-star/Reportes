@@ -14,6 +14,7 @@ use Tests\Support\EstadoResultadosFixtures as F;
  * única), sólo en el consolidado. Datos 100 % SINTÉTICOS.
  */
 it('el Excel consolidado trae la hoja «Financiamientos» con los totales del servicio; la de sucursal no', function () {
+    config(['estado_resultados.gastos_financieros.comisiones_en_resultado_financiero' => true]);
     F::branch('CORDOBA');
     F::branch('CORPORATIVO');
     $p = F::period('2026-09-01', '2026-09-28');

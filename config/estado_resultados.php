@@ -137,10 +137,9 @@ return [
         'tolerancia_importe_banco' => env('ER_AMORTIZACION_TOLERANCIA_IMPORTE', '1.00'),
         // Ventana (días) para marcar un pago como atrasado / adelantado fuera de la tolerancia.
         'ventana_dias_atraso' => (int) env('ER_AMORTIZACION_VENTANA_ATRASO', 10),
-        // Comisión financiera de la tabla (LEROM: comisión por apertura prorrateada) como línea
-        // separada del resultado financiero (reduce EBT). CRITERIO PENDIENTE DE CONFIRMAR POR
-        // FINANZAS: en false la comisión se muestra sólo como dato informativo y no toca el EBT.
-        'comisiones_en_resultado_financiero' => (bool) env('ER_COMISIONES_EN_RESULTADO_FINANCIERO', true),
+        // Criterio definido (25-nov-2026): el resultado financiero toma SOLO intereses. La comisión
+        // de la tabla (LEROM: apertura prorrateada) se muestra como dato informativo y no toca el EBT.
+        'comisiones_en_resultado_financiero' => (bool) env('ER_COMISIONES_EN_RESULTADO_FINANCIERO', false),
         // Prorrateo gerencial del costo financiero por sucursal (analítico, no toca el ER).
         'prorrateo' => [
             'metodo' => env('ER_PRORRATEO_GASTOS_FINANCIEROS', 'aportaciones'),

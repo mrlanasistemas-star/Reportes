@@ -92,7 +92,7 @@ export function useFinancialExpenses(ctx: Ctx) {
     async function upload(
         credit: CreditPeriod,
         file: File,
-        kind: DocumentKind = 'simulacion',
+        kind: DocumentKind = 'definitivo',
     ): Promise<void> {
         const rules = data.value?.rules;
         const ext = file.name.split('.').pop()?.toLowerCase() ?? '';

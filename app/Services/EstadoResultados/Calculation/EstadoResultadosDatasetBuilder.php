@@ -364,7 +364,7 @@ class EstadoResultadosDatasetBuilder
             $this->adjLine($adj['intereses_lerom']),
             $this->adjLine($adj['otros_intereses']),
             // Comisiones financieras (LEROM): línea separada; criterio pendiente de Finanzas (config).
-            ...(config('estado_resultados.gastos_financieros.comisiones_en_resultado_financiero', true) ? [$this->adjLine($adj['comisiones_financieras'])] : []),
+            ...(config('estado_resultados.gastos_financieros.comisiones_en_resultado_financiero', false) ? [$this->adjLine($adj['comisiones_financieras'])] : []),
             $this->adjLine($adj['otros_gastos_financieros']),
             $this->line('fin_bancos', 'Gastos financieros clasificados desde bancos', $finBancos, 'Estados de cuenta · clasificación'),
         ];

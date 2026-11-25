@@ -25,14 +25,14 @@ class CargarTablasCreditoCommand extends Command
     protected $signature = 'estado-resultados:cargar-tablas-credito
         {--lerom= : Ruta del CSV/XLSX de la tabla LEROM}
         {--bbva= : Ruta del CSV/XLSX de la tabla BBVA}
-        {--definitivo : Marcar las tablas como documento definitivo (por omisión: simulación)}
+        {--simulacion : Marcar las tablas como simulación (por omisión: definitivo)}
         {--reprocesar=* : ID(s) de periodo a reprocesar después de cargar}';
 
     protected $description = 'Carga las tablas de amortización LEROM/BBVA y reprocesa periodos del Estado de Resultados';
 
     public function handle(AmortizationUploadService $uploads, EstadoResultadosProcessor $processor): int
     {
-        $kind = $this->option('definitivo') ? 'definitivo' : 'simulacion';
+        $kind = $this->option('simulacion') ? 'simulacion' : 'definitivo';
         $ok = true;
 
         foreach (['lerom', 'bbva'] as $key) {

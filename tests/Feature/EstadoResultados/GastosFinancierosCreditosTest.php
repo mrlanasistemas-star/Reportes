@@ -18,6 +18,8 @@ use Tests\Support\EstadoResultadosGovernanceFixtures as G;
  * gerencial (24-nov-2026). Datos 100 % SINTÉTICOS.
  */
 beforeEach(function () {
+    // Estas pruebas cubren también el modo «comisión en EBT» (por omisión: solo intereses).
+    config(['estado_resultados.gastos_financieros.comisiones_en_resultado_financiero' => true]);
     F::branch('CORDOBA');
     F::branch('ATLIXCO');
     F::branch('CORPORATIVO');
@@ -73,7 +75,7 @@ it('lee LEROM (comisión separada, NUNCA interés) y BBVA; rechaza PDF', functio
         ->and($u->total_interest)->toBe('0.00')
         ->and($u->total_commission)->toBe('600.00')
         ->and($u->total_commission_vat)->toBe('96.00')
-        ->and($u->document_kind)->toBe('simulacion')
+        ->and($u->document_kind)->toBe('definitivo')
         ->and(collect($u->warnings)->pluck('code')->all())->not->toContain('pago_no_cuadra');
 
     $path = storage_path('framework/testing/er/'.uniqid('bbva_', true).'.csv');
@@ -89,7 +91,7 @@ it('lee LEROM (comisión separada, NUNCA interés) y BBVA; rechaza PDF', functio
     expect(fn () => gfcImport('lerom', $path, 'simulador.pdf'))->toThrow(EstadoResultadosImportException::class, 'No se aceptan tablas de amortización en PDF');
 });
 
-it('DEPOSITO LEROM de sucursal es aportación; PAGO LEROM es capital de deuda; sin sucursal o ambiguo queda pendiente', function () {
+it('DEPOSITO LEROM de sucursal es aportación; PAGO LEROM es capital de deuda; sin sucursal se clasifica solo (Sin asignar); ambiguo queda pendiente', function () {
     $c = app(MovementClassifier::class)->useCredits(app(FinancialExpenseService::class)->classifierCredits());
     $base = ['in_period' => true, 'observations' => null, 'bank_reference' => '', 'cargo' => '0', 'abono' => '4095.00'];
 
@@ -100,7 +102,7 @@ it('DEPOSITO LEROM de sucursal es aportación; PAGO LEROM es capital de deuda; s
 
     expect($ok)->toMatchArray(['treatment' => T::TRANSFERENCIA_INTERNA, 'rule' => 'aportacion_credito', 'review' => false])
         ->and($ok['reason'])->toContain('Aportación de CORDOBA para el crédito LEROM')
-        ->and($noBranch)->toMatchArray(['treatment' => T::PENDIENTE, 'suggested' => T::TRANSFERENCIA_INTERNA, 'rule' => 'aportacion_credito_sugerida', 'review' => true])
+        ->and($noBranch)->toMatchArray(['treatment' => T::TRANSFERENCIA_INTERNA, 'suggested' => null, 'rule' => 'aportacion_credito', 'review' => false])
         ->and($noCreditor['rule'])->toBe('aportacion_credito_sugerida')
         ->and($pay)->toMatchArray(['treatment' => T::CAPITAL_DEUDA, 'rule' => 'servicio_deuda']);
 });

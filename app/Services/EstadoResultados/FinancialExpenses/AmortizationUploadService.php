@@ -90,7 +90,7 @@ class AmortizationUploadService
     public function importPath(EstadoResultadosCredit $credit, string $absolutePath, string $originalName, ?int $userId, ?string $notes = null, ?int $reportedSize = null, ?string $documentKind = null): array
     {
         $this->validateFile($absolutePath, $originalName, $reportedSize);
-        $kind = in_array($documentKind, self::DOCUMENT_KINDS, true) ? $documentKind : self::SIMULACION;
+        $kind = in_array($documentKind, self::DOCUMENT_KINDS, true) ? $documentKind : self::DEFINITIVO;
         $ext = mb_strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
         $hash = hash_file('sha256', $absolutePath) ?: '';
 
