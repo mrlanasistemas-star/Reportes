@@ -106,14 +106,14 @@ const notComparableWhy = computed(
 /** La comparativa sigue cargando y aún no hay datos. */
 const loading = computed(() => !!props.comparisonLoading && !props.comparison);
 
-/** Márgenes EBITDA, EBIT y neto con su paso, valor y texto cuando no hay valor. */
+/** Márgenes EBITDA, EBIT, neto y (consolidado) después de retiros, con su paso, valor y texto cuando no hay valor. */
 const margins = computed(() => {
     const m = props.dataset.margins;
     const noIsr = props.dataset.results.isr === null;
     const empty = (fallback: string) =>
         noIncome.value ? 'Sin ingresos' : fallback;
 
-    return [
+    const list = [
         {
             key: 'margen_ebitda',
             step: 'ebitda',
@@ -136,6 +136,19 @@ const margins = computed(() => {
             empty: empty(noIsr ? 'Pendiente de ISR' : 'Pendiente'),
         },
     ];
+
+    // Sólo consolidado: margen después de restar los retiros de DG y socios (rojo si es negativo).
+    if (m.despues_retiros != null) {
+        list.push({
+            key: 'margen_despues_retiros',
+            step: 'resultado_despues_retiros',
+            label: 'Después de retiros',
+            value: m.despues_retiros,
+            empty: empty('Pendiente'),
+        });
+    }
+
+    return list;
 });
 
 /** Explicación de por qué falta un margen según su texto vacío. */
@@ -278,7 +291,12 @@ const select = (k: string) => emit('select', k);
 
                 <!-- Márgenes sobre ingresos -->
                 <div
-                    class="mt-auto grid grid-cols-3 gap-1 border-t pt-3 sm:gap-3"
+                    class="mt-auto grid gap-1 border-t pt-3 sm:gap-3"
+                    :class="
+                        margins.length > 3
+                            ? 'grid-cols-2 sm:grid-cols-4'
+                            : 'grid-cols-3'
+                    "
                     role="group"
                     aria-label="Márgenes sobre ingresos"
                 >

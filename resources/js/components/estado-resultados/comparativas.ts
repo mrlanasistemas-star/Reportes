@@ -94,6 +94,8 @@ export interface CompRow {
     reservation?: Reason | null;
     complete: { current: boolean; previous: boolean };
     centralized?: boolean;
+    /** Concepto de Dirección General sin permiso `ver_dg`: se ve el total, no el detalle. */
+    restricted?: boolean;
 }
 
 /** Comparación de dos periodos con sus renglones y las categorías de OPEX. */

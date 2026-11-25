@@ -78,8 +78,9 @@ it('reproduce el caso de referencia del modelo de un solo EBITDA y la cascada co
             'ingresos_operativos' => '1000000.00', 'opex_total' => '600000.00', 'ebitda' => '400000.00',
             'depreciacion_amortizacion' => '30000.00', 'ebit' => '370000.00', 'resultado_financiero_neto' => '-30000.00',
             'ebt' => '340000.00', 'isr' => '100000.00', 'utilidad_neta' => '240000.00',
+            'retiros_dg_socios' => '0.00', 'resultado_despues_retiros' => '240000.00',
         ])
-        ->and($out['current']['margins'])->toBe(['margen_ebitda' => '40.00', 'margen_ebit' => '37.00', 'margen_neto' => '24.00'])
+        ->and($out['current']['margins'])->toBe(['margen_ebitda' => '40.00', 'margen_ebit' => '37.00', 'margen_neto' => '24.00', 'margen_despues_retiros' => '24.00'])
         ->and($out['current']['source'])->toBe('en_vivo')
         ->and(array_sum(array_map(fn ($c) => (float) $c['amount'], $out['current']['opex_categories'])))->toBe(600000.0);
 

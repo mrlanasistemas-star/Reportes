@@ -30,6 +30,7 @@ const COLOR: Record<string, string> = {
     margen_ebitda: '#0891b2',
     margen_ebit: '#0f766e',
     margen_neto: '#065f46',
+    margen_despues_retiros: '#7c2d12',
 };
 /** Paleta de la dona de composición del OPEX (se repite si hay más categorías). */
 const CAT_COLORS = [

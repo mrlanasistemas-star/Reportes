@@ -121,10 +121,11 @@ class ComparisonService
                 'key' => 'ebitda_unico',
                 'label' => 'Modelo de un solo EBITDA',
                 'formulas' => [
-                    'EBITDA = Ingresos operativos − OPEX (OPEX incluye nómina, corporativo y gastos operativos de Dirección General)',
+                    'EBITDA = Ingresos operativos − OPEX (OPEX incluye nómina y corporativo; Dirección General y socios NO son OPEX)',
                     'EBIT = EBITDA − Depreciación y amortización',
                     'EBT = EBIT + Resultado financiero y no operativo neto (gastos negativos, ingresos positivos)',
                     'Utilidad neta = EBT − ISR (ISR sin información = pendiente, nunca $0)',
+                    'Resultado después de retiros = Utilidad neta (o EBT con ISR pendiente) − Retiros DG y socios (sólo consolidado)',
                 ],
                 'branch_note' => 'Por sucursal sólo existe el EBITDA de sucursal (ingresos − OPEX directo de la sucursal). Corporativo y Dirección General son centralizados y nunca se asignan a sucursales.',
             ],
@@ -446,7 +447,15 @@ class ComparisonService
 
         $rows = [];
         foreach (ComparisonConcepts::ORDER as $k) {
-            $rows[] = $this->row($k, ComparisonConcepts::meta($k), $current, $cmp, $c);
+            $meta = ComparisonConcepts::meta($k);
+            $of = $meta['of'] ?? $k;
+            if (in_array($k, ComparisonConcepts::CONSOLIDATED_ONLY, true)
+                && ($current['values'][$of] ?? null) === null && ($cmp['values'][$of] ?? null) === null) {
+                continue; // Retiros DG y socios: sólo existen en el consolidado.
+            }
+            $sensitive = ComparisonConcepts::SENSITIVE_CONCEPTS[$k] ?? null;
+            $rows[] = $this->row($k, $meta, $current, $cmp, $c)
+                + ['restricted' => ($sensitive === 'dg' && ! $this->canDg) || ($sensitive === 'nomina' && ! $this->canNomina)];
         }
         $cats = [];
         $curCats = array_column($current['opex_categories'], null, 'key');

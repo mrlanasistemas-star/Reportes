@@ -25,4 +25,6 @@ export const CONCEPT_HELP: Record<string, string> = {
     margen_ebitda: 'Qué parte de cada peso de ingresos queda como EBITDA.',
     margen_ebit: 'Qué parte de cada peso de ingresos queda como EBIT.',
     margen_neto: 'Qué parte de cada peso de ingresos queda como utilidad neta.',
+    margen_despues_retiros:
+        'Qué parte de cada peso de ingresos queda después de los retiros de Dirección General y socios.',
 };

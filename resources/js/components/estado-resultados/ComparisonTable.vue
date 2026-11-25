@@ -256,6 +256,12 @@ const ASSESS: Record<string, string> = {
                             ['ebitda', 'utilidad_neta'].includes(r.key)
                                 ? 'bg-emerald-50/50 font-bold dark:bg-emerald-950/20'
                                 : '',
+                            r.key === 'resultado_despues_retiros'
+                                ? 'font-bold'
+                                : '',
+                            r.key === 'retiros_dg_socios'
+                                ? '[&>td]:border-t-2 [&>td]:border-t-border'
+                                : '',
                             r.unit === '%'
                                 ? 'text-[13px] text-muted-foreground'
                                 : '',
@@ -263,6 +269,11 @@ const ASSESS: Record<string, string> = {
                     >
                         <td :class="r.unit === '%' ? 'pl-6' : ''">
                             {{ r.label }}
+                            <Lock
+                                v-if="r.restricted"
+                                class="ml-1 inline size-3 text-muted-foreground"
+                                aria-label="Sin permiso de Dirección General: sólo se ve el total"
+                            />
                         </td>
                         <td class="text-right tabular-nums">
                             <span

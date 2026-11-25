@@ -18,10 +18,17 @@ use App\Services\EstadoResultados\Support\Money;
  *    + totales de las secciones de OPEX del statement + adjustments[isr].state.
  *  El signo del resultado financiero se verifica contra EBT = EBIT + RFN (y se corrige si viene como gasto).
  *  - statement[] (secciones de gasto) → categorías de OPEX; sources.* → disponibilidad; meta.report → estado.
+ *  - Retiros DG y socios (25-nov-2026, sólo consolidado): results.{retiros_dg_socios, resultado_despues_retiros}.
+ *    LEGADO: los periodos calculados/aprobados antes traen DG como categoría de OPEX (`opex_dg` en el modelo
+ *    nuevo, sección `dg` en el de compatibilidad) y no traen retiros. Para comparar «manzanas con manzanas»
+ *    se REEXPRESAN en la lectura (el snapshot no se toca): la categoría DG sale del OPEX y pasa a retiros,
+ *    EBITDA/EBIT/EBT/Utilidad suben en ese importe y el Resultado después de retiros queda igual a la
+ *    utilidad (o EBT) original. Lo que antes iba «fuera del ER» (personal/socios) no se puede recuperar
+ *    del snapshot: esos periodos sólo cuentan su DG operativo/remuneración como retiro (se advierte).
  */
 class PeriodSummaryExtractor
 {
-    public const VERSION = 2; // 2: availability con faltantes de bancos y NOI de corporativo
+    public const VERSION = 3; // 2: availability con faltantes de bancos y NOI de corporativo · 3: retiros DG y socios
 
     /** Secciones del statement que forman el OPEX en el dataset de compatibilidad. */
     private const LEGACY_OPEX_SECTIONS = ['opex_sucursales', 'nomina_sucursales', 'opex_corporativo', 'nomina_corporativa', 'dg'];
@@ -97,6 +104,35 @@ class PeriodSummaryExtractor
         $isr = $isrPending ? null : Figures::amount($r['isr'] ?? null);
         $utilidad = $isr === null ? null : Figures::amount($r['utilidad_neta'] ?? null);
 
+        // Retiros DG y socios (sólo consolidado) y reexpresión de periodos legado (ver docblock).
+        $retiros = null;
+        $after = null;
+        $legacyDg = null;
+        if (! array_key_exists('retiros_dg_socios', $r)) {
+            $dgCats = array_filter($categories, fn ($c) => in_array($c['key'], ComparisonConcepts::LEGACY_DG_CATEGORIES, true));
+            if ($dgCats !== []) {
+                $legacyDg = Figures::sum(array_column($dgCats, 'amount'));
+                $categories = array_values(array_filter($categories, fn ($c) => ! in_array($c['key'], ComparisonConcepts::LEGACY_DG_CATEGORIES, true)));
+                $catSum = Figures::sum(array_column($categories, 'amount'));
+                $up = fn (?string $v) => $v === null ? null : Figures::sum([$v, $legacyDg]);
+                $opex = Figures::sub($opex, $legacyDg);
+                [$ebitda, $ebit, $ebt, $utilidad] = [$up($ebitda), $up($ebit), $up($ebt), $up($utilidad)];
+                if (! Money::of($legacyDg)->isZero()) {
+                    $warnings[] = 'Periodo calculado antes de separar los retiros: sus $'.$legacyDg.' de Dirección General se muestran como «Retiros DG y socios» (fuera del EBITDA) para poder compararlo.';
+                }
+            }
+            if ($consolidated) {
+                $retiros = $legacyDg ?? '0.00';
+            }
+        } elseif ($consolidated) {
+            $retiros = Figures::amount($r['retiros_dg_socios']);
+        }
+        if ($consolidated && $retiros !== null) {
+            $after = array_key_exists('resultado_despues_retiros', $r) && $legacyDg === null && $r['resultado_despues_retiros'] !== null
+                ? Figures::amount($r['resultado_despues_retiros'])
+                : Figures::sub($utilidad ?? $ebt, $retiros);
+        }
+
         // Coherencia (sólo advierte; nunca "ajusta" cifras).
         if ($ingresos !== null && $opex !== null && $ebitda !== null && ! Money::equalsCents(Figures::sub($ingresos, $opex), $ebitda)) {
             $warnings[] = 'Ingresos − OPEX no coincide con el EBITDA del dataset (diferencia $'.Figures::sub(Figures::sub($ingresos, $opex), $ebitda).').';
@@ -109,6 +145,7 @@ class PeriodSummaryExtractor
             'ingresos_operativos' => $ingresos, 'opex_total' => $opex, 'ebitda' => $ebitda,
             'depreciacion_amortizacion' => $da, 'ebit' => $ebit, 'resultado_financiero_neto' => $rfn,
             'ebt' => $ebt, 'isr' => $isr, 'utilidad_neta' => $utilidad,
+            'retiros_dg_socios' => $retiros, 'resultado_despues_retiros' => $after,
         ];
 
         $completeness = (array) ($d['completeness'] ?? []);
@@ -121,6 +158,7 @@ class PeriodSummaryExtractor
             'ingresos_operativos' => true, 'opex_total' => true, 'ebitda' => true,
             'depreciacion_amortizacion' => $daOk, 'ebit' => $daOk, 'resultado_financiero_neto' => $finOk,
             'ebt' => $daOk && $finOk, 'isr' => $isr !== null, 'utilidad_neta' => $daOk && $finOk && $isr !== null,
+            'retiros_dg_socios' => $retiros !== null, 'resultado_despues_retiros' => $after !== null && $daOk && $finOk,
         ];
 
         $availability = $this->availability($d, $adj);
@@ -167,6 +205,7 @@ class PeriodSummaryExtractor
             ],
             'model' => $newModel ? 'ebitda_unico' : 'compatibilidad',
             'sign_corrected' => $signCorrected,
+            'legacy_dg_restated' => $legacyDg,
             'values' => $values,
             'complete' => $complete,
             'missing_adjustments' => array_values(array_merge($daMissing ?? [], $finMissing ?? [], $isr === null ? ['isr'] : [])),

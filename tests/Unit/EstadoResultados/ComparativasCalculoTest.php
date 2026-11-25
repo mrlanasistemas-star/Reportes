@@ -129,7 +129,36 @@ it('compatibilidad: OPEX = Σ secciones, RFN expresado como gasto pasa a signo, 
         ->and($s['values']['isr'])->toBeNull()
         ->and($s['values']['utilidad_neta'])->toBeNull()
         ->and($s['complete']['isr'])->toBeFalse()
-        ->and(collect($s['opex_categories'])->where('centralized', true)->pluck('key')->all())->toBe(['opex_corporativo', 'nomina_corporativa', 'dg']);
+        ->and(collect($s['opex_categories'])->where('centralized', true)->pluck('key')->all())->toBe(['opex_corporativo', 'nomina_corporativa']) // 25-nov-2026: la sección DG legado se reexpresa como retiros
+        ->and($s['values']['retiros_dg_socios'])->toBe('0.00');
+});
+
+it('legado: DG dentro del OPEX se reexpresa como retiros; el modelo nuevo lee retiros tal cual', function () {
+    $opex = fn (array $cats) => [['type' => 'section', 'key' => 'opex', 'categories' => array_map(fn ($k, $a) => ['key' => $k, 'label' => $k, 'total' => ['amount' => $a], 'lines' => []], array_keys($cats), $cats)]];
+    $legacy = (new PeriodSummaryExtractor)->extract(ucDataset([
+        'ingresos_operativos' => '1000000.00', 'opex_total' => '650000.00', 'ebitda' => '350000.00',
+        'depreciacion_amortizacion' => '0.00', 'ebit' => '350000.00', 'resultado_financiero_neto' => '0.00',
+        'ebt' => '350000.00', 'isr' => '100000.00', 'utilidad_neta' => '250000.00',
+    ], $opex(['opex_sucursales' => '600000.00', 'opex_dg' => '50000.00'])));
+
+    expect($legacy['values'])->toMatchArray(['opex_total' => '600000.00', 'ebitda' => '400000.00', 'ebt' => '400000.00',
+        'utilidad_neta' => '300000.00', 'retiros_dg_socios' => '50000.00', 'resultado_despues_retiros' => '250000.00'])
+        ->and(array_column($legacy['opex_categories'], 'key'))->toBe(['opex_sucursales'])
+        ->and($legacy['legacy_dg_restated'])->toBe('50000.00')
+        ->and($legacy['warnings'])->toHaveCount(1);
+
+    $new = (new PeriodSummaryExtractor)->extract(ucDataset([
+        'ingresos_operativos' => '1000000.00', 'opex_total' => '600000.00', 'ebitda' => '400000.00',
+        'depreciacion_amortizacion' => '0.00', 'ebit' => '400000.00', 'resultado_financiero_neto' => '0.00',
+        'ebt' => '400000.00', 'isr' => null, 'utilidad_neta' => null,
+        'retiros_dg_socios' => '50000.00', 'resultado_despues_retiros' => '350000.00',
+    ], $opex(['opex_sucursales' => '600000.00'])));
+
+    expect($new['values']['retiros_dg_socios'])->toBe('50000.00')
+        ->and($new['values']['resultado_despues_retiros'])->toBe('350000.00')
+        ->and($new['complete']['resultado_despues_retiros'])->toBeTrue()
+        ->and($new['legacy_dg_restated'])->toBeNull()
+        ->and($new['warnings'])->toBe([]);
 });
 
 it('sin ninguna fuente ni cifra: «sin datos» con importes null (nunca $0.00)', function () {

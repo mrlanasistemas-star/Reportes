@@ -5,8 +5,10 @@ namespace App\Services\EstadoResultados\Comparatives;
 /**
  * Catálogo de conceptos comparables del Estado de Resultados (modelo de UN solo EBITDA):
  *
- *   Ingresos operativos − OPEX (incluye nómina, corporativo y DG operativo como categorías) = EBITDA
+ *   Ingresos operativos − OPEX (incluye nómina y corporativo como categorías) = EBITDA
  *   EBITDA − D&A = EBIT;  EBIT + Resultado financiero neto (con signo) = EBT;  EBT − ISR = Utilidad neta
+ *   Utilidad neta (o EBT si el ISR está pendiente) − Retiros DG y socios = Resultado después de retiros
+ *   (25-nov-2026: DG y socios salen del OPEX/EBITDA; los dos últimos conceptos sólo existen en consolidado).
  *
  * `kind` define la dirección favorable:
  *   income        → subir es favorable
@@ -38,6 +40,8 @@ final class ComparisonConcepts
         'ebt' => ['label' => 'EBT (utilidad antes de impuestos)', 'kind' => self::RESULT],
         'isr' => ['label' => 'ISR', 'kind' => self::EXPENSE],
         'utilidad_neta' => ['label' => 'Utilidad neta', 'kind' => self::RESULT],
+        'retiros_dg_socios' => ['label' => 'Retiros DG y socios', 'kind' => self::EXPENSE],
+        'resultado_despues_retiros' => ['label' => 'Resultado después de retiros', 'kind' => self::RESULT],
     ];
 
     /** Márgenes = importe / ingresos operativos × 100. */
@@ -45,13 +49,24 @@ final class ComparisonConcepts
         'margen_ebitda' => ['label' => 'Margen EBITDA', 'kind' => self::MARGIN, 'of' => 'ebitda'],
         'margen_ebit' => ['label' => 'Margen EBIT', 'kind' => self::MARGIN, 'of' => 'ebit'],
         'margen_neto' => ['label' => 'Margen neto', 'kind' => self::MARGIN, 'of' => 'utilidad_neta'],
+        'margen_despues_retiros' => ['label' => 'Margen después de retiros', 'kind' => self::MARGIN, 'of' => 'resultado_despues_retiros'],
     ];
 
     /** Orden de presentación de la comparación por concepto (importes y márgenes intercalados). */
     public const ORDER = [
         'ingresos_operativos', 'opex_total', 'ebitda', 'margen_ebitda', 'depreciacion_amortizacion',
         'ebit', 'margen_ebit', 'resultado_financiero_neto', 'ebt', 'isr', 'utilidad_neta', 'margen_neto',
+        'retiros_dg_socios', 'resultado_despues_retiros', 'margen_despues_retiros',
     ];
+
+    /** Conceptos que sólo existen en el consolidado (por sucursal no se presentan). */
+    public const CONSOLIDATED_ONLY = ['retiros_dg_socios', 'resultado_despues_retiros', 'margen_despues_retiros'];
+
+    /** Conceptos con información de Dirección General: sin `ver_dg` se marcan restringidos (el total se conserva). */
+    public const SENSITIVE_CONCEPTS = ['retiros_dg_socios' => 'dg', 'resultado_despues_retiros' => 'dg', 'margen_despues_retiros' => 'dg'];
+
+    /** Categorías de OPEX de DG en periodos calculados ANTES del 25-nov-2026 (se reexpresan como retiros). */
+    public const LEGACY_DG_CATEGORIES = ['dg', 'opex_dg'];
 
     /** Categorías de OPEX que se gestionan de forma CENTRALIZADA (nunca se asignan a sucursales). */
     public const CENTRALIZED_CATEGORIES = ['opex_corporativo', 'nomina_corporativa', 'dg', 'opex_dg'];
@@ -91,13 +106,15 @@ final class ComparisonConcepts
     /**
      * Catálogo público de conceptos en orden de presentación (lo envía ComparisonService al frontend).
      *
-     * @return list<array{key:string,label:string,kind:string,kind_label:string}>
+     * @return list<array{key:string,label:string,kind:string,kind_label:string,consolidated_only:bool,sensitive:?string}>
      */
     public static function catalog(): array
     {
         return array_map(fn ($k) => [
             'key' => $k, 'label' => self::meta($k)['label'], 'kind' => self::meta($k)['kind'],
             'kind_label' => self::KIND_LABELS[self::meta($k)['kind']],
+            'consolidated_only' => in_array($k, self::CONSOLIDATED_ONLY, true),
+            'sensitive' => self::SENSITIVE_CONCEPTS[$k] ?? null,
         ], self::ORDER);
     }
 }
