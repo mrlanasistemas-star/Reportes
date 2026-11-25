@@ -153,14 +153,14 @@ const extra = computed(() => {
     <div>
         <!-- Encabezado -->
         <p class="text-sm font-extrabold">Cadena de evidencia</p>
-        <p class="mt-0.5 text-xs text-muted-foreground">
+        <p class="mt-0.5 text-sm text-muted-foreground">
             Con qué otros registros se emparejó este movimiento y cuánto se
             aplicó en cada vínculo.
         </p>
 
         <p
             v-if="!nodes.length && !extra.length"
-            class="mt-3 rounded-xl border border-dashed p-3 text-xs text-muted-foreground"
+            class="mt-3 rounded-xl border border-dashed p-3 text-sm text-muted-foreground"
         >
             Sin vínculos: no se emparejó con ERP, NOI ni con otra cuenta.
         </p>
@@ -179,15 +179,15 @@ const extra = computed(() => {
                     />
                 </span>
                 <span class="min-w-0 flex-1">
-                    <span class="block truncate text-xs font-bold">{{
+                    <span class="block truncate text-sm font-bold">{{
                         self.title
                     }}</span>
                     <span
-                        class="block truncate text-[11px] text-muted-foreground"
+                        class="block truncate text-xs text-muted-foreground"
                         >{{ self.sub }}</span
                     >
                 </span>
-                <span class="text-right text-xs">
+                <span class="text-right text-sm">
                     <b class="block tabular-nums">{{ mxn(self.amount) }}</b>
                     <span class="text-muted-foreground">{{ self.date }}</span>
                 </span>
@@ -195,7 +195,7 @@ const extra = computed(() => {
 
             <!-- Cada vínculo: datos del emparejamiento y registro destino -->
             <template v-for="(n, i) in nodes" :key="i">
-                <li class="flex items-center gap-2 py-1 pl-5 text-[11px]">
+                <li class="flex items-center gap-2 py-1 pl-5 text-xs">
                     <ArrowDown
                         class="size-3.5 shrink-0 text-muted-foreground"
                     />
@@ -239,14 +239,14 @@ const extra = computed(() => {
                             <component :is="n.icon" v-else class="size-4" />
                         </span>
                         <span class="min-w-0 flex-1">
-                            <span class="block truncate text-xs font-bold">{{
+                            <span class="block truncate text-sm font-bold">{{
                                 n.redacted
                                     ? 'Detalle restringido por permisos'
                                     : n.title
                             }}</span>
                             <span
                                 v-if="n.sub && !n.redacted"
-                                class="block truncate text-[11px] text-muted-foreground"
+                                class="block truncate text-xs text-muted-foreground"
                                 >{{ n.sub }}</span
                             >
                             <span
@@ -254,7 +254,7 @@ const extra = computed(() => {
                                     num(n.link.movement_pending) ||
                                     num(n.link.target_pending)
                                 "
-                                class="block text-[11px] font-semibold text-amber-700 dark:text-amber-400"
+                                class="block text-xs font-semibold text-amber-700 dark:text-amber-400"
                             >
                                 Queda sin aplicar:
                                 <template v-if="num(n.link.movement_pending)"
@@ -267,7 +267,7 @@ const extra = computed(() => {
                                 >
                             </span>
                         </span>
-                        <span class="text-right text-xs">
+                        <span class="text-right text-sm">
                             <b v-if="n.amount" class="block tabular-nums">{{
                                 mxn(n.amount)
                             }}</b>
@@ -287,7 +287,7 @@ const extra = computed(() => {
             <li
                 v-for="(x, i) in extra"
                 :key="`x${i}`"
-                class="mt-2 flex items-center gap-2 rounded-xl bg-muted/50 p-2.5 text-xs"
+                class="mt-2 flex items-center gap-2 rounded-xl bg-muted/50 p-2.5 text-sm"
             >
                 <Undo2 class="size-4 shrink-0" />
                 <span class="flex-1">{{ x.label }}</span>

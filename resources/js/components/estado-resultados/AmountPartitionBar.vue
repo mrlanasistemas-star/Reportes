@@ -69,8 +69,8 @@ const parts = computed(() => {
 <template>
     <div>
         <div class="flex items-baseline justify-between gap-2">
-            <p class="text-sm font-extrabold">¿A dónde va cada peso?</p>
-            <p class="text-xs text-muted-foreground">
+            <p class="text-[15px] font-extrabold">¿A dónde va cada peso?</p>
+            <p class="text-sm text-muted-foreground">
                 Bruto
                 <b class="text-foreground tabular-nums">{{
                     mxn(amounts.gross)
@@ -78,7 +78,7 @@ const parts = computed(() => {
             </p>
         </div>
         <div
-            class="mt-2 flex h-3.5 w-full gap-px overflow-hidden rounded-full bg-muted"
+            class="mt-3 flex h-4 w-full gap-0.5 overflow-hidden rounded-full bg-muted"
             role="img"
             :aria-label="
                 parts
@@ -90,25 +90,34 @@ const parts = computed(() => {
             <span
                 v-for="p in parts.filter((x) => x.width > 0)"
                 :key="p.key"
-                class="h-full transition-[width] duration-500"
+                class="h-full transition-[width] duration-700 ease-out"
                 :class="p.cls"
                 :style="{ width: `${p.width}%` }"
                 :title="`${p.label}: ${mxn(p.amount)}`"
             />
         </div>
-        <ul class="mt-2.5 grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
+        <ul class="mt-3 flex flex-wrap gap-2">
             <li
-                v-for="p in parts"
+                v-for="p in parts.filter((x) => x.width > 0)"
                 :key="p.key"
-                class="flex items-center gap-2 text-xs"
-                :class="p.width > 0 ? '' : 'opacity-45'"
+                class="inline-flex items-center gap-2 rounded-full border bg-background px-3 py-1 text-sm"
                 :title="p.hint"
             >
-                <span class="size-2.5 shrink-0 rounded-sm" :class="p.cls" />
-                <span class="min-w-0 flex-1 truncate">{{ p.label }}</span>
-                <span class="font-semibold tabular-nums">{{
-                    mxn(p.amount)
-                }}</span>
+                <span class="size-3 shrink-0 rounded-full" :class="p.cls" />
+                <span>{{ p.label }}</span>
+                <b class="tabular-nums">{{ mxn(p.amount) }}</b>
+            </li>
+            <li
+                v-if="parts.some((x) => x.width <= 0)"
+                class="inline-flex items-center rounded-full px-2 py-1 text-xs text-muted-foreground"
+                :title="
+                    parts
+                        .filter((x) => x.width <= 0)
+                        .map((p) => `${p.label}: ${mxn(p.amount)}`)
+                        .join('\n')
+                "
+            >
+                Resto de destinos en {{ mxn(0) }}
             </li>
         </ul>
     </div>

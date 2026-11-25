@@ -156,50 +156,58 @@ const dateList = computed(() =>
 
 <template>
     <div>
-        <p class="flex items-center gap-1.5 text-sm font-extrabold">
+        <p
+            class="flex items-center gap-1.5 text-[15px] font-extrabold"
+            title="Cada cuadro responde una pregunta distinta: conciliar no es lo mismo que clasificar ni que incluirlo en el reporte."
+        >
             <ListChecks class="size-4" /> Cómo se trató, dimensión por dimensión
-        </p>
-        <p class="mt-0.5 text-xs text-muted-foreground">
-            Cada cuadro responde una pregunta distinta: conciliar no es lo mismo
-            que clasificar ni que incluirlo en el reporte.
         </p>
         <dl class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div
                 v-for="c in cells"
                 :key="c.dim"
-                class="rounded-xl border p-2.5"
+                class="flex items-start gap-2.5 rounded-xl border p-2.5"
                 :class="TONE[toneOf(c.dim, c.v.key)]"
             >
-                <dt
-                    class="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+                <span
+                    class="grid size-8 shrink-0 place-items-center rounded-lg bg-background/80 text-muted-foreground shadow-xs"
+                    aria-hidden="true"
                 >
-                    <component :is="c.icon" class="size-3.5" /> {{ c.label }}
-                </dt>
-                <dd class="mt-0.5 text-xs leading-snug font-semibold">
-                    {{ c.v.label }}
-                </dd>
-                <dd
-                    v-if="c.dim === 'recognition'"
-                    class="mt-0.5 text-[11px] text-muted-foreground"
-                >
-                    {{ dimensions.recognition.period_code ?? '—' }} ·
-                    {{ dimensions.recognition.basis_label }}
-                    <span
-                        v-if="dimensions.recognition.out_of_period_label"
-                        class="block font-semibold text-violet-700 dark:text-violet-300"
-                        >{{ dimensions.recognition.out_of_period_label }}</span
+                    <component :is="c.icon" class="size-4" />
+                </span>
+                <div class="min-w-0">
+                    <dt class="text-xs text-muted-foreground">
+                        {{ c.label }}
+                    </dt>
+                    <dd class="text-sm leading-snug font-semibold">
+                        {{ c.v.label }}
+                    </dd>
+                    <dd
+                        v-if="c.dim === 'recognition'"
+                        class="text-xs text-muted-foreground"
                     >
-                </dd>
+                        {{ dimensions.recognition.period_code ?? '—' }} ·
+                        {{ dimensions.recognition.basis_label }}
+                        <span
+                            v-if="dimensions.recognition.out_of_period_label"
+                            class="block font-semibold text-violet-700 dark:text-violet-300"
+                            >{{
+                                dimensions.recognition.out_of_period_label
+                            }}</span
+                        >
+                    </dd>
+                </div>
             </div>
         </dl>
-        <div v-if="dateList.length" class="mt-3 flex flex-wrap gap-1.5">
+        <div v-if="dateList.length" class="mt-3 flex flex-wrap gap-2">
             <span
                 v-for="dt in dateList"
                 :key="dt.label"
-                class="rounded-lg bg-muted px-2 py-1 text-[11px]"
+                class="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-sm"
             >
+                <CalendarClock class="size-3.5 text-muted-foreground" />
                 <span class="text-muted-foreground">{{ dt.label }}</span>
-                <b class="ml-1 tabular-nums">{{ dt.value }}</b>
+                <b class="tabular-nums">{{ dt.value }}</b>
             </span>
         </div>
     </div>
