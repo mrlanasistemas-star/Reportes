@@ -8,6 +8,7 @@ use App\Services\EstadoResultados\FinancialExpenses\FinancialExpenseService;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Cuadre de créditos de un periodo, desde consola: cuánto se DEBÍA pagar según la tabla de
@@ -118,7 +119,12 @@ class CuadreCreditosCommand extends Command
 
         /** @var Collection<int, Period> $candidates */
         $candidates = Period::query()->whereDate('start_date', '<=', $arg)->whereDate('end_date', '>=', $arg)->get()
-            ->sortBy([fn ($a, $b) => self::days($b) <=> self::days($a), fn ($a, $b) => $b->id <=> $a->id])->values();
+            ->sortBy([
+                // Primero el periodo con estados de cuenta cargados (donde viven aportaciones y pagos).
+                fn ($a, $b) => self::hasMovements($b) <=> self::hasMovements($a),
+                fn ($a, $b) => self::days($b) <=> self::days($a),
+                fn ($a, $b) => $b->id <=> $a->id,
+            ])->values();
         if ($candidates->isEmpty()) {
             $this->error('Ningún periodo contiene el '.CarbonImmutable::parse($arg)->format('d/m/Y').'.');
 
@@ -126,13 +132,18 @@ class CuadreCreditosCommand extends Command
         }
         $chosen = $candidates->first();
         if ($candidates->count() > 1) {
-            $this->warn('Varios periodos contienen el '.CarbonImmutable::parse($arg)->format('d/m/Y').'; se usa el de mayor duración (para otro, indica su ID):');
+            $this->warn('Varios periodos contienen el '.CarbonImmutable::parse($arg)->format('d/m/Y').'; se usa el que tiene estados de cuenta cargados (o el más largo). Para otro, indica su ID:');
             $this->table(['', 'ID', 'Periodo', 'Del', 'Al', 'Días'], $candidates->map(fn (Period $p) => [
                 $p->is($chosen) ? '→' : '', $p->id, (string) ($p->name ?? ''), $p->start_date->format('d/m/Y'), $p->end_date->format('d/m/Y'), self::days($p),
             ])->all());
         }
 
         return $chosen;
+    }
+
+    private static function hasMovements(Period $p): int
+    {
+        return DB::table('estado_resultados_movements')->where('period_id', $p->id)->exists() ? 1 : 0;
     }
 
     private static function days(Period $p): int
