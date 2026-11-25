@@ -59,6 +59,11 @@ $finSvg = $finSvg ?? null;
 if ($m['scope']['consolidated'] && $fin) {
     $toc[] = ['id' => 'financiamientos', 'n' => sprintf('%02d', count($toc) + 1), 'title' => 'Gastos financieros', 'desc' => 'Créditos, pagos al acreedor, intereses, comisiones y distribución gerencial', 'subs' => []];
 }
+// Retiros DG y socios (sólo consolidado): payload de ErWithdrawalsSection (bloque withdrawals del dataset).
+$wd = $m['scope']['consolidated'] ? ($x['withdrawals'] ?? null) : null;
+if ($wd) {
+    $toc[] = ['id' => 'retiros', 'n' => sprintf('%02d', count($toc) + 1), 'title' => 'Retiros DG y socios', 'desc' => 'Lo que tomaron Dirección General y los socios, después de la Utilidad neta', 'subs' => []];
+}
 $toc[] = ['id' => 'conciliacion', 'n' => sprintf('%02d', count($toc) + 1), 'title' => 'Conciliación y fuentes', 'desc' => 'Validaciones, fuentes del periodo y trazabilidad', 'subs' => []];
 $num = collect($toc)->pluck('n', 'id');
 @endphp
@@ -196,6 +201,18 @@ $num = collect($toc)->pluck('n', 'id');
     .fin-kpis .kpi.info .v { color: #475569; }
     .fin-table td .sub { display: block; font-size: 6.3pt; color: #64748b; }
     .fin-note { border-left: 3px solid #0f766e; background: #f0fdfa; padding: 5px 8px; border-radius: 0 7px 7px 0; font-size: 7.2pt; color: #0f172a; margin-top: 6px; break-inside: avoid; }
+    /* Retiros DG y socios */
+    .step.after .body { background: linear-gradient(90deg, #334155, #64748b); }
+    .step.after.negative .body { background: linear-gradient(90deg, #991b1b, #dc2626); }
+    .step.after.negative .amt { border-color: #dc2626; color: #b91c1c; }
+    .step.withdrawal .num { background: linear-gradient(135deg, #f87171, #b91c1c); }
+    tr.res.after td { background: #334155; }
+    tr.res.after.negative td { background: #991b1b; }
+    tr.res.after.negative td.neg { color: #fff !important; }
+    .wd-kpis .kpi.bad { background: #fef2f2; border-color: #fecaca; }
+    .wd-kpis .kpi.bad .v { color: #b91c1c; }
+    .wd-alert { border: 1.5px solid #dc2626; background: #fef2f2; color: #991b1b; border-radius: 9px; padding: 6px 10px; font-size: 7.6pt; font-weight: 700; margin: 6px 0; break-inside: avoid; }
+    .wd-rule { border-left: 3px solid #0f766e; background: #f0fdfa; padding: 5px 8px; border-radius: 0 7px 7px 0; font-size: 7.2pt; color: #0f172a; margin: 6px 0; break-inside: avoid; }
     .watermark { position: fixed; top: 40%; left: 0; right: 0; text-align: center; font-size: 92pt; font-weight: 800; color: #b91c1c; opacity: .07; transform: rotate(-28deg); z-index: 0; pointer-events: none; }
 </style>
 </head>
@@ -304,8 +321,21 @@ $head = function () use ($logo, $m, $rep, $period) {
             <div class="amt {{ $s['pending'] ? 'pend' : $neg($s['amount']) }}">{{ $money($s['amount']) }}</div>
         </div>
     @endforeach
+    @if($wd)
+        <div class="step withdrawal">
+            <div class="num">−</div>
+            <div class="body"><div class="t">Retiros de Dirección General y socios</div><div class="s">{{ $wd['count'] }} movimiento(s) · no son OPEX: no cambian el EBITDA</div></div>
+            <div class="amt {{ $wd['total'] === null ? 'pend' : '' }}">{{ $money($wd['total']) }}</div>
+        </div>
+        <div class="step result after {{ $wd['negative'] ? 'negative' : '' }}">
+            <div class="num">=</div>
+            <div class="body"><div class="t">{{ $wd['result_title'] }}</div><div class="s">{{ $money($wd['base_amount']) }} − {{ $money($wd['total']) }} = · {{ $wd['formula'] }}</div></div>
+            <div class="amt {{ $wd['result'] === null ? 'pend' : $neg($wd['result']) }}">{{ $money($wd['result']) }}</div>
+        </div>
+        @if($wd['negative'] && $wd['explain'])<div class="wd-alert">{{ $wd['explain'] }}</div>@endif
+    @endif
     <div class="keys">
-        <div class="k"><b>OPEX</b> sí afecta el EBITDA (incluye nómina, corporativo y Dirección General).</div>
+        <div class="k"><b>OPEX</b> sí afecta el EBITDA (incluye nómina y corporativo). Los retiros de DG y socios no son OPEX: se restan después de la Utilidad neta.</div>
         <div class="k"><b>D&amp;A</b> afecta el EBIT.</div>
         <div class="k"><b>Intereses</b> afectan el EBT; el capital de deuda no entra.</div>
         <div class="k"><b>CAPEX</b>, capital de deuda y gastos personales quedan fuera del Estado de Resultados.</div>
@@ -363,7 +393,7 @@ $head = function () use ($logo, $m, $rep, $period) {
                 <tr class="tot"><td>{{ $b['total']['label'] ?? 'Total' }}@if($unknown && $total !== null && (float) $total != 0.0) <span class="badge warn">Incompleto</span>@endif</td><td class="n {{ $neg($total) }}">{{ $totalText }}</td><td class="n">{{ $pct($b['total']['pct'] ?? null) }}</td></tr>
                 @if(! empty($b['note']) && ($b['applies'] ?? true))<tr class="dim"><td colspan="3">{{ $b['note'] }}</td></tr>@endif
             @else
-                <tr class="res {{ ($b['key'] ?? '') === 'utilidad_neta' ? 'final' : '' }}">
+                <tr class="res {{ ($b['key'] ?? '') === 'utilidad_neta' ? 'final' : '' }} {{ ($b['key'] ?? '') === 'resultado_despues_retiros' ? 'after'.(($b['negative'] ?? false) ? ' negative' : '') : '' }}">
                     <td>= {{ $b['label'] }} <span class="f">· {{ $b['formula'] ?? '' }}@if(! ($b['complete'] ?? true) && ($b['amount'] ?? null) !== null) · incompleto, falta: {{ implode(', ', $b['missing'] ?? []) }}@endif</span></td>
                     <td class="n {{ $neg($b['amount'] ?? null) }}">{{ $money($b['amount'] ?? null) }}</td>
                     <td class="n">{{ $pct($b['pct'] ?? null) }}</td>
@@ -423,14 +453,14 @@ $head = function () use ($logo, $m, $rep, $period) {
     <h2><span class="secnum">{{ $num['graficas'] }}</span> <span class="g">Gráficas</span></h2>
     <div class="chart" id="g-evolucion"><h4 class="ct">Evolución de EBITDA, EBIT, EBT y utilidad neta</h4><div class="cs">{{ $svgMeta['evolucion'] }}</div>{!! $svg['evolucion'] !!}</div>
     <div class="chart" id="g-ingresos"><h4 class="ct">Ingresos operativos vs OPEX</h4><div class="cs">{{ $svgMeta['evolucion'] }}</div>{!! $svg['ingresos_opex'] !!}</div>
-    <div class="chart" id="g-cascada"><h4 class="ct">Cascada del resultado · {{ $period['label'] }}</h4><div class="cs">Ingresos − OPEX = EBITDA − D&amp;A = EBIT ± resultado financiero = EBT − ISR = utilidad neta. Un paso pendiente no se dibuja como $0.00.</div>{!! $svg['cascada'] !!}</div>
+    <div class="chart" id="g-cascada"><h4 class="ct">Cascada del resultado · {{ $period['label'] }}</h4><div class="cs">Ingresos − OPEX = EBITDA − D&amp;A = EBIT ± resultado financiero = EBT − ISR = utilidad neta{{ $wd ? ' − retiros DG y socios = resultado después de retiros' : '' }}. Un paso pendiente no se dibuja como $0.00.</div>{!! $svg['cascada'] !!}</div>
 </section>
 <section class="page-break">
     {!! $head() !!}
     <div class="chart" id="g-composicion"><h4 class="ct">Composición del OPEX · {{ $period['label'] }}</h4><div class="cs">Categorías tal como las presenta el Estado de Resultados.</div>{!! $svg['composicion'] !!}</div>
     <div class="chart" id="g-margenes"><h4 class="ct">Márgenes EBITDA, EBIT y neto</h4><div class="cs">% sobre ingresos operativos · {{ $svgMeta['evolucion'] }}</div>{!! $svg['margenes'] !!}</div>
     @if($m['scope']['consolidated'] && $svg['sucursales'])
-        <div class="chart" id="g-sucursales"><h4 class="ct">EBITDA por sucursal · {{ $period['label'] }}</h4><div class="cs">EBITDA de sucursal = ingresos − OPEX directo de la sucursal. Corporativo y Dirección General son centralizados y no se asignan.</div>{!! $svg['sucursales'] !!}</div>
+        <div class="chart" id="g-sucursales"><h4 class="ct">EBITDA por sucursal · {{ $period['label'] }}</h4><div class="cs">EBITDA de sucursal = ingresos − OPEX directo de la sucursal. Corporativo es centralizado y no se asigna; los retiros de Dirección General y socios no son OPEX.</div>{!! $svg['sucursales'] !!}</div>
     @endif
 </section>
 
@@ -544,6 +574,57 @@ $head = function () use ($logo, $m, $rep, $period) {
             @endforeach
         </div>
         <div class="fin-note"><b>Nota:</b> {{ $fin['note'] }}</div>
+    @endif
+</section>
+@endif
+
+{{-- ═══════════════ RETIROS DG Y SOCIOS (consolidado) ═══════════════ --}}
+@if($wd)
+<section class="page-break" id="retiros">
+    {!! $head() !!}
+    <h2><span class="secnum">{{ $num['retiros'] }}</span> <span class="g">Retiros DG y socios</span> <span class="muted" style="font-size:8pt;font-weight:500">después de la Utilidad neta · fuera del EBITDA</span></h2>
+    <div class="kpis wd-kpis">
+        <div class="kpi small"><div class="l">Total de retiros</div><div class="v">{{ $money($wd['total']) }}</div><div class="s">{{ $wd['count'] }} movimiento(s)</div></div>
+        <div class="kpi small"><div class="l">Base usada · {{ $wd['base_label'] }}</div><div class="v {{ $neg($wd['base_amount']) }}">{{ $money($wd['base_amount']) }}</div><div class="s">{{ $wd['base'] === 'ebt' ? 'ISR pendiente: se usa el EBT' : 'Resultado del periodo' }}</div></div>
+        <div class="kpi small {{ $wd['negative'] ? 'bad' : 'main' }}"><div class="l">{{ $wd['result_title'] }}</div><div class="v {{ $wd['result'] === null ? 'pend' : $neg($wd['result']) }}">{{ $money($wd['result']) }}</div><div class="s">{{ $wd['formula'] }}</div></div>
+    </div>
+    @if($wd['negative'])<div class="wd-alert">{{ $wd['explain'] ?: 'En rojo: tomaron dinero del flujo siguiente.' }}</div>@elseif($wd['explain'])<p class="note">{{ $wd['explain'] }}</p>@endif
+    <div class="wd-rule"><b>Regla:</b> {{ $wd['rule'] }}</div>
+
+    @if($wd['restricted'])
+        <p class="warnnote"><span class="badge warn">Detalle restringido</span> {{ $wd['restricted_note'] }}</p>
+    @else
+        <h3>Agrupado por concepto <span class="hint">conceptos normalizados, sin fechas ni folios</span></h3>
+        <table>
+            <thead><tr><th>Concepto</th><th class="n" style="width:80px">Movimientos</th><th class="n" style="width:110px">Importe</th><th class="n" style="width:62px">%</th></tr></thead>
+            <tbody>
+            @forelse($wd['by_concept'] as $g)
+                <tr><td>{{ $g['label'] }}</td><td class="n">{{ (int) $g['count'] }}</td><td class="n {{ $neg($g['amount']) }}">{{ $money($g['amount']) }}</td><td class="n">{{ $pct($g['pct'] ?? null) }}</td></tr>
+            @empty
+                <tr class="dim"><td colspan="4">Sin retiros de Dirección General ni de socios en el periodo.</td></tr>
+            @endforelse
+            <tr class="tot"><td>Total retiros DG y socios</td><td class="n">{{ $wd['count'] }}</td><td class="n {{ $neg($wd['total']) }}">{{ $money($wd['total']) }}</td><td class="n">{{ $wd['by_concept'] ? '100.00%' : '—' }}</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Movimientos <span class="hint">lista completa · {{ count($wd['items']) }} movimiento(s)</span></h3>
+        <table>
+            <thead><tr><th style="width:52px">Fecha</th><th>Concepto</th><th style="width:16%">Cuenta</th><th style="width:20%">Quién / beneficiario</th><th style="width:11%">Origen</th><th class="n" style="width:84px">Importe</th></tr></thead>
+            <tbody>
+            @forelse($wd['items'] as $i)
+                <tr>
+                    <td>{{ $fmtDate($i['date'] ?? null) }}</td>
+                    <td>{{ F::mask((string) ($i['concept'] ?? '')) }}@if(! empty($i['manual'])) <span class="badge mute">Manual</span>@endif</td>
+                    <td>{{ F::mask((string) ($i['account_label'] ?? $i['account_slot'] ?? '')) ?: '—' }}</td>
+                    <td>{{ $i['who'] ?? '—' }}@if(! empty($i['beneficiary']) && $i['beneficiary'] !== ($i['who'] ?? null))<br><span class="muted">{{ F::mask((string) $i['beneficiary']) }}</span>@endif</td>
+                    <td>{{ $i['source_label'] }}</td>
+                    <td class="n {{ $neg($i['amount'] ?? null) }}">{{ $money($i['amount'] ?? null) }}</td>
+                </tr>
+            @empty
+                <tr class="dim"><td colspan="6">Sin movimientos de retiro en el periodo.</td></tr>
+            @endforelse
+            </tbody>
+        </table>
     @endif
 </section>
 @endif

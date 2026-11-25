@@ -700,8 +700,12 @@ const historyUrl = (fp: string) =>
                     >
                         <!-- Indicador de actualización y notas informativas (modelo anterior, acceso por sucursal, datos ocultos) -->
                         <ErRefreshIndicator
-                            :active="loading"
-                            :label="loadingContext"
+                            :active="loading || !!data.autoRefreshing.value"
+                            :label="
+                                data.autoRefreshing.value
+                                    ? 'la clasificación con las reglas nuevas'
+                                    : loadingContext
+                            "
                         />
                         <p
                             v-if="legacyModel"
@@ -825,6 +829,7 @@ const historyUrl = (fp: string) =>
                                     :blocks="dataset.statement"
                                     :movements="dataset.movements"
                                     :highlight="nav.statementFocus.value"
+                                    :withdrawals="dataset.withdrawals ?? null"
                                     @open-movements="nav.openMovements"
                                 />
                             </section>

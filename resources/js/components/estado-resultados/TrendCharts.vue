@@ -25,6 +25,8 @@ const COLOR: Record<string, string> = {
     ebit: '#0f766e',
     ebt: '#475569',
     utilidad_neta: '#065f46',
+    retiros_dg_socios: '#d97706',
+    resultado_despues_retiros: '#7c2d12',
     margen_ebitda: '#0891b2',
     margen_ebit: '#0f766e',
     margen_neto: '#065f46',

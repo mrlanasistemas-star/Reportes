@@ -29,6 +29,7 @@ final class ErSvgCharts
     private const SHORT = [
         'ingresos_operativos' => 'Ingresos', 'opex_total' => 'OPEX', 'ebitda' => 'EBITDA', 'depreciacion_amortizacion' => 'D&A',
         'ebit' => 'EBIT', 'resultado_financiero_neto' => 'Res. financiero', 'ebt' => 'EBT', 'isr' => 'ISR', 'utilidad_neta' => 'Utilidad neta',
+        'retiros_dg_socios' => 'Retiros DG', 'resultado_despues_retiros' => 'Desp. retiros',
     ];
 
     /** Ancho lógico (viewBox) de todas las gráficas. */

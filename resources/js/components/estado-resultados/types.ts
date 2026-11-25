@@ -31,7 +31,7 @@ export interface StatementLine {
     redacted_reason?: string | null;
 }
 
-/** Categoría de OPEX (sucursales, nómina, corporativo, DG): NO son niveles de resultado. */
+/** Categoría de OPEX (sucursales, nómina, corporativo; DG sólo en versiones anteriores al 25-nov-2026): NO son niveles de resultado. */
 export interface OpexCategory {
     key: string;
     label: string;
@@ -47,7 +47,7 @@ export interface OpexCategory {
 export interface StatementSection {
     type: 'section';
     key: string;
-    /** Paso 1–9 del modelo de un solo EBITDA (ausente en versiones anteriores). */
+    /** Paso 1–11 del modelo de un solo EBITDA (10–11 = retiros, sólo consolidado) (ausente en versiones anteriores). */
     step?: number;
     /** Número visible del modelo anterior (respaldo cuando no hay `step`). */
     number: string;
@@ -65,6 +65,8 @@ export interface StatementSection {
     categories?: OpexCategory[];
     /** Detalle oculto por permisos (nómina / DG): sólo se ve el total. */
     restricted?: boolean;
+    /** Sólo la sección 'retiros' (paso 10, consolidado): retiros de DG y socios, después de la utilidad. */
+    withdrawal?: boolean;
 }
 
 /** Renglón de resultado (EBITDA, EBIT, EBT, Utilidad neta). */
@@ -85,6 +87,10 @@ export interface StatementResult {
     complete: boolean;
     /** Conceptos que faltan para completar el resultado. */
     missing: string[];
+    /** Sólo 'resultado_despues_retiros': true = quedó en rojo (tomaron dinero del flujo siguiente). */
+    negative?: boolean;
+    /** Sólo 'resultado_despues_retiros': de qué resultado parte (EBT si el ISR está pendiente). */
+    base?: 'utilidad_neta' | 'ebt';
 }
 
 /** Bloque del estado de resultados: sección o resultado (discriminado por `type`). */
@@ -101,8 +107,71 @@ export interface WaterfallStep {
     level: number;
     step?: number;
     pending?: boolean;
-    /** 'opex' para las categorías de OPEX. */
+    /** 'opex' para las categorías de OPEX; 'retiros' para los retiros de DG y socios (paso 10). */
     group?: string;
+    /** Sólo 'resultado_despues_retiros' (paso 11): resultado del que parte. */
+    base?: 'utilidad_neta' | 'ebt';
+}
+
+/** Movimiento que cuenta como retiro de Dirección General o socios (consolidado). */
+export interface WithdrawalItem {
+    fingerprint: string;
+    source: 'banco' | 'erp' | string;
+    date: string | null;
+    concept: string | null;
+    /** Concepto agrupado (sin fechas ni folios). */
+    group: string;
+    account_slot: string | null;
+    account_label: string | null;
+    folio: string | null;
+    branch_name: string | null;
+    beneficiary: string | null;
+    /** Quién se lo llevó (beneficiario, Dirección General o Socios). */
+    who: string;
+    cargo: string | null;
+    abono: string | null;
+    /** Importe que resta (positivo = salida). */
+    amount: string;
+    treatment: string;
+    treatment_label: string;
+    rule_code: string | null;
+    reason: string | null;
+    manual: boolean;
+}
+
+/** Retiros de DG y socios agrupados por concepto. */
+export interface WithdrawalConcept {
+    key: string;
+    label: string;
+    count: number;
+    amount: string;
+    /** % sobre el total de retiros. */
+    pct: string | null;
+}
+
+/**
+ * Retiros de Dirección General y socios (25-nov-2026): no son OPEX, no cambian el EBITDA;
+ * se restan al final, después de la Utilidad neta (o del EBT si el ISR está pendiente).
+ */
+export interface Withdrawals {
+    /** false en sucursal: DG y socios nunca se asignan a una sucursal. */
+    applies: boolean;
+    note: string | null;
+    total: string;
+    count: number;
+    base: 'utilidad_neta' | 'ebt';
+    base_label: string;
+    base_amount: string;
+    result: string | null;
+    result_label: string;
+    formula: string;
+    negative: boolean;
+    explain: string | null;
+    rule: string;
+    /** Sin permiso ver_dg: by_concept e items vienen vacíos. */
+    restricted?: boolean;
+    by_concept: WithdrawalConcept[];
+    items: WithdrawalItem[];
 }
 
 /** Registro del ERP emparejado con un movimiento. */
@@ -619,6 +688,8 @@ export interface Dataset {
     completeness: Record<string, { complete: boolean; missing: string[] }>;
     statement: StatementBlock[];
     waterfall: WaterfallStep[];
+    /** Retiros de DG y socios. Ausente en versiones aprobadas antes del 25-nov-2026. */
+    withdrawals?: Withdrawals;
     /** Cuadre del EBITDA de sucursales del ER contra el de la Radiografía. */
     radiography_reconciliation: {
         er_ebitda_sucursales: string;

@@ -133,6 +133,8 @@ it('caso de referencia: el Excel (valores y fórmulas recalculadas) es idéntico
         'ingresos_operativos' => '1000000.00', 'opex_total' => '600000.00', 'ebitda' => '400000.00',
         'depreciacion_amortizacion' => '30000.00', 'ebit' => '370000.00', 'resultado_financiero_neto' => '-30000.00',
         'ebt' => '340000.00', 'isr' => '100000.00', 'utilidad_neta' => '240000.00',
+        // 25-nov-2026: retiros de DG y socios debajo de la Utilidad neta (no tocan el EBITDA).
+        'retiros_dg_socios' => '0.00', 'resultado_despues_retiros' => '240000.00',
     ];
     expect($built['results'])->toBe($expected)->and($web['results'])->toBe($expected)
         ->and($web['meta']['dataset_hash'])->toBe($built['meta']['dataset_hash']);
@@ -161,6 +163,17 @@ it('caso de referencia: el Excel (valores y fórmulas recalculadas) es idéntico
     $ebitda = exCellOf($er, 'EBITDA');
     expect($er->getCell($ebitda)->getValue())->toBe('='.exCellOf($er, 'TOTAL INGRESOS OPERATIVOS').'-'.exCellOf($er, 'TOTAL OPEX'))
         ->and($er->getCell(exCellOf($er, 'UTILIDAD NETA'))->getValue())->toContain('ISNUMBER(');
+
+    // Al final: retiros DG y socios y resultado después de retiros (fórmula sobre la Utilidad neta).
+    $after = exCellOf($er, 'RESULTADO DESPUÉS DE RETIROS');
+    expect(exCellOf($er, 'TOTAL RETIROS DG Y SOCIOS'))->not->toBeNull()
+        ->and($er->getCell($after)->getDataType())->toBe(DataType::TYPE_FORMULA)
+        ->and($er->getCell($after)->getValue())->toContain(exCellOf($er, 'UTILIDAD NETA'))
+        ->and((float) $er->getCell($after)->getCalculatedValue())->toBe(240000.0)
+        ->and((int) substr($after, 1))->toBeGreaterThan((int) substr(exCellOf($er, 'UTILIDAD NETA'), 1));
+    $wd = $book->getSheetByName(EstadoResultadosExcelExporter::WITHDRAWALS_SHEET);
+    expect($wd)->not->toBeNull()->and($book->getSheetNames())->not->toContain('Anexo DG')
+        ->and((float) exRow($wd, 'Resultado después de retiros', 'D'))->toBe(240000.0);
 
     // Hoja 1: lee el ER con fórmulas; márgenes y variación contra Agosto (EBITDA ago = 800,000 − 500,000 = 300,000).
     $sum = $book->getSheetByName('Resumen ejecutivo');
@@ -251,11 +264,53 @@ it('ISR sin información: «Pendiente» en el Excel (nunca $0.00) y la utilidad 
         ->and((float) exRow($er, 'EBT · UTILIDAD ANTES DE IMPUESTOS'))->toBe(340000.0)
         ->and(exRow($sum, '8. ISR'))->toBe('Pendiente')
         ->and(exRow($sum, '9. Utilidad neta'))->toBe('Pendiente')
-        ->and(exRow($sum, 'Margen neto'))->toBe('Pendiente');
+        ->and(exRow($sum, 'Margen neto'))->toBe('Pendiente')
+        // Con ISR pendiente el resultado después de retiros se calcula sobre el EBT.
+        ->and((float) exRow($er, 'RESULTADO DESPUÉS DE RETIROS (ANTES DE ISR)'))->toBe(340000.0);
     [$errors] = exFormulaErrors($book);
     expect($errors)->toBe([]);
     // Sin comparativas (llamada directa al exportador): aviso claro, no cifras inventadas.
     expect((string) $book->getSheetByName('Comparativa mensual')->getCell('B6')->getValue())->toContain('no están disponibles');
+    @unlink($path);
+});
+
+it('hoja «Retiros DG y socios»: resumen, agrupado y lista completa con importes numéricos; restringido sólo totales', function () {
+    [, $sep] = exRefPeriods();
+    $d = app(EstadoResultadosDatasetBuilder::class)->build($sep);
+    $d['withdrawals'] = array_replace($d['withdrawals'], [
+        'total' => '300000.00', 'count' => 2, 'result' => '-60000.00', 'negative' => true, 'explain' => 'En rojo: tomaron dinero del flujo siguiente.',
+        'by_concept' => [['key' => 'GASTOS DG', 'label' => 'GASTOS DG', 'count' => 2, 'amount' => '300000.00', 'pct' => '100.0000']],
+        'items' => [
+            ['fingerprint' => 'a', 'source' => 'banco', 'date' => '2026-09-12', 'concept' => 'GASTOS DG 12/09', 'account_label' => 'BBVA 0123456789', 'beneficiary' => 'JUAN SOCIO', 'who' => 'JUAN SOCIO', 'amount' => '100000.00', 'treatment' => 'personal_socios', 'treatment_label' => 'Retiro DG / socios', 'rule_code' => 'retiro_socios', 'reason' => null, 'manual' => false],
+            ['fingerprint' => 'b', 'source' => 'erp', 'date' => '2026-09-20', 'concept' => 'GASTOS DG 20/09', 'account_label' => null, 'beneficiary' => '', 'who' => 'Dirección General', 'amount' => '200000.00', 'treatment' => 'dg_operativo', 'treatment_label' => 'DG operativo', 'rule_code' => 'erp_dg', 'reason' => null, 'manual' => true],
+        ],
+    ]);
+    $path = storage_path('framework/testing/er/ex_wd_'.uniqid().'.xlsx');
+    app(EstadoResultadosExcelExporter::class)->export($d, $path);
+    $book = IOFactory::load($path);
+    $ws = $book->getSheetByName(EstadoResultadosExcelExporter::WITHDRAWALS_SHEET);
+
+    expect($ws)->not->toBeNull()
+        ->and((float) exRow($ws, 'Total de retiros', 'D'))->toBe(300000.0)
+        ->and((float) exRow($ws, 'Resultado después de retiros', 'D'))->toBe(-60000.0)
+        ->and((float) exRow($ws, 'GASTOS DG', 'F'))->toBe(300000.0)
+        ->and((float) exRow($ws, 'Total retiros DG y socios', 'F'))->toBe(300000.0);
+    $rows = collect($ws->toArray(null, true, false, false));
+    $item = $rows->first(fn ($r) => ($r[2] ?? null) === 'GASTOS DG 12/09');
+    expect($item)->not->toBeNull()->and($item[7])->toBe(100000.0)->and($item[3])->toContain('••6789')
+        ->and($rows->first(fn ($r) => ($r[2] ?? null) === 'GASTOS DG 20/09'))->not->toBeNull();
+    [$errors] = exFormulaErrors($book);
+    expect($errors)->toBe([]);
+
+    $d['withdrawals'] = array_replace($d['withdrawals'], ['by_concept' => [], 'items' => [], 'restricted' => true]);
+    app(EstadoResultadosExcelExporter::class)->export($d, $path);
+    $ws = IOFactory::load($path)->getSheetByName(EstadoResultadosExcelExporter::WITHDRAWALS_SHEET);
+    $texts = collect($ws->toArray(null, false, false, false))->flatten()->filter()->implode(' | ');
+    expect($texts)->toContain('Detalle restringido')->not->toContain('GASTOS DG 12/09');
+
+    // Sucursal: sin hoja de retiros.
+    app(EstadoResultadosExcelExporter::class)->export(app(EstadoResultadosDatasetBuilder::class)->build($sep, 'CORDOBA'), $path);
+    expect(IOFactory::load($path)->getSheetByName(EstadoResultadosExcelExporter::WITHDRAWALS_SHEET))->toBeNull();
     @unlink($path);
 });
 

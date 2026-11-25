@@ -7,12 +7,16 @@
  * colapsables y muestran líneas, total, subtotales y cuántos movimientos del
  * banco suman ahí; los resultados (EBITDA, EBIT, EBT, Utilidad neta) son
  * renglones oscuros con fórmula y aviso «Preliminar» si les falta información.
- * Cada renglón trae la barra de peso sobre ingresos (ShareBar).
+ * Cada renglón trae la barra de peso sobre ingresos (ShareBar). En el
+ * consolidado, después de la utilidad neta vienen los retiros de Dirección
+ * General y socios (no son OPEX; con la lista de sus movimientos) y el
+ * resultado después de retiros (en rojo si quedó negativo).
  *
  * Props:
  * - blocks: bloques del statement (secciones y resultados).
  * - movements: movimientos del dataset, para contar los que suman a cada línea.
  * - highlight: bloque a revelar y resaltar al cambiar ('ebitda', 'da', 'opex:<categoría>'…).
+ * - withdrawals: bloque de retiros del dataset (opcional; versiones anteriores no lo traen).
  *
  * Emits:
  * - openMovements(filterKey): abrir movimientos con filtro `line:<clave>`.
@@ -33,13 +37,22 @@ import {
 } from '@/components/ui/tooltip';
 import ShareBar from './ShareBar.vue';
 import { isNegative, isZero, mxn, pct } from './types';
-import type { Movement, StatementBlock, StatementLine } from './types';
+import type {
+    Movement,
+    StatementBlock,
+    StatementLine,
+    StatementResult,
+    Withdrawals,
+} from './types';
+import WithdrawalItemsList from './WithdrawalItemsList.vue';
 
 const props = defineProps<{
     blocks: StatementBlock[];
     movements: Movement[];
     /** Bloque a resaltar: 'ebitda', 'da', u 'opex:<categoría>'. */
     highlight: string | null;
+    /** Retiros de DG y socios (sólo consolidado; ausente en versiones anteriores). */
+    withdrawals?: Withdrawals | null;
 }>();
 
 const emit = defineEmits<{ openMovements: [filterKey: string] }>();
@@ -130,7 +143,21 @@ const restrictedLine = (l: StatementLine) =>
 const RESULT_TONE: Record<string, string> = {
     ebitda: 'bg-cyan-800 text-white dark:bg-cyan-950',
     utilidad_neta: 'bg-emerald-900 text-white dark:bg-emerald-950',
+    resultado_despues_retiros: 'bg-emerald-900 text-white dark:bg-emerald-950',
 };
+
+/**
+ * Tono del renglón de resultado: el resultado después de retiros va en rojo si
+ * quedó negativo (tomaron dinero del flujo siguiente).
+ * @param b renglón de resultado.
+ */
+function resultTone(b: StatementResult): string {
+    if (b.key === 'resultado_despues_retiros' && b.negative) {
+        return 'bg-rose-900 text-white dark:bg-rose-950';
+    }
+
+    return RESULT_TONE[b.key] ?? 'bg-slate-800 text-white dark:bg-slate-800/80';
+}
 </script>
 
 <template>
@@ -162,6 +189,13 @@ const RESULT_TONE: Record<string, string> = {
         </div>
 
         <template v-for="b in blocks" :key="b.key">
+            <!-- Separador: lo que sigue va después de la utilidad neta -->
+            <p
+                v-if="b.type === 'section' && b.withdrawal"
+                class="border-b bg-amber-50/70 px-4 py-1.5 text-[11px] font-semibold text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+                Después de la utilidad neta · no es OPEX y no cambia el EBITDA
+            </p>
             <!-- Sección (con categorías si es OPEX) -->
             <div
                 v-if="b.type === 'section'"
@@ -190,6 +224,11 @@ const RESULT_TONE: Record<string, string> = {
                             v-if="b.state === 'pendiente'"
                             class="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-2 py-px text-[10px] font-bold text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
                             >Pendiente</span
+                        >
+                        <span
+                            v-if="b.withdrawal"
+                            class="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-2 py-px text-[10px] font-bold text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
+                            >No es OPEX</span
                         >
                         <ChevronDown
                             class="size-4 shrink-0 text-muted-foreground transition-transform"
@@ -426,6 +465,11 @@ const RESULT_TONE: Record<string, string> = {
                                 >{{ pct(l.pct) }}</span
                             >
                         </div>
+                        <!-- Retiros: movimientos que los forman -->
+                        <WithdrawalItemsList
+                            v-if="b.withdrawal && withdrawals?.applies"
+                            :withdrawals="withdrawals"
+                        />
                     </template>
                 </div>
 
@@ -478,8 +522,7 @@ const RESULT_TONE: Record<string, string> = {
                 :data-er-block="b.key"
                 class="grid grid-cols-[minmax(0,1fr)_9.5rem] items-center gap-x-4 px-4 py-3.5 transition-shadow duration-700 sm:grid-cols-[minmax(0,1fr)_10rem_5.5rem] xl:grid-cols-[minmax(0,1fr)_minmax(8rem,24rem)_10rem_5.5rem]"
                 :class="[
-                    RESULT_TONE[b.key] ??
-                        'bg-slate-800 text-white dark:bg-slate-800/80',
+                    resultTone(b),
                     flash === b.key
                         ? 'shadow-[inset_0_0_0_3px_rgb(34_197_214)]'
                         : '',
@@ -508,7 +551,8 @@ const RESULT_TONE: Record<string, string> = {
                     </p>
                     <p
                         v-if="b.note"
-                        class="text-[11px] font-semibold text-amber-200"
+                        class="text-[11px] font-semibold"
+                        :class="b.negative ? 'text-rose-200' : 'text-amber-200'"
                     >
                         {{ b.note }}
                     </p>

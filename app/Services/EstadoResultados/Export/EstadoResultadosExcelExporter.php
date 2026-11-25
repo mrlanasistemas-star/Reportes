@@ -53,7 +53,6 @@ class EstadoResultadosExcelExporter
         'opex_suc' => ['Anexo OPEX sucursales', 'Gastos operativos de sucursales por concepto'],
         'opex_corp' => ['Anexo OPEX corporativo', 'Movimientos de gastos corporativos'],
         'nomina' => ['Anexo Nómina', 'Nómina de sucursales y corporativa'],
-        'dg' => ['Anexo DG', 'Gastos de Dirección General'],
         'movimientos' => ['Anexo Movimientos', 'Movimientos bancarios y del ERP del periodo'],
         'ajustes' => ['Anexo Ajustes', 'Depreciación, intereses e ISR'],
         'fuera' => ['Anexo Fuera del ER', 'Movimientos que no afectan el resultado'],
@@ -61,6 +60,17 @@ class EstadoResultadosExcelExporter
 
     /** Hoja de financiamientos (sólo consolidado con créditos registrados). */
     public const FINANCING_SHEET = 'Financiamientos';
+
+    /**
+     * Hoja de retiros de Dirección General y socios (sólo consolidado). Reemplaza al antiguo
+     * «Anexo DG»: DG y socios ya no son OPEX y se restan después de la Utilidad neta.
+     */
+    public const WITHDRAWALS_SHEET = ErWithdrawalsSection::TITLE;
+
+    /** Tratamientos y reglas de DG y socios (respaldo para datasets sin el bloque `withdrawals`). */
+    private const DG_TREATMENTS = ['dg_operativo', 'dg_remuneracion', 'personal_socios'];
+
+    private const DG_RULES = ['dg_requiere_revision', 'erp_dg', 'retiro_dg', 'retiro_socios', 'retiro_dg_devolucion'];
 
     /** Descripción breve de cada hoja principal (índice). */
     private const DESCRIPTIONS = [
@@ -154,6 +164,9 @@ class EstadoResultadosExcelExporter
     /** Sección de financiamientos (ErFinancingSection::build) de la exportación en curso, o null. */
     private ?array $fin = null;
 
+    /** ¿El libro lleva la hoja «Retiros DG y socios»? (sólo consolidado). */
+    private bool $withdrawalsSheet = false;
+
     /**
      * @param  EstadoResultadosExportContext  $context  contexto de presentación compartido con el PDF
      * @param  ErFinancingSection  $financing  sección de financiamientos (FinancialExpenseService)
@@ -180,6 +193,7 @@ class EstadoResultadosExcelExporter
         $this->x = $this->context->make($dataset, $comparisons, $comparisonsError);
         $this->erCells = [];
         $this->erRows = [];
+        $this->withdrawalsSheet = (bool) $this->x['meta']['consolidated'];
         $book = new Spreadsheet;
         $book->getDefaultStyle()->getFont()->setName(self::FONT)->setSize(10)->getColor()->setRGB(self::BODY);
         $book->getProperties()->setCreator('MR LANA · Reportes')->setTitle('Estado de Resultados '.$this->x['meta']['period']['label'])
@@ -204,13 +218,15 @@ class EstadoResultadosExcelExporter
         $this->sheetLines($a('opex_suc'), 'Detalle · Gastos operativos de sucursales', ['opex_sucursales']);
         $this->sheetItems($a('opex_corp'), 'Detalle · Gastos corporativos', fn ($m) => $m['treatment'] === 'opex_corporativo' || ($m['treatment'] === 'pendiente' && ($m['branch_kind'] ?? null) === 'corporativo' && ! str_contains((string) $m['rule_code'], 'dg')));
         $this->sheetPayroll($a('nomina'));
-        $this->sheetItems($a('dg'), 'Detalle · Dirección General', fn ($m) => in_array($m['treatment'], ['dg_operativo', 'dg_remuneracion'], true) || in_array($m['rule_code'], ['dg_requiere_revision', 'erp_dg'], true), 'dg');
         $this->sheetMovements($a('movimientos'));
         $this->sheetAdjustments($a('ajustes'));
         $this->sheetOutside($a('fuera'));
         $this->fin = $this->financing->build($dataset);
         if ($this->fin !== null) {
             $this->sheetFinancing($book->createSheet()->setTitle(self::FINANCING_SHEET));
+        }
+        if ($this->withdrawalsSheet) {
+            $this->sheetWithdrawals($book->createSheet()->setTitle(self::WITHDRAWALS_SHEET));
         }
 
         $this->sheetIndex($ws['indice']);
@@ -310,6 +326,9 @@ class EstadoResultadosExcelExporter
         }
         if ($this->fin !== null) {
             $this->tocRow($ws, $row++, '·', self::FINANCING_SHEET, 'Créditos, pagos al acreedor, aportaciones y distribución gerencial', false);
+        }
+        if ($this->withdrawalsSheet) {
+            $this->tocRow($ws, $row++, '·', self::WITHDRAWALS_SHEET, 'Lo que tomaron Dirección General y los socios (después de la Utilidad neta)', false);
         }
         $row++;
         $this->put($ws, "B{$row}", 'Cifras en MXN. «Pendiente» nunca equivale a $0.00. Generado '.$this->x['meta']['generated_at'].'.');
@@ -423,10 +442,14 @@ class EstadoResultadosExcelExporter
         $ws->freezePane('A7');
         $ws->getPageSetup()->setRowsToRepeatAtTopByStartAndEnd(6, 6);
 
-        $annexOf = [
-            'opex_sucursales' => 'opex_suc', 'nomina_sucursales' => 'nomina', 'nomina_corporativa' => 'nomina', 'opex_corporativo' => 'opex_corp', 'dg' => 'dg',
+        // Sección/categoría ⇒ hoja de detalle. DG (modelo anterior) y retiros ⇒ «Retiros DG y socios».
+        $annexOf = array_map(fn ($k) => self::ANNEXES[$k][0], [
+            'opex_sucursales' => 'opex_suc', 'nomina_sucursales' => 'nomina', 'nomina_corporativa' => 'nomina', 'opex_corporativo' => 'opex_corp',
             'da' => 'ajustes', 'financiero' => 'ajustes', 'isr' => 'ajustes',
-        ];
+        ]);
+        if ($this->withdrawalsSheet) {
+            $annexOf['dg'] = $annexOf['retiros'] = self::WITHDRAWALS_SHEET;
+        }
         $r = 7;
         $ing = null;
         $pctRows = [];
@@ -438,7 +461,7 @@ class EstadoResultadosExcelExporter
                 $ws->getStyle("B{$r}:F{$r}")->getAlignment()->setVertical(Alignment::VERTICAL_BOTTOM);
                 $this->edge($ws, "B{$r}:F{$r}", 'bottom', Border::BORDER_MEDIUM, self::GREEN);
                 if (isset($annexOf[$block['key'] ?? '']) && empty($block['categories'])) {
-                    $this->detailLink($ws, "F{$r}", self::ANNEXES[$annexOf[$block['key']]][0]);
+                    $this->detailLink($ws, "F{$r}", $annexOf[$block['key']]);
                 }
                 $r++;
                 if (! ($block['applies'] ?? true)) {
@@ -454,7 +477,7 @@ class EstadoResultadosExcelExporter
                         $ws->getStyle("B{$r}")->applyFromArray(['font' => ['bold' => true, 'color' => ['rgb' => '0E7490']]]);
                         $centralized = in_array($cat['key'], ['opex_corporativo', 'nomina_corporativa', 'dg'], true);
                         if (isset($annexOf[$cat['key']])) {
-                            $this->detailLink($ws, "F{$r}", self::ANNEXES[$annexOf[$cat['key']]][0], $centralized ? 'Centralizado · Ver detalle  ›' : 'Ver detalle  ›');
+                            $this->detailLink($ws, "F{$r}", $annexOf[$cat['key']], $centralized ? 'Centralizado · Ver detalle  ›' : 'Ver detalle  ›');
                         }
                         $r++;
                         [$first, $last, $r] = $this->writeLines($ws, $r, $cat['lines'], '      ', $pctRows);
@@ -496,7 +519,12 @@ class EstadoResultadosExcelExporter
                 $ws->getStyle("B{$r}:E{$r}")->applyFromArray(['fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::SOFT]]]);
                 $this->edge($ws, "B{$r}:E{$r}", 'top', Border::BORDER_THIN, self::TEAL);
                 $ws->getStyle("B{$r}:E{$r}")->getAlignment()->setVertical(Alignment::VERTICAL_CENTER);
-                $stepKey = ['ingresos' => 'ingresos_operativos', 'opex' => 'opex_total', 'da' => 'depreciacion_amortizacion', 'financiero' => 'resultado_financiero_neto', 'isr' => 'isr'][$block['key'] ?? ''] ?? null;
+                $stepKey = ['ingresos' => 'ingresos_operativos', 'opex' => 'opex_total', 'da' => 'depreciacion_amortizacion', 'financiero' => 'resultado_financiero_neto', 'isr' => 'isr', 'retiros' => 'retiros_dg_socios'][$block['key'] ?? ''] ?? null;
+                if (($block['key'] ?? '') === 'retiros') {
+                    // Retiros DG y socios: después de la Utilidad neta, en rojo (no son OPEX).
+                    $ws->getStyle("B{$r}:E{$r}")->applyFromArray(['fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => 'FEF2F2']]]);
+                    $this->edge($ws, "B{$r}:E{$r}", 'top', Border::BORDER_THIN, self::BAD);
+                }
                 if ($stepKey && ! $this->x['legacy']) {
                     $this->erCells[$stepKey] = "C{$r}";
                 }
@@ -515,7 +543,7 @@ class EstadoResultadosExcelExporter
             $key = $block['key'] ?? '';
             $label = ($block['label'] ?? '').(($block['complete'] ?? true) || ($block['amount'] ?? null) === null ? '' : '  (INCOMPLETO)');
             $this->put($ws, "B{$r}", $label);
-            $formula = $this->x['legacy'] ? null : $this->resultFormula($key);
+            $formula = $this->x['legacy'] ? null : $this->resultFormula($key, $block);
             if (($block['amount'] ?? null) === null && $formula === null) {
                 $this->put($ws, "C{$r}", ErFormat::PENDING);
             } else {
@@ -524,12 +552,18 @@ class EstadoResultadosExcelExporter
                     $this->control($ws, $r, $block['amount']);
                 }
             }
-            if (! $this->x['legacy'] && in_array($key, ['ebitda', 'ebit', 'ebt', 'utilidad_neta'], true)) {
+            if (! $this->x['legacy'] && in_array($key, ['ebitda', 'ebit', 'ebt', 'utilidad_neta', 'resultado_despues_retiros'], true)) {
                 $this->erCells[$key] = "C{$r}";
             }
             $this->erRows[$key === 'ebitda_final' ? 'ebitda' : $key] = $r;
             $pctRows[] = $r;
-            $fill = $key === 'utilidad_neta' ? '065F46' : (in_array($key, ['ebitda', 'ebitda_final'], true) ? self::TEAL : ($key === 'ebt' ? self::TEAL_DARK : '0E7490'));
+            $fill = match (true) {
+                $key === 'resultado_despues_retiros' => ($block['negative'] ?? false) ? '991B1B' : '334155',
+                $key === 'utilidad_neta' => '065F46',
+                in_array($key, ['ebitda', 'ebitda_final'], true) => self::TEAL,
+                $key === 'ebt' => self::TEAL_DARK,
+                default => '0E7490',
+            };
             $ws->getStyle("B{$r}:E{$r}")->applyFromArray(['fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => $fill]]]);
             $ws->getStyle("B{$r}:E{$r}")->applyFromArray(['font' => ['bold' => true, 'size' => 12, 'color' => ['rgb' => 'FFFFFF']]]);
             $ws->getStyle("B{$r}")->getAlignment()->setIndent(1);
@@ -603,11 +637,14 @@ class EstadoResultadosExcelExporter
     }
 
     /** Fórmulas de los resultados del modelo sobre las celdas del libro (pendiente explícito). */
-    private function resultFormula(string $key): ?string
+    private function resultFormula(string $key, array $block = []): ?string
     {
         $c = $this->erCells;
+        // Resultado después de retiros = Utilidad neta (o EBT con ISR pendiente) − Retiros DG y socios.
+        $base = ($block['base'] ?? 'utilidad_neta') === 'ebt' ? 'ebt' : 'utilidad_neta';
 
         return match ($key) {
+            'resultado_despues_retiros' => isset($c[$base], $c['retiros_dg_socios']) ? "=IF(ISNUMBER({$c[$base]}),{$c[$base]}-N({$c['retiros_dg_socios']}),\"Pendiente\")" : null,
             'ebitda' => isset($c['ingresos_operativos'], $c['opex_total']) ? "={$c['ingresos_operativos']}-{$c['opex_total']}" : null,
             // Un ajuste «Sin información» se toma como 0 de forma EXPLÍCITA (N) y el renglón se rotula INCOMPLETO, igual que la web.
             'ebit' => isset($c['ebitda'], $c['depreciacion_amortizacion']) ? "={$c['ebitda']}-N({$c['depreciacion_amortizacion']})" : null,
@@ -682,6 +719,32 @@ class EstadoResultadosExcelExporter
                 $this->edge($ws, "B{$r}:F{$r}", 'bottom', Border::BORDER_THIN, 'A7F3D0');
             }
             $r++;
+        }
+        // Retiros DG y socios (sólo consolidado): después de la Utilidad neta, sin tocar el EBITDA.
+        if ($wd = $this->x['withdrawals'] ?? null) {
+            $nSteps = count($this->x['steps']);
+            foreach ([['retiros_dg_socios', ($nSteps + 1).'. Retiros DG y socios', $wd['total'], false], ['resultado_despues_retiros', ($nSteps + 2).'. '.$wd['result_title'], $wd['result'], true]] as [$k, $label, $amount, $isResult]) {
+                $this->put($ws, "B{$r}", $label);
+                if (isset($this->erRows[$k])) {
+                    $this->linkTo($ws, "B{$r}", self::SHEETS['er'], 'B'.$this->erRows[$k], 'Ver el detalle en el Estado de Resultados');
+                    $ws->getStyle("B{$r}")->getFont()->getColor()->setRGB(self::INK);
+                }
+                if (isset($this->erCells[$k])) {
+                    $ws->setCellValue("C{$r}", "='".self::SHEETS['er']."'!".$this->erCells[$k]);
+                    $ws->getStyle("C{$r}")->getNumberFormat()->setFormatCode(self::MONEY);
+                } else {
+                    $amount === null ? $this->put($ws, "C{$r}", ErFormat::PENDING) : $this->money($ws, "C{$r}", $amount);
+                }
+                $ws->getStyle("C{$r}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+                $this->flag($ws, "H{$r}", $isResult ? ($wd['negative'] ? '⚠ En rojo: tomaron dinero del flujo siguiente' : $wd['formula']) : 'No es OPEX: no cambia el EBITDA', $isResult && $wd['negative'] ? self::BAD : self::MUTED);
+                $ws->getRowDimension($r)->setRowHeight($isResult ? 22 : 18);
+                $this->rowLine($ws, "B{$r}:H{$r}");
+                if ($isResult) {
+                    $ws->getStyle("B{$r}:F{$r}")->getFont()->setBold(true);
+                    $ws->getStyle("B{$r}:F{$r}")->applyFromArray(['fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => $wd['negative'] ? 'FEF2F2' : self::CARD]]]);
+                }
+                $r++;
+            }
         }
         $r++;
         $this->put($ws, "B{$r}", 'MÁRGENES · % SOBRE INGRESOS OPERATIVOS');
@@ -1551,7 +1614,7 @@ class EstadoResultadosExcelExporter
         $this->setup($ws, $this->movementWidths());
         $this->banner($ws, $title, 'R');
         if ($restrictedKey !== null && ! empty($this->d['meta']['redactions'][$restrictedKey])) {
-            $this->restrictedNote($ws, 6, 'El detalle de Dirección General está restringido para tu rol (permiso «Consultar detalle de Dirección General»). El total sí está incluido en el OPEX y en el EBITDA.');
+            $this->restrictedNote($ws, 6, 'El detalle de Dirección General está restringido para tu rol (permiso «Consultar detalle de Dirección General»). El total sí está incluido en el resultado.');
             $ws->freezePane('A5');
 
             return;
@@ -1711,6 +1774,161 @@ class EstadoResultadosExcelExporter
         }
         $items = array_values(array_filter((array) ($this->d['movements'] ?? []), fn ($m) => ! ($m['impact']['included'] ?? false)));
         $this->movementTable($ws, $r + 1, $items);
+    }
+
+    // ── Retiros DG y socios ───────────────────────────────────────────────
+
+    /**
+     * Hoja «Retiros DG y socios» (sólo consolidado): resumen (total, base usada, resultado después
+     * de retiros y la regla), agrupado por concepto y la lista COMPLETA de movimientos. Las cifras
+     * vienen del bloque `withdrawals` del dataset (vía ErWithdrawalsSection). Sin permiso `ver_dg`
+     * sólo los totales. Un dataset anterior a la regla (sin `withdrawals`) lista los movimientos de
+     * Dirección General y socios del propio dataset (reemplaza al antiguo «Anexo DG»).
+     *
+     * @param  Worksheet  $ws  hoja
+     */
+    private function sheetWithdrawals(Worksheet $ws): void
+    {
+        $wd = $this->x['withdrawals'] ?? null;
+        $restrictedDg = ! empty($this->d['meta']['redactions']['dg']);
+        if ($wd === null) {
+            $this->setup($ws, $this->movementWidths());
+            $this->banner($ws, 'Retiros de Dirección General y socios', 'R');
+            if ($restrictedDg) {
+                $this->restrictedNote($ws, 6, ErWithdrawalsSection::RESTRICTED);
+                $ws->freezePane('A5');
+
+                return;
+            }
+            $items = array_values(array_filter((array) ($this->d['movements'] ?? []), fn ($m) => ($m['in_period'] ?? false)
+                && (in_array($m['treatment'] ?? null, self::DG_TREATMENTS, true) || in_array($m['rule_code'] ?? null, self::DG_RULES, true))));
+            $this->note($ws, 'B5', 'Versión del reporte anterior a la regla de retiros: se listan los movimientos de Dirección General y socios tal como se calcularon.', self::AMBER);
+            $this->put($ws, 'B6', count($items).' movimiento(s). Sólo los marcados «Suma» afectan el resultado.');
+            $ws->getStyle('B6')->applyFromArray(['font' => ['italic' => true, 'size' => 8, 'color' => ['rgb' => self::MUTED]]]);
+            $this->movementTable($ws, 8, $items);
+
+            return;
+        }
+
+        $this->setup($ws, ['A' => 2, 'B' => 13, 'C' => 46, 'D' => 24, 'E' => 30, 'F' => 30, 'G' => 22, 'H' => 18, 'I' => 22, 'J' => 50]);
+        $this->banner($ws, 'Retiros de Dirección General y socios', 'J');
+        $this->note($ws, 'B5', $wd['rule']);
+
+        // Resumen (rótulo / importe / nota).
+        $this->label($ws, 'B6', 'RESUMEN');
+        $summary = [
+            ['Total de retiros', $wd['total'], $wd['count'].' movimiento(s) · no son OPEX: no cambian el EBITDA', false],
+            ['Base usada · '.$wd['base_label'], $wd['base_amount'], $wd['base'] === 'ebt' ? 'ISR pendiente: el resultado se calcula sobre el EBT' : 'Resultado del periodo', false],
+            [$wd['result_title'], $wd['result'], $wd['formula'], true],
+        ];
+        $r = 7;
+        foreach ($summary as [$label, $amount, $hint, $isResult]) {
+            $this->put($ws, "B{$r}", $label);
+            $ws->mergeCells("B{$r}:C{$r}");
+            $amount === null ? $this->put($ws, "D{$r}", ErFormat::PENDING) : $this->money($ws, "D{$r}", $amount);
+            $ws->getStyle("D{$r}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+            $this->put($ws, "E{$r}", $hint);
+            $ws->mergeCells("E{$r}:J{$r}");
+            $ws->getStyle("E{$r}")->applyFromArray(['font' => ['size' => 8, 'color' => ['rgb' => self::MUTED]]]);
+            $ws->getStyle("B{$r}:D{$r}")->getFont()->setBold($isResult);
+            if ($isResult) {
+                $neg = $wd['negative'];
+                $ws->getStyle("B{$r}:D{$r}")->applyFromArray(['fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => $neg ? 'FEF2F2' : self::SOFT]],
+                    'font' => ['color' => ['rgb' => $neg ? self::BAD : self::INK]]]);
+                $this->edge($ws, "B{$r}:D{$r}", 'top', Border::BORDER_THIN, $neg ? self::BAD : self::TEAL);
+            }
+            $this->rowLine($ws, "B{$r}:J{$r}");
+            $ws->getRowDimension($r)->setRowHeight($isResult ? 22 : 18);
+            $r++;
+        }
+        if ($wd['explain']) {
+            $wd['negative'] ? $this->flag($ws, "B{$r}", '⚠ '.$wd['explain'], self::BAD) : $this->note($ws, "B{$r}", $wd['explain']);
+            $r++;
+        }
+        $r++;
+
+        if ($wd['restricted']) {
+            $this->restrictedNote($ws, $r, $wd['restricted_note']);
+            $ws->freezePane('A5');
+
+            return;
+        }
+
+        // Agrupado por concepto.
+        $this->label($ws, "B{$r}", 'AGRUPADO POR CONCEPTO');
+        $r++;
+        foreach (['B' => 'CONCEPTO', 'E' => 'MOVIMIENTOS', 'F' => 'IMPORTE', 'G' => '% DEL TOTAL'] as $col => $t) {
+            $this->put($ws, "{$col}{$r}", $t);
+        }
+        $this->headerRow($ws, "B{$r}:G{$r}");
+        $ws->getStyle("E{$r}:G{$r}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+        $r++;
+        $gFirst = $r;
+        foreach ($wd['by_concept'] as $g) {
+            $this->put($ws, "B{$r}", ErFormat::mask((string) $g['label']));
+            $ws->mergeCells("B{$r}:D{$r}");
+            $this->put($ws, "E{$r}", (int) $g['count']);
+            $this->money($ws, "F{$r}", $g['amount']);
+            $this->pct($ws, "G{$r}", $g['pct'] ?? null);
+            $this->rowLine($ws, "B{$r}:G{$r}");
+            $r++;
+        }
+        if ($wd['by_concept'] === []) {
+            $this->note($ws, "B{$r}", 'Sin retiros de Dirección General ni de socios en el periodo.');
+            $r++;
+        }
+        $this->put($ws, "B{$r}", 'Total retiros DG y socios');
+        $ws->mergeCells("B{$r}:D{$r}");
+        $this->put($ws, "E{$r}", (int) $wd['count']);
+        if ($wd['by_concept'] !== []) {
+            $this->formulaOrValue($ws, "F{$r}", '=SUM(F'.$gFirst.':F'.($r - 1).')', $wd['total']);
+        } else {
+            $this->money($ws, "F{$r}", $wd['total']);
+        }
+        $ws->getStyle("B{$r}:G{$r}")->applyFromArray(['font' => ['bold' => true, 'color' => ['rgb' => self::INK]], 'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::SOFT]]]);
+        $this->edge($ws, "B{$r}:G{$r}", 'top', Border::BORDER_THIN, self::TEAL);
+        $r += 3;
+
+        // Lista completa de movimientos.
+        $this->label($ws, "B{$r}", 'MOVIMIENTOS · LISTA COMPLETA ('.count($wd['items']).')');
+        $r++;
+        $hdr = $r;
+        foreach (['B' => 'FECHA', 'C' => 'CONCEPTO', 'D' => 'CUENTA', 'E' => 'QUIÉN', 'F' => 'BENEFICIARIO', 'G' => 'ORIGEN', 'H' => 'IMPORTE', 'I' => 'TRATAMIENTO', 'J' => 'MOTIVO'] as $col => $t) {
+            $this->put($ws, "{$col}{$r}", $t);
+        }
+        $this->headerRow($ws, "B{$r}:J{$r}", true);
+        $ws->getStyle("H{$r}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+        $ws->freezePane('C'.($r + 1));
+        $ws->getPageSetup()->setRowsToRepeatAtTopByStartAndEnd($r, $r);
+        $r++;
+        foreach ($wd['items'] as $i) {
+            if (! empty($i['date'])) {
+                $this->put($ws, "B{$r}", (float) ExcelDate::PHPToExcel(Carbon::parse($i['date'])->startOfDay()));
+                $ws->getStyle("B{$r}")->getNumberFormat()->setFormatCode('dd/mm/yyyy');
+            }
+            $this->put($ws, "C{$r}", ErFormat::mask((string) ($i['concept'] ?? '')));
+            $this->put($ws, "D{$r}", (string) ErFormat::mask((string) ($i['account_label'] ?? $i['account_slot'] ?? '')));
+            $this->put($ws, "E{$r}", (string) ($i['who'] ?? ''));
+            $this->put($ws, "F{$r}", (string) ErFormat::mask((string) ($i['beneficiary'] ?? '')));
+            $this->put($ws, "G{$r}", $i['source_label']);
+            $this->money($ws, "H{$r}", $i['amount'] ?? null);
+            $this->put($ws, "I{$r}", (string) ($i['treatment_label'] ?? '').(! empty($i['manual']) ? ' (manual)' : ''));
+            $this->put($ws, "J{$r}", (string) ErFormat::mask((string) ($i['reason'] ?? '')));
+            $this->rowLine($ws, "B{$r}:J{$r}");
+            $r++;
+        }
+        if ($wd['items'] === []) {
+            $this->note($ws, "B{$r}", 'Sin movimientos de retiro en el periodo.');
+            $r++;
+        } else {
+            $ws->setAutoFilter("B{$hdr}:J".($r - 1));
+            $this->put($ws, "G{$r}", 'Total');
+            $ws->setCellValue("H{$r}", '=SUM(H'.($hdr + 1).':H'.($r - 1).')');
+            $ws->getStyle("H{$r}")->getNumberFormat()->setFormatCode(self::MONEY);
+            $ws->getStyle("G{$r}:H{$r}")->applyFromArray(['font' => ['bold' => true, 'color' => ['rgb' => self::INK]], 'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::SOFT]]]);
+            $this->edge($ws, "G{$r}:H{$r}", 'top', Border::BORDER_THIN, self::TEAL);
+        }
+        $ws->getPageSetup()->setPrintArea("A1:J{$r}");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────

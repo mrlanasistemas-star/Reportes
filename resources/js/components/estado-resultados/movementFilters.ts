@@ -85,10 +85,18 @@ export const QUICK_FILTERS: MovementFilter[] = [
     },
     {
         key: 'dg',
-        label: 'Dirección General',
-        hint: 'Movimientos clasificados o sugeridos como gasto de Dirección General.',
-        test: (m) =>
-            (m.rule_code ?? '').includes('dg') || m.treatment.startsWith('dg_'),
+        label: 'DG y socios',
+        hint: 'Movimientos clasificados o sugeridos como retiro de Dirección General o de socios (se restan después de la utilidad neta).',
+        test: (m) => {
+            const rule = m.rule_code ?? '';
+
+            return (
+                rule.includes('dg') ||
+                rule.startsWith('retiro_') ||
+                m.treatment.startsWith('dg_') ||
+                m.treatment === 'personal_socios'
+            );
+        },
     },
     {
         key: 'manual',

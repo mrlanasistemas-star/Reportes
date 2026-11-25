@@ -52,6 +52,11 @@ const items = computed(() => {
         width: (Math.abs(num(c.total.amount)) / max) * 100,
     }));
 });
+
+/** Versiones aprobadas antes del 25-nov-2026 traían Dirección General dentro del OPEX. */
+const legacyDg = computed(() =>
+    (opex.value?.categories ?? []).some((c) => c.key === 'dg'),
+);
 </script>
 
 <template>
@@ -70,8 +75,16 @@ const items = computed(() => {
             </p>
         </div>
         <p class="mt-0.5 text-xs text-muted-foreground">
-            Corporativo y Dirección General son categorías del OPEX, no niveles
-            de resultado. Todo se resta antes de llegar al EBITDA.
+            <template v-if="legacyDg">
+                Corporativo y Dirección General son categorías del OPEX, no
+                niveles de resultado. Todo se resta antes de llegar al EBITDA.
+            </template>
+            <template v-else>
+                Corporativo es una categoría del OPEX, no un nivel de resultado.
+                Todo se resta antes de llegar al EBITDA. Lo que toman Dirección
+                General y los socios no es OPEX: se resta al final, después de
+                la utilidad neta.
+            </template>
         </p>
         <p
             v-if="!items.length"

@@ -4,6 +4,7 @@ use App\Services\Access\ActionPermissionService;
 use App\Services\EstadoResultados\Calculation\EstadoResultadosDatasetBuilder;
 use App\Services\EstadoResultados\Classification\ClassificationService;
 use App\Services\EstadoResultados\EstadoResultadosProcessor;
+use App\Services\EstadoResultados\Export\EstadoResultadosExcelExporter;
 use App\Services\EstadoResultados\Support\Treatment as T;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -177,7 +178,7 @@ it('sin «ver_dg» se redacta el detalle de Dirección General; el EBITDA final 
 
     $full = $this->actingAs($admin)->getJson("/estado-resultados/{$period->id}/dataset")->json('dataset');
     $red = $this->actingAs($user)->getJson("/estado-resultados/{$period->id}/dataset")->json('dataset');
-    $dg = prOpexCategory($red, 'dg');
+    $dg = collect($red['statement'])->firstWhere('key', 'retiros'); // 25-nov-2026: debajo de la utilidad
 
     expect($full['controls']['dg'])->toBe('6000.00')
         ->and($red['results'])->toBe($full['results'])
@@ -188,8 +189,10 @@ it('sin «ver_dg» se redacta el detalle de Dirección General; el EBITDA final 
         ->and(json_encode($red))->not->toContain('HOTEL EJECUTIVO');
 
     $excel = $this->actingAs($user)->get("/estado-resultados/{$period->id}/exportar/excel")->assertOk();
-    $dgSheet = IOFactory::load($excel->getFile()->getPathname())->getSheetByName('Anexo DG');
-    expect((string) $dgSheet->getCell('B6')->getValue())->toContain('restringido');
+    // 25-nov-2026: el anexo de DG es ahora la hoja «Retiros DG y socios» (sólo totales sin «ver_dg»).
+    $dgSheet = IOFactory::load($excel->getFile()->getPathname())->getSheetByName(EstadoResultadosExcelExporter::WITHDRAWALS_SHEET);
+    $text = implode(' ', array_map(fn ($row) => implode(' ', array_map('strval', $row)), $dgSheet->toArray(null, false, false, false)));
+    expect($text)->toContain('restringido')->not->toContain('HOTEL EJECUTIVO');
     $this->actingAs($user)->getJson("/estado-resultados/{$period->id}/historial-clasificacion?fingerprint={$m['fingerprint']}")->assertForbidden();
     $this->actingAs($admin)->getJson("/estado-resultados/{$period->id}/historial-clasificacion?fingerprint={$m['fingerprint']}")->assertOk()->assertJsonCount(1, 'history');
 });

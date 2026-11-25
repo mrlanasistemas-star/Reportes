@@ -132,6 +132,37 @@ it('alcance de sucursal: sin gráfica de sucursales ni centralizados; Corporativ
         ->not->toContain('EBITDA por sucursal')->not->toContain('Gastos centralizados');
 });
 
+it('retiros DG y socios: al final del estado, resumen en rojo si es negativo, agrupado y lista completa; restringido sólo totales', function () {
+    [, $sep] = pdfRefPeriods();
+    $d = app(EstadoResultadosDatasetBuilder::class)->build($sep);
+    expect($d['withdrawals']['applies'])->toBeTrue();
+    $d['withdrawals'] = array_replace($d['withdrawals'], [
+        'total' => '300000.00', 'count' => 2, 'result' => '-60000.00', 'negative' => true,
+        'explain' => 'En rojo: Dirección General y los socios tomaron más de lo que dejó el periodo (tomaron dinero del flujo siguiente).',
+        'by_concept' => [['key' => 'GASTOS DG', 'label' => 'GASTOS DG', 'count' => 2, 'amount' => '300000.00', 'pct' => '100.0000']],
+        'items' => [
+            ['fingerprint' => 'a', 'source' => 'banco', 'date' => '2026-09-12', 'concept' => 'GASTOS DG 12/09', 'group' => 'GASTOS DG', 'account_slot' => 'bbva', 'account_label' => 'BBVA 0123456789', 'folio' => null, 'branch_name' => null, 'beneficiary' => 'JUAN SOCIO', 'who' => 'JUAN SOCIO', 'cargo' => '100000.00', 'abono' => null, 'amount' => '100000.00', 'treatment' => 'personal_socios', 'treatment_label' => 'Retiro DG / socios', 'rule_code' => 'retiro_socios', 'reason' => null, 'manual' => false],
+            ['fingerprint' => 'b', 'source' => 'erp', 'date' => '2026-09-20', 'concept' => 'GASTOS DG 20/09', 'group' => 'GASTOS DG', 'account_slot' => null, 'account_label' => null, 'folio' => 'R-1', 'branch_name' => null, 'beneficiary' => '', 'who' => 'Dirección General', 'cargo' => '200000.00', 'abono' => null, 'amount' => '200000.00', 'treatment' => 'dg_operativo', 'treatment_label' => 'DG operativo', 'rule_code' => 'erp_dg', 'reason' => null, 'manual' => true],
+        ],
+    ]);
+    $html = app(EstadoResultadosPdfExporter::class)->html($d);
+
+    expect($html)->toContain('href="#retiros"')->toContain('id="retiros"')
+        ->toContain('RETIROS DE DIRECCIÓN GENERAL Y SOCIOS')->toContain('RESULTADO DESPUÉS DE RETIROS')
+        ->toContain('-$60,000.00')->toContain('tomaron dinero del flujo siguiente')
+        ->toContain('Agrupado por concepto')->toContain('GASTOS DG 12/09')->toContain('GASTOS DG 20/09')
+        ->toContain('JUAN SOCIO')->toContain('••6789')->not->toContain('0123456789')
+        ->toContain('$300,000.00')->toContain('Regla:');
+    expect(strpos($html, 'RESULTADO DESPUÉS DE RETIROS'))->toBeGreaterThan(strpos($html, 'UTILIDAD NETA'));
+
+    $d['withdrawals'] = array_replace($d['withdrawals'], ['by_concept' => [], 'items' => [], 'restricted' => true]);
+    expect(app(EstadoResultadosPdfExporter::class)->html($d))->toContain('Detalle restringido')->not->toContain('GASTOS DG 12/09');
+
+    // Dataset anterior a la regla (sin withdrawals): sin sección y sin error.
+    unset($d['withdrawals']);
+    expect(app(EstadoResultadosPdfExporter::class)->html($d))->not->toContain('id="retiros"');
+});
+
 it('preliminar: marca de agua y estado PRELIMINAR; nunca se rotula como aprobado', function () {
     [, $sep] = pdfRefPeriods();
     $d = app(EstadoResultadosDatasetBuilder::class)->build($sep);

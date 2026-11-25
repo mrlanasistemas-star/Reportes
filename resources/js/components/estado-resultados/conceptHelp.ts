@@ -7,7 +7,7 @@ export const CONCEPT_HELP: Record<string, string> = {
     ingresos_operativos:
         'Todo lo que ingresó por la operación del negocio en el periodo. Es el punto de partida del resultado.',
     opex_total:
-        'Gastos operativos (OPEX): lo que cuesta operar. Incluye gastos y nómina de sucursales, gastos y nómina corporativa y Dirección General. Se resta completo antes del EBITDA.',
+        'Gastos operativos (OPEX): lo que cuesta operar. Incluye gastos y nómina de sucursales y gastos y nómina corporativa (lo que toman Dirección General y los socios NO es OPEX). Se resta completo antes del EBITDA.',
     ebitda: 'Lo que queda de los ingresos después de pagar la operación, antes de depreciación, intereses e impuestos. Es la medida principal de qué tan rentable es operar.',
     depreciacion_amortizacion:
         'El desgaste del periodo de los activos (vehículos, equipo) y de los sistemas propios. No es salida de dinero, pero reduce el resultado.',
@@ -18,6 +18,10 @@ export const CONCEPT_HELP: Record<string, string> = {
     isr: 'Impuesto sobre la renta del periodo. Mientras no se capture se muestra «Pendiente», nunca $0.',
     utilidad_neta:
         'Lo que realmente queda al final del periodo, después de depreciación, intereses e ISR.',
+    retiros_dg_socios:
+        'Lo que tomaron Dirección General y los socios en el periodo. No es OPEX ni cambia el EBITDA: se resta al final, después de la utilidad neta.',
+    resultado_despues_retiros:
+        'Lo que queda después de restar a la utilidad neta los retiros de Dirección General y socios (si el ISR está pendiente, se calcula sobre el EBT). En rojo, tomaron dinero del flujo siguiente.',
     margen_ebitda: 'Qué parte de cada peso de ingresos queda como EBITDA.',
     margen_ebit: 'Qué parte de cada peso de ingresos queda como EBIT.',
     margen_neto: 'Qué parte de cada peso de ingresos queda como utilidad neta.',

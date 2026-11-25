@@ -25,7 +25,7 @@ class EstadoResultadosExportContext
     /** Pasos del modelo de EBITDA único con etiqueta, tipo y fórmula impresa. */
     public const STEPS = [
         'ingresos_operativos' => ['label' => 'Ingresos operativos', 'kind' => 'income', 'formula' => 'Intereses, IVA (criterio gerencial), moratorios, cargos y comisiones cobrados. Sin capital recuperado.'],
-        'opex_total' => ['label' => 'OPEX · gastos operativos', 'kind' => 'expense', 'formula' => 'Gastos y nómina de sucursales, gastos y nómina corporativa y Dirección General.'],
+        'opex_total' => ['label' => 'OPEX · gastos operativos', 'kind' => 'expense', 'formula' => 'Gastos y nómina de sucursales y gastos y nómina corporativa. Los retiros de Dirección General y socios no son OPEX (se restan después de la Utilidad neta).'],
         'ebitda' => ['label' => 'EBITDA', 'kind' => 'result', 'formula' => 'Ingresos operativos − OPEX'],
         'depreciacion_amortizacion' => ['label' => 'Depreciación y amortización', 'kind' => 'expense', 'formula' => 'Activos propios y sistemas capitalizados.'],
         'ebit' => ['label' => 'EBIT', 'kind' => 'result', 'formula' => 'EBITDA − Depreciación y amortización'],
@@ -145,10 +145,12 @@ class EstadoResultadosExportContext
             'opex_categories' => $this->opexCategories($d, $summary, $results['opex_total'], $legacy),
             'statement' => array_values((array) ($d['statement'] ?? [])),
             'comparisons' => $comparisons,
-            'cascade' => $comparisons['charts']['cascada']['steps'] ?? $this->cascade($results),
+            'cascade' => $comparisons['charts']['cascada']['steps'] ?? $this->cascade($results, ErWithdrawalsSection::build($d)),
             'sources' => $this->sources($d),
             'validation' => $this->validation($d),
             'redaction_message' => $meta['redactions']['message'] ?? null,
+            // Retiros DG y socios (sólo consolidado; null en sucursal o datasets anteriores a la regla).
+            'withdrawals' => ErWithdrawalsSection::build($d),
             'restricted' => ['nomina' => (bool) ($meta['redactions']['nomina'] ?? false), 'dg' => (bool) ($meta['redactions']['dg'] ?? false)],
             'warnings' => $summary['warnings'],
         ];
@@ -299,7 +301,7 @@ class EstadoResultadosExportContext
     }
 
     /** Cascada con la MISMA forma que charts.cascada (respaldo cuando no hay comparativas). */
-    private function cascade(array $v): array
+    private function cascade(array $v, ?array $w = null): array
     {
         $steps = [];
         $running = null;
@@ -325,6 +327,13 @@ class EstadoResultadosExportContext
         $add('ebt', 'subtotal', $v['ebt']);
         $add('isr', 'delta', $neg($v['isr']));
         $add('utilidad_neta', 'total', $v['utilidad_neta']);
+        if ($w !== null) {
+            // Retiros DG y socios: después de la utilidad (con ISR pendiente, sobre el EBT).
+            $start = $w['base_amount'];
+            $delta = $neg($w['total']);
+            $steps[] = ['key' => 'retiros_dg_socios', 'label' => 'Retiros DG y socios', 'type' => 'delta', 'amount' => $delta, 'start' => $start, 'end' => $w['result'], 'pending' => $delta === null || $start === null];
+            $steps[] = ['key' => 'resultado_despues_retiros', 'label' => 'Resultado después de retiros', 'type' => 'total', 'amount' => $w['result'], 'start' => $w['result'] === null ? null : '0.00', 'end' => $w['result'], 'pending' => $w['result'] === null];
+        }
 
         return $steps;
     }

@@ -15,6 +15,7 @@ import {
     isAbortError,
 } from '@/components/estado-resultados/types';
 import type { Dataset } from '@/components/estado-resultados/types';
+import type { ErTaskStatus } from '@/composables/estado-resultados/erTask';
 
 /** Alcance seleccionable (consolidado o sucursal) que el servidor permite al usuario. */
 export interface ScopeOption {
@@ -26,7 +27,13 @@ export interface ScopeOption {
 interface Entry {
     dataset: Dataset;
     scopes: ScopeOption[];
+    /** Reproceso automático encolado por el servidor (reglas o catálogo nuevos). */
+    auto_refresh?: ErTaskStatus | null;
 }
+
+/** Intervalo de consulta del reproceso automático (ms) y espera máxima en pantalla. */
+const AUTO_REFRESH_POLL_MS = 4000;
+const AUTO_REFRESH_MAX_MS = 30 * 60 * 1000;
 
 /** Últimos datasets vistos en esta pestaña (volver a un alcance/periodo es instantáneo). */
 const MAX_CACHED = 8;
@@ -73,6 +80,8 @@ export function useErDataset(initial: {
     const version = ref(0);
     /** Momento en que empezó la carga en curso (para la pantalla de carga). */
     const loadingSince = ref<number | null>(null);
+    /** Reproceso automático en curso (el servidor lo encoló al detectar reglas nuevas). */
+    const autoRefreshing = ref<ErTaskStatus | null>(null);
 
     /** URL de una ruta del periodo mostrado: `{base}/estado-resultados/{periodo}{path}`. */
     const url = (path: string) =>
@@ -162,6 +171,10 @@ export function useErDataset(initial: {
             dataset.value = res.dataset;
             scopes.value = res.scopes;
             version.value++;
+
+            if (res.auto_refresh && !res.auto_refresh.finished) {
+                void waitAutoRefresh(res.auto_refresh);
+            }
         } catch (e) {
             if (current !== requestId || isAbortError(e)) {
                 return;
@@ -200,6 +213,49 @@ export function useErDataset(initial: {
                 revalidating.value = false;
                 loadingSince.value = null;
             }
+        }
+    }
+
+    /**
+     * Espera en segundo plano el reproceso automático (mismo «Procesar conciliación», lanzado por el
+     * sistema) y recarga el reporte al terminar. Nunca muestra errores: si falla, se queda lo actual.
+     * @param task Tarea encolada por el servidor.
+     */
+    async function waitAutoRefresh(task: ErTaskStatus): Promise<void> {
+        if (autoRefreshing.value) {
+            return;
+        }
+
+        autoRefreshing.value = task;
+        const started = Date.now();
+        const period = periodId.value;
+
+        try {
+            let t = task;
+
+            while (!t.finished && Date.now() - started < AUTO_REFRESH_MAX_MS) {
+                await new Promise((r) => setTimeout(r, AUTO_REFRESH_POLL_MS));
+
+                if (period !== periodId.value) {
+                    return; // cambió de periodo: ya no aplica
+                }
+
+                t = (
+                    await apiJson<{ task: ErTaskStatus }>(
+                        url(`/tareas/${t.id}`),
+                    )
+                ).task;
+                autoRefreshing.value = t;
+            }
+
+            if (t.finished && period === periodId.value) {
+                memory.clear();
+                await loadDataset({ force: true });
+            }
+        } catch {
+            // Silencioso: el reporte actual sigue visible; al recargar se vuelve a revisar.
+        } finally {
+            autoRefreshing.value = null;
         }
     }
 
@@ -280,6 +336,8 @@ export function useErDataset(initial: {
         loadErrorStatus,
         reloadFailed,
         loadingSince,
+        /** Reproceso automático en curso (null si no hay). */
+        autoRefreshing,
         version,
         consolidated,
         url,

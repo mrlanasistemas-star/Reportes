@@ -8,6 +8,10 @@
  * ← →; un paso pendiente se dibuja como hueco punteado, nunca como $0. En móvil
  * es una lista con barras proporcionales.
  *
+ * En el consolidado cierra con los retiros de Dirección General y socios
+ * (después de la utilidad; con ISR pendiente parten del EBT) y el resultado
+ * después de retiros.
+ *
  * Props:
  * - steps: pasos de la cascada del dataset.
  * - meta: StepMeta por clave de paso (fórmula, fuentes).
@@ -45,6 +49,7 @@ const SHORT_LABEL: Record<string, string> = {
     nomina_sucursales: 'Nómina sucursales',
     opex_corporativo: 'Corporativo',
     nomina_corporativa: 'Nómina corporativa',
+    // Versiones aprobadas antes del 25-nov-2026: DG era un paso del OPEX.
     dg: 'Dirección General',
     ebitda: 'EBITDA',
     depreciacion_amortizacion: 'Depreciación y amortización',
@@ -53,6 +58,8 @@ const SHORT_LABEL: Record<string, string> = {
     ebt: 'Antes de impuestos (EBT)',
     isr: 'ISR',
     utilidad_neta: 'Utilidad neta',
+    retiros_dg_socios: 'Retiros DG y socios',
+    resultado_despues_retiros: 'Después de retiros',
 };
 
 /** Paso resaltado: la vista previa manda sobre el fijado. */
@@ -65,8 +72,15 @@ const focusKey = computed(() => props.preview ?? props.selected);
  */
 const bars = computed(() => {
     let running: number | null = 0;
+    /** Fin del EBT: con ISR pendiente, los retiros parten de ahí (la utilidad queda pendiente). */
+    let ebtTo: number | null = null;
     const raw = props.steps.map((s) => {
         const pending = s.amount === null || s.pending === true;
+
+        if (s.group === 'retiros' && running === null) {
+            running = ebtTo;
+        }
+
         const value = pending ? 0 : num(s.amount);
         let from: number | null = 0;
         let to: number | null = value;
@@ -80,6 +94,10 @@ const bars = computed(() => {
         }
 
         running = to;
+
+        if (s.key === 'ebt') {
+            ebtTo = to;
+        }
 
         return { ...s, from, to, value, pending };
     });
@@ -234,9 +252,11 @@ function onKey(e: KeyboardEvent, i: number): void {
                         :class="
                             g.id === 2
                                 ? 'bg-rose-400/70 dark:bg-rose-500/60'
-                                : g.id === 1
-                                  ? 'bg-emerald-600/70 dark:bg-emerald-500/60'
-                                  : 'bg-cyan-500/70 dark:bg-cyan-500/60'
+                                : g.id === 4
+                                  ? 'bg-amber-500/70 dark:bg-amber-500/60'
+                                  : g.id === 1
+                                    ? 'bg-emerald-600/70 dark:bg-emerald-500/60'
+                                    : 'bg-cyan-500/70 dark:bg-cyan-500/60'
                         "
                     />
                 </div>

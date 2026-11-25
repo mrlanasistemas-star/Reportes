@@ -1,7 +1,8 @@
 /**
  * Une cada paso de la cascada con el bloque del estado de resultados que lo explica.
  * Modelo de UN solo EBITDA: Ingresos → OPEX (categorías) → EBITDA → D&A → EBIT →
- * Resultado financiero neto → EBT → ISR → Utilidad neta. Sólo reorganiza datos del
+ * Resultado financiero neto → EBT → ISR → Utilidad neta → (consolidado) Retiros de DG y
+ * socios → Resultado después de retiros. Sólo reorganiza datos del
  * dataset; no calcula importes.
  */
 import type {
@@ -41,17 +42,21 @@ export interface StepMeta {
     blockKey: string;
 }
 
-/** Grupos visuales de la cascada: 1 Ingresos, 2 OPEX, 3 del EBITDA a la utilidad neta. */
+/**
+ * Grupos visuales de la cascada: 1 Ingresos, 2 OPEX, 3 del EBITDA a la utilidad neta,
+ * 4 retiros de DG y socios (después de la utilidad; sólo consolidado).
+ */
 export const STEP_GROUPS: Record<number, { label: string }> = {
     1: { label: 'Ingresos' },
     2: { label: 'OPEX · gastos operativos' },
     3: { label: 'Del EBITDA a la utilidad neta' },
+    4: { label: 'Después de la utilidad: retiros' },
 };
 
-/** Paso del modelo (1–9) → grupo visual. Versiones anteriores sin `step` usan `level`. */
+/** Paso del modelo (1–11) → grupo visual. Versiones anteriores sin `step` usan `level`. */
 /**
  * @param s paso (o barra) con `step`, `level` y `group`.
- * @returns 1, 2 o 3 según STEP_GROUPS.
+ * @returns 1, 2, 3 o 4 según STEP_GROUPS.
  */
 export function groupOf(
     s: Pick<WaterfallStep, 'step' | 'level' | 'group'>,
@@ -60,6 +65,10 @@ export function groupOf(
 
     if (s.group === 'opex' || step === 2) {
         return 2;
+    }
+
+    if (s.group === 'retiros' || step >= 10) {
+        return 4;
     }
 
     return step <= 1 ? 1 : 3;
@@ -72,6 +81,7 @@ const STEP_SECTION: Record<string, string> = {
     depreciacion_amortizacion: 'da',
     resultado_financiero_neto: 'financiero',
     isr: 'isr',
+    retiros_dg_socios: 'retiros',
 };
 
 /** Fórmulas de respaldo para pasos que no son subtotales (los subtotales traen la suya). */
@@ -83,6 +93,8 @@ const FORMULAS: Record<string, string> = {
     resultado_financiero_neto:
         'Con signo: gastos financieros negativos, ingresos financieros / no operativos positivos',
     isr: 'Se resta: impuesto sobre la renta del periodo',
+    retiros_dg_socios:
+        'Se resta después de la utilidad: lo que tomaron Dirección General y los socios. No es OPEX: no cambia el EBITDA',
 };
 
 /**

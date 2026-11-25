@@ -54,9 +54,20 @@ const equation = computed(() => {
     const rows: WaterfallStep[] = [];
 
     for (let j = i - 1; j >= 0; j--) {
-        rows.unshift(props.steps[j]);
+        let s = props.steps[j];
 
-        if (props.steps[j].type !== 'delta') {
+        // Con ISR pendiente el resultado después de retiros parte del EBT, no de la utilidad (pendiente).
+        if (
+            s.type !== 'delta' &&
+            m.step.base === 'ebt' &&
+            s.key === 'utilidad_neta'
+        ) {
+            s = props.steps.find((x) => x.key === 'ebt') ?? s;
+        }
+
+        rows.unshift(s);
+
+        if (s.type !== 'delta') {
             break;
         }
     }
@@ -150,9 +161,11 @@ const lineKey = computed(() =>
                         {{
                             meta.category
                                 ? 'Categoría de OPEX'
-                                : meta.step.type === 'delta'
-                                  ? 'Se resta o suma en este paso'
-                                  : 'Resultado'
+                                : meta.step.group === 'retiros'
+                                  ? 'Se resta después de la utilidad (no es OPEX)'
+                                  : meta.step.type === 'delta'
+                                    ? 'Se resta o suma en este paso'
+                                    : 'Resultado'
                         }}
                         <span
                             v-if="!pinned"
@@ -197,7 +210,12 @@ const lineKey = computed(() =>
             </p>
             <p
                 v-if="meta.result?.note || (pending && meta.section?.note)"
-                class="mt-1 text-xs font-semibold text-amber-800 dark:text-amber-300"
+                class="mt-1 text-xs font-semibold"
+                :class="
+                    meta.result?.negative
+                        ? 'text-rose-700 dark:text-rose-300'
+                        : 'text-amber-800 dark:text-amber-300'
+                "
             >
                 {{ meta.result?.note ?? meta.section?.note }}
             </p>
