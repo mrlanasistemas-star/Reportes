@@ -2039,8 +2039,8 @@ class EstadoResultadosExcelExporter
 
         // 1 · Resumen por crédito (encabezados congelados + autofiltro).
         $hdr = 9;
-        $headers = ['B' => 'CRÉDITO', 'C' => 'ACREEDOR', 'D' => 'COBERTURA TABLA', 'E' => 'PAGOS PREVISTOS', 'F' => 'PAGOS CONCILIADOS', 'G' => 'PREVISTO',
-            'H' => 'PAGADO (BANCO)', 'I' => 'CAPITAL (INFO.)', 'J' => 'INTERÉS', 'K' => 'COMISIÓN', 'L' => 'IVA', 'M' => 'DIFERENCIA', 'N' => 'ESTADO', 'O' => 'MOTIVO'];
+        $headers = ['B' => 'CRÉDITO', 'C' => 'ACREEDOR', 'D' => 'COBERTURA TABLA', 'E' => 'PAGOS PREVISTOS', 'F' => 'PAGOS CUBIERTOS', 'G' => 'DEBÍA PAGAR',
+            'H' => 'APLICADO', 'I' => 'CAPITAL (INFO.)', 'J' => 'INTERÉS', 'K' => 'COMISIÓN', 'L' => 'IVA', 'M' => 'FALTANTE / EXCEDENTE', 'N' => 'ESTADO', 'O' => 'MOTIVO'];
         foreach ($headers as $c => $t) {
             $this->put($ws, "{$c}{$hdr}", $t);
         }
@@ -2054,14 +2054,14 @@ class EstadoResultadosExcelExporter
             $this->put($ws, "C{$r}", (string) $c['creditor']);
             $this->put($ws, "D{$r}", $c['coverage_label']);
             $this->put($ws, "E{$r}", (int) $pt['expected_count']);
-            $this->put($ws, "F{$r}", (int) $pt['reconciled_count']);
-            $this->money($ws, "G{$r}", $pt['expected']);
-            $this->money($ws, "H{$r}", $pt['detected']);
+            $this->put($ws, "F{$r}", (int) $c['application']['covered_count']);
+            $this->money($ws, "G{$r}", $c['application']['expected']);
+            $this->money($ws, "H{$r}", $c['application']['applied']);
             $c['covered'] ? $this->money($ws, "I{$r}", $c['totals']['principal']) : $this->put($ws, "I{$r}", '—');
             $this->money($ws, "J{$r}", $c['recognized']['interest']);
             $this->money($ws, "K{$r}", $c['recognized']['commission']);
             $this->money($ws, "L{$r}", $c['vat']);
-            $this->money($ws, "M{$r}", $pt['difference']);
+            $this->money($ws, "M{$r}", $c['application']['difference']);
             $this->put($ws, "N{$r}", $c['status_label']);
             $this->pill($ws, "N{$r}", match ($c['status_tone']) {
                 'ok' => 'ECFDF5', 'bad' => 'FEF2F2', default => 'FFFBEB'
@@ -2074,19 +2074,21 @@ class EstadoResultadosExcelExporter
         }
         $ws->setAutoFilter("B{$hdr}:O".($r - 1));
         $this->put($ws, "B{$r}", 'Total');
-        foreach (['H' => $s['observed_payment'], 'I' => $s['principal_informative'], 'J' => $s['interest_recognized'], 'K' => $s['commission_recognized'], 'L' => $s['vat_separated']] as $col => $v) {
+        foreach (['G' => $s['expected_payment'], 'H' => $s['applied_payment'], 'I' => $s['principal_informative'], 'J' => $s['interest_recognized'], 'K' => $s['commission_recognized'], 'L' => $s['vat_separated']] as $col => $v) {
             $this->money($ws, "{$col}{$r}", $v);
         }
         $ws->getStyle("B{$r}:O{$r}")->applyFromArray(['font' => ['bold' => true], 'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => self::SOFT]]]);
         $this->edge($ws, "B{$r}:O{$r}", 'top', Border::BORDER_THIN, self::TEAL);
-        $r += 2;
+        $this->note($ws, 'B'.($r + 1), ErFinancingSection::APPLIED_NOTE);
+        $r += 3;
 
         // 2 · Calendario previsto del periodo (tabla de amortización vs. banco).
-        $r = $this->finTable($ws, $r, 'CALENDARIO PREVISTO DEL PERIODO', ['CRÉDITO', 'NÚM.', 'FECHA PREVISTA', 'PAGO PREVISTO', 'CAPITAL', 'INTERÉS', 'COMISIÓN', 'IVA', 'FECHA BANCO', 'PAGADO', 'DIFERENCIA', 'ESTADO', 'ETAPA'],
+        $r = $this->finTable($ws, $r, 'CALENDARIO PREVISTO DEL PERIODO', ['CRÉDITO', 'NÚM.', 'FECHA PREVISTA', 'PAGO PREVISTO', 'APLICADO', 'FALTANTE', 'COBERTURA', 'CAPITAL', 'INTERÉS', 'COMISIÓN', 'IVA', 'FECHA BANCO', 'CARGO BANCO', 'ESTADO BANCO'],
             collect($fin['credits'])->flatMap(fn ($c) => array_map(fn ($p) => [
-                $c['name'], (int) $p['number'], ['date', $p['scheduled_date']], ['money', $p['expected_payment']], ['money', $p['principal']], ['money', $p['interest']],
-                ['money', $p['commission']], ['money', $p['vat']], ['date', $p['bank_date']], ['money', $p['detected_payment']], ['money', $p['difference']],
-                ErFinancingSection::PAYMENT_STATUS[$p['status']] ?? $p['status'], ucfirst((string) $p['stage']),
+                $c['name'], (int) $p['number'], ['date', $p['scheduled_date']], ['money', $p['expected_payment']], ['money', $p['applied']], ['money', $p['shortfall']],
+                ErFinancingSection::coverageLabel($p['coverage'], $c['application']['basis']), ['money', $p['principal']], ['money', $p['interest']],
+                ['money', $p['commission']], ['money', $p['vat']], ['date', $p['bank_date']], ['money', $p['detected_payment']],
+                ErFinancingSection::PAYMENT_STATUS[$p['status']] ?? $p['status'],
             ], $c['payments']['rows']))->all(), 'Sin pagos previstos en el periodo.');
 
         // 3 · Pagos bancarios detectados (cargos al acreedor; cuentas y conceptos enmascarados).
@@ -2123,10 +2125,10 @@ class EstadoResultadosExcelExporter
 
         // 6 · Diferencias (pagos vs. tabla, captura del ER vs. tabla y cuadre del reparto).
         $allocBy = collect($fin['allocation']['credits'] ?? [])->keyBy('credit_key');
-        $r = $this->finTable($ws, $r, 'DIFERENCIAS', ['CRÉDITO', 'PREVISTO', 'PAGADO', 'PAGADO − PREVISTO', 'POR CONCILIAR (#)', 'POR CONCILIAR ($)', 'ER − TABLA (INTERÉS)', 'ER − TABLA (COMISIÓN)', 'REPARTO CUADRA'],
+        $r = $this->finTable($ws, $r, 'DIFERENCIAS', ['CRÉDITO', 'DEBÍA PAGAR', 'APORTADO', 'PAGADO AL ACREEDOR', 'APLICADO', 'FALTANTE / EXCEDENTE', 'SIN CUBRIR (#)', 'ER − TABLA (INTERÉS)', 'ER − TABLA (COMISIÓN)', 'REPARTO CUADRA'],
             array_map(fn ($c) => [
-                $c['name'], ['money', $c['payments']['totals']['expected']], ['money', $c['payments']['totals']['detected']], ['money', $c['payments']['totals']['difference']],
-                (int) $c['payments']['totals']['unreconciled_count'], ['money', $c['payments']['totals']['unreconciled_amount']],
+                $c['name'], ['money', $c['application']['expected']], ['money', $c['application']['contributed']], ['money', $c['application']['paid_to_creditor']],
+                ['money', $c['application']['applied']], ['money', $c['application']['difference']], (int) $c['payments']['totals']['unreconciled_count'],
                 ['money', $c['adjustment']['difference'] ?? null], ['money', $c['commission_adjustment']['difference'] ?? null],
                 isset($allocBy[$c['key']]) ? (($allocBy[$c['key']]['check']['ok'] ?? false) ? '✓ Sí' : '✗ No') : '—',
             ], $fin['credits']), 'Sin créditos.');

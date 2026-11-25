@@ -453,6 +453,7 @@ class FinancialExpenseService
             $calc = $item['calc'];
             $calc['bank'] = $this->bankEvidence($credit, $period, $calc); // compatibilidad (UI actual)
             $calc['creditor_payments'] = $item['creditor_payments'];
+            $calc['application'] = $item['application'];
             $calc['contributions'] = $ctx['contributions']['by_credit'][$credit->key] ?? self::emptyContributions();
             $calc['status'] = $item['status'];
             $calc['recognized'] = $item['recognized'];
@@ -544,10 +545,12 @@ class FinancialExpenseService
 
         $items = [];
         $summary = ['observed' => BigDecimal::zero(), 'principal' => BigDecimal::zero(), 'interest' => BigDecimal::zero(), 'commission' => BigDecimal::zero(),
-            'vat' => BigDecimal::zero(), 'unreconciled_count' => 0, 'unreconciled' => BigDecimal::zero()];
+            'vat' => BigDecimal::zero(), 'unreconciled_count' => 0, 'unreconciled' => BigDecimal::zero(),
+            'expected' => BigDecimal::zero(), 'applied' => BigDecimal::zero(), 'shortfall' => BigDecimal::zero()];
         foreach ($credits as $credit) {
             $calc = $this->creditPeriod($credit, $period);
             $payments = $this->creditorPayments($credit, $calc, $movements, $overrides, $locked !== null);
+            [$payments, $application] = self::applyFunds($payments, $contributions['by_credit'][$credit->key] ?? self::emptyContributions());
             $recognized = [
                 'interest' => self::recognizedAmount($adjustments[$credit->adjustment_concept] ?? null, $feedCount[$credit->adjustment_concept] ?? 0, $calc, 'interest'),
                 'commission' => $credit->commission_concept && $commissionsOn
@@ -558,9 +561,14 @@ class FinancialExpenseService
             $recognized['commission_informative'] = $credit->commission_concept && ! $commissionsOn ? $calc['totals']['commission'] : null;
 
             $items[] = [
-                'model' => $credit, 'calc' => $calc, 'creditor_payments' => $payments, 'recognized' => $recognized,
-                'status' => $this->derivedStatus($credit, $period, $calc, $payments, $hasBank),
+                'model' => $credit, 'calc' => $calc, 'creditor_payments' => $payments, 'recognized' => $recognized, 'application' => $application,
+                'status' => $this->derivedStatus($credit, $period, $calc, $payments, $hasBank, $application),
             ];
+            if ($calc['covered']) {
+                $summary['expected'] = $summary['expected']->plus(Money::of($application['expected']));
+                $summary['applied'] = $summary['applied']->plus(Money::of($application['applied']));
+                $summary['shortfall'] = $summary['shortfall']->plus(Money::of($application['shortfall']));
+            }
             $summary['observed'] = $summary['observed']->plus(Money::of($payments['totals']['detected']));
             if ($calc['covered']) {
                 $summary['principal'] = $summary['principal']->plus(Money::of($calc['totals']['principal']));
@@ -583,6 +591,10 @@ class FinancialExpenseService
             'allocation' => $allocation,
             'summary' => [
                 'observed_payment' => Money::str2($summary['observed']),
+                // Pago aplicado a los créditos (ver applyFunds(): máx(aportaciones, pagos al acreedor)).
+                'expected_payment' => Money::str2($summary['expected']),
+                'applied_payment' => Money::str2($summary['applied']),
+                'shortfall' => Money::str2($summary['shortfall']),
                 'principal_informative' => Money::str2($summary['principal']),
                 'interest_recognized' => Money::str2($summary['interest']),
                 'commission_recognized' => Money::str2($summary['commission']),
@@ -960,6 +972,78 @@ class FinancialExpenseService
     }
 
     /**
+     * PAGO APLICADO AL CRÉDITO y su reparto FIFO sobre los pagos programados del periodo.
+     *
+     * Regla anti doble conteo: aplicado = MÁX(aportaciones, pagos al acreedor detectados).
+     *  - Las aportaciones («DEPOSITO … LEROM» de las sucursales, identificadas o pendientes de
+     *    sucursal) son el dinero apartado para el crédito; el cargo al acreedor («PAGO CREDITO…»)
+     *    es ESE MISMO dinero saliendo hacia el acreedor. Sumarlos contaría dos veces lo mismo.
+     *  - Si las sucursales aportaron más de lo que ya salió al acreedor, lo aportado cuenta como
+     *    aplicado (el dinero está reservado para el crédito); si salió más de lo aportado, la
+     *    diferencia la puso la empresa con otros fondos y también cuenta. Sin cargos al acreedor,
+     *    aplicado = aportaciones; sin aportaciones, aplicado = pagos al acreedor.
+     * Reparto FIFO al centavo: el aplicado cubre los pagos del periodo en orden (5, 6, 7…); cada
+     * uno queda cubierto / parcial / sin_cubrir con su importe aplicado y faltante; el sobrante es
+     * excedente. Sólo es EVIDENCIA de pago: no toca el ER (capital fuera; costo = interés/comisión
+     * de la tabla) ni la conciliación banco ↔ renglón (`status`), que se conserva como dato.
+     * También redefine `totals.unreconciled_*` como pagos NO cubiertos y su faltante.
+     *
+     * @param  array<string,mixed>  $payments  creditorPayments()
+     * @param  array<string,mixed>  $contrib  aportaciones del crédito (contributions()['by_credit'][key])
+     * @return array{0:array<string,mixed>, 1:array<string,mixed>} [pagos con applied/shortfall/coverage, resumen]
+     */
+    public static function applyFunds(array $payments, array $contrib): array
+    {
+        $contributed = Money::cents($contrib['total'] ?? 0);
+        $paid = Money::cents($payments['totals']['detected'] ?? 0);
+        $applied = max($contributed, $paid);
+        $left = $applied;
+        $expected = 0;
+        $counts = ['cubierto' => 0, 'parcial' => 0, 'sin_cubrir' => 0];
+        $dueShort = 0;
+        foreach ($payments['rows'] as &$row) {
+            $exp = Money::cents($row['expected_payment']);
+            $take = min($left, $exp);
+            $left -= $take;
+            $expected += $exp;
+            $row['applied'] = self::c2($take);
+            $row['shortfall'] = self::c2($exp - $take);
+            $row['coverage'] = $take >= $exp ? 'cubierto' : ($take > 0 ? 'parcial' : 'sin_cubrir');
+            $counts[$row['coverage']]++;
+            if ($row['due'] ?? false) {
+                $dueShort += $exp - $take;
+            }
+        }
+        unset($row);
+        $shortfall = $expected - min($applied, $expected);
+        $payments['totals']['covered_count'] = $counts['cubierto'];
+        $payments['totals']['unreconciled_count'] = $counts['parcial'] + $counts['sin_cubrir'];
+        $payments['totals']['unreconciled_amount'] = self::c2($shortfall);
+
+        return [$payments, [
+            'rule' => 'max_aportaciones_pagos',
+            'basis' => match (true) {
+                $applied === 0 => 'sin_fondos',
+                $contributed >= $paid => 'aportaciones',
+                default => 'pagos_acreedor',
+            },
+            'expected' => self::c2($expected),
+            'contributed' => self::c2($contributed),
+            'paid_to_creditor' => self::c2($paid),
+            'applied' => self::c2($applied),
+            'difference' => self::c2($applied - $expected),
+            'shortfall' => self::c2($shortfall),
+            'excess' => self::c2($left),
+            'due_shortfall' => self::c2($dueShort),
+            'expected_count' => count($payments['rows']),
+            'covered_count' => $counts['cubierto'],
+            'partial_count' => $counts['parcial'],
+            'uncovered_count' => $counts['sin_cubrir'],
+            'note' => 'Aplicado = lo mayor entre lo aportado por las sucursales y lo pagado al acreedor: es el mismo dinero, por eso no se suma.',
+        ]];
+    }
+
+    /**
      * Subconjuntos (≥2) de cargos cuya suma es la cuota dentro de la tolerancia.
      *
      * @param  array<int,array<string,mixed>>  $cargos  id ⇒ movimiento
@@ -1000,13 +1084,15 @@ class FinancialExpenseService
     /**
      * Estado DERIVADO del crédito en el periodo (no se guarda): vigente · sin_pagos_programados
      * (fuera de calendario) · posible_liquidacion (ya pasó el último pago previsto y no hay cargos
-     * al acreedor; NO es «liquidado», que sólo lo confirma un usuario) · pago_no_localizado (un
-     * pago ya vencido sin cargo, cuando el periodo tiene estados de cuenta). Más: último pago
+     * al acreedor; NO es «liquidado», que sólo lo confirma un usuario) · pago_no_localizado (pagos
+     * vencidos y NADA aplicado: ni aportaciones ni cargos al acreedor) · pago_incompleto (hubo
+     * aportaciones o pagos, pero no alcanzan a cubrir los pagos vencidos; ver applyFunds()), ambos
+     * sólo cuando el periodo tiene estados de cuenta. Más: último pago
      * previsto, próximo pago, pagos restantes y saldo SEGÚN LA TABLA (no saldo bancario).
      *
      * @return array<string,mixed>
      */
-    private function derivedStatus(EstadoResultadosCredit $credit, Period $period, array $calc, array $payments, bool $hasBank): array
+    private function derivedStatus(EstadoResultadosCredit $credit, Period $period, array $calc, array $payments, bool $hasBank, array $application): array
     {
         $end = $period->end_date->format('Y-m-d');
         $upload = $credit->currentUpload;
@@ -1016,13 +1102,16 @@ class FinancialExpenseService
         $next = $all->first(fn ($r) => $r->payment_date->format('Y-m-d') > $end);
         $atEnd = $all->filter(fn ($r) => $r->payment_date->format('Y-m-d') <= $end)->last();
         $hasCargos = (float) $payments['totals']['detected'] > 0;
+        $dueShort = Money::of($application['due_shortfall'])->isPositive();
         $coverage = $calc['coverage'];
 
         [$status, $reason] = match (true) {
             $coverage['status'] === self::FUERA_CALENDARIO && $coverage['position'] === 'despues' && ! $hasCargos => ['posible_liquidacion', 'Ya pasó el último pago previsto ('.$last?->payment_date->format('d/m/Y').') y no hay cargos al acreedor en el periodo. Confirma con el acreedor antes de darlo por liquidado.'],
             $coverage['status'] === self::FUERA_CALENDARIO && $coverage['position'] === 'despues' => ['sin_pagos_programados', 'La tabla ya no tiene pagos programados, pero hay cargos al acreedor en el periodo: revisa si la tabla está completa.'],
             $coverage['status'] === self::FUERA_CALENDARIO => ['sin_pagos_programados', $coverage['reason']],
-            $hasBank && collect($payments['rows'])->contains(fn ($r) => $r['due'] && $r['status'] === 'no_localizado') => ['pago_no_localizado', 'Hay pagos vencidos según la tabla sin cargo bancario localizado.'],
+            $hasBank && $dueShort && Money::of($application['applied'])->isZero() => ['pago_no_localizado', 'Hay pagos vencidos según la tabla sin aportaciones ni cargos al acreedor en el banco.'],
+            $hasBank && $dueShort => ['pago_incompleto', 'Aplicado '.self::fmt($application['applied']).' de '.self::fmt($application['expected']).': faltan '.self::fmt($application['due_shortfall'])
+                .' de pagos ya vencidos (cubiertos '.$application['covered_count'].' de '.$application['expected_count'].').'],
             default => ['vigente', $coverage['status'] === self::SIN_TABLA ? 'Sin tabla de amortización cargada.' : 'Crédito con pagos programados.'],
         };
 
@@ -1160,6 +1249,12 @@ class FinancialExpenseService
     }
 
     /** Centavos ⇒ «1234.56». */
+    /** $1,234.56 (texto corto para motivos). */
+    private static function fmt(string $amount): string
+    {
+        return '$'.number_format((float) $amount, 2);
+    }
+
     private static function c2(int $cents): string
     {
         return Money::str2(BigDecimal::ofUnscaledValue($cents, 2));

@@ -532,27 +532,29 @@ $head = function () use ($logo, $m, $rep, $period) {
             <div class="kpi small main"><div class="l">Efecto en EBT</div><div class="v">{{ $money($fs['ebt_effect']) }}</div><div class="s">Interés + comisión · una sola vez</div></div>
         </div>
 
-        <h3>Por crédito <span class="hint">pagos previstos según la tabla de amortización vs. cargos bancarios conciliados</span></h3>
+        <h3>Por crédito <span class="hint">pagos de la tabla de amortización vs. lo aplicado (aportaciones de sucursales y pagos al acreedor)</span></h3>
         <table class="fin-table">
-            <thead><tr><th>Crédito</th><th class="n">Pagos prev. / concil.</th><th class="n">Pagado</th><th class="n">Capital</th><th class="n">Interés</th><th class="n">Comisión</th><th class="n">IVA</th><th class="n">Diferencia</th><th>Estado</th></tr></thead>
+            <thead><tr><th>Crédito</th><th class="n">Pagos cubiertos</th><th class="n">Debía pagar</th><th class="n">Aplicado</th><th class="n">Capital</th><th class="n">Interés</th><th class="n">Comisión</th><th class="n">IVA</th><th class="n">Faltante / excedente</th><th>Estado</th></tr></thead>
             <tbody>
             @foreach($fin['credits'] as $c)
-                @php $pt = $c['payments']['totals']; @endphp
+                @php $ap = $c['application']; @endphp
                 <tr>
                     <td><b>{{ $c['name'] }}</b><span class="sub">{{ $c['creditor'] }} · tabla: {{ $c['coverage_label'] }}</span></td>
-                    <td class="n">{{ $pt['expected_count'] }} / {{ $pt['reconciled_count'] }}</td>
-                    <td class="n">{{ $money($pt['detected']) }}</td>
+                    <td class="n">{{ $ap['covered_count'] }} de {{ $ap['expected_count'] }}@if($ap['partial_count'])<span class="sub">+{{ $ap['partial_count'] }} parcial</span>@endif</td>
+                    <td class="n">{{ $money($ap['expected']) }}</td>
+                    <td class="n">{{ $money($ap['applied']) }}<span class="sub">aport. {{ $money($ap['contributed']) }} · acreedor {{ $money($ap['paid_to_creditor']) }}</span></td>
                     <td class="n">{{ $c['covered'] ? $money($c['totals']['principal']) : '—' }}</td>
                     <td class="n">{{ $money($c['recognized']['interest']) }}</td>
                     <td class="n">{{ $money($c['recognized']['commission']) }}@if($c['recognized']['commission_informative'] !== null)<span class="sub">informativa {{ $money($c['recognized']['commission_informative']) }}</span>@endif</td>
                     <td class="n">{{ $money($c['vat']) }}</td>
-                    <td class="n {{ $neg($pt['difference']) }}">{{ $money($pt['difference']) }}</td>
+                    <td class="n {{ $neg($ap['difference']) }}">{{ $money($ap['difference']) }}</td>
                     <td><span class="badge {{ $c['status_tone'] }}">{{ $c['status_label'] }}</span></td>
                 </tr>
             @endforeach
             <tr class="tot">
                 <td>Total</td><td></td>
-                <td class="n">{{ $money($fs['observed_payment']) }}</td>
+                <td class="n">{{ $money($fs['expected_payment']) }}</td>
+                <td class="n">{{ $money($fs['applied_payment']) }}</td>
                 <td class="n">{{ $money($fs['principal_informative']) }}</td>
                 <td class="n">{{ $money($fs['interest_recognized']) }}</td>
                 <td class="n">{{ $money($fs['commission_recognized']) }}</td>
@@ -562,8 +564,9 @@ $head = function () use ($logo, $m, $rep, $period) {
             </tbody>
         </table>
         @if($fs['unreconciled']['count'] > 0)
-            <p class="note">Pagos por conciliar: {{ $fs['unreconciled']['count'] }} · {{ $money($fs['unreconciled']['amount']) }} (diferencia = pagado − previsto; no cambia el gasto del ER).</p>
+            <p class="note">Pagos sin cubrir: {{ $fs['unreconciled']['count'] }} · faltan {{ $money($fs['unreconciled']['amount']) }} (no cambia el gasto del ER).</p>
         @endif
+        <p class="note">{{ \App\Services\EstadoResultados\Export\ErFinancingSection::APPLIED_NOTE }}</p>
 
         <div class="chart" style="margin-top:8px">
             <h4 class="ct">Distribución gerencial del costo financiero por sucursal</h4>

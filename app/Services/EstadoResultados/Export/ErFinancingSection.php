@@ -22,6 +22,7 @@ final class ErFinancingSection
     public const CREDIT_STATUS = [
         'vigente' => 'Vigente',
         'pago_no_localizado' => 'Pago no localizado',
+        'pago_incompleto' => 'Faltan pagos por cubrir',
         'sin_pagos_programados' => 'Sin pagos programados',
         'posible_liquidacion' => 'Posible liquidación',
     ];
@@ -35,6 +36,16 @@ final class ErFinancingSection
         'no_localizado' => 'No localizado',
         'no_previsto' => 'No previsto',
     ];
+
+    /** Rótulos de la cobertura de cada pago con lo aplicado (FinancialExpenseService::applyFunds). */
+    public const COVERAGE_STATUS = [
+        'cubierto' => 'Cubierto con aportaciones',
+        'parcial' => 'Parcial',
+        'sin_cubrir' => 'Sin cubrir',
+    ];
+
+    /** Texto corto de la regla del pago aplicado (mismo en web, PDF y Excel). */
+    public const APPLIED_NOTE = 'Aplicado = lo mayor entre lo aportado por las sucursales y lo pagado al acreedor (es el mismo dinero: no se suma dos veces); cubre los pagos en orden.';
 
     /** Rótulos de la cobertura de la tabla sobre el periodo. */
     public const COVERAGE = [
@@ -97,13 +108,14 @@ final class ErFinancingSection
                 'recognized' => $c['recognized'],
                 'vat' => $c['covered'] ? self::sum2($c['totals']['interest_vat'], $c['totals']['commission_vat']) : '0.00',
                 'payments' => $cp,
+                'application' => $c['application'],
                 'contributions' => $c['contributions'],
                 'status' => $c['status']['status'],
                 'status_label' => self::CREDIT_STATUS[$c['status']['status']] ?? $c['status']['status'],
                 'status_reason' => $c['status']['reason'],
                 'status_tone' => match ($c['status']['status']) {
                     'vigente' => 'ok',
-                    'pago_no_localizado', 'posible_liquidacion' => 'bad',
+                    'pago_no_localizado', 'pago_incompleto', 'posible_liquidacion' => 'bad',
                     default => 'warn',
                 },
                 'next_payment' => $c['status']['next_payment'],
@@ -142,6 +154,16 @@ final class ErFinancingSection
                 : null,
             'note' => self::NOTE,
         ];
+    }
+
+    /** Rótulo de la cobertura de un pago; «Cubierto con aportaciones» sólo si el aplicado salió de ellas. */
+    public static function coverageLabel(?string $coverage, ?string $basis): string
+    {
+        if ($coverage === 'cubierto' && $basis !== 'aportaciones') {
+            return 'Cubierto';
+        }
+
+        return self::COVERAGE_STATUS[$coverage] ?? '—';
     }
 
     /** Suma de dos importes en texto (centavos exactos) para el IVA separado de un crédito. */
