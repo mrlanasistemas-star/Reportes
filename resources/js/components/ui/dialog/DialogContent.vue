@@ -8,8 +8,10 @@ import {
   DialogClose,
   DialogContent,
   DialogPortal,
+  injectDialogRootContext,
   useForwardPropsEmits,
 } from "reka-ui"
+import { useModalLayer } from "@/composables/useModalLayer"
 import { cn } from "@/lib/utils"
 import DialogOverlay from "./DialogOverlay.vue"
 
@@ -25,13 +27,18 @@ const emits = defineEmits<DialogContentEmits>()
 const delegatedProps = reactiveOmit(props, "class")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
+
+// Capa propia: el último diálogo abierto queda encima (también sobre los ErModal).
+const rootContext = injectDialogRootContext()
+const { zIndex } = useModalLayer(() => rootContext.open.value)
 </script>
 
 <template>
   <DialogPortal>
-    <DialogOverlay />
+    <DialogOverlay :style="{ zIndex }" />
     <DialogContent
       data-slot="dialog-content"
+      :style="{ zIndex: zIndex + 1 }"
       v-bind="{ ...$attrs, ...forwarded }"
       :class="
         cn(

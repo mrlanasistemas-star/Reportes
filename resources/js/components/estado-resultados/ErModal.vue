@@ -32,11 +32,12 @@ import {
     DialogTitle,
 } from 'reka-ui';
 import type { Component } from 'vue';
+import { useModalLayer } from '@/composables/useModalLayer';
 import { cn } from '@/lib/utils';
 import { TONE_ICON } from './erTone';
 import type { ErTone } from './erTone';
 
-withDefaults(
+const props = withDefaults(
     defineProps<{
         open: boolean;
         title: string;
@@ -58,6 +59,9 @@ withDefaults(
 );
 const emit = defineEmits<{ 'update:open': [v: boolean] }>();
 
+// Capa propia: el último modal abierto queda encima de los anteriores.
+const { zIndex } = useModalLayer(() => props.open);
+
 /** Ancho máximo por tamaño. */
 const SIZE: Record<'md' | 'lg' | 'xl' | '2xl', string> = {
     md: 'sm:max-w-xl',
@@ -71,9 +75,11 @@ const SIZE: Record<'md' | 'lg' | 'xl' | '2xl', string> = {
     <DialogRoot :open="open" @update:open="(v) => emit('update:open', v)">
         <DialogPortal>
             <DialogOverlay
+                :style="{ zIndex }"
                 class="fixed inset-0 z-50 bg-slate-950/55 backdrop-blur-[3px] duration-300 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none"
             />
             <DialogContent
+                :style="{ zIndex: zIndex + 1 }"
                 :class="
                     cn(
                         'fixed top-1/2 left-1/2 z-50 flex max-h-[92dvh] w-[calc(100%-1.5rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-3xl border bg-background text-[15px] shadow-2xl ring-1 shadow-slate-950/20 ring-black/5 outline-none sm:max-h-[85vh] dark:ring-white/10',
