@@ -27,14 +27,14 @@ import {
     RefreshCw,
 } from 'lucide-vue-next';
 import { computed, toRef, watch } from 'vue';
+import { Button } from '@/components/ui/button';
+import { useFinancialExpenses } from '@/composables/estado-resultados/useFinancialExpenses';
 import CreditStatusCard from './CreditStatusCard.vue';
 import FinancialAllocationBars from './FinancialAllocationBars.vue';
 import { dmy } from './financialExpenses';
 import FinancialSummaryTiles from './FinancialSummaryTiles.vue';
 import FinInfoTip from './FinInfoTip.vue';
 import { mxn } from './types';
-import { Button } from '@/components/ui/button';
-import { useFinancialExpenses } from '@/composables/estado-resultados/useFinancialExpenses';
 
 const props = defineProps<{
     base: string;
@@ -131,11 +131,11 @@ const HELP =
                     <span
                         v-if="data.summary && data.summary.unreconciled.count"
                         class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-900 dark:bg-amber-950/50 dark:text-amber-300"
-                        title="Pagos previstos que aún no se localizan en el banco"
+                        title="Pagos de la tabla que lo aplicado (aportaciones y pagos al acreedor) aún no alcanza a cubrir"
                     >
                         <CircleAlert class="size-3" />
-                        {{ data.summary.unreconciled.count }} sin conciliar ·
-                        {{ mxn(data.summary.unreconciled.amount) }}
+                        {{ data.summary.unreconciled.count }} sin cubrir ·
+                        faltan {{ mxn(data.summary.unreconciled.amount) }}
                     </span>
                 </div>
 

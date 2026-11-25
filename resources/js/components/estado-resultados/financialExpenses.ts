@@ -137,6 +137,8 @@ export interface CreditPeriod {
     /** Legado (UI actual): cotejo simple tabla vs. banco. Lo nuevo está en creditor_payments. */
     bank: BankEvidence;
     creditor_payments?: CreditorPayments;
+    /** Pago aplicado al crédito (máx. aportaciones / pagos al acreedor) repartido FIFO. */
+    application?: CreditApplication;
     contributions?: CreditContributions;
     status?: CreditStatus;
     recognized?: CreditRecognized;
@@ -269,6 +271,37 @@ export interface CreditorPaymentRow {
     movements: MovementRef[];
     ambiguous: boolean;
     candidates: MovementRef[];
+    /** Importe aplicado a este pago (FIFO) y lo que le falta, al centavo. */
+    applied?: string;
+    shortfall?: string;
+    coverage?: PaymentCoverage;
+}
+
+/** Cobertura de un pago con lo aplicado: cubierto / parcial / sin_cubrir. */
+export type PaymentCoverage = 'cubierto' | 'parcial' | 'sin_cubrir';
+
+/**
+ * Pago aplicado al crédito en el periodo (FinancialExpenseService::applyFunds).
+ * applied = máx(contributed, paid_to_creditor): es el mismo dinero (entra por depósito de
+ * las sucursales y sale por cargo al acreedor), por eso no se suma. Se reparte FIFO sobre
+ * los pagos de la tabla; difference = applied − expected (negativo = faltante).
+ */
+export interface CreditApplication {
+    rule: 'max_aportaciones_pagos';
+    basis: 'aportaciones' | 'pagos_acreedor' | 'sin_fondos';
+    expected: string;
+    contributed: string;
+    paid_to_creditor: string;
+    applied: string;
+    difference: string;
+    shortfall: string;
+    excess: string;
+    due_shortfall: string;
+    expected_count: number;
+    covered_count: number;
+    partial_count: number;
+    uncovered_count: number;
+    note: string;
 }
 
 /** Pagos al acreedor del periodo (cargos que coinciden con bank_pattern). */
@@ -290,6 +323,9 @@ export interface CreditorPayments {
         unscheduled: string;
         reversals: string;
         difference: string;
+        /** Pagos totalmente cubiertos con lo aplicado. */
+        covered_count?: number;
+        /** Pagos NO cubiertos (parciales + sin cubrir) y su faltante. */
         unreconciled_count: number;
         unreconciled_amount: string;
     };
@@ -333,6 +369,7 @@ export interface CreditStatus {
         | 'vigente'
         | 'sin_pagos_programados'
         | 'pago_no_localizado'
+        | 'pago_incompleto'
         | 'posible_liquidacion';
     reason: string;
     last_scheduled: { number: number | null; date: string } | null;
@@ -359,6 +396,10 @@ export interface CreditRecognized {
 /** Resumen del periodo (consolidado). */
 export interface FinancialSummary {
     observed_payment: string;
+    /** Σ debía pagar / aplicado / faltante de los créditos con tabla (ver CreditApplication). */
+    expected_payment?: string;
+    applied_payment?: string;
+    shortfall?: string;
     principal_informative: string;
     interest_recognized: string;
     commission_recognized: string;
@@ -403,7 +444,11 @@ export interface AllocationCredit {
         principal_informative: string;
         reason: string | null;
     };
-    check: { assigned_plus_unassigned: string; recognized: string; ok: boolean };
+    check: {
+        assigned_plus_unassigned: string;
+        recognized: string;
+        ok: boolean;
+    };
 }
 
 /** Prorrateo del periodo (FinancialExpenseService::allocation, mismo cálculo para PDF/Excel). */
@@ -416,7 +461,6 @@ export interface FinancialAllocation {
     unassigned: string;
     recognized: string;
 }
-
 
 /** Detalle que el backend agrega a los ajustes de interés (AdjustmentService::forPeriod). */
 export interface AdjustmentAmortization {

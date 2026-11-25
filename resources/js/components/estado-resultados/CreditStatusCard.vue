@@ -3,8 +3,9 @@
  * CreditStatusCard — tarjeta visual de un crédito (LEROM, BBVA, futuros) en el periodo.
  *
  * La usa FinancialExpensesPanel. Cabecera con nombre, estado, «Simulación» y cobertura;
- * anillo de pagos conciliados vs. previstos; próximo pago, pagos restantes y saldo
- * según tabla; interés y comisión reconocidos. Debajo, colapsables: pagos del periodo,
+ * anillo de pagos cubiertos vs. previstos; cuadre «Debía pagar / Aplicado / Faltante»
+ * con barra (aplicado = máx. aportaciones o pagos al acreedor, ver CreditApplication);
+ * próximo pago, pagos restantes y saldo según tabla; interés y comisión reconocidos. Debajo, colapsables: pagos del periodo,
  * aportaciones, tabla de amortización y carga del archivo.
  *
  * Props:
@@ -25,6 +26,12 @@ import {
 } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import type { Component } from 'vue';
+import { Button } from '@/components/ui/button';
+import {
+    Collapsible,
+    CollapsibleContent,
+    CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import AmortizationScheduleTable from './AmortizationScheduleTable.vue';
 import AmortizationUploadCard from './AmortizationUploadCard.vue';
 import CreditorPaymentsList from './CreditorPaymentsList.vue';
@@ -32,12 +39,6 @@ import { PERIODICITY_LABEL, dmy } from './financialExpenses';
 import type { CreditPeriod, DocumentKind } from './financialExpenses';
 import FinInfoTip from './FinInfoTip.vue';
 import { mxn, num } from './types';
-import { Button } from '@/components/ui/button';
-import {
-    Collapsible,
-    CollapsibleContent,
-    CollapsibleTrigger,
-} from '@/components/ui/collapsible';
 
 const props = defineProps<{
     credit: CreditPeriod;
@@ -67,6 +68,10 @@ const STATUS: Record<string, { label: string; cls: string }> = {
     },
     pago_no_localizado: {
         label: 'Pago no localizado',
+        cls: 'bg-rose-100 text-rose-900 border-rose-200 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-900',
+    },
+    pago_incompleto: {
+        label: 'Faltan pagos por cubrir',
         cls: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:border-amber-900',
     },
     posible_liquidacion: {
@@ -111,18 +116,51 @@ const coverageChip = computed(() => {
     );
 });
 
-/** Pagos del periodo: conciliados vs. previstos. */
-const totals = computed(() => props.credit.creditor_payments?.totals ?? null);
+/** Pago aplicado al crédito (aportaciones / pagos al acreedor, sin doble conteo). */
+const app = computed(() => props.credit.application ?? null);
+
+/** Pagos del periodo: cubiertos (y parciales) vs. previstos. */
 const ring = computed(() => {
-    const t = totals.value;
-    const expected = t?.expected_count ?? 0;
-    const done = t?.reconciled_count ?? 0;
-    const pct = expected ? done / expected : 0;
+    const a = app.value;
+    const expected = a?.expected_count ?? 0;
+    const done = a?.covered_count ?? 0;
+    const partial = a?.partial_count ?? 0;
     const r = 26;
     const len = 2 * Math.PI * r;
+    const pct = expected ? done / expected : 0;
+    const pctPartial = expected ? partial / expected : 0;
 
-    return { expected, done, pct, r, len, dash: len * pct };
+    return {
+        expected,
+        done,
+        partial,
+        r,
+        len,
+        dash: len * pct,
+        dashPartial: len * pctPartial,
+    };
 });
+
+/** Cuadre: % aplicado de lo que se debía pagar y faltante / excedente. */
+const cuadre = computed(() => {
+    const a = app.value;
+
+    if (!a || num(a.expected) === 0) {
+        return null;
+    }
+
+    const diff = num(a.difference);
+
+    return {
+        pct: Math.min(100, (num(a.applied) / num(a.expected)) * 100),
+        short: diff < 0,
+        diff: Math.abs(diff),
+    };
+});
+
+/** Ayuda corta de la regla del aplicado. */
+const APPLIED_HELP =
+    'Aplicado = lo mayor entre lo que aportaron las sucursales y lo que se pagó al acreedor.\nEs el mismo dinero (entra por depósito y sale por cargo), por eso no se suma dos veces.\nCubre los pagos de la tabla en orden.';
 
 /** Importes reconocidos (la captura manual gana). */
 const recognized = computed(
@@ -257,7 +295,7 @@ const sections = computed(() => {
                     viewBox="0 0 64 64"
                     class="size-16 -rotate-90"
                     role="img"
-                    :aria-label="`${ring.done} de ${ring.expected} pagos conciliados`"
+                    :aria-label="`${ring.done} de ${ring.expected} pagos cubiertos`"
                 >
                     <circle
                         cx="32"
@@ -278,6 +316,17 @@ const sections = computed(() => {
                         class="stroke-emerald-500 transition-[stroke-dasharray] duration-700"
                         :stroke-dasharray="`${ring.dash} ${ring.len}`"
                     />
+                    <circle
+                        v-if="ring.dashPartial > 0"
+                        cx="32"
+                        cy="32"
+                        :r="ring.r"
+                        fill="none"
+                        stroke-width="7"
+                        class="stroke-amber-400"
+                        :stroke-dasharray="`${ring.dashPartial} ${ring.len}`"
+                        :stroke-dashoffset="-ring.dash"
+                    />
                 </svg>
                 <div class="text-xs">
                     <p class="text-lg leading-none font-extrabold tabular-nums">
@@ -286,7 +335,13 @@ const sections = computed(() => {
                             >/{{ ring.expected }}</span
                         >
                     </p>
-                    <p class="text-muted-foreground">pagos conciliados</p>
+                    <p class="text-muted-foreground">pagos cubiertos</p>
+                    <p
+                        v-if="ring.partial"
+                        class="text-[11px] font-semibold text-amber-700 dark:text-amber-400"
+                    >
+                        +{{ ring.partial }} parcial
+                    </p>
                 </div>
             </div>
 
@@ -362,6 +417,79 @@ const sections = computed(() => {
                 </div>
             </dl>
         </div>
+
+        <!-- Cuadre: debía pagar vs. aplicado -->
+        <section
+            v-if="app && cuadre"
+            aria-label="Cuadre de pagos del periodo"
+            class="space-y-2 rounded-xl border p-3"
+        >
+            <div class="grid grid-cols-3 gap-2">
+                <div>
+                    <p class="text-xs text-muted-foreground">Debía pagar</p>
+                    <p class="text-base font-extrabold tabular-nums sm:text-lg">
+                        {{ mxn(app.expected) }}
+                    </p>
+                </div>
+                <div>
+                    <p
+                        class="flex items-center gap-1 text-xs text-muted-foreground"
+                    >
+                        Aplicado
+                        <FinInfoTip
+                            :text="APPLIED_HELP"
+                            label="Cómo se calcula lo aplicado"
+                        />
+                    </p>
+                    <p
+                        class="text-base font-extrabold text-emerald-700 tabular-nums sm:text-lg dark:text-emerald-400"
+                    >
+                        {{ mxn(app.applied) }}
+                    </p>
+                </div>
+                <div>
+                    <p class="text-xs text-muted-foreground">
+                        {{ cuadre.short ? 'Faltante' : 'Excedente' }}
+                    </p>
+                    <p
+                        class="text-base font-extrabold tabular-nums sm:text-lg"
+                        :class="
+                            cuadre.short
+                                ? 'text-rose-700 dark:text-rose-400'
+                                : 'text-emerald-700 dark:text-emerald-400'
+                        "
+                    >
+                        {{ mxn(cuadre.diff) }}
+                    </p>
+                </div>
+            </div>
+            <div
+                class="h-2.5 w-full overflow-hidden rounded-full bg-rose-100 dark:bg-rose-950/40"
+                role="img"
+                :aria-label="`Aplicado ${cuadre.pct.toFixed(0)}% de lo que se debía pagar`"
+            >
+                <span
+                    class="block h-full rounded-full bg-emerald-500 transition-[width] duration-700"
+                    :style="{ width: `${cuadre.pct}%` }"
+                />
+            </div>
+            <p
+                class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums"
+            >
+                <span class="inline-flex items-center gap-1"
+                    ><HandCoins
+                        class="size-3.5 text-cyan-600 dark:text-cyan-400"
+                    />Aportaciones <b>{{ mxn(app.contributed) }}</b></span
+                >
+                <span
+                    >Pagos al acreedor
+                    <b>{{ mxn(app.paid_to_creditor) }}</b></span
+                >
+                <span class="ml-auto font-semibold"
+                    >{{ cuadre.pct.toFixed(0) }}% cubierto</span
+                >
+            </p>
+        </section>
 
         <!-- Avisos breves -->
         <p
@@ -447,7 +575,7 @@ const sections = computed(() => {
                     <CreditorPaymentsList
                         v-if="s.key === 'pagos' && credit.creditor_payments"
                         :payments="credit.creditor_payments"
-                        :show-commission="hasCommission"
+                        :basis="app?.basis"
                     />
                     <ul
                         v-else-if="s.key === 'aportaciones' && contributions"

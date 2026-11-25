@@ -2,7 +2,7 @@
 /**
  * FinancialSummaryTiles — cabecera visual de «Gastos financieros».
  *
- * La usa FinancialExpensesPanel. Fila de KPI (pago observado, capital informativo,
+ * La usa FinancialExpensesPanel. Fila de KPI (debía pagar, aplicado con faltante,
  * costo financiero reconocido, IVA separado y efecto en EBT) y una barra que parte
  * el pago en capital / interés / comisión / IVA.
  *
@@ -16,6 +16,9 @@ import FinInfoTip from './FinInfoTip.vue';
 import { mxn, num } from './types';
 
 const props = defineProps<{ summary: FinancialSummary; scheduled: string }>();
+
+/** Faltante total del periodo (para colorear el subtítulo del aplicado). */
+const shortTotal = computed(() => props.summary.shortfall ?? '0');
 
 /** Partes del pago; el ancho es proporcional a su suma (sólo visual). */
 const parts = computed(() => {
@@ -54,36 +57,35 @@ const parts = computed(() => {
     }));
 });
 
-/** Hay cargos al acreedor observados en el banco. */
-const hasObserved = computed(() => num(props.summary.observed_payment) !== 0);
-
 /** Tiles de la fila de KPI. */
 const tiles = computed(() => {
     const s = props.summary;
+    const short = num(s.shortfall);
 
     return [
         {
-            key: 'pago',
-            label: hasObserved.value ? 'Pago observado' : 'Pago según tablas',
-            value: hasObserved.value ? s.observed_payment : props.scheduled,
+            key: 'debia',
+            label: 'Debía pagar',
+            value: s.expected_payment ?? props.scheduled,
+            sub: '',
             cls: '',
             box: 'bg-card',
-            help: hasObserved.value
-                ? 'Cargos al acreedor encontrados en el banco del periodo.'
-                : 'Aún no se localizan cargos al acreedor en el banco: se muestra lo programado en las tablas.',
+            help: 'Pagos de las tablas de amortización que caen en el periodo.',
         },
         {
-            key: 'capital',
-            label: 'Capital',
-            value: s.principal_informative,
-            cls: 'text-muted-foreground',
-            box: 'bg-muted/40',
-            help: 'Informativo: amortiza la deuda, no es gasto.',
+            key: 'aplicado',
+            label: 'Aplicado',
+            value: s.applied_payment ?? s.observed_payment,
+            sub: short > 0 ? `Faltan ${mxn(short)}` : 'Sin faltante',
+            cls: 'text-emerald-700 dark:text-emerald-400',
+            box: 'bg-card',
+            help: 'Aportaciones de sucursales o pagos al acreedor, lo mayor (es el mismo dinero: no se suma dos veces).',
         },
         {
             key: 'costo',
             label: 'Costo financiero',
             value: s.financial_cost,
+            sub: '',
             cls: 'text-rose-700 dark:text-rose-400',
             box: 'bg-card',
             help: `Interés ${mxn(s.interest_recognized)} + comisión ${mxn(s.commission_recognized)}.\nComisión financiera: criterio por confirmar con Finanzas.`,
@@ -92,6 +94,7 @@ const tiles = computed(() => {
             key: 'iva',
             label: 'IVA separado',
             value: s.vat_separated,
+            sub: '',
             cls: 'text-amber-700 dark:text-amber-400',
             box: 'bg-card',
             help: 'IVA de intereses y comisiones: nunca suma al gasto.',
@@ -100,6 +103,7 @@ const tiles = computed(() => {
             key: 'ebt',
             label: 'Efecto en EBT',
             value: s.ebt_effect,
+            sub: '',
             cls: 'text-rose-700 dark:text-rose-400',
             box: 'border-rose-200 bg-rose-50/60 dark:border-rose-900 dark:bg-rose-950/25',
             help: 'Lo que reduce el resultado antes de impuestos (una sola vez, en el consolidado).',
@@ -135,6 +139,17 @@ const tiles = computed(() => {
                 >
                     {{ mxn(t.value) }}
                 </p>
+                <p
+                    v-if="t.sub"
+                    class="text-xs font-semibold tabular-nums"
+                    :class="
+                        num(shortTotal) > 0
+                            ? 'text-rose-700 dark:text-rose-400'
+                            : 'text-muted-foreground'
+                    "
+                >
+                    {{ t.sub }}
+                </p>
             </div>
         </div>
 
@@ -156,7 +171,7 @@ const tiles = computed(() => {
                 />
             </div>
             <ul
-                class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]"
+                class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
             >
                 <li
                     v-for="p in parts"
@@ -166,7 +181,7 @@ const tiles = computed(() => {
                 >
                     <span class="size-2.5 rounded-sm" :class="p.cls" />
                     {{ p.label }}
-                    <b class="tabular-nums">{{ p.pct.toFixed(0) }}%</b>
+                    <b class="tabular-nums">{{ mxn(p.amount) }}</b>
                 </li>
                 <li class="ml-auto text-muted-foreground">
                     El capital queda fuera del Estado de Resultados
