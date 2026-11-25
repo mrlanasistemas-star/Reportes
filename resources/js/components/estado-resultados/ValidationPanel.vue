@@ -99,6 +99,7 @@ const props = withDefaults(
 const emit = defineEmits<{
     open: [fingerprint: string];
     classify: [fingerprints: string[]];
+    consider: [fingerprints: string[]];
     reload: [];
     'open-catalog': [draft: Partial<RuleDraft>];
 }>();
@@ -837,6 +838,7 @@ const counts = computed(() => control.allCounts.value);
                 :groups="groupsCtx"
                 @open="(fp) => emit('open', fp)"
                 @classify="(fps) => emit('classify', fps)"
+                @consider="(fps) => emit('consider', fps)"
                 @reload="emit('reload')"
                 @open-catalog="(d) => emit('open-catalog', d)"
             />

@@ -41,6 +41,12 @@ const PARTS: Array<{
         cls: 'bg-slate-500 dark:bg-slate-400',
     },
     {
+        key: 'considered',
+        label: 'Ya considerado',
+        hint: 'Ya se tomó en cuenta (Radiografía, otro periodo u otra fuente): no suma otra vez.',
+        cls: 'bg-teal-400 dark:bg-teal-500',
+    },
+    {
         key: 'pending',
         label: 'Pendiente',
         hint: 'Aún sin clasificar: ni suma ni se excluye.',
@@ -58,10 +64,19 @@ const PARTS: Array<{
 const parts = computed(() => {
     const gross = Math.abs(num(props.amounts.gross)) || 1;
 
+    // «Ya considerado» viene dentro de «excluido»: se muestra aparte sin contarlo dos veces.
+    const considered = num(props.amounts.considered ?? 0);
+    const amountOf = (k: keyof MovementAmounts) =>
+        k === 'excluded'
+            ? num(props.amounts.excluded) - considered
+            : k === 'considered'
+              ? considered
+              : num(props.amounts[k] ?? 0);
+
     return PARTS.map((p) => ({
         ...p,
-        amount: props.amounts[p.key],
-        width: (Math.abs(num(props.amounts[p.key])) / gross) * 100,
+        amount: amountOf(p.key),
+        width: (Math.abs(amountOf(p.key)) / gross) * 100,
     }));
 });
 </script>

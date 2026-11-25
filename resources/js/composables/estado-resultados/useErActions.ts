@@ -41,6 +41,17 @@ export interface AdjustmentLog {
     at: string;
 }
 
+/**
+ * Cuerpo de /clasificar. Con «Ya considerado»: considered_reason y, en modo parcial,
+ * considered_amount (la parte ya considerada; el resto toma 	reatment).
+ */
+export interface ClassifyPayload {
+    treatment: string;
+    notes: string;
+    considered_reason?: string | null;
+    considered_amount?: string | null;
+}
+
 /** Contexto que la pantalla del ER inyecta a las acciones. */
 interface Ctx {
     /** Arma la URL de una ruta del periodo mostrado a partir de su sufijo. */
@@ -361,7 +372,7 @@ export function useErActions(ctx: Ctx) {
      */
     async function classify(
         fingerprints: string[],
-        payload: { treatment: string; notes: string },
+        payload: ClassifyPayload,
     ): Promise<boolean> {
         if (!(await guard())) {
             return false;
@@ -383,6 +394,44 @@ export function useErActions(ctx: Ctx) {
             return true;
         } catch (e) {
             await showError(e, 'No se guardó la clasificación');
+
+            return false;
+        } finally {
+            classifying.value = false;
+        }
+    }
+
+    /**
+     * Deshace la clasificación manual (vuelve a la regla automática y quita un «Ya considerado»
+     * parcial) con motivo en la bitácora (POST `/control-movimientos/deshacer`).
+     * @param fingerprints Huellas de los movimientos.
+     * @param notes Motivo (mínimo 3 caracteres).
+     * @returns true si se deshizo algo.
+     */
+    async function revert(
+        fingerprints: string[],
+        notes: string,
+    ): Promise<boolean> {
+        if (!(await guard())) {
+            return false;
+        }
+
+        classifying.value = true;
+
+        try {
+            const res = await apiJson<{ message: string; count: number }>(
+                ctx.url('/control-movimientos/deshacer'),
+                {
+                    method: 'POST',
+                    body: JSON.stringify({ fingerprints, notes }),
+                },
+            );
+            await ctx.loadDataset();
+            toast.success(res.message);
+
+            return res.count > 0;
+        } catch (e) {
+            await showError(e, 'No se pudo deshacer la clasificación');
 
             return false;
         } finally {
@@ -551,6 +600,7 @@ export function useErActions(ctx: Ctx) {
         upload,
         removePart,
         classify,
+        revert,
         acceptSuggestions,
         saveAdjustment,
         loadLogs,

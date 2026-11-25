@@ -4,7 +4,7 @@
  *
  * Se usa en pages/EstadoResultados/Index. A la izquierda, el movimiento en
  * turno (de mayor a menor importe) con la sugerencia del sistema, botones y
- * atajos de teclado (A aceptar, C clasificar, S/→ saltar, D detalle) y los que
+ * atajos de teclado (A aceptar, C clasificar, Y ya considerado, S/→ saltar, D detalle) y los que
  * siguen; a la derecha, los pendientes agrupados por sugerencia para resolver
  * en bloque. Si no llegó nada del banco muestra un estado vacío neutral con
  * acceso a Fuentes; si no hay pendientes, un mensaje de «todo clasificado».
@@ -19,12 +19,14 @@
  * Emits:
  * - accept(fingerprints, ask): aceptar la sugerencia; ask = pedir confirmación.
  * - classify(fingerprints): abrir el diálogo para clasificar.
+ * - consider(fingerprints): marcar «Ya considerado» (total o parcial).
  * - open(m): abrir el detalle de un movimiento.
  * - showAll(): ver todos los pendientes en la tabla de movimientos.
  * - goSources(): ir a Fuentes cuando no hay estados de cuenta.
  */
 import {
     CheckCheck,
+    CheckCircle2,
     FolderInput,
     CornerDownRight,
     Loader2,
@@ -49,6 +51,7 @@ const props = defineProps<{
 const emit = defineEmits<{
     accept: [fingerprints: string[], ask: boolean];
     classify: [fingerprints: string[]];
+    consider: [fingerprints: string[]];
     open: [m: Movement];
     showAll: [];
     /** Sin estados de cuenta: llevar a la pestaña Fuentes. */
@@ -161,9 +164,16 @@ function classify(): void {
     }
 }
 
+/** Pide marcar «Ya considerado» el movimiento en turno. */
+function consider(): void {
+    if (current.value) {
+        emit('consider', [current.value.fingerprint]);
+    }
+}
+
 /**
  * Atajos de la cola: sólo con el foco DENTRO de la tarjeta (no en toda la ventana).
- * A acepta (con confirmación), C clasifica, S o → salta, D abre el detalle.
+ * A acepta (con confirmación), C clasifica, Y «Ya considerado», S o → salta, D abre el detalle.
  * Se ignoran con Ctrl/Meta/Alt o si el foco está en un campo o en una lista de pestañas.
  * @param e evento de teclado de la tarjeta.
  */
@@ -189,6 +199,8 @@ function onKey(e: KeyboardEvent): void {
         accept(true);
     } else if (k === 'c' && props.canClassify) {
         classify();
+    } else if (k === 'y' && props.canClassify) {
+        consider();
     } else if (k === 's' || e.key === 'ArrowRight') {
         skip();
     } else if (k === 'd') {
@@ -253,7 +265,7 @@ function onKey(e: KeyboardEvent): void {
         <!-- Movimiento en turno -->
         <section
             class="relative overflow-hidden rounded-2xl border bg-card shadow-soft-xs outline-none focus-visible:ring-3 focus-visible:ring-emerald-500/30"
-            aria-label="Movimiento en turno. Atajos con el foco aquí: A aceptar, C clasificar, S saltar, D ver detalle"
+            aria-label="Movimiento en turno. Atajos con el foco aquí: A aceptar, C clasificar, Y ya considerado, S saltar, D ver detalle"
             tabindex="0"
             @keydown="onKey"
         >
@@ -279,7 +291,7 @@ function onKey(e: KeyboardEvent): void {
                     </p>
                     <p class="w-full text-[11px] text-muted-foreground">
                         Atajos de teclado: haz clic dentro de esta tarjeta y usa
-                        A, C, S o D.
+                        A, C, Y, S o D.
                     </p>
                 </div>
 
@@ -428,6 +440,19 @@ function onKey(e: KeyboardEvent): void {
                                 }}
                                 <kbd class="rounded bg-muted px-1.5 text-[10px]"
                                     >C</kbd
+                                >
+                            </button>
+                            <button
+                                v-if="canClassify"
+                                type="button"
+                                class="inline-flex h-11 items-center gap-2 rounded-xl border px-4 text-sm font-semibold transition hover:border-teal-400 hover:bg-teal-50 dark:hover:bg-teal-950/30"
+                                title="Ya está tomado en cuenta (Radiografía, otro periodo u otra fuente): todo o una parte"
+                                @click="consider"
+                            >
+                                <CheckCircle2 class="size-4 text-teal-600" />
+                                Ya considerado
+                                <kbd class="rounded bg-muted px-1.5 text-[10px]"
+                                    >Y</kbd
                                 >
                             </button>
                             <button

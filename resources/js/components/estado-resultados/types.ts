@@ -201,6 +201,62 @@ export interface Override {
     at: string | null;
     /** Número de cambios de clasificación registrados. */
     history_count: number;
+    /** «Ya considerado» parcial: importe apartado (null = sin reparto). */
+    considered_amount?: string | null;
+    /** Motivo de «Ya considerado»: radiografia | otro_periodo | otra_fuente. */
+    considered_reason?: string | null;
+}
+
+/** Motivos de «Ya considerado» (mismo catálogo que Treatment::CONSIDERED_REASONS). */
+export const CONSIDERED_REASONS: Array<{ key: string; label: string }> = [
+    { key: 'radiografia', label: 'En Radiografía de sucursales' },
+    { key: 'otro_periodo', label: 'Ya reconocido en otro periodo' },
+    { key: 'otra_fuente', label: 'Ya registrado en otra cuenta/fuente' },
+];
+
+/** Tratamiento de la parte ya considerada según su motivo. */
+export const consideredTreatment = (reason: string) =>
+    reason === 'radiografia' ? 'cubierto_radiografia' : 'ya_considerado';
+
+/** Destino de una parte del importe de un movimiento en el cuadre (Σ partes = bruto). */
+export interface MovementPart {
+    /** Tratamiento (categoría del cuadre). */
+    key: string;
+    amount: string;
+    side: 'cargo' | 'abono';
+    /** Mismo gasto que una fila ERP del dataset: el cuadre no lo repite. */
+    overlap?: boolean;
+}
+
+/** Categoría del cuadre de gastos e ingresos (un tratamiento). */
+export interface CuadreCategory {
+    key: string;
+    label: string;
+    /** er | retiros | fuera | pendiente */
+    kind: 'er' | 'retiros' | 'fuera' | 'pendiente';
+    /** Subgrupo de «Fuera del ER» (ya_considerado, internos, capital, balance, periodo). */
+    outside: string | null;
+    line: string | null;
+    assignable: boolean;
+    count: number;
+    cargos: string;
+    abonos: string;
+    total: string;
+}
+
+/** Cuadre del periodo: Σ por destino = universo importado (sin repetir el ERP ya pagado). */
+export interface Cuadre {
+    imported: string;
+    overlap: string;
+    universe: string;
+    ingresos: string;
+    gastos: string;
+    by_kind: Record<'er' | 'retiros' | 'fuera' | 'pendiente', string>;
+    outside: Array<{ key: string; label: string; amount: string }>;
+    sum_categories: string;
+    difference: string;
+    ok: boolean;
+    categories: CuadreCategory[];
 }
 
 /**
@@ -294,6 +350,12 @@ export interface Movement {
     erp_payment?: { amount: string; applied: string; pending: string };
     erp_payment_status?: string;
     reconciliation_delta_days?: number | null;
+    /** Importe «ya considerado» (parcial) y su tratamiento (25-nov-2026). */
+    considered?: string;
+    considered_reason?: string | null;
+    considered_treatment?: string | null;
+    /** Destinos del importe en el cuadre (Σ = bruto). */
+    parts?: MovementPart[];
 }
 
 /** Par clave/etiqueta de una dimensión (key null = sin valor). */
@@ -341,6 +403,8 @@ export interface MovementAmounts {
     out_of_period: string;
     /** Parte que todavía se puede clasificar. */
     classifiable: string;
+    /** Parte «ya considerada» (incluida en excluded). */
+    considered?: string;
 }
 
 /** Vínculo de trazabilidad entre un movimiento y otro registro (banco, ERP o NOI). */
@@ -690,6 +754,8 @@ export interface Dataset {
     waterfall: WaterfallStep[];
     /** Retiros de DG y socios. Ausente en versiones aprobadas antes del 25-nov-2026. */
     withdrawals?: Withdrawals;
+    /** Cuadre de gastos e ingresos (versiones anteriores al 25-nov-2026 no lo traen). */
+    cuadre?: Cuadre;
     /** Cuadre del EBITDA de sucursales del ER contra el de la Radiografía. */
     radiography_reconciliation: {
         er_ebitda_sucursales: string;

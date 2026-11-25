@@ -24,6 +24,8 @@
  * - update:open: abrir o cerrar el modal.
  * - classify: clasificar el movimiento (lista con su huella).
  * - acceptSuggestion: aceptar el tratamiento sugerido (huella).
+ * - consider: marcar «Ya considerado» (total o parcial) (lista con su huella).
+ * - revert: deshacer la clasificación manual / el reparto (huella).
  * - openMovement: abrir otro movimiento enlazado.
  * - createRule: crear una regla de catálogo con el texto del movimiento.
  */
@@ -34,6 +36,7 @@ import {
     BookMarked,
     CheckCircle2,
     CircleSlash,
+    Undo2,
     FileText,
     GitCompareArrows,
     History,
@@ -73,6 +76,8 @@ const emit = defineEmits<{
     'update:open': [v: boolean];
     classify: [fingerprints: string[]];
     acceptSuggestion: [fingerprint: string];
+    consider: [fingerprints: string[]];
+    revert: [fingerprint: string];
     openMovement: [m: Movement];
     createRule: [m: Movement];
 }>();
@@ -80,6 +85,8 @@ const emit = defineEmits<{
 /** Cambio del historial de clasificación: tratamiento nuevo y anterior, motivo, usuario y fecha. */
 interface HistoryRow {
     treatment_label: string;
+    considered_amount?: string | null;
+    considered_reason_label?: string | null;
     previous_label: string | null;
     notes: string;
     user: string | null;
@@ -214,6 +221,8 @@ const can = computed(() => {
             mv.treatment === 'pendiente' &&
             !!mv.suggested_treatment,
         classify: !!mv && open,
+        consider: !!mv && open && mv.source !== 'noi_corp',
+        revert: !!mv && open && !!mv.override,
         rule:
             !!mv &&
             !!props.canCreateRule &&
@@ -415,6 +424,17 @@ watch(() => [props.open, props.movement?.fingerprint] as const, loadHistory, {
                 >
                     Clasificado por <b>{{ m.override.user ?? '—' }}</b> el
                     {{ m.override.at }} · motivo: {{ m.override.notes }}
+                </p>
+                <p
+                    v-if="num(m.considered ?? 0)"
+                    class="mt-2 flex items-center gap-1.5 rounded-xl border border-teal-200 bg-teal-50/60 p-3 text-sm dark:border-teal-900 dark:bg-teal-950/20"
+                >
+                    <CheckCircle2 class="size-4 shrink-0 text-teal-600" />
+                    <span
+                        >Ya considerado <b>{{ mxn(m.considered) }}</b> (no
+                        suma); el resto va a <b>{{ m.treatment_label }}</b
+                        >.</span
+                    >
                 </p>
             </ErDisclosure>
 
@@ -640,6 +660,12 @@ watch(() => [props.open, props.movement?.fingerprint] as const, loadHistory, {
                 >
                     <li v-for="(h, i) in history" :key="i">
                         <b>{{ h.treatment_label }}</b>
+                        <span
+                            v-if="h.considered_amount"
+                            class="ml-1 rounded-full bg-teal-100 px-2 text-xs font-semibold text-teal-800 dark:bg-teal-950/60 dark:text-teal-300"
+                            >ya considerado {{ mxn(h.considered_amount) }} ·
+                            {{ h.considered_reason_label }}</span
+                        >
                         <span class="text-muted-foreground">
                             (antes: {{ h.previous_label ?? '—' }})</span
                         ><br />
@@ -663,7 +689,9 @@ watch(() => [props.open, props.movement?.fingerprint] as const, loadHistory, {
                 <span class="truncate">{{ lockReason }}</span>
             </p>
             <p
-                v-else-if="!can.accept && !can.classify && !can.rule"
+                v-else-if="
+                    !can.accept && !can.classify && !can.rule && !can.consider
+                "
                 class="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-muted-foreground"
             >
                 <Info class="size-4 shrink-0" /> Solo consulta: no tienes
@@ -678,6 +706,24 @@ watch(() => [props.open, props.movement?.fingerprint] as const, loadHistory, {
                 @click="emit('createRule', m)"
             >
                 <BookMarked class="size-4" /> Crear regla
+            </Button>
+            <Button
+                v-if="can.revert"
+                variant="ghost"
+                class="h-10 rounded-xl"
+                title="Volver a la regla automática (quita también un «Ya considerado» parcial)"
+                @click="emit('revert', m.fingerprint)"
+            >
+                <Undo2 class="size-4" /> Deshacer
+            </Button>
+            <Button
+                v-if="can.consider"
+                variant="outline"
+                class="h-10 rounded-xl"
+                title="Ya está tomado en cuenta (Radiografía, otro periodo u otra fuente): todo o una parte"
+                @click="emit('consider', [m.fingerprint])"
+            >
+                <CheckCircle2 class="size-4 text-teal-600" /> Ya considerado
             </Button>
             <Button
                 v-if="can.accept"

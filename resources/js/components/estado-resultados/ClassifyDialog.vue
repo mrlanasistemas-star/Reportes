@@ -14,6 +14,7 @@
  * - items: movimientos seleccionados.
  * - treatments: catálogo de tratamientos (sólo se ofrecen los asignables).
  * - saving: si se está guardando (bloquea cerrar).
+ * - initialTreatment: destino ya elegido (p. ej. al arrastrar en el Cuadre).
  *
  * Emits:
  * - update:open(v): abrir o cerrar el diálogo.
@@ -38,6 +39,7 @@ const props = defineProps<{
     items: Movement[];
     treatments: TreatmentMeta[];
     saving: boolean;
+    initialTreatment?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -62,8 +64,11 @@ watch(
                 props.items.length === 1
                     ? props.items[0].suggested_treatment
                     : null;
-            treatment.value = suggested ?? '';
-            notes.value = '';
+            const initial = props.initialTreatment ?? null;
+            treatment.value = initial ?? suggested ?? '';
+            notes.value = initial
+                ? `Movido en el cuadre a «${props.treatments.find((t) => t.key === initial)?.label ?? initial}».`
+                : '';
         }
     },
 );

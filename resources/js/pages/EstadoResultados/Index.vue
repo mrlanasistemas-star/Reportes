@@ -42,6 +42,7 @@ import {
     Lock,
     LineChart,
     History,
+    Sigma,
 } from 'lucide-vue-next';
 import { computed, onMounted, provide, ref, watch } from 'vue';
 import AppPageHeader from '@/components/app/AppPageHeader.vue';
@@ -53,7 +54,9 @@ import { draftFromMovement } from '@/components/estado-resultados/conceptCatalog
 import type { RuleDraft } from '@/components/estado-resultados/conceptCatalog';
 import ConceptCatalogPanel from '@/components/estado-resultados/ConceptCatalogPanel.vue';
 import ConciliationSummary from '@/components/estado-resultados/ConciliationSummary.vue';
+import ConsideredDialog from '@/components/estado-resultados/ConsideredDialog.vue';
 import ControlPanel from '@/components/estado-resultados/ControlPanel.vue';
+import CuadrePanel from '@/components/estado-resultados/CuadrePanel.vue';
 import ErCommandBar from '@/components/estado-resultados/ErCommandBar.vue';
 import ErLoadingScreen from '@/components/estado-resultados/ErLoadingScreen.vue';
 import ErRefreshIndicator from '@/components/estado-resultados/ErRefreshIndicator.vue';
@@ -83,9 +86,11 @@ import ValidationPanel from '@/components/estado-resultados/ValidationPanel.vue'
 import VersionHistorySheet from '@/components/estado-resultados/VersionHistorySheet.vue';
 import { Button } from '@/components/ui/button';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { swal } from '@/composables/estado-resultados/erSwal';
 import { useCloseRoute } from '@/composables/estado-resultados/useCloseRoute';
 import type { CloseStep } from '@/composables/estado-resultados/useCloseRoute';
 import { useErActions } from '@/composables/estado-resultados/useErActions';
+import type { ClassifyPayload } from '@/composables/estado-resultados/useErActions';
 import {
     tabRequest,
     useErComparatives,
@@ -301,6 +306,11 @@ const detailMovement = ref<Movement | null>(null);
 /** Diálogo de clasificación abierto y los movimientos a clasificar. */
 const classifyOpen = ref(false);
 const classifyItems = ref<Movement[]>([]);
+/** Destino ya elegido al abrir «Clasificar» (mover en el Cuadre). */
+const classifyInitial = ref<string | null>(null);
+/** Diálogo «Ya considerado» abierto y sus movimientos. */
+const considerOpen = ref(false);
+const considerItems = ref<Movement[]>([]);
 /** Alta de regla del catálogo precargada desde el detalle de un movimiento. */
 const catalogPrefill = ref<Partial<RuleDraft> | null>(null);
 
@@ -422,6 +432,15 @@ const tabs = computed<ErTab[]>(() => {
             group: 'cierre',
         },
         {
+            key: 'cuadre',
+            label: 'Cuadre',
+            icon: Sigma,
+            badge: live && d?.cuadre && !d.cuadre.ok ? '!' : null,
+            badgeLabel: 'el cuadre tiene diferencia',
+            tone: 'bad',
+            group: 'cierre',
+        },
+        {
             key: 'control',
             label: 'Control',
             icon: ShieldCheck,
@@ -497,11 +516,15 @@ function openDetail(m: Movement): void {
  * Abre el diálogo de clasificación con los movimientos de esas huellas (cierra el
  * detalle). Si ninguna huella está en el dataset, no abre nada.
  */
-function openClassify(fingerprints: string[]): void {
+function openClassify(
+    fingerprints: string[],
+    initial: string | null = null,
+): void {
     const set = new Set(fingerprints);
     classifyItems.value = (dataset.value?.movements ?? []).filter((m) =>
         set.has(m.fingerprint),
     );
+    classifyInitial.value = initial;
     detailOpen.value = false;
 
     if (classifyItems.value.length) {
@@ -522,6 +545,52 @@ async function submitClassify(payload: {
     if (ok) {
         classifyOpen.value = false;
         table.value?.clearSelection();
+    }
+}
+
+/** Abre «Ya considerado» (total o parcial) con los movimientos de esas huellas. */
+function openConsider(fingerprints: string[]): void {
+    const set = new Set(fingerprints);
+    considerItems.value = (dataset.value?.movements ?? []).filter((m) =>
+        set.has(m.fingerprint),
+    );
+    detailOpen.value = false;
+
+    if (considerItems.value.length) {
+        considerOpen.value = true;
+    }
+}
+
+/** Guarda «Ya considerado» (mismo /clasificar, con motivo y reparto). */
+async function submitConsider(payload: ClassifyPayload): Promise<void> {
+    if (
+        await actions.classify(
+            considerItems.value.map((m) => m.fingerprint),
+            payload,
+        )
+    ) {
+        considerOpen.value = false;
+        table.value?.clearSelection();
+    }
+}
+
+/** Deshace la clasificación manual de un movimiento (pide el motivo para la bitácora). */
+async function revertMovement(fp: string): Promise<void> {
+    const r = await swal.fire({
+        icon: 'question',
+        title: '¿Deshacer la clasificación manual?',
+        text: 'Vuelve a la regla automática y quita un «Ya considerado» parcial. Queda en la bitácora.',
+        input: 'text',
+        inputValue: 'Se deshace la clasificación manual.',
+        inputValidator: (v: string) =>
+            v.trim().length >= 3 ? null : 'Escribe el motivo.',
+        showCancelButton: true,
+        confirmButtonText: 'Deshacer',
+        cancelButtonText: 'Cancelar',
+    });
+
+    if (r.isConfirmed) {
+        await actions.revert([fp], String(r.value).trim());
     }
 }
 
@@ -890,6 +959,7 @@ const historyUrl = (fp: string) =>
                                     :accepting="actions.accepting.value"
                                     @accept="accept"
                                     @classify="openClassify"
+                                    @consider="openConsider"
                                     @open="openDetail"
                                     @show-all="nav.openMovements('pendientes')"
                                     @go-sources="nav.go('fuentes')"
@@ -1026,6 +1096,7 @@ const historyUrl = (fp: string) =>
                                     }"
                                     @open="openByFingerprint"
                                     @classify="openClassify"
+                                    @consider="openConsider"
                                     @reload="data.loadDataset()"
                                     @open-catalog="openCatalogWith"
                                 />
@@ -1037,6 +1108,30 @@ const historyUrl = (fp: string) =>
                                     existiera la pantalla de validación: no trae
                                     ese detalle.
                                 </p>
+                            </section>
+
+                            <section
+                                v-else-if="nav.tab.value === 'cuadre'"
+                                id="er-panel-cuadre"
+                                key="cuadre"
+                                role="tabpanel"
+                                aria-labelledby="er-tab-cuadre"
+                            >
+                                <CuadrePanel
+                                    :cuadre="dataset.cuadre ?? null"
+                                    :movements="dataset.movements"
+                                    :treatments="treatments"
+                                    :can-act="canWrite.clasificar"
+                                    :can-catalog="!!can.catalogo"
+                                    :lock-reason="lockReason"
+                                    :consolidated="
+                                        dataset.meta.scope.consolidated
+                                    "
+                                    @open="openDetail"
+                                    @move="(fps, t) => openClassify(fps, t)"
+                                    @consider="openConsider"
+                                    @create-rule="createRuleFrom"
+                                />
                             </section>
 
                             <section
@@ -1097,13 +1192,23 @@ const historyUrl = (fp: string) =>
             :can-create-rule="!!can.catalogo"
             @create-rule="createRuleFrom"
             @accept-suggestion="(fp) => accept([fp], false)"
+            @consider="openConsider"
+            @revert="revertMovement"
         />
         <ClassifyDialog
             v-model:open="classifyOpen"
             :items="classifyItems"
             :treatments="treatments"
             :saving="actions.classifying.value"
+            :initial-treatment="classifyInitial"
             @submit="submitClassify"
+        />
+        <ConsideredDialog
+            v-model:open="considerOpen"
+            :items="considerItems"
+            :treatments="treatments"
+            :saving="actions.classifying.value"
+            @submit="submitConsider"
         />
         <VersionHistorySheet
             v-model:open="historyOpen"

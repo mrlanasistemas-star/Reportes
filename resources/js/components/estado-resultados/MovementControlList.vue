@@ -22,9 +22,11 @@
  * Emits:
  * - open: abrir el detalle de un movimiento (huella).
  * - classify: clasificar los movimientos seleccionados (huellas).
+ * - consider: marcar «Ya considerado» los seleccionados (huellas).
  * - reload / open-catalog: los reenvía desde la vista agrupada.
  */
 import {
+    CheckCircle2,
     CheckSquare,
     Download,
     FileX2,
@@ -74,6 +76,7 @@ const props = defineProps<{
 const emit = defineEmits<{
     open: [fingerprint: string];
     classify: [fingerprints: string[]];
+    consider: [fingerprints: string[]];
     reload: [];
     'open-catalog': [draft: Partial<RuleDraft>];
 }>();
@@ -496,6 +499,17 @@ onMounted(() => void c.value.loadRemote(1));
             >
                 <Lock class="size-3.5" /> Solo lectura
             </p>
+            <button
+                v-if="canAct"
+                type="button"
+                class="inline-flex h-10 items-center gap-1.5 rounded-xl border bg-background px-4 text-sm font-bold shadow-sm transition hover:border-teal-400 hover:bg-teal-50 focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-teal-950/30"
+                :disabled="!selected.size"
+                title="Ya tomados en cuenta (Radiografía, otro periodo u otra fuente)"
+                @click="emit('consider', [...selected])"
+            >
+                <CheckCircle2 class="size-4 text-teal-600" />
+                Ya considerado
+            </button>
             <button
                 v-if="canAct"
                 type="button"

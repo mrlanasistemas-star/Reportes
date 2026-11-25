@@ -21,6 +21,7 @@ export type ErTabKey =
     | 'indicadores'
     | 'fuentes'
     | 'validacion'
+    | 'cuadre'
     | 'control'
     | 'catalogo';
 
@@ -37,6 +38,7 @@ const TABS: string[] = [
     'indicadores',
     'fuentes',
     'validacion',
+    'cuadre',
     'control',
     'catalogo',
 ];
