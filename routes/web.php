@@ -178,6 +178,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->group(function () {
             Route::get('/', [HardDataController::class, 'index'])->name('index');
             Route::get('/periodos/{period}', [HardDataController::class, 'data'])->name('data');
+            Route::get('/periodos/{period}/exportar/{format}', [HardDataController::class, 'export'])->whereIn('format', ['excel', 'pdf'])->name('export');
             Route::get('/colaboradores/{employee}/historial', [HardDataController::class, 'history'])->name('history');
         });
 

@@ -6,7 +6,10 @@ use App\Models\Period;
 use App\Models\PeriodSummary;
 use App\Models\User;
 use App\Services\Api\EmployeePeriodKpiService;
+use App\Services\HardData\HardDataPdfExporter;
+use App\Services\HardData\HardDataService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 
 uses(RefreshDatabase::class);
 
@@ -175,4 +178,51 @@ it('hides collaborators without income or without payroll in the period', functi
         ->assertJsonCount(1, 'rows')
         ->assertJsonPath('rows.0.name', 'MARGARITA DOMINGUEZ')
         ->assertJsonPath('hidden', 2);
+});
+
+it('shows the official branch when the assignment points to a route', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    hdFakeKpis([hdRow(9001, 'BLANCA CRUZ', hdBranch('CRUZ AZUL'), 100.0), hdRow(9002, 'JOSE AMECA', hdBranch('CORDOBA PADELMA'), 50.0)]);
+
+    $this->actingAs($admin)->getJson("/datos-duros/periodos/{$period->id}")
+        ->assertOk()
+        ->assertJsonPath('rows.0.branch', 'TULA')
+        ->assertJsonPath('rows.0.routes.0', 'CRUZ AZUL')
+        ->assertJsonPath('rows.1.branch', 'CORDOBA');
+});
+
+it('exports the visible rows to Excel in the screen order', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    $ori = hdBranch('ORIZABA');
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', $ori, 1500.0), hdRow(9002, 'ADRIAN DIAZ', $ori, 20.0), hdRow(9003, 'MARIO PEREZ', $ori, 90.0)]);
+
+    $response = $this->actingAs($admin)->get("/datos-duros/periodos/{$period->id}/exportar/excel?ids=9003,9001")->assertOk();
+    $book = IOFactory::load($response->getFile()->getPathname());
+    $sheet = $book->getSheetByName('Datos duros');
+
+    expect($sheet->getCell('D2')->getValue())->toBe('MARIO PEREZ')
+        ->and($sheet->getCell('D3')->getValue())->toBe('MARGARITA DOMINGUEZ')
+        ->and($sheet->getCell('A4')->getValue())->toBe('TOTAL')
+        ->and($book->getSheetNames())->toContain('Por sucursal', 'Detalle de Gastos');
+});
+
+it('renders the executive PDF html for the list and for one collaborator', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', hdBranch('ORIZABA'), 1500.0)]);
+    $dataset = app(HardDataService::class)->dataset($period, $admin);
+    $exporter = app(HardDataPdfExporter::class);
+
+    expect($exporter->html($dataset))->toContain('Detalle por colaborador', 'MARGARITA DOMINGUEZ', '$1,500')
+        ->and($exporter->html($dataset, $dataset['rows'][0]))->toContain('Ficha individual', 'Cartera por antigüedad');
+});
+
+it('does not export a collaborator outside the user scope', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', hdBranch('ORIZABA'), 1500.0)]);
+
+    $this->actingAs($admin)->get("/datos-duros/periodos/{$period->id}/exportar/pdf?colaborador=777")->assertNotFound();
 });

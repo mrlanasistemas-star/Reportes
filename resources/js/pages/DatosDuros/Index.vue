@@ -29,6 +29,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import CollaboratorCard from '@/components/datos-duros/CollaboratorCard.vue';
 import CollaboratorSheet from '@/components/datos-duros/CollaboratorSheet.vue';
 import CollaboratorTable from '@/components/datos-duros/CollaboratorTable.vue';
+import ExportButtons from '@/components/datos-duros/ExportButtons.vue';
 import FacetBar from '@/components/datos-duros/FacetBar.vue';
 import PeriodRail from '@/components/datos-duros/PeriodRail.vue';
 import ResultsToolbar from '@/components/datos-duros/ResultsToolbar.vue';
@@ -291,6 +292,15 @@ const calculatedAt = computed(() => {
     }).format(new Date(iso));
 });
 
+// Exporta exactamente lo que se ve (mismo orden). Sin filtros ni orden especial = «todos».
+const exportIds = computed(() =>
+    f.filtered.value.length === rows.value.length &&
+    f.sortKey.value === 'ebitda' &&
+    f.sortDir.value === 'desc'
+        ? []
+        : f.filtered.value.map((r) => r.id),
+);
+
 const firstLoad = computed(() => loading.value && !dataset.value);
 const notAvailable = computed(() => dataset.value?.status === 'not_available');
 </script>
@@ -489,7 +499,15 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                     :sort-key="f.sortKey.value"
                     :sort-dir="f.sortDir.value"
                     @sort="f.setSort"
-                />
+                >
+                    <template #actions>
+                        <ExportButtons
+                            :period-id="periodId"
+                            :ids="exportIds"
+                            :disabled="firstLoad || !f.filtered.value.length"
+                        />
+                    </template>
+                </ResultsToolbar>
 
                 <!-- Esqueleto de primera carga -->
                 <div
@@ -584,5 +602,13 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
         v-model:open="sheetOpen"
         :row="selected"
         :period="currentPeriod"
-    />
+    >
+        <template #actions>
+            <ExportButtons
+                v-if="selected"
+                :period-id="periodId"
+                :employee-id="selected.id"
+            />
+        </template>
+    </CollaboratorSheet>
 </template>

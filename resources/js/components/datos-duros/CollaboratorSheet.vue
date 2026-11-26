@@ -227,6 +227,9 @@ const ebitdaParts = computed(() => {
                                     >{{ period.name }}</span
                                 >
                             </div>
+                            <div class="mt-3">
+                                <slot name="actions" />
+                            </div>
                         </div>
                     </div>
                 </SheetHeader>

@@ -92,6 +92,8 @@ const SORTS: { key: HardDataSortKey; label: string }[] = [
             </button>
         </div>
 
+        <slot name="actions" />
+
         <div
             class="flex shrink-0 rounded-xl border border-border bg-card p-0.5"
             role="group"
