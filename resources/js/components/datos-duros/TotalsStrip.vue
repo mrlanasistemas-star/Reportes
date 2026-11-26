@@ -15,6 +15,7 @@ import {
     Wallet,
 } from 'lucide-vue-next';
 import { computed } from 'vue';
+import AnimatedValue from '@/components/datos-duros/AnimatedValue.vue';
 import { Skeleton } from '@/components/ui/skeleton';
 import { moneyCompact, money, num, percent } from '@/lib/format';
 import { moraTone } from '@/lib/hardData';
@@ -51,7 +52,8 @@ const tiles = computed(() => {
     return [
         {
             label: 'Colaboradores',
-            value: num(t.count),
+            n: t.count,
+            fmt: num,
             full: `${num(t.active)} activos`,
             hint: `${num(t.active)} activos`,
             icon: Users,
@@ -59,7 +61,8 @@ const tiles = computed(() => {
         },
         {
             label: 'Colocación',
-            value: moneyCompact(t.placement),
+            n: t.placement,
+            fmt: moneyCompact,
             full: money(t.placement),
             hint: `${num(t.operations)} operaciones`,
             icon: HandCoins,
@@ -67,7 +70,8 @@ const tiles = computed(() => {
         },
         {
             label: 'Recuperación',
-            value: moneyCompact(t.recovery),
+            n: t.recovery,
+            fmt: moneyCompact,
             full: money(t.recovery),
             hint: 'Cobranza del periodo',
             icon: Banknote,
@@ -75,7 +79,8 @@ const tiles = computed(() => {
         },
         {
             label: 'Cartera',
-            value: moneyCompact(t.portfolio),
+            n: t.portfolio,
+            fmt: moneyCompact,
             full: money(t.portfolio),
             hint: `Vencida ${moneyCompact(t.overdue)}`,
             icon: Wallet,
@@ -83,7 +88,8 @@ const tiles = computed(() => {
         },
         {
             label: 'Mora',
-            value: percent(t.moraPct),
+            n: t.moraPct,
+            fmt: percent,
             full: `Vencida ${money(t.overdue)}`,
             hint: 'Vencida / cartera',
             icon: TrendingUp,
@@ -91,7 +97,8 @@ const tiles = computed(() => {
         },
         {
             label: 'Nómina',
-            value: moneyCompact(t.payroll),
+            n: t.payroll,
+            fmt: moneyCompact,
             full: money(t.payroll),
             hint: 'Capital humano',
             icon: Receipt,
@@ -99,7 +106,8 @@ const tiles = computed(() => {
         },
         {
             label: 'OPEX',
-            value: moneyCompact(t.opex),
+            n: t.opex,
+            fmt: moneyCompact,
             full: money(t.opex),
             hint: 'Gasto atribuible',
             icon: PiggyBank,
@@ -112,10 +120,10 @@ const tiles = computed(() => {
 <template>
     <section
         aria-label="Totales del filtro"
-        class="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-9"
+        class="app-stagger grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-9"
     >
         <article
-            class="relative col-span-2 overflow-hidden rounded-2xl border border-transparent bg-gradient-to-br from-primary via-primary/90 to-primary/75 p-4 text-primary-foreground shadow-soft-md sm:col-span-4 xl:col-span-2"
+            class="dd-ebitda relative isolate col-span-2 overflow-hidden rounded-2xl border border-transparent bg-gradient-to-br from-primary via-primary/90 to-primary/75 p-4 text-primary-foreground shadow-soft-md sm:col-span-4 xl:col-span-2"
         >
             <div
                 class="pointer-events-none absolute -top-10 -right-8 size-32 rounded-full bg-white/10 blur-2xl"
@@ -132,21 +140,27 @@ const tiles = computed(() => {
                     class="mt-2 text-3xl font-extrabold tracking-tight tabular-nums"
                     :title="money(totals.ebitda)"
                 >
-                    {{ moneyCompact(totals.ebitda) }}
+                    <AnimatedValue
+                        :value="totals.ebitda"
+                        :format="moneyCompact"
+                    />
                 </p>
                 <p class="mt-1 text-xs opacity-85">
                     Margen
-                    <span class="font-bold tabular-nums">{{
-                        percent(totals.marginPct)
-                    }}</span>
+                    <AnimatedValue
+                        class="font-bold"
+                        :value="totals.marginPct"
+                        :format="percent"
+                    />
                     sobre ingreso base
                 </p>
             </template>
         </article>
 
         <article
-            v-for="tile in tiles"
+            v-for="(tile, i) in tiles"
             :key="tile.label"
+            :class="i === tiles.length - 1 ? 'col-span-2 xl:col-span-1' : ''"
             class="app-hover-lift flex flex-col rounded-2xl border border-border bg-card p-3.5 shadow-soft-xs"
             :title="tile.full"
         >
@@ -170,7 +184,7 @@ const tiles = computed(() => {
                 <p
                     class="mt-2 text-xl font-extrabold tracking-tight text-foreground tabular-nums"
                 >
-                    {{ tile.value }}
+                    <AnimatedValue :value="tile.n" :format="tile.fmt" />
                 </p>
                 <p class="mt-0.5 truncate text-[11px] text-muted-foreground">
                     {{ tile.hint }}
@@ -179,3 +193,39 @@ const tiles = computed(() => {
         </article>
     </section>
 </template>
+
+<style scoped>
+/* Brillo suave que recorre la tarjeta de EBITDA. */
+.dd-ebitda::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        110deg,
+        transparent 30%,
+        rgb(255 255 255 / 0.16) 50%,
+        transparent 70%
+    );
+    transform: translateX(-100%);
+    animation: dd-sheen 6s var(--ease-in-out, ease-in-out) infinite;
+    pointer-events: none;
+    z-index: -1;
+}
+
+@keyframes dd-sheen {
+    0%,
+    60% {
+        transform: translateX(-100%);
+    }
+
+    100% {
+        transform: translateX(100%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dd-ebitda::before {
+        animation: none;
+    }
+}
+</style>

@@ -302,6 +302,9 @@ const exportIds = computed(() =>
 );
 
 const firstLoad = computed(() => loading.value && !dataset.value);
+// Cambio de periodo sin caché: se atenúan los datos anteriores mientras llegan los nuevos.
+const switching = computed(() => loading.value && !!dataset.value);
+const shownPeriodKey = computed(() => dataset.value?.period?.id ?? 0);
 const notAvailable = computed(() => dataset.value?.status === 'not_available');
 </script>
 
@@ -490,110 +493,128 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                     vacantes); tampoco suman en los totales.
                 </p>
 
-                <TotalsStrip :totals="f.totals.value" :loading="firstLoad" />
-
-                <ResultsToolbar
-                    v-model:view="view"
-                    :count="f.filtered.value.length"
-                    :total="rows.length"
-                    :sort-key="f.sortKey.value"
-                    :sort-dir="f.sortDir.value"
-                    @sort="f.setSort"
-                >
-                    <template #actions>
-                        <ExportButtons
-                            :period-id="periodId"
-                            :ids="exportIds"
-                            :disabled="firstLoad || !f.filtered.value.length"
-                        />
-                    </template>
-                </ResultsToolbar>
-
-                <!-- Esqueleto de primera carga -->
                 <div
-                    v-if="firstLoad"
-                    class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                    :class="[
+                        'flex flex-col gap-5 transition-[opacity,filter] duration-300',
+                        switching
+                            ? 'pointer-events-none opacity-50 blur-[1px] saturate-50'
+                            : '',
+                    ]"
+                    :aria-busy="switching"
                 >
-                    <div
-                        v-for="i in 8"
-                        :key="i"
-                        class="rounded-2xl border border-border bg-card p-4"
-                    >
-                        <div class="flex items-center gap-3">
-                            <Skeleton class="size-11 rounded-2xl" />
-                            <div class="flex-1 space-y-2">
-                                <Skeleton class="h-4 w-3/4" /><Skeleton
-                                    class="h-3 w-1/2"
-                                />
-                            </div>
-                        </div>
-                        <Skeleton class="mt-4 h-14 w-full rounded-xl" />
-                        <div class="mt-3 grid grid-cols-2 gap-3">
-                            <Skeleton v-for="j in 4" :key="j" class="h-8" />
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Sin resultados -->
-                <section
-                    v-else-if="!f.filtered.value.length"
-                    class="flex flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-card px-6 py-14 text-center"
-                >
-                    <SearchX
-                        class="size-10 text-muted-foreground"
-                        aria-hidden="true"
+                    <TotalsStrip
+                        :totals="f.totals.value"
+                        :loading="firstLoad"
                     />
-                    <h2 class="mt-3 text-lg font-bold text-foreground">
-                        Nadie coincide con esa búsqueda
-                    </h2>
-                    <p class="mt-1 max-w-md text-sm text-muted-foreground">
-                        Prueba con menos letras o quita algún filtro.
-                    </p>
-                    <button
-                        v-if="f.activeCount.value"
-                        type="button"
-                        class="mt-4 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-foreground shadow-soft-sm transition hover:opacity-90"
-                        @click="f.clearAll"
-                    >
-                        Limpiar filtros
-                    </button>
-                </section>
 
-                <template v-else>
-                    <TransitionGroup
-                        v-if="view === 'cards'"
-                        tag="div"
-                        class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
-                        enter-active-class="transition duration-200 ease-out"
-                        enter-from-class="opacity-0 translate-y-1"
-                        move-class="transition duration-200"
-                    >
-                        <CollaboratorCard
-                            v-for="(row, i) in visible"
-                            :key="row.id"
-                            :rank="i + 1"
-                            :row="row"
-                            :tokens="f.tokens.value"
-                            @open="openRow"
-                        />
-                    </TransitionGroup>
-                    <CollaboratorTable
-                        v-else
-                        :rows="visible"
-                        :tokens="f.tokens.value"
+                    <ResultsToolbar
+                        v-model:view="view"
+                        :count="f.filtered.value.length"
+                        :total="rows.length"
                         :sort-key="f.sortKey.value"
                         :sort-dir="f.sortDir.value"
-                        @open="openRow"
                         @sort="f.setSort"
-                    />
-                    <div ref="sentinel" class="h-1" aria-hidden="true" />
-                    <p
-                        v-if="limit < f.filtered.value.length"
-                        class="text-center text-xs text-muted-foreground"
                     >
-                        Cargando más colaboradores…
-                    </p>
-                </template>
+                        <template #actions>
+                            <ExportButtons
+                                :period-id="periodId"
+                                :ids="exportIds"
+                                :disabled="
+                                    firstLoad || !f.filtered.value.length
+                                "
+                            />
+                        </template>
+                    </ResultsToolbar>
+
+                    <!-- Esqueleto de primera carga -->
+                    <div
+                        v-if="firstLoad"
+                        class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                    >
+                        <div
+                            v-for="i in 8"
+                            :key="i"
+                            class="rounded-2xl border border-border bg-card p-4"
+                        >
+                            <div class="flex items-center gap-3">
+                                <Skeleton class="size-11 rounded-2xl" />
+                                <div class="flex-1 space-y-2">
+                                    <Skeleton class="h-4 w-3/4" /><Skeleton
+                                        class="h-3 w-1/2"
+                                    />
+                                </div>
+                            </div>
+                            <Skeleton class="mt-4 h-14 w-full rounded-xl" />
+                            <div class="mt-3 grid grid-cols-2 gap-3">
+                                <Skeleton v-for="j in 4" :key="j" class="h-8" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sin resultados -->
+                    <section
+                        v-else-if="!f.filtered.value.length"
+                        class="flex flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-card px-6 py-14 text-center"
+                    >
+                        <SearchX
+                            class="size-10 text-muted-foreground"
+                            aria-hidden="true"
+                        />
+                        <h2 class="mt-3 text-lg font-bold text-foreground">
+                            Nadie coincide con esa búsqueda
+                        </h2>
+                        <p class="mt-1 max-w-md text-sm text-muted-foreground">
+                            Prueba con menos letras o quita algún filtro.
+                        </p>
+                        <button
+                            v-if="f.activeCount.value"
+                            type="button"
+                            class="mt-4 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-foreground shadow-soft-sm transition hover:opacity-90"
+                            @click="f.clearAll"
+                        >
+                            Limpiar filtros
+                        </button>
+                    </section>
+
+                    <template v-else>
+                        <TransitionGroup
+                            v-if="view === 'cards'"
+                            :key="`cards-${shownPeriodKey}`"
+                            tag="div"
+                            class="app-stagger grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                            enter-active-class="transition duration-200 ease-out"
+                            enter-from-class="opacity-0 translate-y-1"
+                            move-class="transition duration-200"
+                        >
+                            <CollaboratorCard
+                                v-for="(row, i) in visible"
+                                :key="row.id"
+                                :rank="i + 1"
+                                :row="row"
+                                :tokens="f.tokens.value"
+                                @open="openRow"
+                            />
+                        </TransitionGroup>
+                        <CollaboratorTable
+                            v-else
+                            :key="`table-${shownPeriodKey}`"
+                            class="app-enter"
+                            :rows="visible"
+                            :tokens="f.tokens.value"
+                            :sort-key="f.sortKey.value"
+                            :sort-dir="f.sortDir.value"
+                            @open="openRow"
+                            @sort="f.setSort"
+                        />
+                        <div ref="sentinel" class="h-1" aria-hidden="true" />
+                        <p
+                            v-if="limit < f.filtered.value.length"
+                            class="text-center text-xs text-muted-foreground"
+                        >
+                            Cargando más colaboradores…
+                        </p>
+                    </template>
+                </div>
             </template>
         </template>
     </div>
