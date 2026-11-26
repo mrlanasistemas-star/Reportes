@@ -24,5 +24,32 @@
             "type": "image/png",
             "purpose": "maskable"
         }
+    ],
+    "shortcuts": [
+        {
+            "name": "Datos duros",
+            "short_name": "Datos duros",
+            "description": "Cifras finales por colaborador y periodo",
+            "url": "/datos-duros",
+            "icons": [
+                {
+                    "src": "/logoMrLana.png",
+                    "sizes": "256x256",
+                    "type": "image/png"
+                }
+            ]
+        },
+        {
+            "name": "Dashboard",
+            "short_name": "Dashboard",
+            "url": "/dashboard",
+            "icons": [
+                {
+                    "src": "/logoMrLana.png",
+                    "sizes": "256x256",
+                    "type": "image/png"
+                }
+            ]
+        }
     ]
 }

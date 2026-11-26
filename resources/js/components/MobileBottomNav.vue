@@ -29,7 +29,8 @@ const quickItems = computed(() => {
     const visible = visibleMainNavItems(page.props.auth);
     const preferredTitles = [
         'Dashboard',
-        'Carga de archivos',
+        // Consulta rápida desde el teléfono (26-nov-2026); la carga se hace en escritorio.
+        'Datos duros',
         'Reportes mensuales',
         'OKR',
     ];

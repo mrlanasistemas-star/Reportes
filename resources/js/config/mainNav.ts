@@ -1,6 +1,7 @@
 import {
     BookOpen,
     CalendarRange,
+    Database,
     FileSpreadsheet,
     FolderOpen,
     Landmark,
@@ -59,6 +60,15 @@ export const mainNavItems: NavItem[] = [
         group: 'Análisis',
         href: '/reportes-mensuales',
         icon: FileSpreadsheet,
+        module: 'reportes',
+    },
+    {
+        // Datos duros (26-nov-2026): cifras finales por colaborador sin abrir la
+        // radiografía. Mismo permiso de módulo que Reportes mensuales.
+        title: 'Datos duros',
+        group: 'Análisis',
+        href: '/datos-duros',
+        icon: Database,
         module: 'reportes',
     },
     {
