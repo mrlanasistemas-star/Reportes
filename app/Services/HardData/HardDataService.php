@@ -62,8 +62,10 @@ class HardDataService
         $result = $this->kpis->forPeriod($period);
         $allowed = $this->scope->allowedBranchIds($user);
 
-        $rows = collect($result['rows'])
-            ->filter(fn (array $r) => $allowed === null || in_array((int) ($r['branch_id'] ?? 0), $allowed, true))
+        $inScope = collect($result['rows'])
+            ->filter(fn (array $r) => $allowed === null || in_array((int) ($r['branch_id'] ?? 0), $allowed, true));
+        $rows = $inScope
+            ->filter(fn (array $r) => $this->workedInPeriod($r))
             ->map(fn (array $r) => $this->slim($r))
             ->values()
             ->all();
@@ -74,6 +76,7 @@ class HardDataService
             'message' => $result['message'],
             'calculated_at' => $result['calculated_at'],
             'rows' => $rows,
+            'hidden' => $inScope->count() - count($rows),
             'scope' => [
                 'general' => $allowed === null,
                 'label' => $this->scope->label($user),
@@ -104,7 +107,7 @@ class HardDataService
             $row = collect($this->kpis->forPeriod($period)['rows'])
                 ->first(fn (array $r) => in_array($employeeId, $r['employee']['employee_ids'] ?? [$r['employee']['id'] ?? null], true));
 
-            if ($row === null || ($allowed !== null && ! in_array((int) ($row['branch_id'] ?? 0), $allowed, true))) {
+            if ($row === null || ! $this->workedInPeriod($row) || ($allowed !== null && ! in_array((int) ($row['branch_id'] ?? 0), $allowed, true))) {
                 return ['period' => $this->describePeriod($period), 'present' => false];
             }
 
@@ -125,6 +128,19 @@ class HardDataService
                 'category' => $k['ebitda']['category'],
             ];
         })->values()->all();
+    }
+
+    /**
+     * Solo cuentan quienes trabajaron el periodo: con ingreso base y con nómina
+     * pagada. Sin ingresos o sin pago = baja / vacante, no se muestra (y no suma
+     * en los totales de la pantalla).
+     */
+    private function workedInPeriod(array $r): bool
+    {
+        $k = $r['kpis'] ?? [];
+
+        return (float) ($k['ebitda']['income_base'] ?? 0) > 0
+            && (float) ($k['payroll']['human_capital_total'] ?? 0) > 0;
     }
 
     /** Forma compacta de una fila de EmployeePeriodKpiService para la pantalla. */
@@ -180,6 +196,9 @@ class HardDataService
         if (preg_match('/^(.*?)\s*\((.+)\)\s*$/u', $label, $m)) {
             $name = trim($m[1]);
             $range = trim($m[2]);
+        } elseif ($p->start_date && $p->end_date) {
+            // Bimestres/trimestres: el nombre no trae fechas, se calculan.
+            $range = Period::dateRangeLabel($p->start_date, $p->end_date);
         }
 
         return [

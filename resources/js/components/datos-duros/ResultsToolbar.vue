@@ -17,6 +17,9 @@ defineProps<{
 const view = defineModel<'cards' | 'table'>('view', { required: true });
 const emit = defineEmits<{ sort: [key: HardDataSortKey] }>();
 
+const sortLabel = (key: HardDataSortKey) =>
+    SORTS.find((s) => s.key === key)?.label ?? '';
+
 const SORTS: { key: HardDataSortKey; label: string }[] = [
     { key: 'ebitda', label: 'EBITDA' },
     { key: 'placement', label: 'Colocación' },
@@ -36,6 +39,21 @@ const SORTS: { key: HardDataSortKey; label: string }[] = [
             }}</span>
             <template v-if="count !== total"> de {{ total }}</template>
             colaborador{{ count === 1 ? '' : 'es' }}
+            <span class="hidden sm:inline">
+                · ordenados por
+                <span class="font-semibold text-foreground">{{
+                    sortLabel(sortKey)
+                }}</span
+                >{{
+                    sortKey === 'name'
+                        ? sortDir === 'asc'
+                            ? ' (A a la Z)'
+                            : ' (Z a la A)'
+                        : sortDir === 'desc'
+                          ? ', de mayor a menor'
+                          : ', de menor a mayor'
+                }}</span
+            >
         </p>
 
         <div
@@ -43,7 +61,7 @@ const SORTS: { key: HardDataSortKey; label: string }[] = [
         >
             <span
                 class="mr-1 shrink-0 text-[11px] font-bold tracking-wide text-muted-foreground uppercase"
-                >Ordenar</span
+                >Ordenar por</span
             >
             <button
                 v-for="s in SORTS"

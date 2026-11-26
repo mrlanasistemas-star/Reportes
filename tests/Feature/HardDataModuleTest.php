@@ -158,3 +158,21 @@ it('requires the reportes module', function () {
 
     $this->actingAs($user)->get('/datos-duros')->assertForbidden();
 });
+
+it('hides collaborators without income or without payroll in the period', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    $ori = hdBranch('ORIZABA');
+
+    $sinIngreso = hdRow(9002, 'BAJA SIN INGRESO', $ori, 0.0);
+    $sinIngreso['kpis']['ebitda']['income_base'] = 0.0;
+    $sinNomina = hdRow(9003, 'VACANTE SIN NOMINA', $ori, 500.0);
+    $sinNomina['kpis']['payroll']['human_capital_total'] = 0.0;
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', $ori, 1500.0), $sinIngreso, $sinNomina]);
+
+    $this->actingAs($admin)->getJson("/datos-duros/periodos/{$period->id}")
+        ->assertOk()
+        ->assertJsonCount(1, 'rows')
+        ->assertJsonPath('rows.0.name', 'MARGARITA DOMINGUEZ')
+        ->assertJsonPath('hidden', 2);
+});

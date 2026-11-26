@@ -69,6 +69,8 @@ export type HardDataDataset = {
     message: string | null;
     calculated_at: string | null;
     rows: HardDataRow[];
+    /** Colaboradores del alcance que no se muestran (sin ingresos o sin nómina en el periodo). */
+    hidden?: number;
     scope: { general: boolean; label: string };
 };
 

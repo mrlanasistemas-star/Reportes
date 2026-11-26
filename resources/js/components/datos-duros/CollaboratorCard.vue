@@ -9,7 +9,11 @@ import type { HardDataRow } from '@/types/hardData';
 import CategoryBadge from './CategoryBadge.vue';
 import HighlightText from './HighlightText.vue';
 
-const props = defineProps<{ row: HardDataRow; tokens: string[] }>();
+const props = defineProps<{
+    row: HardDataRow;
+    tokens: string[];
+    rank?: number;
+}>();
 const emit = defineEmits<{ open: [row: HardDataRow] }>();
 const { getInitials } = useInitials();
 
@@ -58,6 +62,12 @@ const metrics = computed(() => [
         />
 
         <div class="flex items-start gap-3">
+            <span
+                v-if="rank"
+                class="absolute top-2.5 left-2.5 z-10 flex h-5 min-w-5 items-center justify-center rounded-full bg-foreground px-1.5 text-[10px] font-extrabold text-background tabular-nums shadow-soft-xs"
+                :title="`Lugar ${rank} en el orden actual`"
+                >{{ rank }}</span
+            >
             <span
                 :class="[
                     'flex size-11 shrink-0 items-center justify-center rounded-2xl text-sm font-extrabold',

@@ -7,7 +7,7 @@ import type { HardDataDataset } from '@/types/hardData';
  * revalida en segundo plano (stale-while-revalidate). sessionStorage se borra al
  * cerrar la pestaña, así que las cifras nunca quedan guardadas en el equipo.
  */
-const STORAGE_PREFIX = 'datos-duros:v1:';
+const STORAGE_PREFIX = 'datos-duros:v2:';
 const memory = new Map<number, HardDataDataset>();
 
 function readStored(periodId: number): HardDataDataset | null {

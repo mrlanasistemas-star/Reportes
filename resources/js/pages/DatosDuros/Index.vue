@@ -23,6 +23,7 @@ import {
     RefreshCw,
     SearchX,
     ShieldCheck,
+    UserX,
 } from 'lucide-vue-next';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import CollaboratorCard from '@/components/datos-duros/CollaboratorCard.vue';
@@ -467,6 +468,18 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                     </div>
                 </section>
 
+                <p
+                    v-if="!firstLoad && dataset?.hidden"
+                    class="-mt-1 flex items-center gap-2 px-1 text-xs text-muted-foreground"
+                >
+                    <UserX class="size-3.5 shrink-0" aria-hidden="true" />
+                    No se muestran {{ dataset.hidden }} colaborador{{
+                        dataset.hidden === 1 ? '' : 'es'
+                    }}
+                    sin ingresos o sin nómina pagada en este periodo (bajas y
+                    vacantes); tampoco suman en los totales.
+                </p>
+
                 <TotalsStrip :totals="f.totals.value" :loading="firstLoad" />
 
                 <ResultsToolbar
@@ -538,8 +551,9 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                         move-class="transition duration-200"
                     >
                         <CollaboratorCard
-                            v-for="row in visible"
+                            v-for="(row, i) in visible"
                             :key="row.id"
+                            :rank="i + 1"
                             :row="row"
                             :tokens="f.tokens.value"
                             @open="openRow"
