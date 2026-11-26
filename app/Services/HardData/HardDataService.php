@@ -2,11 +2,13 @@
 
 namespace App\Services\HardData;
 
+use App\Models\Branch;
 use App\Models\Period;
 use App\Models\PeriodSummary;
 use App\Models\User;
 use App\Services\Access\DataScopeService;
 use App\Services\Api\EmployeePeriodKpiService;
+use App\Services\Catalog\BranchRouteCatalog;
 
 /**
  * Módulo «Datos duros» — resumen de las cifras finales por colaborador y periodo
@@ -61,9 +63,9 @@ class HardDataService
     {
         $result = $this->kpis->forPeriod($period);
         $allowed = $this->scope->allowedBranchIds($user);
+        $canSee = $this->visibilityFilter($allowed);
 
-        $inScope = collect($result['rows'])
-            ->filter(fn (array $r) => $allowed === null || in_array((int) ($r['branch_id'] ?? 0), $allowed, true));
+        $inScope = collect($result['rows'])->filter($canSee);
         $rows = $inScope
             ->filter(fn (array $r) => $this->workedInPeriod($r))
             ->map(fn (array $r) => $this->slim($r))
@@ -93,7 +95,7 @@ class HardDataService
      */
     public function history(int $employeeId, User $user, string $type = 'monthly', int $limit = 12): array
     {
-        $allowed = $this->scope->allowedBranchIds($user);
+        $canSee = $this->visibilityFilter($this->scope->allowedBranchIds($user));
 
         $periods = Period::query()
             ->whereIn('id', collect($this->periods())->pluck('id'))
@@ -103,11 +105,11 @@ class HardDataService
             ->get()
             ->reverse();
 
-        return $periods->map(function (Period $period) use ($employeeId, $allowed) {
+        return $periods->map(function (Period $period) use ($employeeId, $canSee) {
             $row = collect($this->kpis->forPeriod($period)['rows'])
                 ->first(fn (array $r) => in_array($employeeId, $r['employee']['employee_ids'] ?? [$r['employee']['id'] ?? null], true));
 
-            if ($row === null || ! $this->workedInPeriod($row) || ($allowed !== null && ! in_array((int) ($row['branch_id'] ?? 0), $allowed, true))) {
+            if ($row === null || ! $this->workedInPeriod($row) || ! $canSee($row)) {
                 return ['period' => $this->describePeriod($period), 'present' => false];
             }
 
@@ -116,7 +118,7 @@ class HardDataService
             return [
                 'period' => $this->describePeriod($period),
                 'present' => true,
-                'branch' => $row['branch']['name'] ?? $row['report_branch_name'] ?? null,
+                'branch' => $this->officialBranch($row)['branch'],
                 'placement' => $k['placement']['amount'],
                 'recovery' => $k['recovery']['total'],
                 'portfolio' => $k['portfolio']['total'],
@@ -128,6 +130,58 @@ class HardDataService
                 'category' => $k['ebitda']['category'],
             ];
         })->values()->all();
+    }
+
+    /**
+     * Sucursal OFICIAL de la fila (BranchRouteCatalog): varias asignaciones
+     * apuntan a un branch que en realidad es una RUTA (CRUZ AZUL y ATOTONILCO
+     * → TULA, CORDOBA PADELMA → CORDOBA, MAT-CEN → ATLIXCO…). Una ruta nunca
+     * es sucursal: se muestra la sucursal dueña y la ruta pasa a la lista de
+     * rutas. Si el nombre no está en el catálogo se deja tal cual (nunca se
+     * adivina por parecido).
+     *
+     * @return array{branch:?string, route:?string}
+     */
+    private function officialBranch(array $r): array
+    {
+        $raw = $r['branch']['name'] ?? $r['report_branch_name'] ?? null;
+        $official = BranchRouteCatalog::officialBranchFor($raw);
+
+        if ($official === null) {
+            foreach (BranchRouteCatalog::HISTORICAL_FINANCIAL_BRANCHES as $historical) {
+                if (BranchRouteCatalog::normalize($historical) === BranchRouteCatalog::normalize($raw)) {
+                    return ['branch' => $historical, 'route' => null];
+                }
+            }
+
+            return ['branch' => $raw, 'route' => null];
+        }
+
+        $isRoute = BranchRouteCatalog::normalize($official) !== BranchRouteCatalog::normalize($raw);
+
+        return ['branch' => $official, 'route' => $isRoute ? BranchRouteCatalog::route($raw)['route'] ?? $raw : null];
+    }
+
+    /**
+     * Filtro de alcance: el branch asignado está permitido, o su sucursal
+     * oficial es una de las sucursales permitidas (un gerente de TULA ve a quien
+     * quedó asignado a la ruta CRUZ AZUL).
+     *
+     * @param  list<int>|null  $allowed
+     * @return \Closure(array): bool
+     */
+    private function visibilityFilter(?array $allowed): \Closure
+    {
+        if ($allowed === null) {
+            return fn (array $r) => true;
+        }
+
+        $allowedOfficial = Branch::query()->whereIn('id', $allowed)->pluck('name')
+            ->map(fn ($name) => BranchRouteCatalog::normalize(BranchRouteCatalog::officialBranchFor($name) ?? $name))
+            ->filter()->unique()->all();
+
+        return fn (array $r) => in_array((int) ($r['branch_id'] ?? 0), $allowed, true)
+            || in_array(BranchRouteCatalog::normalize($this->officialBranch($r)['branch']), $allowedOfficial, true);
     }
 
     /**
@@ -147,7 +201,10 @@ class HardDataService
     private function slim(array $r): array
     {
         $k = $r['kpis'];
-        $routes = collect($r['routes'] ?? [])->pluck('route')->filter()->unique()->values()->all();
+        $official = $this->officialBranch($r);
+        $routes = collect($r['routes'] ?? [])->pluck('route')
+            ->prepend($official['route'])
+            ->filter()->unique()->values()->all();
 
         return [
             'id' => $r['employee']['id'],
@@ -156,7 +213,7 @@ class HardDataService
             'promoter_code' => $r['employee']['promoter_code'] ?? null,
             'position' => $r['employee']['position'] ?? null,
             'branch_id' => $r['branch_id'],
-            'branch' => $r['branch']['name'] ?? $r['report_branch_name'] ?? null,
+            'branch' => $official['branch'],
             'region' => $r['region'] ?? null,
             'routes' => $routes,
             'status' => $r['employment']['operational_status'] ?? null,
