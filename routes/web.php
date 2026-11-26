@@ -11,6 +11,7 @@ use App\Http\Controllers\EstadoResultadosControlController;
 use App\Http\Controllers\EstadoResultadosController;
 use App\Http\Controllers\EstadoResultadosFinancialExpensesController;
 use App\Http\Controllers\ExpenseReviewController;
+use App\Http\Controllers\HardDataController;
 use App\Http\Controllers\MonthlyReportController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\Okr\ResponsibleController as UserAdministrationController;
@@ -167,6 +168,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('validaciones.')
         ->group(function () {
             Route::get('/', [ValidationController::class, 'index'])->name('index');
+        });
+
+    // Datos duros (26-nov-2026) — cifras finales por colaborador y periodo sin abrir la
+    // radiografía completa. Mismo módulo de acceso que Reportes mensuales.
+    Route::prefix('datos-duros')
+        ->middleware('module:reportes')
+        ->name('datos-duros.')
+        ->group(function () {
+            Route::get('/', [HardDataController::class, 'index'])->name('index');
+            Route::get('/periodos/{period}', [HardDataController::class, 'data'])->name('data');
+            Route::get('/colaboradores/{employee}/historial', [HardDataController::class, 'history'])->name('history');
         });
 
     Route::prefix('reportes-mensuales')

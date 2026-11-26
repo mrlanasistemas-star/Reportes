@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Period;
 use App\Models\PeriodSummary;
+use App\Services\Api\EmployeePeriodKpiService;
 use App\Services\DashboardTrendService;
 use App\Services\RadiografiaExportService;
 use Illuminate\Console\Command;
@@ -96,6 +97,9 @@ class WarmRadiografiaGeneralCommand extends Command
             $t = microtime(true);
             try {
                 $estado = $exportService->warmGeneralState($period, $refreshAfter);
+                // Datos duros por colaborador (módulo /datos-duros y API v1): caché propia de 12 h;
+                // si ya existe no recalcula nada.
+                app(EmployeePeriodKpiService::class)->forPeriod($period);
             } catch (\Throwable $e) {
                 // Un periodo que falla nunca impide calentar los demás ni tumba el scheduler.
                 $estado = 'error';
