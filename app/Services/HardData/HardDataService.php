@@ -9,6 +9,8 @@ use App\Models\User;
 use App\Services\Access\DataScopeService;
 use App\Services\Api\EmployeePeriodKpiService;
 use App\Services\Catalog\BranchRouteCatalog;
+use App\Services\People\PeopleMatcher;
+use App\Services\People\PeopleRosterClient;
 
 /**
  * Módulo «Datos duros» — resumen de las cifras finales por colaborador y periodo
@@ -22,12 +24,18 @@ use App\Services\Catalog\BranchRouteCatalog;
  *
  * Esa fuente ya cachea 12 h por periodo + versión de radiografía, así que abrir
  * un periodo ya consultado es instantáneo y se invalida solo al regenerar.
+ *
+ * Puesto, sucursal y bajas vienen de MR LANA PEOPLE (fuente de verdad del
+ * personal) cuando hay conexión; si no, de Reportería. El ALCANCE (qué filas ve
+ * cada usuario) siempre se decide con la sucursal de Reportería.
  */
 class HardDataService
 {
     public function __construct(
         private readonly EmployeePeriodKpiService $kpis,
         private readonly DataScopeService $scope,
+        private readonly PeopleRosterClient $people,
+        private readonly PeopleMatcher $matcher,
     ) {}
 
     /**
@@ -66,11 +74,14 @@ class HardDataService
         $canSee = $this->visibilityFilter($allowed);
 
         $inScope = collect($result['rows'])->filter($canSee);
+        $roster = $this->people->roster();
+        $this->matcher->load($roster['people']);
         $rows = $inScope
             ->filter(fn (array $r) => $this->workedInPeriod($r))
-            ->map(fn (array $r) => $this->slim($r))
+            ->map(fn (array $r) => $this->withPeople($this->slim($r)))
             ->values()
             ->all();
+        $matched = collect($rows)->whereNotNull('people')->count();
 
         return [
             'period' => $this->describePeriod($period),
@@ -79,6 +90,15 @@ class HardDataService
             'calculated_at' => $result['calculated_at'],
             'rows' => $rows,
             'hidden' => $inScope->count() - count($rows),
+            'people' => [
+                'configured' => $this->people->configured(),
+                'connected' => $roster['connected'],
+                'stale' => $roster['stale'],
+                'synced_at' => $roster['synced_at'],
+                'matched' => $matched,
+                'unmatched' => count($rows) - $matched,
+                'error' => $roster['error'] === null || $roster['error'] === 'not_configured' ? $roster['error'] : 'unreachable',
+            ],
             'scope' => [
                 'general' => $allowed === null,
                 'label' => $this->scope->label($user),
@@ -195,6 +215,40 @@ class HardDataService
 
         return (float) ($k['ebitda']['income_base'] ?? 0) > 0
             && (float) ($k['payroll']['human_capital_total'] ?? 0) > 0;
+    }
+
+    /**
+     * Puesto, sucursal y estatus de People sobre la fila (si se empata). Se
+     * conserva la sucursal de Reportería en `reportes_branch` para comparar.
+     */
+    private function withPeople(array $row): array
+    {
+        $row['reportes_branch'] = $row['branch'];
+        $row['position'] = PeopleMatcher::position($row['position']);
+        $row['people'] = null;
+        $hit = $this->matcher->isEmpty() ? null : $this->matcher->match($row['code'], $row['name']);
+
+        if ($hit === null) {
+            return $row;
+        }
+
+        $p = $hit['person'];
+        $row['position'] = PeopleMatcher::position($p['position']) ?? $row['position'];
+        $row['branch'] = PeopleMatcher::officialBranch($p['branch']) ?? $row['branch'];
+
+        if ($p['is_baja']) {
+            $row['status'] = 'BAJA';
+        }
+
+        $row['people'] = [
+            'via' => $hit['via'],
+            'number' => $p['number'],
+            'status' => $p['status'],
+            'is_baja' => $p['is_baja'],
+            'baja_date' => $p['baja_date'],
+        ];
+
+        return $row;
     }
 
     /** Forma compacta de una fila de EmployeePeriodKpiService para la pantalla. */

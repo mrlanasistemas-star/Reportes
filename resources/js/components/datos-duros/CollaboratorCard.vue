@@ -81,6 +81,12 @@ const metrics = computed(() => [
                 <p class="truncate text-sm font-bold text-foreground">
                     <HighlightText :text="row.name" :tokens="tokens" />
                 </p>
+                <p
+                    v-if="row.position"
+                    class="mt-0.5 truncate text-[11px] font-bold tracking-wide text-info uppercase"
+                >
+                    <HighlightText :text="row.position" :tokens="tokens" />
+                </p>
                 <p class="mt-0.5 truncate text-xs text-muted-foreground">
                     <HighlightText
                         :text="row.branch ?? 'Sin sucursal'"

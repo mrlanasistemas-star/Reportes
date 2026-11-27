@@ -37,7 +37,8 @@ class HardDataExcelExporter
         $book->getProperties()->setCreator('MR LANA · Reportes')->setTitle('Datos duros · '.$dataset['period']['name']);
 
         $this->mainSheet($book->getActiveSheet(), $dataset);
-        $this->branchSheet($book->createSheet(), $dataset);
+        $this->groupSheet($book->createSheet(), 'Por sucursal', 'SUCURSAL', $dataset, fn ($r) => $r['branch'] ?? 'Sin sucursal');
+        $this->groupSheet($book->createSheet(), 'Por puesto', 'PUESTO', $dataset, fn ($r) => $r['position'] ?? 'Sin puesto');
         $this->detailSheet($book->createSheet(), 'Detalle de Gastos', ['COLABORADOR', 'SUCURSAL', 'CATEGORÍA', 'CONCEPTO', 'MONTO'], $dataset['rows'],
             fn (array $r) => array_map(fn ($i) => [$r['name'], $r['branch'], $i['category'], $i['concept'], (float) $i['amount']], $r['opex_items'] ?? []));
         $this->detailSheet($book->createSheet(), 'Colocación por producto', ['COLABORADOR', 'SUCURSAL', 'PRODUCTO', 'OPERACIONES', 'MONTO'], $dataset['rows'],
@@ -55,19 +56,21 @@ class HardDataExcelExporter
     {
         $sheet->setTitle('Datos duros');
         $headers = [
-            'PERIODO', 'SUCURSAL', 'RUTAS', 'NOMBRE COLABORADOR', 'CATEGORÍA', 'ESTADO ACTIVO/BAJA',
+            'PERIODO', 'SUCURSAL', 'RUTAS', 'NOMBRE COLABORADOR', 'PUESTO', 'CATEGORÍA', 'ESTADO ACTIVO/BAJA',
             'COLOCACIÓN', 'OPERACIONES', 'RECUPERACIÓN', 'VALOR CARTERA', 'CARTERA VENCIDA', 'MORA %',
             'NÓMINA / CAPITAL HUMANO', 'OPEX', 'UTILIDAD BRUTA', 'GASTO TOTAL', 'EBITDA', 'MARGEN EBITDA %',
+            'PUESTO Y SUCURSAL SEGÚN',
         ];
         $period = $dataset['period']['name'].($dataset['period']['range'] ? ' ('.$dataset['period']['range'].')' : '');
 
         $rows = array_map(fn (array $r) => [
-            $period, $r['branch'] ?? 'Sin sucursal', implode(', ', $r['routes'] ?? []), $r['name'], $r['category'],
+            $period, $r['branch'] ?? 'Sin sucursal', implode(', ', $r['routes'] ?? []), $r['name'], $r['position'] ?? 'Sin puesto', $r['category'],
             mb_strtoupper((string) ($r['status'] ?? 'ACTIVO')) === 'BAJA' ? 'BAJA' : 'ACTIVO',
             (float) $r['placement'], (int) $r['operations'], (float) $r['recovery'], (float) $r['portfolio'], (float) $r['overdue'],
             $r['mora_pct'] === null ? null : (float) $r['mora_pct'],
             (float) $r['payroll'], (float) $r['opex'], (float) $r['income_base'], (float) $r['total_expenses'], (float) $r['ebitda'],
             $r['margin_pct'] === null ? null : (float) $r['margin_pct'],
+            empty($r['people']) ? 'REPORTERÍA' : 'PEOPLE',
         ], $dataset['rows']);
 
         $last = $this->table($sheet, $headers, $rows);
@@ -78,13 +81,13 @@ class HardDataExcelExporter
         // Fila de totales (fórmulas: siguen al usuario si filtra/edita en Excel).
         $t = $last + 1;
         $sheet->setCellValue("A{$t}", 'TOTAL');
-        foreach (['G', 'H', 'I', 'J', 'K', 'M', 'N', 'O', 'P', 'Q'] as $col) {
+        foreach (['H', 'I', 'J', 'K', 'L', 'N', 'O', 'P', 'Q', 'R'] as $col) {
             $sheet->setCellValue("{$col}{$t}", "=SUM({$col}2:{$col}{$last})");
         }
-        $sheet->setCellValue("L{$t}", "=IF(J{$t}=0,0,K{$t}/J{$t}*100)");
-        $sheet->setCellValue("R{$t}", "=IF(O{$t}=0,0,Q{$t}/O{$t}*100)");
+        $sheet->setCellValue("M{$t}", "=IF(K{$t}=0,0,L{$t}/K{$t}*100)");
+        $sheet->setCellValue("S{$t}", "=IF(P{$t}=0,0,R{$t}/P{$t}*100)");
         $this->formatRow($sheet, $headers, $t);
-        $sheet->getStyle("A{$t}:R{$t}")->applyFromArray([
+        $sheet->getStyle("A{$t}:T{$t}")->applyFromArray([
             'font' => ['bold' => true],
             'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => S::BG_LIGHT_BLUE]],
             'borders' => ['top' => ['borderStyle' => Border::BORDER_MEDIUM, 'color' => ['argb' => S::BG_PRIMARY_DARK]]],
@@ -92,24 +95,25 @@ class HardDataExcelExporter
 
         // ACTIVO/BAJA coloreado como en el Excel de colaboradores.
         for ($i = 2; $i <= $last; $i++) {
-            $isActive = $sheet->getCell("F{$i}")->getValue() === 'ACTIVO';
-            $sheet->getStyle("F{$i}")->applyFromArray([
+            $isActive = $sheet->getCell("G{$i}")->getValue() === 'ACTIVO';
+            $sheet->getStyle("G{$i}")->applyFromArray([
                 'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['argb' => $isActive ? S::BG_POSITIVE : S::BG_ALERT_RED]],
                 'font' => ['bold' => true],
                 'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER],
             ]);
-            if ((float) $sheet->getCell("Q{$i}")->getValue() < 0) {
-                $sheet->getStyle("Q{$i}")->getFont()->getColor()->setARGB(S::FG_RED);
+            if ((float) $sheet->getCell("R{$i}")->getValue() < 0) {
+                $sheet->getStyle("R{$i}")->getFont()->getColor()->setARGB(S::FG_RED);
             }
         }
-        $sheet->setAutoFilter("A1:R{$last}");
+        $sheet->setAutoFilter("A1:T{$last}");
     }
 
-    private function branchSheet(Worksheet $sheet, array $dataset): void
+    /** Resumen agrupado (por sucursal o por puesto), ordenado por EBITDA. */
+    private function groupSheet(Worksheet $sheet, string $title, string $label, array $dataset, callable $key): void
     {
-        $sheet->setTitle('Por sucursal');
-        $headers = ['SUCURSAL', 'COLABORADORES', 'COLOCACIÓN', 'RECUPERACIÓN', 'VALOR CARTERA', 'CARTERA VENCIDA', 'MORA %', 'NÓMINA / CAPITAL HUMANO', 'OPEX', 'EBITDA', 'MARGEN EBITDA %'];
-        $rows = collect($dataset['rows'])->groupBy(fn ($r) => $r['branch'] ?? 'Sin sucursal')->map(function ($g, $branch) {
+        $sheet->setTitle($title);
+        $headers = [$label, 'COLABORADORES', 'COLOCACIÓN', 'RECUPERACIÓN', 'VALOR CARTERA', 'CARTERA VENCIDA', 'MORA %', 'NÓMINA / CAPITAL HUMANO', 'OPEX', 'EBITDA', 'MARGEN EBITDA %'];
+        $rows = collect($dataset['rows'])->groupBy($key)->map(function ($g, $branch) {
             $portfolio = $g->sum('portfolio');
             $income = $g->sum('income_base');
 

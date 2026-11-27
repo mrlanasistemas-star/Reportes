@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
- * FacetBar — filtros por chips (sin selects): sucursales con conteo, categoría
- * EBITDA y alertas rápidas. Cada chip se activa/desactiva con un toque y los
+ * FacetBar — filtros por chips (sin selects): sucursales con conteo, puesto
+ * (de People), categoría EBITDA y alertas rápidas. Cada chip se activa/desactiva con un toque y los
  * conteos se recalculan según el resto de filtros activos.
  */
 import {
     AlertTriangle,
+    BriefcaseBusiness,
     Building2,
     Check,
     Gem,
@@ -18,6 +19,8 @@ import type { HardDataFlag } from '@/types/hardData';
 defineProps<{
     branchFacets: { name: string; count: number }[];
     categoryFacets: { key: string; count: number }[];
+    positionFacets: { name: string; count: number }[];
+    positions: Set<string>;
     flagFacets: { key: HardDataFlag; label: string; count: number }[];
     branches: Set<string>;
     categories: Set<string>;
@@ -28,12 +31,15 @@ defineProps<{
 const emit = defineEmits<{
     'toggle-branch': [name: string];
     'toggle-category': [key: string];
+    'toggle-position': [name: string];
     'toggle-flag': [key: HardDataFlag];
     clear: [];
 }>();
 
 const showAllBranches = ref(false);
 const BRANCH_PREVIEW = 8;
+const showAllPositions = ref(false);
+const POSITION_PREVIEW = 6;
 </script>
 
 <template>
@@ -89,6 +95,65 @@ const BRANCH_PREVIEW = 8;
                         showAllBranches
                             ? 'Ver menos'
                             : `+${branchFacets.length - BRANCH_PREVIEW} más`
+                    }}
+                </button>
+            </div>
+        </div>
+
+        <div
+            v-if="positionFacets.length > 1"
+            class="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-3"
+        >
+            <span
+                class="flex shrink-0 items-center gap-1.5 text-[11px] font-bold tracking-wide text-muted-foreground uppercase sm:mt-1.5 sm:w-24"
+            >
+                <BriefcaseBusiness class="size-3.5" aria-hidden="true" /> Puesto
+            </span>
+            <div
+                class="-mx-1 flex flex-1 gap-1.5 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 [&::-webkit-scrollbar]:hidden [&>*]:shrink-0"
+            >
+                <button
+                    v-for="p in showAllPositions
+                        ? positionFacets
+                        : positionFacets.slice(0, POSITION_PREVIEW)"
+                    :key="p.name"
+                    type="button"
+                    :aria-pressed="positions.has(p.name)"
+                    :disabled="p.count === 0 && !positions.has(p.name)"
+                    :class="[
+                        'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40',
+                        positions.has(p.name)
+                            ? 'border-info bg-info text-white shadow-soft-xs'
+                            : 'border-border bg-card text-foreground hover:border-info/40 hover:bg-info-soft',
+                    ]"
+                    @click="emit('toggle-position', p.name)"
+                >
+                    <Check
+                        v-if="positions.has(p.name)"
+                        class="size-3"
+                        aria-hidden="true"
+                    />
+                    {{ p.name }}
+                    <span
+                        :class="[
+                            'tabular-nums',
+                            positions.has(p.name)
+                                ? 'text-white/80'
+                                : 'text-muted-foreground',
+                        ]"
+                        >{{ p.count }}</span
+                    >
+                </button>
+                <button
+                    v-if="positionFacets.length > POSITION_PREVIEW"
+                    type="button"
+                    class="rounded-full px-3 py-1 text-xs font-semibold text-info transition hover:bg-info-soft"
+                    @click="showAllPositions = !showAllPositions"
+                >
+                    {{
+                        showAllPositions
+                            ? 'Ver menos'
+                            : `+${positionFacets.length - POSITION_PREVIEW} más`
                     }}
                 </button>
             </div>

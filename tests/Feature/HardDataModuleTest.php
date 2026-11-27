@@ -9,6 +9,7 @@ use App\Services\Api\EmployeePeriodKpiService;
 use App\Services\HardData\HardDataPdfExporter;
 use App\Services\HardData\HardDataService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
 uses(RefreshDatabase::class);
@@ -225,4 +226,90 @@ it('does not export a collaborator outside the user scope', function () {
     hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', hdBranch('ORIZABA'), 1500.0)]);
 
     $this->actingAs($admin)->get("/datos-duros/periodos/{$period->id}/exportar/pdf?colaborador=777")->assertNotFound();
+});
+
+/** Respuesta de People (contrato people-integracion/1) para Http::fake. */
+function hdPeoplePayload(array $people, ?string $next = null): array
+{
+    return [
+        'contrato' => 'people-integracion/1',
+        'data' => array_map(fn (array $p) => $p + [
+            'id' => random_int(1, 99999), 'numero_empleado' => null, 'clave_noi' => null, 'nombre_completo' => '',
+            'estatus' => ['valor' => 'activo', 'etiqueta' => 'Activo'], 'activo' => true, 'fecha_baja' => null,
+            'sucursal' => null, 'puesto' => null,
+        ], $people),
+        'meta' => ['hay_mas' => $next !== null, 'siguiente_cursor' => $next, 'server_time' => now()->toIso8601String()],
+    ];
+}
+
+it('takes position, branch and baja from People (by NOI key, then by name)', function () {
+    config(['services.people.token' => 'ppl_int_test', 'services.people.url' => 'https://people.test/api/integracion/v1']);
+    Http::fake([
+        'people.test/api/integracion/v1/colaboradores?*cursor=c2*' => Http::response(hdPeoplePayload([
+            // Por nombre (con las palabras en otro orden) y dado de baja.
+            ['nombre_completo' => 'Diaz Adrian', 'activo' => false, 'estatus' => ['valor' => 'inactivo', 'etiqueta' => 'Baja'], 'fecha_baja' => '2026-06-20',
+                'sucursal' => ['id' => 4, 'clave' => 'ORI01', 'nombre' => 'Orizaba'], 'puesto' => ['id' => 2, 'nombre' => 'Gestor de cobranza']],
+        ])),
+        'people.test/api/integracion/v1/colaboradores*' => Http::response(hdPeoplePayload([
+            // Por clave NOI: People dice Tula y Gerente aunque Reportería lo tenga en una ruta.
+            ['clave_noi' => '09001', 'nombre_completo' => 'Margarita Domínguez', 'sucursal' => ['id' => 1, 'clave' => 'TUL01', 'nombre' => 'Tula'], 'puesto' => ['id' => 1, 'nombre' => 'gerente de sucursal']],
+        ], 'c2')),
+    ]);
+
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    $cruz = hdBranch('CRUZ AZUL');
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', $cruz, 1500.0), hdRow(9002, 'ADRIAN DIAZ', $cruz, 20.0), hdRow(9003, 'NADIE EN PEOPLE', $cruz, 10.0)]);
+
+    $rows = collect(app(HardDataService::class)->dataset($period, $admin)['rows'])->keyBy('id');
+    $dataset = app(HardDataService::class)->dataset($period, $admin);
+
+    expect($rows[9001]['position'])->toBe('GERENTE DE SUCURSAL')
+        ->and($rows[9001]['branch'])->toBe('TULA')
+        ->and($rows[9001]['people']['via'])->toBe('clave')
+        ->and($rows[9002]['position'])->toBe('GESTOR DE COBRANZA')
+        ->and($rows[9002]['branch'])->toBe('ORIZABA')
+        ->and($rows[9002]['status'])->toBe('BAJA')
+        ->and($rows[9002]['people'])->toMatchArray(['via' => 'nombre', 'is_baja' => true, 'baja_date' => '2026-06-20'])
+        ->and($rows[9003]['people'])->toBeNull()
+        ->and($rows[9003]['branch'])->toBe('TULA') // sin People: sucursal oficial de Reportería
+        ->and($dataset['people'])->toMatchArray(['configured' => true, 'connected' => true, 'matched' => 2, 'unmatched' => 1]);
+
+    Http::assertSent(fn ($req) => $req->hasHeader('Authorization', 'Bearer ppl_int_test') && str_contains($req->url(), 'estatus=todos'));
+});
+
+it('keeps working with Reportería data when People is not configured or does not answer', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', hdBranch('ORIZABA'), 1500.0)]);
+
+    config(['services.people.token' => null]);
+    $off = app(HardDataService::class)->dataset($period, $admin);
+    expect($off['people'])->toMatchArray(['configured' => false, 'connected' => false])
+        ->and($off['rows'][0]['branch'])->toBe('ORIZABA');
+
+    config(['services.people.token' => 'ppl_int_test', 'services.people.url' => 'https://people.test/api/integracion/v1']);
+    Http::fake(['people.test/*' => Http::response(['message' => 'Error', 'codigo' => 'error'], 500)]);
+    $down = app(HardDataService::class)->dataset($period, $admin);
+    expect($down['people'])->toMatchArray(['configured' => true, 'connected' => false, 'error' => 'unreachable'])
+        ->and($down['rows'][0]['branch'])->toBe('ORIZABA');
+});
+
+it('puts the People position in the Excel and adds a sheet per position', function () {
+    config(['services.people.token' => 'ppl_int_test', 'services.people.url' => 'https://people.test/api/integracion/v1']);
+    Http::fake(['people.test/*' => Http::response(hdPeoplePayload([
+        ['clave_noi' => '9001', 'nombre_completo' => 'MARGARITA DOMINGUEZ', 'sucursal' => ['id' => 1, 'clave' => 'ORI01', 'nombre' => 'Orizaba'], 'puesto' => ['id' => 1, 'nombre' => 'Subgerente']],
+    ]))]);
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', hdBranch('ORIZABA'), 1500.0)]);
+
+    $response = $this->actingAs($admin)->get("/datos-duros/periodos/{$period->id}/exportar/excel")->assertOk();
+    $book = IOFactory::load($response->getFile()->getPathname());
+    $sheet = $book->getSheetByName('Datos duros');
+
+    expect($sheet->getCell('E1')->getValue())->toBe('PUESTO')
+        ->and($sheet->getCell('E2')->getValue())->toBe('SUBGERENTE')
+        ->and($sheet->getCell('T2')->getValue())->toBe('PEOPLE')
+        ->and($book->getSheetByName('Por puesto')->getCell('A2')->getValue())->toBe('SUBGERENTE');
 });

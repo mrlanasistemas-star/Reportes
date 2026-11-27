@@ -8,6 +8,7 @@
  * Teclado: «/» o Ctrl+K enfoca · ↑ ↓ recorren sugerencias · Enter elige · Esc limpia.
  */
 import {
+    BriefcaseBusiness,
     Building2,
     CornerDownLeft,
     MapPin,
@@ -109,7 +110,9 @@ function suggestionHint(s: HardDataSuggestion): string {
             ? 'Filtrar sucursal'
             : s.kind === 'route'
               ? 'Buscar por ruta'
-              : 'Filtrar categoría EBITDA';
+              : s.kind === 'position'
+                ? 'Filtrar puesto'
+                : 'Filtrar categoría EBITDA';
 
     return `${what} · ${s.count} colaborador${s.count === 1 ? '' : 'es'}`;
 }
@@ -254,6 +257,10 @@ function suggestionHint(s: HardDataSuggestion): string {
                             />
                             <MapPin
                                 v-else-if="s.kind === 'route'"
+                                class="size-4"
+                            />
+                            <BriefcaseBusiness
+                                v-else-if="s.kind === 'position'"
                                 class="size-4"
                             />
                             <Sparkles v-else class="size-4" />

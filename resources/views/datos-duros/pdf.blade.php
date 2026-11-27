@@ -80,7 +80,8 @@ $maxBranch = max(1, (float) $branches->max(fn ($b) => abs($b['ebitda'])));
     tr.total td, tfoot td { font-weight: 800; background: #ecfdf5 !important; border-top: 1.5px solid #106a59; border-bottom: 0; }
     .name { font-weight: 700; white-space: nowrap; }
     td.nw { white-space: nowrap; }
-    .routes { font-size: 5.8pt; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
+    .routes { font-size: 5.8pt; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 210px; }
+    .routes .pos { color: #106a59; font-weight: 700; }
     .evo { display: flex; align-items: flex-end; gap: 6px; height: 70px; padding: 0 2px; border-bottom: 1px solid #e2e8f0; }
     .evo .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
     .evo .b { width: 70%; border-radius: 3px 3px 0 0; min-height: 2px; }
@@ -115,7 +116,8 @@ $maxBranch = max(1, (float) $branches->max(fn ($b) => abs($b['ebitda'])));
         @if ($single)
             <h1>{{ $single['name'] }}</h1>
             <div class="sub">{{ $single['branch'] ?? 'Sin sucursal' }}@if ($single['routes']) · {{ implode(', ', $single['routes']) }}@endif
-                @if ($single['position']) · {{ $single['position'] }}@endif</div>
+                @if ($single['position']) · {{ $single['position'] }}@endif
+                @if (! empty($single['people']['is_baja'])) · BAJA EN PEOPLE{{ $single['people']['baja_date'] ? ' ('.$single['people']['baja_date'].')' : '' }}@endif</div>
         @else
             <h1>Datos duros por colaborador</h1>
             <div class="sub">Cifras finales del periodo: colocación, recuperación, cartera, mora, nómina, OPEX y EBITDA</div>
@@ -288,7 +290,7 @@ $maxBranch = max(1, (float) $branches->max(fn ($b) => abs($b['ebitda'])));
                 <tr>
                     <td class="rank">{{ $i + 1 }}</td>
                     <td><div class="name">{{ $r['name'] }}@if (mb_strtoupper((string) $r['status']) === 'BAJA')<span class="baja">BAJA</span>@endif</div>
-                        @if ($r['routes'])<div class="routes">{{ implode(', ', $r['routes']) }}</div>@endif</td>
+                        @if ($r['position'] || $r['routes'])<div class="routes">@if ($r['position'])<span class="pos">{{ $r['position'] }}</span>@endif{{ $r['position'] && $r['routes'] ? ' · ' : '' }}{{ implode(', ', $r['routes']) }}</div>@endif</td>
                     <td class="nw">{{ $r['branch'] ?? '—' }}</td>
                     <td><span class="cat" style="background: {{ L::categoryColor($r['category']) }}">{{ mb_substr((string) $r['category'], 0, 3) }}</span></td>
                     <td class="num">{{ $money($r['placement']) }}</td><td class="num">{{ $r['operations'] }}</td>

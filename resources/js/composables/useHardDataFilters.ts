@@ -33,9 +33,17 @@ function haystack(r: HardDataRow): string {
     );
 }
 
+export const SIN_PUESTO = 'Sin puesto';
+
+/** Puesto con el que se agrupa/filtra (viene de People cuando hay conexión). */
+export function positionOf(r: HardDataRow): string {
+    return r.position?.trim() || SIN_PUESTO;
+}
+
 export type HardDataSuggestion =
     | { kind: 'branch'; value: string; count: number }
     | { kind: 'category'; value: string; count: number }
+    | { kind: 'position'; value: string; count: number }
     | { kind: 'route'; value: string; count: number }
     | { kind: 'person'; row: HardDataRow };
 
@@ -61,6 +69,7 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
     const query = ref('');
     const branches = ref<Set<string>>(new Set());
     const categories = ref<Set<string>>(new Set());
+    const positions = ref<Set<string>>(new Set());
     const flags = ref<Set<HardDataFlag>>(new Set());
     const sortKey = ref<HardDataSortKey>('ebitda');
     const sortDir = ref<'asc' | 'desc'>('desc');
@@ -81,13 +90,18 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
             .map(({ row }) => row),
     );
 
+    const inBranch = (r: HardDataRow) =>
+        branches.value.size === 0 ||
+        branches.value.has(r.branch ?? 'Sin sucursal');
+    const inCategory = (r: HardDataRow) =>
+        categories.value.size === 0 ||
+        categories.value.has((r.category ?? '').toUpperCase());
+    const inPosition = (r: HardDataRow) =>
+        positions.value.size === 0 || positions.value.has(positionOf(r));
+
     const filtered = computed(() => {
         const list = textMatched.value.filter(
-            (r) =>
-                (branches.value.size === 0 ||
-                    branches.value.has(r.branch ?? 'Sin sucursal')) &&
-                (categories.value.size === 0 ||
-                    categories.value.has((r.category ?? '').toUpperCase())),
+            (r) => inBranch(r) && inCategory(r) && inPosition(r),
         );
         const dir = sortDir.value === 'asc' ? 1 : -1;
         const key = sortKey.value;
@@ -106,10 +120,7 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
         const counts = new Map<string, number>();
 
         for (const r of textMatched.value) {
-            if (
-                categories.value.size &&
-                !categories.value.has((r.category ?? '').toUpperCase())
-            ) {
+            if (!inCategory(r) || !inPosition(r)) {
                 continue;
             }
 
@@ -133,10 +144,7 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
         const counts = new Map<string, number>();
 
         for (const r of textMatched.value) {
-            if (
-                branches.value.size &&
-                !branches.value.has(r.branch ?? 'Sin sucursal')
-            ) {
+            if (!inBranch(r) || !inPosition(r)) {
                 continue;
             }
 
@@ -148,6 +156,29 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
             key,
             count: counts.get(key) ?? 0,
         }));
+    });
+
+    /** Puestos (de People) con conteo, respetando texto + sucursal + categoría. */
+    const positionFacets = computed(() => {
+        const counts = new Map<string, number>();
+
+        for (const r of textMatched.value) {
+            if (!inBranch(r) || !inCategory(r)) {
+                continue;
+            }
+
+            const p = positionOf(r);
+            counts.set(p, (counts.get(p) ?? 0) + 1);
+        }
+
+        const all = new Set(rows.value.map(positionOf));
+
+        return [...all]
+            .map((name) => ({ name, count: counts.get(name) ?? 0 }))
+            .sort(
+                (a, b) =>
+                    b.count - a.count || a.name.localeCompare(b.name, 'es'),
+            );
     });
 
     const flagFacets = computed(() =>
@@ -181,6 +212,21 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
                     count: rows.value.filter(
                         (r) => (r.branch ?? 'Sin sucursal') === f.name,
                     ).length,
+                });
+            }
+        }
+
+        for (const f of positionFacets.value) {
+            if (
+                f.name !== SIN_PUESTO &&
+                matches(f.name) &&
+                !positions.value.has(f.name)
+            ) {
+                out.push({
+                    kind: 'position',
+                    value: f.name,
+                    count: rows.value.filter((r) => positionOf(r) === f.name)
+                        .length,
                 });
             }
         }
@@ -254,6 +300,7 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
         () =>
             branches.value.size +
             categories.value.size +
+            positions.value.size +
             flags.value.size +
             (query.value.trim() ? 1 : 0),
     );
@@ -283,6 +330,7 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
         query.value = '';
         branches.value = new Set();
         categories.value = new Set();
+        positions.value = new Set();
         flags.value = new Set();
     }
 
@@ -291,18 +339,21 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
         tokens,
         branches,
         categories,
+        positions,
         flags,
         sortKey,
         sortDir,
         filtered,
         branchFacets,
         categoryFacets,
+        positionFacets,
         flagFacets,
         suggestions,
         totals,
         activeCount,
         toggleBranch: (v: string) => toggle(branches, v),
         toggleCategory: (v: string) => toggle(categories, v),
+        togglePosition: (v: string) => toggle(positions, v),
         toggleFlag: (v: HardDataFlag) => toggle(flags, v),
         setSort,
         clearAll,

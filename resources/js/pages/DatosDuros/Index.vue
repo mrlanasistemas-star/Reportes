@@ -106,6 +106,9 @@ function readUrl(): void {
     f.categories.value = new Set(
         (q.get('cat') ?? '').split('|').filter(Boolean),
     );
+    f.positions.value = new Set(
+        (q.get('puesto') ?? '').split('|').filter(Boolean),
+    );
     f.flags.value = new Set(
         (q.get('alerta') ?? '')
             .split('|')
@@ -152,6 +155,10 @@ function writeUrl(): void {
             q.set('cat', [...f.categories.value].join('|'));
         }
 
+        if (f.positions.value.size) {
+            q.set('puesto', [...f.positions.value].join('|'));
+        }
+
         if (f.flags.value.size) {
             q.set('alerta', [...f.flags.value].join('|'));
         }
@@ -177,6 +184,7 @@ watch(
         f.query,
         f.branches,
         f.categories,
+        f.positions,
         f.flags,
         f.sortKey,
         f.sortDir,
@@ -274,6 +282,8 @@ function onPick(s: HardDataSuggestion): void {
         f.toggleBranch(s.value);
     } else if (s.kind === 'category') {
         f.toggleCategory(s.value);
+    } else if (s.kind === 'position') {
+        f.togglePosition(s.value);
     }
 }
 
@@ -300,6 +310,42 @@ const exportIds = computed(() =>
         ? []
         : f.filtered.value.map((r) => r.id),
 );
+
+// Estado de la conexión con MR LANA PEOPLE (puesto, sucursal y bajas).
+const peopleBadge = computed(() => {
+    const p = dataset.value?.people;
+
+    if (!p) {
+        return null;
+    }
+
+    if (!p.configured) {
+        return {
+            label: 'Sin conexión con People',
+            tone: 'bg-muted text-muted-foreground',
+            live: false,
+            title: 'Falta configurar el token de People: puesto, sucursal y bajas salen de Reportería.',
+        };
+    }
+
+    if (!p.connected) {
+        return {
+            label: 'People no responde',
+            tone: 'bg-danger-soft text-danger',
+            live: false,
+            title: 'No se pudo leer People: puesto, sucursal y bajas salen de Reportería.',
+        };
+    }
+
+    return {
+        label: p.stale ? 'People (última copia)' : 'Conectado con People',
+        tone: p.stale
+            ? 'bg-warning-soft text-warning'
+            : 'bg-success-soft text-success',
+        live: !p.stale,
+        title: `${p.matched} colaboradores con puesto y sucursal de People${p.unmatched ? `; ${p.unmatched} no se encontraron en People y conservan los datos de Reportería` : ''}.`,
+    };
+});
 
 const firstLoad = computed(() => loading.value && !dataset.value);
 // Cambio de periodo sin caché: se atenúan los datos anteriores mientras llegan los nuevos.
@@ -364,6 +410,25 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                     >
                         <Clock class="size-3.5" aria-hidden="true" /> Calculado
                         {{ calculatedAt }}
+                    </span>
+                    <span
+                        v-if="peopleBadge"
+                        :class="[
+                            'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-semibold',
+                            peopleBadge.tone,
+                        ]"
+                        :title="peopleBadge.title"
+                    >
+                        <span class="relative flex size-2">
+                            <span
+                                v-if="peopleBadge.live"
+                                class="absolute inline-flex size-full animate-ping rounded-full bg-current opacity-60"
+                            />
+                            <span
+                                class="relative inline-flex size-2 rounded-full bg-current"
+                            />
+                        </span>
+                        {{ peopleBadge.label }}
                     </span>
                     <span
                         v-if="revalidating"
@@ -462,6 +527,8 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                         v-if="!firstLoad"
                         :branch-facets="f.branchFacets.value"
                         :category-facets="f.categoryFacets.value"
+                        :position-facets="f.positionFacets.value"
+                        :positions="f.positions.value"
                         :flag-facets="f.flagFacets.value"
                         :branches="f.branches.value"
                         :categories="f.categories.value"
@@ -469,6 +536,7 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                         :active-count="f.activeCount.value"
                         @toggle-branch="f.toggleBranch"
                         @toggle-category="f.toggleCategory"
+                        @toggle-position="f.togglePosition"
                         @toggle-flag="f.toggleFlag"
                         @clear="f.clearAll"
                     />

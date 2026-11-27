@@ -61,6 +61,16 @@ export type HardDataRow = {
     ebitda: number;
     margin_pct: number | null;
     category: HardDataCategory | string;
+    /** Sucursal según Reportería (para comparar con la de People). */
+    reportes_branch?: string | null;
+    /** Datos de MR LANA PEOPLE si se empató (por clave NOI o por nombre). */
+    people?: {
+        via: 'clave' | 'nombre';
+        number: string | null;
+        status: string | null;
+        is_baja: boolean;
+        baja_date: string | null;
+    } | null;
 };
 
 export type HardDataDataset = {
@@ -72,6 +82,15 @@ export type HardDataDataset = {
     /** Colaboradores del alcance que no se muestran (sin ingresos o sin nómina en el periodo). */
     hidden?: number;
     scope: { general: boolean; label: string };
+    people?: {
+        configured: boolean;
+        connected: boolean;
+        stale: boolean;
+        synced_at: string | null;
+        matched: number;
+        unmatched: number;
+        error: string | null;
+    };
 };
 
 export type HardDataHistoryPoint = {

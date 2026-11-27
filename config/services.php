@@ -35,4 +35,17 @@ return [
         ],
     ],
 
+    /*
+    | MR LANA PEOPLE — fuente de verdad del personal (puesto, sucursal, baja).
+    | Reportes LEE /colaboradores de la API de integración (token ppl_int_ del
+    | cliente «reportes»). Sin token, Datos duros sigue funcionando con los datos de
+    | Reportería y avisa «Sin conexión con People».
+    */
+    'people' => [
+        'url' => env('PEOPLE_API_URL', 'https://people.mr-lana.com/api/integracion/v1'),
+        'token' => env('PEOPLE_API_TOKEN'),
+        'timeout' => (int) env('PEOPLE_API_TIMEOUT', 20),
+        'cache_minutes' => (int) env('PEOPLE_CACHE_MINUTES', 30),
+    ],
+
 ];

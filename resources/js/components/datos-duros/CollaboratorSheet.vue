@@ -6,7 +6,13 @@
  * evolución contra otros periodos. Todo sale de la fila ya cargada (sin
  * llamadas extra), salvo la evolución.
  */
-import { Building2, IdCard, MapPin } from 'lucide-vue-next';
+import {
+    BriefcaseBusiness,
+    Building2,
+    IdCard,
+    MapPin,
+    UserCheck,
+} from 'lucide-vue-next';
 import { computed } from 'vue';
 import {
     Sheet,
@@ -179,9 +185,45 @@ const ebitdaParts = computed(() => {
                             <SheetDescription
                                 class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
                             >
+                                <span
+                                    v-if="r.position"
+                                    class="inline-flex items-center gap-1 font-bold text-info"
+                                    ><BriefcaseBusiness class="size-3.5" />
+                                    {{ r.position }}</span
+                                >
                                 <span class="inline-flex items-center gap-1"
                                     ><Building2 class="size-3.5" />
                                     {{ r.branch ?? 'Sin sucursal' }}</span
+                                >
+                                <span
+                                    v-if="
+                                        r.people &&
+                                        r.reportes_branch &&
+                                        r.reportes_branch !== r.branch
+                                    "
+                                    class="text-muted-foreground"
+                                    :title="`Reportería lo tenía en ${r.reportes_branch}; People dice ${r.branch}`"
+                                    >(Reportería: {{ r.reportes_branch }})</span
+                                >
+                                <span
+                                    v-if="r.people"
+                                    :class="[
+                                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold',
+                                        r.people.is_baja
+                                            ? 'bg-danger-soft text-danger'
+                                            : 'bg-success-soft text-success',
+                                    ]"
+                                    :title="
+                                        r.people.via === 'clave'
+                                            ? 'Empatado con People por clave de empleado'
+                                            : 'Empatado con People por nombre'
+                                    "
+                                    ><UserCheck class="size-3" />
+                                    {{
+                                        r.people.is_baja
+                                            ? `Baja en People${r.people.baja_date ? ` · ${r.people.baja_date}` : ''}`
+                                            : 'Activo en People'
+                                    }}</span
                                 >
                                 <span
                                     v-if="r.routes.length"

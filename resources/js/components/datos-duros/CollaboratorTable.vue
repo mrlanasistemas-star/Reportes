@@ -117,6 +117,15 @@ const TONE_TEXT = {
                                 >
                             </p>
                             <p class="text-xs text-muted-foreground">
+                                <span
+                                    v-if="r.position"
+                                    class="font-bold text-info"
+                                    ><HighlightText
+                                        :text="r.position"
+                                        :tokens="tokens"
+                                    />
+                                    ·
+                                </span>
                                 <HighlightText
                                     :text="r.branch ?? 'Sin sucursal'"
                                     :tokens="tokens"
