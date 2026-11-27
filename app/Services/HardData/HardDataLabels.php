@@ -28,7 +28,7 @@ final class HardDataLabels
 
     /** Color de la categoría EBITDA (mismos tonos que los chips de la pantalla). */
     public const CATEGORY_COLORS = [
-        'DIAMANTE' => '#0ea5e9', 'MASTER' => '#8b5cf6', 'SENIOR' => '#10b981', 'JUNIOR' => '#f59e0b', 'MANTENIDO' => '#f43f5e',
+        'DIAMANTE' => '#0ea5e9', 'MASTER' => '#8b5cf6', 'SENIOR' => '#10b981', 'JUNIOR' => '#f59e0b', 'MANTENIDO' => '#f43f5e', 'SIN CARTERA' => '#64748b',
     ];
 
     public static function payroll(string $key): string

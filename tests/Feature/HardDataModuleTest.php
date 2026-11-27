@@ -313,3 +313,32 @@ it('puts the People position in the Excel and adds a sheet per position', functi
         ->and($sheet->getCell('T2')->getValue())->toBe('PEOPLE')
         ->and($book->getSheetByName('Por puesto')->getCell('A2')->getValue())->toBe('SUBGERENTE');
 });
+
+it('shows People-active staff with payroll but no own income as "sin cartera"', function () {
+    config(['services.people.token' => 'ppl_int_test', 'services.people.url' => 'https://people.test/api/integracion/v1']);
+    Http::fake(['people.test/*' => Http::response(hdPeoplePayload([
+        ['clave_noi' => '9101', 'nombre_completo' => 'Ivan Quevedo', 'puesto' => ['id' => 1, 'nombre' => 'Gerente de sucursal'], 'sucursal' => ['id' => 1, 'clave' => 'ORI', 'nombre' => 'Orizaba']],
+        ['clave_noi' => '9102', 'nombre_completo' => 'Baja Finiquito', 'activo' => false, 'fecha_baja' => '2026-06-03', 'puesto' => ['id' => 2, 'nombre' => 'Gestor']],
+    ]))]);
+
+    $admin = User::factory()->create(['role' => 'admin']);
+    $period = hdPeriod(6);
+    $ori = hdBranch('ORIZABA');
+    $rows = [];
+    foreach ([[9101, 'IVAN QUEVEDO'], [9102, 'BAJA FINIQUITO'], [9103, 'NO ESTA EN PEOPLE']] as [$id, $name]) {
+        $r = hdRow($id, $name, $ori, -300.0);
+        $r['kpis']['ebitda']['income_base'] = 0.0;
+        $rows[] = $r;
+    }
+    hdFakeKpis([hdRow(9001, 'MARGARITA DOMINGUEZ', $ori, 1500.0), ...$rows]);
+
+    $dataset = app(HardDataService::class)->dataset($period, $admin);
+    $byId = collect($dataset['rows'])->keyBy('id');
+
+    expect($byId->keys()->all())->toEqualCanonicalizing([9001, 9101])
+        ->and($byId[9101]['support'])->toBeTrue()
+        ->and($byId[9101]['category'])->toBe('SIN CARTERA')
+        ->and($byId[9101]['position'])->toBe('GERENTE DE SUCURSAL')
+        ->and($byId[9001]['support'])->toBeFalse()
+        ->and($dataset['hidden'])->toBe(2);
+});

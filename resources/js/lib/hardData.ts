@@ -50,6 +50,12 @@ export const CATEGORY_META: Record<
         dot: 'bg-rose-500',
         min: 'EBITDA < $100K',
     },
+    'SIN CARTERA': {
+        label: 'Sin cartera',
+        chip: 'bg-slate-100 text-slate-700 ring-slate-200 dark:bg-slate-500/15 dark:text-slate-300 dark:ring-slate-500/30',
+        dot: 'bg-slate-400',
+        min: 'Cobra nómina pero no genera ingresos propios (gerencia, coordinación, apoyo). Activo según People.',
+    },
 };
 
 export const CATEGORY_ORDER = [
@@ -58,6 +64,7 @@ export const CATEGORY_ORDER = [
     'SENIOR',
     'JUNIOR',
     'MANTENIDO',
+    'SIN CARTERA',
 ];
 
 export function categoryMeta(category: string | null | undefined) {

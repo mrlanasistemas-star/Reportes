@@ -56,8 +56,9 @@ export const FLAG_LABELS: Record<HardDataFlag, string> = {
 
 const FLAG_TEST: Record<HardDataFlag, (r: HardDataRow) => boolean> = {
     mora_alta: (r) => Number(r.mora_pct ?? 0) >= 10,
-    ebitda_negativo: (r) => r.ebitda < 0,
-    sin_colocacion: (r) => !r.placement,
+    // El personal sin cartera (gerencia, coordinación) no cuenta como alerta.
+    ebitda_negativo: (r) => !r.support && r.ebitda < 0,
+    sin_colocacion: (r) => !r.support && !r.placement,
     baja: (r) => (r.status ?? '').toUpperCase() === 'BAJA',
 };
 
@@ -155,7 +156,12 @@ export function useHardDataFilters(rows: Ref<HardDataRow[]>) {
         return CATEGORY_ORDER.map((key) => ({
             key,
             count: counts.get(key) ?? 0,
-        }));
+        })).filter(
+            (c) =>
+                c.key !== 'SIN CARTERA' ||
+                c.count > 0 ||
+                categories.value.has(c.key),
+        );
     });
 
     /** Puestos (de People) con conteo, respetando texto + sucursal + categoría. */

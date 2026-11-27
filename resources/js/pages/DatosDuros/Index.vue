@@ -557,8 +557,9 @@ const notAvailable = computed(() => dataset.value?.status === 'not_available');
                     No se muestran {{ dataset.hidden }} colaborador{{
                         dataset.hidden === 1 ? '' : 'es'
                     }}
-                    sin ingresos o sin nómina pagada en este periodo (bajas y
-                    vacantes); tampoco suman en los totales.
+                    sin nómina pagada en este periodo, o sin ingresos y sin
+                    estar activos en People (bajas y vacantes); tampoco suman
+                    en los totales.
                 </p>
 
                 <div

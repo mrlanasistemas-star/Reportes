@@ -77,8 +77,18 @@ class HardDataService
         $roster = $this->people->roster();
         $this->matcher->load($roster['people']);
         $rows = $inScope
-            ->filter(fn (array $r) => $this->workedInPeriod($r))
-            ->map(fn (array $r) => $this->withPeople($this->slim($r)))
+            ->map(fn (array $r) => $this->withPeople($this->slim($r)) + ['_worked' => $this->workedInPeriod($r)])
+            ->filter(fn (array $r) => $r['_worked'] || $this->isSupportStaff($r))
+            ->map(function (array $r) {
+                $worked = $r['_worked'];
+                unset($r['_worked']);
+                $r['support'] = ! $worked;
+                if (! $worked) {
+                    $r['category'] = self::SUPPORT_CATEGORY;
+                }
+
+                return $r;
+            })
             ->values()
             ->all();
         $matched = collect($rows)->whereNotNull('people')->count();
@@ -129,7 +139,7 @@ class HardDataService
             $row = collect($this->kpis->forPeriod($period)['rows'])
                 ->first(fn (array $r) => in_array($employeeId, $r['employee']['employee_ids'] ?? [$r['employee']['id'] ?? null], true));
 
-            if ($row === null || ! $this->workedInPeriod($row) || ! $canSee($row)) {
+            if ($row === null || ! $canSee($row) || ! ($this->workedInPeriod($row) || (float) ($row['kpis']['payroll']['human_capital_total'] ?? 0) > 0)) {
                 return ['period' => $this->describePeriod($period), 'present' => false];
             }
 
@@ -209,6 +219,22 @@ class HardDataService
      * pagada. Sin ingresos o sin pago = baja / vacante, no se muestra (y no suma
      * en los totales de la pantalla).
      */
+    /** Categoría de quien cobra nómina sin ingresos propios (gerentes, coordinación, mesa de control…). */
+    public const SUPPORT_CATEGORY = 'SIN CARTERA';
+
+    /**
+     * Personal de apoyo: cobró nómina en el periodo pero no genera ingresos
+     * propios (no tiene cartera). Solo se muestra si People confirma que está
+     * ACTIVO; sin People no se distingue de una baja con finiquito y se oculta.
+     */
+    private function isSupportStaff(array $row): bool
+    {
+        return (float) ($row['payroll'] ?? 0) > 0
+            && (float) ($row['income_base'] ?? 0) <= 0
+            && $row['people'] !== null
+            && ! $row['people']['is_baja'];
+    }
+
     private function workedInPeriod(array $r): bool
     {
         $k = $r['kpis'] ?? [];

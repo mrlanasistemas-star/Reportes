@@ -64,6 +64,8 @@ export type HardDataRow = {
     /** Sucursal según Reportería (para comparar con la de People). */
     reportes_branch?: string | null;
     /** Datos de MR LANA PEOPLE si se empató (por clave NOI o por nombre). */
+    /** Cobra nómina sin ingresos propios (gerente, coordinación…), activo en People. */
+    support?: boolean;
     people?: {
         via: 'clave' | 'nombre';
         number: string | null;
